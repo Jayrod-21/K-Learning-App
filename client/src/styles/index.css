@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  /* Korean design tokens — 단청 palette */
+  --color-primary: #8B1A1A;
+  --color-secondary: #2D5A27;
+  --color-accent: #C9A84C;
+  --color-ink: #1A1A2E;
+  --color-paper: #F5F0E8;
+
+  /* Semantic colors */
+  --color-primary-light: #A52A2A;
+  --color-primary-dark: #6B1414;
+  --color-secondary-light: #3D7A37;
+  --color-accent-light: #D4B85C;
+  --color-danger: #DC3545;
+  --color-success: #2D5A27;
+  --color-warning: #C9A84C;
+
+  /* Typography */
+  --font-korean: 'Noto Sans KR', sans-serif;
+  --font-ui: 'Inter', sans-serif;
+}
+
+/* Base styles */
+body {
+  font-family: var(--font-ui);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Dark mode (default) */
+.dark body,
+body.dark {
+  background-color: var(--color-ink);
+  color: var(--color-paper);
+}
+
+/* Light mode */
+.light body,
+body.light {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+}
+
+/* Korean text styling */
+.font-korean {
+  font-family: var(--font-korean);
+}
+
+/* Scrollbar styling for dark mode */
+.dark ::-webkit-scrollbar {
+  width: 8px;
+}
+
+.dark ::-webkit-scrollbar-track {
+  background: var(--color-ink);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 4px;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #444;
+}
