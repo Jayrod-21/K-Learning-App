@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  client-checks:
+    name: Client — Lint, Type Check & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  server-checks:
+    name: Server — Lint & Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for syntax errors
+        run: node --check src/index.js
+
+      - name: Check middleware
+        run: node --check src/middleware/auth.js
+
+      - name: Check services
+        run: |
+          node --check src/services/claudeService.js
+          node --check src/services/supabaseService.js
+
+      - name: Check routes
+        run: |
+          node --check src/routes/conversation.js
+          node --check src/routes/grammar.js
+          node --check src/routes/progress.js
+          node --check src/routes/reading.js
+          node --check src/routes/vocab.js
+
+  docker-build:
+    name: Docker — Build Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build client image
+        run: docker build -t hangugeo-client ./client
+
+      - name: Build server image
+        run: docker build -t hangugeo-server ./server
+
+  security-scan:
+    name: Security — Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit client dependencies
+        working-directory: ./client
+        run: npm audit --audit-level=high || true
+
+      - name: Audit server dependencies
+        working-directory: ./server
+        run: npm audit --audit-level=high || true
+
+      - name: Check for secrets in code
+        run: |
+          echo "Checking for potential secrets..."
+          ! grep -rn "ANTHROPIC_API_KEY\s*=\s*sk-" --include="*.ts" --include="*.js" --include="*.tsx" . || { echo "ERROR: API key found in source code!"; exit 1; }
+          ! grep -rn "SUPABASE_SERVICE_KEY\s*=\s*eyJ" --include="*.ts" --include="*.js" --include="*.tsx" . || { echo "ERROR: Supabase key found in source code!"; exit 1; }
+          echo "No secrets detected."

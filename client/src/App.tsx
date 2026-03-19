@@ -1,11 +1,18 @@
 /**
  * App Root Component
- * Sets up routing and auth-gated navigation.
+ * Sets up routing, navigation, and auth-gated pages.
  */
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
+import Navigation from './components/Navigation';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Curriculum from './pages/Curriculum';
+import Vocabulary from './pages/Vocabulary';
+import GrammarList from './pages/GrammarList';
+import GrammarLesson from './pages/GrammarLesson';
+import Reading from './pages/Reading';
+import Conversation from './pages/Conversation';
 
 /**
  * Protected route wrapper — redirects to login if unauthenticated
@@ -15,10 +22,10 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-ink flex items-center justify-center">
+      <div className="min-h-screen bg-[#1A1A2E] flex items-center justify-center">
         <div className="text-center">
-          <p className="font-korean text-2xl text-paper mb-2">한국어 마스터</p>
-          <p className="text-paper/40 text-sm">Loading...</p>
+          <p className="font-['Noto_Sans_KR'] text-2xl text-[#F5F0E8] mb-2">한국어 마스터</p>
+          <p className="text-[#F5F0E8]/40 text-sm">Loading...</p>
         </div>
       </div>
     );
@@ -28,7 +35,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
 
-  return <>{children}</>;
+  return (
+    <div className="min-h-screen bg-[#1A1A2E]">
+      <Navigation />
+      <main>{children}</main>
+    </div>
+  );
 }
 
 /**
@@ -66,12 +78,19 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* Future routes — placeholder for Phase 2+ */}
+        <Route
+          path="/curriculum"
+          element={
+            <ProtectedRoute>
+              <Curriculum />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/vocab"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="단어 학습 | Vocabulary" />
+              <Vocabulary />
             </ProtectedRoute>
           }
         />
@@ -79,7 +98,15 @@ export default function App() {
           path="/grammar"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="문법 수업 | Grammar" />
+              <GrammarList />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/grammar/:lessonId"
+          element={
+            <ProtectedRoute>
+              <GrammarLesson />
             </ProtectedRoute>
           }
         />
@@ -95,7 +122,7 @@ export default function App() {
           path="/conversation"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="AI 대화 | Conversation" />
+              <Conversation />
             </ProtectedRoute>
           }
         />
@@ -103,7 +130,7 @@ export default function App() {
           path="/reading"
           element={
             <ProtectedRoute>
-              <PlaceholderPage title="읽기 연습 | Reading" />
+              <Reading />
             </ProtectedRoute>
           }
         />
@@ -121,20 +148,18 @@ export default function App() {
   );
 }
 
-/** Temporary placeholder for future module pages */
+/** Temporary placeholder for modules not yet built */
 function PlaceholderPage({ title }: { title: string }) {
   return (
-    <div className="min-h-screen bg-ink text-paper flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="font-korean text-3xl font-bold mb-4">{title}</h1>
-        <p className="text-paper/40">Coming in Phase 2+</p>
-        <a
-          href="/"
-          className="inline-block mt-6 text-accent hover:text-accent-light transition-colors"
-        >
-          ← 대시보드로 돌아가기
-        </a>
-      </div>
+    <div className="max-w-4xl mx-auto px-4 py-8 text-center">
+      <h1 className="font-['Noto_Sans_KR'] text-3xl font-bold text-[#F5F0E8] mb-4">{title}</h1>
+      <p className="text-[#a0a0b0]">Coming soon</p>
+      <a
+        href="/"
+        className="inline-block mt-6 text-[#C9A84C] hover:underline transition-colors"
+      >
+        ← 대시보드로 돌아가기
+      </a>
     </div>
   );
 }
