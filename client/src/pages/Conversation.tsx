@@ -213,7 +213,7 @@ export default function Conversation() {
  * Simple fallback responses when AI backend is unavailable.
  * Provides basic practice even without the Claude API.
  */
-function getFallbackResponse(input: string, mode: ConversationMode): string {
+function getFallbackResponse(_input: string, mode: ConversationMode): string {
   const responses: Record<ConversationMode, string[]> = {
     casual: [
       '좋아요! 그런데 API 연결이 안 되어 있어서 자세한 대화가 어려워요. 서버를 확인해 주세요.\n\n(The AI server is not connected. Please check your server configuration and ANTHROPIC_API_KEY.)',
