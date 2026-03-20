@@ -75,7 +75,7 @@ export default function Conversation() {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, aiMessage]);
-    } catch (err) {
+    } catch {
       setError('AI service unavailable. Make sure the server is running and ANTHROPIC_API_KEY is set.');
       const fallbackMessage: Message = {
         role: 'assistant',
