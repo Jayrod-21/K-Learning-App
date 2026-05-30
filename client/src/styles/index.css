@@ -163,6 +163,13 @@ body {
   }
 }
 
+/* Indeterminate spinner rotation — used by inline loading affordances
+   (WordPopover lookup, Images upload). Neutralised by the reduced-motion
+   block above. */
+@keyframes km-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
  * Bones — the 9 component classes used across the app.
  * ──────────────────────────────────────────────────────────────────────── */
@@ -2841,6 +2848,38 @@ body {
   white-space: nowrap;
   line-height: 1;
 }
+.km-images__thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Inline upload error — surfaces a failed `POST /images/ocr` without leaving
+   the list view; dismissable. */
+.km-images__upload-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border-color: var(--vermilion);
+}
+.km-images__upload-error-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.km-images__upload-error-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--paper);
+}
+.km-images__detected-empty {
+  margin: 0;
+  padding: 14px;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
 .km-images__capture { margin: 0 18px; }
 .km-images__capture-bar {
   display: flex;
@@ -2856,6 +2895,19 @@ body {
 .km-images__capture-frame {
   position: relative;
   width: 100%;
+}
+/* Real photo — no bounding-box overlay (Pass 8 locked: Vision returns words,
+   not coordinates). The image sizes to its natural aspect ratio. */
+.km-images__capture-img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+/* Mock-only placeholder — gradient + absolutely-positioned scene text, shown
+   when a capture has no real image bytes (`blobUrl` empty). */
+.km-images__capture-placeholder {
+  position: relative;
+  width: 100%;
   aspect-ratio: 4 / 3;
 }
 .km-images__capture-line {
@@ -2863,26 +2915,6 @@ body {
   color: var(--ink);
   white-space: nowrap;
   line-height: 1;
-}
-.km-images__ocrbox {
-  position: absolute;
-  border: 1.5px solid var(--vermilion);
-  border-radius: 2px;
-  background: rgba(184, 58, 46, 0.12);
-  cursor: pointer;
-  padding: 0;
-  animation: kmOcrPulse 1.6s ease-out 1 both;
-}
-.km-images__ocrbox--added {
-  background: rgba(92, 117, 72, 0.18);
-  border-color: var(--moss);
-}
-@keyframes kmOcrPulse {
-  0%   { box-shadow: 0 0 0 0 rgba(184, 58, 46, 0.5); }
-  100% { box-shadow: 0 0 0 8px rgba(184, 58, 46, 0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .km-images__ocrbox { animation: none; }
 }
 .km-images__capture-caption {
   padding: 12px 14px;

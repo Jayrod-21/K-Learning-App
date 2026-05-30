@@ -32,8 +32,26 @@ export interface CacheControl {
   readonly ttl?: '5m' | '1h';
 }
 
+/**
+ * Image content block — mirrors the Anthropic SDK `ImageBlockParam`
+ * base64-source shape. The OCR route (`image_ocr`) carries an image as the
+ * first element of a user message's `content` array; every existing route
+ * uses only `text` blocks. We model only the base64 source (not the URL or
+ * Files-API variants) because the proxy never has a public URL for an
+ * uploaded blob — it has the bytes. `media_type` is restricted to the upload
+ * allowlist the route enforces (jpeg/png/webp); `data` is the base64-encoded
+ * image, NOT logged and NOT part of the cache key (image_ocr runs with
+ * cacheTtl 0 and `serializeMessages` skips image-block data).
+ */
+export interface ImageSourceBase64 {
+  readonly type: 'base64';
+  readonly media_type: 'image/jpeg' | 'image/png' | 'image/webp';
+  readonly data: string;
+}
+
 export type ContentBlock =
   | { type: 'text'; text: string; cache_control?: CacheControl }
+  | { type: 'image'; source: ImageSourceBase64; cache_control?: CacheControl }
   | { type: 'tool_result'; tool_use_id: string; content: string };
 
 export interface MessageRequest {

@@ -27,6 +27,7 @@ Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
 | 014 | `diagnostic_runs` | P5A | Live CAT-lite diagnostic: per-run sessions + per-item responses (Diagnostic screen) |
 | 015 | `topik_responses` | P6A | TOPIK Prep answer log: append-only graded attempts (Study mode live + Mock route) |
 | 016 | `hanja` | P7A | Hanja reference corpus (`hanja_characters` + `hanja_compounds`) + per-user `hanja_progress` (Hanja screen live); extends `corpus` enum with `'hanja'` |
+| 017 | `image_captures` | P8A | Per-user image OCR mining: `image_captures` (uploaded photo + caption, soft-deleted) + `image_words` (the OCR'd content words, no bounding boxes) — Images screen live |
 
 ## Transaction ownership (ADR-013)
 
@@ -726,4 +727,70 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 016_hanja.down.sql   -- --allow-de
 # Verify reverted but 001/002 intact (and the enum value persists by design)
 psql "$DATABASE_URL" -c "\dt" | grep -E 'hanja_characters|hanja_compounds|hanja_progress' && echo "FAIL" || echo "OK"
 psql "$DATABASE_URL" -c "\dt" | grep -E 'users|corpus_sources' || echo "FAIL: 001/002 tables gone"
+```
+
+## Migration 017: `image_captures` (P8A)
+
+### What it creates
+
+Two parent/child tables that take the **Images screen** live (Pass 8 — image
+OCR mining):
+
+- `image_captures` — **per-user**, one row per photo the user uploaded, plus its
+  OCR caption (`caption_kr` / `caption_en`) and the stored-blob metadata
+  (`mime`, `byte_size`, `blob_path`). FK to `users` (`ON DELETE CASCADE`).
+  **Soft-deleted** (`deleted_at`) because a capture is the user's mining history
+  — a deferred "added to vocab from capture #N" audit row would reference it.
+- `image_words` — the distinct CONTENT words Claude Vision transcribed from the
+  capture (`kr`, `en`, `gloss`, `pos`, plus a detection `ordinal`). Child of
+  `image_captures` (`ON DELETE CASCADE`). `UNIQUE (capture_id, ordinal)` keeps
+  the word list in a stable order. **No bounding-box columns** (see below).
+
+### The "no bounding boxes" decision
+
+Claude Vision returns reliable word transcription + glosses but NOT precise
+coordinates, so the OCR result carries no `box` field. The client renders the
+real photo plus a tappable word LIST (not a coordinate overlay). `image_words`
+therefore stores only the word + its glosses + an ordinal — never geometry. This
+is the locked product decision recorded in `PASS8_CONTRACT.md` §A.
+
+### Why `blob_path` is relative (not absolute)
+
+`blob_path` is a path RELATIVE to the configured store root
+(`IMAGE_STORAGE_DIR`), e.g. `42/<uuid>.png`. The server joins it with the root
+and asserts the resolved path stays under the root (path-traversal guard in
+`server/src/services/imageStore.ts`). Storing it relative keeps rows portable if
+the root moves (filesystem today, S3 later — `server/SECURITY.md` §16) and means
+the DB never holds a host-specific absolute path. The filename component is a
+server-generated UUID — never client input — so the path is injection-free.
+
+### Reference vs user state
+
+Both tables are per-user state (FK chain to `users`, CASCADE). `image_captures`
+is soft-deleted (historical value); `image_words` is hard-deleted with its
+parent (no standalone audit value, and CASCADE handles account deletion).
+Neither is reference data.
+
+### How to test (this migration specifically)
+
+```bash
+# Assume migrations 001..016 already applied to a fresh DB.
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 017_image_captures.up.sql
+
+# Smoke: both tables + the user FK + the word FK + the key constraints/indexes
+psql "$DATABASE_URL" -c "\dt" | grep -E 'image_captures|image_words'
+psql "$DATABASE_URL" -c "\d image_captures" | grep -E 'fk_image_captures_user|ix_image_captures_user_created|ck_image_captures_mime'
+psql "$DATABASE_URL" -c "\d image_words"    | grep -E 'fk_image_words_capture|uq_image_words_capture_ordinal|ix_image_words_capture'
+
+# Idempotency: re-applying succeeds (CREATE TABLE IF NOT EXISTS)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 017_image_captures.up.sql
+
+# Apply down (drops the two tables; leaves 001's users)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 017_image_captures.down.sql   # --allow-destructive via migrate.py
+
+# Verify reverted but 001 intact (blob files on disk are NOT removed — see down.sql note)
+psql "$DATABASE_URL" -c "\dt" | grep -E 'image_captures|image_words' && echo "FAIL" || echo "OK"
+psql "$DATABASE_URL" -c "\dt" | grep -E 'users' || echo "FAIL: 001 tables gone"
 ```

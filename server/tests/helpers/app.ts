@@ -118,6 +118,22 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    ocrImage: async () => ({
+      // Deterministic OCR result: a fixed caption + 3 content words (no boxes).
+      // Lets the /images upload route test assert the persisted caption + words
+      // without touching Anthropic Vision. The input (image bytes) is ignored —
+      // the stub is intentionally content-independent so the test is stable.
+      result: {
+        caption_kr: '책상 위의 메뉴판',
+        caption_en: 'a menu on the desk',
+        words: [
+          { kr: '메뉴', en: 'menu', gloss: 'a list of dishes', pos: 'n.' as const },
+          { kr: '주문하다', en: 'to order', gloss: 'to place an order', pos: 'v.' as const },
+          { kr: '맛있다', en: 'delicious', gloss: 'tastes good', pos: 'adj.' as const },
+        ],
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     generateConversation: (input) => {
       // Default stub: a deterministic single-delta stream + a complete event.
       // Tests that need failure or chunked behaviour pass an override via

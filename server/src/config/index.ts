@@ -27,6 +27,16 @@ const EnvSchema = z.object({
   KIWI_URL: z.string().url(),
   CLAUDE_PROXY_URL: z.string().url().optional(),
 
+  // Image blob store (Pass 8 — Images screen). Filesystem root under which
+  // uploaded photos are stored as `{userId}/{uuid}.{ext}`. Relative paths are
+  // resolved against the process CWD. Durable/offsite (S3) is deferred — see
+  // SECURITY.md §16. Default keeps local dev zero-config.
+  IMAGE_STORAGE_DIR: z.string().min(1).default('./var/images'),
+
+  // Per-user DAILY cap on image-OCR uploads (the Vision-cost lever). Exceeding
+  // it returns 429 before any upstream call. See SECURITY.md §16.
+  IMAGE_OCR_DAILY_CAP: z.coerce.number().int().positive().default(20),
+
   // Session / cookie
   SESSION_COOKIE_NAME: z.string().default('km_sid'),
   SESSION_LIFETIME_DAYS: z.coerce.number().int().positive().default(30),

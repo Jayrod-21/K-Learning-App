@@ -57,6 +57,13 @@ export class ConflictError extends AppError {
   }
 }
 
+export class PayloadTooLargeError extends AppError {
+  public constructor(message: string) {
+    super(413, 'payload_too_large', message);
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
 export class UpstreamError extends AppError {
   public constructor(message: string, details?: unknown) {
     super(502, 'upstream_error', message, details);

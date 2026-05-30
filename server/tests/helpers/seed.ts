@@ -498,6 +498,66 @@ export async function seedHanjaProgress(
   return Number(rows[0]!.id);
 }
 
+/**
+ * Seed a single image_captures row (+ its image_words) for a user. Returns the
+ * new capture id.
+ *
+ * Per-user mining history (migration 017); the route scopes every read to
+ * user_id. Pass `deleted: true` to exercise the soft-delete exclusion, and
+ * `blobPath` to point at a real on-disk blob if a test wants to exercise
+ * GET /:id/blob (otherwise the default path won't resolve to a file). `words`
+ * are inserted in array order as ordinals 0..n-1.
+ */
+export async function seedImageCapture(
+  pool: Pool,
+  userId: number,
+  opts: {
+    originalFilename?: string | null;
+    mime?: 'image/jpeg' | 'image/png' | 'image/webp';
+    byteSize?: number;
+    blobPath?: string;
+    captionKr?: string;
+    captionEn?: string;
+    deleted?: boolean;
+    words?: Array<{ kr: string; en?: string; gloss?: string; pos?: string | null }>;
+  } = {},
+): Promise<number> {
+  const mime = opts.mime ?? 'image/png';
+  const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+  const blobPath =
+    opts.blobPath ??
+    `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO image_captures
+       (user_id, original_filename, mime, byte_size, blob_path,
+        caption_kr, caption_en, deleted_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7,
+             CASE WHEN $8 THEN now() ELSE NULL END)
+     RETURNING id`,
+    [
+      userId,
+      opts.originalFilename === undefined ? 'seed.png' : opts.originalFilename,
+      mime,
+      opts.byteSize ?? 1024,
+      blobPath,
+      opts.captionKr ?? '책상 위의 메뉴판',
+      opts.captionEn ?? 'a menu on the desk',
+      opts.deleted ?? false,
+    ],
+  );
+  const captureId = Number(rows[0]!.id);
+  const words = opts.words ?? [{ kr: '메뉴', en: 'menu', gloss: 'a menu', pos: 'n.' }];
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i]!;
+    await pool.query(
+      `INSERT INTO image_words (capture_id, ordinal, kr, en, gloss, pos)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [captureId, i, w.kr, w.en ?? '', w.gloss ?? '', w.pos ?? null],
+    );
+  }
+  return captureId;
+}
+
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,

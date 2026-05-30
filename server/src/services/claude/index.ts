@@ -57,6 +57,8 @@ import {
   GradeInputSchema,
   GradeResultSchema,
   GrammarRecognitionInputSchema,
+  ImageOcrInputSchema,
+  ImageOcrResultSchema,
   PatternResultSchema,
   type CallMetadata,
   type ConversationInput,
@@ -69,6 +71,8 @@ import {
   type GradeInput,
   type GradeResult,
   type GrammarRecognitionInput,
+  type ImageOcrInput,
+  type ImageOcrResult,
   type PatternResult,
   type ProxyResult,
 } from './models';
@@ -76,6 +80,7 @@ import { buildConversationRequest } from './prompts/conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
+import { buildImageOcrRequest } from './prompts/image_ocr';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
 import { sanitizeUserInput } from './prompts/sanitize';
 import { TokenBucketLimiter, type RateLimiter } from './rate_limit';
@@ -100,6 +105,9 @@ export type {
   GradeInput,
   GradeResult,
   GrammarRecognitionInput,
+  ImageOcrInput,
+  ImageOcrResult,
+  ImageOcrWord,
   PatternResult,
   ProficiencyLevel,
   ProxyResult,
@@ -167,6 +175,13 @@ export interface ClaudeProxy {
     input: DiagnosticItemInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<DiagnosticItemResult>>;
+  /**
+   * Run OCR + vocab-mining on ONE uploaded photo. The user message carries an
+   * IMAGE content block (base64). Returns a caption + the distinct content
+   * words (NO bounding boxes — locked decision). Not cached (cacheTtl 0): image
+   * bytes make a poor cache key and the same photo is rarely re-uploaded.
+   */
+  ocrImage(input: ImageOcrInput, ctx?: CallContext): Promise<ProxyResult<ImageOcrResult>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -339,6 +354,40 @@ class ClaudeProxyImpl implements ClaudeProxy {
       request: req,
       cacheTtl: cfg.cacheTtlSeconds.diagnostic_item,
       outputSchema: DiagnosticItemResultSchema,
+      parser: parseJsonContent,
+    });
+  }
+
+  async ocrImage(
+    rawInput: ImageOcrInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<ImageOcrResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'image_ocr';
+    // The only user-controlled input is the image BYTES (validated upstream by
+    // the route's magic-byte sniff + size cap) plus the media type. There is no
+    // free TEXT to run through the prompt-injection sanitizer; the instruction
+    // is entirely static. We still validate the base64/mediaType shape here so a
+    // malformed call fails as a 400 (ClaudeInputValidationError), not deep in
+    // the SDK. The cap on imageBase64 length is the schema's secondary ceiling.
+    const input = parseInput(ImageOcrInputSchema, rawInput, route);
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildImageOcrRequest(
+      { imageBase64: input.imageBase64, mediaType: input.mediaType },
+      model,
+    );
+
+    // cacheTtl 0 (image bytes are a useless cache key). runJsonRoute still
+    // computes a cache key, but serializeMessages substitutes a placeholder for
+    // the base64 payload, and a 0 TTL write is effectively a no-op / immediate
+    // expiry — the lookup never returns a hit for a fresh image.
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.image_ocr,
+      outputSchema: ImageOcrResultSchema,
       parser: parseJsonContent,
     });
   }
@@ -780,15 +829,33 @@ function stringifySystem(
   return system.map((b) => (b.type === 'text' ? b.text : '')).join('\n');
 }
 
-function serializeMessages(
+// Exported for unit testing: the image-block placeholder behavior is the most
+// load-bearing security property of the image_ocr route (a regression that
+// dropped the placeholder would put multi-MB base64 into every cache key and
+// any logged cache key). A unit test pins it. See tests/services/claude.
+export function serializeMessages(
   messages: import('./client').MessageRequest['messages'],
 ): string {
   return JSON.stringify(
     messages.map((m) => ({
       role: m.role,
-      content: m.content.map((c) =>
-        c.type === 'text' ? { type: 'text', text: c.text } : c,
-      ),
+      content: m.content.map((c) => {
+        if (c.type === 'text') return { type: 'text', text: c.text };
+        // Image blocks carry a (potentially multi-MB) base64 payload. Embedding
+        // it in the cache key would bloat the key and is pointless — image_ocr
+        // runs with cacheTtl 0, so the row is never read back. We serialize a
+        // stable placeholder that records the media type + payload length only,
+        // never the raw bytes (also keeps base64 image data out of any logged
+        // cache key). See PASS8_CONTRACT §B.
+        if (c.type === 'image') {
+          return {
+            type: 'image',
+            media_type: c.source.media_type,
+            dataLength: c.source.data.length,
+          };
+        }
+        return c;
+      }),
     })),
   );
 }

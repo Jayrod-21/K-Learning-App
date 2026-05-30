@@ -23,6 +23,9 @@ import type {
   GrammarRecognitionInput,
   GradeInput,
   GradeResult,
+  ImageOcrInput,
+  ImageOcrResult,
+  ImageOcrWord,
   PatternResult,
   ProxyResult,
 } from './claude/index.js';
@@ -36,6 +39,9 @@ export type {
   GrammarRecognitionInput,
   GradeInput,
   GradeResult,
+  ImageOcrInput,
+  ImageOcrResult,
+  ImageOcrWord,
   PatternResult,
   ProxyResult,
 };

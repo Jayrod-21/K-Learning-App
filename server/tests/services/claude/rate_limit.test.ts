@@ -11,6 +11,7 @@ const limits = {
   recognize_grammar: 3,
   grade_writing: 1,
   diagnostic_item: 2,
+  image_ocr: 2,
   generate_conversation: 2,
 } as const;
 

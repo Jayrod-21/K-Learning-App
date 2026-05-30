@@ -65,6 +65,7 @@ function setupProxy(sdkResponses: Parameters<typeof makeStubSdk>[0]) {
     recognize_grammar: 30,
     grade_writing: 5,
     diagnostic_item: 20,
+    image_ocr: 10,
     generate_conversation: 10,
   });
   const sdk = makeStubSdk(sdkResponses);
@@ -195,7 +196,7 @@ describe('enrich — error paths', () => {
     const cache = new InMemoryCacheStore();
     const usage = new InMemoryUsageStore();
     const limiter = new TokenBucketLimiter(
-      { enrich: 1, recognize_grammar: 1, grade_writing: 1, diagnostic_item: 1, generate_conversation: 1 },
+      { enrich: 1, recognize_grammar: 1, grade_writing: 1, diagnostic_item: 1, image_ocr: 1, generate_conversation: 1 },
       () => 1_700_000_000_000,
     );
     setTestEnv();

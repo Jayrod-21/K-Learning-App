@@ -1,52 +1,23 @@
 /**
  * Images screen fixtures + loader. The prototype hand-authors three demo
- * captures with predetermined OCR boxes; we model them here so the screen
- * renders the upload card, recent grid, and CaptureView against a real shape.
+ * captures; we model them against the real `ImageCapture` domain shape so the
+ * screen renders the upload card, recent grid, and CaptureView as a fallback
+ * when the real `/images` endpoint is unavailable.
  *
- * `data.js` does NOT define a canonical capture shape — the prototype builds
- * one inline inside `screens-d.jsx`. We invent the shape here to match what
- * Pass 8's `POST /images/ocr` endpoint will return per the integration plan:
- *   `{ id, caption_kr, caption_en, words: [{ id, kr, en, gloss, pos, box }] }`.
+ * The OCR domain types (`OcrWord`, `ImageCapture`) now live in
+ * `types/domain.ts` (Pass 8) — there are NO bounding boxes (Claude Vision
+ * returns word transcription + glosses, not coordinates), so the fixtures
+ * carry no `box` field. The capture view renders the real photo via `blobUrl`;
+ * the mock has no real bytes, so each fixture leaves `blobUrl` empty and keeps
+ * the `scene`/`gradient` placeholder fields the render falls back to when
+ * `blobUrl` is absent.
  *
  * Real wiring (Pass 8): `POST /images/ocr` (upload + Claude Vision),
- * `GET /images` (history), `GET /images/:id` (single capture).
+ * `GET /images` (history), `GET /images/:id` (single capture) — see
+ * `services/images.ts`.
  */
-import type { PartOfSpeech } from '../../types/domain';
+import type { ImageCapture } from '../../types/domain';
 import { mockDelay } from './_delay';
-
-/** OCR bounding box, normalised 0–1 against the image's render box. */
-export interface OcrBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-/** One detected word in a capture. */
-export interface OcrWord {
-  id: string;
-  kr: string;
-  en: string;
-  pos: PartOfSpeech;
-  gloss: string;
-  box: OcrBox;
-}
-
-/** One image capture in the user's history. */
-export interface ImageCapture {
-  id: string;
-  /** Display name shown in the recent-captures grid. */
-  name: string;
-  caption_kr: string;
-  caption_en: string;
-  /** Decorative gradient seed for the placeholder render. */
-  gradient: string;
-  /** Korean text rendered absolutely-positioned in the capture preview. */
-  scene: { text: string; x: number; y: number; size: number }[];
-  words: OcrWord[];
-  /** ISO timestamp — drives the "today / yesterday / ..." label. */
-  capturedAt: string;
-}
 
 export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
   {
@@ -54,6 +25,9 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
     name: '카페 메뉴판',
     caption_kr: '카페 메뉴판 — 음료 가격표',
     caption_en: 'Café menu board — drink prices.',
+    // No real bytes in the mock — empty `blobUrl` makes the capture view fall
+    // back to the gradient placeholder below.
+    blobUrl: '',
     gradient: 'linear-gradient(135deg, #f3e5d8 0%, #d9c6a8 100%)',
     scene: [
       { text: '오늘의 음료', x: 12, y: 8, size: 22 },
@@ -62,38 +36,16 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
       { text: '녹차 ₩4,800', x: 12, y: 68, size: 16 },
     ],
     words: [
-      {
-        id: 'w1',
-        kr: '음료',
-        en: 'beverage',
-        pos: 'n.',
-        gloss: 'beverage, drink',
-        box: { x: 12, y: 8, w: 28, h: 8 },
-      },
+      { id: 'w1', kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage, drink' },
       {
         id: 'w2',
         kr: '아메리카노',
         en: 'americano',
         pos: 'n.',
         gloss: 'americano coffee',
-        box: { x: 12, y: 32, w: 32, h: 7 },
       },
-      {
-        id: 'w3',
-        kr: '라떼',
-        en: 'latte',
-        pos: 'n.',
-        gloss: 'caffè latte',
-        box: { x: 12, y: 50, w: 18, h: 7 },
-      },
-      {
-        id: 'w4',
-        kr: '녹차',
-        en: 'green tea',
-        pos: 'n.',
-        gloss: 'green tea',
-        box: { x: 12, y: 68, w: 18, h: 7 },
-      },
+      { id: 'w3', kr: '라떼', en: 'latte', pos: 'n.', gloss: 'caffè latte' },
+      { id: 'w4', kr: '녹차', en: 'green tea', pos: 'n.', gloss: 'green tea' },
     ],
     capturedAt: '2026-05-28T10:14:00+09:00',
   },
@@ -102,6 +54,7 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
     name: '지하철 안내판',
     caption_kr: '지하철역 안내판 — 출구 표시',
     caption_en: 'Subway station sign — exit indicators.',
+    blobUrl: '',
     gradient: 'linear-gradient(180deg, #e7d9c0 0%, #b89e7c 100%)',
     scene: [
       { text: '2호선 강남역', x: 14, y: 14, size: 24 },
@@ -115,7 +68,6 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
         en: 'Gangnam Station',
         pos: 'pn.',
         gloss: 'Gangnam subway station',
-        box: { x: 14, y: 14, w: 36, h: 10 },
       },
       {
         id: 'w6',
@@ -123,7 +75,6 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
         en: 'exit',
         pos: 'n.',
         gloss: 'exit (from a station/building)',
-        box: { x: 14, y: 46, w: 20, h: 8 },
       },
     ],
     capturedAt: '2026-05-27T18:22:00+09:00',
@@ -133,6 +84,7 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
     name: '식당 영수증',
     caption_kr: '한식당 영수증 — 결제 내역',
     caption_en: 'Korean restaurant receipt — payment details.',
+    blobUrl: '',
     gradient: 'linear-gradient(160deg, #fbf6e6 0%, #d8c8a0 100%)',
     scene: [
       { text: '맛있는 식당', x: 10, y: 6, size: 20 },
@@ -147,7 +99,6 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
         en: 'restaurant',
         pos: 'n.',
         gloss: 'restaurant, eatery',
-        box: { x: 10, y: 6, w: 22, h: 8 },
       },
       {
         id: 'w8',
@@ -155,7 +106,6 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
         en: 'bibimbap',
         pos: 'n.',
         gloss: 'bibimbap (mixed rice dish)',
-        box: { x: 10, y: 28, w: 20, h: 7 },
       },
       {
         id: 'w9',
@@ -163,16 +113,8 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
         en: 'kimchi stew',
         pos: 'n.',
         gloss: 'kimchi jjigae (stew)',
-        box: { x: 10, y: 44, w: 24, h: 7 },
       },
-      {
-        id: 'w10',
-        kr: '합계',
-        en: 'total',
-        pos: 'n.',
-        gloss: 'sum, total amount',
-        box: { x: 10, y: 70, w: 16, h: 7 },
-      },
+      { id: 'w10', kr: '합계', en: 'total', pos: 'n.', gloss: 'sum, total amount' },
     ],
     capturedAt: '2026-05-26T20:48:00+09:00',
   },

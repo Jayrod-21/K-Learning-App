@@ -630,3 +630,138 @@ them as React children (escaped); no HTML is emitted, so there is no stored-XSS
 path through the corpus text. Empty-source fields (`gloss_kr`, `etymology`) are
 served as `''` (the client's default), never as `null` that could surprise a
 consumer.
+
+## 16. Pass 8 surface — Images / OCR mining (`/images/*`, migration 017)
+
+Pass 8 takes the **Images screen** live. The user uploads a photo containing
+Korean text; the server runs it through Claude Vision (OCR), stores the photo as
+a blob, and persists the mined content words. This pass introduces THREE new
+high-value attack surfaces at once — **file uploads**, an **external Vision
+call**, and **blob storage** — so it gets the full new-app treatment. The code
+lives in `server/src/routes/images.ts` + `server/src/services/imageStore.ts` +
+the `image_ocr` Claude route.
+
+### 16.1 Malicious upload — wrong/forged content type
+
+- **Attack.** Upload an SVG (script-bearing), an HTML file, or an executable
+  with a `.png` name and `Content-Type: image/png`; or a polyglot file that is a
+  valid PNG header glued to script. The goal is stored XSS (if the blob is ever
+  served as `text/html`) or RCE on a naive image processor.
+- **Defense — NEVER trust the client mime; magic-byte sniff the buffer.** multer
+  has a `fileFilter` that drops a declared mime outside the
+  `image/jpeg`/`image/png`/`image/webp` allowlist EARLY (so an 8 MiB `.svg`
+  isn't even buffered). That filter is a cheap pre-screen, NOT the authority.
+  After multer, `sniffImageMime(buffer)` inspects the leading bytes —
+  JPEG `FF D8 FF`, PNG `89 50 4E 47 0D 0A 1A 0A`, WEBP `RIFF…WEBP` — and the
+  request is rejected `400` unless the BYTES are a real allowlisted image. A
+  renamed SVG/HTML/exe fails the sniff. The DB `mime` column stores the SNIFFED
+  type (CHECK-constrained to the allowlist in migration 017), never the client
+  value. We do NOT decode/transcode the image (no ImageMagick/sharp), so there
+  is no image-parser RCE surface; the bytes are stored verbatim and served back
+  with `X-Content-Type-Options: nosniff` so a browser can never reinterpret a
+  blob as HTML/JS. Route tests assert both the magic-byte reject and the
+  declared-mime reject persist nothing.
+
+### 16.2 Path traversal / filename injection into the blob store
+
+- **Attack.** Use a crafted filename (`../../etc/cron.d/x`, an absolute path, a
+  null byte) so the server writes the upload outside the store root or reads an
+  arbitrary file back via the blob endpoint.
+- **Defense — server-generated UUID paths + resolve-under-root guard.** The blob
+  filename is built ENTIRELY from server-trusted values:
+  `{sessionUserId}/{serverUUID}.{extFromSniffedMime}`. The client-declared
+  filename is stored ONLY for display (`original_filename`, sanitized of control
+  chars + path separators + length-capped) and is NEVER part of a filesystem
+  path. `saveBlob` guards its inputs (userId is a positive integer, captureId
+  matches a UUID regex) and asserts the destination is under the root.
+  `readBlob` treats the stored relative path as untrusted on the way back in:
+  it rejects absolute paths, `normalize`s, `resolve`s against the root, and
+  asserts the result stays under the root (with a trailing-separator-aware
+  prefix check so `/var/images-evil` is not accepted for root `/var/images`). A
+  traversal trip throws; the blob route maps it (and a missing file) to `404`.
+
+### 16.3 IDOR — reading another user's captures, words, or blobs
+
+- **Attack.** Enumerate capture ids and fetch `/images/:id`, `/images/:id/blob`,
+  or pull another user's mining history via the list.
+- **Defense — every query is user-scoped via `getUserId(req)`.** The list, the
+  single-capture read, and the blob read all filter
+  `WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL` against the SESSION
+  user — never a client value. Another user's id (or a soft-deleted row) returns
+  `404`, not `403`: we don't confirm the existence of a row the caller may not
+  see. The blob row's `mime`/`blob_path` are read only after the user-scope
+  check passes, so no filesystem touch happens for a row the caller doesn't own.
+  Route tests assert the cross-user `404` on both `:id` and `:id/blob`.
+
+### 16.4 Vision cost amplification / DoS
+
+- **Attack.** Hammer `POST /images/ocr` to run up the Anthropic Vision bill, or
+  upload huge files to exhaust memory.
+- **Defense — per-user daily cap + size cap + per-minute limiter + bounded
+  memory.** Before any upstream call, the route counts the user's captures since
+  `date_trunc('day', now())` and returns `429` at the configured
+  `IMAGE_OCR_DAILY_CAP` (default 20/day). The count includes soft-deleted rows
+  so deleting captures can't reset the Vision budget — the cap is a COST control,
+  not a storage quota. The 8 MiB `multer` `fileSize` limit bounds both per-call
+  Vision cost and per-request memory (memory storage is intrinsically bounded by
+  that limit; `files: 1` rejects multi-file floods). An oversize upload trips
+  multer's `LIMIT_FILE_SIZE`, which the route maps to **`413` Payload Too Large**
+  (the correct HTTP semantic for an oversize body, and the status the client keys
+  its "image is too large" copy off — distinct from the `400` it shows for an
+  unsupported/forged image); every other `MulterError` (unexpected field, too
+  many files/parts) maps to `400`. The Claude proxy's own `image_ocr` per-minute
+  limiter (default 10/min) bounds bursts, and `expensiveLimiter` (per-user) sits
+  in front of the route. Route tests assert the `429` at the cap and the `413` on
+  an oversize upload.
+
+### 16.5 Atomicity — no half-captures on Vision or DB failure
+
+- **Attack / failure mode.** The Vision call succeeds but the DB write fails (or
+  vice-versa), leaving a capture row with no words, or words with no row, or a
+  blob with no row.
+- **Defense — Vision outside the tx, then one transaction for blob + rows.** The
+  Vision OCR call happens BEFORE any transaction opens (Bar §1: no external I/O
+  inside an open tx — connection-hogging deadlocks are how prod goes down). A
+  Vision failure throws → `502 UpstreamError` and NOTHING is written. On success,
+  a single `withTransaction` writes the blob, the `image_captures` row, and all
+  `image_words` together; any DB error rolls the whole unit back. A blob written
+  to disk before a later DB error in the same tx becomes an orphan FILE (harmless,
+  GC-able) — never an orphan ROW. The proxy error is mapped to a generic `502`
+  that never forwards the upstream's status or provider-specific details to the
+  wire (mirrors §13.7 / the diagnostic route).
+
+### 16.6 No bounding boxes (design note, not a hole)
+
+The OCR result carries NO coordinates/boxes (locked decision — Claude Vision's
+word transcription is reliable but its geometry is not). `image_words` has no box
+columns and the client renders the real photo plus a tappable word list rather
+than an overlay. There is consequently no coordinate data to leak or to trust.
+
+### 16.7 Blob serving headers + output integrity
+
+Blobs are served only to the authenticated owner with `Cache-Control: private,
+max-age=0, must-revalidate` (never shared-cache), `X-Content-Type-Options:
+nosniff` (the browser must honor our content-type, never sniff bytes into an
+executable type), and the exact sniffed `mime`. The same-origin `<img src>` sends
+the session cookie. Every text DTO field (caption, word glosses) is plain data
+the client renders as escaped React children — no HTML is emitted, so there is no
+stored-XSS path through OCR text. Empty fields are served as `''`, never `null`.
+
+### 16.8 Deferred / known gaps
+
+- **Blobs are on the LOCAL filesystem, not durable/offsite storage.** A host loss
+  loses the photos (the DB rows survive and the blob endpoint then `404`s the
+  bytes — handled gracefully, not a 500). Moving to S3 (or equivalent) with
+  server-side encryption is the planned follow-up; `blob_path` is stored RELATIVE
+  precisely so the root can move without a data migration.
+- **No malware scanning / image re-encoding.** We store bytes verbatim and never
+  decode them server-side, which removes the image-parser RCE surface but means
+  a blob is whatever the user uploaded. `nosniff` + private cache +
+  owner-only serving keep that bounded; a ClamAV-style scan is a future option if
+  the threat model grows.
+- **Down-migration does not delete blob files.** Rolling back 017 drops the rows
+  but leaves the files on disk (the store is not transactional with Postgres);
+  filesystem cleanup is an operational task (noted in `017_*.down.sql`).
+- **OCR-to-vocab banking is NOT wired this pass** — it shares the deferred
+  KRDICT→`vocab_entries` mapping (FU-NF-33). The capture/words are stored as
+  mining history; banking a word into the SRS deck comes later.

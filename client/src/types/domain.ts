@@ -940,3 +940,53 @@ export interface PatchAuthMeBody {
   phone?: string;
   expected_version: number;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Images / OCR mining (Pass 8)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One detected content word in an image capture.
+ *
+ * No bounding box (Pass 8 locked decision): Claude Vision returns reliable
+ * word transcription + glosses but NOT precise coordinates, so the capture
+ * view renders the real photo plus a tappable word list rather than an
+ * overlay. The shape matches the server's `image_words` row projected onto
+ * the client (`kr` dictionary form, `en` short gloss, `gloss` fuller gloss,
+ * `pos` the POS union).
+ */
+export interface OcrWord {
+  id: string;
+  kr: string;
+  en: string;
+  pos: PartOfSpeech;
+  gloss: string;
+}
+
+/**
+ * One image capture in the user's history — the result of `POST /images/ocr`
+ * and the shape `GET /images/:id` returns.
+ *
+ * `blobUrl` is the relative path to the real image bytes (`/images/:id/blob`),
+ * served same-origin with the session cookie. `scene`/`gradient` are
+ * mock-only placeholder fields: the prototype's `loadImagesMock` paints a
+ * gradient + absolutely-positioned KR text when no real photo exists, so they
+ * stay optional and a real capture carries neither.
+ */
+export interface ImageCapture {
+  id: string;
+  /** Display name shown in the recent-captures grid. */
+  name: string;
+  caption_kr: string;
+  caption_en: string;
+  /** Relative URL to the real image bytes (`/images/:id/blob`). */
+  blobUrl: string;
+  /** Mock-only: decorative gradient seed for the placeholder render. */
+  gradient?: string;
+  /** Mock-only: KR text rendered absolutely-positioned in the placeholder. */
+  scene?: { text: string; x: number; y: number; size: number }[];
+  /** Detected content words. Present on a single-capture fetch / upload result. */
+  words: OcrWord[];
+  /** ISO timestamp — drives the "today / yesterday / ..." label. */
+  capturedAt: string;
+}

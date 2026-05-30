@@ -250,6 +250,59 @@ export const DiagnosticItemResultSchema = z.object({
 });
 export type DiagnosticItemResult = z.infer<typeof DiagnosticItemResultSchema>;
 
+// ---- 3c. ocrImage ----------------------------------------------------------
+// Image OCR mining (Pass 8, Images screen). Given a photo containing Korean
+// text, Claude Vision transcribes it and returns a short caption plus the
+// distinct CONTENT words (nouns/verbs/adjectives/adverbs/pronouns), each with
+// glosses + a part-of-speech tag. NO bounding boxes (locked decision): the
+// result carries no coordinates and the client renders a tappable word LIST.
+
+/** Part-of-speech tags the model may emit — the client `PartOfSpeech` union.
+ *  Free-ish but constrained to a small closed set so the DTO is predictable.
+ *  `.optional()` (not defaulted) so a missing tag stays absent rather than
+ *  guessing a value; the route maps a missing tag to null in the DB. */
+export const ImageWordPosSchema = z.enum(['n.', 'v.', 'adj.', 'adv.', 'pn.']);
+export type ImageWordPos = z.infer<typeof ImageWordPosSchema>;
+
+const ImageOcrWordSchema = z.object({
+  /** Dictionary form of the word (Korean). Non-empty. */
+  kr: NonEmptyText.max(200),
+  /** Short English gloss. `.optional()` (not `.default('')`) so the inferred
+   *  result type matches `runJsonRoute`'s output; the route coerces to ''. */
+  en: z.string().max(500).optional(),
+  /** Slightly fuller gloss / usage note. Optional; route coerces to ''. */
+  gloss: z.string().max(800).optional(),
+  /** Part of speech. Optional — absent when the model didn't tag it. */
+  pos: ImageWordPosSchema.optional(),
+});
+export type ImageOcrWord = z.infer<typeof ImageOcrWordSchema>;
+
+export const ImageOcrInputSchema = z.object({
+  /** Base64-encoded image bytes (no data: URI prefix). Capped so a pathological
+   *  payload can't blow past the upload limit at the schema layer too — an 8
+   *  MiB blob is ~11.2M base64 chars; 16M leaves headroom without being
+   *  unbounded. The route's multer fileSize limit is the primary cap. */
+  imageBase64: z.string().min(1).max(16_000_000),
+  /** Sniffed media type — must be one of the upload allowlist values. */
+  mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  /** Optional model override (vision-capable tiers only in practice). */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type ImageOcrInput = z.infer<typeof ImageOcrInputSchema>;
+
+export const ImageOcrResultSchema = z.object({
+  /** Short Korean caption. `.optional()` (not `.default('')`) so the inferred
+   *  result type matches `runJsonRoute`'s output; the route coerces to ''. */
+  caption_kr: z.string().max(2000).optional(),
+  /** English translation of the caption. Optional; route coerces to ''. */
+  caption_en: z.string().max(2000).optional(),
+  /** The distinct content words. Capped at 30 (the prompt asks for ~30); an
+   *  empty/absent array is valid (no Korean text). Optional; route coerces to
+   *  []. NO box field. */
+  words: z.array(ImageOcrWordSchema).max(30).optional(),
+});
+export type ImageOcrResult = z.infer<typeof ImageOcrResultSchema>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 

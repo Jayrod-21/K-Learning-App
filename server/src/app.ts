@@ -29,6 +29,7 @@ import planRoutes from './routes/plan.js';
 import diagnosticRoutes from './routes/diagnostic.js';
 import topikRoutes from './routes/topik.js';
 import hanjaRoutes from './routes/hanja.js';
+import imagesRoutes from './routes/images.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -74,6 +75,7 @@ export function createApp(): Express {
   app.use('/diagnostic', diagnosticRoutes);
   app.use('/topik', topikRoutes);
   app.use('/hanja', hanjaRoutes);
+  app.use('/images', imagesRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {
