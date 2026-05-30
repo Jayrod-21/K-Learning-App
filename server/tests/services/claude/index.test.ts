@@ -16,7 +16,7 @@
  *   - generateConversation streaming + final
  */
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import {
   createClaudeProxy,

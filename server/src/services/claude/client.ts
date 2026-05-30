@@ -226,6 +226,9 @@ export class ClaudeClient {
             ) => ReturnType<SdkMessagesAPI['stream']>
           )(req, { signal })
         : this.sdk.messages.stream(req);
+    // `iterate` is a generator-function declaration (its own `this`), so the
+    // logger reference is captured here.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
     async function* iterate(): AsyncIterable<StreamEvent> {

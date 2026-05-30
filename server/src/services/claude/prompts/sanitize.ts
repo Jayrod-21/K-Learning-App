@@ -69,6 +69,10 @@ const INJECTION_MARKERS: readonly string[] = [
   'act as if you',
 ];
 
+// Matching control characters here is the whole point — this strips them from
+// user input before it reaches the model (defense against hidden-instruction and
+// terminal-escape injection). The literal control-char class is intentional.
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 export interface SanitizeOptions {

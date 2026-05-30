@@ -26,7 +26,7 @@
 import { type Pool } from 'pg';
 import type { Logger } from 'pino';
 import { randomUUID } from 'node:crypto';
-import { z, type ZodSchema } from 'zod';
+import { z } from 'zod';
 
 import {
   PostgresCacheStore,
@@ -454,12 +454,12 @@ class ClaudeProxyImpl implements ClaudeProxy {
       outcomeResolver = res;
     });
 
-    const self = this;
+    // Arrow IIFE — `this` is captured lexically, no `self` alias needed.
     void (async (): Promise<void> => {
       try {
         // Cache lookup first.
-        const hit = await self.cache.get(cacheKey).catch((e) => {
-          self.logger.warn({ errMsg: errMsg(e) }, 'conversation cache lookup failed');
+        const hit = await this.cache.get(cacheKey).catch((e) => {
+          this.logger.warn({ errMsg: errMsg(e) }, 'conversation cache lookup failed');
           return null;
         });
         if (hit) {
@@ -491,17 +491,17 @@ class ClaudeProxyImpl implements ClaudeProxy {
             });
             return;
           }
-          self.logger.warn({ route }, 'conversation cache row failed schema; refreshing');
+          this.logger.warn({ route }, 'conversation cache row failed schema; refreshing');
         }
 
         // Cache miss — consume the rate-limit budget BEFORE calling the SDK.
         // (Hits intentionally skip the limiter; see ADR-020 §5.)
-        self.rateLimiter.consume(route, bucketKey);
+        this.rateLimiter.consume(route, bucketKey);
 
         // Go to the SDK. Stream returns events + final. Threads the
         // caller's abort signal so a closed client stops the upstream
         // spend immediately (REVIEW_P3A BL-1, A-B1 fix).
-        const { events: sdkEvents, final: sdkFinal } = self.client.stream(
+        const { events: sdkEvents, final: sdkFinal } = this.client.stream(
           req,
           ctx.signal,
         );
@@ -526,13 +526,13 @@ class ClaudeProxyImpl implements ClaudeProxy {
 
         // Cache write — soft failure.
         try {
-          await self.cache.put(
+          await this.cache.put(
             cacheKey,
             parsed.value,
             cfg.cacheTtlSeconds.generate_conversation,
           );
         } catch (e) {
-          self.logger.warn({ errMsg: errMsg(e) }, 'conversation cache write failed');
+          this.logger.warn({ errMsg: errMsg(e) }, 'conversation cache write failed');
         }
 
         const latencyMs = Date.now() - start;
@@ -573,7 +573,7 @@ class ClaudeProxyImpl implements ClaudeProxy {
         throw outcome.error;
       }
       // Best-effort usage write.
-      await self.recordUsageSoft({
+      await this.recordUsageSoft({
         requestId,
         userId: ctx.userId ?? null,
         route,
@@ -586,7 +586,7 @@ class ClaudeProxyImpl implements ClaudeProxy {
         latencyMs: outcome.meta.latencyMs,
         costEstimateUsd: outcome.meta.costEstimateUsd,
       });
-      self.logger.info(
+      this.logger.info(
         {
           requestId,
           route,
@@ -621,7 +621,11 @@ class ClaudeProxyImpl implements ClaudeProxy {
     ctx: CallContext;
     request: import('./client').MessageRequest;
     cacheTtl: number;
-    outputSchema: ZodSchema<TResult>;
+    // Bind TResult to the schema's OUTPUT type (post-`.default()`), accepting
+    // any input. `ZodSchema<T>` would pin input === output === T, so for schemas
+    // with `.default()` fields TS infers T from the optional input side and the
+    // return type loses the defaulted-required fields. See parseInput/safeParse.
+    outputSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>;
     parser: (raw: import('./client').MessageResponse) => unknown;
   }): Promise<ProxyResult<TResult>> {
     const cfg = this.cfg;
@@ -799,7 +803,11 @@ class ClaudeProxyImpl implements ClaudeProxy {
 
 // ---- Helpers ---------------------------------------------------------------
 
-function parseInput<T>(schema: ZodSchema<T>, raw: unknown, route: RouteName): T {
+function parseInput<T>(
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  raw: unknown,
+  route: RouteName,
+): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     throw new ClaudeInputValidationError(
@@ -868,7 +876,10 @@ interface ParseErr {
   readonly ok: false;
   readonly errors: string;
 }
-function safeParse<T>(schema: ZodSchema<T>, raw: unknown): ParseOk<T> | ParseErr {
+function safeParse<T>(
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+  raw: unknown,
+): ParseOk<T> | ParseErr {
   const r = schema.safeParse(raw);
   if (r.success) return { ok: true, value: r.data };
   return {
@@ -986,6 +997,9 @@ class AsyncQueue<T> {
   }
 
   iter(): AsyncIterable<T> {
+    // The returned iterator uses object-literal method shorthand, where `this`
+    // is the iterator object, not the queue — so a captured reference is needed.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     return {
       [Symbol.asyncIterator](): AsyncIterableIterator<T> {

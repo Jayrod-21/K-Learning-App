@@ -259,9 +259,12 @@ export class InMemoryUsageStore implements UsageStore {
 
   // eslint-disable-next-line @typescript-eslint/require-await
   async sumCostSince(since: Date): Promise<number> {
-    return this.records
-      .filter((r) => new Date().getTime() >= since.getTime())
-      .reduce((acc, r) => acc + (r.costEstimateUsd ?? 0), 0);
+    // In-memory records carry no per-row timestamp (unlike the Postgres store),
+    // so this double can't window by time. Every record was created during this
+    // process's lifetime, so they all count as "since" any past instant; a
+    // future `since` window is empty.
+    if (Date.now() < since.getTime()) return 0;
+    return this.records.reduce((acc, r) => acc + (r.costEstimateUsd ?? 0), 0);
   }
 }
 

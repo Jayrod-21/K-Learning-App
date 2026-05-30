@@ -13,11 +13,14 @@ import { UpstreamError } from '../middleware/errors.js';
 
 const router = Router();
 
+// Mirror the proxy's GradeInput contract exactly: `rubric` is a required TOPIK
+// rubric enum, not a free string. (A loose/absent rubric used to pass edge
+// validation here and then get rejected by the proxy's own input parse as a
+// 502 — validate it at the edge instead so a bad rubric is a clean 400.)
 const GradeSchema = z.object({
-  prompt: z.string().min(1).max(2_000),
-  sample: z.string().min(1).max(5_000),
-  rubric: z.string().min(1).max(64).optional(),
-  targetLevel: z.enum(['L3', 'L4', 'L5+']).optional(),
+  prompt: z.string().min(1).max(2_000).optional(),
+  sample: z.string().min(1).max(16_000),
+  rubric: z.enum(['topik_ii_53', 'topik_ii_54']),
 });
 
 router.post(

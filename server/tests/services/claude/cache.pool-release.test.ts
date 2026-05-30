@@ -24,7 +24,7 @@ import { PostgresCacheStore } from '../../../src/services/claude/cache';
 interface RecordedCall {
   readonly clientId: number;
   readonly sql: string;
-  readonly resolved: boolean;
+  resolved: boolean;
   resolvedAt: number | null;
 }
 
