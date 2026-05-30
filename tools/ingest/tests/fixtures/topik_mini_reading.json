@@ -1,0 +1,56 @@
+{
+  "source": {
+    "test": "99",
+    "level": "TOPIK II",
+    "section": "reading",
+    "form": "B (홀수형)",
+    "total_questions": 3,
+    "origin": "Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-05-28"
+  },
+  "passages": {
+    "1-2": "샘플 지문입니다."
+  },
+  "items": [
+    {
+      "id": "topik99-read-001",
+      "number": 1,
+      "instruction_group": "1-2",
+      "instruction": "알맞은 것을 고르십시오.",
+      "skill_tag": "grammar-connective",
+      "proficiency": "L3",
+      "points": 2,
+      "has_image": false,
+      "stem": "오늘 비가 (   ) 우산을 가져왔어요.",
+      "options": ["오는데", "오니까", "오면서", "오든지"],
+      "answer": 2
+    },
+    {
+      "id": "topik99-read-002",
+      "number": 2,
+      "instruction_group": "1-2",
+      "instruction": "알맞은 것을 고르십시오.",
+      "skill_tag": "grammar-paraphrase",
+      "proficiency": "L4",
+      "points": 2,
+      "has_image": false,
+      "stem": "공부를 (   ) 시험을 잘 봤어요.",
+      "options": ["하지 않아도", "한 만큼", "하더라도", "할수록"],
+      "answer": 2
+    },
+    {
+      "id": "topik99-read-003",
+      "number": 3,
+      "instruction_group": "3",
+      "instruction": "다음을 읽고 답하십시오.",
+      "skill_tag": "reading-main-idea",
+      "proficiency": "L5+",
+      "points": 2,
+      "has_image": false,
+      "stem": "샘플 본문 — 정답은 1번입니다.",
+      "options": ["요약1", "요약2", "요약3", "요약4"],
+      "answer": 1
+    }
+  ]
+}

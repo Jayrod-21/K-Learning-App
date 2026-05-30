@@ -1,0 +1,28 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+
+# Copyrighted source materials — never commit these
+# (they live one level above the repo, but in case anything sneaks in:)
+*.mp3
+*.m4a
+*.wav
+*Zone.Identifier
+Darakwon/
+TOPIK Tests/
+이야기들/
+Lessons/
+How To Sound Like A Native Korean Speaker/
+
+# Parser intermediates are derived data of copyrighted sources — keep local-only
+tools/ingest/output/*.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

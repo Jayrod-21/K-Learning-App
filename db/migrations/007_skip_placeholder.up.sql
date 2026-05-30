@@ -1,0 +1,34 @@
+-- =============================================================================
+-- Migration 007 — no-op placeholder
+-- =============================================================================
+--
+-- WHY THIS FILE EXISTS
+--
+-- The migration numbering jumps from 006_canonical_grammar to
+-- 008_topik_dependencies. Slot 007 was skipped during Phase C development
+-- when 008/009 took numbers ahead of a planned (then-resolved) collision
+-- and nobody backfilled the gap.
+--
+-- WHY A PLACEHOLDER INSTEAD OF RENUMBERING
+--
+-- 008/009 have already been edited in place and applied in some
+-- environments (see Repository/db/docs/FIX_REPORT_C.md and the migration
+-- checksum drift runbook). Renumbering 008→007 and 009→008 would force
+-- every environment that already applied 008/009 through Option B of the
+-- runbook (manual checksum update + audit log) — an avoidable, risky
+-- maneuver. A no-op placeholder closes the gap without disturbing applied
+-- history.
+--
+-- The runner (db/migrate.py) doesn't require contiguous numbering, but
+-- future readers and reviewers benefit from a contiguous sequence on disk.
+--
+-- BEHAVIOR
+--
+-- Forward (this file): runs a single trivial SELECT so the migration body
+-- is non-empty and the runner records a checksum like any other migration.
+-- Has no schema effect.
+--
+-- See 007_skip_placeholder.down.sql for the matching no-op reverse.
+-- =============================================================================
+
+SELECT 1 AS migration_007_skip_placeholder;

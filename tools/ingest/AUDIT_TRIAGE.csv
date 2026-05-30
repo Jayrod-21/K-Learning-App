@@ -1,0 +1,30 @@
+corpus,entry_id,severity,field,expected,found,notes
+vocab_beginner,vocab-beg-0002,MINOR_DISCREPANCY,hanja,家族,家人,"hanja doesn't match printed book or sibling japanese field 家族 — direct inspection"
+vocab_beginner,vocab-beg-5007,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — schema-fidelity call
+vocab_beginner,vocab-beg-5008,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — schema-fidelity call
+vocab_beginner,vocab-beg-7050,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 내일
+vocab_beginner,vocab-beg-7056,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 매일
+vocab_beginner,vocab-beg-7058,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 모레
+vocab_beginner,vocab-beg-7060,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 어제
+vocab_beginner,vocab-beg-7061,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,"adverb, noun",composite POS — 언제
+vocab_beginner,vocab-beg-7062,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 오늘
+vocab_beginner,vocab-beg-7101,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 방금
+vocab_beginner,vocab-beg-7107,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 아까
+vocab_beginner,vocab-beg-7118,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 요즘
+vocab_beginner,vocab-beg-7121,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 이제
+vocab_beginner,vocab-beg-7124,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 잠깐
+vocab_beginner,vocab-beg-7125,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 잠시
+vocab_beginner,vocab-beg-7131,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,"noun, adverb",composite POS — 지금
+vocab_intermediate,vocab-int-11010,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 당분간
+vocab_intermediate,vocab-int-11016,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,noun/adverb,composite POS — 밤낮
+vocab_intermediate,vocab-int-11026,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,noun/adverb,composite POS — 엊그제
+vocab_intermediate,vocab-int-11037,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 일시적
+vocab_intermediate,vocab-int-11042,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 종일
+vocab_intermediate,vocab-int-11057,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 결국
+vocab_intermediate,vocab-int-11062,MINOR_DISCREPANCY,part_of_speech,noun OR adverb,noun/adverb,composite POS — 당장
+vocab_intermediate,vocab-int-11070,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 만약
+vocab_intermediate,vocab-int-11071,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 만일
+vocab_intermediate,vocab-int-11078,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 원래
+vocab_intermediate,vocab-int-11080,MINOR_DISCREPANCY,part_of_speech,adverb OR noun,adverb/noun,composite POS — 잘못
+vocab_beginner,<pattern>,MINOR_DISCREPANCY,audio_track,<verify on PDF>,null/missing,"~358 word entries (24%) lack audio_track — pattern; needs OCR pass to confirm if track ribbon is page-level"
+vocab_intermediate,<pattern>,MINOR_DISCREPANCY,audio_track,<verify on PDF>,null/missing,"~189 word entries (13%) lack audio_track — pattern; needs OCR pass to confirm if track ribbon is page-level"

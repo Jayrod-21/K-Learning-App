@@ -1,0 +1,32 @@
+{
+  "source": {
+    "slug": "ttmik-mini",
+    "type": "lesson_series",
+    "title": "TTMIK Mini Fixture",
+    "publisher": "Talk To Me In Korean",
+    "level": null,
+    "copyright_status": "personal_use_only",
+    "metadata": {}
+  },
+  "units": [
+    {
+      "ordinal": 1,
+      "level": 1,
+      "lesson": 1,
+      "title": "Mini L1L1",
+      "sentences": [
+        {"ordinal": 1, "korean": "안녕하세요.", "english": "Hello.", "romanization": null, "speaker": null, "is_dialog": false, "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {"ordinal": 2, "korean": "감사합니다.", "english": "Thank you.", "romanization": null, "speaker": null, "is_dialog": false, "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+      ]
+    },
+    {
+      "ordinal": 2,
+      "level": 1,
+      "lesson": 2,
+      "title": "Mini L1L2",
+      "sentences": [
+        {"ordinal": 1, "korean": "네.", "english": "Yes.", "romanization": null, "speaker": null, "is_dialog": false, "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,232 @@
+# =============================================================================
+# Korean Master — compose stack
+# =============================================================================
+# The DB service is owned by the db harness (db/) — see db/README.md.
+# Decision (ADR-009): we keep DB + app in ONE compose file rather than
+# splitting into docker-compose.db.yml. The stack is small (3 services), the
+# app depends on the DB at boot via healthcheck, and `docker compose up` as a
+# single command is what dad's box will run. Splitting buys us nothing here.
+# =============================================================================
+
+name: korean-master
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Postgres 16 — see db/README.md, db/SECURITY.md
+  # ---------------------------------------------------------------------------
+  db:
+    # Pinned to 16-alpine. We intentionally do NOT use `:latest`.
+    # When bumping, update the digest below AND db/docs/ADR-001 §D1.
+    image: postgres:16-alpine
+    # Optional digest pin — uncomment after first pull to lock the exact image.
+    # image: postgres:16-alpine@sha256:<fill-in-after-first-pull>
+    container_name: korean-master-db
+    restart: unless-stopped
+
+    # Bind to loopback ONLY. The Cloudflare Tunnel terminates at the app, not
+    # at the DB. If you need to reach the DB from another host, do it through
+    # an SSH tunnel.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # application_name surfaces in pg_stat_activity for observability.
+      PGAPPNAME: korean-master-db
+      # Reasonable Postgres defaults for our scale. Override in postgresql.conf
+      # if needed — kept in env vars for now to keep the harness self-contained.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+
+    # Statement + idle timeouts applied at the role level via command flags.
+    # These prevent runaway queries and abandoned transactions from holding
+    # connections forever.
+    command:
+      - "postgres"
+      - "-c"
+      - "statement_timeout=30000"           # 30s — app queries
+      - "-c"
+      - "idle_in_transaction_session_timeout=60000"  # 60s — kill abandoned txs
+      - "-c"
+      - "log_min_duration_statement=1000"   # log queries >1s
+      - "-c"
+      - "log_connections=on"
+      - "-c"
+      - "log_disconnections=on"
+      - "-c"
+      - "log_lock_waits=on"
+      # NB: migrate.py SETs statement_timeout=0 AND
+      # idle_in_transaction_session_timeout=0 on its connection at session
+      # start — see connect_from_env() — so long-running CREATE INDEX /
+      # data-backfill steps aren't killed by the role-level 30 s cap.
+
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Backups directory mounted read-write for backup.sh inside the container
+      # if we choose to run it that way; default workflow runs it from the host.
+      - ${BACKUP_DIR:-./db/backups}:/backups
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      - internal
+
+    # Resource limits — a runaway query / OOM in Postgres should not take the
+    # box down. These are caps, not reservations.
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEM_LIMIT:-2g}
+          cpus: "${DB_CPU_LIMIT:-2.0}"
+
+    # Logging caps — without this, Docker's default json-file driver can fill
+    # the disk with query logs after a runaway period.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # Modest hardening — Postgres needs to write to its data dir but the rest
+    # of the FS is read-only.
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # Kiwi morphological analyzer — see services/kiwi/README.md, services/kiwi/SECURITY.md
+  # ADR-014: separate service (not embedded in B3); internal-only.
+  # ---------------------------------------------------------------------------
+  kiwi:
+    build: ./services/kiwi
+    container_name: korean-master-kiwi
+    restart: unless-stopped
+    # NO host port mapping by design — see ADR-014 §D4. The server container
+    # reaches us at http://kiwi:8000 over the internal network. For local dev
+    # debugging, add a port via docker-compose.override.yml.
+    environment:
+      - KIWI_HOST=0.0.0.0
+      - KIWI_PORT=8000
+      - KIWI_MODEL_SIZE=${KIWI_MODEL_SIZE:-base}
+      - KIWI_LOG_LEVEL=${KIWI_LOG_LEVEL:-INFO}
+      - KIWI_MAX_INPUT_CHARS=${KIWI_MAX_INPUT_CHARS:-4096}
+      - KIWI_SERVICE_NAME=kiwi-service
+    networks:
+      # internal-only: kiwi has no DB creds, no API keys, and no need to
+      # egress. Defense in depth — a hypothetical RCE here can't reach the
+      # Anthropic API or any other external host. See SECURITY.md §T7.
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health | grep -q '\"model_loaded\": *true' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 60s    # Kiwi model load takes ~0.5–1s; generous margin.
+    deploy:
+      resources:
+        limits:
+          memory: ${KIWI_MEM_LIMIT:-512m}
+          cpus: "${KIWI_CPU_LIMIT:-1.5}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+
+  # ---------------------------------------------------------------------------
+  # API server (Express + Claude proxy)
+  # ---------------------------------------------------------------------------
+  server:
+    build: ./server
+    container_name: korean-master-server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    environment:
+      - PORT=4000
+      - CLIENT_URL=${CLIENT_URL:-http://localhost:4173}
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - PGAPPNAME=korean-master-server
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Kiwi service URL — same compose network, DNS-resolved by service name.
+      - KIWI_URL=http://kiwi:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      kiwi:
+        condition: service_healthy
+    networks:
+      - internal
+      - external
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # SPA client
+  # ---------------------------------------------------------------------------
+  client:
+    build: ./client
+    container_name: korean-master-client
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4173:4173"
+    environment:
+      - VITE_API_URL=${VITE_API_URL:-http://localhost:4000}
+    depends_on:
+      - server
+    networks:
+      - external
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+# ---------------------------------------------------------------------------
+# Networks: `internal` is DB-side, NOT routed to the public internet
+# (`internal: true`). Members of this network can talk to each other but
+# cannot egress. The `db` container is on `internal` only; the `server`
+# straddles `internal` + `external` so it can reach the Claude API while
+# the DB cannot (defends T6 in db/SECURITY.md against COPY FROM PROGRAM
+# 'curl …' payloads in a malicious dump).
+#
+# `internal: true` does NOT remove the host-port mapping on `db` — that's a
+# separate kernel-level construct. migrate.py / psql / pg_dump from the host
+# still reach the DB via 127.0.0.1:${POSTGRES_HOST_PORT}.
+#
+# `external` is reachable from outside the compose stack (Cloudflare Tunnel
+# terminates at the `server` container, not at the DB).
+# ---------------------------------------------------------------------------
+networks:
+  internal:
+    driver: bridge
+    internal: true    # Blocks egress for any container that is ONLY on this
+                      # network (db). Containers also on `external` (server)
+                      # can still egress through that interface.
+  external:
+    driver: bridge
+
+volumes:
+  db_data:
+    # Labels surface in `docker volume inspect` so the backup / lifecycle
+    # tooling can introspect "is this our volume" without grepping names.
+    # SF7 in REVIEW_A3.
+    name: korean_master_db_data
+    labels:
+      app: "korean-master"
+      component: "db"
+      purpose: "pgdata"

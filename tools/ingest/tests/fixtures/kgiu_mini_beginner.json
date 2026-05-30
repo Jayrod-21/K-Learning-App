@@ -1,0 +1,43 @@
+{
+  "source": {
+    "book": "Korean Grammar in Use: Beginning Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "beginner",
+    "default_proficiency": "basic",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-05-28",
+    "note": "Mini fixture for loader tests."
+  },
+  "items": [
+    {
+      "id": "kgiu-fix-intro-01",
+      "type": "intro",
+      "title_en": "Korean Sentence Structure",
+      "category": "introduction",
+      "proficiency": "basic",
+      "explanation": "Korean sentences end with a predicate.",
+      "examples": [
+        {"korean": "에릭이 사과를 먹어요.", "english": "Eric eats an apple."}
+      ],
+      "tips": ["The predicate is always at the end."],
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [14, 15]
+    },
+    {
+      "id": "kgiu-fix-001",
+      "type": "grammar",
+      "pattern": "-아/어/여요",
+      "title_en": "Polite present-tense ending",
+      "category": "ending",
+      "proficiency": "basic",
+      "register": "해요체",
+      "explanation": "Used for polite informal speech.",
+      "formation_rules": ["Stem + 아요/어요/여요"],
+      "examples": [{"korean": "가다 → 가요", "english": "go → goes"}],
+      "tips": ["Vowel harmony applies."],
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [20]
+    }
+  ]
+}

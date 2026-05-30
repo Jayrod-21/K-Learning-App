@@ -1,0 +1,74 @@
+{
+  "source": {
+    "book": "KGIU Beginner Resolver Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "beginner",
+    "default_proficiency": "basic",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-05-28",
+    "note": "Synthetic fixture for the cross-ref resolver tests."
+  },
+  "items": [
+    {
+      "id": "kgiu-beg-u03-01",
+      "type": "grammar",
+      "pattern": "N이/가",
+      "title_en": "subject particle",
+      "category": "particle",
+      "proficiency": "basic",
+      "explanation": "Subject particle.",
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [70, 71]
+    },
+    {
+      "id": "kgiu-beg-u03-02",
+      "type": "grammar",
+      "pattern": "N은/는",
+      "title_en": "topic particle",
+      "category": "particle",
+      "proficiency": "basic",
+      "explanation": "Topic particle.",
+      "compare_with": [
+        {
+          "with": "N이/가 (subject particle)",
+          "note": "은/는 = old/known topic; 이/가 = new info. See kgiu-beg-u03-01."
+        }
+      ],
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [72, 73]
+    },
+    {
+      "id": "kgiu-beg-u03-13",
+      "type": "grammar",
+      "pattern": "N밖에",
+      "title_en": "only (with negation)",
+      "category": "particle",
+      "proficiency": "basic",
+      "compare_with": [
+        {
+          "with": "N만 (Unit 3.12)",
+          "note": "만 works in both positive and negative; 밖에 only in negative."
+        }
+      ],
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [110]
+    },
+    {
+      "id": "kgiu-beg-u03-99",
+      "type": "grammar",
+      "pattern": "N으로 ②",
+      "title_en": "homograph fixture",
+      "category": "particle",
+      "proficiency": "basic",
+      "compare_with": [
+        {
+          "with": "이런 형식 없음",
+          "note": "See kgiu-beg-u99-77 for the contrast — the id won't resolve because it isn't loaded."
+        }
+      ],
+      "source_book": "KGIU Beginner Fixture",
+      "source_pages": [115]
+    }
+  ]
+}

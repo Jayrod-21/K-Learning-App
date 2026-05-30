@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      iOS Safari ignores PWA manifest icons for the home-screen launcher; it
+      reads `apple-touch-icon` instead. The SVG is a placeholder until Pass
+      Final ships rasterised 180×180 / 192×192 / 512×512 PNGs (see
+      SECURITY.md §"PWA manifest hijack"). iOS will rasterise the SVG at
+      install time — visually adequate for the skeleton phase.
+    -->
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#E8DFC5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#15110D" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!--
+      No-flash theme bootstrap. Reads localStorage["km.theme"] (the same key
+      ThemeProvider writes) and falls back to `prefers-color-scheme`. Writes
+      `data-theme` on <html> *synchronously*, before React mounts, so the
+      first paint shows the right palette and we never flash light-mode-then-
+      dark on a dark-mode user. ThemeProvider's mount effect notices the
+      attribute is already correct and skips the redundant DOM write. The
+      attribute pattern (no inline style) and the lack of dynamic input make
+      this script safe under a future `script-src 'self'` CSP — drop a
+      `nonce="…"` if a stricter posture demands it.
+    -->
+    <script>
+      (function () {
+        try {
+          var s = localStorage.getItem('km.theme');
+          var pref =
+            window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = (s === 'light' || s === 'dark') ? s : (pref ? 'dark' : 'light');
+          document.documentElement.dataset.theme = theme;
+        } catch (_) {
+          /* localStorage may throw in privacy mode; leave attribute unset. */
+        }
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <title>한국어 마스터 | Korean Master</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

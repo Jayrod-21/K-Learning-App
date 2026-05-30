@@ -1,0 +1,140 @@
+{
+  "source": {
+    "book": "Vocab Beginner Resolver Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "beginner",
+    "default_proficiency": "basic",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-05-28",
+    "note": "Synthetic fixture for the cross-ref resolver tests.",
+    "extraction_complete": true
+  },
+  "items": [
+    {
+      "id": "vocab-beg-0001",
+      "type": "word",
+      "korean": "가족",
+      "english": "a family",
+      "pronunciation": "[가족]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "가족이 모두 몇 명이에요?",
+      "related": [
+        {"korean": "식구", "english": "family members", "page": 19}
+      ],
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [16]
+    },
+    {
+      "id": "vocab-beg-0002",
+      "type": "word",
+      "korean": "식구",
+      "english": "family members",
+      "pronunciation": "[식꾸]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "우리 식구는 모두 다섯이에요.",
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [19]
+    },
+    {
+      "id": "vocab-beg-0003",
+      "type": "word",
+      "korean": "남동생",
+      "english": "a younger brother",
+      "pronunciation": "[남동생]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "저는 남동생이 한 명 있어요.",
+      "antonyms": [
+        {"korean": "여동생", "english": "younger sister", "page": 21}
+      ],
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [17]
+    },
+    {
+      "id": "vocab-beg-0004",
+      "type": "word",
+      "korean": "여동생",
+      "english": "a younger sister",
+      "pronunciation": "[여동생]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "여동생이 한 명 있어요.",
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [21]
+    },
+    {
+      "id": "vocab-beg-0005",
+      "type": "word",
+      "korean": "나",
+      "english": "I, me",
+      "pronunciation": "[나]",
+      "part_of_speech": "pronoun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "나는 학생이에요.",
+      "synonyms": [
+        {"korean": "저", "english": "I (humble)"}
+      ],
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [16]
+    },
+    {
+      "id": "vocab-beg-0006",
+      "type": "word",
+      "korean": "걸리다",
+      "english": "to be hung",
+      "pronunciation": "[걸리다]",
+      "part_of_speech": "verb",
+      "proficiency": "basic",
+      "theme": "02 행동 / Actions",
+      "subsection": "6 피동 / Passive",
+      "example_korean": "옷이 걸려 있어요.",
+      "basic_form": "걸다",
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [131]
+    },
+    {
+      "id": "vocab-beg-0007",
+      "type": "word",
+      "korean": "걸다",
+      "english": "to hang",
+      "pronunciation": "[걸다]",
+      "part_of_speech": "verb",
+      "proficiency": "basic",
+      "theme": "02 행동 / Actions",
+      "subsection": "5 행위 / Actions",
+      "example_korean": "옷걸이에 걸다.",
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [128]
+    },
+    {
+      "id": "vocab-beg-0008",
+      "type": "word",
+      "korean": "없는단어",
+      "english": "nonexistent target test",
+      "pronunciation": "[없는단어]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "99 테스트",
+      "subsection": "1 broken",
+      "example_korean": "테스트.",
+      "related": [
+        {"korean": "분명히없는단어", "english": "definitely missing"}
+      ],
+      "source_book": "Vocab Beginner Fixture",
+      "source_pages": [999]
+    }
+  ]
+}

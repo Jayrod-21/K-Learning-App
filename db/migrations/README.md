@@ -1,0 +1,729 @@
+# `db/migrations/` — Database migrations
+
+Forward and reverse migrations for the Korean Master self-hosted Postgres.
+Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
+`NNN_<short>.down.sql`, applied/rolled back in numeric order.
+
+> If you're adding a section for a later migration, **APPEND** below — do
+> not overwrite existing sections.
+
+## Migration list
+
+| # | Name | Owner | Purpose |
+|---|------|-------|---------|
+| 001 | `core_schema` | A1 | Auth, user state, SRS (FSRS), grammar bank |
+| 002 | `darakwon_corpora` | A2 | Darakwon corpora: KGIU + 2000 Words + supplements (hanja, Let's Check) |
+| 003 | `krdict` | B2 | KRDICT learner-dictionary import schema |
+| 004 | `claude_cache_and_usage` | B4 | Claude proxy: cache + per-call cost / latency accounting |
+| 005 | `lesson_podcast_topik` | B-series | TTMIK lessons, Iyagi podcast, TOPIK item pool |
+| 006 | `canonical_grammar` | C1 | Canonical-grammar dedup layer (cross-level KGIU dedup, ADR-021) |
+| 007 | `skip_placeholder` | C-series | Reserved no-op placeholder (keeps numbering contiguous) |
+| 008 | `topik_dependencies` | B-series | TOPIK item-pool dependency tables |
+| 009 | `cross_ref_relations` | C-series | Cross-corpus reference relations |
+| 010 | `canonical_grammar_manual_override` | C1 | Manual-override sentinel for canonical-grammar re-pointing (REVIEW_C1) |
+| 011 | `user_profile_fields` | P3A | `users.phone` + `users.version` (PATCH /auth/me optimistic concurrency) |
+| 012 | `vocab_lists` | P3A | User-curated vocab lists (Review → Lists tab) |
+| 013 | `writing_prompts` | P4 | Curated writing-prompt bank (Today screen Writing task, GET /plan/today) |
+| 014 | `diagnostic_runs` | P5A | Live CAT-lite diagnostic: per-run sessions + per-item responses (Diagnostic screen) |
+| 015 | `topik_responses` | P6A | TOPIK Prep answer log: append-only graded attempts (Study mode live + Mock route) |
+| 016 | `hanja` | P7A | Hanja reference corpus (`hanja_characters` + `hanja_compounds`) + per-user `hanja_progress` (Hanja screen live); extends `corpus` enum with `'hanja'` |
+
+## Transaction ownership (ADR-013)
+
+**Migration files MUST NOT contain top-level `BEGIN`, `COMMIT`, `ROLLBACK`,
+`START TRANSACTION`, or unprefixed `SAVEPOINT`.** The runner (`db/migrate.py`)
+wraps every migration body in a single transaction together with the
+`schema_migrations` bookkeeping write. An inner `COMMIT` would end the
+runner's tx early and decouple the schema change from the bookkeeping row,
+breaking atomicity.
+
+`discover_migrations` enforces this rule at discovery time — a file
+containing top-level tx control is rejected before any apply runs (raises
+`TxControlInMigration`). `BEGIN`/`END` inside `DO $$ … $$` blocks (PL/pgSQL
+keywords) are fine — the detector strips dollar-quoted strings before
+matching.
+
+Manual application via `psql` should use the `-1` flag to wrap the whole
+file in a transaction without requiring inline `BEGIN`/`COMMIT`:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f NNN_name.up.sql
+```
+
+See `db/docs/ADR-013-migration-tx-ownership.md` for the rationale and
+alternatives considered.
+
+## Running migrations
+
+Migration tooling is owned by A3 (`docker-compose.yml` + `Makefile` +
+migrator). The expected interface is:
+
+```bash
+make db.up          # apply all pending up migrations
+make db.down N=1    # roll back the last N migrations
+make db.status      # show applied vs pending
+```
+
+Manual application with `psql` (use the `-1` flag — the migration files
+deliberately don't contain `BEGIN`/`COMMIT`; the runner OR psql -1 owns
+the transaction; see ADR-013):
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 001_core_schema.up.sql
+```
+
+`ON_ERROR_STOP=1` is critical — without it, psql continues after errors and
+leaves the schema in a half-applied state. `-1` wraps the file in a single
+transaction so partial-failure rollback is automatic.
+
+## How to test a migration
+
+Per the Senior Engineer Bar §1 "Migrations": every migration is tested in
+both directions. The test cycle is:
+
+1. **Fresh database** — `dropdb && createdb` or a disposable Docker container.
+2. **Apply up** — `psql -v ON_ERROR_STOP=1 -1 -f NNN_*.up.sql`. Must succeed.
+3. **Snapshot schema** — `pg_dump --schema-only > after-up.sql`.
+4. **Apply down** — `psql -v ON_ERROR_STOP=1 -1 -f NNN_*.down.sql`. Must succeed.
+5. **Snapshot again** — `pg_dump --schema-only > after-down.sql`.
+6. **Confirm reverted** — `diff before-up.sql after-down.sql` is empty (or
+   limited to extension presence, which we intentionally don't drop).
+7. **Re-apply up** — verify idempotency: applying again on a fresh DB still
+   succeeds.
+
+A3 will wire this into CI.
+
+## Rolling back
+
+Down migrations for **001** are destructive by design (they `DROP TABLE`
+users / sessions / vocab_cards / etc.). Pass `--allow-destructive` when
+running `make db-rollback` or `python -m db.migrate down` — without it the
+runner exits non-zero with a guard error and refuses to apply the down.
+This is intentional: 001 is the foundation, and rolling it back wipes the
+database. See `db/docs/ADR-013-migration-tx-ownership.md` and the Senior
+Engineer Bar §1 ("Migrations — destructive operations gated").
+
+## Conventions
+
+- Identity columns: `BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`. Never
+  serial, never INT.
+- Timestamps: `TIMESTAMPTZ`, default `now()`. Never `TIMESTAMP`.
+- Strings: `TEXT` + optional `CHECK (length(...) <= N)`. Never `VARCHAR(n)`.
+- Semi-structured: `JSONB`. Never `JSON`.
+- Closed sets: Postgres `ENUM`. Open sets that may grow: `TEXT` + `CHECK`.
+- Audit columns on every entity table: `created_at`, `updated_at`, `version`.
+- `updated_at` maintained by the shared `set_updated_at()` trigger function
+  (defined in 001, reused by every later migration).
+- Soft delete (`deleted_at`) for user-owned historical data; hard delete for
+  transient data.
+- Every FK has explicit `ON DELETE` and `ON UPDATE` clauses.
+- Index names: `ix_<table>_<cols>`, `uq_<table>_<cols>`, `fk_<table>_<ref>`.
+- Every index has a `COMMENT ON INDEX` naming the query it supports.
+- Every table and non-obvious column has `COMMENT ON TABLE` / `COMMENT ON COLUMN`.
+
+See `db/docs/ADR-001-database-choices.md` for the full contract.
+
+---
+
+## Migration 001: `core_schema` (A1)
+
+### What it creates
+
+1. Extensions: `citext`, `pgcrypto`.
+2. Shared trigger function: `set_updated_at()` — used by every later migration.
+3. Enum types: `proficiency_level`, `register_level`, `topik_section`,
+   `corpus`, `book_level`, `card_face`, `fsrs_rating`, `fsrs_state`,
+   `conversation_mode`.
+4. Tables (in dependency order):
+   - `users` — accounts + Argon2id password hash + email verification + soft delete.
+   - `sessions` — server-side opaque session tokens (SHA-256 hashed in storage).
+   - `study_log` — per-day rollup.
+   - `user_progress` — append-only metric snapshots.
+   - `diagnostic_snapshots` — multi-dimensional adaptive diagnostic history.
+   - `conversations` — AI tutor / roleplay sessions.
+   - `grammar_entries` — user-banked canonical grammar patterns.
+   - `vocab_cards` — FSRS-native SRS state (polymorphic target).
+   - `card_reviews` — append-only review log with BEFORE/AFTER state.
+
+### Coordination with migration 002
+
+`vocab_cards` declares three nullable columns that A2 will FK-link to corpus
+tables after they exist:
+
+- `vocab_entry_id`     → reserved name `fk_vocab_cards_vocab_entry`     (ON DELETE RESTRICT)
+- `source_sentence_id` → reserved name `fk_vocab_cards_source_sentence` (ON DELETE SET NULL)
+- `topik_item_id`      → reserved name `fk_vocab_cards_topik_item`      (ON DELETE RESTRICT)
+
+A2's `002_*.down.sql` MUST drop these constraints before this migration is
+rolled back. See `db/docs/ADR-004-soft-fk-to-corpus.md`.
+
+### ADRs that explain non-obvious choices
+
+- `ADR-001` — foundation (BIGINT IDENTITY PKs, TIMESTAMPTZ, TEXT, JSONB, enums).
+- `ADR-002` — Argon2id password hashing, server-side opaque sessions, cookie attrs.
+- `ADR-003` — FSRS storage (state on card, append-only review log), polymorphic target.
+- `ADR-004` — Deferred FKs from `vocab_cards` to corpus tables.
+
+### Security
+
+See `SECURITY.md` (same directory) — enumerates SQL injection, credential
+stuffing, timing attacks, session hijacking, password-DB-compromise, CSRF,
+mass assignment, exfiltration, soft-delete bypass, JSONB injection.
+
+### How to test (this migration specifically)
+
+```bash
+# Fresh DB
+createdb korean_master_test
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+# Apply up (note -1: migration files don't own transactions — see ADR-013)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/001_core_schema.up.sql
+
+# Quick smoke: every expected table and enum exists
+psql "$DATABASE_URL" -c "\dt" | grep -E 'users|sessions|study_log|user_progress|diagnostic_snapshots|conversations|grammar_entries|vocab_cards|card_reviews'
+psql "$DATABASE_URL" -c "\dT" | grep -E 'proficiency_level|register_level|topik_section|corpus|book_level|card_face|fsrs_rating|fsrs_state|conversation_mode'
+
+# Idempotency: applying again on the same DB succeeds (no error, no diff)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/001_core_schema.up.sql
+
+# Apply down
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/001_core_schema.down.sql
+
+# Verify reverted: no app tables, no app enums
+psql "$DATABASE_URL" -c "\dt" | grep -E 'users|sessions|vocab_cards' && echo "FAIL: tables still present" || echo "OK: tables dropped"
+psql "$DATABASE_URL" -c "\dT" | grep -E 'fsrs_state|card_face' && echo "FAIL: enums still present" || echo "OK: enums dropped"
+
+# Re-apply up: clean cycle
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/001_core_schema.up.sql
+```
+
+Extensions (`citext`, `pgcrypto`) intentionally remain after `down` — they're
+database-global, not migration-owned. Re-running `up` is a no-op for them.
+
+### Known gotchas
+
+- The shared `set_updated_at()` function is defined in this migration and
+  **must remain** as long as ANY later migration uses it. Migration 001's
+  `down.sql` drops it last. If you write a later migration that adds a table
+  with `updated_at` + trigger, do NOT redefine the function — reference the
+  existing one.
+- `vocab_cards.source_sentence_id` (and the other corpus-side IDs) is a typed
+  `BIGINT` column with NO FK yet. A2 adds the FK. Until 002 is applied, the
+  schema does not enforce that these IDs reference valid sentences. Loaders
+  run after 002 — this is safe in practice.
+- Enums are not extensible via `IF NOT EXISTS` in PG 16. The migration guards
+  enum creation with `DO $$ … $$` blocks. Adding a value later =
+  `ALTER TYPE … ADD VALUE … IF NOT EXISTS` in a follow-up migration.
+
+---
+
+## Migration 002: `darakwon_corpora` (A2)
+
+### What it creates
+
+1. New enum types: `content_domain`, `vocab_relation_type`, `kgiu_entry_type`,
+   `vocab_entry_type`, `lets_check_parent_kind`.
+2. Tables (dependency order):
+   - `corpus_sources` — catalog of every ingested JSON file (Darakwon books here,
+     TTMIK/Iyagi/TOPIK in later migrations).
+   - `kgiu_entries` — raw KGIU source rows, all 3 levels unified (Beginner /
+     Intermediate / Advanced). **Distinct from A1's `grammar_entries`** (which
+     is the user-canonical layer). See ADR-008.
+   - `kgiu_entry_relations` — directed FK cross-references between
+     `kgiu_entries` rows (compare_with, parallel-level pointers, etc.).
+   - `vocab_entries` — unified 2000-Words table (Beginner + Intermediate).
+   - `vocab_entry_relations` — hybrid-target word↔word relations
+     (synonym/antonym/passive/causative/etc.). See ADR-007.
+   - `hanja_extensions` — "Korean through Chinese Characters" mind-maps.
+   - `lets_check_exercises` — review-exercise pages with polymorphic parent
+     (`kgiu_entry` xor `vocab_subsection`).
+3. tsvector triggers and GIN indexes for full-text search on `kgiu_entries`
+   and `vocab_entries`. Config: `simple` (Korean tokenization deferred to
+   Phase B — see ADR-006).
+4. Seeds `corpus_sources` with the 5 Darakwon corpora.
+5. Adds the A1-reserved FK `fk_vocab_cards_vocab_entry`
+   (`vocab_cards.vocab_entry_id` → `vocab_entries.id`, `ON DELETE RESTRICT`).
+
+### Coordination with migration 001
+
+- Reuses A1's `set_updated_at()` function — does NOT redefine.
+- Reuses A1's enums `proficiency_level`, `corpus`, `book_level`, `register_level`.
+- Adds the deferred FK A1 reserved on `vocab_cards.vocab_entry_id`.
+- The down migration drops that FK BEFORE dropping `vocab_entries`, so 002
+  can be rolled back independently of 001.
+
+### Coordination with migration A3 (loader tooling)
+
+- The loader populates volatile fields on `corpus_sources`:
+  `extracted_by`, `extracted_at`, `version_tag`, `source_sha256`, `item_count`.
+- The loader is the ONLY writer of `kgiu_entries`, `vocab_entries`,
+  `hanja_extensions`, `lets_check_exercises`, and the seeded `corpus_sources`
+  rows post-seed. Its DB role should have INSERT/UPDATE on these tables only
+  (see SECURITY.md A2-7).
+- Upsert key for entries: `(corpus, source_id)`. Loader should
+  `INSERT … ON CONFLICT (corpus, source_id) DO UPDATE SET …`.
+
+### ADRs that explain non-obvious choices
+
+- `ADR-005` — stable columns vs JSONB for variable-shape Darakwon arrays.
+- `ADR-006` — tsvector language configuration (`simple` for Phase A,
+  Kiwi-aware for Phase B).
+- `ADR-007` — hybrid target column on `vocab_entry_relations`
+  (FK or text).
+- `ADR-008` — `kgiu_entries` (source) vs `grammar_entries` (user-canonical).
+
+### Security
+
+See `SECURITY.md` — section "Darakwon corpora (migration 002) — A2"
+enumerates loader-side SQL injection, JSONB injection / DoS, FTS DoS via
+pathological queries, stored XSS via rendered JSONB, prompt injection into
+Claude, reference-data tampering, and loader-role privilege drift.
+
+### How to test (this migration specifically)
+
+```bash
+# Assume migration 001 has already been applied to a fresh DB.
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+# Apply 002 (note -1: migration files don't own transactions — see ADR-013)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/002_darakwon_corpora.up.sql
+
+# Smoke: every expected table and enum exists
+psql "$DATABASE_URL" -c "\dt" | grep -E 'corpus_sources|kgiu_entries|kgiu_entry_relations|vocab_entries|vocab_entry_relations|hanja_extensions|lets_check_exercises'
+psql "$DATABASE_URL" -c "\dT" | grep -E 'content_domain|vocab_relation_type|kgiu_entry_type|vocab_entry_type|lets_check_parent_kind'
+
+# Seeded rows present
+psql "$DATABASE_URL" -c "SELECT corpus, level FROM corpus_sources ORDER BY corpus;"
+# Expected: kgiu_advanced/advanced, kgiu_beginner/beginner, kgiu_intermediate/intermediate,
+#           vocab_2000_beginner/beginner, vocab_2000_intermediate/intermediate
+
+# FK on vocab_cards was added
+psql "$DATABASE_URL" -c "\d vocab_cards" | grep fk_vocab_cards_vocab_entry
+
+# Idempotency: re-applying succeeds
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/002_darakwon_corpora.up.sql
+
+# Apply down (drops 002's tables and the vocab_cards FK; leaves 001 intact)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/002_darakwon_corpora.down.sql
+
+# Verify 002's tables are gone but 001's remain
+psql "$DATABASE_URL" -c "\dt" | grep -E 'corpus_sources|kgiu_entries|vocab_entries' && echo "FAIL" || echo "OK"
+psql "$DATABASE_URL" -c "\dt" | grep -E 'users|sessions|vocab_cards' || echo "FAIL: 001 tables gone"
+
+# Re-apply 002: clean cycle
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+  -f db/migrations/002_darakwon_corpora.up.sql
+```
+
+### Known gotchas
+
+- **Two grammar tables**. A1's `grammar_entries` is user-canonical; A2's
+  `kgiu_entries` is the raw KGIU source. They are NOT interchangeable. Phase
+  C will add a bridge. See `ADR-008-kgiu-vs-grammar-entries.md`.
+- **`register` is TEXT, not the `register_level` enum**. Real KGIU data
+  has composite values like "해요체/합쇼체", "문어체/구어체" that don't fit a
+  closed-set enum. Loader can normalize later. See column comment.
+- **`part_of_speech` is TEXT, not an enum.** Real 2000-Words data carries
+  composite values like "noun, adverb". See column comment.
+- **JSONB shape CHECKs**. Every JSONB column has a CHECK that enforces
+  `jsonb_typeof(col) = 'array'`. The loader will fail loudly on bad shapes
+  — that's intentional.
+- **TSVECTOR config is `simple`.** Korean recall is imperfect until Phase
+  B's Kiwi integration. The `ix_vocab_entries_korean` B-tree index is the
+  precise-headword fallback. See ADR-006.
+
+---
+
+## Migration checksum drift — operator runbook
+
+### When you'll see this
+
+`make db-migrate` (or `python -m db.migrate up`) exits non-zero with a
+`migrate.failed` structlog line whose `error` field reads:
+
+```
+migration NNN_<name>.up.sql has been modified since it was applied
+(recorded=<sha12>…, current=<sha12>…). Revert the file or write a new
+migration.
+```
+
+The exception type is `ChecksumMismatch` (see
+`db/migrate.py` → `class ChecksumMismatch` and the raise site in
+`cmd_migrate`). Exit code is **1** (validation failure). No SQL ran; the
+runner refused to proceed before opening a write transaction.
+
+### Why it exists
+
+`migrate.py` stores a SHA-256 of each `*.up.sql` body in
+`schema_migrations.checksum` at apply time and re-hashes the file before
+every subsequent `up`. A mismatch means the file on disk drifted from what
+was applied — usually an in-place edit to an already-applied migration. The
+guard refuses to silently diverge the live schema from the recorded
+history.
+
+### Dev environment
+
+Drop the database and re-apply from zero:
+
+```bash
+make db-reset      # drops + recreates the Postgres database
+make db-migrate    # replays every migration with current file contents
+```
+
+**Data loss caveat:** `db-reset` destroys every row in the local database
+(users, study_log, FSRS state, ingested corpora). Re-seed afterward with
+the loader (`make ingest-darakwon` etc.) or accept an empty dev DB.
+
+### Staging / production
+
+#### Option A (preferred): Restore from backup + replay
+
+Audit-friendly. Requires a known-good Postgres backup taken **before** the
+in-place edits landed.
+
+```bash
+# 1. Stop the app (so no writes race the restore)
+sudo systemctl stop korean-master   # or: docker compose stop app
+
+# 2. Restore the pre-drift backup
+#    Replace <BACKUP>.dump with the snapshot taken before the bad edit.
+pg_restore --clean --if-exists \
+    -d "$DATABASE_URL" /var/backups/korean-master/<BACKUP>.dump
+
+# 3. Replay forward with the current migration files
+make db-migrate     # equivalent to: python -m db.migrate up
+
+# 4. Sanity check, then restart
+python -m db.migrate status
+sudo systemctl start korean-master
+```
+
+The replayed checksums now match the on-disk files; `schema_migrations`
+reflects reality.
+
+#### Option B (fallback): Manually update checksum
+
+Only when Option A is infeasible (no backup, or the data delta since the
+backup is unacceptable to lose). **The schema must already match what the
+edited migration would produce** — if it doesn't, you're papering over
+genuine drift and the next migration may fail in production.
+
+```bash
+# 1. Compute the diff between recorded SQL and current file. There is no
+#    recorded SQL on disk — compare against git history for the file.
+git log --all --oneline -- db/migrations/NNN_<name>.up.sql
+git diff <pre-edit-sha>..HEAD -- db/migrations/NNN_<name>.up.sql
+
+# 2. Confirm the live schema already reflects the post-edit form.
+#    (Inspect tables/columns/indexes the edit touched via psql \d.)
+psql "$DATABASE_URL" -c "\d+ <affected_table>"
+
+# 3. Compute the new checksum (matches migrate.py's algorithm: sha256 of
+#    the up.sql body as UTF-8 bytes).
+sha256sum db/migrations/NNN_<name>.up.sql
+
+# 4. Update the bookkeeping row. Wrap in a tx so a typo can be rolled back.
+psql "$DATABASE_URL" <<SQL
+BEGIN;
+UPDATE schema_migrations
+   SET checksum = '<new_sha256_hex>'
+ WHERE version = 'NNN';
+-- Verify exactly one row updated before committing:
+SELECT version, name, checksum, applied_at, applied_by
+  FROM schema_migrations WHERE version = 'NNN';
+COMMIT;
+SQL
+
+# 5. Re-run migrate to confirm the guard is satisfied.
+python -m db.migrate status
+make db-migrate
+```
+
+**Audit log requirement.** Record in the ops journal: who ran the update,
+when, the version, the old + new checksum (first 12 chars is fine), the
+reviewer who verified the schema matched, and the link to the original PR
+or commit that edited the migration.
+
+### Decision tree
+
+| Scenario | Option |
+|---|---|
+| Dev / local | `make db-reset` + `make db-migrate` |
+| Staging with backup | Option A |
+| Prod with backup | Option A |
+| Prod without backup | Option B + audit log entry |
+
+### Going forward
+
+Prefer **forward migrations** (`NNN+1_fix_<thing>.up.sql`) over in-place
+edits to already-applied migrations. The Phase C fix-pass edited 006, 008,
+and 009 in place — that's the maneuver that triggered this runbook and
+should not be repeated outside a coordinated environment-wide drop. In-place
+edits are acceptable only in dev, or when every environment that applied
+the prior version is dropped and replayed in the same change.
+
+## Migration 013: `writing_prompts` (P4)
+
+### What it creates
+
+A single reference table `writing_prompts` — a curated, shared (not per-user)
+bank of writing prompts spanning the `proficiency_level` bands (`L3`/`L4`/`L5+`)
+and Korean speech-level registers (`해요체`, `합쇼체`, `문어체`). The `.up.sql`
+seeds 8 starter prompts inline with `ON CONFLICT (source_id) DO NOTHING`, so
+re-applying after a partial failure neither duplicates nor errors.
+
+### Why it exists
+
+Pass 4 lights up the Today screen. Its `GET /plan/today` endpoint composes the
+day's plan from existing tables (`vocab_cards` for the due count, `ttmik_lessons`
+for reading, `iyagi_episodes` for listening) — the one branch with no existing
+source is **Writing**. The integration plan allowed either inline route literals
+or a seed table; the table wins because it is testable in isolation, keeps the
+band-weighted selection SQL identical in shape to the reading/listening branches,
+and gives the Pass-8 Writing drill screen real rows to grow rubric metadata onto.
+
+### Reference data, not user state
+
+No `user_id` FK, no `deleted_at`. Prompts are retired non-destructively via
+`is_active = FALSE` (selection queries filter `WHERE is_active`), so a prompt
+already surfaced in a user's history is never hard-deleted out from under a
+future audit/log row.
+
+### How to test (this migration specifically)
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 013_writing_prompts.up.sql
+psql "$DATABASE_URL" -c "SELECT count(*) FROM writing_prompts WHERE is_active;"   -- expect 8
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 013_writing_prompts.up.sql          -- re-run = no-op
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 013_writing_prompts.down.sql        -- requires --allow-destructive via migrate.py
+```
+
+## Migration 014: `diagnostic_runs` (P5A)
+
+### What it creates
+
+Two parent/child tables that back the live, server-graded, CAT-lite Diagnostic
+screen (Pass 5):
+
+- `diagnostic_runs` — one row per started diagnostic *session*. Holds the
+  running CAT ability estimate (`ability_estimate`, θ on the 0–6 TOPIK scale),
+  the intended item count (`target_item_count`, default 8), lifecycle `status`
+  (`in_progress` → `finished`), and a soft FK (`snapshot_id`) to the
+  `diagnostic_snapshots` row produced on finish.
+- `diagnostic_responses` — one row per *item served* within a run. Holds the
+  served-item difficulty, kind, source (`topik` vs `generated`), the full
+  server-side `item_payload` JSONB, and — critically — the **column-private
+  `correct_answer`**, plus the user's `picked` choice and `is_correct` verdict.
+
+### Why it exists
+
+Pass 5 turns the Diagnostic screen from a client-graded mock into a real,
+adaptive, server-graded flow. The finished result still lands in
+`diagnostic_snapshots` (migration 001) — these two tables are the *transient run
+machinery* in front of that durable snapshot. A run is hard-deleted with the
+user (in-flight runs have no standalone audit value); the snapshot is
+soft-deleted and survives, and `snapshot_id` is `ON DELETE SET NULL` so dropping
+a snapshot never destroys run history.
+
+### The security property (why `correct_answer` is a column)
+
+`correct_answer` lives in `diagnostic_responses` as a column the client NEVER
+receives. The route assembles an answer-stripped `ClientItem` (no
+`correct_answer`, no `explain`) for the wire; grading compares the user's pick
+against this column server-side; the correct choice + explanation are revealed
+only in the `/answer` response *after* the user has committed a pick. This is
+the answer-tampering defense — see `server/SECURITY.md` §13.
+
+### Reference vs run state
+
+`diagnostic_runs` / `diagnostic_responses` are per-user run state (FK to `users`,
+hard-deleted on user delete). They are NOT reference data and carry no
+`deleted_at`. The durable, soft-deleted record is `diagnostic_snapshots`.
+
+### How to test (this migration specifically)
+
+```bash
+# Assume migrations 001..013 already applied to a fresh DB.
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 014_diagnostic_runs.up.sql
+
+# Smoke: both tables + the user/snapshot FKs exist
+psql "$DATABASE_URL" -c "\dt" | grep -E 'diagnostic_runs|diagnostic_responses'
+psql "$DATABASE_URL" -c "\d diagnostic_runs"      | grep -E 'fk_diagnostic_runs_user|fk_diagnostic_runs_snapshot'
+psql "$DATABASE_URL" -c "\d diagnostic_responses" | grep -E 'fk_diagnostic_responses_run|uq_diagnostic_responses_run_ordinal'
+
+# Idempotency: re-applying succeeds (CREATE TABLE IF NOT EXISTS)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 014_diagnostic_runs.up.sql
+
+# Apply down (drops the two tables; leaves 001's diagnostic_snapshots/users)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 014_diagnostic_runs.down.sql   -- --allow-destructive via migrate.py
+
+# Verify reverted but 001 intact
+psql "$DATABASE_URL" -c "\dt" | grep -E 'diagnostic_runs|diagnostic_responses' && echo "FAIL" || echo "OK"
+psql "$DATABASE_URL" -c "\dt" | grep -E 'diagnostic_snapshots|users' || echo "FAIL: 001 tables gone"
+```
+
+## Migration 015: `topik_responses` (P6A)
+
+### What it creates
+
+A single table `topik_responses` — an **append-only** log of graded TOPIK Prep
+answers. One row is written per answer the user submits via
+`POST /topik/:itemId/answer` (Pass 6, TOPIK Prep Study mode going live + the
+Mock-Test server route). It powers accuracy / weak-area analytics over the
+public `topik_items` pool.
+
+### Why append-only (a log, not per-item state)
+
+TOPIK Prep is a drill: a user may re-attempt the same item many times. Each
+attempt is a **new row** with its own `answered_at`, `picked`, and `is_correct`
+— the route never UPDATEs an existing response. Duplicate
+`(user_id, topik_item_id)` pairs are therefore expected and intended. Analytics
+("accuracy over time", "most-missed items") read the full history; collapsing to
+one mutable row per (user, item) would destroy that. There is consequently no
+optimistic-concurrency write path and no `deleted_at` — the audit columns
+(`created_at`/`updated_at`/`version`) are present only for schema consistency
+with every other entity table (ADR-001 §D6).
+
+### FK posture
+
+- `user_id` → `users(id)` **ON DELETE CASCADE** — a response belongs to its user
+  and has no value detached from them; purging the account purges the log.
+- `topik_item_id` → `topik_items(id)` **ON DELETE RESTRICT** — `topik_items` is
+  curated reference data (migration 005). RESTRICT stops a corpus item a learner
+  has already answered from being hard-deleted out from under its responses.
+  Mirrors the existing reference-data FK posture (`vocab_cards.topik_item_id`,
+  `vocab_list_entries.entry_id`).
+
+### Constraints
+
+`picked` is TEXT + `CHECK (picked IN ('a','b','c','d'))`; `mode` is TEXT +
+`CHECK (mode IN ('study','mock'))` defaulting to `'study'`; `time_ms` is the lone
+nullable non-audit column (NULL = unknown, distinct from 0) with
+`CHECK (time_ms IS NULL OR time_ms >= 0)`. Two indexes:
+`ix_topik_responses_user_item` (per-(user, item) attempt lookups) and
+`ix_topik_responses_user_answered_at` (recent-answers feed, `answered_at DESC`).
+
+### Reference vs user state
+
+`topik_responses` is per-user state (FK to `users`, CASCADE). It is NOT reference
+data. The thing it points at — `topik_items` — is the reference data, hence the
+RESTRICT back-reference.
+
+### How to test (this migration specifically)
+
+```bash
+# Assume migrations 001..014 already applied to a fresh DB.
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 015_topik_responses.up.sql
+
+# Smoke: table + both FKs + both indexes exist
+psql "$DATABASE_URL" -c "\dt" | grep -E 'topik_responses'
+psql "$DATABASE_URL" -c "\d topik_responses" | grep -E 'fk_topik_responses_user|fk_topik_responses_topik_item'
+psql "$DATABASE_URL" -c "\d topik_responses" | grep -E 'ix_topik_responses_user_item|ix_topik_responses_user_answered_at'
+
+# Idempotency: re-applying succeeds (CREATE TABLE IF NOT EXISTS)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 015_topik_responses.up.sql
+
+# Apply down (drops the table; leaves 005's topik_items and 001's users)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 015_topik_responses.down.sql   -- --allow-destructive via migrate.py
+
+# Verify reverted but 005/001 intact
+psql "$DATABASE_URL" -c "\dt" | grep -E 'topik_responses' && echo "FAIL" || echo "OK"
+psql "$DATABASE_URL" -c "\dt" | grep -E 'topik_items|users' || echo "FAIL: 005/001 tables gone"
+```
+
+## Migration 016: `hanja` (P7A)
+
+### What it creates
+
+Three tables that take the **Hanja screen** live (Pass 7), plus one enum
+extension:
+
+- `hanja_characters` — the hanja reference corpus, one row per Korean hanja
+  (built by `tools/ingest/build_hanja.py` from the vocab corpora + the Unihan
+  database, written to `tools/ingest/output/hanja.json`, 758 characters). Shared
+  reference data: no `user_id`, no `deleted_at`. Reloads retire-by-overwrite
+  (`ON CONFLICT (char) DO UPDATE`).
+- `hanja_compounds` — words that contain a character (child of
+  `hanja_characters`, `ON DELETE CASCADE`). `UNIQUE (character_id, word_kr)` is
+  the reload upsert target.
+- `hanja_progress` — **per-user** new/practicing/banked state (FK to `users`,
+  CASCADE). `UNIQUE (user_id, char)` is the UPSERT target for
+  `POST /hanja/:char/state`.
+- `ALTER TYPE corpus ADD VALUE IF NOT EXISTS 'hanja'` — the corpus loader
+  (`load_hanja.py`) reuses the shared `upsert_corpus_source` /
+  `get_or_create_checkpoint` helpers, both of which cast the corpus name
+  `::corpus`. `'hanja'` is not one of the 001 enum values, so the migration adds
+  it.
+
+### The `corpus` enum extension (the one schema gotcha)
+
+`ALTER TYPE … ADD VALUE` can run inside a transaction on **PostgreSQL 12+** (our
+target is `postgres:16-alpine`), so the runner-owned transaction (ADR-013) is
+fine. The only residual PG caveat — *a newly added enum value cannot be USED in
+the same transaction that added it* — does not apply: this migration never
+inserts a `'hanja'` corpus row. The loader writes that row later, in a separate
+process and transaction, well after 016 has committed. The guard
+(`ADD VALUE IF NOT EXISTS`) makes re-applying a no-op, mirroring migration 002's
+`kgiu_entry_type` / `vocab_entry_type` extensions.
+
+The down migration deliberately does **not** remove the enum value — PostgreSQL
+has no `ALTER TYPE … DROP VALUE`. Leaving the value is harmless (nothing
+references it once the loader's `corpus_sources` row is gone) and re-applying up
+is a no-op. The schema after `down` is a superset of where it started, which is
+the same stance migration 002 takes for its own `ADD VALUE` additions.
+
+### Why `hanja_progress.char` is TEXT, not a FK
+
+Progress must SURVIVE a corpus reload. `build_hanja.py` re-derives the character
+set from the vocab corpora; a future rebuild could drop a character a user had
+already banked. A FK with `ON DELETE CASCADE` would silently erase that progress
+on reload; `ON DELETE RESTRICT` would block the reload. Keying progress on the
+character TEXT (validated to one hanja codepoint by the route) decouples the two
+so user state is durable. An orphan progress row (a char no longer in the
+corpus) simply never surfaces — the list endpoint LEFT JOINs *from*
+`hanja_characters`.
+
+### Reference vs user state
+
+`hanja_characters` / `hanja_compounds` are shared reference data (no `user_id`,
+retire-by-overwrite, no soft delete). `hanja_progress` is per-user state (FK to
+`users`, CASCADE, no `deleted_at` — clearing progress is a delete).
+
+### How to test (this migration specifically)
+
+```bash
+# Assume migrations 001..015 already applied to a fresh DB.
+export DATABASE_URL=postgres://localhost/korean_master_test
+
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 016_hanja.up.sql
+
+# Smoke: 'hanja' is now a corpus enum value
+psql "$DATABASE_URL" -c "SELECT 'hanja'::corpus;"   -- must not error
+
+# Smoke: tables + key constraints/indexes exist
+psql "$DATABASE_URL" -c "\dt" | grep -E 'hanja_characters|hanja_compounds|hanja_progress'
+psql "$DATABASE_URL" -c "\d hanja_compounds" | grep -E 'fk_hanja_compounds_character|uq_hanja_compounds_character_word'
+psql "$DATABASE_URL" -c "\d hanja_progress"  | grep -E 'fk_hanja_progress_user|uq_hanja_progress_user_char'
+
+# Idempotency: re-applying succeeds (CREATE TABLE IF NOT EXISTS + ADD VALUE IF NOT EXISTS)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 016_hanja.up.sql
+
+# Apply down (drops the three tables; leaves the corpus enum value + 001/002)
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 -f 016_hanja.down.sql   -- --allow-destructive via migrate.py
+
+# Verify reverted but 001/002 intact (and the enum value persists by design)
+psql "$DATABASE_URL" -c "\dt" | grep -E 'hanja_characters|hanja_compounds|hanja_progress' && echo "FAIL" || echo "OK"
+psql "$DATABASE_URL" -c "\dt" | grep -E 'users|corpus_sources' || echo "FAIL: 001/002 tables gone"
+```

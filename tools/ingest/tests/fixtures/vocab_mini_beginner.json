@@ -1,0 +1,53 @@
+{
+  "source": {
+    "book": "2000 Essential Korean Words Beginner Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "beginner",
+    "default_proficiency": "basic",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-05-28",
+    "note": "Mini fixture for vocab loader tests.",
+    "extraction_complete": true
+  },
+  "items": [
+    {
+      "id": "vocab-fix-0001",
+      "type": "theme_intro",
+      "theme": "01 사람 / People",
+      "korean": "사람",
+      "english": "People",
+      "notes": ["1 가족/친척 Family/Relatives"],
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [15]
+    },
+    {
+      "id": "vocab-fix-0002",
+      "type": "word",
+      "korean": "가족",
+      "english": "a family",
+      "pronunciation": "[가족]",
+      "part_of_speech": "noun",
+      "hanja": "家族",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "가족이 모두 몇 명이에요?",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [18]
+    },
+    {
+      "id": "vocab-fix-0003",
+      "type": "word",
+      "korean": "친구",
+      "english": "a friend",
+      "pronunciation": "[친구]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "7 친구 / Friends",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [42]
+    }
+  ]
+}

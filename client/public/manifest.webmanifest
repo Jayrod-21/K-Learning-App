@@ -1,0 +1,21 @@
+{
+  "name": "한국어 마스터 — Korean Master",
+  "short_name": "한국어 마스터",
+  "description": "Hanji-paper Korean study app for TOPIK II Level 4. Read, review, drill, and bank vocabulary tapped from real text.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#E8DFC5",
+  "theme_color": "#E8DFC5",
+  "lang": "ko",
+  "categories": ["education", "books"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

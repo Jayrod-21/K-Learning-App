@@ -1,0 +1,3 @@
+# Loader scratch — large external source dumps fetched on demand, never committed.
+# build_hanja.py re-fetches Unihan into _work/unihan/ when absent.
+_work/

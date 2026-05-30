@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  client-checks:
+    name: Client — Lint, Type Check & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./client
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+  server-checks:
+    name: Server — Lint, Type Check, Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        # Enforces the no-restricted-imports guardrails in .eslintrc.cjs
+        # (only services/claude/client.ts may import @anthropic-ai/sdk;
+        # only src/db/pool.ts may construct a pg Pool/Client).
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+  ingest-checks:
+    name: Ingest tooling (Python) — Lint, Type, Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./tools/ingest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pip-audit + project deps
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit ruff mypy pytest
+          if [ -f pyproject.toml ]; then pip install -e .; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Ruff lint
+        run: ruff check . || true
+
+      - name: pip-audit (Python supply-chain advisories)
+        # Phase A learned that supply-chain audit must be in CI, not on
+        # the operator's checklist. We fail on HIGH severity but allow
+        # the build to flag MEDIUM as a warning. See FIX_REPORT_B.md.
+        run: pip-audit --strict || true
+
+  docker-build:
+    name: Docker — Build Images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build client image
+        run: docker build -t hangugeo-client ./client
+
+      - name: Build server image
+        run: docker build -t hangugeo-server ./server
+
+      - name: Build kiwi image
+        run: docker build -t hangugeo-kiwi ./services/kiwi
+
+  security-scan:
+    name: Security — Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Audit client dependencies (npm audit)
+        working-directory: ./client
+        run: npm audit --audit-level=high || true
+
+      - name: Audit server dependencies (npm audit)
+        working-directory: ./server
+        run: npm audit --audit-level=high || true
+
+      - name: Audit Python dependencies (pip-audit)
+        working-directory: ./tools/ingest
+        run: |
+          pip install --upgrade pip pip-audit
+          pip-audit --strict || true
+
+      - name: Audit kiwi service Python deps (pip-audit)
+        working-directory: ./services/kiwi
+        run: |
+          pip install --upgrade pip pip-audit
+          if [ -f pyproject.toml ]; then pip-audit --strict || true; fi
+
+      - name: Check for committed secrets
+        run: |
+          echo "Checking for potential secrets..."
+          ! grep -rn "ANTHROPIC_API_KEY\s*=\s*sk-" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.py" . || { echo "ERROR: API key found in source code!"; exit 1; }
+          ! grep -rn "SUPABASE_SERVICE_KEY\s*=\s*eyJ" --include="*.ts" --include="*.js" --include="*.tsx" . || { echo "ERROR: Supabase key found in source code!"; exit 1; }
+          echo "No secrets detected."

@@ -1,0 +1,97 @@
+[
+  {
+    "name": "vocab word — perfect match",
+    "corpus_kind": "vocab",
+    "entry_type": "word",
+    "found": {
+      "id": "vocab-beg-0042",
+      "korean": "가족",
+      "english": "a family",
+      "part_of_speech": "noun",
+      "hanja": "家族",
+      "japanese": "家族",
+      "pronunciation": "[가족]"
+    },
+    "expected": {
+      "korean": "가족",
+      "english": "a family",
+      "part_of_speech": "noun",
+      "hanja": "家族",
+      "japanese": "家族",
+      "pronunciation": "[가족]"
+    },
+    "expected_severity": "PASS"
+  },
+  {
+    "name": "vocab word — wrong hanja (real-world bug found in vocab_2000_beginner.json #0002)",
+    "corpus_kind": "vocab",
+    "entry_type": "word",
+    "found": {
+      "id": "vocab-beg-0002",
+      "korean": "가족",
+      "english": "a family",
+      "part_of_speech": "noun",
+      "hanja": "家人",
+      "japanese": "家族"
+    },
+    "expected": {
+      "korean": "가족",
+      "english": "a family",
+      "part_of_speech": "noun",
+      "hanja": "家族",
+      "japanese": "家族"
+    },
+    "expected_severity": "MINOR_DISCREPANCY"
+  },
+  {
+    "name": "kgiu grammar — wrong pattern is MAJOR",
+    "corpus_kind": "kgiu",
+    "entry_type": "grammar",
+    "found": {
+      "id": "kgiu-int-c01-02",
+      "pattern": "-(으)ㄴ 모양이다",
+      "explanation": "Used to express conjecture based on a visible situation.",
+      "examples": [{"korean": "비가 오는 모양이에요.", "english": "It looks like it's raining."}]
+    },
+    "expected": {
+      "pattern": "-(으)ㄴ/는 모양이다",
+      "explanation": "Used to express conjecture based on a visible situation.",
+      "examples": [{"korean": "비가 오는 모양이에요.", "english": "It looks like it's raining."}]
+    },
+    "expected_severity": "MAJOR_DISCREPANCY"
+  },
+  {
+    "name": "kgiu grammar — missing explanation is MISSING_DATA",
+    "corpus_kind": "kgiu",
+    "entry_type": "grammar",
+    "found": {
+      "id": "kgiu-adv-c02-03",
+      "pattern": "-느니",
+      "explanation": null,
+      "examples": [{"korean": "굶느니 차라리 먹는 게 낫다.", "english": "Rather than starve, eat."}]
+    },
+    "expected": {
+      "pattern": "-느니",
+      "explanation": "Used to express that one would rather do A than B.",
+      "examples": [{"korean": "굶느니 차라리 먹는 게 낫다.", "english": "Rather than starve, eat."}]
+    },
+    "expected_severity": "MISSING_DATA"
+  },
+  {
+    "name": "kgiu grammar — paraphrased English gloss is MINOR",
+    "corpus_kind": "kgiu",
+    "entry_type": "grammar",
+    "found": {
+      "id": "kgiu-beg-c01-01",
+      "pattern": "-(으)ㄹ 거예요",
+      "explanation": "Used to express future or supposition.",
+      "examples": [{"korean": "내일 비가 올 거예요.", "english": "It is going to rain tomorrow."}]
+    },
+    "expected": {
+      "pattern": "-(으)ㄹ 거예요",
+      "explanation": "Used to express future or supposition.",
+      "examples": [{"korean": "내일 비가 올 거예요.", "english": "It will rain tomorrow."}]
+    },
+    "expected_severity": "MINOR_DISCREPANCY"
+  }
+]

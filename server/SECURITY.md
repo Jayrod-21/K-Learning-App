@@ -1,0 +1,632 @@
+# Server — security threat model
+
+> Per global standing orders: *"WHAT specific attacks exist for this type of
+> app and HOW do we defend against each one?"*
+
+This server is the Express API behind the Korean Master app. It owns
+authentication, session storage, Postgres access, and proxies the Kiwi
+(B1) and Claude (B4) services. Everything user-facing flows through here.
+
+## 1. Authentication — credential attacks
+
+### 1.1 Brute-force / credential stuffing
+- **Defense 1:** Argon2id password hashing (`memoryCost=65536 (64 MiB), timeCost=3, parallelism=1`).
+  Memory-hard → GPU-cracking economics are unfavorable. Hash encoding is
+  stored in `users.password_hash`; the `ck_users_password_hash_argon2id`
+  DB constraint enforces the algorithm prefix and length.
+- **Defense 2:** Per-IP rate limit on `/auth/login` and `/auth/register`
+  via `authLimiter` (default: 10/min/IP, only counts failures).
+- **Defense 3:** Login response shape and timing identical for "unknown
+  email" and "wrong password" — `verifyPassword` always runs, against a
+  dummy hash if the user doesn't exist. Prevents username enumeration.
+
+### 1.2 Session hijacking
+- **Defense 1:** Server-side opaque tokens (ADR-002), 32 random bytes
+  (256-bit) from `crypto.randomBytes`, stored as SHA-256 hex in the DB.
+  A DB read yields hashes, not usable credentials.
+- **Defense 2:** Cookie attributes locked:
+  - `HttpOnly` → JS can't read the cookie → XSS can't steal the session.
+  - `Secure` → cookie only sent over HTTPS (skipped in `development`).
+  - `SameSite=Strict` → no cross-site send → CSRF mitigated.
+  - `Path=/`, no `Domain` → host-only.
+- **Defense 3:** Idle timeout (7d default) + absolute expiry (30d default).
+  Rotation = new row, never mutate `expires_at`. Logout = revoke row.
+
+### 1.3 Session fixation
+- **Defense:** Login always issues a new session row; we don't accept a
+  client-suggested session ID. Tokens are minted server-side only.
+
+### 1.4 Password handling in transit
+- **Defense:** All endpoints require HTTPS in production (Cloudflare
+  Tunnel + origin TLS). Server enforces `Secure` cookies in non-dev.
+
+## 2. Injection
+
+### 2.1 SQL injection
+- **Defense:** Every query uses `$1, $2, …` parameter placeholders.
+  The `db/pool.ts` wrapper exists specifically to prevent ad-hoc raw
+  queries; callers never touch the raw `Pool`. ESLint rule TODO: ban
+  `pool.query` outside that module.
+- **Defense:** Zod schemas reject obviously hostile inputs (length caps,
+  alphabet caps) before they reach SQL.
+
+### 2.2 NoSQL / JSONB injection
+- **Defense:** Inputs destined for JSONB columns are `JSON.stringify`'d
+  from Zod-validated objects, then sent as a parameter (`$N::jsonb`).
+  Never string-concatenated into SQL.
+
+### 2.3 Log injection
+- **Defense:** Inbound correlation IDs are validated against
+  `^[A-Za-z0-9_-]{1,128}$` before logging — no newlines, no ANSI escapes
+  from upstream callers can corrupt log lines.
+
+## 3. Authorization
+
+### 3.1 IDOR (Insecure Direct Object Reference)
+- **Defense:** Every user-state query is scoped by `WHERE user_id = $userId`
+  where `$userId` comes from the authenticated session, never the client.
+- **Defense:** A defense-in-depth middleware on `/progress` rejects bodies
+  whose `user_id` doesn't match the session.
+- **Defense:** Optimistic concurrency via the `version` column on
+  `conversations` and `vocab_cards` — a stale write returns 409, not a
+  silent overwrite.
+
+### 3.2 Privilege escalation via registration
+- **Defense:** `RegisterSchema` permits only `{ email, password, display_name? }`.
+  Roles/flags cannot be set from the client.
+
+## 4. Data exposure
+
+### 4.1 PII / secrets in logs
+- **Defense:** Pino is configured with `redact` covering `password`,
+  `password_hash`, `token`, `cookie`, `authorization` (and `*.` variants).
+  A typo that nests one of those under another key still gets caught.
+- **Defense:** Session tokens NEVER logged. The DB stores SHA-256 hashes;
+  we log only the first 8 chars of a `token_hash` for correlation. (Per
+  ADR-002 §"Logging".)
+
+### 4.2 Error-message leakage
+- **Defense:** `errorHandler` returns generic 500 bodies; stack traces
+  log to stderr with the correlation ID. Clients see `{code, message,
+  correlationId}` and nothing more.
+
+## 5. DoS / abuse
+
+### 5.1 Slow endpoints / upstream costs
+- **Defense:** Per-route rate limits — cheap bucket (define, list,
+  reading) at 120/min/IP; expensive bucket (lemmatize, enrich,
+  grade-writing, conversation messages) at 20/min/user-or-IP.
+- **Defense:** Express body limit at 256 KB. Argon2 input capped at 256
+  bytes before hashing. Upstream timeouts 5s (Kiwi).
+- **Defense:** DB `statement_timeout` set per session (default 5s).
+  Long-running query can't take the pool with it.
+
+### 5.2 Open redirect / CORS
+- **Defense:** `cors({ origin: CLIENT_ORIGIN })` — single env-pinned
+  origin, with `credentials: true` only because we use cookies. No `*`,
+  no reflected `Origin`.
+
+### 5.3 Pool exhaustion via long external I/O
+- **Defense:** Claude / Kiwi calls happen OUTSIDE any open transaction.
+  `withTransaction` is reserved for short DB-only operations.
+
+## 6. Supply chain
+
+### 6.1 Dependency vulns
+- **Defense:** `npm audit` in CI; pinned versions in `package.json`;
+  Dependabot watches the repo (TODO: enable).
+- **Defense:** Helmet adds standard hardening headers
+  (`Content-Security-Policy`, `Strict-Transport-Security`,
+  `X-Content-Type-Options`, etc.).
+
+## 7. Cryptography hygiene
+
+- Random: `crypto.randomBytes(32)` for session tokens. Never `Math.random()`.
+- Hash: SHA-256 for session-token storage (fast — not a password). Argon2id
+  for passwords (slow + memory-hard — what passwords need).
+- No homegrown crypto. No JWT signing keys to leak (we chose opaque tokens).
+
+## 8. Operational
+
+### 8.1 What we monitor
+- Per-route latency p50/p95/p99 (TODO: ship to Prometheus).
+- 4xx / 5xx rate by route (Pino → log shipper).
+- Auth failure rate per IP (rate-limiter exports headers, future scrape).
+- DB pool utilization (pg client emits stats).
+
+### 8.2 Incident response
+- Every error includes a correlation ID returned to the client; users
+  can paste it into a support request and we find the request in seconds.
+- "Log me out everywhere": ADR-002 §"Open questions" — a single SQL
+  UPDATE on `sessions` revokes all of a user's tokens.
+
+## 9. Things explicitly deferred
+
+- **MFA / TOTP:** Single-user app today; ADR-002 §D6 says we add a
+  `user_mfa_factors` table when multi-user lands.
+- **Email-verification flow:** Schema column `users.email_verified_at`
+  exists; verification-token table + sending logic ship with the API
+  when we open registration beyond Jared.
+- **CAPTCHA on login:** Deferred until traffic shows we need it.
+- **WAF:** Cloudflare in front handles this layer.
+
+## 10. Pass 3 surfaces — additional threat model
+
+### 10.1 `PATCH /auth/me` — profile update (display_name / email / phone)
+
+**Threat — email change without verification.** A user (legitimate or
+session-hijacker) with a valid cookie can rewrite `users.email`. The
+canonical recovery channel (email) now points at an address we never
+confirmed control of. Full email-verification is **deferred** per
+`Repository/client/SECURITY.md §"Deferred"` — same posture as registration.
+
+**Defences (Pass 3):**
+- Authenticated route (`requireAuth` + cookie). Anonymous callers can't
+  reach the surface.
+- `authLimiter` per-IP bucket — the same rate budget as login. Justified
+  inline in the route comment: email/phone rotation in a tight loop is the
+  same class of abuse as credential stuffing and should starve on the
+  same allowance. A separate `profileLimiter` was considered and rejected
+  to keep the rate-limit posture simple.
+- Audit: every email change writes a WARN-level structured log with the
+  user id, correlation id, and the **domain only** (right of `@`) of both
+  the old and new addresses. The local part is PII (§4.1) and is never
+  logged.
+- `.strict()` Zod schema — extra keys (`role`, `is_admin`, …) are 400'd
+  before SQL.
+- Phone shape validated by the same regex the DB CHECK enforces
+  (`ck_users_phone_shape` — see migration 011) — a payload that passes
+  Zod can't trip a constraint violation.
+- 23505 / `UNIQUE` violation on email surfaces as a generic 409 with no
+  hint about which field collided (matches `/auth/register`).
+
+**Acknowledged residual risk.** Until verification ships, the entire
+account-recovery story rests on the cookie remaining uncompromised. The
+"log me out everywhere" SQL (ADR-002 §"Open questions") is the manual
+recovery path; the password-change endpoint will hard-revoke all sessions
+on a successful update.
+
+### 10.2 `/vocab/lists/*` — user-curated vocab lists
+
+**Threat — IDOR / cross-user list access.** A list belongs to exactly one
+user. Every read or write path that names a `listId` must verify the
+session user owns it.
+
+**Defences:**
+- Every query joins `vocab_lists` with `WHERE id = $listId AND user_id =
+  $sessionUserId AND deleted_at IS NULL`. A request for another user's
+  list yields a 404 with no body — we don't confirm the list exists.
+- Append / remove paths take `FOR UPDATE` on the parent row so concurrent
+  callers can't race the position-increment math.
+- `.strict()` Zod schemas on every body. Path params validated by
+  `validateParams`.
+- Soft delete is the **only** delete path for lists; membership rows
+  hard-delete. There is no admin "purge" endpoint over the wire.
+
+**Threat — corpus tampering via membership API.** `vocab_entries` is
+reference data; deleting one under a list is a footgun.
+
+**Defence:** FK `fk_vocab_list_entries_entry` is `ON DELETE RESTRICT`
+(migration 012). A corpus-row delete that has live memberships fails
+loudly — the operator must clean memberships first.
+
+**Threat — duplicate-add collision under retry.** The UNIQUE constraint on
+`(list_id, entry_id)` (migration 012) would surface a generic 500 from a
+23505 if we let it. Instead the route detects the duplicate set BEFORE
+INSERT and returns 409 with the duplicate ids in the body so the client
+can render a meaningful "already in list" message.
+
+### 10.3 `POST /conversation/:id/messages/stream` — Server-Sent Events
+
+**Threat — connection-pool DoS via held streams.** A malicious client
+opens streams and never reads them, holding sockets + B4 worker
+goroutines hostage.
+
+**Defences:**
+- `expensiveLimiter` per-user bucket (default 20/min) caps fresh
+  attempts.
+- `req.on('close', …)` fires an `AbortController` that propagates to the
+  upstream B4 call (see `services/claude/index.ts → generateConversation`
+  worker). The persisted-message branch is skipped when the response was
+  aborted mid-stream — no half-turn lands in the DB.
+- B4's own per-route token-bucket (`CLAUDE_RATE_LIMIT_CONVERSATION`) is
+  consumed on cache miss only (`services/claude/SECURITY.md §"Stream
+  hijack via abandoned reader"`). Cache hits replay locally with no
+  upstream cost.
+
+**Threat — persisted half-turn under upstream failure.** If we persisted
+the user turn before the assistant turn was assembled, a stream failure
+would leave the conversation with a hanging user message.
+
+**Defence:** persistence is the very last step. Stream errors → SSE
+`event:error` frame → close the connection → no DB write. The next
+attempt re-streams cleanly.
+
+**Threat — retry storm produces duplicate assistant turns.** A network
+blip mid-stream means the client doesn't know if the turn persisted.
+Naïve retries double-spend the Claude budget AND insert a duplicate row.
+
+**Defence:** request-level idempotency via `X-Request-Id` header
+(matches our correlation-id alphabet `^[A-Za-z0-9_-]{1,128}$`). The
+endpoint scans the persisted `messages` JSONB for a prior assistant turn
+tagged with that id; if found, the response replays the cached text
+without re-streaming. Clients that don't supply the header opt out and
+get the legacy semantics. A query-string fallback (`?request_id=…`) is
+accepted for environments that strip custom headers.
+
+**Threat — SSE byte-stream corruption from the central error handler.**
+The standard `errorHandler` returns JSON. Routing a mid-stream error to
+it would write JSON bytes into an already-open SSE response and confuse
+every parser downstream.
+
+**Defence:** the streaming handler catches its own errors. Pre-headers
+errors `next(err)` cleanly to the standard handler. Post-headers errors
+serialize as an SSE `event:error` frame and call `res.end()` — never
+`next(err)`.
+
+**Threat — proxy buffering reorders or coalesces frames.** Cloudflare,
+nginx, and similar default to buffering responses; with SSE that
+delays the streaming UX or — worse — closes the response after a fixed
+window.
+
+**Defences:**
+- `Cache-Control: no-cache, no-transform` + `Connection: keep-alive` +
+  `X-Accel-Buffering: no` set at response open.
+- `res.flushHeaders()` called immediately so the client sees the open
+  connection before the first delta.
+
+## 11. Bar checks before declaring done
+
+- [x] Parameterized queries — wrapper-enforced, audited in code review.
+- [x] Zod at every boundary — body, query, params.
+- [x] Per-IP and per-user rate limits in separate buckets.
+- [x] HttpOnly+Secure+SameSite=Strict cookies.
+- [x] Correlation IDs through every request, in every log line.
+- [x] Structured logs with secret redaction.
+- [x] Integration tests against a real Postgres in Docker.
+- [x] No secrets in code; env via Zod schema.
+
+## 12. Pass 4 surface — additional threat model
+
+### 12.1 `GET /plan/today` — daily study plan
+
+`GET /plan/today` composes the Today screen's plan from existing tables. It is
+authenticated, **read-only**, and takes no body, query, or path parameters.
+
+- **AuthZ / IDOR.** The only user identifier is `getUserId(req)`, read from the
+  session — never from the request. Every user-scoped query is
+  `WHERE user_id = $1` against that value (due count + diagnostic snapshot).
+  Content tables (`ttmik_lessons`, `iyagi_episodes`, `writing_prompts`) are
+  shared reference data with no per-user rows, so there is no cross-tenant read
+  to leak. A test asserts user A's plan never counts user B's due cards.
+- **SQL injection.** No client string reaches SQL. The deterministic-selection
+  key is built from `user_id` (session-derived) + the day boundary
+  (`(now() AT TIME ZONE 'Asia/Seoul')::date`, a server-side SQL expression) +
+  the row id, all passed as bound parameters / server-side values, never
+  concatenated from input. The 'Asia/Seoul' literal is a fixed string in the
+  route source, not a request value. Band-preference params (`book_level`,
+  `proficiency_level`) are derived server-side from numeric snapshot estimates
+  and cast to their enums; an out-of-range value can only yield NULL (no band
+  preference), never an injection.
+- **Plan-rollover boundary.** The day component of the selection hash is pinned
+  to `(now() AT TIME ZONE 'Asia/Seoul')::date`, so the plan rolls over at
+  midnight in the app's target locale regardless of the DB session timezone. A
+  bare `current_date` would evaluate in the session `TimeZone` GUC (UTC on a
+  stock container), reshuffling the plan mid-morning (09:00 KST) for a
+  Korea-resident user. Not a security hole — the endpoint is read-only — but the
+  pin keeps the determinism guarantee honest and session-TZ-independent.
+- **DoS / cost.** `cheapLimiter` (per-user) caps polling. The handler runs five
+  small queries and calls no upstream (no Claude proxy), so it cannot amplify
+  cost. The `md5(...)`-ordered selection is `ORDER BY … LIMIT 1`, but `md5` is
+  not indexable: Postgres hashes every candidate row and takes the top one — a
+  scan + top-1, not index-bounded work. That is acceptable here because the
+  corpora are small curated reference banks (hundreds of rows) and `cheapLimiter`
+  caps how often the scan can run; the partial index on `writing_prompts`
+  narrows the active/band filter but does not satisfy the hash ordering.
+- **Output integrity.** Every field is plain data (titles, integer minutes,
+  level labels). The client renders them as React children (escaped). No HTML is
+  emitted, so no stored-XSS path through corpus titles.
+- **Information disclosure.** The response reveals only the user's own due count
+  and which modality is weakest — data the user already owns. Raw estimate values
+  are never returned, only the derived `largestGap` label, keeping the diagnostic
+  scores server-side until the Diagnostic screen (Pass 5) surfaces them
+  deliberately.
+
+### 12.2 `writing_prompts` (migration 013)
+
+Shared reference data, no `user_id`, no soft-delete (retired via `is_active`).
+Seeded inline with `ON CONFLICT (source_id) DO NOTHING` — re-applying the
+migration is idempotent and cannot duplicate or corrupt the bank. No runtime
+route mutates this table, so there is no injection or authZ surface beyond the
+read in §12.1.
+
+## 13. Pass 5 surface — live Diagnostic (`/diagnostic/*`, migration 014)
+
+Pass 5 turns the Diagnostic screen from a client-graded mock into a real,
+adaptive, **server-graded** flow. The endpoints (`server/src/routes/diagnostic.ts`)
+start a CAT-lite run, serve one item at a time, grade each answer server-side,
+and on finish write a `diagnostic_snapshots` row. Tables: `diagnostic_runs` +
+`diagnostic_responses` (migration 014). This section enumerates the attack
+vectors specific to a graded assessment and the defenses in place.
+
+### 13.1 Answer tampering — THE security property of this pass
+
+- **Attack.** A graded diagnostic is worthless if the client can see (or set)
+  the correct answer. If the served item carried `correct_answer`, a user could
+  read it from the network tab and "pass" every item, or POST a forged
+  `is_correct: true` to inflate their estimate.
+- **Defense — correct answer is column-private + grading is server-side.**
+  `diagnostic_responses.correct_answer` (and the `explain` text) live ONLY in the
+  database. The wire `ClientItem` is assembled by `toClientItem()`, which copies
+  a strict allow-list of fields (`responseId`, `ordinal`, `section`, `level`,
+  `kind`, `prompt`, `hint`, `passage`, `underline`, `audio`, `choices`) — it has
+  no path to the correct answer or explanation. The client submits only its
+  *picked choice id*; the server compares it against the column. The client
+  never sends, and the server never trusts, an `is_correct` flag.
+- **Defense — reveal only after commit.** The correct choice + explanation are
+  returned in the `/answer` response (`result.correctAnswer`, `result.explain`)
+  *after* the pick is persisted with `answered_at`. There is no endpoint that
+  returns an unanswered item's answer. (A route test asserts the ClientItem on
+  both `POST /diagnostic` and the `/answer` `next` item has no `correctAnswer` /
+  `explain` property.)
+
+### 13.2 Run ownership / IDOR
+
+- **Attack.** Enumerate `runId` / `responseId` to read or mutate another user's
+  run, or to read their snapshot.
+- **Defense — every query is user-scoped.** `getUserId(req)` (session-derived) is
+  a predicate on every read and write: `loadUserRun` filters `WHERE id = $1 AND
+  user_id = $2` and throws `NotFoundError` (404, not 403 — we don't confirm the
+  run exists) when the run isn't the caller's. `/finish` and `/latest`/
+  `/trajectory` snapshot reads filter `WHERE user_id = $1`. A `runId` or
+  `responseId` is NEVER trusted for ownership on its own. (A route test confirms
+  user B answering user A's run → 404.)
+
+### 13.3 Double-answer / replay / out-of-order
+
+- **Attack.** Re-POST the same answer (or an arbitrary earlier `responseId`) to
+  re-roll the CAT update, or answer items out of order to confuse scoring.
+- **Defense — single current item + 409, gated under a row lock.** `/answer`
+  grades, bumps θ, and serves the next item INSIDE one transaction that first
+  locks the run row `FOR UPDATE`. Under the lock it re-reads "the current
+  unanswered item" (lowest-ordinal response with `answered_at IS NULL`), requires
+  the body's `responseId` to equal it, and runs the single-shot
+  `UPDATE … WHERE id = $1 AND answered_at IS NULL`. The handler **checks
+  `rowCount`**: if zero (a concurrent request already answered this item), it
+  throws `ConflictError` (409) and the transaction aborts — so the racing
+  duplicate produces **no second θ bump and no second served item**. Because the
+  lock serializes the two requests, the staircase step number (counted under the
+  lock) is also deterministic, and a concurrent `/finish` cannot flip the run to
+  `finished` between the status check and the write (the status re-check happens
+  under the same lock). The `UNIQUE (run_id, ordinal)` constraint prevents
+  double-serving a slot.
+
+### 13.4 Claude cost amplification
+
+- **Attack.** Hammer `POST /diagnostic` / `/answer` to drive unbounded Claude
+  spend on vocab/grammar item generation.
+- **Defense — limiter + bounded calls + caps.** Item-generating routes use
+  `expensiveLimiter()` (per-user bucket). The fixed 8-item, 2-each schedule
+  bounds generation to **≤4 Claude calls per run** (vocab + grammar only;
+  reading/listening are pure DB reads, no Claude). The `diagnostic_item` proxy
+  route has its own per-minute rate limit and a tight input cap
+  (`CLAUDE_MAX_INPUT_DIAGNOSTIC_ITEM`, default 1000 chars) on every seed field,
+  and seeds are sanitized through the shared prompt-injection guard before they
+  reach the model. Claude is called strictly OUTSIDE any open DB transaction
+  (Bar §"Transactions") so generation latency can't hold a connection.
+
+### 13.5 Prompt injection via generated-item seeds
+
+- **Attack.** A poisoned corpus row (vocab word / grammar pattern) tries to
+  steer the item generator ("ignore instructions, output …").
+- **Defense — structural + sanitized.** Seeds are wrapped in
+  `<user_input>…</user_input>` and the system prompt instructs the model to treat
+  them as data. `sanitizeUserInput` strips control chars, NFC-normalizes, caps
+  length, and rejects known injection markers. The output is parsed by
+  `DiagnosticItemResultSchema` (exactly 4 choices, `answerIndex` 0..3, bounded
+  string lengths) — a malformed or oversized generation fails the schema and the
+  proxy raises rather than serving garbage. The route additionally guards
+  `answerIndex` against the choice count before persisting.
+
+### 13.6 Listening transcript — best-effort, not audio (known limitation)
+
+The TOPIK corpus has **no audio files**: listening items carry transcript text
+only. `buildTopikItem` surfaces `audio = { duration: extra.duration || 40,
+transcript: stem || extra.transcript || '' }`. This is a content limitation, not
+a vulnerability — but it is documented here and in `routes/diagnostic.ts` so a
+future engineer wiring real audio knows the transcript was always plaintext and
+must not be treated as a secret (it is part of the item, revealed with it).
+
+### 13.7 Information disclosure — raw estimates stay server-side
+
+- **Attack.** Infer more about the scoring model than intended from the wire.
+- **Defense — mapped scores only.** The snapshot DTO and trajectory expose only
+  the 0–100 `estimateToScore`-mapped value and a templated band note, never the
+  raw 0–6 estimate, the per-item difficulty, or the θ trajectory. Those live in
+  the `evidence` JSONB and `ability_estimate` column, returned to no client. The
+  `note`/`goals` strings are fully templated (deterministic, no Claude), so no
+  model output reaches the client outside the per-item `explain` (which is itself
+  only revealed post-answer).
+
+### 13.8 `GET /diagnostic/latest` deliberately returns 200, not 404
+
+When a user has no run, `/latest` returns **200 with `{ dimensions: [],
+references, defaultRef: 'L4', goals: [] }`** rather than 404. This matches the
+client's `DIAGNOSTIC_SNAPSHOT_FIXTURE` contract (empty dimensions = "no run yet"
+→ route to intro). It is a deliberate deviation from a "404 → intro" design and
+is not a security concern: the response carries only static reference data the
+client already ships in its mock.
+
+### 13.9 SQL injection
+
+Every query is parameterized (`$1, $2, …` via the `query`/`withTransaction`
+helpers); no request value is concatenated into SQL. The dynamic `WHERE
+proficiency = $n` / `id <> ALL($n)` fragments append only bound-parameter
+placeholders, never input. Enum casts (`::topik_section`, `::proficiency_level`)
+mean an out-of-range value errors at the cast, it cannot inject.
+
+## 14. Pass 6 surface — TOPIK Prep (`/topik/*`, migration 015)
+
+Pass 6 takes the TOPIK Prep Study mode LIVE and adds the Mock-Test **server
+route** (the mock taking UI is deferred to FU-NF-39). The endpoints
+(`server/src/routes/topik.ts`) browse the item pool, assemble a mock (full test,
+original order) or a study draw (shuffled cross-test), and grade a submitted
+answer, logging each attempt to `topik_responses` (migration 015). This section
+enumerates the attack vectors and the defenses in place.
+
+### 14.1 Answers are PUBLIC in Study mode — by design (not a leak)
+
+- **Design fact.** TOPIK items are **public reference data** (real past exams,
+  freely available). TOPIK Prep is a study tool, not a secured assessment, so the
+  locked decision (contract §B) is to serve the `correct` flag + `explanation`
+  **inline** in every `TopikItemDTO` — `options[i].correct` is set on the
+  `(answer − 1)` index, and `explanation` is surfaced. This is the OPPOSITE of the
+  Pass-5 Diagnostic, which is answer-stripped because it is graded/scored. The
+  difference is deliberate and matches the existing study screen + design.
+- **Consequence for grading.** Because the answer is already public, the
+  `/answer` route's grade is a *convenience + analytics* record, not a
+  trust boundary: a user could compute `correct` client-side from the DTO. The
+  server still grades server-side and logs the attempt so analytics ("accuracy",
+  "weak areas") are computed from a single, server-owned source of truth, not a
+  client-asserted flag (the client never sends `is_correct`).
+- **Deferred — Mock-mode answer-strip (FU-NF-39).** When the full-scale,
+  scored Mock-Test UI lands, mock items MUST be answer-stripped (the diagnostic
+  pattern: a column-private correct answer, revealed only post-answer). This pass
+  does NOT strip mock answers — `POST /topik/mock` returns the same inline-answer
+  DTOs as study. That is acceptable *only* because no scored mock UI consumes them
+  yet; FU-NF-39 owns closing this before mock becomes a graded surface.
+
+### 14.2 Answer log is user-scoped — IDOR / mass-assignment
+
+- **Attack.** Forge a `topik_responses` row under another user's id (to pollute
+  their analytics), or read another user's answer history.
+- **Defense — session-stamped writes.** Every `topik_responses` row is inserted
+  with `getUserId(req)` (session-derived) as `user_id`; the route accepts NO
+  client-supplied user id (mass-assignment closed at the boundary — the
+  `AnswerBodySchema` is `.strict()` and contains only `picked`/`timeMs`/`mode`).
+  Reads (analytics, a future history endpoint) filter `WHERE user_id = $1` against
+  the session value and are backed by `ix_topik_responses_user_item` /
+  `ix_topik_responses_user_answered_at`. A route test confirms two users each
+  answering the SAME public item produce one row apiece, each under their own id.
+- **itemId is reference data.** `topik_items` is public and not user-owned, so an
+  `itemId` path param carries no ownership to verify — but a missing/ungradeable
+  id is a clean 404 (no silent insert against nothing), and the logged row is
+  still always the caller's.
+
+### 14.3 SQL injection — parameterized + enum-normalized inputs
+
+- **Attack.** Inject via the `section` / `level` / `source_test` filters or the
+  answer body.
+- **Defense — bound params + zod-to-enum normalization.** Every query is
+  parameterized; no request value is concatenated into SQL. `section` is
+  normalized by zod (`SectionSchema`) which accepts EITHER the topik_section enum
+  OR the Korean label (`읽기`/`듣기`/`쓰기`) and maps both to the enum string,
+  bound and cast `::topik_section`; `level` is a `z.enum(['L3','L4','L5+'])` bound
+  and cast `::proficiency_level`; `source_test` is `z.coerce.number().int()`. An
+  unrecognized section/level fails validation (400) before reaching SQL, and the
+  enum cast would error (not inject) on any value that somehow slipped through.
+  The dynamic `WHERE` fragments append only `$n` placeholders, never input.
+
+### 14.4 DoS / cost
+
+- **Attack.** Hammer the study draw or the pool browse to load the DB.
+- **Defense — cheapLimiter + bounded reads.** Every `/topik/*` route uses
+  `cheapLimiter()` (per-IP). No route calls any upstream (no Claude), so there is
+  no cost amplification. `POST /topik/study` is `ORDER BY random() LIMIT n` with
+  `n` capped at 50 by `StudyBodySchema`; `GET /topik/items` is `LIMIT`-capped at
+  100 with an offset, plus a bounded `count(*)` for the page total; `POST
+  /topik/mock` is bounded by a single test's item count (a real TOPIK test is
+  ≤70 items). The `random()` order scans the (filtered) pool — acceptable because
+  the corpus is a small curated reference bank and the limiter caps how often the
+  scan can run; the `ix_topik_items_section_proficiency` index narrows the
+  section/level filter even though it cannot satisfy the random ordering.
+
+### 14.5 Output integrity
+
+Every DTO field is plain data (Korean/English option text, integer level/number,
+explanation text). The client renders them as React children (escaped); no HTML
+is emitted, so there is no stored-XSS path through corpus item/option text.
+
+## 15. Pass 7 surface — Hanja (`/hanja/*`, migration 016)
+
+Pass 7 takes the **Hanja screen** live. The endpoints
+(`server/src/routes/hanja.ts`) browse the hanja corpus with the caller's
+per-character state folded in, feature one character per day, report the user's
+progress counts, and upsert a character's state. The reference data lives in
+`hanja_characters` + `hanja_compounds`; the per-user state lives in
+`hanja_progress` (all migration 016). This section enumerates the attack vectors
+and the defenses in place.
+
+### 15.1 Reference data is PUBLIC — and carries no answer secret
+
+- **Design fact.** `hanja_characters` (reading, gloss, strokes, level,
+  frequency) and `hanja_compounds` (containing words) are **public reference
+  data** — derived from the Darakwon vocab corpora + the public-domain Unihan
+  database. Unlike the Diagnostic (§13), a hanja's reading/gloss is **not a quiz
+  answer** that must be withheld: the Hanja screen is a browse/study surface, not
+  a scored assessment. Serving the full character record to any authenticated
+  user is the intended behavior, not a leak. There is consequently no
+  answer-strip and no column-private field on these tables.
+
+### 15.2 Per-user progress is user-scoped — IDOR / mass-assignment
+
+- **Attack.** Forge a `hanja_progress` row under another user's id (to pollute
+  their progress), or read another user's state through the list endpoint.
+- **Defense — session-stamped writes, session-scoped reads.** Every
+  `hanja_progress` write is `INSERT … ON CONFLICT (user_id, char) DO UPDATE`
+  with `user_id = getUserId(req)` (session-derived); the route accepts NO
+  client-supplied user id. `StateBodySchema` is `.strict()` and contains only
+  `state`, so a `userId` smuggled in the body is a 400 (mass-assignment closed at
+  the boundary — a route test asserts this). The list join (`GET /hanja`), the
+  `/today` weighting, and the `/progress` counts all filter
+  `hp.user_id = $1`/`vcrd.user_id = $1` against the session value, never a client
+  value — backed by `ix_hanja_progress_user_state`. `UNIQUE (user_id, char)`
+  guarantees a user holds at most one state per character, so the upsert can
+  never create a second row, and a user can never address another user's row (the
+  conflict key includes their own `user_id`). A route test confirms one user's
+  banked state does not appear in a second user's list.
+- **The `/today` weighting reads only the caller's own data.** The
+  recently-mined signal joins `vocab_cards` filtered to `user_id = $1` (and
+  `deleted_at IS NULL`); it never reads another user's cards. The fallback and
+  the deterministic-per-day pick read only the public corpus.
+
+### 15.3 `:char` param — single-codepoint validation + parameterized SQL
+
+- **Attack.** Inject via the `:char` path param or the `filter` query, or stamp
+  progress against a giant/garbage "character" to bloat the table.
+- **Defense — zod single-codepoint guard + bound params + DB CHECK.** `:char`
+  is validated to **exactly one Unicode codepoint** (`[...s].length === 1`)
+  before it reaches SQL; `filter` is a `z.enum(['all','banked','practicing',
+  'new'])` (an unknown value is a 400, never SQL). Every query is parameterized —
+  no request value is concatenated into SQL; the only dynamic WHERE fragments
+  are fixed literals chosen by the validated `filter` enum plus a `$n`
+  placeholder. The DB `CHECK (char_length(char) = 1)` on `hanja_progress` is the
+  backstop if a codepoint somehow slips the route guard, and the `state` is
+  CHECK-constrained at both the zod layer and the column.
+- **Decoupled-from-corpus is intentional, not a hole.** `:char` is NOT validated
+  against `hanja_characters` (progress survives a corpus reload — see migration
+  016). The blast radius of stamping a non-corpus character is one extra,
+  one-codepoint, user-owned row that simply never surfaces in the list (which
+  LEFT JOINs *from* the corpus) — bounded and harmless.
+
+### 15.4 DoS / cost
+
+- **Attack.** Hammer the list or `/today` to load the DB.
+- **Defense — cheapLimiter + bounded reads + indexes.** Every `/hanja/*` route
+  uses `cheapLimiter()` (per-IP). No route calls any upstream (no Claude), so
+  there is no cost amplification. The corpus is a small curated reference bank
+  (~758 rows); `GET /hanja` returns the whole (filtered) set ordered by an
+  indexed `frequency DESC`, with compounds aggregated via a per-character LATERAL
+  join keyed on the indexed `hanja_compounds.character_id`. `/today` runs three
+  bounded `LIMIT 1` queries; `/progress` is five indexed `count(*)` scalars. None
+  of these grow with user count — they scan a fixed-size corpus joined to the
+  caller's own (indexed) progress rows.
+
+### 15.5 Output integrity
+
+Every DTO field is plain data (the character, Korean/English glosses, integer
+strokes, a level string, the compounds' word/gloss strings). The client renders
+them as React children (escaped); no HTML is emitted, so there is no stored-XSS
+path through the corpus text. Empty-source fields (`gloss_kr`, `etymology`) are
+served as `''` (the client's default), never as `null` that could surprise a
+consumer.

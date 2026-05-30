@@ -1,0 +1,200 @@
+/**
+ * Claude proxy configuration (12-factor / env-driven).
+ *
+ * All knobs that influence cost, latency, or security live here. Reading
+ * the env at import time is deliberate: process restarts pick up new
+ * settings; misconfiguration fails fast at boot, not on the first call.
+ *
+ * Secrets (ANTHROPIC_API_KEY, DATABASE_URL) are read here and exposed
+ * ONLY through the `getApiKey()` and `getDatabaseUrl()` getters so they
+ * never leak into structured logs (the config object itself is safe to
+ * dump because the secrets aren't on it).
+ */
+
+import { z } from 'zod';
+
+// --- Zod-validated env schema -----------------------------------------------
+
+const ModelEnum = z.enum([
+  'claude-haiku-4-5',
+  'claude-sonnet-4-6',
+  'claude-opus-4-7',
+]);
+export type ClaudeModelId = z.infer<typeof ModelEnum>;
+
+const EnvSchema = z.object({
+  // Secrets (handled separately — see getters below).
+  ANTHROPIC_API_KEY: z.string().min(20, 'ANTHROPIC_API_KEY missing or too short'),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL required for cache/usage tables'),
+
+  // SDK behavior
+  CLAUDE_BASE_URL: z.string().url().optional(),
+  CLAUDE_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+
+  // Retry
+  CLAUDE_RETRY_MAX_ATTEMPTS: z.coerce.number().int().min(0).max(10).default(3),
+  CLAUDE_RETRY_BASE_MS: z.coerce.number().int().positive().default(250),
+  CLAUDE_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(8_000),
+
+  // Model defaults (per-route, env-overridable).
+  CLAUDE_DEFAULT_MODEL_ENRICH: ModelEnum.default('claude-haiku-4-5'),
+  CLAUDE_DEFAULT_MODEL_RECOGNIZE_GRAMMAR: ModelEnum.default('claude-sonnet-4-6'),
+  CLAUDE_DEFAULT_MODEL_GRADE_WRITING: ModelEnum.default('claude-sonnet-4-6'),
+  CLAUDE_DEFAULT_MODEL_DIAGNOSTIC_ITEM: ModelEnum.default('claude-sonnet-4-6'),
+  CLAUDE_DEFAULT_MODEL_CONVERSATION: ModelEnum.default('claude-sonnet-4-6'),
+
+  // Input length caps (in characters) — prompt-injection defense.
+  CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
+  CLAUDE_MAX_INPUT_RECOGNIZE_GRAMMAR: z.coerce.number().int().positive().default(4_000),
+  CLAUDE_MAX_INPUT_GRADE_WRITING: z.coerce.number().int().positive().default(16_000),
+  // Seeds are short corpus terms (a word or a grammar pattern + glosses), so a
+  // tight cap is both sufficient and a prompt-injection ceiling.
+  CLAUDE_MAX_INPUT_DIAGNOSTIC_ITEM: z.coerce.number().int().positive().default(1_000),
+  CLAUDE_MAX_INPUT_CONVERSATION: z.coerce.number().int().positive().default(8_000),
+
+  // Cache TTLs (seconds). null/0 = no expiry.
+  CLAUDE_CACHE_TTL_ENRICH_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
+  CLAUDE_CACHE_TTL_RECOGNIZE_GRAMMAR_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
+  CLAUDE_CACHE_TTL_GRADE_WRITING_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 7),
+  // Diagnostic items are unique per seed AND we deliberately want variety on
+  // re-runs over the same seed (so a user retaking the diagnostic doesn't see an
+  // identical question). 0 = no caching. See ADR/contract §B.
+  CLAUDE_CACHE_TTL_DIAGNOSTIC_ITEM_S: z.coerce.number().int().nonnegative().default(0),
+  CLAUDE_CACHE_TTL_CONVERSATION_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24),
+
+  // Rate-limit (per-minute, per-bucket-key).
+  CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
+  CLAUDE_RATE_LIMIT_RECOGNIZE_GRAMMAR: z.coerce.number().int().positive().default(30),
+  CLAUDE_RATE_LIMIT_GRADE_WRITING: z.coerce.number().int().positive().default(5),
+  // Per run we generate at most 4 vocab/grammar items; this per-minute ceiling
+  // comfortably bounds a single run while capping a runaway loop.
+  CLAUDE_RATE_LIMIT_DIAGNOSTIC_ITEM: z.coerce.number().int().positive().default(20),
+  CLAUDE_RATE_LIMIT_CONVERSATION: z.coerce.number().int().positive().default(10),
+
+  // Logging
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+});
+
+export type RouteName =
+  | 'enrich'
+  | 'recognize_grammar'
+  | 'grade_writing'
+  | 'diagnostic_item'
+  | 'generate_conversation';
+
+export interface PublicClaudeConfig {
+  readonly baseUrl: string | undefined;
+  readonly timeoutMs: number;
+
+  readonly retry: {
+    readonly maxAttempts: number;
+    readonly baseMs: number;
+    readonly maxDelayMs: number;
+  };
+
+  readonly modelDefaults: Readonly<Record<RouteName, ClaudeModelId>>;
+  readonly inputCaps: Readonly<Record<RouteName, number>>;
+  readonly cacheTtlSeconds: Readonly<Record<RouteName, number>>;
+  readonly rateLimitPerMinute: Readonly<Record<RouteName, number>>;
+
+  readonly logLevel: string;
+  readonly nodeEnv: 'development' | 'test' | 'production';
+}
+
+/**
+ * Internal config — secrets live here and are only returned via getters.
+ */
+interface InternalClaudeConfig extends PublicClaudeConfig {
+  readonly _apiKey: string;
+  readonly _databaseUrl: string;
+}
+
+let cached: InternalClaudeConfig | null = null;
+
+/**
+ * Build the config object from process.env. Throws on validation failure.
+ * Caches the result; tests can reset via `__resetConfigForTests()`.
+ */
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeConfig {
+  if (cached !== null) {
+    return publicView(cached);
+  }
+  const parsed = EnvSchema.safeParse(env);
+  if (!parsed.success) {
+    // Do NOT include env values in the error — they may contain secrets.
+    const fields = parsed.error.issues.map((i) => i.path.join('.')).join(', ');
+    throw new Error(`Invalid Claude proxy configuration: bad fields [${fields}]`);
+  }
+  const e = parsed.data;
+  cached = {
+    _apiKey: e.ANTHROPIC_API_KEY,
+    _databaseUrl: e.DATABASE_URL,
+    baseUrl: e.CLAUDE_BASE_URL,
+    timeoutMs: e.CLAUDE_TIMEOUT_MS,
+    retry: {
+      maxAttempts: e.CLAUDE_RETRY_MAX_ATTEMPTS,
+      baseMs: e.CLAUDE_RETRY_BASE_MS,
+      maxDelayMs: e.CLAUDE_RETRY_MAX_DELAY_MS,
+    },
+    modelDefaults: {
+      enrich: e.CLAUDE_DEFAULT_MODEL_ENRICH,
+      recognize_grammar: e.CLAUDE_DEFAULT_MODEL_RECOGNIZE_GRAMMAR,
+      grade_writing: e.CLAUDE_DEFAULT_MODEL_GRADE_WRITING,
+      diagnostic_item: e.CLAUDE_DEFAULT_MODEL_DIAGNOSTIC_ITEM,
+      generate_conversation: e.CLAUDE_DEFAULT_MODEL_CONVERSATION,
+    },
+    inputCaps: {
+      enrich: e.CLAUDE_MAX_INPUT_ENRICH,
+      recognize_grammar: e.CLAUDE_MAX_INPUT_RECOGNIZE_GRAMMAR,
+      grade_writing: e.CLAUDE_MAX_INPUT_GRADE_WRITING,
+      diagnostic_item: e.CLAUDE_MAX_INPUT_DIAGNOSTIC_ITEM,
+      generate_conversation: e.CLAUDE_MAX_INPUT_CONVERSATION,
+    },
+    cacheTtlSeconds: {
+      enrich: e.CLAUDE_CACHE_TTL_ENRICH_S,
+      recognize_grammar: e.CLAUDE_CACHE_TTL_RECOGNIZE_GRAMMAR_S,
+      grade_writing: e.CLAUDE_CACHE_TTL_GRADE_WRITING_S,
+      diagnostic_item: e.CLAUDE_CACHE_TTL_DIAGNOSTIC_ITEM_S,
+      generate_conversation: e.CLAUDE_CACHE_TTL_CONVERSATION_S,
+    },
+    rateLimitPerMinute: {
+      enrich: e.CLAUDE_RATE_LIMIT_ENRICH,
+      recognize_grammar: e.CLAUDE_RATE_LIMIT_RECOGNIZE_GRAMMAR,
+      grade_writing: e.CLAUDE_RATE_LIMIT_GRADE_WRITING,
+      diagnostic_item: e.CLAUDE_RATE_LIMIT_DIAGNOSTIC_ITEM,
+      generate_conversation: e.CLAUDE_RATE_LIMIT_CONVERSATION,
+    },
+    logLevel: e.LOG_LEVEL,
+    nodeEnv: e.NODE_ENV,
+  };
+  return publicView(cached);
+}
+
+function publicView(c: InternalClaudeConfig): PublicClaudeConfig {
+  const { _apiKey: _a, _databaseUrl: _d, ...pub } = c;
+  void _a;
+  void _d;
+  return pub;
+}
+
+/** Internal — used only by client.ts and cache.ts. NEVER logged. */
+export function getApiKey(): string {
+  if (cached === null) {
+    loadConfig();
+  }
+  // Non-null assert: loadConfig() either populates cached or throws.
+  return cached!._apiKey;
+}
+
+export function getDatabaseUrl(): string {
+  if (cached === null) {
+    loadConfig();
+  }
+  return cached!._databaseUrl;
+}
+
+/** Test-only: reset the memoized config so a new env can be loaded. */
+export function __resetConfigForTests(): void {
+  cached = null;
+}
