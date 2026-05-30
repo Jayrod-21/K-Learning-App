@@ -44,6 +44,10 @@ const EnvSchema = z.object({
   CLAUDE_DEFAULT_MODEL_CONVERSATION: ModelEnum.default('claude-sonnet-4-6'),
   // Image OCR is a vision task — sonnet tier (vision-capable) by default.
   CLAUDE_DEFAULT_MODEL_IMAGE_OCR: ModelEnum.default('claude-sonnet-4-6'),
+  // Grammar production drills (Pass 9). Both gen + score want sonnet-grade
+  // Korean reasoning (drill authoring + nuanced production grading).
+  CLAUDE_DEFAULT_MODEL_GENERATE_GRAMMAR_DRILL: ModelEnum.default('claude-sonnet-4-6'),
+  CLAUDE_DEFAULT_MODEL_SCORE_GRAMMAR_DRILL: ModelEnum.default('claude-sonnet-4-6'),
 
   // Input length caps (in characters) — prompt-injection defense.
   CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
@@ -57,6 +61,12 @@ const EnvSchema = z.object({
   // base64 chars; 16M leaves headroom. The route's multer fileSize limit (8
   // MiB) is the primary cost/DoS cap — this is the secondary ceiling.
   CLAUDE_MAX_INPUT_IMAGE_OCR: z.coerce.number().int().positive().default(16_000_000),
+  // Grammar drill: generation seeds are a short pattern + meaning + one example,
+  // so a tight cap bounds the prompt and the injection surface. Scoring also
+  // carries the rendered task text + the learner's answer, so it gets a larger
+  // (but still bounded) ceiling.
+  CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(2_000),
+  CLAUDE_MAX_INPUT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(4_000),
 
   // Cache TTLs (seconds). null/0 = no expiry.
   CLAUDE_CACHE_TTL_ENRICH_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
@@ -72,6 +82,12 @@ const EnvSchema = z.object({
   // serializeMessages cache-key builder also substitutes a placeholder for the
   // base64 payload, but cacheTtl 0 means the row is never read back anyway.
   CLAUDE_CACHE_TTL_IMAGE_OCR_S: z.coerce.number().int().nonnegative().default(0),
+  // Grammar drill GENERATION: 0 = no caching. We deliberately want variety on
+  // re-drilling the same pattern (a learner shouldn't see the identical task
+  // twice), exactly like diagnostic_item. SCORING: 0 — the result depends on the
+  // learner's free-text answer, so the key is effectively unique per submit.
+  CLAUDE_CACHE_TTL_GENERATE_GRAMMAR_DRILL_S: z.coerce.number().int().nonnegative().default(0),
+  CLAUDE_CACHE_TTL_SCORE_GRAMMAR_DRILL_S: z.coerce.number().int().nonnegative().default(0),
 
   // Rate-limit (per-minute, per-bucket-key).
   CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
@@ -84,6 +100,11 @@ const EnvSchema = z.object({
   // Image OCR is an expensive vision call. The per-user DAILY cap in the route
   // is the primary cost lever; this per-minute ceiling bounds a burst.
   CLAUDE_RATE_LIMIT_IMAGE_OCR: z.coerce.number().int().positive().default(10),
+  // Grammar drill: a learner works one drill at a time (generate → answer →
+  // submit), so 20/min per user comfortably covers normal pacing while capping a
+  // runaway loop. Same ceiling for gen + score.
+  CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
+  CLAUDE_RATE_LIMIT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
 
   // Logging
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
@@ -96,7 +117,9 @@ export type RouteName =
   | 'grade_writing'
   | 'diagnostic_item'
   | 'generate_conversation'
-  | 'image_ocr';
+  | 'image_ocr'
+  | 'generate_grammar_drill'
+  | 'score_grammar_drill';
 
 export interface PublicClaudeConfig {
   readonly baseUrl: string | undefined;
@@ -159,6 +182,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       diagnostic_item: e.CLAUDE_DEFAULT_MODEL_DIAGNOSTIC_ITEM,
       generate_conversation: e.CLAUDE_DEFAULT_MODEL_CONVERSATION,
       image_ocr: e.CLAUDE_DEFAULT_MODEL_IMAGE_OCR,
+      generate_grammar_drill: e.CLAUDE_DEFAULT_MODEL_GENERATE_GRAMMAR_DRILL,
+      score_grammar_drill: e.CLAUDE_DEFAULT_MODEL_SCORE_GRAMMAR_DRILL,
     },
     inputCaps: {
       enrich: e.CLAUDE_MAX_INPUT_ENRICH,
@@ -167,6 +192,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       diagnostic_item: e.CLAUDE_MAX_INPUT_DIAGNOSTIC_ITEM,
       generate_conversation: e.CLAUDE_MAX_INPUT_CONVERSATION,
       image_ocr: e.CLAUDE_MAX_INPUT_IMAGE_OCR,
+      generate_grammar_drill: e.CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL,
+      score_grammar_drill: e.CLAUDE_MAX_INPUT_SCORE_GRAMMAR_DRILL,
     },
     cacheTtlSeconds: {
       enrich: e.CLAUDE_CACHE_TTL_ENRICH_S,
@@ -175,6 +202,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       diagnostic_item: e.CLAUDE_CACHE_TTL_DIAGNOSTIC_ITEM_S,
       generate_conversation: e.CLAUDE_CACHE_TTL_CONVERSATION_S,
       image_ocr: e.CLAUDE_CACHE_TTL_IMAGE_OCR_S,
+      generate_grammar_drill: e.CLAUDE_CACHE_TTL_GENERATE_GRAMMAR_DRILL_S,
+      score_grammar_drill: e.CLAUDE_CACHE_TTL_SCORE_GRAMMAR_DRILL_S,
     },
     rateLimitPerMinute: {
       enrich: e.CLAUDE_RATE_LIMIT_ENRICH,
@@ -183,6 +212,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       diagnostic_item: e.CLAUDE_RATE_LIMIT_DIAGNOSTIC_ITEM,
       generate_conversation: e.CLAUDE_RATE_LIMIT_CONVERSATION,
       image_ocr: e.CLAUDE_RATE_LIMIT_IMAGE_OCR,
+      generate_grammar_drill: e.CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL,
+      score_grammar_drill: e.CLAUDE_RATE_LIMIT_SCORE_GRAMMAR_DRILL,
     },
     logLevel: e.LOG_LEVEL,
     nodeEnv: e.NODE_ENV,

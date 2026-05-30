@@ -56,6 +56,10 @@ import {
   EnrichmentResultSchema,
   GradeInputSchema,
   GradeResultSchema,
+  GrammarDrillGenInputSchema,
+  GrammarDrillItemSchema,
+  GrammarDrillScoreInputSchema,
+  GrammarDrillScoreSchema,
   GrammarRecognitionInputSchema,
   ImageOcrInputSchema,
   ImageOcrResultSchema,
@@ -70,6 +74,10 @@ import {
   type EnrichmentResult,
   type GradeInput,
   type GradeResult,
+  type GrammarDrillGenInput,
+  type GrammarDrillItem,
+  type GrammarDrillScore,
+  type GrammarDrillScoreInput,
   type GrammarRecognitionInput,
   type ImageOcrInput,
   type ImageOcrResult,
@@ -80,6 +88,10 @@ import { buildConversationRequest } from './prompts/conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
+import {
+  buildGrammarDrillGenRequest,
+  buildGrammarDrillScoreRequest,
+} from './prompts/grammar_drill';
 import { buildImageOcrRequest } from './prompts/image_ocr';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
 import { sanitizeUserInput } from './prompts/sanitize';
@@ -104,6 +116,12 @@ export type {
   EnrichmentResult,
   GradeInput,
   GradeResult,
+  GrammarDrillGenInput,
+  GrammarDrillItem,
+  GrammarDrillScore,
+  GrammarDrillScoreInput,
+  DrillType,
+  DrillVerdict,
   GrammarRecognitionInput,
   ImageOcrInput,
   ImageOcrResult,
@@ -182,6 +200,24 @@ export interface ClaudeProxy {
    * bytes make a poor cache key and the same photo is rarely re-uploaded.
    */
   ocrImage(input: ImageOcrInput, ctx?: CallContext): Promise<ProxyResult<ImageOcrResult>>;
+  /**
+   * Author ONE grammar PRODUCTION drill of an explicit type (the route picks the
+   * type from attempt history — rotation — and passes it; the model never
+   * chooses). Tool-use forced; the returned item INCLUDES the reference model
+   * answer, which the route strips before responding (answer-stripping).
+   */
+  generateGrammarDrill(
+    input: GrammarDrillGenInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<GrammarDrillItem>>;
+  /**
+   * Score a learner's grammar production against the target pattern + reference
+   * model. Tool-use forced; reproducible (temperature 0).
+   */
+  scoreGrammarDrill(
+    input: GrammarDrillScoreInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<GrammarDrillScore>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -389,6 +425,89 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.image_ocr,
       outputSchema: ImageOcrResultSchema,
       parser: parseJsonContent,
+    });
+  }
+
+  async generateGrammarDrill(
+    rawInput: GrammarDrillGenInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<GrammarDrillItem>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_grammar_drill';
+    const input = parseInput(GrammarDrillGenInputSchema, rawInput, route);
+    // Sanitize every free-text field through the shared injection guard + length
+    // cap. patternKey/patternDisplay are corpus rows, but meaning/example are
+    // closer to free text; wrapping ALL of them is defense-in-depth and the cap
+    // bounds the prompt. drillType is a closed enum (not sanitized).
+    const cap = cfg.inputCaps.generate_grammar_drill;
+    const patternKey = sanitizeUserInput(input.patternKey, { maxLength: cap });
+    const patternDisplay = sanitizeUserInput(input.patternDisplay, { maxLength: cap });
+    const meaning =
+      input.meaning !== undefined
+        ? sanitizeUserInput(input.meaning, { maxLength: cap })
+        : undefined;
+    const exampleKr =
+      input.exampleKr !== undefined
+        ? sanitizeUserInput(input.exampleKr, { maxLength: cap })
+        : undefined;
+    const exampleEn =
+      input.exampleEn !== undefined
+        ? sanitizeUserInput(input.exampleEn, { maxLength: cap })
+        : undefined;
+    const cleaned: GrammarDrillGenInput = {
+      ...input,
+      patternKey,
+      patternDisplay,
+      ...(meaning !== undefined ? { meaning } : {}),
+      ...(exampleKr !== undefined ? { exampleKr } : {}),
+      ...(exampleEn !== undefined ? { exampleEn } : {}),
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const { request } = buildGrammarDrillGenRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.generate_grammar_drill,
+      outputSchema: GrammarDrillItemSchema,
+      parser: parseToolResult('submit_drill'),
+    });
+  }
+
+  async scoreGrammarDrill(
+    rawInput: GrammarDrillScoreInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<GrammarDrillScore>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'score_grammar_drill';
+    const input = parseInput(GrammarDrillScoreInputSchema, rawInput, route);
+    const cap = cfg.inputCaps.score_grammar_drill;
+    // The learner's answer + the rendered task + the reference are all free text;
+    // sanitize each (the answer is the highest-risk field — it is raw user text).
+    const patternDisplay = sanitizeUserInput(input.patternDisplay, { maxLength: cap });
+    const promptText = sanitizeUserInput(input.promptText, { maxLength: cap });
+    const referenceModelKr = sanitizeUserInput(input.referenceModelKr, { maxLength: cap });
+    const userAnswer = sanitizeUserInput(input.userAnswer, { maxLength: cap });
+    const cleaned: GrammarDrillScoreInput = {
+      ...input,
+      patternDisplay,
+      promptText,
+      referenceModelKr,
+      userAnswer,
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const { request } = buildGrammarDrillScoreRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.score_grammar_drill,
+      outputSchema: GrammarDrillScoreSchema,
+      parser: parseToolResult('submit_drill_score'),
     });
   }
 
@@ -918,6 +1037,33 @@ function parseGradeToolResult(resp: import('./client').MessageResponse): unknown
     maxTotal: input.max_total,
     estimatedLevel: input.estimated_level,
     overallComment: input.overall_comment,
+  };
+}
+
+/**
+ * Generalized tool-result parser factory. Returns a parser that extracts the
+ * named tool's `input` verbatim — used by routes whose tool input_schema already
+ * matches the Zod output schema field-for-field (camelCase), so no snake_case
+ * remapping like `parseGradeToolResult` is needed.
+ *
+ * On a missing tool call (the model returned prose despite a forced
+ * tool_choice), returns a `__parse_error__` sentinel so the downstream
+ * `safeParse` fails → ClaudeOutputSchemaError, exactly as the JSON path does.
+ * The grammar-drill routes (generate_grammar_drill / score_grammar_drill) use
+ * this; their tool fields are authored to mirror GrammarDrillItem /
+ * GrammarDrillScore one-to-one.
+ */
+function parseToolResult(
+  toolName: string,
+): (resp: import('./client').MessageResponse) => unknown {
+  return (resp) => {
+    const submit = resp.toolUses.find((t) => t.name === toolName);
+    if (!submit) {
+      return { __parse_error__: `response did not call ${toolName} tool` };
+    }
+    // The tool input is already shaped to the Zod schema (camelCase fields);
+    // hand it straight to safeParse, which is the authority on the shape.
+    return submit.input;
   };
 }
 

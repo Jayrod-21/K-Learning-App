@@ -303,6 +303,138 @@ export const ImageOcrResultSchema = z.object({
 });
 export type ImageOcrResult = z.infer<typeof ImageOcrResultSchema>;
 
+// ---- 3d. generate/scoreGrammarDrill ----------------------------------------
+// Grammar PRODUCTION drills (Pass 9, Grammar screen DrillPanel). Given a grammar
+// pattern, Claude authors ONE production task of a chosen type (transformation /
+// cloze / conversation); the learner answers; Claude then scores the answer.
+// Generation uses tool-use (a per-type input_schema); scoring uses tool-use too.
+
+/** The three drill variants (locked decision — all three). Matches the
+ *  Postgres CHECK on grammar_drill_attempts.drill_type and the client DrillType. */
+export const DrillTypeSchema = z.enum(['transformation', 'cloze', 'conversation']);
+export type DrillType = z.infer<typeof DrillTypeSchema>;
+
+/** Score verdict buckets. Matches the grammar_drill_attempts.verdict CHECK and
+ *  the client DrillVerdict union. */
+export const DrillVerdictSchema = z.enum(['excellent', 'good', 'needs_work', 'incorrect']);
+export type DrillVerdict = z.infer<typeof DrillVerdictSchema>;
+
+export const GrammarDrillGenInputSchema = z.object({
+  /** Canonical pattern key (the dedup key from the grammar bank). */
+  patternKey: NonEmptyText.max(120),
+  /** Human-readable display form of the pattern shown to the learner. */
+  patternDisplay: NonEmptyText.max(120),
+  /** Optional EN summary/title of the pattern's meaning, to anchor the drill. */
+  meaning: z.string().trim().max(300).optional(),
+  /** Optional KR example of the pattern in use (corpus seed). */
+  exampleKr: z.string().trim().max(500).optional(),
+  /** Optional EN gloss of that example. */
+  exampleEn: z.string().trim().max(500).optional(),
+  /** Which variant to author. The ROUTE picks this from attempt history
+   *  (rotation) and passes it explicitly — the model never chooses the type. */
+  drillType: DrillTypeSchema,
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type GrammarDrillGenInput = z.infer<typeof GrammarDrillGenInputSchema>;
+
+/**
+ * Fields common to every generated drill item, regardless of type. The
+ * `referenceModel*` pair is the model answer and is SERVER-ONLY — the
+ * generation route strips it before responding (answer-stripping) and reveals it
+ * only after the learner submits. Defined as a plain object spread into each
+ * member of the discriminated union below.
+ */
+const DrillCommon = {
+  type: DrillTypeSchema,
+  patternKey: NonEmptyText.max(120),
+  patternDisplay: NonEmptyText.max(120),
+  /** EN, "what to do" — the task instruction shown above the answer box. */
+  instruction: NonEmptyText.max(400),
+  /** The reference model answer (KR). SERVER-ONLY — stripped from gen response. */
+  referenceModelKr: NonEmptyText.max(600),
+  /** EN gloss of the reference model answer. SERVER-ONLY — stripped from gen. */
+  referenceModelEn: NonEmptyText.max(600),
+};
+
+/**
+ * A generated drill item. Discriminated on `type` so each variant carries only
+ * its own task fields — the tool-use input_schema the prompt forces must match
+ * the per-type member exactly or the output parse fails.
+ */
+export const GrammarDrillItemSchema = z.discriminatedUnion('type', [
+  z.object({
+    ...DrillCommon,
+    type: z.literal('transformation'),
+    /** Base KR sentence NOT using the pattern; the learner rewrites it. */
+    sourceKr: NonEmptyText.max(500),
+    /** EN gloss of the base sentence. */
+    sourceEn: NonEmptyText.max(500),
+  }),
+  z.object({
+    ...DrillCommon,
+    type: z.literal('cloze'),
+    /** The situation the seed sentence sits in. */
+    context: NonEmptyText.max(500),
+    /** Seed KR sentence containing ONE blank `___` where the pattern goes. */
+    seedKr: NonEmptyText.max(500),
+  }),
+  z.object({
+    ...DrillCommon,
+    type: z.literal('conversation'),
+    /** The conversational scenario framing. */
+    scenario: NonEmptyText.max(500),
+    /** The interlocutor's KR line the learner replies to. */
+    promptKr: NonEmptyText.max(500),
+    /** EN gloss of that line. */
+    promptEn: NonEmptyText.max(500),
+  }),
+]);
+export type GrammarDrillItem = z.infer<typeof GrammarDrillItemSchema>;
+
+export const GrammarDrillScoreInputSchema = z.object({
+  /** Which variant was drilled (controls how the prompt frames the grading). */
+  drillType: DrillTypeSchema,
+  /** The pattern the learner was meant to produce. */
+  patternDisplay: NonEmptyText.max(120),
+  /** The rendered task text (source | context+seed | scenario+prompt) — grading
+   *  context so the scorer sees what the learner was responding to. */
+  promptText: NonEmptyText.max(1200),
+  /** The reference model answer (KR) — the scorer compares against this. */
+  referenceModelKr: NonEmptyText.max(600),
+  /** The learner's submitted answer (KR). Treated as DATA, never instructions. */
+  userAnswer: NonEmptyText.max(600),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type GrammarDrillScoreInput = z.infer<typeof GrammarDrillScoreInputSchema>;
+
+export const GrammarDrillScoreSchema = z.object({
+  /** Overall score 0..100 (naturalness + accuracy). */
+  score: z.number().min(0).max(100),
+  /** Verdict bucket derived from the score + pattern usage. */
+  verdict: DrillVerdictSchema,
+  /** Did the answer actually use the target pattern? false → score low. */
+  usesPattern: z.boolean(),
+  /** EN, overall feedback shown to the learner. */
+  summary: NonEmptyText.max(800),
+  /** Specific corrections, each citing a verbatim KR fragment. Capped at 5;
+   *  defaults to [] so a flawless answer yields an empty list, not a missing
+   *  field. (Uses the systemically-fixed `.default()` quirk — the inferred type
+   *  carries corrections as a required array post-default.) */
+  corrections: z
+    .array(
+      z.object({
+        span: NonEmptyText.max(200),
+        issue: NonEmptyText.max(300),
+        fix: NonEmptyText.max(300),
+      }),
+    )
+    .max(5)
+    .default([]),
+});
+export type GrammarDrillScore = z.infer<typeof GrammarDrillScoreSchema>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 

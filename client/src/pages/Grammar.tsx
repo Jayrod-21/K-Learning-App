@@ -6,9 +6,15 @@
  *                button per row → `POST /grammar/bank` (idempotent server
  *                side). 🅂 badge OFF (real `listPatterns` + `listBanked`).
  *   - `banked` — the subset the user has already banked. Same row shape.
- *   - `drill`  — the Pass-2 production drill UI. **Mocked until Pass 9**;
- *                MockBadge is shown while this tab is active so the dev
- *                signal is honest.
+ *   - `drill`  — the Pass-9 LIVE production drill. Per pattern, the panel
+ *                generates a drill via `POST /grammar-drill` (Claude picks the
+ *                type by history rotation), renders the per-type DrillCard, and
+ *                scores the learner's answer via `POST /grammar-drill/:id/submit`
+ *                (reveal: score + verdict + corrections + reference model). A
+ *                failed generate/submit NEVER blanks the screen — it surfaces an
+ *                inline `role="alert"` + Retry. When the generate endpoint is
+ *                unreachable the panel falls back to a local mock drill and
+ *                shows the 🅂 MockBadge so the dev signal stays honest.
  *
  * Data:
  *   useEndpointOrMock('grammar:list', loadGrammarMock(adapted),
@@ -41,13 +47,14 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type JSX,
 } from 'react';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { Pill } from '../components/Pill';
+import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { GoldRule } from '../components/GoldRule';
@@ -60,17 +67,20 @@ import {
 } from '../hooks/useEndpointOrMock';
 import { loadGrammarMock } from '../data/mocks/grammar';
 import * as grammarService from '../services/grammar';
+import {
+  generateDrill,
+  submitDrill,
+  type DrillScore,
+} from '../services/grammarDrill';
 import { ApiError } from '../services/api';
 import type {
   BankGrammarBody,
+  DrillItemPublic,
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
   ServerProficiency,
 } from '../types/domain';
-
-const TUTOR_NOTE =
-  'Your production reads natural. Check tense agreement and register; the model preserves the formal -습니다 ending.';
 
 type Tab = 'list' | 'banked' | 'drill';
 
@@ -352,12 +362,14 @@ function Grammar(): JSX.Element {
     [items, bankedKeys],
   );
 
-  // 🅂 badge ONLY when the user is on the drill tab (always mocked) OR
-  // both wired fetches fell back to the mock. Drill tab gets the badge
-  // regardless because the drill itself never hits a real endpoint in
-  // Pass 3 — only Pass 9 will flip it.
+  // 🅂 badge for the list/banked tabs when BOTH wired fetches fell back to
+  // the mock. The drill tab now hits a REAL endpoint (Pass 9), so its mock
+  // signal is owned by `DrillPanel` itself (which renders its own MockBadge
+  // only when the generate endpoint is unreachable and it falls to a local
+  // mock drill). We suppress the list/banked badge while on the drill tab so
+  // the two signals don't fight over the same corner.
   const showMockBadge =
-    tab === 'drill' || (listState.isMock && bankedState.isMock);
+    tab !== 'drill' && listState.isMock && bankedState.isMock;
 
   return (
     <section
@@ -368,9 +380,7 @@ function Grammar(): JSX.Element {
       {showMockBadge ? <MockBadge /> : null}
       <Topbar
         krTitle={<span id="grammar-title">문법 · Grammar</span>}
-        eyebrow={
-          tab === 'drill' ? 'Production drill · mock' : 'Patterns + bank'
-        }
+        eyebrow={tab === 'drill' ? 'Production drill' : 'Patterns + bank'}
       />
 
       <div className="km-review__tabs" role="tablist" aria-label="Grammar section">
@@ -634,7 +644,7 @@ function BankedPanel({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Drill panel — Pass-2 mock-only production drill
+// Drill panel — Pass-9 live production drill (generate → submit → reveal)
 // ─────────────────────────────────────────────────────────────
 
 interface DrillPanelProps {
@@ -642,133 +652,329 @@ interface DrillPanelProps {
   items: readonly PatternListItem[];
 }
 
-function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
-  const [idx, setIdx] = useState(0);
-  const [userInput, setUserInput] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-  // Pull the live mock fixture so we get the drill block per row. The
-  // list-level adapter strips the drill payload by design (it isn't on
-  // the wire shape); the drill panel calls the mock loader directly to
-  // round-trip the seed/model/note. Held in state so the async settle
-  // doesn't trigger a re-render storm during navigation.
-  const [patterns, setPatterns] = useState<readonly GrammarPattern[] | null>(
-    null,
-  );
+/**
+ * Phases of the per-pattern drill lifecycle. There is deliberately NO 'error'
+ * phase: failure is failure-SAFE, not a terminal state. A generate failure falls
+ * back to a local mock drill (still 'ready', with a 🅂 badge); a submit failure
+ * returns to 'ready' with an inline role=alert ErrorCard and the answer preserved
+ * for Retry. The screen never blanks, so an unreachable 'error' phase would be a
+ * dead union member that a future `switch (phase)` could mishandle.
+ */
+type DrillPhase = 'generating' | 'ready' | 'scoring' | 'revealed';
 
-  // Kick off the mock load once per mount. The fixture is in-memory after
-  // first call (no network), so this is effectively synchronous past the
-  // initial mockDelay. Cleanup flag prevents an unmount-during-load setState.
+/**
+ * Local mock drills — one per type — used as the fall-back when the generate
+ * endpoint is unreachable, so a dev / offline session still exercises the full
+ * render + submit flow. The panel rotates these by `idx` and shows the 🅂 badge
+ * while any of them is in play. They carry the SAME public shape as a real
+ * `DrillItemPublic` (no reference model — that's revealed only on submit), so
+ * the DrillCard renders them identically to live items.
+ */
+const MOCK_DRILLS: readonly DrillItemPublic[] = [
+  {
+    type: 'transformation',
+    patternKey: 'mock:transformation',
+    patternDisplay: '-더라도',
+    instruction: 'Rewrite the sentence using -더라도 (even if / even though).',
+    sourceKr: '비가 와요. 우리는 갈 거예요.',
+    sourceEn: "It's raining. We will go.",
+  },
+  {
+    type: 'cloze',
+    patternKey: 'mock:cloze',
+    patternDisplay: '-느라고',
+    instruction: 'Fill the blank with a -느라고 clause explaining the result.',
+    context: 'Explain why you missed dinner — you were preparing a presentation.',
+    seedKr: '발표 자료를 ___ 저녁을 못 먹었어요.',
+  },
+  {
+    type: 'conversation',
+    patternKey: 'mock:conversation',
+    patternDisplay: '-ㄹ 뿐만 아니라',
+    instruction: 'Reply using -ㄹ 뿐만 아니라 (not only … but also).',
+    scenario: 'A friend asks what you think of the new café.',
+    promptKr: '새로 생긴 카페 어때요?',
+    promptEn: 'How is the new café?',
+  },
+];
+
+/**
+ * Synthesize a plausible reveal for a mock drill so the offline flow can paint
+ * the full reveal block (score + verdict + correction + reference model). The
+ * reference model is derived from the mock item's own fields — never a real
+ * Claude score, hence the 🅂 badge that accompanies it.
+ */
+function mockScoreFor(item: DrillItemPublic, answer: string): DrillScore {
+  const used = answer.includes(stripParticle(item.patternDisplay));
+  return {
+    score: used ? 82 : 48,
+    verdict: used ? 'good' : 'needs_work',
+    usesPattern: used,
+    summary: used
+      ? 'Offline practice — your answer reads natural and uses the target pattern. Connect to score it for real.'
+      : 'Offline practice — the target pattern looks absent. Connect to score it for real.',
+    corrections: [],
+    referenceModelKr: mockReferenceKr(item),
+    referenceModelEn: 'A natural sentence that uses the target pattern.',
+  };
+}
+
+/** Strip a leading dash from a pattern display so a naïve "did they use it"
+ *  mock check matches the bare morpheme. Purely for the offline heuristic. */
+function stripParticle(display: string): string {
+  return display.replace(/^-/, '').replace(/^ㄹ /, '');
+}
+
+/** Build a mock reference sentence from the item's own seed/source text. */
+function mockReferenceKr(item: DrillItemPublic): string {
+  switch (item.type) {
+    case 'transformation':
+      return item.sourceKr;
+    case 'cloze':
+      return item.seedKr.replace('___', `${item.patternDisplay}`);
+    case 'conversation':
+      return item.promptKr;
+  }
+}
+
+function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
+  // Which pattern (by index into `items`) we're drilling. Wraps with `%`.
+  const [idx, setIdx] = useState(0);
+  const [phase, setPhase] = useState<DrillPhase>('generating');
+  const [attemptId, setAttemptId] = useState<number | null>(null);
+  const [item, setItem] = useState<DrillItemPublic | null>(null);
+  const [score, setScore] = useState<DrillScore | null>(null);
+  const [userInput, setUserInput] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  // True iff the current item came from the local mock fall-back (the generate
+  // endpoint was unreachable). Drives the 🅂 badge + the offline-mock scoring.
+  const [isMock, setIsMock] = useState(false);
+  // Monotonic retry tick — bumped by the Retry button to re-run the generate
+  // effect without advancing the pattern (mirrors useEndpointOrMock's `tick`).
+  const [retryTick, setRetryTick] = useState(0);
+
+  // The pattern this index points at. `null` when the list is empty.
+  const pattern = items.length > 0 ? items[idx % items.length] : null;
+  const patternKey = pattern?.patternKey ?? null;
+
+  // Generate-in-flight controller so navigating away (Skip/Next) or unmount
+  // aborts a stale generate and its settle doesn't clobber the next pattern.
+  const genCtrlRef = useRef<AbortController | null>(null);
+  const submitCtrlRef = useRef<AbortController | null>(null);
   useEffect(() => {
-    let alive = true;
-    void loadGrammarMock().then((rows) => {
-      if (alive) setPatterns(rows);
-    });
     return () => {
-      alive = false;
+      genCtrlRef.current?.abort();
+      submitCtrlRef.current?.abort();
     };
   }, []);
 
-  if (loading && !patterns) {
+  // Generate a drill whenever the active pattern changes (idx → pattern) or a
+  // Retry is requested (`retryTick`). The generate is real-first; on failure it
+  // falls to a local mock drill so the screen never dead-ends. A stale settle
+  // is dropped via the abort signal.
+  useEffect(() => {
+    if (!pattern) return;
+    genCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    genCtrlRef.current = ctrl;
+
+    // Reset per-pattern state up front so the loading view paints cleanly and
+    // no stale answer/score leaks across patterns. Sync-to-external-system
+    // case (a fresh network round-trip), same shape as useEndpointOrMock.
+    setPhase('generating');
+    setAttemptId(null);
+    setItem(null);
+    setScore(null);
+    setUserInput('');
+    setError(null);
+    setIsMock(false);
+
+    const mockItem = MOCK_DRILLS[idx % MOCK_DRILLS.length];
+
+    void (async (): Promise<void> => {
+      try {
+        const gen = await generateDrill(
+          {
+            patternKey: pattern.patternKey,
+            patternDisplay: pattern.pattern,
+            meaning: pattern.title,
+          },
+          ctrl.signal,
+        );
+        if (ctrl.signal.aborted) return;
+        setAttemptId(gen.attemptId);
+        setItem(gen.item);
+        setPhase('ready');
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        // Canceled (navigated away) — let the superseding run own the state.
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        // Endpoint unreachable / upstream down → fall back to a local mock
+        // drill rather than blanking the screen. The 🅂 badge flags it.
+        setItem(mockItem);
+        setAttemptId(null);
+        setIsMock(true);
+        setPhase('ready');
+      }
+    })();
+    // `idx` + `patternKey` are the stable triggers (`pattern` is a fresh object
+    // each render); `retryTick` re-runs on demand. `pattern.title` / `.pattern`
+    // are read off the same row, so the minimal dep array stays correct.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx, patternKey, retryTick]);
+
+  const advance = useCallback((): void => {
+    submitCtrlRef.current?.abort();
+    setIdx((i) => i + 1);
+  }, []);
+
+  const retryGenerate = useCallback((): void => {
+    setRetryTick((t) => t + 1);
+  }, []);
+
+  const submit = useCallback(async (): Promise<void> => {
+    if (!item) return;
+    const answer = userInput.trim();
+    if (answer.length === 0) return;
+    setPhase('scoring');
+    setError(null);
+    submitCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    submitCtrlRef.current = ctrl;
+    try {
+      // Offline / mock path — no real attempt to submit against; synthesize a
+      // plausible reveal so the flow is exercised end to end.
+      if (isMock || attemptId === null) {
+        const synthetic = mockScoreFor(item, answer);
+        if (ctrl.signal.aborted) return;
+        setScore(synthetic);
+        setPhase('revealed');
+        return;
+      }
+      const result = await submitDrill(attemptId, answer, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      setScore(result);
+      setPhase('revealed');
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      if (err instanceof ApiError && err.code === 'canceled') return;
+      // Submit failed — the attempt stays unscored server-side, so the user
+      // can retry. Surface an inline alert and return to the ready phase with
+      // the answer intact (don't blank their work).
+      setError(
+        'Scoring your answer failed. Your answer is still here — try again.',
+      );
+      setPhase('ready');
+    }
+  }, [item, userInput, isMock, attemptId]);
+
+  if (loading && items.length === 0) {
     return (
       <div className="km-grammar__state" role="status">
         Loading drill…
       </div>
     );
   }
-  if (!patterns || patterns.length === 0) {
-    // Fall back to row count if mock fixture failed but list loaded — the
-    // drill UI needs a `drill` block that only the fixture carries, so we
-    // show a friendly empty state rather than crash. `items` participates
-    // in the count so a future real-data drill source doesn't break.
+  if (items.length === 0) {
     return (
       <div className="km-grammar__state" role="status">
-        {items.length === 0
-          ? 'No drill patterns available.'
-          : 'Drill data unavailable.'}
+        No grammar patterns to drill yet. Bank or browse patterns first.
       </div>
     );
   }
-  const pattern = patterns[idx % patterns.length];
+
   return (
-    <DrillCard
-      pattern={pattern}
-      userInput={userInput}
-      submitted={submitted}
-      onInput={(v) => {
-        setUserInput(v);
-      }}
-      onSubmit={() => {
-        if (userInput.trim().length > 0) setSubmitted(true);
-      }}
-      onSkip={() => {
-        setUserInput('');
-        setSubmitted(false);
-        setIdx((i) => i + 1);
-      }}
-      onNext={() => {
-        setUserInput('');
-        setSubmitted(false);
-        setIdx((i) => i + 1);
-      }}
-    />
+    <>
+      {isMock ? <MockBadge /> : null}
+      {phase === 'generating' || !item ? (
+        <Card className="km-grammar__card" aria-busy="true">
+          <div className="km-grammar__state" role="status">
+            Generating drill…
+          </div>
+        </Card>
+      ) : (
+        <DrillCard
+          item={item}
+          phase={phase}
+          score={score}
+          userInput={userInput}
+          error={error}
+          onInput={setUserInput}
+          onSubmit={() => {
+            void submit();
+          }}
+          onRetry={retryGenerate}
+          onSkip={advance}
+          onNext={advance}
+        />
+      )}
+    </>
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Drill card — renders by item.type; reveal block post-submit
+// ─────────────────────────────────────────────────────────────
+
 interface DrillCardProps {
-  pattern: GrammarPattern;
+  item: DrillItemPublic;
+  phase: DrillPhase;
+  score: DrillScore | null;
   userInput: string;
-  submitted: boolean;
+  error: string | null;
   onInput: (value: string) => void;
   onSubmit: () => void;
+  onRetry: () => void;
   onSkip: () => void;
   onNext: () => void;
 }
 
+/** Verdict → Pill tone + label. Each verdict maps to a distinct Pill tone:
+ *  green (excellent) → gold (good) → ochre (needs work) → red (incorrect),
+ *  a four-step warm-to-alarm gradient within the design's tone vocabulary. */
+const VERDICT_META: Record<
+  DrillScore['verdict'],
+  { tone: PillTone; label: string; cls: string }
+> = {
+  excellent: { tone: 'green', label: 'Excellent', cls: 'km-grammar__verdict--excellent' },
+  good: { tone: 'gold', label: 'Good', cls: 'km-grammar__verdict--good' },
+  needs_work: { tone: 'ochre', label: 'Needs work', cls: 'km-grammar__verdict--needs-work' },
+  incorrect: { tone: 'red', label: 'Incorrect', cls: 'km-grammar__verdict--incorrect' },
+};
+
 function DrillCard({
-  pattern,
+  item,
+  phase,
+  score,
   userInput,
-  submitted,
+  error,
   onInput,
   onSubmit,
+  onRetry,
   onSkip,
   onNext,
 }: DrillCardProps): JSX.Element {
-  const drill = pattern.drill;
-  const revealId = `gr-reveal-${pattern.id}`;
-  const inputId = `gr-input-${pattern.id}`;
-  const canSubmit = userInput.trim().length > 0;
+  const revealId = `gr-reveal-${item.patternKey}`;
+  const inputId = `gr-input-${item.patternKey}`;
+  const revealed = phase === 'revealed' && score !== null;
+  const scoring = phase === 'scoring';
+  const canSubmit = userInput.trim().length > 0 && !revealed && !scoring;
 
   return (
     <Card className="km-grammar__card">
       <div className="km-grammar__header">
         <div>
           <Eyebrow>Pattern</Eyebrow>
-          <h2 className="kr km-grammar__pattern">{pattern.pattern}</h2>
-          <p className="km-grammar__title">{pattern.title}</p>
+          <h2 className="kr km-grammar__pattern">{item.patternDisplay}</h2>
         </div>
         <Pill tone="gold">Production</Pill>
       </div>
 
       <GoldRule className="km-grammar__rule" />
 
-      <Eyebrow>Situation</Eyebrow>
-      <p className="km-grammar__context kr">
-        {drill?.context ?? pattern.desc}
-      </p>
+      <DrillBody item={item} />
 
-      {drill ? (
-        <>
-          <Eyebrow className="km-grammar__seed-eyebrow">
-            Seed sentence — fill it in
-          </Eyebrow>
-          <div className="kr km-grammar__seed">{drill.seed}</div>
-        </>
-      ) : null}
-
-      <p className="km-grammar__instruction">
-        Use <span className="kr">{pattern.pattern}</span> to write a full
-        Korean sentence for this situation.
-      </p>
+      <p className="km-grammar__instruction">{item.instruction}</p>
 
       <label htmlFor={inputId} className="km-sr-only">
         Your answer in Korean
@@ -780,35 +986,35 @@ function DrillCard({
         onChange={(e) => {
           onInput(e.target.value);
         }}
-        placeholder={`Write the full sentence using ${pattern.pattern}…`}
-        aria-describedby={submitted ? revealId : undefined}
+        placeholder={`Write your answer using ${item.patternDisplay}…`}
+        aria-describedby={revealed ? revealId : undefined}
         rows={3}
-        disabled={submitted}
-        // Soft cap — defensive; the server-side handler in Pass 9 will
-        // enforce its own bound. Keeps a runaway paste from filling memory.
+        disabled={revealed || scoring}
+        // Soft cap — defensive; the server enforces its own 1..600 bound.
+        // Keeps a runaway paste from filling memory before the request.
         maxLength={500}
       />
 
-      {submitted && drill ? (
-        <Card variant="flat" className="km-grammar__reveal" id={revealId}>
-          <Eyebrow>Model answer</Eyebrow>
-          <p className="kr km-grammar__model">{drill.model}</p>
-          <p className="km-grammar__model-en">{drill.model_en}</p>
-          <p className="km-grammar__tutor-note">
-            <span className="km-grammar__tutor-label">Tutor · </span>
-            {TUTOR_NOTE}
-          </p>
-        </Card>
+      {scoring ? (
+        <div className="km-grammar__state" role="status">
+          Scoring your answer…
+        </div>
       ) : null}
 
+      {error ? (
+        <ErrorCard message={error} onRetry={onRetry} />
+      ) : null}
+
+      {revealed ? <DrillReveal score={score} revealId={revealId} /> : null}
+
       <div className="km-grammar__footer">
-        {!submitted ? (
+        {!revealed ? (
           <>
-            <Button variant="ghost" onClick={onSkip}>
+            <Button variant="ghost" onClick={onSkip} disabled={scoring}>
               Skip
             </Button>
             <Button variant="gold" onClick={onSubmit} disabled={!canSubmit}>
-              Submit
+              {scoring ? 'Scoring…' : 'Submit'}
             </Button>
           </>
         ) : (
@@ -826,6 +1032,95 @@ function DrillCard({
           </>
         )}
       </div>
+    </Card>
+  );
+}
+
+/** Per-type body — the task framing above the textarea. */
+function DrillBody({ item }: { item: DrillItemPublic }): JSX.Element {
+  switch (item.type) {
+    case 'transformation':
+      return (
+        <>
+          <Eyebrow>Transform this</Eyebrow>
+          <p className="km-grammar__context kr">{item.sourceKr}</p>
+          <p className="km-grammar__model-en">{item.sourceEn}</p>
+        </>
+      );
+    case 'cloze':
+      return (
+        <>
+          <Eyebrow>Situation</Eyebrow>
+          <p className="km-grammar__context">{item.context}</p>
+          <Eyebrow className="km-grammar__seed-eyebrow">
+            Seed — fill the blank
+          </Eyebrow>
+          <div className="kr km-grammar__seed">{item.seedKr}</div>
+        </>
+      );
+    case 'conversation':
+      return (
+        <>
+          <Eyebrow>Scenario</Eyebrow>
+          <p className="km-grammar__context">{item.scenario}</p>
+          <Eyebrow className="km-grammar__seed-eyebrow">They say</Eyebrow>
+          <div className="kr km-grammar__seed">{item.promptKr}</div>
+          <p className="km-grammar__model-en">{item.promptEn}</p>
+        </>
+      );
+  }
+}
+
+/** Post-submit reveal — score, verdict, corrections, reference model. */
+function DrillReveal({
+  score,
+  revealId,
+}: {
+  score: DrillScore;
+  revealId: string;
+}): JSX.Element {
+  const verdict = VERDICT_META[score.verdict];
+  return (
+    <Card variant="flat" className="km-grammar__reveal" id={revealId}>
+      <div className="km-grammar__score-head">
+        <div className="km-grammar__score">
+          <span className="km-grammar__score-num">{score.score}</span>
+          <span className="km-grammar__score-max"> / 100</span>
+        </div>
+        <Pill tone={verdict.tone} className={verdict.cls}>
+          {verdict.label}
+        </Pill>
+      </div>
+
+      <p className="km-grammar__uses-pattern">
+        {score.usesPattern
+          ? 'Uses the target pattern.'
+          : 'The target pattern was not detected — try to include it.'}
+      </p>
+
+      <p className="km-grammar__summary">{score.summary}</p>
+
+      {score.corrections.length > 0 ? (
+        <>
+          <Eyebrow className="km-grammar__seed-eyebrow">Corrections</Eyebrow>
+          <ul className="km-grammar__corrections">
+            {score.corrections.map((c, i) => (
+              <li
+                key={`${c.span}-${String(i)}`}
+                className="km-grammar__correction"
+              >
+                <span className="kr km-grammar__correction-span">{c.span}</span>
+                <span className="km-grammar__correction-issue">{c.issue}</span>
+                <span className="km-grammar__correction-fix">→ {c.fix}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
+      <Eyebrow className="km-grammar__seed-eyebrow">Model answer</Eyebrow>
+      <p className="kr km-grammar__model">{score.referenceModelKr}</p>
+      <p className="km-grammar__model-en">{score.referenceModelEn}</p>
     </Card>
   );
 }

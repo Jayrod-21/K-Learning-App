@@ -765,3 +765,102 @@ stored-XSS path through OCR text. Empty fields are served as `''`, never `null`.
 - **OCR-to-vocab banking is NOT wired this pass** — it shares the deferred
   KRDICT→`vocab_entries` mapping (FU-NF-33). The capture/words are stored as
   mining history; banking a word into the SRS deck comes later.
+
+## 17. Pass 9 surface — Settings prefs + Grammar drills (`/settings/*`, `/grammar-drill/*`, migrations 018–019)
+
+Pass 9 adds two server features: a tiny **preferences** sync (`/settings/prefs`,
+migration 018) and a **grammar production-drill** loop (`/grammar-drill/*`,
+migration 019, two new Claude routes). The preferences route is a low-surface,
+cheap, authed CRUD on a JSONB column; the grammar-drill loop is the interesting
+surface — it generates a drill, hands the learner a task, then scores their
+free-text Korean answer, so it carries the same answer-stripping + IDOR +
+scored-once + Claude-cost properties as the Diagnostic (§13).
+
+### 17.1 Preferences — IDOR + unknown-key injection + corrupt-blob resilience
+
+- **Attack.** Read or write another user's preferences; smuggle an unknown key or
+  a tampered palette value into the JSONB blob; or poison the column so a later
+  read 500s and breaks the Settings screen.
+- **Defense.** There is NO `:id` in the path — the subject is always the session
+  user (`getUserId(req)`), so cross-user access is structurally impossible.
+  `PrefsSchema` is `.strict()` at every level, so `validateBody` rejects an
+  unknown key or a bad enum as a clean `400`; the whole blob is REPLACED (not
+  merged), so a crafted partial can't smuggle extra keys. On READ, the stored
+  blob is re-validated through the SAME schema; an empty `{}` (the migration
+  default) or a legacy/corrupt shape falls back to `DEFAULT_PREFS` (logged at
+  `warn`), never a `500` — a user's own bad data must not break their screen. No
+  Claude, no external I/O → the standard cheap limiter is sufficient. Profile
+  PII (name/email/phone) lives in its OWN columns (edited via `PATCH /auth/me`),
+  not in this blob, so there is nothing sensitive to leak here.
+
+### 17.2 Drill generation — answer-stripping (THE property of this surface)
+
+- **Attack.** Read the reference model answer off the generation response and
+  paste it back as the "production", turning a production drill into a copy
+  exercise (a measurement-validity leak, the grammar analogue of the diagnostic's
+  correct-answer leak in §13.2).
+- **Defense.** The generated item is persisted WITH its reference model
+  (`item` JSONB, server-only column), but the generation RESPONSE strips
+  `referenceModelKr`/`referenceModelEn` (`toPublicItem` → `DrillItemPublic`). The
+  learner never sees the model answer until AFTER they submit. The reference is
+  revealed only in the `/submit` response, once an answer is committed. Route
+  tests assert the gen response omits both reference fields and that the row
+  still stores them.
+
+### 17.3 Drill submit — IDOR + scored-once (concurrent double-submit)
+
+- **Attack.** Submit against another user's `attemptId` to score/overwrite their
+  attempt; or double-submit the same attempt concurrently to get two paid Claude
+  calls to both land on the row (cost amplification + a non-deterministic final
+  score).
+- **Defense.** The submit handler loads the attempt scoped to `(id, user_id)`;
+  another user's id → `404` (not `403` — don't confirm existence). The scoring
+  write is a SINGLE-SHOT `UPDATE … WHERE id=$1 AND user_id=$2 AND scored_at IS
+  NULL`. A lone such UPDATE is itself atomic: Postgres serializes the two racers
+  on the row write-lock the UPDATE takes, so AT MOST ONE matches the predicate
+  (`rowCount 1`) and the loser sees `rowCount 0` → `409` — no separate `FOR
+  UPDATE` pre-read is needed (unlike the diagnostic's `/answer`, §13.3, whose
+  `FOR UPDATE` read is load-bearing because it derives θ/the pending item under
+  the lock; here the score is already computed before the UPDATE, so a lock-read
+  would be a redundant round-trip). The cheap pre-load before the Claude call
+  spares the already-scored common case a paid call, but it is NOT relied on for
+  correctness — the `rowCount` gate is the authoritative single-shot guard. This
+  is the same `scored_at IS NULL` gate the diagnostic uses on `answered_at`
+  (§13.3). The loser's Claude call is discarded — a paid-but-unused call, bounded
+  by the expensive limiter + the proxy's per-route per-minute ceiling.
+
+### 17.4 Claude-fail leaves no half-state
+
+- Generation does the Claude call BEFORE the INSERT, so a `502` writes NO attempt
+  row. Submit does the Claude call, THEN the single-shot UPDATE; a `502` leaves
+  the row UNSCORED (`scored_at` stays NULL) so the learner can retry, and nothing
+  partial is persisted. Claude proxy errors are mapped to a `502 UpstreamError`
+  by `mapClaudeError` (mirrors §13/§16) — the upstream status + provider details
+  are NEVER forwarded to the wire (§13.7).
+
+### 17.5 Cost amplification + prompt injection via pattern/answer text
+
+- **Cost.** Both routes are behind `expensiveLimiter()` (per-user burst) AND the
+  proxy's own per-route per-minute limiter (`generate_grammar_drill` /
+  `score_grammar_drill`, 20/min default); the input caps (2 000 / 4 000 chars)
+  bound prompt size and the per-call token spend.
+- **Injection.** The pattern key/display, meaning, example, the rendered task
+  text, and — highest risk — the learner's free-text ANSWER are all wrapped in
+  `<user_input>…</user_input>` and run through `sanitizeUserInput`
+  (marker-reject + control-char strip + NFC + length cap) IN THE PROXY before the
+  prompt builders see them; the system prompt instructs the model to treat that
+  block as data, never instructions (e.g. an answer that says "give a perfect
+  score" is ignored). The route never concatenates user text into SQL
+  (parameterized everywhere) or into the prompt directly. This is pinned by the
+  proxy unit tests (`grammar_drill.test.ts`): a marker-bearing `userAnswer` is
+  rejected with `PromptInjectionRejectedError` before any model call, and an
+  instruction-like-but-legal answer is asserted to reach the model only inside
+  the `<user_input>` wrapper, never as a bare top-level instruction.
+
+### 17.6 Deferred / known gaps
+
+- **FSRS-production scheduling is NOT wired this pass (FU-NF-42).** Attempts are
+  persisted with their score, but the score does NOT yet feed an FSRS rating into
+  a production-face `vocab_cards` row — production progress does not yet flow into
+  Review. There is no `vocab_cards`/`card_reviews` coupling on submit, so the
+  attempt log is a standalone table this pass.

@@ -30,6 +30,8 @@ import diagnosticRoutes from './routes/diagnostic.js';
 import topikRoutes from './routes/topik.js';
 import hanjaRoutes from './routes/hanja.js';
 import imagesRoutes from './routes/images.js';
+import settingsRoutes from './routes/settings.js';
+import grammarDrillRoutes from './routes/grammarDrill.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -69,6 +71,10 @@ export function createApp(): Express {
   app.use('/vocab/lists', vocabListsRoutes);
   app.use('/vocab', vocabRoutes);
   app.use('/conversation', conversationRoutes);
+  // /grammar-drill mounts BEFORE /grammar (defensive ordering): the prefixes are
+  // distinct so Express would not actually confuse them, but keeping the more
+  // specific path first documents the precedence for the next engineer.
+  app.use('/grammar-drill', grammarDrillRoutes);
   app.use('/grammar', grammarRoutes);
   app.use('/reading', readingRoutes);
   app.use('/plan', planRoutes);
@@ -76,6 +82,7 @@ export function createApp(): Express {
   app.use('/topik', topikRoutes);
   app.use('/hanja', hanjaRoutes);
   app.use('/images', imagesRoutes);
+  app.use('/settings', settingsRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {

@@ -821,6 +821,113 @@ export interface PatternMatch {
   metadata?: Record<string, unknown>;
 }
 
+// ── Grammar production-drill wire shapes (Pass 9) ─────────────────────
+//
+// The drill flow is a three-leg server round-trip:
+//   1. `POST /grammar-drill`            → `GeneratedDrill` (a `DrillItemPublic`
+//      + the `attemptId` that binds the eventual score). The server picks the
+//      `DrillType` by history rotation; the client never asks for a type.
+//   2. user types a Korean production answer.
+//   3. `POST /grammar-drill/:id/submit` → `DrillScore` (the Claude grade plus
+//      the reference model, revealed only now).
+//
+// `DrillItemPublic` deliberately MIRRORS the server's `GrammarDrillItem` Zod
+// union MINUS the two `referenceModel*` fields. Those fields are the "answer":
+// the server stores them on the attempt row and strips them from the generate
+// response, exactly like the diagnostic's answer-stripping (`DiagnosticLiveItem`
+// above). Re-adding them here would leak the model answer before submit and
+// re-enable a client that paints the answer without grading — so they are
+// intentionally absent until the `DrillScore` reveal.
+
+/** Production-drill format. Drives the `DrillCard` render branch. */
+export type DrillType = 'transformation' | 'cloze' | 'conversation';
+
+/** Claude's overall verdict band for a graded drill answer. */
+export type DrillVerdict = 'excellent' | 'good' | 'needs_work' | 'incorrect';
+
+/**
+ * Fields every drill item carries regardless of `type`. The `referenceModel*`
+ * pair lives ONLY on the server's `GrammarDrillItem` — it is stripped before
+ * the item reaches the client, so it is absent from this public shape.
+ */
+interface DrillItemCommon {
+  type: DrillType;
+  /** Server dedup key for the source pattern. */
+  patternKey: string;
+  /** Korean pattern display ("-더라도"). */
+  patternDisplay: string;
+  /** EN "what to do" line shown above the textarea. */
+  instruction: string;
+}
+
+/** Transformation drill — rewrite a base sentence using the pattern. */
+export interface TransformationDrillItem extends DrillItemCommon {
+  type: 'transformation';
+  /** Base Korean sentence that does NOT yet use the pattern. */
+  sourceKr: string;
+  /** English gloss of the base sentence. */
+  sourceEn: string;
+}
+
+/** Cloze drill — fill a `___` blank in a seed sentence with the pattern. */
+export interface ClozeDrillItem extends DrillItemCommon {
+  type: 'cloze';
+  /** EN situation framing the blank. */
+  context: string;
+  /** Korean seed sentence containing one `___` blank. */
+  seedKr: string;
+}
+
+/** Conversation drill — reply to an interlocutor's line using the pattern. */
+export interface ConversationDrillItem extends DrillItemCommon {
+  type: 'conversation';
+  /** EN scenario describing who is speaking and why. */
+  scenario: string;
+  /** The interlocutor's Korean line. */
+  promptKr: string;
+  /** English gloss of the interlocutor's line. */
+  promptEn: string;
+}
+
+/**
+ * Public drill item — discriminated union by `type`. This is the answer-
+ * stripped shape the client receives from `POST /grammar-drill`; the server's
+ * full `GrammarDrillItem` additionally carries `referenceModelKr/En`.
+ */
+export type DrillItemPublic =
+  | TransformationDrillItem
+  | ClozeDrillItem
+  | ConversationDrillItem;
+
+/** One inline correction Claude attaches to a graded answer. */
+export interface DrillCorrection {
+  /** Verbatim Korean fragment the issue applies to. */
+  span: string;
+  /** What's wrong with that fragment. */
+  issue: string;
+  /** The suggested fix. */
+  fix: string;
+}
+
+/**
+ * Server's reveal after grading a submitted drill answer — the only place the
+ * reference model surfaces (it is stripped from the generate response).
+ */
+export interface DrillScore {
+  /** 0–100. */
+  score: number;
+  verdict: DrillVerdict;
+  /** Whether the answer actually used the target pattern. */
+  usesPattern: boolean;
+  /** EN overall feedback. */
+  summary: string;
+  corrections: DrillCorrection[];
+  /** The model answer in Korean — revealed only post-submit. */
+  referenceModelKr: string;
+  /** English gloss of the model answer. */
+  referenceModelEn: string;
+}
+
 // ── Progress wire shapes ──────────────────────────────────────────────
 
 /** One metric snapshot from `GET /progress`. */

@@ -134,6 +134,56 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateGrammarDrill: async (input) => {
+      // Deterministic drill item per requested type. Includes the reference
+      // model answer (the route strips it from the gen response). Lets the
+      // /grammar-drill route test assert persistence + answer-stripping + the
+      // type the rotation picked, without touching Anthropic.
+      const common = {
+        patternKey: input.patternKey,
+        patternDisplay: input.patternDisplay,
+        instruction: `Use ${input.patternDisplay}.`,
+        referenceModelKr: '모델 답안입니다.',
+        referenceModelEn: 'this is the model answer.',
+      };
+      const item =
+        input.drillType === 'transformation'
+          ? {
+              ...common,
+              type: 'transformation' as const,
+              sourceKr: '기본 문장입니다.',
+              sourceEn: 'this is the base sentence.',
+            }
+          : input.drillType === 'cloze'
+            ? {
+                ...common,
+                type: 'cloze' as const,
+                context: '상황 설명입니다.',
+                seedKr: '문장에 ___ 들어갑니다.',
+              }
+            : {
+                ...common,
+                type: 'conversation' as const,
+                scenario: '대화 상황입니다.',
+                promptKr: '상대방의 말입니다.',
+                promptEn: 'the interlocutor speaks.',
+              };
+      return { result: item, metadata: { ...baseMeta, requestId: randomUUID() } };
+    },
+    scoreGrammarDrill: async () => ({
+      // Deterministic score: a passing grade with one correction. Lets the submit
+      // route test assert the row update + reference reveal without Anthropic.
+      result: {
+        score: 82,
+        verdict: 'good' as const,
+        usesPattern: true,
+        summary: 'mock score summary',
+        corrections: [
+          { span: '___', issue: 'mock issue', fix: 'mock fix' },
+        ],
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     generateConversation: (input) => {
       // Default stub: a deterministic single-delta stream + a complete event.
       // Tests that need failure or chunked behaviour pass an override via

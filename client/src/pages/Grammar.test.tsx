@@ -37,11 +37,17 @@ const services = vi.hoisted(() => ({
   identifyPattern: vi.fn(),
 }));
 
+const drillServices = vi.hoisted(() => ({
+  generateDrill: vi.fn(),
+  submitDrill: vi.fn(),
+}));
+
 const mocks = vi.hoisted(() => ({
   loadGrammarMock: vi.fn(),
 }));
 
 vi.mock('../services/grammar', () => services);
+vi.mock('../services/grammarDrill', () => drillServices);
 vi.mock('../data/mocks/grammar', () => mocks);
 
 import Grammar from './Grammar';
@@ -106,6 +112,7 @@ const FIXTURE = [
 
 function resetMocks(): void {
   for (const fn of Object.values(services)) (fn as Mock).mockReset();
+  for (const fn of Object.values(drillServices)) (fn as Mock).mockReset();
   (mocks.loadGrammarMock as Mock).mockReset();
   // Default mock fallback resolves with the fixture — happy-path tests
   // don't need to set this per-case. The ErrorCard test overrides it.
@@ -260,42 +267,170 @@ describe('Grammar — detail Sheet', () => {
   });
 });
 
-describe('Grammar — drill tab (mocked)', () => {
-  it('renders the MockBadge when the drill tab is active', async () => {
+describe('Grammar — drill tab (live generate → submit → reveal)', () => {
+  const GEN_TRANSFORM = {
+    attemptId: 7,
+    item: {
+      type: 'transformation' as const,
+      patternKey: 'KGIU-INT-007',
+      patternDisplay: '-더라도',
+      instruction: 'Rewrite using -더라도.',
+      sourceKr: '비가 와요. 우리는 갈 거예요.',
+      sourceEn: "It's raining. We will go.",
+    },
+  };
+
+  const SCORE = {
+    score: 82,
+    verdict: 'good' as const,
+    usesPattern: true,
+    summary: 'Reads natural — good register.',
+    corrections: [
+      { span: '진행합시다', issue: 'register mismatch', fix: '진행해야 한다' },
+    ],
+    referenceModelKr: '비가 오더라도 우리는 출발할 거예요.',
+    referenceModelEn: "Even if it rains, we will set out.",
+  };
+
+  it('generates a transformation drill, submits, and reveals the score + reference', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue(SCORE);
 
     const user = userEvent.setup();
     render(<Grammar />);
 
-    // List tab — real data → no MockBadge.
-    await screen.findByText('-더라도');
-    expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
-
-    // Flip to drill tab — MockBadge appears (drill stays mocked).
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
-    expect(await screen.findByTestId('mock-badge')).toBeInTheDocument();
-  });
-
-  it('submit reveals the model answer + tutor note', async () => {
-    services.listPatterns.mockResolvedValue([ROW]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
-
-    const user = userEvent.setup();
-    render(<Grammar />);
-
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
-    // Drill loads from the mock fixture (first pattern: -더라도).
-    const textarea = await screen.findByPlaceholderText(
-      /Write the full sentence using/i,
-    );
-    await user.type(textarea, '그 의견이 일리가 있더라도 진행합시다.');
+    // Generate ran with the row's pattern source.
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'KGIU-INT-007',
+      patternDisplay: '-더라도',
+    });
+
+    // Transformation body renders.
+    expect(await screen.findByText('Transform this')).toBeInTheDocument();
+    expect(screen.getByText('비가 와요. 우리는 갈 거예요.')).toBeInTheDocument();
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 우리는 갈 거예요.');
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
 
+    await waitFor(() => {
+      expect(drillServices.submitDrill).toHaveBeenCalledWith(
+        7,
+        '비가 오더라도 우리는 갈 거예요.',
+        expect.anything(),
+      );
+    });
+
+    // Reveal: score, verdict, correction, reference model.
+    expect(await screen.findByText('82')).toBeInTheDocument();
+    expect(screen.getByText('Good')).toBeInTheDocument();
     expect(screen.getByText('Model answer')).toBeInTheDocument();
+    expect(
+      screen.getByText('비가 오더라도 우리는 출발할 거예요.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/register mismatch/)).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /next pattern/i }),
     ).toBeInTheDocument();
+  });
+
+  it('renders a cloze drill body when the server returns type=cloze', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue({
+      attemptId: 9,
+      item: {
+        type: 'cloze',
+        patternKey: 'KGIU-INT-007',
+        patternDisplay: '-느라고',
+        instruction: 'Fill the blank with a -느라고 clause.',
+        context: 'Explain why you missed dinner.',
+        seedKr: '발표 자료를 ___ 저녁을 못 먹었어요.',
+      },
+    });
+
+    const user = userEvent.setup();
+    render(<Grammar />);
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    expect(await screen.findByText('Seed — fill the blank')).toBeInTheDocument();
+    expect(
+      screen.getByText('발표 자료를 ___ 저녁을 못 먹었어요.'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders a conversation drill body when the server returns type=conversation', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue({
+      attemptId: 11,
+      item: {
+        type: 'conversation',
+        patternKey: 'KGIU-INT-007',
+        patternDisplay: '-ㄹ 뿐만 아니라',
+        instruction: 'Reply using -ㄹ 뿐만 아니라.',
+        scenario: 'A friend asks about the café.',
+        promptKr: '새 카페 어때요?',
+        promptEn: 'How is the new café?',
+      },
+    });
+
+    const user = userEvent.setup();
+    render(<Grammar />);
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    expect(await screen.findByText('They say')).toBeInTheDocument();
+    expect(screen.getByText('새 카페 어때요?')).toBeInTheDocument();
+  });
+
+  it('falls back to a local mock drill + 🅂 badge when generate is unreachable', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockRejectedValue(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    const user = userEvent.setup();
+    render(<Grammar />);
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    // The screen does NOT blank — a mock drill renders + the MockBadge shows.
+    expect(await screen.findByTestId('mock-badge')).toBeInTheDocument();
+    expect(
+      await screen.findByPlaceholderText(/Write your answer using/i),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces an inline alert + Retry when submit fails, keeping the answer', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockRejectedValue(
+      new ApiError('upstream', { status: 502, code: 'upstream' }),
+    );
+
+    const user = userEvent.setup();
+    render(<Grammar />);
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Inline failure-safe error — the screen is intact, answer preserved.
+    expect(await screen.findByText(/Scoring your answer failed/i)).toBeInTheDocument();
+    expect(
+      (screen.getByPlaceholderText(/Write your answer using/i) as HTMLTextAreaElement)
+        .value,
+    ).toBe('비가 오더라도 갈 거예요.');
+    // Submit button is back (not stuck on a spinner).
+    expect(screen.getByRole('button', { name: /^submit$/i })).toBeInTheDocument();
   });
 });

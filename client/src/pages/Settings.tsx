@@ -78,7 +78,9 @@ import { useAuth } from '../hooks/useAuth';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { fetchMe, patchMe } from '../services/auth';
+import { fetchPrefs, putPrefs, type Prefs } from '../services/settings';
 import type { User } from '../hooks/auth-context';
+import type { NotifPrefs, PalettePrefs } from '../types/domain';
 
 /**
  * Mock fallback for the `/auth/me` query — returns a user-shaped fixture so
@@ -106,8 +108,29 @@ import {
   PAPER_PRESETS,
   WRONG_PRESETS,
 } from '../lib/palette-presets';
+import { loadSettings } from '../lib/settings';
 import type { IconName } from '../components/Icon';
 import type { PatchAuthMeBody } from '../types/domain';
+
+/**
+ * Mock fallback for the `/settings/prefs` query. Returns the user's CURRENT
+ * localStorage prefs (notif + palette) after a small delay so a server-down
+ * dev session still hydrates the screen with the real local choice rather than
+ * a synthetic default — and the 🅂 badge then signals the fall-back honestly.
+ *
+ * The palette `string` fields from localStorage are narrowed to the domain
+ * preset unions: the swatch pickers only ever write valid preset ids, and the
+ * server's `PrefsSchema` enforces the same closed set, so a structural cast is
+ * safe here. Any drift would surface as a 400 on the next real `putPrefs`.
+ */
+async function loadPrefsMock(): Promise<Prefs> {
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const local = loadSettings();
+  return {
+    notif: local.notif,
+    palette: local.palette as PalettePrefs,
+  };
+}
 
 /** Local edit buffer for the three server-backed profile fields. */
 interface ProfileBuffer {
@@ -120,6 +143,13 @@ interface ProfileBuffer {
 type ProfileFieldErrors = Partial<Record<keyof ProfileBuffer, string>>;
 
 const DEBOUNCE_MS = 600;
+
+/**
+ * Debounce for the prefs PUT. Shorter than the profile's 600ms — palette /
+ * notif edits are coarse taps (no keystroke stream to coalesce), so ~400ms is
+ * enough to batch a flurry of swatch clicks without feeling laggy.
+ */
+const PREFS_DEBOUNCE_MS = 400;
 
 /** Fallback version when the server hasn't reported one yet. Real callers
  *  read `useAuth().user.version`; this only paints during the first
@@ -150,6 +180,33 @@ function messageFor(err: ApiError, field: keyof ProfileBuffer): string {
     return 'Network unreachable. Your change was not saved.';
   }
   return 'Saving that change failed. Try again.';
+}
+
+/**
+ * Field-by-field equality for the two prefs slices. Compared by value (not by
+ * JSON, which would be sensitive to key order between a server response and a
+ * literal-built object) so the change-detector never reports a spurious diff
+ * that would loop a redundant PUT. Overloaded over the two concrete shapes;
+ * the slices are always passed as a matched pair (notif vs notif, palette vs
+ * palette) by the callers.
+ */
+function notifEqual(a: NotifPrefs, b: NotifPrefs): boolean {
+  return (
+    a.channel.email === b.channel.email &&
+    a.channel.sms === b.channel.sms &&
+    a.reviewsDue === b.reviewsDue &&
+    a.daily === b.daily &&
+    a.weekly === b.weekly
+  );
+}
+
+function paletteEqual(a: PalettePrefs, b: PalettePrefs): boolean {
+  return (
+    a.paper === b.paper &&
+    a.accent === b.accent &&
+    a.correct === b.correct &&
+    a.wrong === b.wrong
+  );
 }
 
 export default function Settings(): JSX.Element {
@@ -218,7 +275,6 @@ export default function Settings(): JSX.Element {
     // Sync-to-external-system case — see useEndpointOrMock for the same
     // pattern. The effect is driven by the meQuery resolution, not by
     // our own state, so the rule's bad-loop heuristic doesn't apply.
-    /* eslint-disable react-hooks/set-state-in-effect */
     setServerProfile(next);
     if (typeof fresh.version === 'number') {
       setServerVersion(fresh.version);
@@ -235,7 +291,6 @@ export default function Settings(): JSX.Element {
       email: edited.has('email') ? prev.email : next.email,
       phone: edited.has('phone') ? prev.phone : next.phone,
     }));
-    /* eslint-enable react-hooks/set-state-in-effect */
   }, [meQuery.loading, meQuery.isMock, meQuery.data]);
 
   // Debounced auto-save. Tracks the latest pending timer + the latest
@@ -431,13 +486,136 @@ export default function Settings(): JSX.Element {
     ],
   );
 
+  // ───── Preferences (notif + palette) server-sync ─────
+  //
+  // The provider stays pure (localStorage cache + instant palette apply); the
+  // server round-trip is owned HERE, at the screen, alongside the 🅂 badge.
+  //
+  //   - On mount: hydrate `/settings/prefs`. On a real (non-mock) settle that
+  //     differs from the current local prefs, write it into the provider —
+  //     server wins on load (last-writer-wins).
+  //   - On every notif/palette change: debounce a full `putPrefs`. Failure is
+  //     non-fatal: localStorage already holds the change, so a failed PUT only
+  //     surfaces an inline `role=alert`; the screen never breaks.
+  const prefsQuery = useEndpointOrMock<Prefs>('settings:prefs', loadPrefsMock, {
+    realFn: fetchPrefs,
+  });
+
+  // The prefs we last reconciled with the server (hydrated value, or the body
+  // of the last successful/attempted PUT). The change-driven effect compares
+  // against this so a server-hydration write does NOT echo straight back as a
+  // PUT, and an unchanged render never fires a redundant round-trip. Seeded to
+  // the current local prefs so the first paint is a no-op.
+  const lastSyncedPrefsRef = useRef<Prefs>({
+    notif: settings.notif,
+    palette: settings.palette as PalettePrefs,
+  });
+
+  const [prefsError, setPrefsError] = useState<string | null>(null);
+
+  const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prefsCtrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (prefsTimerRef.current !== null) clearTimeout(prefsTimerRef.current);
+      prefsCtrlRef.current?.abort();
+    };
+  }, []);
+
+  const flushPrefs = useCallback(async (next: Prefs): Promise<void> => {
+    prefsCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    prefsCtrlRef.current = ctrl;
+    try {
+      const stored = await putPrefs(next, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      // Server echoes the stored object — adopt it as the baseline so a later
+      // hydration / re-render reconciles against exactly what's persisted.
+      lastSyncedPrefsRef.current = stored;
+      setPrefsError(null);
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      // A canceled PUT (unmount / superseded keystroke) is not a real failure.
+      if (err instanceof ApiError && err.code === 'canceled') return;
+      // Non-fatal: localStorage already holds the change. Surface an inline,
+      // author-controlled note (never echo the server string) so the user knows
+      // the cross-device sync didn't land, but the screen keeps working.
+      setPrefsError(
+        'Your appearance and notification changes are saved on this device, ' +
+          'but syncing them to your account failed. They will sync next time.',
+      );
+    }
+  }, []);
+
+  // Hydrate from the server. Only a real (non-mock) settle is authoritative —
+  // treating the mock fall-back as server truth would clobber the user's local
+  // prefs with a synthetic default the moment the server is unreachable.
+  //
+  // Hydration runs EXACTLY ONCE per real settle (the `hydratedRef` latch). It
+  // must NOT re-fire on subsequent local edits — otherwise a stale server value
+  // would clobber the user's just-made change. The current local prefs are read
+  // from a ref so they don't enter the dep array and re-trigger the effect.
+  const prefsHydratedRef = useRef<boolean>(false);
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    if (prefsHydratedRef.current) return;
+    if (prefsQuery.loading) return;
+    if (prefsQuery.isMock) return;
+    const fresh = prefsQuery.data;
+    if (!fresh) return;
+    prefsHydratedRef.current = true;
+    // Record what the server holds BEFORE writing it into the provider, so the
+    // change-driven effect below sees no diff and skips the echo PUT.
+    lastSyncedPrefsRef.current = fresh;
+    const local = settingsRef.current;
+    const samePrefs =
+      notifEqual(fresh.notif, local.notif) &&
+      paletteEqual(fresh.palette, local.palette as PalettePrefs);
+    if (samePrefs) return;
+    // Sync-to-external-system case — driven by the query resolution, not by our
+    // own state, so the rule's bad-loop heuristic doesn't apply. `updateSettings`
+    // is the provider's setter, not a local setState, so the rule stays quiet.
+    updateSettings({ notif: fresh.notif, palette: fresh.palette });
+  }, [prefsQuery.loading, prefsQuery.isMock, prefsQuery.data, updateSettings]);
+
+  // Debounced PUT on any notif/palette change. Compares against the last
+  // server-reconciled snapshot so server-hydration writes and unchanged renders
+  // are no-ops. The provider's localStorage write already happened — this is
+  // best-effort durability on top of it.
+  useEffect(() => {
+    const current: Prefs = {
+      notif: settings.notif,
+      palette: settings.palette as PalettePrefs,
+    };
+    const last = lastSyncedPrefsRef.current;
+    if (notifEqual(current.notif, last.notif) && paletteEqual(current.palette, last.palette)) {
+      return;
+    }
+    // Mark synced eagerly: the body we're about to PUT becomes the new
+    // reconciliation baseline so a failed PUT doesn't loop-retry every render.
+    // localStorage still holds the change, so durability isn't lost on failure.
+    lastSyncedPrefsRef.current = current;
+    if (prefsTimerRef.current !== null) clearTimeout(prefsTimerRef.current);
+    prefsTimerRef.current = setTimeout(() => {
+      prefsTimerRef.current = null;
+      void flushPrefs(current);
+    }, PREFS_DEBOUNCE_MS);
+    // `flushPrefs` is stable (no deps); the effect keys on the settings slices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.notif, settings.palette]);
+
   return (
     <section
       className="screen km-settings"
       style={{ position: 'relative' }}
       aria-labelledby="km-settings-title"
     >
-      {meQuery.isMock ? <MockBadge /> : null}
+      {meQuery.isMock || prefsQuery.isMock ? <MockBadge /> : null}
       <Topbar
         krTitle={
           <>
@@ -510,8 +688,17 @@ export default function Settings(): JSX.Element {
         {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
       </SettingsGroup>
 
-      {/* ───── Notifications (localStorage) ───── */}
-      <SettingsGroup icon="bell" eyebrow="알림" title="Notifications">
+      {/* Prefs (notif + palette) cross-device sync failure — non-fatal: the
+          change is already in localStorage, this only flags the lost sync. */}
+      {prefsError ? <ErrorCard message={prefsError} /> : null}
+
+      {/* ───── Notifications (localStorage cache + server sync) ───── */}
+      <SettingsGroup
+        icon="bell"
+        eyebrow="알림"
+        title="Notifications"
+        mock={prefsQuery.isMock}
+      >
         <Eyebrow className="km-settings__group-eyebrow">Channels</Eyebrow>
         <div className="km-settings__channels">
           <ChannelChip
@@ -584,8 +771,13 @@ export default function Settings(): JSX.Element {
         />
       </SettingsGroup>
 
-      {/* ───── Appearance (localStorage) ───── */}
-      <SettingsGroup icon="palette" eyebrow="외관" title="Appearance">
+      {/* ───── Appearance (localStorage cache + server sync) ───── */}
+      <SettingsGroup
+        icon="palette"
+        eyebrow="외관"
+        title="Appearance"
+        mock={prefsQuery.isMock}
+      >
         <SwatchPicker
           label="Paper"
           hint="Background."
@@ -654,11 +846,16 @@ function SettingsGroup({
   icon,
   eyebrow,
   title,
+  mock = false,
   children,
 }: {
   icon: IconName;
   eyebrow: string;
   title: string;
+  /** When true, this group's prefs are running off the mock fall-back (the
+   *  server is unreachable). Renders a small 🅂 marker so the dev signal is
+   *  honest at the group level, mirroring the corner MockBadge semantics. */
+  mock?: boolean;
   children: ReactNode;
 }): JSX.Element {
   return (
@@ -671,6 +868,16 @@ function SettingsGroup({
           <Eyebrow>{eyebrow}</Eyebrow>
           <div className="km-settings__group-title">{title}</div>
         </div>
+        {mock ? (
+          <span
+            className="km-settings__group-mock"
+            title="Showing locally-cached preferences — not synced from your account"
+            aria-label="Preferences not synced from server"
+            style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.6 }}
+          >
+            🅂
+          </span>
+        ) : null}
       </header>
       {children}
     </Card>

@@ -41,6 +41,8 @@ const mocks = vi.hoisted(() => {
   return {
     fetchMe: vi.fn(),
     patchMe: vi.fn(),
+    fetchPrefs: vi.fn(),
+    putPrefs: vi.fn(),
     refresh: vi.fn(async () => undefined),
     // Mutable from the test bodies — the useAuth mock reads it on each call.
     currentUser: {
@@ -55,6 +57,11 @@ const mocks = vi.hoisted(() => {
 vi.mock('../services/auth', () => ({
   fetchMe: mocks.fetchMe,
   patchMe: mocks.patchMe,
+}));
+
+vi.mock('../services/settings', () => ({
+  fetchPrefs: mocks.fetchPrefs,
+  putPrefs: mocks.putPrefs,
 }));
 
 vi.mock('../hooks/useAuth', () => ({
@@ -75,10 +82,28 @@ import { SettingsProvider } from '../hooks/SettingsProvider';
 
 // ─── Lifecycle ────────────────────────────────────────────────
 
+/** Default prefs the server hands back — matches DEFAULT_SETTINGS notif/palette
+ *  so the hydration effect is a no-op for the existing profile tests. */
+const DEFAULT_PREFS = {
+  notif: {
+    channel: { email: true, sms: false },
+    reviewsDue: true,
+    daily: false,
+    weekly: true,
+  },
+  palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+};
+
 beforeEach(() => {
   window.localStorage.clear();
   mocks.fetchMe.mockReset();
   mocks.patchMe.mockReset();
+  mocks.fetchPrefs.mockReset();
+  mocks.putPrefs.mockReset();
+  // Default: prefs match the local defaults → hydration is a no-op. Individual
+  // prefs tests override these.
+  mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+  mocks.putPrefs.mockResolvedValue(DEFAULT_PREFS);
   mocks.refresh.mockReset();
   mocks.refresh.mockResolvedValue(undefined);
   mocks.currentUser = {
@@ -430,5 +455,238 @@ describe('Settings — local-only halves still work', () => {
     expect(emailInput.value).toBe('');
     expect(emailChip).toBeDisabled();
     expect(emailChip).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
+describe('Settings — prefs server-sync (Pass 9)', () => {
+  it('hydrates notif + palette from the server on mount (server wins on load)', async () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    // Server holds a NON-default palette → the swatch picker should adopt it.
+    mocks.fetchPrefs.mockResolvedValue({
+      notif: {
+        channel: { email: true, sms: false },
+        reviewsDue: true,
+        daily: false,
+        weekly: true,
+      },
+      palette: { paper: 'linen', accent: 'indigo', correct: 'pine', wrong: 'amber' },
+    });
+
+    render(
+      <SettingsProvider>
+        <Settings />
+      </SettingsProvider>,
+    );
+
+    // The Paper picker reflects the server's 'linen' once hydration lands.
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'Linen' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+    });
+  });
+
+  it('debounces a putPrefs with the full prefs object on a palette change', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    // Server prefs == defaults → mount hydration is a no-op, so the only PUT
+    // is the one driven by the user's click below.
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+
+    render(
+      <SettingsProvider>
+        <Settings />
+      </SettingsProvider>,
+    );
+
+    // Let the (no-op) hydration settle first so it doesn't race the change PUT.
+    await waitFor(() => {
+      expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+
+    await user.click(screen.getByRole('radio', { name: 'Linen' }));
+
+    // Nothing fires before the debounce window elapses.
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      notif: unknown;
+      palette: { paper: string };
+    };
+    expect(body.palette.paper).toBe('linen');
+    expect(body.notif).toBeDefined();
+  });
+
+  it('a failed putPrefs never breaks the screen — surfaces an inline alert', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+    mocks.putPrefs.mockRejectedValue(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    render(
+      <SettingsProvider>
+        <Settings />
+      </SettingsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+
+    const linen = screen.getByRole('radio', { name: 'Linen' });
+    await user.click(linen);
+    // The local palette change still applied instantly (provider is the cache).
+    expect(linen).toHaveAttribute('aria-checked', 'true');
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    // Inline, author-controlled note — the screen is intact, change is local.
+    await waitFor(() => {
+      expect(screen.getByText(/saved on this device/i)).toBeInTheDocument();
+    });
+    expect(linen).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('does not echo the server-hydrated prefs straight back as a PUT', async () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    // Server holds non-default prefs; hydration writes them into the provider.
+    mocks.fetchPrefs.mockResolvedValue({
+      notif: {
+        channel: { email: true, sms: false },
+        reviewsDue: true,
+        daily: false,
+        weekly: true,
+      },
+      palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
+    });
+
+    render(
+      <SettingsProvider>
+        <Settings />
+      </SettingsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'Ivory' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+    });
+
+    // Even after the debounce window, the hydration write must NOT have
+    // triggered an echo PUT — the change-detector keys off the synced baseline.
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+  });
+
+  it('a swatch edit made BEFORE a slow hydration resolves is synced, then server-wins-on-load without an echo loop', async () => {
+    // SF-3 (client review): pin the ordering when the user edits WHILE the server
+    // hydration is still in flight. Contract A5 is explicit: "server wins on load
+    // — last-writer-wins", so a late real settle is authoritative and replaces the
+    // in-flight local slice. What MUST hold regardless of refactors to the
+    // provider's merge semantics:
+    //   1. The user's pre-hydration edit is NOT lost: it applies instantly to the
+    //      provider AND debounces exactly one PUT carrying that edit (best-effort
+    //      sync, durability already in localStorage).
+    //   2. The late real settle wins on load: the swatch ends on the SERVER value,
+    //      fully reconciled (not a half-merged state) — no crash.
+    //   3. The hydration write does NOT spawn an echo PUT, and the pre-hydration
+    //      edit does NOT leave a stale baseline that loops PUTs every render — so
+    //      total PUTs == the single user-edit PUT, with none added by the settle.
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+
+    // Hold the prefs hydration open until we release it AFTER the user's click.
+    let releaseHydration!: (prefs: typeof DEFAULT_PREFS) => void;
+    mocks.fetchPrefs.mockReturnValue(
+      new Promise<typeof DEFAULT_PREFS>((resolve) => {
+        releaseHydration = resolve;
+      }),
+    );
+
+    render(
+      <SettingsProvider>
+        <Settings />
+      </SettingsProvider>,
+    );
+
+    // User edits the palette (Linen) while hydration is still pending. The local
+    // provider applies it instantly (offline-cache UX), and the debounce fires the
+    // best-effort sync PUT for that edit.
+    const linen = screen.getByRole('radio', { name: 'Linen' });
+    await user.click(linen);
+    expect(linen).toHaveAttribute('aria-checked', 'true');
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    // (1) The edit was synced, not lost: exactly one PUT, carrying Linen.
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      (mocks.putPrefs.mock.calls[0][0] as { palette: { paper: string } }).palette
+        .paper,
+    ).toBe('linen');
+
+    // Now the slow server settle lands holding a DIFFERENT palette (Ivory).
+    await act(async () => {
+      releaseHydration({
+        notif: DEFAULT_PREFS.notif,
+        palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
+      });
+    });
+
+    // (2) Server wins on load: the swatch reflects the server's Ivory, fully
+    //     settled (not a half-merged Linen/Ivory state).
+    await waitFor(() => {
+      expect(screen.getByRole('radio', { name: 'Ivory' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+    });
+    expect(linen).toHaveAttribute('aria-checked', 'false');
+
+    // (3) Flush every timer: the hydration write must NOT echo a PUT, and the
+    //     pre-hydration edit must NOT leave a stale baseline that loops PUTs — so
+    //     the PUT count stays at the single user-edit PUT from step (1).
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
   });
 });
