@@ -4,7 +4,8 @@
  */
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
-import { _setConfigForTesting } from '../../src/config/index.js';
+import { _setConfigForTesting, TEST_TOTP_SECRET_ENC_KEY } from '../../src/config/index.js';
+import { _resetEncryptionKeyForTesting } from '../../src/crypto/encryption.js';
 import { setPoolForTesting } from '../../src/db/pool.js';
 import {
   resetClaudeProxyForTesting,
@@ -24,6 +25,14 @@ export interface BuildOptions {
   connectionString: string;
   kiwiUrl?: string;
   claudeProxy?: Partial<ClaudeProxy>;
+  /**
+   * Pass Login config overrides. Defaults keep the LEGACY single-step login
+   * behavior (mfaRequired=false) so the pre-existing auth tests — which expect
+   * /auth/login to set a session cookie directly — stay valid. The MFA test
+   * suite opts into the two-step flow with `mfaRequired: true`.
+   */
+  mfaRequired?: boolean;
+  registrationEnabled?: boolean;
 }
 
 /**
@@ -248,7 +257,15 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.RATE_LIMIT_EXPENSIVE_MAX = '20';
   process.env.RATE_LIMIT_AUTH_MAX = '5';
   process.env.LOG_LEVEL = 'silent';
-  _setConfigForTesting({});
+  // Pass Login: provision the fixed test AES key (so TOTP secrets encrypt/decrypt
+  // deterministically) and default to the LEGACY single-step login so the
+  // pre-existing auth tests keep their direct-session expectations. The MFA suite
+  // flips mfaRequired on.
+  process.env.TOTP_SECRET_ENC_KEY = TEST_TOTP_SECRET_ENC_KEY;
+  _setConfigForTesting({
+    MFA_REQUIRED: opts.mfaRequired ?? false,
+    REGISTRATION_ENABLED: opts.registrationEnabled ?? true,
+  });
 
   const pool = new Pool({ connectionString: opts.connectionString, max: 5 });
   setPoolForTesting(pool);
@@ -258,6 +275,9 @@ export function buildTestApp(opts: BuildOptions): TestApp {
 
   resetLimiters();
   resetKrdictReadyCache();
+  // Re-derive the AES key from the (possibly overridden) test config so a prior
+  // test's key never leaks into this app instance.
+  _resetEncryptionKeyForTesting();
 
   const app = createApp();
   return { app, pool };

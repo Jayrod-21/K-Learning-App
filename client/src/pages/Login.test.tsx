@@ -1,0 +1,383 @@
+/**
+ * Login screen — multi-step 2FA flow (PASS LOGIN — PART C3 / C7).
+ *
+ * We stub `useAuth` so each test can pin the `pending` state and the method
+ * resolutions, driving one step at a time without a real AuthProvider. The
+ * `qrcode` module is stubbed to a deterministic data URL so the enroll step's
+ * `<img>` is assertable without invoking the real encoder.
+ *
+ * Coverage:
+ *   - Step transitions render the right fields (credentials / code / enroll).
+ *   - Code step accepts a 6-digit code + has the recovery-code toggle.
+ *   - Enroll step renders the QR (alt text) AND the manual secret.
+ *   - The recovery-codes ack gates app entry (button disabled until checked,
+ *     then `completeEnrollment` fires).
+ *   - Fixed error strings for invalid_code / account_locked / challenge_invalid
+ *     — and that a raw server `message` is NEVER echoed.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ApiError } from '../services/api';
+import type { AuthContextValue } from '../hooks/auth-context';
+
+// ─── Mocks ────────────────────────────────────────────────────
+const mocks = vi.hoisted(() => ({
+  authValue: null as AuthContextValue | null,
+}));
+
+vi.mock('../hooks/useAuth', () => ({
+  useAuth: () => mocks.authValue,
+}));
+
+// Deterministic QR so the enroll <img> is assertable without the real encoder.
+vi.mock('../lib/qr', () => ({
+  otpauthUriToDataUrl: vi.fn(async () => 'data:image/png;base64,QRTEST'),
+}));
+
+import Login from './Login';
+
+/** Build a default mocked auth context; tests override per-case. */
+function makeAuth(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
+  return {
+    status: 'guest',
+    user: null,
+    loading: false,
+    pending: null,
+    login: vi.fn(async () => undefined),
+    submitTotp: vi.fn(async () => undefined),
+    enroll: vi.fn(async () => ({ otpauthUri: 'otpauth://x', secret: 'SEED' })),
+    confirmEnroll: vi.fn(async () => ({ recoveryCodes: ['AAAAA-BBBBB'] })),
+    completeEnrollment: vi.fn(async () => undefined),
+    register: vi.fn(async () => undefined),
+    logout: vi.fn(async () => undefined),
+    refresh: vi.fn(async () => undefined),
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  mocks.authValue = makeAuth();
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+// ─── Credentials step ─────────────────────────────────────────
+
+describe('Login — credentials step', () => {
+  it('renders email + password and submits via login()', async () => {
+    const login = vi.fn(async () => undefined);
+    mocks.authValue = makeAuth({ login });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    expect(login).toHaveBeenCalledWith('jay@example.com', 'a-long-passphrase');
+  });
+
+  it('maps a 401 to the fixed credential string (never echoes server text)', async () => {
+    const login = vi.fn(async () => {
+      throw new ApiError('user bob@evil.com not found', {
+        status: 401,
+        code: 'invalid_credentials',
+      });
+    });
+    mocks.authValue = makeAuth({ login });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'pw');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Email or password is incorrect.');
+    // The raw server message must NOT leak.
+    expect(alert).not.toHaveTextContent('bob@evil.com');
+  });
+
+  it('maps registration_closed (403) to the fixed string in register mode', async () => {
+    const register = vi.fn(async () => {
+      throw new ApiError('registration disabled', {
+        status: 403,
+        code: 'registration_closed',
+      });
+    });
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: /Create one/ }),
+    );
+    await user.type(screen.getByLabelText('Email'), 'jay@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Registration is closed.',
+    );
+  });
+});
+
+// ─── Code step ────────────────────────────────────────────────
+
+describe('Login — code step (mfa_required)', () => {
+  it('renders the 6-digit code field with one-time-code autofill', () => {
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+    });
+    render(<Login />);
+
+    const input = screen.getByLabelText('Authentication code');
+    expect(input).toHaveAttribute('autocomplete', 'one-time-code');
+    expect(input).toHaveAttribute('inputmode', 'numeric');
+    expect(input).toHaveAttribute('maxlength', '6');
+  });
+
+  it('submits the code via submitTotp()', async () => {
+    const submitTotp = vi.fn(async () => undefined);
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(submitTotp).toHaveBeenCalledWith('123456');
+  });
+
+  it('toggles to a recovery-code field', async () => {
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Use a recovery code' }));
+    expect(screen.getByLabelText('Recovery code')).toBeInTheDocument();
+  });
+
+  it('maps invalid_code to the fixed string', async () => {
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('totp mismatch step 42', {
+        status: 401,
+        code: 'invalid_code',
+      });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/didn.t match/);
+    expect(alert).not.toHaveTextContent('step 42');
+  });
+
+  it('maps account_locked (423) to the wait message', async () => {
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('locked', { status: 423, code: 'account_locked' });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Too many attempts/);
+  });
+
+  it('renders the specific "wait N minutes" copy when the 423 carries retry_after (SF1)', async () => {
+    // 423 with retry_after = 90s → ceil(90/60) = 2 minutes. The api layer now
+    // preserves retry_after on ApiError.retryAfter, so the UI shows the real N
+    // instead of degrading to the generic "a few minutes".
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('locked', {
+        status: 423,
+        code: 'account_locked',
+        retryAfter: 90,
+      });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('wait 2 minutes');
+    // Singular vs plural: a 30-second window rounds up to exactly 1 minute.
+    expect(alert).not.toHaveTextContent('a few minutes');
+  });
+
+  it('uses singular "minute" when retry_after rounds to 1 (SF1)', async () => {
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('locked', {
+        status: 423,
+        code: 'account_locked',
+        retryAfter: 30,
+      });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('wait 1 minute');
+  });
+
+  it('falls back to generic copy when the 423 omits retry_after (SF1)', async () => {
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('locked', { status: 423, code: 'account_locked' });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Too many attempts — wait a few minutes and try again.',
+    );
+  });
+
+  it('maps challenge_invalid to the "start again" string', async () => {
+    const submitTotp = vi.fn(async () => {
+      throw new ApiError('challenge gone', {
+        status: 401,
+        code: 'challenge_invalid',
+      });
+    });
+    mocks.authValue = makeAuth({
+      pending: { kind: 'mfa', challengeToken: 'tok', expiresIn: 300 },
+      submitTotp,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Authentication code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/expired/);
+  });
+});
+
+// ─── Enroll step ──────────────────────────────────────────────
+
+describe('Login — enroll step (enrollment_required)', () => {
+  it('renders the QR and the manual secret', async () => {
+    mocks.authValue = makeAuth({
+      pending: { kind: 'enroll', challengeToken: 'tok', expiresIn: 300 },
+      enroll: vi.fn(async () => ({
+        otpauthUri: 'otpauth://totp/x?secret=SEED',
+        secret: 'SEEDSECRET',
+      })),
+    });
+    render(<Login />);
+
+    // QR <img> appears once enroll() + the (stubbed) encoder resolve.
+    const img = await screen.findByAltText(
+      'QR code for setting up two-factor authentication',
+    );
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,QRTEST');
+    // Manual-entry secret is shown.
+    expect(screen.getByText('SEEDSECRET')).toBeInTheDocument();
+  });
+
+  it('confirms and surfaces recovery codes gated by the ack', async () => {
+    const confirmEnroll = vi.fn(async () => ({
+      recoveryCodes: ['AAAAA-BBBBB', 'CCCCC-DDDDD'],
+    }));
+    const completeEnrollment = vi.fn(async () => undefined);
+    mocks.authValue = makeAuth({
+      pending: { kind: 'enroll', challengeToken: 'tok', expiresIn: 300 },
+      enroll: vi.fn(async () => ({ otpauthUri: 'otpauth://x', secret: 'SEED' })),
+      confirmEnroll,
+      completeEnrollment,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    // Wait for the confirm input to enable (it disables until the secret lands).
+    await waitFor(() => {
+      expect(screen.getByLabelText('Authentication code')).not.toBeDisabled();
+    });
+    await user.type(screen.getByLabelText('Authentication code'), '654321');
+    await user.click(screen.getByRole('button', { name: 'Confirm & continue' }));
+
+    expect(confirmEnroll).toHaveBeenCalledWith('654321');
+
+    // Recovery codes shown.
+    expect(await screen.findByText('AAAAA-BBBBB')).toBeInTheDocument();
+    expect(screen.getByText('CCCCC-DDDDD')).toBeInTheDocument();
+
+    // Entry is gated: the continue button is disabled until the ack box is
+    // checked. completeEnrollment must NOT have fired yet.
+    const enter = screen.getByRole('button', { name: /I saved them/ });
+    expect(enter).toBeDisabled();
+    expect(completeEnrollment).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByLabelText(/saved these codes somewhere safe/),
+    );
+    expect(enter).not.toBeDisabled();
+    await user.click(enter);
+    expect(completeEnrollment).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the manual key when the QR fails to render', async () => {
+    const qr = await import('../lib/qr');
+    vi.mocked(qr.otpauthUriToDataUrl).mockRejectedValueOnce(
+      new Error('encode failed'),
+    );
+    mocks.authValue = makeAuth({
+      pending: { kind: 'enroll', challengeToken: 'tok', expiresIn: 300 },
+      enroll: vi.fn(async () => ({
+        otpauthUri: 'otpauth://x',
+        secret: 'FALLBACKKEY',
+      })),
+    });
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(screen.getByText('FALLBACKKEY')).toBeInTheDocument();
+    });
+    // No QR image rendered, but a fallback hint + the manual key are present.
+    expect(
+      screen.queryByAltText(
+        'QR code for setting up two-factor authentication',
+      ),
+    ).not.toBeInTheDocument();
+  });
+});

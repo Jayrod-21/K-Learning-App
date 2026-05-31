@@ -14,6 +14,21 @@ import { Pool, type PoolClient, type QueryResultRow } from 'pg';
 import { loadConfig } from '../config/index.js';
 import { getLogger } from '../logging.js';
 
+/**
+ * A parameterized-query executor returning the rows + a non-null rowCount.
+ *
+ * Both the module-level `query` helper and a transaction-bound executor (see
+ * `withTransaction`'s `tx` argument) satisfy this shape, so a helper that needs
+ * to run either standalone OR inside a caller's transaction takes a `Querier`
+ * and the caller decides. This is what lets an atomic multi-step operation
+ * (e.g. recovery-code spend + challenge consume) share one connection so a
+ * later failure rolls the earlier write back.
+ */
+export type Querier = <T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: readonly unknown[],
+) => Promise<{ rows: T[]; rowCount: number }>;
+
 let _pool: Pool | null = null;
 
 export function getPool(): Pool {
@@ -108,6 +123,22 @@ export async function withTransaction<T>(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Adapt a transaction-bound `PoolClient` into the `Querier` shape so a helper
+ * written against `Querier` (e.g. `consumeChallenge`) can run inside a caller's
+ * transaction on the same connection. Normalizes pg's nullable `rowCount` to 0,
+ * matching the module-level `query` helper's contract.
+ */
+export function clientQuerier(client: PoolClient): Querier {
+  return async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params: readonly unknown[] = [],
+  ) => {
+    const result = await client.query<T>(text, params as unknown[]);
+    return { rows: result.rows, rowCount: result.rowCount ?? 0 };
+  };
 }
 
 function serializeError(err: unknown): Record<string, unknown> {

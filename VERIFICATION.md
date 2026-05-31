@@ -27,21 +27,26 @@ no top-level BEGIN/COMMIT in the SQL.
 ```bash
 docker compose up -d postgres            # or the compose service name for PG
 # apply every migration forward
-python db/migrate.py up                  # expect 001 … 022 applied, no error
+python db/migrate.py up                  # expect 001 … 025 applied, no error
 # round-trip the most recent ones down then up to prove reversibility
-python db/migrate.py down --to 019       # 022 → 021 → 020 → 019 downgrade cleanly
-python db/migrate.py up                  # back to 022
+python db/migrate.py down --to 022       # 025 → 024 → 023 → 022 downgrade cleanly
+python db/migrate.py up                  # back to 025
 ```
 
-Pass criteria: forward applies 001–022 with no error; the down/up round-trip
+Pass criteria: forward applies 001–025 with no error; the down/up round-trip
 succeeds (each `*.down.sql` reverses its `*.up.sql`). New since the last run:
 018 = `users.preferences` JSONB; 019 = `grammar_drill_attempts`; 020 = the
 grammar-production-card unique index; 021 = the `user_mined` corpus enum value
 (its down is a documented no-op — Postgres has no DROP VALUE); 022 = the
 `user_mined` vocab CHECK relaxations + corpus_sources seed (the 021→022 split is
 required — a freshly-added enum value can't be used in the tx that adds it).
-This down round-trip is where 020–022's reversibility is exercised (closes the
-FU-NF-33-review note that the downs were reasoned but not yet run).
+**Login pass:** 023 = `user_totp` (encrypted secret + confirmed_at + replay/lockout
+columns); 024 = `user_recovery_codes` (single-use hashed backup codes); 025 =
+`mfa_login_challenges` (the short-lived two-step pending tokens). All three are
+purely additive (expand/contract-safe for the shared blue/green DB); their downs
+are plain reverse `DROP TABLE`. This down round-trip is where 020–025's
+reversibility is exercised (closes the FU-NF-33-review note that the downs were
+reasoned but not yet run).
 
 > Note: `migrate.py down` for 001 requires `--allow-destructive` (it's a
 > DROP TABLE) — see `db/migrations/README.md`.
@@ -56,13 +61,21 @@ cd server
 npm ci
 npx tsc --noEmit                         # expect 0 errors
 ESLINT_USE_FLAT_CONFIG=false npx eslint 'src/**/*.ts' 'tests/**/*.ts'  # 0 errors
-npx vitest run                           # FULL suite — unit + Docker-gated routes
+# Config validates at module-import (the rate-limiters call loadConfig eagerly),
+# so the required vars must be present before collection — each route test then
+# overrides DATABASE_URL with its own testcontainer. The AES key can be any
+# 32-byte base64 value here (the suite re-injects a fixed test key per app).
+TOTP_SECRET_ENC_KEY="$(openssl rand -base64 32)" \
+  DATABASE_URL='postgres://test:test@localhost:5432/test' \
+  KIWI_URL='http://kiwi.invalid/' CLIENT_ORIGIN='http://localhost:5173' \
+  npx vitest run                         # FULL suite — unit + Docker-gated routes
 ```
 
-Pass criteria: tsc 0; eslint 0; **all** vitest files pass (the 23 route suites
-that only collected in the sandbox now execute against real Postgres — incl.
-the Pass-9 `settings` + `grammarDrill` route tests). The in-memory unit tests
-(128 today) must stay green.
+Pass criteria: tsc 0; eslint 0; **all** vitest files pass (the route suites that
+only collected in the sandbox now execute against real Postgres — incl. the
+Pass-9 `settings`/`grammarDrill` and the Login-pass `auth.mfa` route suite). The
+in-memory unit tests must stay green (now incl. the Login-pass crypto / totp /
+recoveryCodes units).
 
 ## 3. Real-Claude smoke (proxy paths against the live API)
 
@@ -139,6 +152,29 @@ CLI):
 3. Optionally rename the repo to drop "OVERNIGHT"; decide re-public.
 4. Deploy to dad's home Postgres + serve via the Cloudflare Tunnel.
 
+### 7a. Production auth provisioning (Login pass — do this at deploy)
+
+The login is the public gate, so the prod box must be set up deliberately:
+- **Generate the TOTP encryption key once** and put it in the prod `server/.env`
+  (gitignored): `TOTP_SECRET_ENC_KEY="$(openssl rand -base64 32)"`. **Back it up
+  with the DB** (per the backup plan) — losing it makes every enrolled TOTP
+  secret undecryptable. Rotating it invalidates existing enrollments (operator
+  then runs `mfa:reset` and re-enrolls).
+- **Lock registration:** set `REGISTRATION_ENABLED=false` in the prod env so
+  `/auth/register` returns 403. (`MFA_REQUIRED=true` is the default.)
+- **Seed the single account:** `SEED_USER_EMAIL=… SEED_USER_PASSWORD=… npm run
+  seed:user` (server/). Idempotent — re-running is a no-op once the account
+  exists.
+- **First login forces enrollment:** the seeded account has no TOTP, so the
+  first sign-in drops into the authenticator-enrollment step (QR + confirm) and
+  issues the one-time recovery codes — save them. Thereafter every login needs a
+  6-digit code.
+- **Lost-device recovery:** with no email sender, total lockout (phone + codes
+  both lost) is recovered by the operator running `npm run mfa:reset` against the
+  account, which clears the TOTP factor so the next login re-enrolls.
+- Smoke the live flow once: register-blocked (403), login → enroll → code →
+  session; a bad code rate-limits then locks (423); a recovery code logs in once.
+
 ## Outstanding before/with this pass
 
 - **FU-NF-44** — bump `@anthropic-ai/sdk` 0.80 → current (clears the 2 prod
@@ -148,10 +184,11 @@ CLI):
 
 ## Checklist
 
-- [ ] §1 migrations 001–019 apply + round-trip
-- [ ] §2 tsc 0 · eslint 0 · full vitest green (incl. route suites)
+- [ ] §1 migrations 001–025 apply + round-trip
+- [ ] §2 tsc 0 · eslint 0 · full vitest green (incl. route + `auth.mfa` suites)
 - [ ] §3 real-Claude smoke (4 pass) + Vision case added & passing
 - [ ] §4 loaders idempotent, row counts sane
 - [ ] §5 SW registers · offline shell · install flow · Lighthouse PWA+a11y ≥ 90
 - [ ] §6 SW excludes the API · `npm audit --omit=dev` 0 (post FU-NF-44)
+- [ ] §7a prod auth: key generated+backed up · registration locked · account seeded · enroll/code/recovery/lockout smoked
 - [ ] §7 promote rebuild → main

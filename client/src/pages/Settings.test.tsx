@@ -42,6 +42,10 @@ const mocks = vi.hoisted(() => {
   return {
     fetchMe: vi.fn(),
     patchMe: vi.fn(),
+    fetchMfaStatus: vi.fn(),
+    mfaEnroll: vi.fn(),
+    mfaConfirm: vi.fn(),
+    regenerateRecoveryCodes: vi.fn(),
     fetchPrefs: vi.fn(),
     putPrefs: vi.fn(),
     refresh: vi.fn(async () => undefined),
@@ -58,6 +62,15 @@ const mocks = vi.hoisted(() => {
 vi.mock('../services/auth', () => ({
   fetchMe: mocks.fetchMe,
   patchMe: mocks.patchMe,
+  fetchMfaStatus: mocks.fetchMfaStatus,
+  mfaEnroll: mocks.mfaEnroll,
+  mfaConfirm: mocks.mfaConfirm,
+  regenerateRecoveryCodes: mocks.regenerateRecoveryCodes,
+}));
+
+// Deterministic QR so the re-enroll <img> renders without the real encoder.
+vi.mock('../lib/qr', () => ({
+  otpauthUriToDataUrl: vi.fn(async () => 'data:image/png;base64,QRTEST'),
 }));
 
 vi.mock('../services/settings', () => ({
@@ -119,6 +132,14 @@ beforeEach(() => {
   window.localStorage.clear();
   mocks.fetchMe.mockReset();
   mocks.patchMe.mockReset();
+  mocks.fetchMfaStatus.mockReset();
+  mocks.fetchMfaStatus.mockResolvedValue({
+    enabled: true,
+    recoveryCodesRemaining: 8,
+  });
+  mocks.mfaEnroll.mockReset();
+  mocks.mfaConfirm.mockReset();
+  mocks.regenerateRecoveryCodes.mockReset();
   mocks.fetchPrefs.mockReset();
   mocks.putPrefs.mockReset();
   // Default: prefs match the local defaults → hydration is a no-op. Individual
@@ -765,5 +786,118 @@ describe('Settings — theme-mode control (A4)', () => {
     await user.keyboard('{Home}');
     expect(light).toHaveAttribute('aria-checked', 'true');
     expect(light).toHaveFocus();
+  });
+});
+
+// ─── Two-Factor Authentication section (PASS LOGIN — PART C4) ──
+
+describe('Settings — Two-Factor Authentication', () => {
+  it('renders the status badge + recovery-codes-remaining', async () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+    } satisfies User);
+    mocks.fetchMfaStatus.mockResolvedValue({
+      enabled: true,
+      recoveryCodesRemaining: 6,
+    });
+
+    renderSettings();
+
+    expect(
+      await screen.findByText('Two-Factor Authentication'),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Enabled')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/6 recovery codes remaining/)).toBeInTheDocument();
+  });
+
+  it('has NO disable button (2FA is mandatory)', async () => {
+    mocks.fetchMe.mockResolvedValue({ id: 1, email: 'jay@example.com' } satisfies User);
+
+    renderSettings();
+    await screen.findByText('Two-Factor Authentication');
+
+    expect(
+      screen.queryByRole('button', { name: /disable/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /turn off/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('regenerate: password re-auth → shows new codes once', async () => {
+    mocks.fetchMe.mockResolvedValue({ id: 1, email: 'jay@example.com' } satisfies User);
+    mocks.regenerateRecoveryCodes.mockResolvedValue({
+      recoveryCodes: ['NEW11-NEW22', 'NEW33-NEW44'],
+    });
+
+    renderSettings();
+    await screen.findByText('Two-Factor Authentication');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Regenerate recovery codes' }),
+    );
+    await user.type(
+      screen.getByLabelText('Confirm your password to continue'),
+      'a-long-passphrase',
+    );
+    await user.click(screen.getByRole('button', { name: 'Regenerate codes' }));
+
+    expect(mocks.regenerateRecoveryCodes).toHaveBeenCalledWith(
+      'a-long-passphrase',
+    );
+    expect(await screen.findByText('NEW11-NEW22')).toBeInTheDocument();
+    expect(screen.getByText('NEW33-NEW44')).toBeInTheDocument();
+  });
+
+  it('re-enroll: password → QR + manual key → confirm → new codes', async () => {
+    mocks.fetchMe.mockResolvedValue({ id: 1, email: 'jay@example.com' } satisfies User);
+    mocks.mfaEnroll.mockResolvedValue({
+      otpauthUri: 'otpauth://totp/x?secret=NEWSEED',
+      secret: 'NEWSEEDKEY',
+    });
+    mocks.mfaConfirm.mockResolvedValue({
+      recoveryCodes: ['RE111-RE222'],
+    });
+
+    renderSettings();
+    await screen.findByText('Two-Factor Authentication');
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Re-enroll authenticator (new phone)',
+      }),
+    );
+    await user.type(
+      screen.getByLabelText('Confirm your password to set up a new authenticator'),
+      'a-long-passphrase',
+    );
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(mocks.mfaEnroll).toHaveBeenCalledWith({
+      password: 'a-long-passphrase',
+    });
+    // QR + manual key render.
+    expect(
+      await screen.findByAltText(
+        'QR code for setting up two-factor authentication',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('NEWSEEDKEY')).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Authentication code'), '654321');
+    await user.click(
+      screen.getByRole('button', { name: 'Confirm new authenticator' }),
+    );
+
+    expect(mocks.mfaConfirm).toHaveBeenCalledWith({
+      password: 'a-long-passphrase',
+      code: '654321',
+    });
+    expect(await screen.findByText('RE111-RE222')).toBeInTheDocument();
   });
 });

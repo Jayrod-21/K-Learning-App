@@ -1227,6 +1227,109 @@ export interface PatchAuthMeBody {
   expected_version: number;
 }
 
+// ── MFA / TOTP 2FA login (PASS LOGIN — PART C) ────────────────────────────
+//
+// These mirror the server's wire shapes (PASS_LOGIN_CONTRACT PART B) EXACTLY.
+// The server speaks snake_case on the wire; `services/auth.ts` translates to
+// the camelCase in-app result types below at the boundary, the same idiom the
+// rest of the service layer uses (e.g. `grammarPatternKey`).
+//
+// SECURITY — the wire never carries the TOTP secret in a form this client may
+// persist: `challenge_token`, `secret`, and `recovery_codes` are held in
+// React state ONLY (never localStorage / sessionStorage / cookies). See the
+// AuthProvider + Login docstrings. The client also NEVER echoes a raw server
+// error `message`; the Login/Settings error tables map `code`/`status` to
+// fixed copy.
+
+/**
+ * Shared shape for the `POST /auth/login` envelope. The server discriminates
+ * on `status`; only one variant carries the user, the other two carry a
+ * short-lived pending challenge token (the bearer of step-1 success).
+ *
+ * `status: 'authenticated'` is the legacy / `MFA_REQUIRED=false` branch
+ * (direct session, cookie already set). The mandatory-2FA prod posture only
+ * ever returns `mfa_required` (confirmed factor exists) or
+ * `enrollment_required` (no confirmed factor — first login forces enrollment).
+ */
+export type LoginResponse =
+  | { status: 'authenticated'; user: AuthMeResponse['user'] }
+  | { status: 'mfa_required'; challenge_token: string; expires_in: number }
+  | { status: 'enrollment_required'; challenge_token: string; expires_in: number };
+
+/** `POST /auth/login/totp` success envelope — the real session cookie is set. */
+export interface LoginTotpResponse {
+  status: 'authenticated';
+  user: AuthMeResponse['user'];
+}
+
+/**
+ * `POST /auth/mfa/enroll` envelope. Auth is EITHER an `enroll` challenge token
+ * (the forced-enrollment login leg) OR a full session + password re-auth (the
+ * Settings re-enroll leg). Returns the freshly-minted PENDING secret as a
+ * base32 string (manual-entry) plus the `otpauth://` URI the client renders to
+ * a QR. No session and no recovery codes are issued here — `confirm` does that.
+ */
+export interface MfaEnrollResponse {
+  otpauth_uri: string;
+  secret: string;
+}
+
+/**
+ * `POST /auth/mfa/confirm` envelope. Two shapes by auth leg:
+ *   - challenge leg → `status:'authenticated'` + `user` (session minted) +
+ *     `recovery_codes` (shown ONCE).
+ *   - session re-enroll leg → `status:'updated'` (current session kept) +
+ *     `recovery_codes`.
+ * `user` is therefore optional; `recovery_codes` is always present.
+ */
+export interface MfaConfirmResponse {
+  status: 'authenticated' | 'updated';
+  user?: AuthMeResponse['user'];
+  recovery_codes: string[];
+}
+
+/** `POST /auth/mfa/recovery-codes/regenerate` envelope. */
+export interface RegenerateRecoveryCodesResponse {
+  recovery_codes: string[];
+}
+
+/** `GET /auth/mfa/status` envelope (Settings 2FA section). */
+export interface MfaStatusResponse {
+  enabled: boolean;
+  recovery_codes_remaining: number;
+}
+
+// ── In-app (camelCase) MFA result types — what services/auth.ts returns ──
+
+/** Discriminated `login()` result the AuthProvider branches on. */
+export type LoginResult =
+  | { status: 'authenticated'; user: import('../hooks/auth-context').User }
+  | { status: 'mfa_required'; challengeToken: string; expiresIn: number }
+  | { status: 'enrollment_required'; challengeToken: string; expiresIn: number };
+
+/** `mfaEnroll()` result — QR source + manual-entry secret. */
+export interface MfaEnrollResult {
+  otpauthUri: string;
+  secret: string;
+}
+
+/** `mfaConfirm()` result — optional user (challenge leg) + recovery codes. */
+export interface MfaConfirmResult {
+  user?: import('../hooks/auth-context').User;
+  recoveryCodes: string[];
+}
+
+/** `regenerateRecoveryCodes()` result. */
+export interface RecoveryCodesResult {
+  recoveryCodes: string[];
+}
+
+/** `fetchMfaStatus()` result (Settings 2FA section). */
+export interface MfaStatus {
+  enabled: boolean;
+  recoveryCodesRemaining: number;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Images / OCR mining (Pass 8)
 // ─────────────────────────────────────────────────────────────

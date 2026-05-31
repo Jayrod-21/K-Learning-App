@@ -25,6 +25,16 @@
  *   - Token leakage: the cookie is `HttpOnly`; we never see or echo it.
  *   - Session fixation: handled server-side (each login mints a new row).
  *     We trust the server and just re-probe on success.
+ *   - Pending-challenge leakage (PASS LOGIN — PART C2): the two-step 2FA
+ *     `pending` state (the challenge token between the password step and the
+ *     real session) lives in React state ONLY. It is NEVER written to
+ *     `localStorage`/`sessionStorage`/a cookie — a persisted bearer token
+ *     would outlive its purpose and widen the theft surface. The app gate
+ *     stays `guest` for the whole pending window; a pending challenge confers
+ *     no session powers. A page reload drops it by design (the user restarts
+ *     at the credentials step). `login` only sets `pending` on the
+ *     `mfa_required`/`enrollment_required` branches; it authenticates directly
+ *     only on the legacy `authenticated` branch.
  */
 import {
   useCallback,
@@ -37,9 +47,16 @@ import {
 } from 'react';
 import { ApiError, api } from '../services/api';
 import {
+  login as loginRequest,
+  loginTotp,
+  mfaConfirm,
+  mfaEnroll,
+} from '../services/auth';
+import {
   AuthContext,
   type AuthContextValue,
   type AuthStatus,
+  type PendingChallenge,
   type User,
 } from './auth-context';
 
@@ -60,6 +77,10 @@ export function AuthProvider({
   children: ReactNode;
 }): JSX.Element {
   const [state, setState] = useState<AuthState>(INITIAL_STATE);
+  // The interstitial 2FA challenge (PART C2). Memory-only — see the
+  // threat-model header. `null` outside a pending login. The challenge token
+  // it carries is read by the new MFA methods below and NEVER persisted.
+  const [pending, setPending] = useState<PendingChallenge | null>(null);
   // Coalesce concurrent probes — the initial mount and any post-logout
   // refresh can race; only the latest controller's response applies.
   const probeRef = useRef<AbortController | null>(null);
@@ -136,16 +157,99 @@ export function AuthProvider({
       // Abort any in-flight probe *before* the POST. See threat-model
       // header: a slow `/auth/me` that resolves after `setState` below
       // would clobber `authenticated` back to `guest`. Aborting first
-      // makes the probe's catch a no-op via `ctrl.signal.aborted`.
+      // makes the probe's catch a no-op via `ctrl.signal.aborted`. The same
+      // defence covers the 2FA branches: even though they don't authenticate
+      // yet, a late probe resolving as 401 must not race the `pending` UI.
       probeRef.current?.abort();
-      const data = await api.post<AuthResponse>('/auth/login', {
-        email,
-        password,
+      const result = await loginRequest(email, password);
+      if (result.status === 'authenticated') {
+        // Legacy / `MFA_REQUIRED=false` branch — cookie already set.
+        setPending(null);
+        setState({ status: 'authenticated', user: result.user });
+        return;
+      }
+      // `mfa_required` | `enrollment_required` — hold the challenge in memory
+      // and stay `guest`. The Login screen renders the next step off `pending`.
+      setPending({
+        kind: result.status === 'mfa_required' ? 'mfa' : 'enroll',
+        challengeToken: result.challengeToken,
+        expiresIn: result.expiresIn,
       });
-      setState({ status: 'authenticated', user: data.user });
     },
     [],
   );
+
+  const submitTotp = useCallback(
+    async (code: string): Promise<void> => {
+      if (!pending || pending.kind !== 'mfa') {
+        // A submit with no live `mfa` challenge is a programming error — the
+        // screen should only render the code step when `pending.kind==='mfa'`.
+        throw new ApiError('no pending challenge', {
+          status: 0,
+          code: 'no_pending',
+        });
+      }
+      // Same probe-race defence as `login`: the about-to-be-set session must
+      // win against any straggling 401 probe.
+      probeRef.current?.abort();
+      const { user } = await loginTotp(pending.challengeToken, code);
+      // Only clear `pending` AFTER the call resolves — a thrown ApiError (bad
+      // or expired code) leaves the screen on the code step to retry.
+      setPending(null);
+      setState({ status: 'authenticated', user });
+    },
+    [pending],
+  );
+
+  const enroll = useCallback(async (): Promise<{
+    otpauthUri: string;
+    secret: string;
+  }> => {
+    if (!pending || pending.kind !== 'enroll') {
+      throw new ApiError('no pending enrollment', {
+        status: 0,
+        code: 'no_pending',
+      });
+    }
+    // Mint the pending secret. Does NOT consume the challenge or authenticate
+    // — `confirmEnroll` does both — so `pending` is intentionally untouched.
+    return mfaEnroll({ challengeToken: pending.challengeToken });
+  }, [pending]);
+
+  const confirmEnroll = useCallback(
+    async (code: string): Promise<{ recoveryCodes: string[] }> => {
+      if (!pending || pending.kind !== 'enroll') {
+        throw new ApiError('no pending enrollment', {
+          status: 0,
+          code: 'no_pending',
+        });
+      }
+      const { recoveryCodes } = await mfaConfirm({
+        challengeToken: pending.challengeToken,
+        code,
+      });
+      // Clear `pending` (the challenge is spent) but do NOT authenticate yet —
+      // the screen must display the one-time recovery codes and gate app entry
+      // behind the user's acknowledgement. `completeEnrollment` finishes the
+      // flip once they confirm they've saved the codes. The session cookie is
+      // already set server-side, so a reload mid-acknowledgement still lands
+      // the user signed in (the probe picks it up) — they'd just miss the
+      // codes, which is the correct fail-safe (codes are unrecoverable, the
+      // session is not).
+      setPending(null);
+      return { recoveryCodes };
+    },
+    [pending],
+  );
+
+  const completeEnrollment = useCallback(async (): Promise<void> => {
+    // Idempotent: if we're already authenticated, nothing to do.
+    if (state.status === 'authenticated') return;
+    // The session cookie is already set (confirm minted it); re-probe to
+    // hydrate the user and flip the gate. Reuses the shared abort/coalesce
+    // logic so a racing initial probe can't clobber the result.
+    await probe();
+  }, [state.status, probe]);
 
   const register = useCallback(
     async (
@@ -196,6 +300,9 @@ export function AuthProvider({
       // Best-effort — if the server can't reach us we still drop local
       // state so the UI redirects to login. Next probe will reconcile.
     }
+    // Drop any half-finished 2FA challenge too — a stale `pending` would
+    // otherwise stick the Login screen on the code/enroll step after a logout.
+    setPending(null);
     setState({ status: 'guest', user: null });
     await probe();
   }, [probe]);
@@ -205,7 +312,12 @@ export function AuthProvider({
       status: state.status,
       user: state.user,
       loading: state.status === 'loading',
+      pending,
       login,
+      submitTotp,
+      enroll,
+      confirmEnroll,
+      completeEnrollment,
       register,
       logout,
       // `refresh` is just `probe` re-exposed under a name screens can
@@ -214,7 +326,19 @@ export function AuthProvider({
       // an in-flight initial probe is safe — the older controller aborts.
       refresh: probe,
     }),
-    [state.status, state.user, login, register, logout, probe],
+    [
+      state.status,
+      state.user,
+      pending,
+      login,
+      submitTotp,
+      enroll,
+      confirmEnroll,
+      completeEnrollment,
+      register,
+      logout,
+      probe,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

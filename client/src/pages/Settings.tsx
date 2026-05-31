@@ -61,17 +61,21 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
+  type FormEvent,
   type JSX,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
 import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { Topbar } from '../components/Topbar';
@@ -81,10 +85,18 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { useTheme } from '../hooks/useTheme';
 import type { ThemeMode } from '../hooks/useTheme';
-import { fetchMe, patchMe } from '../services/auth';
+import {
+  fetchMe,
+  fetchMfaStatus,
+  mfaConfirm,
+  mfaEnroll,
+  patchMe,
+  regenerateRecoveryCodes,
+} from '../services/auth';
+import { otpauthUriToDataUrl } from '../lib/qr';
 import { fetchPrefs, putPrefs, type Prefs } from '../services/settings';
 import type { User } from '../hooks/auth-context';
-import type { NotifPrefs, PalettePrefs } from '../types/domain';
+import type { MfaStatus, NotifPrefs, PalettePrefs } from '../types/domain';
 
 /**
  * Mock fallback for the `/auth/me` query — returns a user-shaped fixture so
@@ -707,6 +719,9 @@ export default function Settings(): JSX.Element {
         {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
       </SettingsGroup>
 
+      {/* ───── Two-Factor Authentication (server-backed) ───── */}
+      <TwoFactorSection />
+
       {/* Prefs (notif + palette) cross-device sync failure is surfaced via a
           non-blocking toast (see flushPrefs) — the change is already durable in
           localStorage, so it never blanks the screen with an inline ErrorCard. */}
@@ -901,6 +916,449 @@ function SettingsGroup({
       </header>
       {children}
     </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Two-Factor Authentication (PASS LOGIN — PART C4)
+// ─────────────────────────────────────────────────────────────
+//
+// Mandatory 2FA: there is intentionally NO disable button. The only operations
+// are (a) regenerate recovery codes and (b) re-enroll the authenticator (new
+// phone). Both require a password re-auth at the moment of action — the
+// password is sent only with the privileged call, never stored. A lost-device
+// total lockout is recovered by the operator via the `mfa-reset` CLI (noted in
+// the UI), not in-app.
+//
+// SECURITY:
+//   - The re-auth password lives in a local state field for exactly the
+//     in-flight call and is cleared as soon as the modal closes. It is never
+//     persisted and never sent anywhere but the privileged endpoint.
+//   - The pending secret (re-enroll) + recovery codes are held in React state
+//     only, shown once, never persisted (RecoveryCodesPanel + qr helper).
+//   - No raw server error text is rendered: blocking loads use ErrorCard with
+//     fixed copy; transient failures use the global Toast with fixed copy.
+
+/** Author-controlled copy for a 2FA action failure — never echoes `err`. */
+function mfaMessageFor(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return 'That password was incorrect.';
+    if (err.status === 400) return 'That code didn’t match. Try again.';
+    if (err.status === 423) {
+      // Surface the real lockout window when the server supplies retry_after
+      // (seconds) — consistent with Login.tsx (SF1). Falls back to generic copy.
+      if (typeof err.retryAfter === 'number' && err.retryAfter > 0) {
+        const minutes = Math.max(1, Math.ceil(err.retryAfter / 60));
+        return `Too many attempts — wait ${String(minutes)} ${
+          minutes === 1 ? 'minute' : 'minutes'
+        } and try again.`;
+      }
+      return 'Too many attempts — wait a few minutes and try again.';
+    }
+    if (err.status === 429) {
+      return 'Too many attempts. Please wait a moment and try again.';
+    }
+    if (err.status === 0 || err.code === 'network') {
+      return 'Network unreachable. Please try again.';
+    }
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+/** Which re-auth flow the inline panel is driving, if any. */
+type MfaFlow = 'none' | 'regenerate' | 'reenroll';
+
+function TwoFactorSection(): JSX.Element {
+  const { toast } = useToast();
+
+  // Status load. Mock fallback keeps the section rendering in a server-down
+  // dev session; a real settle drives the badge.
+  const statusQuery = useEndpointOrMock<MfaStatus>(
+    'settings:mfa-status',
+    loadMfaStatusMock,
+    { realFn: fetchMfaStatus },
+  );
+
+  const [flow, setFlow] = useState<MfaFlow>('none');
+  // Recovery codes to display once (after a successful regenerate / re-enroll).
+  const [codes, setCodes] = useState<string[] | null>(null);
+
+  const status = statusQuery.data;
+
+  // Re-fetch the status (recovery-codes-remaining changes after a regenerate).
+  const reloadStatus = useCallback((): void => {
+    void statusQuery.refetch();
+  }, [statusQuery]);
+
+  function reset(): void {
+    setFlow('none');
+    setCodes(null);
+  }
+
+  // Blocking load failure → ErrorCard (per the contract). A mock settle is a
+  // soft state, not a failure, so it doesn't block.
+  return (
+    <SettingsGroup
+      icon="info"
+      eyebrow="2단계 인증"
+      title="Two-Factor Authentication"
+      mock={statusQuery.isMock}
+    >
+      {statusQuery.error && !statusQuery.data ? (
+        <ErrorCard
+          message="Couldn’t load your 2FA status. Check your connection and retry."
+          onRetry={reloadStatus}
+        />
+      ) : codes !== null ? (
+        <RecoveryCodesPanel
+          codes={codes}
+          title="Your new recovery codes"
+          // No app-entry ack here — the user is already signed in; a simple
+          // "Done" closes the panel.
+        />
+      ) : (
+        <>
+          <div className="km-mfa__status">
+            <span className="km-mfa__badge">
+              <Icon name="check" size={12} />
+              {status?.enabled ? 'Enabled' : 'Required'}
+            </span>
+            {status ? (
+              <span className="km-mfa__remaining">
+                {status.recoveryCodesRemaining}{' '}
+                {status.recoveryCodesRemaining === 1
+                  ? 'recovery code'
+                  : 'recovery codes'}{' '}
+                remaining
+              </span>
+            ) : null}
+          </div>
+
+          {flow === 'none' ? (
+            <div className="km-mfa__actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFlow('regenerate');
+                }}
+              >
+                Regenerate recovery codes
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setFlow('reenroll');
+                }}
+              >
+                Re-enroll authenticator (new phone)
+              </Button>
+            </div>
+          ) : flow === 'regenerate' ? (
+            <RegenerateFlow
+              onCancel={reset}
+              onDone={(newCodes) => {
+                setCodes(newCodes);
+                setFlow('none');
+                reloadStatus();
+                toast({ message: 'New recovery codes generated.', tone: 'success' });
+              }}
+              onError={(err) => {
+                toast({ message: mfaMessageFor(err), tone: 'error' });
+              }}
+            />
+          ) : (
+            <ReEnrollFlow
+              onCancel={reset}
+              onDone={(newCodes) => {
+                setCodes(newCodes);
+                setFlow('none');
+                reloadStatus();
+                toast({
+                  message: 'Authenticator re-enrolled.',
+                  tone: 'success',
+                });
+              }}
+              onError={(err) => {
+                toast({ message: mfaMessageFor(err), tone: 'error' });
+              }}
+            />
+          )}
+
+          <p className="km-mfa__note">
+            2FA is required and can’t be turned off. If you lose your
+            authenticator and your recovery codes, contact the operator to reset
+            it.
+          </p>
+        </>
+      )}
+
+      {codes !== null ? (
+        <div className="km-mfa__actions">
+          <Button variant="gold" size="sm" onClick={reset}>
+            Done
+          </Button>
+        </div>
+      ) : null}
+    </SettingsGroup>
+  );
+}
+
+/** Mock fallback for the MFA status query (server-down dev session). */
+async function loadMfaStatusMock(): Promise<MfaStatus> {
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  return { enabled: true, recoveryCodesRemaining: 10 };
+}
+
+/**
+ * Regenerate-recovery-codes flow — a single password field. On submit it
+ * re-auths and issues a fresh set; the parent shows them once.
+ */
+function RegenerateFlow({
+  onCancel,
+  onDone,
+  onError,
+}: {
+  onCancel: () => void;
+  onDone: (codes: string[]) => void;
+  onError: (err: unknown) => void;
+}): JSX.Element {
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const pwId = useId();
+
+  async function handleSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
+    e.preventDefault();
+    if (submitting || password === '') return;
+    setSubmitting(true);
+    try {
+      const { recoveryCodes } = await regenerateRecoveryCodes(password);
+      setPassword('');
+      onDone(recoveryCodes);
+    } catch (err) {
+      onError(err);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form className="km-mfa__reauth" onSubmit={handleSubmit} aria-busy={submitting}>
+      <div className="km-field">
+        <label htmlFor={pwId} className="km-field__label">
+          Confirm your password to continue
+        </label>
+        <input
+          id={pwId}
+          className="km-field__input"
+          type="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value);
+          }}
+        />
+      </div>
+      <div className="km-mfa__actions">
+        <Button type="submit" variant="gold" size="sm" disabled={submitting || password === ''}>
+          <span role="status" aria-live="polite">
+            {submitting ? 'One moment…' : 'Regenerate codes'}
+          </span>
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Re-enroll flow — password re-auth → mint a new pending secret (QR + manual
+ * key) → 6-digit confirm → new recovery codes. Rotates the TOTP secret.
+ */
+function ReEnrollFlow({
+  onCancel,
+  onDone,
+  onError,
+}: {
+  onCancel: () => void;
+  onDone: (codes: string[]) => void;
+  onError: (err: unknown) => void;
+}): JSX.Element {
+  // Two sub-steps: 're-auth' collects the password + mints the secret;
+  // 'confirm' shows the QR and takes the code.
+  const [step, setStep] = useState<'reauth' | 'confirm'>('reauth');
+  const [password, setPassword] = useState('');
+  const [secret, setSecret] = useState<string | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrFailed, setQrFailed] = useState(false);
+  const [code, setCode] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const pwId = useId();
+  const codeId = useId();
+  const secretId = useId();
+
+  // N4: the `mfaEnroll`/`mfaConfirm` service calls don't accept an AbortSignal,
+  // so we can't cancel the in-flight request — but we MUST NOT `setState` /
+  // `onError` after unmount (the modal can close mid-request). A mounted guard
+  // makes every late settle a no-op, matching the abort discipline the fetch /
+  // prefs paths in this file use for their cancellable requests.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function handleReauth(e: FormEvent<HTMLFormElement>): Promise<void> {
+    e.preventDefault();
+    if (submitting || password === '') return;
+    setSubmitting(true);
+    try {
+      const { otpauthUri, secret: sec } = await mfaEnroll({ password });
+      if (!mountedRef.current) return;
+      setSecret(sec);
+      setStep('confirm');
+      try {
+        const dataUrl = await otpauthUriToDataUrl(otpauthUri);
+        if (!mountedRef.current) return;
+        setQrDataUrl(dataUrl);
+      } catch {
+        if (!mountedRef.current) return;
+        setQrFailed(true);
+      }
+    } catch (err) {
+      if (!mountedRef.current) return;
+      onError(err);
+    } finally {
+      if (mountedRef.current) setSubmitting(false);
+    }
+  }
+
+  async function handleConfirm(e: FormEvent<HTMLFormElement>): Promise<void> {
+    e.preventDefault();
+    if (submitting || code.trim() === '') return;
+    setSubmitting(true);
+    try {
+      // Re-auth password is re-sent with confirm too (the server's session leg
+      // accepts `{password, code}`); it's still only in memory.
+      const { recoveryCodes } = await mfaConfirm({ password, code: code.trim() });
+      if (!mountedRef.current) return;
+      setPassword('');
+      onDone(recoveryCodes);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      onError(err);
+    } finally {
+      if (mountedRef.current) setSubmitting(false);
+    }
+  }
+
+  if (step === 'reauth') {
+    return (
+      <form className="km-mfa__reauth" onSubmit={handleReauth} aria-busy={submitting}>
+        <div className="km-field">
+          <label htmlFor={pwId} className="km-field__label">
+            Confirm your password to set up a new authenticator
+          </label>
+          <input
+            id={pwId}
+            className="km-field__input"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value);
+            }}
+          />
+        </div>
+        <div className="km-mfa__actions">
+          <Button type="submit" variant="gold" size="sm" disabled={submitting || password === ''}>
+            <span role="status" aria-live="polite">
+              {submitting ? 'One moment…' : 'Continue'}
+            </span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <div className="km-mfa__reauth">
+      <p className="km-mfa__note" style={{ marginTop: 0 }}>
+        Scan this with your new authenticator app, then enter the 6-digit code
+        it shows.
+      </p>
+      <div className="km-enroll__qr">
+        {qrDataUrl ? (
+          <img
+            src={qrDataUrl}
+            alt="QR code for setting up two-factor authentication"
+            className="km-enroll__qr-img"
+            width={220}
+            height={220}
+          />
+        ) : qrFailed ? (
+          <p className="km-field__hint">
+            The QR couldn’t be drawn. Enter the setup key below instead.
+          </p>
+        ) : (
+          <p className="km-field__hint" role="status" aria-live="polite">
+            Preparing your setup code…
+          </p>
+        )}
+      </div>
+      {secret ? (
+        <div className="km-enroll__secret">
+          <label htmlFor={secretId} className="km-field__label">
+            Or enter this setup key manually
+          </label>
+          <code id={secretId} className="km-enroll__secret-value">
+            {secret}
+          </code>
+        </div>
+      ) : null}
+      <form onSubmit={handleConfirm} aria-busy={submitting}>
+        <div className="km-field">
+          <label htmlFor={codeId} className="km-field__label">
+            Authentication code
+          </label>
+          <input
+            id={codeId}
+            className="km-field__input km-login__code-input"
+            type="text"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            maxLength={6}
+            required
+            value={code}
+            onChange={(e) => {
+              setCode(e.target.value);
+            }}
+            placeholder="000000"
+          />
+        </div>
+        <div className="km-mfa__actions">
+          <Button type="submit" variant="gold" size="sm" disabled={submitting || code.trim() === ''}>
+            <span role="status" aria-live="polite">
+              {submitting ? 'One moment…' : 'Confirm new authenticator'}
+            </span>
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </div>
   );
 }
 

@@ -55,12 +55,24 @@ import axios, {
 export class ApiError extends Error {
   public readonly status: number;
   public readonly code: string;
+  /**
+   * Seconds until a rate-limited / locked-out operation may be retried, when the
+   * server supplies it (e.g. the 423 `account_locked` lockout body carries
+   * `{ error: { code: 'account_locked', retry_after } }`). `undefined` when the
+   * server did not provide one. This is a STRUCTURED NUMERIC field — not echoed
+   * server prose — so surfacing it does not violate the fixed-error-string rule.
+   */
+  public readonly retryAfter?: number;
 
-  public constructor(message: string, opts: { status: number; code: string }) {
+  public constructor(
+    message: string,
+    opts: { status: number; code: string; retryAfter?: number },
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = opts.status;
     this.code = opts.code;
+    this.retryAfter = opts.retryAfter;
   }
 }
 
@@ -68,6 +80,7 @@ interface ServerErrorBody {
   error?: {
     code?: unknown;
     message?: unknown;
+    retry_after?: unknown;
   };
 }
 
@@ -87,7 +100,15 @@ function normaliseError(err: unknown): ApiError {
         typeof body.error.message === 'string'
           ? body.error.message
           : err.message;
-      return new ApiError(message, { status, code });
+      // Preserve a structured numeric `retry_after` (seconds) when present — the
+      // 423 lockout body carries it so the UI can render "wait N minutes" with a
+      // real N. Only accept a finite positive number; anything else is dropped.
+      const retryAfterRaw = body.error.retry_after;
+      const retryAfter =
+        typeof retryAfterRaw === 'number' && Number.isFinite(retryAfterRaw) && retryAfterRaw > 0
+          ? retryAfterRaw
+          : undefined;
+      return new ApiError(message, { status, code, retryAfter });
     }
     if (status === 0) {
       // Discriminate the three "no response" cases — axios collapses them

@@ -704,6 +704,166 @@ body {
 }
 .km-link:hover { text-decoration: underline; }
 
+/* Login — 2FA code input ─────────────────────────────────────────────── */
+.km-login__code-input {
+  letter-spacing: 0.32em;
+  font-size: 18px;
+  text-align: center;
+}
+
+/* Login — TOTP enrollment (QR + manual secret) ───────────────────────── */
+.km-enroll {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.km-enroll__qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+.km-enroll__qr-img {
+  display: block;
+  width: 220px;
+  height: 220px;
+  image-rendering: pixelated; /* keep the QR modules crisp at integer scale */
+}
+.km-enroll__secret {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.km-enroll__secret-value {
+  font-family: 'Inter', monospace;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  word-break: break-all;
+  user-select: all; /* one tap/triple-click selects the whole key */
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 10px 12px;
+  color: var(--paper);
+}
+
+/* Login / Settings — recovery codes panel ────────────────────────────── */
+.km-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.km-recovery__title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--paper);
+  letter-spacing: -0.01em;
+}
+.km-recovery__warn {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--paper-dim);
+}
+.km-recovery__codes {
+  list-style: none;
+  margin: 0;
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+.km-recovery__code {
+  font-family: 'Inter', monospace;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--paper);
+  user-select: all;
+}
+.km-recovery__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.km-recovery__copied {
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+.km-recovery__ack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 4px;
+}
+.km-recovery__ack-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--paper-dim);
+  cursor: pointer;
+}
+.km-recovery__ack-label input {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+
+/* Settings — 2FA section ─────────────────────────────────────────────── */
+.km-mfa__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.km-mfa__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--moss, var(--line-strong));
+  color: var(--moss, var(--paper));
+}
+.km-mfa__remaining {
+  font-size: 13px;
+  color: var(--paper-mute);
+}
+.km-mfa__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.km-mfa__note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--paper-mute);
+  margin: 10px 0 0;
+}
+.km-mfa__reauth {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
 /* Field ──────────────────────────────────────────────────────────────── */
 .km-field { display: flex; flex-direction: column; gap: 6px; }
 .km-field__label {

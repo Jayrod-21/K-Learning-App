@@ -924,3 +924,147 @@ the pure `grammarScheduler` module, advances the card, and appends an immutable
   only; it adds no model call and concatenates no user text into SQL
   (parameterized throughout) — the cost + injection posture of §17.5 is
   unchanged.
+
+## 18. Pass Login surface — TOTP 2FA + login hardening (`/auth/*`, migrations 023–025)
+
+Pass Login makes second-factor authentication MANDATORY (decision D1) and
+reworks login into a two-step, pending-token flow (D2). The factor is a standard
+TOTP authenticator (RFC 6238: SHA1, 6 digits, 30 s, ±1-step skew window).
+Surfaces added: a reworked `POST /auth/login`, `POST /auth/login/totp`,
+`POST /auth/mfa/{enroll,confirm}`, `POST /auth/mfa/recovery-codes/regenerate`,
+`GET /auth/mfa/status`, plus a registration gate on `POST /auth/register`. New
+tables: `user_totp` (023), `user_recovery_codes` (024), `mfa_login_challenges`
+(025). New module `src/crypto/encryption.ts` and `src/auth/{totp,recoveryCodes,
+mfaChallenges}.ts`. Operator CLIs `seed-user` and `mfa-reset`.
+
+### 18.1 TOTP secret at rest — disclosure
+- **Threat:** a DB dump / backup leak yields the factor secret, letting an
+  attacker generate valid codes forever.
+- **Defense:** the base32 secret is encrypted with **AES-256-GCM** before it
+  touches `user_totp.secret_encrypted` (stored as `base64(iv ‖ tag ‖ ct)`). The
+  256-bit key lives ONLY in `TOTP_SECRET_ENC_KEY` (env, validated to exactly 32
+  bytes at config load) — never in the DB, never in a tracked file (the
+  `.env.example` carries a placeholder only). A DB read alone is useless; the
+  attacker needs both the dump AND the env key. A fresh 12-byte CSPRNG IV per
+  encrypt prevents the catastrophic GCM nonce-reuse failure mode.
+
+### 18.2 Ciphertext tampering
+- **Threat:** an attacker with DB write access flips ciphertext bits to coerce a
+  predictable / chosen secret.
+- **Defense:** GCM is authenticated. `decryptSecret` verifies the 16-byte tag and
+  THROWS on any mismatch; the route treats a throw as "secret unusable" and fails
+  the verify (logged as `*_decrypt_failed`, never the plaintext) rather than
+  trusting unverified bytes or 500ing with the internal cause.
+
+### 18.3 Code replay
+- **Threat:** a TOTP code is valid for the whole ±1-step window (~90 s); a
+  network-sniffed or shoulder-surfed code could be replayed within it.
+- **Defense:** a **monotonic step guard**. `user_totp.last_used_step` holds the
+  highest accepted RFC time-step; a code is accepted only if its matched step is
+  strictly greater. The code used at enrollment-confirm seeds the high-water
+  mark, so even the confirming code cannot be replayed to log in.
+
+### 18.4 Code brute-force
+- **Threat:** 6 digits = 10⁶ space; online guessing could find a live code.
+- **Defense (two layers):** (1) the per-IP `authLimiter` (failures-only) on every
+  auth endpoint; (2) a **per-account lockout** (B-LOCK): `TOTP_MAX_FAILED_ATTEMPTS`
+  consecutive bad codes set `user_totp.locked_until = now() + TOTP_LOCKOUT_MINUTES`,
+  and code-verify 423s (with `retry_after`) until it elapses. The failure counter
+  is bumped and the lock decision made in ONE atomic `UPDATE … RETURNING` so a
+  burst of concurrent guesses can't slip past the threshold. Counters reset to 0
+  on any success.
+
+### 18.5 Pending login token (challenge)
+- **Threat:** the bridge between the password step and the code step could be
+  forged, replayed, repurposed, or used as a session.
+- **Defense:** challenges are opaque 32-byte tokens, **SHA-256-hashed at rest**
+  (`mfa_login_challenges.token_hash`), **single-use** (success sets `consumed_at`
+  via an atomic `UPDATE … WHERE consumed_at IS NULL` rowCount gate),
+  **time-boxed** (`MFA_CHALLENGE_TTL_SEC`, default 5 min), and **purpose-scoped**
+  (`'totp'` vs `'enroll'` — the active-lookup predicates on purpose so an
+  enrollment challenge can NEVER drive the code-login endpoint or vice-versa). A
+  challenge confers **no session powers** — it can only advance its own one step.
+  The raw token is returned to the client once and held in memory only (never
+  localStorage — client contract C2/C3).
+
+### 18.6 Recovery codes
+- **Threat:** backup codes leak from the DB, or are reused / guessed.
+- **Defense:** each code is high-entropy (10 Crockford-base32 chars = 50 bits from
+  a CSPRNG), stored only as **SHA-256 hex** (`user_recovery_codes.code_hash`) —
+  the plaintext is shown to the user exactly ONCE and never persisted or logged.
+  Spend is **single-use** via an atomic `UPDATE … SET used_at = now() WHERE …
+  used_at IS NULL` rowCount gate, scoped to the challenge's user. SHA-256 (not
+  Argon2) is correct here precisely because the code is high-entropy — Argon2
+  would add login latency for zero security gain. Regenerate / re-enroll deletes
+  the prior UNUSED codes before issuing a fresh set.
+
+### 18.7 Concurrency — no double-issue / double-spend
+- **Threat:** a racing double-submit issues two sessions, spends a recovery code
+  / consumes a challenge twice, or burns a single-use recovery code without
+  handing back a session (a credential silently lost).
+- **Defense:** every state transition is an atomic `UPDATE … WHERE <still-valid>`
+  with a rowCount gate (mirrors the Pass-9 scored-once pattern): challenge consume
+  (`WHERE consumed_at IS NULL`), recovery spend (`WHERE used_at IS NULL`), lockout
+  increment (single `UPDATE … RETURNING`). The loser of a race sees rowCount 0 and
+  is rejected — it never issues a session or burns a second code.
+- **Recovery-spend + challenge-consume are committed TOGETHER in one
+  `withTransaction`** (all crypto — argon2/otplib/decrypt — runs *before* the
+  transaction opens, so no external work holds a connection). The recovery code is
+  marked used and the challenge is consumed inside the same transaction; if the
+  consume loses the race (rowCount 0), the whole transaction rolls back via a
+  `ChallengeAlreadyConsumed` sentinel, so the recovery code is **un-spent** and the
+  loser gets `challenge_invalid` with neither a session nor a burned code. This
+  closes the prior independent-gates wart (a racing two-distinct-code submit could
+  otherwise spend a code with no session to show for it).
+- **Enrollment confirm** likewise issues the one-time recovery-code set inside the
+  same transaction that wins the `confirmed_at IS NULL` flip — only that winner
+  issues codes, so two concurrent confirms can't desync the shown set from the
+  stored hashes.
+
+### 18.8 Mandatory enforcement — no session without a confirmed factor
+- **Threat:** a path that issues a full session before MFA completes defeats the
+  mandate.
+- **Defense:** when `MFA_REQUIRED` (default true), `POST /auth/login` NEVER sets a
+  session cookie on the password step — it returns `mfa_required` (confirmed
+  factor exists) or `enrollment_required` (forces first-time enrollment), each
+  with only a pending challenge. The session is minted ONLY at
+  `/auth/login/totp` (valid code/recovery) or `/auth/mfa/confirm` (enrollment).
+  The legacy single-step direct-session path exists ONLY behind
+  `MFA_REQUIRED=false` (test / explicit opt-out).
+
+### 18.9 Registration lockdown
+- **Threat:** self-service signup on a single-user deployment is an account-
+  creation / spam surface.
+- **Defense:** `REGISTRATION_ENABLED` (MUST be false in prod) gates
+  `POST /auth/register` with a `403 registration_closed` BEFORE any DB work — no
+  timing/existence leak. The one account is provisioned out-of-band via the
+  `seed-user` CLI (reuses the Argon2id hasher, idempotent `ON CONFLICT DO
+  NOTHING`, fails loud on a < 12-char password).
+
+### 18.10 Constant-time secret comparisons
+- Password re-auth (enroll/confirm/regenerate Settings paths) uses Argon2id
+  `verify` (constant-time, same dummy-verify enumeration defense as login). TOTP
+  verification goes through otplib's constant-time compare. Recovery codes are
+  matched by hash-equality lookup (the secret value never branches the code path).
+
+### 18.11 Enrollment-pending scope
+- An `'enroll'` challenge authorizes ONLY `/auth/mfa/{enroll,confirm}` and only
+  for its own user; it cannot act as a session, cannot read protected data, and
+  is consumed (single-use) on confirm. Re-enroll from Settings is gated by a full
+  session PLUS a password re-auth (step-up), so a hijacked but un-stepped-up
+  session cannot silently rotate the factor.
+
+### 18.12 No-email account recovery
+- A total lockout (lost authenticator AND lost recovery codes) has NO in-app
+  self-service reset (the mandate forbids a disable button). Recovery is the
+  operator-run `mfa-reset` CLI: it deletes the factor + recovery codes and
+  revokes the user's live sessions in ONE transaction; the next login then falls
+  into forced re-enrollment. Possession of shell + DB access is the authorization
+  boundary for that CLI (it is not an endpoint).
+
+### 18.13 Never-log list (Pass Login)
+- TOTP secret (plaintext base32 or encrypted blob), recovery-code plaintext,
+  pending raw challenge token, and the `TOTP_SECRET_ENC_KEY` are NEVER logged.
+  Decrypt failures log a fixed sentinel (`*_decrypt_failed`), never the
+  ciphertext or key. Route errors use a fixed `{error:{code,message}}` table with
+  no server-internal detail echoed to the client.
