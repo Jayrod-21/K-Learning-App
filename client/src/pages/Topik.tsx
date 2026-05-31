@@ -1,35 +1,41 @@
 /**
- * Topik — TOPIK Prep Study mode (Pass 6, live).
+ * Topik — TOPIK Prep. Two modes behind a segmented toggle (FU-NF-39):
  *
- * Steps a real shuffled draw from `POST /topik/study` (`fetchStudyDraw`), one
- * item at a time, keeping the Pass-2 pick→submit→reveal→next interaction. The
- * draw is a `TopikItem[]`; `idx` selects the current item. When the user steps
- * past the last item the screen shows a "draw complete" state with a "New set"
- * button that refetches a fresh draw and resets to the first item.
+ *   - **Study** (default, unchanged): the Pass-6 live shuffled draw from
+ *     `POST /topik/study`, one item at a time with the pick→submit→reveal→next
+ *     interaction. Study items carry the inline `correct` flag (public
+ *     reference data); the screen reveals correctness client-side.
+ *   - **Mock**: the answer-stripped, server-graded Mock-Test taking flow. A
+ *     section-select → timed exam → server-graded results state machine. The
+ *     exam NEVER receives a `correct` flag — grading happens on submit
+ *     (`POST /topik/mock/submit`); explanations are revealed only post-exam.
  *
- * Study mode reveals correctness client-side off the inline `item.options[].correct`
- * flag — TOPIK items are public reference data, so the answer is served inline
- * by design (the answer-stripped Mock-Test taking flow is FU-NF-39, not built
- * here). On submit the screen ALSO fires `recordTopikAnswer` as fire-and-forget
- * analytics: a failure is swallowed silently and never blocks the reveal or
- * breaks the flow (see `handleSubmit` for why it is deliberately not surfaced
- * as a toast).
+ * The mode toggle is a roving-tabindex radiogroup (WAI-ARIA APG) mirroring the
+ * Settings ThemeModeControl / SwatchPicker pattern. Study mode and the Mock
+ * subtree are sibling components so the two interaction models stay isolated:
+ * switching modes unmounts the other subtree (and tears down the exam timer).
  *
- * Local state:
- *   - `idx`      — position within the draw. `idx >= data.length` is the
- *                  "draw complete" terminal state.
- *   - `picked`   — choice id the user selected (null before any pick).
- *   - `revealed` — Submit pressed; correctness chrome is visible.
- *   - `answered` — running count of submitted items, for the eyebrow + footer.
- *   - `drawKey`  — bumped on "New set" so `useEndpointOrMock`'s `refetch` runs
- *                  and the per-item reveal-block ids stay unique across draws.
- *
- * Threat model: Korean text comes from the server draw and renders as a React
- * text node. JSX escapes interpolated strings, so a malicious server payload
- * becomes literal text — no unescaped HTML reaches the DOM. The analytics write
- * is fire-and-forget and cannot surface a server error into the UI.
+ * Threat model:
+ *   - **Answer leakage.** Study mode reveals off the inline `correct` flag (by
+ *     design — public items). Mock mode is answer-stripped end-to-end: the
+ *     `TopikMockItem` type has no `correct`/`explanation`, the exam holds only
+ *     the user's own picks, and the key arrives solely in the server's
+ *     `MockResult` reveal after submit. A tampered client cannot self-grade.
+ *   - **Rendered text is escaped.** Every Korean string (prompts, choices,
+ *     explanations) renders as a React text node — a malicious server payload
+ *     becomes literal text, never markup.
+ *   - **Failure-safe.** Neither mode can blank the screen: study + mock-fetch
+ *     both fall back to a mock fixture (🅂 badge) via `useEndpointOrMock`, and
+ *     the exam's submit failure surfaces an inline retry rather than dropping
+ *     the user's work.
  */
-import { useCallback, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent,
+} from 'react';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -42,10 +48,158 @@ import { loadTopikStudyMock } from '../data/mocks/topik';
 import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
 import { cn } from '../lib/cn';
 import type { TopikItem } from '../types/domain';
+import { MockMode } from './topik/MockMode';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
+/** The two TOPIK Prep modes the segmented toggle switches between. */
+type TopikMode = 'study' | 'mock';
+
+const MODES: ReadonlyArray<{ id: TopikMode; label: string }> = [
+  { id: 'study', label: 'Study' },
+  { id: 'mock', label: 'Mock' },
+];
+
 function Topik(): JSX.Element {
+  // Default is Study — the unchanged Pass-6 flow.
+  const [mode, setMode] = useState<TopikMode>('study');
+
+  return (
+    <section className="screen km-topik" aria-labelledby="topik-title">
+      <Topbar
+        krTitle={<span id="topik-title">학습 · TOPIK</span>}
+        eyebrow={mode === 'mock' ? 'Mock test · timed' : 'Study mode'}
+      />
+
+      <ModeToggle mode={mode} onSelect={setMode} />
+
+      <div
+        role="tabpanel"
+        id={`topik-panel-${mode}`}
+        aria-labelledby={`topik-tab-${mode}`}
+      >
+        {mode === 'study' ? <StudyMode /> : <MockMode />}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Study ⇄ Mock segmented control — a `tablist` of two `tab`s implementing the
+ * WAI-ARIA APG tabs keyboard contract with a roving tabindex (mirrors the
+ * focus mechanics of Settings' ThemeModeControl / SwatchPicker). Selection
+ * follows focus: an arrow move IS the commit, since switching modes is cheap
+ * and idempotent and that's the behaviour a small two-option segmented control
+ * wants.
+ *
+ * Deliberately a tablist (not a radiogroup): the choice group inside each mode
+ * is itself a radiogroup, so modelling the mode switch as tabs keeps the two
+ * ARIA roles distinct — a screen reader (and the test suite) never conflates
+ * "which mode" with "which answer".
+ */
+function ModeToggle({
+  mode,
+  onSelect,
+}: {
+  mode: TopikMode;
+  onSelect: (mode: TopikMode) => void;
+}): JSX.Element {
+  // Refs by id (not index) so focus management survives a future reorder,
+  // matching ThemeModeControl/SwatchPicker.
+  const refs = useRef<Map<TopikMode, HTMLButtonElement>>(new Map());
+  const selectedIndex = MODES.findIndex((m) => m.id === mode);
+
+  const moveTo = useCallback(
+    (nextIndex: number): void => {
+      const wrapped = (nextIndex + MODES.length) % MODES.length;
+      const next = MODES[wrapped];
+      if (!next) return;
+      if (next.id !== mode) onSelect(next.id);
+      refs.current.get(next.id)?.focus();
+    },
+    [mode, onSelect],
+  );
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>): void => {
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'ArrowDown':
+          e.preventDefault();
+          moveTo(selectedIndex + 1);
+          break;
+        case 'ArrowLeft':
+        case 'ArrowUp':
+          e.preventDefault();
+          moveTo(selectedIndex - 1);
+          break;
+        case 'Home':
+          e.preventDefault();
+          moveTo(0);
+          break;
+        case 'End':
+          e.preventDefault();
+          moveTo(MODES.length - 1);
+          break;
+        default:
+          break;
+      }
+    },
+    [moveTo, selectedIndex],
+  );
+
+  return (
+    <div
+      className="km-topik__modes"
+      role="tablist"
+      aria-label="Study or Mock test mode"
+      // `tabIndex={-1}` makes the interactive-role container focusable WITHOUT
+      // entering the Tab order (the roving tabs own Tab entry) — satisfies
+      // jsx-a11y's interactive-supports-focus rule, same as the repo's
+      // radiogroup containers (SwatchPicker / ThemeModeControl).
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
+      {MODES.map((m) => {
+        const selected = m.id === mode;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            role="tab"
+            id={`topik-tab-${m.id}`}
+            aria-selected={selected}
+            aria-controls={`topik-panel-${m.id}`}
+            // Roving tabindex: only the active tab is a Tab stop, so the
+            // tablist exposes a single tab entry and Tab lands on the selected
+            // mode (WAI-ARIA APG tabs pattern).
+            tabIndex={selected ? 0 : -1}
+            ref={(el) => {
+              if (el) refs.current.set(m.id, el);
+              else refs.current.delete(m.id);
+            }}
+            onClick={() => {
+              if (!selected) onSelect(m.id);
+            }}
+            className={cn(
+              'km-topik__mode focusring',
+              selected && 'km-topik__mode--active',
+            )}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Study mode — the Pass-6 live flow, untouched. Owns its own draw, stepping
+ * state, and reveal interaction. Extracted from the page root verbatim so the
+ * Mock toggle can render it as a sibling without entangling the two modes.
+ */
+function StudyMode(): JSX.Element {
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [revealed, setRevealed] = useState(false);
@@ -101,24 +255,18 @@ function Topik(): JSX.Element {
   }, [picked, current]);
 
   return (
-    <section
-      className="screen km-topik"
-      aria-labelledby="topik-title"
-      style={{ position: 'relative' }}
-    >
+    <div style={{ position: 'relative' }}>
       {isMock ? <MockBadge /> : null}
-      <Topbar
-        krTitle={<span id="topik-title">학습 · TOPIK</span>}
-        eyebrow={
-          isComplete
-            ? `${String(answered)} answered · set complete`
-            : current
-              ? `${current.section} · Item ${String(idx + 1)} / ${String(
-                  draw.length,
-                )}`
-              : 'Study mode'
-        }
-      />
+
+      {!loading && current ? (
+        <div className="km-topik__substate" role="status">
+          <Eyebrow>
+            {`${current.section} · Item ${String(idx + 1)} / ${String(
+              draw.length,
+            )}`}
+          </Eyebrow>
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="km-topik__state" role="status">
@@ -194,7 +342,7 @@ function Topik(): JSX.Element {
           onNext={advance}
         />
       ) : null}
-    </section>
+    </div>
   );
 }
 

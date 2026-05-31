@@ -203,6 +203,103 @@ export interface TopikAnswerResult {
   explanation: string;
 }
 
+// ── TOPIK Mock-Test (FU-NF-39) — server-graded, answer-stripped ──────────
+
+/** Stable choice id on a TOPIK multiple-choice item (`a`|`b`|`c`|`d`). */
+export type ChoiceId = 'a' | 'b' | 'c' | 'd';
+
+/**
+ * The two MCQ sections the Mock-Test flow supports in v1. Writing
+ * (constructed-response) is deferred to FU-NF-47 and is NOT a member of this
+ * union — the exam never serves or submits it. The wire normalises Korean
+ * labels (읽기/듣기) to this enum server-side; the client speaks the enum.
+ */
+export type MockSection = 'reading' | 'listening';
+
+/**
+ * One choice on a Mock-Test item as the client receives it.
+ *
+ * SECURITY (answer-tampering defense, mirrors `DiagnosticChoice`): this type
+ * intentionally has **no `correct` field**. Mock items are graded server-side
+ * on submit (`POST /topik/mock/submit`); the key lives only in the DB and is
+ * revealed per item in `MockReveal.correctChoiceId` AFTER the exam ends.
+ * Re-adding `correct` here would re-enable client-side grading and leak the
+ * answer mid-exam, so it is deliberately omitted (the strip is type-level so a
+ * regression cannot compile a leak through).
+ */
+export interface TopikMockChoice {
+  id: ChoiceId;
+  kr: string;
+  en: string;
+}
+
+/**
+ * A Mock-Test item — `TopikItem` WITHOUT `options[].correct` and WITHOUT
+ * `explanation` (both stripped at the server boundary, revealed only in the
+ * submit result). This is the only TOPIK shape the timed exam ever consumes.
+ */
+export interface TopikMockItem {
+  id: string;
+  section: TopikSection;
+  number: number;
+  level: number;
+  prompt: string;
+  passageRef?: string;
+  options: TopikMockChoice[];
+}
+
+/** Envelope returned by `POST /topik/mock` — the answer-stripped exam payload. */
+export interface MockTest {
+  /** The test the server picked (or echoed) — referenced on submit. */
+  sourceTest: number;
+  section: MockSection;
+  items: TopikMockItem[];
+}
+
+/** One graded answer the client submits in `POST /topik/mock/submit`. */
+export interface MockSubmitAnswer {
+  /** Positive server row id of the item (the `TopikMockItem.id` as a number). */
+  itemId: number;
+  picked: ChoiceId;
+  /** Best-effort time-on-item in ms; omitted when not measured. */
+  timeMs?: number;
+}
+
+/** Body for `POST /topik/mock/submit`. */
+export interface MockSubmitBody {
+  sourceTest: number;
+  section: MockSection;
+  answers: MockSubmitAnswer[];
+  /** Best-effort total wall-clock duration of the exam, in ms. */
+  durationMs?: number;
+}
+
+/**
+ * Per-item reveal in the submit result — the only place a mock item's answer
+ * surfaces. `picked` is `null` for an item the user skipped (graded incorrect).
+ */
+export interface MockReveal {
+  itemId: number;
+  picked: ChoiceId | null;
+  correctChoiceId: ChoiceId;
+  isCorrect: boolean;
+  explanation: string;
+}
+
+/** Result envelope from `POST /topik/mock/submit` — server-computed score. */
+export interface MockResult {
+  sourceTest: number;
+  section: MockSection;
+  totalItems: number;
+  answered: number;
+  correct: number;
+  /** correct/total × 100, one decimal place (server-computed). */
+  percentage: number;
+  /** Readiness band headline derived from `percentage` server-side. */
+  band: string;
+  items: MockReveal[];
+}
+
 // ─────────────────────────────────────────────────────────────
 // Diagnostic
 // ─────────────────────────────────────────────────────────────

@@ -12,7 +12,14 @@
  * conditional explanation block (real items may lack one) is covered by the
  * mock-backed render too.
  */
-import type { TopikItem } from '../../types/domain';
+import type {
+  MockResult,
+  MockSection,
+  MockSubmitBody,
+  MockTest,
+  TopikItem,
+  TopikMockItem,
+} from '../../types/domain';
 import { mockDelay } from './_delay';
 
 /** The canonical single-item fixture (kept as the basis for the draw). */
@@ -179,4 +186,138 @@ export const TOPIK_STUDY_DRAW_FIXTURE: TopikItem[] = [
 export async function loadTopikStudyMock(): Promise<TopikItem[]> {
   await mockDelay();
   return [...TOPIK_STUDY_DRAW_FIXTURE];
+}
+
+// ── Mock-Test (FU-NF-39) — answer-stripped exam fixtures ─────────────────
+//
+// The Mock-Test exam is server-graded and answer-stripped: a `TopikMockItem`
+// carries NO `correct` flag and NO `explanation`. These fixtures deliberately
+// omit both so the offline fallback exercises the exact shape the real
+// endpoint emits — there is no answer here for a tampering client to read.
+
+/** A small answer-stripped exam (4 items) covering the reading section. */
+const TOPIK_MOCK_ITEMS_FIXTURE: TopikMockItem[] = [
+  {
+    id: '1001',
+    section: '읽기',
+    number: 1,
+    level: 4,
+    prompt: '이 글의 내용과 같은 것은?',
+    passageRef: 'remote-work',
+    options: [
+      { id: 'a', kr: '재택근무는 출퇴근 시간을 늘린다.', en: 'Remote work increases commute time.' },
+      { id: 'b', kr: '재택근무에는 장점과 단점이 모두 있다.', en: 'Remote work has both pros and cons.' },
+      { id: 'c', kr: '대부분의 회사가 재택근무를 폐지했다.', en: 'Most companies abolished remote work.' },
+      { id: 'd', kr: '재택근무는 소통을 더 쉽게 만든다.', en: 'Remote work makes communication easier.' },
+    ],
+  },
+  {
+    id: '1002',
+    section: '읽기',
+    number: 2,
+    level: 4,
+    prompt: '밑줄 친 부분과 의미가 가장 비슷한 것은?',
+    options: [
+      { id: 'a', kr: '결국 계획을 미루기로 했다.', en: 'They decided to postpone the plan.' },
+      { id: 'b', kr: '예상보다 일찍 일을 끝냈다.', en: 'They finished earlier than expected.' },
+      { id: 'c', kr: '회의를 다음 주로 옮겼다.', en: 'They moved the meeting to next week.' },
+      { id: 'd', kr: '새로운 직원을 채용했다.', en: 'They hired a new employee.' },
+    ],
+  },
+  {
+    id: '1003',
+    section: '읽기',
+    number: 3,
+    level: 3,
+    prompt: '( )에 들어갈 말로 가장 알맞은 것은?',
+    options: [
+      { id: 'a', kr: '그러나', en: 'However' },
+      { id: 'b', kr: '그래서', en: 'Therefore' },
+      { id: 'c', kr: '그리고', en: 'And' },
+      { id: 'd', kr: '하지만', en: 'But' },
+    ],
+  },
+  {
+    id: '1004',
+    section: '읽기',
+    number: 4,
+    level: 3,
+    prompt: '글쓴이의 태도로 알맞은 것은?',
+    options: [
+      { id: 'a', kr: '비판적이다.', en: 'Critical.' },
+      { id: 'b', kr: '회의적이다.', en: 'Skeptical.' },
+      { id: 'c', kr: '긍정적이다.', en: 'Positive.' },
+      { id: 'd', kr: '무관심하다.', en: 'Indifferent.' },
+    ],
+  },
+];
+
+/**
+ * Async loader — resolves a section-scoped answer-stripped exam after a brief
+ * simulated round-trip. The fixture is reading-flavoured; the `section` the
+ * caller asked for is echoed on the envelope so the screen labels it correctly
+ * even on the offline path. Returns fresh copies so a caller never mutates the
+ * shared fixture.
+ */
+export async function loadTopikMockTest(section: MockSection): Promise<MockTest> {
+  await mockDelay();
+  return {
+    sourceTest: 0,
+    section,
+    items: TOPIK_MOCK_ITEMS_FIXTURE.map((it) => ({
+      ...it,
+      options: it.options.map((o) => ({ ...o })),
+    })),
+  };
+}
+
+/**
+ * Offline grader for the Mock-Test submit fallback.
+ *
+ * The real submit grades server-side against the DB key; this fallback cannot
+ * — the fixtures carry no answer. So it deterministically treats choice `b` as
+ * "correct" purely to produce a coherent results screen offline (a fixed
+ * pseudo-key, NOT a real answer). This path is dev-only mock chrome (the 🅂
+ * badge fires), never a grading authority. Skipped items grade incorrect.
+ */
+export async function submitTopikMockTestMock(
+  body: MockSubmitBody,
+): Promise<MockResult> {
+  await mockDelay();
+  const PSEUDO_KEY = 'b' as const;
+  const totalItems = TOPIK_MOCK_ITEMS_FIXTURE.length;
+  const pickedById = new Map(body.answers.map((a) => [a.itemId, a.picked]));
+  const items = TOPIK_MOCK_ITEMS_FIXTURE.map((it) => {
+    const picked = pickedById.get(Number(it.id)) ?? null;
+    return {
+      itemId: Number(it.id),
+      picked,
+      correctChoiceId: PSEUDO_KEY,
+      isCorrect: picked === PSEUDO_KEY,
+      explanation:
+        'Offline fixture — the live exam reveals the real explanation here once graded by the server.',
+    };
+  });
+  const correct = items.filter((i) => i.isCorrect).length;
+  const answered = body.answers.length;
+  const percentage =
+    totalItems === 0 ? 0 : Math.round((correct / totalItems) * 1000) / 10;
+  const band =
+    percentage >= 80
+      ? 'On track for L5+'
+      : percentage >= 60
+        ? 'L4 range'
+        : percentage >= 40
+          ? 'L3 range'
+          : 'Below L3';
+  return {
+    sourceTest: body.sourceTest,
+    section: body.section,
+    totalItems,
+    answered,
+    correct,
+    percentage,
+    band,
+    items,
+  };
 }

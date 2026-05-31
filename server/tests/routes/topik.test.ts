@@ -4,7 +4,8 @@
  *
  * Routes:
  *   GET  /topik/items
- *   POST /topik/mock
+ *   POST /topik/mock          (answer-stripped — FU-NF-39)
+ *   POST /topik/mock/submit   (server-graded — FU-NF-39)
  *   POST /topik/study
  *   POST /topik/:itemId/answer
  *
@@ -15,7 +16,12 @@
  * Coverage:
  *   - auth required on every route (401 unauthenticated)
  *   - GET /items: section/level/source_test filters + pagination (limit/offset/total)
- *   - POST /mock: ALL items of a test in original item_number order
+ *   - POST /mock: a section's items, answer-STRIPPED (no options[].correct, no
+ *     explanation on the wire — FU-NF-39); server-picks a sourceTest when omitted
+ *     (highest test_number with items in the section); 400 on the writing section
+ *   - POST /mock/submit: grades right/wrong/skipped server-side, writes
+ *     topik_responses(mode='mock') rows user-scoped, returns percentage+band+
+ *     reveals; 400 on writing/empty
  *   - POST /study: shuffled cross-test draw, filter honored, count ≤ limit
  *   - POST /:itemId/answer: grades correct AND wrong; inserts a user-scoped
  *     topik_responses row; 404 on a missing item
@@ -55,6 +61,7 @@ describe('topik — auth required', () => {
   it.each([
     ['GET', '/topik/items'],
     ['POST', '/topik/mock'],
+    ['POST', '/topik/mock/submit'],
     ['POST', '/topik/study'],
     ['POST', '/topik/1/answer'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
@@ -167,22 +174,42 @@ describe('GET /topik/items — filters + pagination', () => {
   });
 });
 
-describe('POST /topik/mock — full test in original order', () => {
-  it('returns every item of the test in item_number order', async () => {
+describe('POST /topik/mock — answer-stripped section assembly (FU-NF-39)', () => {
+  it('returns the section in item_number order, ANSWER-STRIPPED, echoing sourceTest+section', async () => {
     // Seed out of order to prove the route, not the insert order, sorts.
-    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 900, itemNumber: 3 });
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 900,
+      itemNumber: 3,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+      extra: { explanation: 'should NOT reach the wire' },
+    });
     await seedTopikItem(pg.pool, { section: 'reading', testNumber: 900, itemNumber: 1 });
     await seedTopikItem(pg.pool, { section: 'reading', testNumber: 900, itemNumber: 2 });
     // A different test must not bleed in.
     await seedTopikItem(pg.pool, { section: 'reading', testNumber: 901, itemNumber: 1 });
     const { agent } = await registerUser(t.app, pg.pool);
 
-    const res = await agent.post('/topik/mock').send({ sourceTest: 900 });
+    const res = await agent.post('/topik/mock').send({ sourceTest: 900, section: 'reading' });
     expect(res.status).toBe(200);
+    expect(res.body.sourceTest).toBe(900);
+    expect(res.body.section).toBe('reading'); // normalized enum echoed
     expect(res.body.items.map((i: { number: number }) => i.number)).toEqual([1, 2, 3]);
+
+    // The strip: NO item carries `explanation`, NO choice carries `correct`.
+    for (const item of res.body.items as Array<{ explanation?: unknown; options: Array<Record<string, unknown>> }>) {
+      expect(item).not.toHaveProperty('explanation');
+      expect(JSON.stringify(item)).not.toContain('correct');
+      for (const opt of item.options) {
+        expect(opt).not.toHaveProperty('correct');
+        // The choice keeps exactly the public fields.
+        expect(Object.keys(opt).sort()).toEqual(['en', 'id', 'kr']);
+      }
+    }
   });
 
-  it('honors the optional section filter within a test', async () => {
+  it('honors the section filter within a test (listening only)', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', testNumber: 910, itemNumber: 1 });
     await seedTopikItem(pg.pool, { section: 'listening', testNumber: 910, itemNumber: 1 });
     const { agent } = await registerUser(t.app, pg.pool);
@@ -190,7 +217,262 @@ describe('POST /topik/mock — full test in original order', () => {
     const res = await agent.post('/topik/mock').send({ sourceTest: 910, section: 'listening' });
     expect(res.status).toBe(200);
     expect(res.body.items.length).toBe(1);
+    // The stripped item omits the Korean section label entirely? No — section is
+    // still on each item DTO (kept from the study DTO); only correct/explanation
+    // are stripped. The item-level section is the Korean label.
     expect(res.body.items[0].section).toBe('듣기');
+  });
+
+  it('server-picks the HIGHEST test_number with items in the section when sourceTest omitted', async () => {
+    // Two reading tests; the picker must choose 921 (the higher), and a listening
+    // item under an even-higher test must NOT influence a reading pick.
+    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 920, itemNumber: 1 });
+    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 921, itemNumber: 1 });
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 999, itemNumber: 1 });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ section: 'reading' });
+    expect(res.status).toBe(200);
+    expect(res.body.sourceTest).toBe(921); // highest reading test, not the listening 999
+    expect(res.body.items.length).toBe(1);
+  });
+
+  it('rejects the writing section with 400 (writing mock is FU-NF-47)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const byEnum = await agent.post('/topik/mock').send({ section: 'writing' });
+    const byKr = await agent.post('/topik/mock').send({ section: '쓰기' });
+    expect(byEnum.status).toBe(400);
+    expect(byKr.status).toBe(400);
+  });
+
+  it('requires the section field (400 when omitted)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/topik/mock').send({ sourceTest: 900 });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /topik/mock/submit — bulk server-graded scoring (FU-NF-39)', () => {
+  /** Seed a 3-item reading mock under one test; answers are b/c/a (2/3/1). */
+  async function seedThreeItemReadingMock(testNumber: number): Promise<number[]> {
+    const ids: number[] = [];
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 1,
+        options: ['가', '나', '다', '라'],
+        answer: 2, // correct 'b'
+        extra: { explanation: '1번 설명' },
+      }),
+    );
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 2,
+        options: ['가', '나', '다', '라'],
+        answer: 3, // correct 'c'
+        extra: { explanation: '2번 설명' },
+      }),
+    );
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 3,
+        options: ['가', '나', '다', '라'],
+        answer: 1, // correct 'a'
+        extra: { explanation: '3번 설명' },
+      }),
+    );
+    return ids;
+  }
+
+  it('grades right/wrong/skipped server-side, returns percentage+band+reveals', async () => {
+    const [id1, id2, id3] = await seedThreeItemReadingMock(1000);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // id1 correct ('b'), id2 wrong ('a' vs 'c'), id3 skipped (absent).
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1000,
+      section: 'reading',
+      answers: [
+        { itemId: id1, picked: 'b', timeMs: 5000 },
+        { itemId: id2, picked: 'a' },
+      ],
+      durationMs: 120000,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.sourceTest).toBe(1000);
+    expect(res.body.section).toBe('reading');
+    expect(res.body.totalItems).toBe(3);
+    expect(res.body.answered).toBe(2); // skipped item is NOT counted as answered
+    expect(res.body.correct).toBe(1);
+    expect(res.body.percentage).toBe(33.3); // 1/3 → 33.3 (1-dp)
+    expect(res.body.band).toBe('Below L3'); // <40
+
+    // Reveals: one per served item, in item_number order, answer revealed NOW.
+    expect(res.body.items.map((r: { itemId: string }) => r.itemId)).toEqual([
+      String(id1),
+      String(id2),
+      String(id3),
+    ]);
+    const [r1, r2, r3] = res.body.items;
+    expect(r1).toMatchObject({ picked: 'b', correctChoiceId: 'b', isCorrect: true, explanation: '1번 설명' });
+    expect(r2).toMatchObject({ picked: 'a', correctChoiceId: 'c', isCorrect: false, explanation: '2번 설명' });
+    expect(r3).toMatchObject({ picked: null, correctChoiceId: 'a', isCorrect: false, explanation: '3번 설명' });
+  });
+
+  it("writes one topik_responses(mode='mock') row per ANSWERED item, server-computed is_correct", async () => {
+    const [id1, id2, id3] = await seedThreeItemReadingMock(1001);
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 1001,
+      section: 'reading',
+      answers: [
+        { itemId: id1, picked: 'b', timeMs: 3000 }, // correct
+        { itemId: id2, picked: 'd' }, // wrong
+      ],
+    });
+
+    const log = await pg.pool.query<{
+      user_id: string;
+      topik_item_id: string;
+      picked: string;
+      is_correct: boolean;
+      mode: string;
+      time_ms: number | null;
+    }>(
+      `SELECT user_id::text AS user_id, topik_item_id::text AS topik_item_id,
+              picked, is_correct, mode, time_ms
+         FROM topik_responses
+        ORDER BY topik_item_id`,
+    );
+    // Two rows (the skipped id3 is NOT logged), both mode='mock', user-scoped.
+    expect(log.rows.length).toBe(2);
+    for (const r of log.rows) {
+      expect(r.user_id).toBe(String(userId));
+      expect(r.mode).toBe('mock');
+    }
+    const byItem = new Map(log.rows.map((r) => [r.topik_item_id, r]));
+    expect(byItem.get(String(id1))).toMatchObject({ picked: 'b', is_correct: true, time_ms: 3000 });
+    expect(byItem.get(String(id2))).toMatchObject({ picked: 'd', is_correct: false, time_ms: null });
+    expect(byItem.has(String(id3))).toBe(false);
+  });
+
+  it('computes the band from percentage (all correct → On track for L5+)', async () => {
+    const [id1, id2, id3] = await seedThreeItemReadingMock(1002);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1002,
+      section: 'reading',
+      answers: [
+        { itemId: id1, picked: 'b' },
+        { itemId: id2, picked: 'c' },
+        { itemId: id3, picked: 'a' },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.correct).toBe(3);
+    expect(res.body.percentage).toBe(100);
+    expect(res.body.band).toBe('On track for L5+');
+  });
+
+  it('is user-scoped — two users submitting the same mock each write their own rows', async () => {
+    const [id1] = await seedThreeItemReadingMock(1003);
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+
+    await a.agent.post('/topik/mock/submit').send({
+      sourceTest: 1003,
+      section: 'reading',
+      answers: [{ itemId: id1, picked: 'b' }],
+    });
+    await b.agent.post('/topik/mock/submit').send({
+      sourceTest: 1003,
+      section: 'reading',
+      answers: [{ itemId: id1, picked: 'a' }],
+    });
+
+    const aRows = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM topik_responses WHERE user_id = $1`,
+      [a.userId],
+    );
+    const bRows = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM topik_responses WHERE user_id = $1`,
+      [b.userId],
+    );
+    expect(aRows.rows[0]?.n).toBe('1');
+    expect(bRows.rows[0]?.n).toBe('1');
+  });
+
+  it('ignores a pick for an item NOT in the served section/test', async () => {
+    const [id1] = await seedThreeItemReadingMock(1004);
+    // A foreign item in a different test — a pick for it must not be graded/logged.
+    const foreign = await seedTopikItem(pg.pool, { section: 'reading', testNumber: 1005, itemNumber: 1 });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1004,
+      section: 'reading',
+      answers: [
+        { itemId: id1, picked: 'b' },
+        { itemId: foreign, picked: 'a' },
+      ],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.totalItems).toBe(3); // only the 1004 section items
+    expect(res.body.answered).toBe(1); // the foreign pick is ignored
+
+    const log = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM topik_responses`);
+    expect(log.rows[0]?.n).toBe('1'); // foreign pick not logged
+  });
+
+  it('404s when the test/section has no gradeable items', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 9999,
+      section: 'reading',
+      answers: [{ itemId: 1, picked: 'a' }],
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects the writing section with 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1000,
+      section: 'writing',
+      answers: [{ itemId: 1, picked: 'a' }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepts an empty answers array (timed-out blank exam) — grades all skipped, reveals the key', async () => {
+    await seedThreeItemReadingMock(1006);
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1006,
+      section: 'reading',
+      answers: [],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.totalItems).toBe(3);
+    expect(res.body.answered).toBe(0);
+    expect(res.body.correct).toBe(0);
+    // Every item is revealed (so the learner sees what they missed), all skipped.
+    expect(res.body.items.length).toBe(3);
+    for (const r of res.body.items) {
+      expect(r.picked).toBeNull();
+      expect(r.isCorrect).toBe(false);
+      expect(typeof r.correctChoiceId).toBe('string'); // the answer key is revealed
+    }
+    // Nothing answered → no analytics rows written.
+    const log = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM topik_responses`);
+    expect(log.rows[0]?.n).toBe('0');
   });
 });
 

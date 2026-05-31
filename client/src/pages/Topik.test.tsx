@@ -56,6 +56,10 @@ vi.mock('../services/topik', () => ({
   // Never actually invoked — useEndpointOrMock is mocked and ignores realFn —
   // but stubbed so the module's named export exists for the screen's import.
   fetchStudyDraw: () => Promise.reject(new Error('not used in tests')),
+  // Mock-mode services exist for MockMode's import; never called in these
+  // Study-mode tests (no section is started).
+  fetchMockTest: () => Promise.reject(new Error('not used in tests')),
+  submitMockTest: () => Promise.reject(new Error('not used in tests')),
 }));
 
 const { recordTopikAnswer } = svc;
@@ -261,6 +265,43 @@ describe('Topik (Study mode)', () => {
     // The button refetches via startNewSet's drawKey bump + refetch.
     await user.click(newSet);
     expect(hookState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults to Study mode and exposes a Study/Mock tablist', () => {
+    setDraw([ITEM_A, ITEM_B]);
+    render(<Topik />);
+    // Study tab is selected by default; the study item renders.
+    const studyTab = screen.getByRole('tab', { name: /study/i });
+    expect(studyTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /mock/i })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
+    expect(screen.getByText('이 글의 내용과 같은 것은?')).toBeInTheDocument();
+    // Exactly the four answer choices are radios — the mode switch is a
+    // tablist, so it doesn't add stray radios.
+    expect(screen.getAllByRole('radio')).toHaveLength(4);
+  });
+
+  it('switches to Mock mode and renders the section select', async () => {
+    setDraw([ITEM_A, ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getByRole('tab', { name: /mock/i }));
+
+    expect(screen.getByRole('tab', { name: /mock/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    // The Mock section select shows the section cards (Reading enabled).
+    expect(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    ).toBeInTheDocument();
+    // Study item is gone.
+    expect(
+      screen.queryByText('이 글의 내용과 같은 것은?'),
+    ).not.toBeInTheDocument();
   });
 
   it('renders an error state with a retry when the draw fails and is empty', () => {

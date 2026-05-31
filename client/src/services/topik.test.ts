@@ -3,9 +3,20 @@
  * and error re-throw. Mirrors the diagnostic/reading service test style.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchStudyDraw, recordTopikAnswer } from './topik';
+import {
+  fetchMockTest,
+  fetchStudyDraw,
+  recordTopikAnswer,
+  submitMockTest,
+} from './topik';
 import { api, ApiError } from './api';
-import type { TopikAnswerResult, TopikItem } from '../types/domain';
+import type {
+  MockResult,
+  MockSubmitBody,
+  MockTest,
+  TopikAnswerResult,
+  TopikItem,
+} from '../types/domain';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -139,5 +150,143 @@ describe('recordTopikAnswer', () => {
     await expect(
       recordTopikAnswer('101', { picked: 'a' }),
     ).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+const MOCK_TEST: MockTest = {
+  sourceTest: 7,
+  section: 'reading',
+  items: [
+    {
+      id: '1001',
+      section: '읽기',
+      number: 1,
+      level: 4,
+      prompt: '이 글의 내용과 같은 것은?',
+      options: [
+        { id: 'a', kr: '가', en: 'A' },
+        { id: 'b', kr: '나', en: 'B' },
+        { id: 'c', kr: '다', en: 'C' },
+        { id: 'd', kr: '라', en: 'D' },
+      ],
+    },
+  ],
+};
+
+describe('fetchMockTest', () => {
+  it('POSTs /topik/mock with just the section and returns the stripped envelope', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_TEST);
+
+    const res = await fetchMockTest('reading');
+
+    expect(spy).toHaveBeenCalledWith(
+      '/topik/mock',
+      { section: 'reading' },
+      undefined,
+    );
+    expect(res.sourceTest).toBe(7);
+    expect(res.section).toBe('reading');
+    // The returned items carry NO `correct` flag and NO `explanation`.
+    const opt = res.items[0]?.options[0];
+    expect(opt).not.toHaveProperty('correct');
+    expect(res.items[0]).not.toHaveProperty('explanation');
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_TEST);
+    const ctrl = new AbortController();
+
+    await fetchMockTest('listening', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/topik/mock',
+      { section: 'listening' },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(fetchMockTest('reading')).rejects.toMatchObject({
+      status: 500,
+    });
+  });
+});
+
+const SUBMIT_BODY: MockSubmitBody = {
+  sourceTest: 7,
+  section: 'reading',
+  answers: [
+    { itemId: 1001, picked: 'b', timeMs: 4200 },
+    { itemId: 1002, picked: 'a' },
+  ],
+  durationMs: 90000,
+};
+
+const MOCK_RESULT: MockResult = {
+  sourceTest: 7,
+  section: 'reading',
+  totalItems: 2,
+  answered: 2,
+  correct: 1,
+  percentage: 50,
+  band: 'L3 range',
+  items: [
+    {
+      itemId: 1001,
+      picked: 'b',
+      correctChoiceId: 'b',
+      isCorrect: true,
+      explanation: 'B is the only consistent summary.',
+    },
+    {
+      itemId: 1002,
+      picked: 'a',
+      correctChoiceId: 'c',
+      isCorrect: false,
+      explanation: 'C restates the underlined phrase.',
+    },
+  ],
+};
+
+describe('submitMockTest', () => {
+  it('POSTs /topik/mock/submit with the body and returns the graded result', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_RESULT);
+
+    const res = await submitMockTest(SUBMIT_BODY);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/topik/mock/submit',
+      SUBMIT_BODY,
+      undefined,
+    );
+    expect(res.percentage).toBe(50);
+    expect(res.band).toBe('L3 range');
+    expect(res.items).toHaveLength(2);
+    expect(res.items[0]?.isCorrect).toBe(true);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_RESULT);
+    const ctrl = new AbortController();
+
+    await submitMockTest(SUBMIT_BODY, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/topik/mock/submit', SUBMIT_BODY, {
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('bad request', { status: 400, code: 'bad_request' }),
+    );
+
+    await expect(submitMockTest(SUBMIT_BODY)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 });

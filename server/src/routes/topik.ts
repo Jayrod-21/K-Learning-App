@@ -3,15 +3,21 @@
  *
  * Flow:
  *   GET  /topik/items          → paginated browse of the item pool (filters)
- *   POST /topik/mock           → ALL items of a test (+section) in original order
+ *   POST /topik/mock           → a section's items, ANSWER-STRIPPED, for a timed mock
+ *   POST /topik/mock/submit    → bulk server-graded mock scoring (one tx, append log)
  *   POST /topik/study          → a shuffled cross-test draw matching a filter
  *   POST /topik/:itemId/answer → grade a pick, log the attempt, reveal the answer
  *
  * SECURITY (see SECURITY.md §14):
  *   - TOPIK items are PUBLIC reference data. This is a study tool, not a secured
  *     exam, so STUDY mode serves the `correct` flag + explanation INLINE in every
- *     TopikItemDTO — by design (contract §B / locked decisions). The Mock-mode
- *     answer-strip is deferred to FU-NF-39; this pass does NOT strip mock answers.
+ *     TopikItemDTO — by design (contract §B / locked decisions). MOCK mode is the
+ *     OPPOSITE (FU-NF-39, the diagnostic pattern): `POST /topik/mock` returns an
+ *     answer-stripped DTO (`toMockItemDTO` Omits `options[].correct` + the
+ *     `explanation` field — the strip is TYPE-LEVEL, so the wire type literally
+ *     has nowhere to carry the answer), and grading happens server-side on
+ *     `POST /topik/mock/submit` from the DB answer (never a client-asserted flag).
+ *     Writing-section mock is deferred (FU-NF-47); mock is reading/listening only.
  *   - IDOR: `topik_responses` rows are stamped with the SESSION user
  *     (`getUserId(req)`), NEVER a client-supplied id. `topik_items` is reference
  *     data, not user-owned, so an itemId carries no ownership to check — but the
@@ -27,7 +33,7 @@ import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
-import { query } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 
 const router = Router();
@@ -205,6 +211,63 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Mock-mode answer-strip (FU-NF-39) — the diagnostic pattern for /topik/mock.
+//
+// The answer-strip is TYPE-LEVEL, not a runtime delete: the wire DTO is built
+// from `Omit`s so it has NO `correct` field on a choice and NO `explanation`
+// field at all. A regression that tried to copy `correct`/`explanation` onto a
+// mock item would fail to compile, so the answer cannot leak by accident — the
+// only field on a mock choice is `{ id, kr, en }`, and the only fields on a mock
+// item are id/section/number/level/prompt/passageRef/options. The `correct` flag
+// + `explanation` are revealed only by `POST /topik/mock/submit`, post-exam.
+// ---------------------------------------------------------------------------
+
+/** A mock choice — the study choice with `correct` removed (type-level). */
+type TopikMockChoiceDTO = Omit<TopikChoiceDTO, 'correct'>;
+
+/** A mock item — the study item with `options[].correct` and `explanation`
+ *  removed (type-level). `passageRef` is preserved if present. */
+type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation'> & {
+  readonly options: readonly TopikMockChoiceDTO[];
+};
+
+/**
+ * Strip a study DTO down to the mock wire DTO. Because the return type Omits
+ * `correct`/`explanation`, this function physically cannot emit them — the
+ * answer is dropped at the boundary. `explanation` is simply not read here.
+ */
+function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
+  return {
+    id: item.id,
+    section: item.section,
+    number: item.number,
+    level: item.level,
+    prompt: item.prompt,
+    ...(item.passageRef !== undefined ? { passageRef: item.passageRef } : {}),
+    options: item.options.map((o) => ({ id: o.id, kr: o.kr, en: o.en })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mock readiness band — percentage → a simple readiness label.
+//
+// No shared percentage→band map exists (the diagnostic's bands are θ-derived,
+// not percentage-derived — see services/diagnostic/cat.ts `bandForTheta`), so
+// the mock surface owns this percentage→readiness mapping. The thresholds and
+// the TOPIK-level vocabulary (L3/L4/L5+) match the contract (§A2):
+//   ≥ 80  → 'On track for L5+'
+//   60–79 → 'L4 range'
+//   40–59 → 'L3 range'
+//   < 40  → 'Below L3'
+// ---------------------------------------------------------------------------
+function bandForPercentage(percentage: number): string {
+  if (percentage >= 80) return 'On track for L5+';
+  if (percentage >= 60) return 'L4 range';
+  if (percentage >= 40) return 'L3 range';
+  return 'Below L3';
+}
+
 /** The SELECT column list shared by every item-fetching query. */
 const ITEM_COLUMNS = `id::text AS id,
                       section::text AS section,
@@ -296,41 +359,248 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
   }
 });
 
+/**
+ * The mock section schema — like `SectionSchema` (accepts enum OR Korean label),
+ * but CONSTRAINED to the MCQ sections. Writing mock (constructed-response, graded
+ * by the gradeWriting engine) is deferred to FU-NF-47, so a writing section is
+ * rejected at the boundary (400) before it can reach SQL. `refine` runs after the
+ * label→enum transform, so both `쓰기` and `writing` are rejected.
+ */
+const MockSectionSchema = SectionSchema.refine(
+  (s): s is Extract<SectionEnum, 'reading' | 'listening'> => s !== 'writing',
+  { message: 'mock supports the reading and listening sections only (writing mock is FU-NF-47)' },
+);
+
 const MockBodySchema = z
   .object({
-    sourceTest: z.number().int().positive(),
-    section: SectionSchema.optional(),
+    // OPTIONAL — when omitted the server deterministically picks a test for the
+    // section (see the route doc). When present it must be a positive int.
+    sourceTest: z.number().int().positive().optional(),
+    section: MockSectionSchema,
   })
   .strict();
 
 /**
- * POST /topik/mock — the full test for `sourceTest` (+optional section) in
- * original `item_number` order (the original assembly). Returns `{ items }`.
+ * Resolve the `sourceTest` for a mock: if the client supplied one, use it;
+ * otherwise the server PICKS deterministically — the HIGHEST `topik_tests`
+ * `test_number` that has at least one gradeable item in the section. "Highest"
+ * makes the pick stable and intuitively "the newest test" without the client
+ * needing to know test numbers. The same survivor guard the rest of the file
+ * uses (`>=2 options AND answer NOT NULL`) restricts the candidates to gradeable
+ * items, so the picked test always yields a usable mock. Returns null when no
+ * test has a gradeable item in the section (empty corpus for that section).
+ */
+async function resolveMockSourceTest(
+  section: SectionEnum,
+  requested: number | undefined,
+): Promise<number | null> {
+  if (requested !== undefined) return requested;
+  const { rows } = await query<{ test_number: number }>(
+    `SELECT t.test_number
+       FROM topik_tests t
+       JOIN topik_items i ON i.topik_test_id = t.id
+      WHERE i.section = $1::topik_section
+        AND jsonb_array_length(i.options) >= 2
+        AND i.answer IS NOT NULL
+      ORDER BY t.test_number DESC
+      LIMIT 1`,
+    [section],
+  );
+  return rows[0]?.test_number ?? null;
+}
+
+/**
+ * POST /topik/mock — a section's items for `sourceTest` (server-picked when
+ * omitted) in original `item_number` order, ANSWER-STRIPPED for a timed mock.
  *
- * Server route only — the Mock-Test taking UI is deferred to FU-NF-39. Answers
- * are NOT stripped here (FU-NF-39 owns the answer-strip); the DTOs carry the
- * same inline `correct`/`explanation` as study (see SECURITY.md §14.1).
+ * Body: `{ section: 'reading'|'listening' (or 읽기/듣기), sourceTest?: number }`.
+ * Returns `{ sourceTest, section, items: TopikMockItemDTO[] }` — `sourceTest` is
+ * echoed so `/topik/mock/submit` can reference the same test; `section` is the
+ * normalized enum. Items are stripped via `toMockItemDTO` (no `correct`, no
+ * `explanation` — type-level, see above + SECURITY.md §14.1).
+ *
+ * Writing section → 400 (MockSectionSchema; FU-NF-47). An empty result (unknown
+ * or empty test/section) is a valid 200 with `items: []` — same posture as the
+ * other read routes; the client surfaces "no items".
  */
 router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof MockBodySchema>;
 
-    const params: unknown[] = [body.sourceTest];
-    let sectionClause = '';
-    if (body.section !== undefined) {
-      params.push(body.section);
-      sectionClause = ` AND i.section = $${params.length}::topik_section`;
+    const sourceTest = await resolveMockSourceTest(body.section, body.sourceTest);
+    if (sourceTest === null) {
+      // No test has a gradeable item in this section — no mock to assemble.
+      res.status(200).json({ sourceTest: null, section: body.section, items: [] });
+      return;
     }
+
     const { rows } = await query<TopikItemRow>(
       `SELECT ${ITEM_COLUMNS}
          FROM topik_items i
          JOIN topik_tests t ON t.id = i.topik_test_id
-        WHERE t.test_number = $1${sectionClause}
+        WHERE t.test_number = $1
+          AND i.section = $2::topik_section
         ORDER BY i.item_number`,
-      params,
+      [sourceTest, body.section],
     );
 
-    res.status(200).json({ items: mapRows(rows) });
+    res.status(200).json({
+      sourceTest,
+      section: body.section,
+      items: mapRows(rows).map(toMockItemDTO),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /topik/mock/submit — bulk, server-graded mock scoring (FU-NF-39).
+// ---------------------------------------------------------------------------
+
+/** Cap on answers per submit — a real TOPIK section is ≤50 items; 200 is a safe
+ *  DoS bound that still tolerates a longer assembled mock. */
+const MAX_MOCK_ANSWERS = 200;
+
+const MockSubmitAnswerSchema = z
+  .object({
+    itemId: z.number().int().positive(),
+    picked: z.enum(['a', 'b', 'c', 'd']),
+    timeMs: z.number().int().nonnegative().max(60 * 60 * 1000).optional(),
+  })
+  .strict();
+
+const MockSubmitBodySchema = z
+  .object({
+    sourceTest: z.number().int().positive(),
+    section: MockSectionSchema,
+    // min 0: a timed-out exam with nothing answered still submits — every item
+    // is then graded as skipped/incorrect and the result reveals the full answer
+    // key + explanations so the learner sees what they missed (the exam was
+    // already consumed by fetching it). The .max bounds abuse.
+    answers: z.array(MockSubmitAnswerSchema).max(MAX_MOCK_ANSWERS),
+    durationMs: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+/** A per-item reveal in the submit result — the answer is revealed NOW. */
+interface MockRevealDTO {
+  readonly itemId: string;
+  readonly picked: ChoiceId | null;
+  readonly correctChoiceId: ChoiceId;
+  readonly isCorrect: boolean;
+  readonly explanation: string;
+}
+
+/**
+ * POST /topik/mock/submit — grade a whole mock section server-side and score it.
+ *
+ * Body (`.strict()`): `{ sourceTest, section, answers:[{itemId,picked,timeMs?}],
+ * durationMs? }`. Loads the section's gradeable items for `sourceTest` (the same
+ * assembly `/topik/mock` served) and grades each item against the DB answer —
+ * the client never had the answer (A1), so grading is purely server-side. Items
+ * the user did not answer (in the served set but absent from `answers`) count as
+ * incorrect/unanswered (`picked: null`).
+ *
+ * Persistence: in ONE transaction, INSERT a `topik_responses` row per graded
+ * answer (mode='mock', `user_id` from the SESSION — never client-supplied,
+ * `is_correct` server-computed). Append-only, mirroring the per-item route.
+ *
+ * Returns `200 { sourceTest, section, totalItems, answered, correct, percentage,
+ * band, items: MockRevealDTO[] }`. `percentage` = correct/totalItems*100 (1-dp);
+ * `band` from `bandForPercentage`. The reveal array carries the correct choice +
+ * explanation for EVERY served item (post-exam reveal), in item_number order.
+ *
+ * Threat model (SECURITY.md §14.1): answers graded from the DB, never a client
+ * `correct`; writes user-scoped (no IDOR / mass-assignment — body is `.strict()`
+ * and carries no user id); the mock DTO carries no answer (A1). 400 on the
+ * writing section (MockSectionSchema). An empty `answers` array is accepted (a
+ * timed-out blank exam): every item grades as skipped and the result reveals
+ * the answer key the learner missed; no topik_responses rows are written.
+ */
+router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const body = req.body as z.infer<typeof MockSubmitBodySchema>;
+
+    // Load the section's gradeable items for this test — the authoritative set
+    // of items the mock comprised. mapRowToDTO drops ungradeable rows, so the
+    // grading universe is exactly the items `/topik/mock` would have served.
+    const { rows } = await query<TopikItemRow>(
+      `SELECT ${ITEM_COLUMNS}
+         FROM topik_items i
+         JOIN topik_tests t ON t.id = i.topik_test_id
+        WHERE t.test_number = $1
+          AND i.section = $2::topik_section
+        ORDER BY i.item_number`,
+      [body.sourceTest, body.section],
+    );
+    const items = mapRows(rows);
+    if (items.length === 0) {
+      throw new NotFoundError('no gradeable mock items for this test and section');
+    }
+
+    // Index the client's picks by itemId (last write wins on a dup id — the
+    // schema permits dups but grading is deterministic on the final pick).
+    const pickByItemId = new Map<string, z.infer<typeof MockSubmitAnswerSchema>>();
+    for (const a of body.answers) pickByItemId.set(String(a.itemId), a);
+
+    // Grade every served item server-side. A skipped item (no pick) is incorrect
+    // with picked=null; a pick for an item NOT in the served set is ignored (it
+    // is not part of this mock's grading universe).
+    const reveals: MockRevealDTO[] = [];
+    const toInsert: { itemId: string; picked: ChoiceId; isCorrect: boolean; timeMs: number | null }[] = [];
+    let correct = 0;
+    for (const item of items) {
+      const correctChoice = item.options.find((o) => o.correct);
+      // mapRowToDTO guarantees exactly one correct option; guard keeps the type
+      // a definite ChoiceId (mirrors the per-item /answer route).
+      if (correctChoice === undefined) continue;
+      const submitted = pickByItemId.get(item.id);
+      const picked = submitted?.picked ?? null;
+      const isCorrect = picked !== null && picked === correctChoice.id;
+      if (isCorrect) correct += 1;
+      reveals.push({
+        itemId: item.id,
+        picked,
+        correctChoiceId: correctChoice.id,
+        isCorrect,
+        explanation: item.explanation,
+      });
+      // Only ANSWERED items are logged (a skip is not an attempt). Append-only,
+      // mode='mock', stamped with the session user in the transaction below.
+      if (picked !== null) {
+        toInsert.push({ itemId: item.id, picked, isCorrect, timeMs: submitted?.timeMs ?? null });
+      }
+    }
+
+    // Persist every graded answer in ONE transaction (all-or-nothing): a mock is
+    // scored atomically, so a mid-write failure never logs a partial section.
+    await withTransaction(async (client) => {
+      for (const row of toInsert) {
+        await client.query(
+          `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, time_ms)
+           VALUES ($1, $2, $3, $4, 'mock', $5)`,
+          [userId, row.itemId, row.picked, row.isCorrect, row.timeMs],
+        );
+      }
+    });
+
+    const totalItems = reveals.length;
+    const answered = toInsert.length;
+    // 1-dp percentage; totalItems > 0 here (the empty case 404'd above).
+    const percentage = Math.round((correct / totalItems) * 1000) / 10;
+
+    res.status(200).json({
+      sourceTest: body.sourceTest,
+      section: body.section,
+      totalItems,
+      answered,
+      correct,
+      percentage,
+      band: bandForPercentage(percentage),
+      items: reveals,
+    });
   } catch (err) {
     next(err);
   }

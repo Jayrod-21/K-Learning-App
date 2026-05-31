@@ -41,7 +41,14 @@
  * the other services and for future direct callers.
  */
 import { api } from './api';
-import type { TopikAnswerResult, TopikItem } from '../types/domain';
+import type {
+  MockResult,
+  MockSection,
+  MockSubmitBody,
+  MockTest,
+  TopikAnswerResult,
+  TopikItem,
+} from '../types/domain';
 
 /** Filter for `POST /topik/study`. All fields optional → whole-pool draw. */
 export interface StudyDrawOptions {
@@ -110,6 +117,50 @@ export async function recordTopikAnswer(
 ): Promise<TopikAnswerResult> {
   return api.post<TopikAnswerResult>(
     `/topik/${itemId}/answer`,
+    body,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /topik/mock — start a section-scoped Mock-Test (FU-NF-39).
+ *
+ * Sends only `{ section }`; the server PICKS a `sourceTest` that has a complete
+ * set of items for that section and echoes it back so `submitMockTest` can
+ * reference the same assembly. The returned items are ANSWER-STRIPPED
+ * (`TopikMockItem` carries no `correct` flag and no `explanation`) — the exam
+ * is graded server-side on submit, never on the client.
+ *
+ * Typed pass-through: the server's answer-stripped DTO matches `MockTest`
+ * field-for-field, so this returns the envelope as-is (no per-field mapping).
+ */
+export async function fetchMockTest(
+  section: MockSection,
+  signal?: AbortSignal,
+): Promise<MockTest> {
+  return api.post<MockTest>(
+    '/topik/mock',
+    { section },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /topik/mock/submit — submit a finished Mock-Test for server grading.
+ *
+ * The server re-loads the section's items for `sourceTest`, grades each
+ * `picked` against the DB answer (items not in `answers` count as skipped /
+ * incorrect), appends one `topik_responses` row per answer scoped to the
+ * session user, and returns the score (`percentage` + `band`), the
+ * correct/total tallies, and a per-item `MockReveal[]` with explanations now
+ * revealed. The client never had the key, so it cannot self-grade.
+ */
+export async function submitMockTest(
+  body: MockSubmitBody,
+  signal?: AbortSignal,
+): Promise<MockResult> {
+  return api.post<MockResult>(
+    '/topik/mock/submit',
     body,
     signal !== undefined ? { signal } : undefined,
   );

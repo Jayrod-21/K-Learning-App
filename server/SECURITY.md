@@ -474,27 +474,37 @@ original order) or a study draw (shuffled cross-test), and grade a submitted
 answer, logging each attempt to `topik_responses` (migration 015). This section
 enumerates the attack vectors and the defenses in place.
 
-### 14.1 Answers are PUBLIC in Study mode — by design (not a leak)
+### 14.1 Study answers are PUBLIC by design; Mock answers are STRIPPED + server-graded
 
-- **Design fact.** TOPIK items are **public reference data** (real past exams,
-  freely available). TOPIK Prep is a study tool, not a secured assessment, so the
-  locked decision (contract §B) is to serve the `correct` flag + `explanation`
-  **inline** in every `TopikItemDTO` — `options[i].correct` is set on the
-  `(answer − 1)` index, and `explanation` is surfaced. This is the OPPOSITE of the
-  Pass-5 Diagnostic, which is answer-stripped because it is graded/scored. The
-  difference is deliberate and matches the existing study screen + design.
-- **Consequence for grading.** Because the answer is already public, the
-  `/answer` route's grade is a *convenience + analytics* record, not a
-  trust boundary: a user could compute `correct` client-side from the DTO. The
-  server still grades server-side and logs the attempt so analytics ("accuracy",
-  "weak areas") are computed from a single, server-owned source of truth, not a
+- **Design fact (Study).** TOPIK items are **public reference data** (real past
+  exams, freely available). STUDY mode is a study tool, not a secured assessment,
+  so the locked decision (contract §B) is to serve the `correct` flag +
+  `explanation` **inline** in every `TopikItemDTO` — `options[i].correct` is set
+  on the `(answer − 1)` index, and `explanation` is surfaced. The `/answer`
+  route's grade is therefore a *convenience + analytics* record, not a trust
+  boundary: a user could compute `correct` client-side from the DTO. The server
+  still grades server-side and logs the attempt so analytics ("accuracy", "weak
+  areas") are computed from a single, server-owned source of truth, not a
   client-asserted flag (the client never sends `is_correct`).
-- **Deferred — Mock-mode answer-strip (FU-NF-39).** When the full-scale,
-  scored Mock-Test UI lands, mock items MUST be answer-stripped (the diagnostic
-  pattern: a column-private correct answer, revealed only post-answer). This pass
-  does NOT strip mock answers — `POST /topik/mock` returns the same inline-answer
-  DTOs as study. That is acceptable *only* because no scored mock UI consumes them
-  yet; FU-NF-39 owns closing this before mock becomes a graded surface.
+- **Mock-mode answer-strip + server grading (FU-NF-39 — CLOSED).** MOCK mode is
+  the OPPOSITE of study, and follows the Pass-5 Diagnostic pattern because it is a
+  scored, timed surface:
+  - **Answer-stripped at the boundary.** `POST /topik/mock` returns
+    `{ sourceTest, section, items }` where each item is built by `toMockItemDTO`,
+    whose return type **`Omit`s `options[].correct` AND the `explanation` field**.
+    The strip is **type-level**: the mock wire type has nowhere to carry the
+    answer, so a regression that tried to copy `correct`/`explanation` onto a mock
+    item would fail to compile. The `correct` flag never reaches a mock client.
+  - **Graded server-side.** `POST /topik/mock/submit` loads the section's items
+    for `sourceTest` from the DB and grades each submitted `picked` against the
+    DB answer — never a client-asserted flag. Skipped items count as incorrect.
+    It returns the score (`totalItems/answered/correct/percentage/band`) plus a
+    per-item reveal array (`correctChoiceId` + `explanation`) — the answer is
+    revealed only NOW, post-exam, mirroring the diagnostic's post-answer reveal.
+  - **Section-constrained.** Mock is reading/listening MCQ only; the writing
+    section (constructed-response, would route to the gradeWriting engine) is
+    rejected at the boundary (400 via `MockSectionSchema`) and **deferred to
+    FU-NF-47**. So mock currently strips + grades exactly the two MCQ sections.
 
 ### 14.2 Answer log is user-scoped — IDOR / mass-assignment
 
