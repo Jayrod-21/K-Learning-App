@@ -25,6 +25,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ApiError } from '../services/api';
@@ -79,6 +80,26 @@ vi.mock('../hooks/useAuth', () => ({
 // We import Settings AFTER the mocks above so the module sees them.
 import Settings from './Settings';
 import { SettingsProvider } from '../hooks/SettingsProvider';
+import { ThemeProvider } from '../hooks/ThemeProvider';
+import { ToastProvider } from '../components/ToastProvider';
+
+/**
+ * Settings now consumes `useTheme` (A4 theme-mode control) and `useToast`
+ * (A3 prefs-sync-failure surface), so every render needs ThemeProvider +
+ * ToastProvider in the tree alongside SettingsProvider. This helper wraps
+ * the page in the same provider order App.tsx uses.
+ */
+function renderSettings(): ReturnType<typeof render> {
+  return render(
+    <ThemeProvider>
+      <ToastProvider>
+        <SettingsProvider>
+          <Settings />
+        </SettingsProvider>
+      </ToastProvider>
+    </ThemeProvider>,
+  );
+}
 
 // ─── Lifecycle ────────────────────────────────────────────────
 
@@ -119,6 +140,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.documentElement.removeAttribute('style');
+  // A4: ThemeProvider writes data-theme on <html>; reset between tests so a
+  // theme-mode test's choice doesn't bleed into the next render.
+  delete document.documentElement.dataset.theme;
 });
 
 // ─── Tests ────────────────────────────────────────────────────
@@ -131,11 +155,7 @@ describe('Settings — profile hydration', () => {
       display_name: 'Jay',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
     expect(screen.getByText('Profile')).toBeInTheDocument();
     expect(screen.getByText('Notifications')).toBeInTheDocument();
     expect(screen.getByText('Appearance')).toBeInTheDocument();
@@ -149,11 +169,7 @@ describe('Settings — profile hydration', () => {
       phone: '+15555550100',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     const email = screen.getByLabelText('Email') as HTMLInputElement;
@@ -171,11 +187,7 @@ describe('Settings — profile hydration', () => {
       phone: '+15555550100',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     await waitFor(() => {
       expect(
@@ -199,11 +211,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
       display_name: 'Jared',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     // Replace 'Jay' with 'Jared'. user.clear + user.type chains; the
@@ -244,11 +252,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
       new ApiError('conflict', { status: 409, code: 'email_exists' }),
     );
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const email = screen.getByLabelText('Email') as HTMLInputElement;
     await user.clear(email);
@@ -311,11 +315,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
 
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const phone = screen.getByLabelText('Phone') as HTMLInputElement;
     // Wait for the server-truth sync to land the seeded value.
@@ -364,11 +364,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
       display_name: 'Jay',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     // Replace the value with the same string → no diff.
@@ -391,11 +387,7 @@ describe('Settings — local-only halves still work', () => {
       display_name: 'Jay',
     } satisfies User);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const linen = screen.getByRole('radio', { name: 'Linen' });
     expect(linen).toHaveAttribute('aria-checked', 'false');
@@ -440,11 +432,7 @@ describe('Settings — local-only halves still work', () => {
       }),
     );
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     const emailInput = screen.getByLabelText('Email') as HTMLInputElement;
     expect(emailInput.value).toBe('jay@example.com');
@@ -476,11 +464,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       palette: { paper: 'linen', accent: 'indigo', correct: 'pine', wrong: 'amber' },
     });
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     // The Paper picker reflects the server's 'linen' once hydration lands.
     await waitFor(() => {
@@ -502,11 +486,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     // is the one driven by the user's click below.
     mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     // Let the (no-op) hydration settle first so it doesn't race the change PUT.
     await waitFor(() => {
@@ -533,7 +513,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     expect(body.notif).toBeDefined();
   });
 
-  it('a failed putPrefs never breaks the screen — surfaces an inline alert', async () => {
+  it('a failed putPrefs never breaks the screen — surfaces a non-blocking toast (A3)', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
       id: 1,
@@ -545,11 +525,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       new ApiError('network unreachable', { status: 0, code: 'network' }),
     );
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     await waitFor(() => {
       expect(mocks.fetchPrefs).toHaveBeenCalled();
@@ -564,11 +540,25 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       vi.advanceTimersByTime(500);
     });
 
-    // Inline, author-controlled note — the screen is intact, change is local.
+    // A3 ErrorCard-vs-Toast split: the sync failure is transient/background,
+    // so it surfaces as a non-blocking toast (NOT an inline ErrorCard). The
+    // screen is intact, the change is durable locally, and the swatch keeps
+    // its selection.
     await waitFor(() => {
       expect(screen.getByText(/saved on this device/i)).toBeInTheDocument();
     });
+    // It's a polite toast (role=status), not an alert/ErrorCard.
+    const toast = screen.getByText(/saved on this device/i).closest('.km-toast');
+    expect(toast).not.toBeNull();
     expect(linen).toHaveAttribute('aria-checked', 'true');
+
+    // The Retry action re-attempts the PUT.
+    mocks.putPrefs.mockResolvedValueOnce(DEFAULT_PREFS);
+    const before = mocks.putPrefs.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => {
+      expect(mocks.putPrefs.mock.calls.length).toBeGreaterThan(before);
+    });
   });
 
   it('does not echo the server-hydrated prefs straight back as a PUT', async () => {
@@ -588,11 +578,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
     });
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     await waitFor(() => {
       expect(screen.getByRole('radio', { name: 'Ivory' })).toHaveAttribute(
@@ -638,11 +624,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       }),
     );
 
-    render(
-      <SettingsProvider>
-        <Settings />
-      </SettingsProvider>,
-    );
+    renderSettings();
 
     // User edits the palette (Linen) while hydration is still pending. The local
     // provider applies it instantly (offline-cache UX), and the debounce fires the
@@ -688,5 +670,100 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       vi.advanceTimersByTime(1000);
     });
     expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Settings — theme-mode control (A4)', () => {
+  it('renders Light / Dark / System as a labelled radiogroup', () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+    const group = screen.getByRole('radiogroup', { name: 'Theme mode' });
+    expect(within(group).getByRole('radio', { name: 'Light' })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: 'Dark' })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: 'System' })).toBeInTheDocument();
+  });
+
+  it("selecting Dark sets data-theme + persists km.theme; System clears it", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(window.localStorage.getItem('km.theme')).toBe('dark');
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // System clears the explicit choice (follows OS pref thereafter).
+    await user.click(screen.getByRole('radio', { name: 'System' }));
+    expect(window.localStorage.getItem('km.theme')).toBeNull();
+    expect(screen.getByRole('radio', { name: 'System' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  it('exposes a single roving Tab stop and moves selection with arrow keys', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+
+    const light = screen.getByRole('radio', { name: 'Light' });
+    const dark = screen.getByRole('radio', { name: 'Dark' });
+    const system = screen.getByRole('radio', { name: 'System' });
+
+    // Roving tabindex: only the checked radio (System, the default with no
+    // stored km.theme) is tabbable; the rest are removed from the Tab order.
+    expect(system).toHaveAttribute('tabindex', '0');
+    expect(light).toHaveAttribute('tabindex', '-1');
+    expect(dark).toHaveAttribute('tabindex', '-1');
+
+    // Focus the active radio, then drive the WAI-ARIA arrow-key contract.
+    system.focus();
+    expect(system).toHaveFocus();
+
+    // ArrowRight wraps from the last option (System) back to the first (Light),
+    // committing selection AND moving focus (selection follows focus).
+    await user.keyboard('{ArrowRight}');
+    expect(light).toHaveAttribute('aria-checked', 'true');
+    expect(light).toHaveFocus();
+    expect(light).toHaveAttribute('tabindex', '0');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('km.theme')).toBe('light');
+
+    // ArrowRight again advances Light → Dark.
+    await user.keyboard('{ArrowRight}');
+    expect(dark).toHaveAttribute('aria-checked', 'true');
+    expect(dark).toHaveFocus();
+
+    // ArrowLeft steps back Dark → Light.
+    await user.keyboard('{ArrowLeft}');
+    expect(light).toHaveAttribute('aria-checked', 'true');
+    expect(light).toHaveFocus();
+
+    // End jumps to the last option (System), clearing the stored choice.
+    await user.keyboard('{End}');
+    expect(system).toHaveAttribute('aria-checked', 'true');
+    expect(system).toHaveFocus();
+    expect(window.localStorage.getItem('km.theme')).toBeNull();
+
+    // Home jumps to the first option (Light).
+    await user.keyboard('{Home}');
+    expect(light).toHaveAttribute('aria-checked', 'true');
+    expect(light).toHaveFocus();
   });
 });

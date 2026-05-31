@@ -154,12 +154,22 @@ body {
 [data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(239,231,208,0.12); }
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: var(--paper-mute); }
 
-/* Honour OS reduced-motion preference (a11y). */
+/* Honour OS reduced-motion preference (a11y).
+ *
+ * Zeroing duration alone is NOT enough: a staggered entrance (e.g. the OCR
+ * detected-word list, the SkillBar fills) sets a per-element
+ * animation-delay / transition-delay, so with only the duration collapsed
+ * each element still waits out its delay before snapping in — the cascade a
+ * reduced-motion user explicitly opted out of. Zero the DELAYS too so every
+ * staggered element lands instantly, and force instant scrolling. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -168,6 +178,191 @@ body {
    block above. */
 @keyframes km-spin {
   to { transform: rotate(360deg); }
+}
+
+/* OCR detected-word entrance — Pass Final A1.
+ *
+ * The original spec called for a 1.6s ease-out "pulse" on the OCR
+ * coordinate boxes, staggered 100ms. Those boxes were dropped in Pass 8
+ * (Vision returns words, not coordinates), so the screen is a word LIST.
+ * A 1.6s INFINITE pulse on a list is visual noise; we re-interpret the
+ * intent as a single, brief staggered ENTRANCE: each row fades + rises in
+ * once, 100ms apart, so the detected words cascade in like results landing.
+ *
+ * The per-row `animation-delay` is set inline from the row index (capped in
+ * Images.tsx so a long list doesn't lag the tail). The reduced-motion block
+ * above collapses `animation-duration` to ~0ms — so under that preference
+ * every row renders instantly at full opacity (the keyframe `to` state is
+ * the natural resting state, so a zero-duration run leaves no artifact and
+ * never breaks layout). */
+.km-images__detected-row--enter {
+  animation: rise 460ms ease-out both;
+}
+
+/* Toast — global transient-notification system (Pass Final A3).
+ *
+ * Portaled to <body> by ToastProvider, so the viewport is a fixed overlay.
+ * It mirrors the shell's centered mobile column (same max-width) and pins to
+ * the bottom, sitting ABOVE the BottomNav with a safe-area inset so it clears
+ * the iOS home indicator. z-index 80 keeps it over the Sheet (70). */
+.km-toast-viewport {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(
+    var(--shell-bottomnav-h) + 12px + env(safe-area-inset-bottom)
+  );
+  z-index: 80;
+  width: 100%;
+  max-width: var(--shell-max-width);
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The container is layout-only; individual toasts capture pointer events.
+     This lets taps "fall through" the gaps between toasts to the app. */
+  pointer-events: none;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.km-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  /* Slide+fade in; neutralised by the global prefers-reduced-motion block. */
+  animation: toastIn 220ms cubic-bezier(.2, .7, .2, 1) both;
+}
+[data-theme="dark"] .km-toast {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* Tone accents reuse the palette tokens (vermilion / moss / ink), matching
+   the ErrorCard idiom (vermilion = error). */
+.km-toast--error {
+  border-left-color: var(--vermilion);
+  background: var(--vermilion-soft);
+}
+.km-toast--success {
+  border-left-color: var(--moss);
+  background: var(--moss-soft);
+}
+.km-toast--info {
+  border-left-color: var(--ink-2);
+}
+
+.km-toast__icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  margin-top: 1px;
+  color: var(--ink-2);
+}
+.km-toast--error .km-toast__icon { color: var(--vermilion); }
+.km-toast--success .km-toast__icon { color: var(--moss); }
+
+.km-toast__message {
+  flex: 1;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.km-toast__action {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--vermilion);
+  background: transparent;
+  border: 1px solid var(--vermilion);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.km-toast__action:hover { background: var(--vermilion-soft); }
+
+.km-toast__dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -2px -2px 0 0;
+  color: var(--paper-mute);
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.km-toast__dismiss:hover { color: var(--ink); }
+
+/* Install prompt — dismissible "Add to Home Screen" banner (Pass Final B3).
+ *
+ * Pinned bottom in the centered mobile column, ABOVE the BottomNav and just
+ * UNDER the toast viewport (z-index 79 vs toast's 80) so a transient toast
+ * still reads on top. It is a labelled landmark, NOT a modal — it never traps
+ * focus. The slide+fade-in is neutralised by the global reduced-motion block.
+ * Hanji card styling: cream surface, hairline border, vermilion left accent
+ * matching the seal. The column is `max-width` capped and inset 16px each
+ * side, so the box spans `100% - 32px`. */
+.km-install {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(
+    var(--shell-bottomnav-h) + 12px + env(safe-area-inset-bottom)
+  );
+  z-index: 79;
+  width: calc(100% - 32px);
+  max-width: calc(var(--shell-max-width) - 32px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--vermilion);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  animation: toastIn 220ms cubic-bezier(.2, .7, .2, 1) both;
+}
+[data-theme="dark"] .km-install {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.km-install__body {
+  flex: 1;
+  min-width: 0;
+}
+.km-install__title {
+  margin: 0 0 2px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.km-install__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--paper-mute);
+}
+.km-install__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -3234,6 +3429,38 @@ body {
   cursor: not-allowed;
   color: var(--paper-faint);
 }
+
+/* Theme-mode segmented control (PF-A A4) — Light / Dark / System. Mirrors
+   the channel-chip visual language (segmented, equal-width, vermilion active
+   state) so the Appearance group reads as one family. */
+.km-settings__thememode {
+  padding-bottom: 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.km-settings__thememode-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.km-settings__thememode-opt {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--paper-dim);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.km-settings__thememode-opt--active {
+  border-color: var(--vermilion);
+  background: var(--vermilion-soft);
+  color: var(--vermilion);
+}
+
 .km-settings__toggle-row {
   display: flex;
   align-items: center;

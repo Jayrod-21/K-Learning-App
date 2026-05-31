@@ -135,6 +135,21 @@ describe('Images page — capture view (no boxes)', () => {
     expect(document.querySelector('.km-images__ocrbox')).toBeNull();
   });
 
+  it('applies the staggered OCR-entrance class with a capped per-index delay', async () => {
+    // A1 adaptation: detected-word rows cascade in (single ~460ms `rise`,
+    // 100ms apart, capped at 12 rows), NOT a 1.6s infinite pulse on dropped
+    // coordinate boxes. Reduced-motion is handled by the global CSS block.
+    const user = userEvent.setup();
+    render(<Images />);
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+
+    const rows = document.querySelectorAll('.km-images__detected-row--enter');
+    expect(rows.length).toBe(2);
+    // i-th row gets animation-delay = min(i, 12) * 100ms.
+    expect((rows[0] as HTMLElement).style.animationDelay).toBe('0ms');
+    expect((rows[1] as HTMLElement).style.animationDelay).toBe('100ms');
+  });
+
   it('opens WordPopover when a detected-word row is tapped', async () => {
     const user = userEvent.setup();
     render(<Images />);

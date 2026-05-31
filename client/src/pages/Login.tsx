@@ -161,12 +161,14 @@ export default function Login(): JSX.Element {
               }}
               maxLength={254}
               placeholder="you@example.com"
-              // First editable field gets focus on mount — see threat-model.
-              // `autoFocus` only fires on mount in React (not on every
-              // render), which is what we want. The `jsx-a11y/no-autofocus`
-              // rule will land with FU-NF-17 (jsx-a11y plugin) — the
-              // disable comment is intentionally left out until then so
-              // ESLint doesn't error on a rule that isn't registered.
+              // First editable field gets focus on mount. `autoFocus` only
+              // fires on mount in React (not on every render), which is what
+              // we want. The general jsx-a11y/no-autofocus caution is about
+              // autofocus yanking focus on content pages; on a dedicated
+              // sign-in route whose sole job is this form, focusing the first
+              // field is the expected, helpful behaviour — the documented
+              // exception to the rule. Disabled for this one line with cause.
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
             />
           </div>

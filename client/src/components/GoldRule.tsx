@@ -6,8 +6,9 @@
  * the implementation (gradient stops, opacity, dark-theme tuning) without
  * grep-and-replace across every screen.
  *
- * Decorative — `role="separator"` makes screen readers announce it as a
- * section break without needing visible text.
+ * Decorative — a bare `<hr>` already carries the implicit `separator` role,
+ * so screen readers announce it as a section break without an explicit
+ * `role` (which jsx-a11y/no-redundant-roles correctly flags as redundant).
  */
 import type { CSSProperties, JSX } from 'react';
 import { cn } from '../lib/cn';
@@ -18,11 +19,5 @@ export interface GoldRuleProps {
 }
 
 export function GoldRule({ className, style }: GoldRuleProps): JSX.Element {
-  return (
-    <hr
-      className={cn('km-goldrule', className)}
-      style={style}
-      role="separator"
-    />
-  );
+  return <hr className={cn('km-goldrule', className)} style={style} />;
 }

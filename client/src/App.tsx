@@ -29,7 +29,9 @@ import { AuthProvider } from './hooks/AuthProvider';
 import { useAuth } from './hooks/useAuth';
 import { ThemeProvider } from './hooks/ThemeProvider';
 import { SettingsProvider } from './hooks/SettingsProvider';
+import { ToastProvider } from './components/ToastProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { InstallPrompt } from './components/InstallPrompt';
 import { Shell } from './components/Shell';
 import Login from './pages/Login';
 import Today from './pages/Today';
@@ -49,40 +51,54 @@ export default function App(): JSX.Element {
     <ErrorBoundary>
       <ThemeProvider>
         <SettingsProvider>
-          <BrowserRouter>
-            <AuthProvider>
-              <Routes>
-                <Route
-                  path="/login"
-                  element={
-                    <PublicOnly>
-                      <Login />
-                    </PublicOnly>
-                  }
-                />
-                <Route
-                  element={
-                    <RequireAuth>
-                      <Shell />
-                    </RequireAuth>
-                  }
-                >
-                  <Route index element={<Today />} />
-                  <Route path="topik" element={<Topik />} />
-                  <Route path="reading" element={<Reading />} />
-                  <Route path="review" element={<Review />} />
-                  <Route path="diagnostic" element={<Diagnostic />} />
-                  <Route path="grammar" element={<Grammar />} />
-                  <Route path="hanja" element={<Hanja />} />
-                  <Route path="images" element={<Images />} />
-                  <Route path="chat" element={<Chat />} />
-                  <Route path="reference" element={<Reference />} />
-                  <Route path="settings" element={<Settings />} />
-                </Route>
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </AuthProvider>
-          </BrowserRouter>
+          {/* PF-A: ToastProvider wraps the app so every screen can surface a
+              transient hanji toast. Placed inside SettingsProvider (so toasts
+              inherit the palette tokens) and outside the router (so a toast
+              survives navigation). PF-B parent: reconcile this with the
+              InstallPrompt mount — both live at App root; nesting order here
+              is intentional (Toast available to InstallPrompt if it opts in). */}
+          <ToastProvider>
+            <BrowserRouter>
+              <AuthProvider>
+                <Routes>
+                  <Route
+                    path="/login"
+                    element={
+                      <PublicOnly>
+                        <Login />
+                      </PublicOnly>
+                    }
+                  />
+                  <Route
+                    element={
+                      <RequireAuth>
+                        <Shell />
+                      </RequireAuth>
+                    }
+                  >
+                    <Route index element={<Today />} />
+                    <Route path="topik" element={<Topik />} />
+                    <Route path="reading" element={<Reading />} />
+                    <Route path="review" element={<Review />} />
+                    <Route path="diagnostic" element={<Diagnostic />} />
+                    <Route path="grammar" element={<Grammar />} />
+                    <Route path="hanja" element={<Hanja />} />
+                    <Route path="images" element={<Images />} />
+                    <Route path="chat" element={<Chat />} />
+                    <Route path="reference" element={<Reference />} />
+                    <Route path="settings" element={<Settings />} />
+                  </Route>
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </AuthProvider>
+            </BrowserRouter>
+            {/* PF-B: PWA install banner. Mounted at App root as a sibling of the
+                router (it needs no routing context) and INSIDE ToastProvider so
+                it inherits the palette tokens and could surface a toast later.
+                Renders null unless the browser offers an install opportunity,
+                so the mount is effectively free. */}
+            <InstallPrompt />
+          </ToastProvider>
         </SettingsProvider>
       </ThemeProvider>
     </ErrorBoundary>

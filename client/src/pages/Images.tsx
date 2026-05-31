@@ -608,10 +608,20 @@ function CaptureView({
           </p>
         ) : (
           <ul className="km-images__detected-list">
-            {cap.words.map((w) => {
+            {cap.words.map((w, i) => {
               const isAdded = added.has(w.id);
+              // A1 OCR-entrance adaptation: cascade rows in 100ms apart. Cap
+              // the stagger at 12 rows so a long detection list doesn't make
+              // the tail rows wait (>1.2s) before appearing — past the cap
+              // they all share the final delay and land together. The entrance
+              // is a single brief `rise` (see index.css), reduced-motion-safe.
+              const enterDelayMs = Math.min(i, 12) * 100;
               return (
-                <li key={w.id} className="km-images__detected-row">
+                <li
+                  key={w.id}
+                  className="km-images__detected-row km-images__detected-row--enter"
+                  style={{ animationDelay: `${String(enterDelayMs)}ms` }}
+                >
                   <button
                     type="button"
                     onClick={() => {

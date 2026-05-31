@@ -64,6 +64,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import { Card } from '../components/Card';
@@ -74,9 +75,12 @@ import { MockBadge } from '../components/MockBadge';
 import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { Topbar } from '../components/Topbar';
+import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
+import { useTheme } from '../hooks/useTheme';
+import type { ThemeMode } from '../hooks/useTheme';
 import { fetchMe, patchMe } from '../services/auth';
 import { fetchPrefs, putPrefs, type Prefs } from '../services/settings';
 import type { User } from '../hooks/auth-context';
@@ -212,6 +216,8 @@ function paletteEqual(a: PalettePrefs, b: PalettePrefs): boolean {
 export default function Settings(): JSX.Element {
   const { user, refresh } = useAuth();
   const { settings, updateSettings, resetSettings } = useSettings();
+  const { mode: themeMode, setMode: setThemeMode } = useTheme();
+  const { toast } = useToast();
 
   // Hydrate from /auth/me. Mock fallback keeps the screen rendering during
   // dev when the server route is down; `isMock` flips the corner badge.
@@ -511,8 +517,6 @@ export default function Settings(): JSX.Element {
     palette: settings.palette as PalettePrefs,
   });
 
-  const [prefsError, setPrefsError] = useState<string | null>(null);
-
   const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prefsCtrlRef = useRef<AbortController | null>(null);
 
@@ -523,30 +527,45 @@ export default function Settings(): JSX.Element {
     };
   }, []);
 
-  const flushPrefs = useCallback(async (next: Prefs): Promise<void> => {
-    prefsCtrlRef.current?.abort();
-    const ctrl = new AbortController();
-    prefsCtrlRef.current = ctrl;
-    try {
-      const stored = await putPrefs(next, ctrl.signal);
-      if (ctrl.signal.aborted) return;
-      // Server echoes the stored object — adopt it as the baseline so a later
-      // hydration / re-render reconciles against exactly what's persisted.
-      lastSyncedPrefsRef.current = stored;
-      setPrefsError(null);
-    } catch (err) {
-      if (ctrl.signal.aborted) return;
-      // A canceled PUT (unmount / superseded keystroke) is not a real failure.
-      if (err instanceof ApiError && err.code === 'canceled') return;
-      // Non-fatal: localStorage already holds the change. Surface an inline,
-      // author-controlled note (never echo the server string) so the user knows
-      // the cross-device sync didn't land, but the screen keeps working.
-      setPrefsError(
-        'Your appearance and notification changes are saved on this device, ' +
-          'but syncing them to your account failed. They will sync next time.',
-      );
-    }
-  }, []);
+  const flushPrefs = useCallback(
+    async (next: Prefs): Promise<void> => {
+      prefsCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      prefsCtrlRef.current = ctrl;
+      try {
+        const stored = await putPrefs(next, ctrl.signal);
+        if (ctrl.signal.aborted) return;
+        // Server echoes the stored object — adopt it as the baseline so a later
+        // hydration / re-render reconciles against exactly what's persisted.
+        lastSyncedPrefsRef.current = stored;
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        // A canceled PUT (unmount / superseded keystroke) is not a real failure.
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        // ErrorCard-vs-Toast split (PF-A A3): a prefs-sync failure is
+        // transient/background — the change is ALREADY durable in localStorage
+        // (the provider wrote it), so blanking part of the screen with an
+        // inline ErrorCard overstates the problem. A non-blocking toast with a
+        // Retry action is the right affordance: it informs without interrupting
+        // and lets the user re-attempt the cross-device sync immediately.
+        // Blocking full-screen LOAD failures still use ErrorCard. The message
+        // is author-controlled — never an echo of the server string.
+        toast({
+          message:
+            'Saved on this device, but syncing to your account failed. ' +
+            'It will retry automatically.',
+          tone: 'info',
+          action: {
+            label: 'Retry',
+            onClick: () => {
+              void flushPrefs(next);
+            },
+          },
+        });
+      }
+    },
+    [toast],
+  );
 
   // Hydrate from the server. Only a real (non-mock) settle is authoritative —
   // treating the mock fall-back as server truth would clobber the user's local
@@ -688,9 +707,9 @@ export default function Settings(): JSX.Element {
         {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
       </SettingsGroup>
 
-      {/* Prefs (notif + palette) cross-device sync failure — non-fatal: the
-          change is already in localStorage, this only flags the lost sync. */}
-      {prefsError ? <ErrorCard message={prefsError} /> : null}
+      {/* Prefs (notif + palette) cross-device sync failure is surfaced via a
+          non-blocking toast (see flushPrefs) — the change is already durable in
+          localStorage, so it never blanks the screen with an inline ErrorCard. */}
 
       {/* ───── Notifications (localStorage cache + server sync) ───── */}
       <SettingsGroup
@@ -778,6 +797,7 @@ export default function Settings(): JSX.Element {
         title="Appearance"
         mock={prefsQuery.isMock}
       >
+        <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
         <SwatchPicker
           label="Paper"
           hint="Background."
@@ -881,6 +901,147 @@ function SettingsGroup({
       </header>
       {children}
     </Card>
+  );
+}
+
+/**
+ * Theme-mode control (PF-A A4) — Light / Dark / System segmented radiogroup.
+ *
+ * Lives in the Appearance group above the palette swatches. Unlike the
+ * palette (which persists through `km.settings` + the server `/settings/prefs`
+ * sync), the light/dark mode persists through `ThemeProvider` into
+ * `km.theme` — 'system' CLEARS the key and follows the OS pref live. The two
+ * concerns are deliberately separate stores.
+ *
+ * A11y: a `radiogroup` of three `radio` buttons implementing the full
+ * WAI-ARIA APG radio-group keyboard contract, mirroring the in-repo
+ * `SwatchPicker`:
+ *   - Roving tabindex — only the checked radio is tabbable (`tabIndex={0}`);
+ *     the others are `-1`, so the group is a SINGLE Tab stop and Tab lands on
+ *     the active mode.
+ *   - Arrow Left/Right/Up/Down move between options; Home/End jump to the
+ *     ends; the move wraps. Because selection follows focus, an arrow move IS
+ *     the commit. Space/Enter activate the focused radio via the native
+ *     `<button>` click (committing the already-focused mode — a no-op since it
+ *     is the one focus is on).
+ *   - `tabIndex={-1}` on the group makes the interactive-role container
+ *     focusable without entering the Tab order (satisfies jsx-a11y's
+ *     interactive-supports-focus rule without a second Tab stop).
+ *
+ * Unlike `SwatchPicker` — which separates focus from selection so an
+ * arrow-sweep doesn't churn the palette `localStorage` debounce + CSS-var
+ * cascade on every keypress — this control commits selection AS focus moves
+ * (the standard "selection follows focus" APG variant). Switching theme mode
+ * is cheap and idempotent (a single `data-theme` swap), there is no
+ * per-keypress cost to avoid, and selection-follows-focus is the behaviour a
+ * user expects from a small segmented Light/Dark/System control.
+ */
+const THEME_MODES: ReadonlyArray<{ id: ThemeMode; label: string }> = [
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'system', label: 'System' },
+];
+
+function ThemeModeControl({
+  mode,
+  onSelect,
+}: {
+  mode: ThemeMode;
+  onSelect: (mode: ThemeMode) => void;
+}): JSX.Element {
+  // Refs by id (not index) so focus management survives a future reorder of
+  // THEME_MODES, matching SwatchPicker's approach.
+  const optRefs = useRef<Map<ThemeMode, HTMLButtonElement>>(new Map());
+  const selectedIndex = THEME_MODES.findIndex((m) => m.id === mode);
+
+  // Commit selection to the option at `nextIndex` (wrapping) AND move DOM
+  // focus to it. Selection follows focus — see the doc-comment for why this
+  // diverges from SwatchPicker's separated-focus model.
+  const moveTo = useCallback(
+    (nextIndex: number): void => {
+      const wrapped =
+        (nextIndex + THEME_MODES.length) % THEME_MODES.length;
+      const next = THEME_MODES[wrapped];
+      if (!next) return;
+      if (next.id !== mode) onSelect(next.id);
+      optRefs.current.get(next.id)?.focus();
+    },
+    [mode, onSelect],
+  );
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>): void => {
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'ArrowDown':
+          e.preventDefault();
+          moveTo(selectedIndex + 1);
+          break;
+        case 'ArrowLeft':
+        case 'ArrowUp':
+          e.preventDefault();
+          moveTo(selectedIndex - 1);
+          break;
+        case 'Home':
+          e.preventDefault();
+          moveTo(0);
+          break;
+        case 'End':
+          e.preventDefault();
+          moveTo(THEME_MODES.length - 1);
+          break;
+        default:
+          break;
+      }
+    },
+    [moveTo, selectedIndex],
+  );
+
+  return (
+    <div className="km-settings__thememode">
+      <div className="km-settings__row-head">
+        <span className="km-settings__row-label">Theme</span>
+        <span className="km-settings__row-hint">
+          Light, dark, or match your device.
+        </span>
+      </div>
+      <div
+        className="km-settings__thememode-row"
+        role="radiogroup"
+        aria-label="Theme mode"
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+      >
+        {THEME_MODES.map((m) => {
+          const selected = m.id === mode;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              // Roving tabindex: only the checked radio is a Tab stop, so the
+              // group exposes a single tab entry and Tab lands on the active
+              // mode (WAI-ARIA APG radio-group pattern).
+              tabIndex={selected ? 0 : -1}
+              ref={(el) => {
+                if (el) optRefs.current.set(m.id, el);
+                else optRefs.current.delete(m.id);
+              }}
+              onClick={() => {
+                if (!selected) onSelect(m.id);
+              }}
+              className={
+                'km-settings__thememode-opt focusring' +
+                (selected ? ' km-settings__thememode-opt--active' : '')
+              }
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

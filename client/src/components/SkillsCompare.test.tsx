@@ -106,4 +106,18 @@ describe('SkillsCompare', () => {
     );
     expect(container.querySelector('.km-skillscompare--empty')).toBeTruthy();
   });
+
+  it('fans the bars in with a per-index transition delay (i * 70ms)', () => {
+    // A1: SkillsCompare passes `delayMs = i * 70` (within the 70–90ms
+    // envelope) so the bars cascade in; SkillBar applies it as the fill's
+    // transition-delay. Pin the cadence so a future refactor can't silently
+    // flatten the stagger.
+    const { container } = render(
+      <SkillsCompare skills={SKILLS} references={REFS} />,
+    );
+    const fills = container.querySelectorAll('.km-skillbar__fill');
+    expect(fills.length).toBe(SKILLS.length);
+    expect((fills[0] as HTMLElement).style.transitionDelay).toBe('0ms');
+    expect((fills[1] as HTMLElement).style.transitionDelay).toBe('70ms');
+  });
 });

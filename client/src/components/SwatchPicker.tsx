@@ -162,6 +162,14 @@ export function SwatchPicker({
         className="km-swatchpicker__row"
         role="radiogroup"
         aria-label={label}
+        // The radiogroup hosts the arrow-key handler (focus rotates between
+        // the child radios via the roving-tabindex pattern). jsx-a11y's
+        // interactive-supports-focus rule requires an element with an
+        // interactive role to be focusable; `tabIndex={-1}` makes the group
+        // programmatically focusable WITHOUT inserting it into the Tab order
+        // (the roving radios own Tab entry), satisfying the rule while
+        // preserving the WAI-ARIA APG separated-focus behaviour.
+        tabIndex={-1}
         onKeyDown={onKeyDown}
       >
         {entries.map(([id, p]) => {

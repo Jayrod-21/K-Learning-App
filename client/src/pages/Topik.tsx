@@ -11,8 +11,9 @@
  * flag — TOPIK items are public reference data, so the answer is served inline
  * by design (the answer-stripped Mock-Test taking flow is FU-NF-39, not built
  * here). On submit the screen ALSO fires `recordTopikAnswer` as fire-and-forget
- * analytics: a failure is swallowed (logged in dev) and never blocks the reveal
- * or breaks the flow.
+ * analytics: a failure is swallowed silently and never blocks the reveal or
+ * breaks the flow (see `handleSubmit` for why it is deliberately not surfaced
+ * as a toast).
  *
  * Local state:
  *   - `idx`      — position within the draw. `idx >= data.length` is the
@@ -86,14 +87,16 @@ function Topik(): JSX.Element {
     setRevealed(true);
     setAnswered((n) => n + 1);
     // Fire-and-forget analytics: never block the reveal, never break the UI.
-    // A network/auth failure here is logged in dev and otherwise swallowed —
-    // the reveal is driven off the inline `correct` flag, not this response.
+    // The reveal is driven off the inline `correct` flag, not this response,
+    // so a failure here is genuinely ignorable. We deliberately do NOT surface
+    // it through the Toast system: a transient analytics miss is not worth a
+    // notification mid-quiz (it would nag the user during a test for an outcome
+    // that has zero effect on what they see), and the component's threat model
+    // already commits to never surfacing a server error from this write into
+    // the UI. The empty `.catch` exists only to keep the rejection handled so
+    // it never becomes an unhandled promise rejection.
     void recordTopikAnswer(current.id, { picked, mode: 'study' }).catch(
-      (err: unknown) => {
-        if (import.meta.env.DEV) {
-          console.warn('[topik] recordTopikAnswer failed (ignored):', err);
-        }
-      },
+      () => {},
     );
   }, [picked, current]);
 
