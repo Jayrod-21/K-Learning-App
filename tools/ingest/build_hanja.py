@@ -27,10 +27,12 @@ PIPELINE
     5. Write `output/hanja.json` in the house corpus shape ({source, characters}).
 
 DATA GAPS (documented, not silently dropped)
-    * Korean character gloss (훈, e.g. "배울" for 學) and prose etymology are NOT
-      in Unihan and have no clean primary source — emitted as empty strings for
-      v1. The English gloss (kDefinition) + reading carry the meaning until a
-      훈음 source or Claude generation is added later.
+    * Korean character gloss (훈, e.g. "배울" for 學) is sourced from the
+      한국어문회-derived map at data/hanja_hunmeum.json (FU-NF-40) — Unihan has no
+      훈 field. See load_hunmeum().
+    * Prose etymology is still NOT sourced (no clean primary source) — emitted
+      as an empty string; the English gloss (kDefinition) + reading carry the
+      meaning. Tracked as the remaining half of FU-NF-40.
 
 USAGE
     python3 build_hanja.py            # uses ./_work/unihan + ./output
@@ -53,6 +55,12 @@ HERE = Path(__file__).resolve().parent
 OUTPUT_DIR = HERE / "output"
 WORK_DIR = HERE / "_work" / "unihan"
 UNIHAN_URL = "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip"
+
+# 훈 (native-Korean gloss) per character — Unihan has no such field, so this is
+# sourced + verified against the 사단법인 한국어문회 grade-level 훈음 data (canonical
+# facts; see the file's _provenance). Committed (small, factual) so the build is
+# reproducible without re-deriving from the source compilation. FU-NF-40.
+HUNMEUM_PATH = HERE / "data" / "hanja_hunmeum.json"
 
 VOCAB_FILES = ["vocab_2000_beginner.json", "vocab_2000_intermediate.json"]
 
@@ -317,12 +325,29 @@ def word_is_hanja_backed(
     return True
 
 
+def load_hunmeum() -> dict[str, str]:
+    """Load the per-character 훈 (native-Korean gloss) map (FU-NF-40).
+
+    Unihan carries the reading (음) and an English gloss but NOT the Korean 훈,
+    so the 훈 is sourced + verified against the 사단법인 한국어문회 훈음 data and
+    committed as a small factual map at HUNMEUM_PATH. Missing file → empty map
+    (build still succeeds, gloss_kr falls back to "" as before).
+    """
+    if not HUNMEUM_PATH.exists():
+        print(f"  WARN: {HUNMEUM_PATH} not found — gloss_kr (훈) will be empty", file=sys.stderr)
+        return {}
+    doc = json.loads(HUNMEUM_PATH.read_text(encoding="utf-8"))
+    gloss = doc.get("gloss_kr", {})
+    return {k: v for k, v in gloss.items() if isinstance(v, str) and v}
+
+
 def main() -> int:
     fetch_unihan()
     unihan = load_unihan()
     if not unihan:
         print("ERROR: Unihan data not found/parsed in _work/unihan", file=sys.stderr)
         return 1
+    hunmeum = load_hunmeum()
 
     # word_trad_cache memoises a vocab word's hanja → traditional rendering.
     char_freq: Counter[str] = Counter()
@@ -397,7 +422,9 @@ def main() -> int:
             {
                 "char": ch,
                 "sound": korean_reading(ch, unihan) or "",
-                "gloss_kr": "",  # 훈 (Korean meaning) — no primary source; v1 gap
+                # 훈 (Korean gloss) from the 한국어문회-sourced map (FU-NF-40);
+                # "" only if a char is absent from it.
+                "gloss_kr": hunmeum.get(ch, ""),
                 "gloss_en": (info.get("kDefinition") or "").strip(),
                 "strokes": strokes,
                 "frequency": char_freq[ch],
@@ -415,7 +442,8 @@ def main() -> int:
             "unihan_source": UNIHAN_URL,
             "unihan_license": "Unicode (public-domain redistributable)",
             "scope": "all distinct Korean hanja appearing in the vocab corpora",
-            "gaps": "gloss_kr (훈) + etymology have no primary source — empty for v1",
+            "hunmeum_source": "훈 sourced/verified against 사단법인 한국어문회 훈음 data via github.com/rycont/hanja-grade-dataset; canonical facts (FU-NF-40), see data/hanja_hunmeum.json _provenance",
+            "gaps": "etymology has no primary source — empty (FU-NF-40 deferred etymology)",
         },
         "characters": characters,
     }
