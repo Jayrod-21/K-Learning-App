@@ -1,0 +1,23 @@
+-- =============================================================================
+-- Migration 021 — user_mined corpus enum value (DOWN)
+--   Reverses 021_user_mined_corpus.up.sql.
+--
+-- DELIBERATE NO-OP — PostgreSQL CANNOT remove an enum value.
+--   `ALTER TYPE … DROP VALUE` does not exist. Leaving 'user_mined' in the
+--   `corpus` enum is harmless: once migration 022's down has deleted the
+--   corpus_sources row (and provided no vocab_entries reference it), nothing
+--   uses the value, and re-applying 021 is a no-op (`ADD VALUE IF NOT EXISTS`).
+--   Removing it would require dropping and recreating the entire `corpus` enum
+--   and re-pointing every dependent column — far out of scope for a down
+--   migration. This mirrors migration 016's hanja-enum down exactly (and 002's
+--   stance on its ALTER TYPE … ADD VALUE additions): the down leaves the type a
+--   superset of where it started; the schema is functionally reverted.
+--
+-- TRANSACTION OWNERSHIP (ADR-013):
+--   No top-level BEGIN/COMMIT — `migrate.py` wraps each down body in its own
+--   transaction together with the bookkeeping DELETE. An empty body is valid.
+-- =============================================================================
+
+-- (intentionally empty — see the header.)
+
+-- End of 021_user_mined_corpus.down.sql.

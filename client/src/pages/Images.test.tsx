@@ -10,12 +10,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import userEvent from '@testing-library/user-event';
 import { ApiError } from '../services/api';
 import type { ImageCapture } from '../types/domain';
 
-const { FIXTURE, UPLOADED, hookState, uploadImageMock, fetchImageMock } =
-  vi.hoisted(() => {
+const {
+  FIXTURE,
+  UPLOADED,
+  hookState,
+  uploadImageMock,
+  fetchImageMock,
+  mineWordMock,
+} = vi.hoisted(() => {
     const fixture: ImageCapture[] = [
       {
         id: 'img1',
@@ -52,6 +59,7 @@ const { FIXTURE, UPLOADED, hookState, uploadImageMock, fetchImageMock } =
       },
       uploadImageMock: vi.fn(),
       fetchImageMock: vi.fn(),
+      mineWordMock: vi.fn(),
     };
   });
 
@@ -71,8 +79,23 @@ vi.mock('../services/images', () => ({
   fetchImages: vi.fn(),
 }));
 
+vi.mock('../services/vocab', () => ({
+  mineWord: mineWordMock,
+}));
+
 // Pull the page AFTER the mocks are set up.
 import Images from './Images';
+import { ToastProvider } from '../components/ToastProvider';
+
+/**
+ * Images consumes `useToast` (FU-NF-33 bank-failure surface), so every render
+ * needs a `<ToastProvider/>` in the tree.
+ */
+function renderImages(): ReturnType<typeof render> {
+  return render((<Images />) as ReactElement, {
+    wrapper: ({ children }) => <ToastProvider>{children}</ToastProvider>,
+  });
+}
 
 beforeEach(() => {
   hookState.data = FIXTURE;
@@ -81,6 +104,8 @@ beforeEach(() => {
   hookState.isMock = true;
   uploadImageMock.mockReset();
   fetchImageMock.mockReset();
+  mineWordMock.mockReset();
+  mineWordMock.mockResolvedValue({ entryId: 1, card: { id: 10, version: 1 } });
 });
 
 function pickFile(): Promise<void> {
@@ -94,7 +119,7 @@ function pickFile(): Promise<void> {
 
 describe('Images page — list view', () => {
   it('renders the upload card and sample list', () => {
-    render(<Images />);
+    renderImages();
     expect(screen.getByText('Capture or upload')).toBeInTheDocument();
     expect(screen.getByText(/Or try a sample/)).toBeInTheDocument();
     expect(
@@ -103,11 +128,15 @@ describe('Images page — list view', () => {
   });
 
   it('shows the 🅂 mock badge when on mock data and hides it when real', () => {
-    const { rerender } = render(<Images />);
+    const { rerender } = renderImages();
     expect(screen.getByTestId('mock-badge')).toBeInTheDocument();
 
     hookState.isMock = false;
-    rerender(<Images />);
+    rerender(
+      <ToastProvider>
+        <Images />
+      </ToastProvider>,
+    );
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 });
@@ -115,7 +144,7 @@ describe('Images page — list view', () => {
 describe('Images page — capture view (no boxes)', () => {
   it('opens the CaptureView with the real image and word list, no overlay boxes', async () => {
     const user = userEvent.setup();
-    render(<Images />);
+    renderImages();
 
     const sampleButtons = screen.getAllByRole('button', {
       name: /카페 메뉴판/,
@@ -140,7 +169,7 @@ describe('Images page — capture view (no boxes)', () => {
     // 100ms apart, capped at 12 rows), NOT a 1.6s infinite pulse on dropped
     // coordinate boxes. Reduced-motion is handled by the global CSS block.
     const user = userEvent.setup();
-    render(<Images />);
+    renderImages();
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
 
     const rows = document.querySelectorAll('.km-images__detected-row--enter');
@@ -152,7 +181,7 @@ describe('Images page — capture view (no boxes)', () => {
 
   it('opens WordPopover when a detected-word row is tapped', async () => {
     const user = userEvent.setup();
-    render(<Images />);
+    renderImages();
 
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
     await user.click(screen.getByRole('button', { name: 'Open 음료' }));
@@ -165,6 +194,51 @@ describe('Images page — capture view (no boxes)', () => {
     expect(within(dialog).getAllByText(/beverage/).length).toBeGreaterThan(0);
   });
 
+  it('banks a detected word via mineWord by lemma + optimistic flip (FU-NF-33)', async () => {
+    const user = userEvent.setup();
+    renderImages();
+
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+    // The first detected word's Add button → mine by lemma (no krdictEntryId).
+    const addButtons = screen.getAllByRole('button', { name: /^Add$/ });
+    await user.click(addButtons[0]);
+
+    await waitFor(() => {
+      expect(mineWordMock).toHaveBeenCalledTimes(1);
+    });
+    expect(mineWordMock).toHaveBeenCalledWith({
+      lemma: '음료',
+      english: 'beverage',
+      pos: 'n.',
+    });
+    // No krdictEntryId — OCR words have no /define lookup.
+    expect(mineWordMock.mock.calls[0][0]).not.toHaveProperty('krdictEntryId');
+    // Optimistic flip — the row locks to "Added".
+    expect(screen.getByRole('button', { name: /Added/ })).toBeInTheDocument();
+  });
+
+  it('rolls the Added flip back + toasts when the bank fails (FU-NF-33)', async () => {
+    mineWordMock.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    renderImages();
+
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+
+    // The fixed, non-blocking failure toast surfaces (never server text).
+    expect(
+      await screen.findByText(/Couldn't bank — try again/i),
+    ).toBeInTheDocument();
+    // The optimistic flip rolled back — the row is tappable as "Add" again.
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole('button', { name: /^Add$/ }).length,
+      ).toBeGreaterThan(0);
+    });
+  });
+
   it('hydrates words via fetchImage when a list capture arrives without them', async () => {
     // Simulate the real `GET /images` list (summaries with empty words).
     hookState.data = [{ ...FIXTURE[0], words: [] }];
@@ -172,7 +246,7 @@ describe('Images page — capture view (no boxes)', () => {
     fetchImageMock.mockResolvedValueOnce(FIXTURE[0]);
 
     const user = userEvent.setup();
-    render(<Images />);
+    renderImages();
 
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
 
@@ -193,7 +267,7 @@ describe('Images page — upload', () => {
       }),
     );
 
-    render(<Images />);
+    renderImages();
     await pickFile();
 
     // The card flips to its busy copy + spinner while in flight.
@@ -210,7 +284,7 @@ describe('Images page — upload', () => {
   it('opens the uploaded capture on success', async () => {
     uploadImageMock.mockResolvedValueOnce(UPLOADED);
 
-    render(<Images />);
+    renderImages();
     await pickFile();
 
     await waitFor(() => {
@@ -230,7 +304,7 @@ describe('Images page — upload', () => {
       }),
     );
 
-    render(<Images />);
+    renderImages();
     await pickFile();
 
     const alert = await screen.findByRole('alert');

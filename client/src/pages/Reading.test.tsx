@@ -19,7 +19,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import userEvent from '@testing-library/user-event';
+import { ApiError } from '../services/api';
 import type { ReadingPassage } from '../types/domain';
 
 // ── Hook stub ───────────────────────────────────────────────────────
@@ -94,12 +96,29 @@ vi.mock('../services/grammar', () => ({
   identifyPattern: vi.fn(),
 }));
 
+vi.mock('../services/vocab', () => ({
+  mineWord: vi.fn(),
+}));
+
 import { Reading } from './Reading';
 import { fetchSentences, fetchUnits } from '../services/reading';
 import { lemmatize } from '../services/lemmatize';
 import { defineEntry } from '../services/define';
 import { enrich } from '../services/enrich';
 import { identifyPattern } from '../services/grammar';
+import { mineWord } from '../services/vocab';
+import { ToastProvider } from '../components/ToastProvider';
+
+/**
+ * Reading consumes `useToast` (FU-NF-33 bank-failure surface), so every
+ * render needs a `<ToastProvider/>` in the tree. Wrap in the same provider
+ * App.tsx uses for the toast region.
+ */
+function renderReading(): ReturnType<typeof render> {
+  return render((<Reading />) as ReactElement, {
+    wrapper: ({ children }) => <ToastProvider>{children}</ToastProvider>,
+  });
+}
 
 // ── Fixtures ────────────────────────────────────────────────────────
 
@@ -194,12 +213,17 @@ describe('Reading', () => {
     vi.mocked(defineEntry).mockReset();
     vi.mocked(enrich).mockReset();
     vi.mocked(identifyPattern).mockReset();
+    vi.mocked(mineWord).mockReset();
+    vi.mocked(mineWord).mockResolvedValue({
+      entryId: 1,
+      card: { id: 10, version: 1 },
+    });
     hoisted.refetchSpy.mockReset();
   });
 
   it('renders the skeleton while loading', () => {
     hoisted.hookState.current = { kind: 'loading' };
-    render(<Reading />);
+    renderReading();
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
   });
@@ -210,7 +234,7 @@ describe('Reading', () => {
       data: PASSAGE_WITH_GLOSS,
       isMock: true,
     };
-    render(<Reading />);
+    renderReading();
     expect(screen.getByText('읽기 · Read')).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: '재택근무' }),
@@ -221,7 +245,7 @@ describe('Reading', () => {
   it('shows ErrorCard with Retry when the hook surfaces no data', async () => {
     hoisted.hookState.current = { kind: 'error' };
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
     expect(screen.getByRole('alert')).toBeInTheDocument();
     const retry = screen.getByRole('button', { name: /Retry/i });
     await user.click(retry);
@@ -235,7 +259,7 @@ describe('Reading', () => {
       isMock: true,
     };
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
 
     const tap = screen.getByRole('button', { name: '재택근무' });
     await user.click(tap);
@@ -275,7 +299,7 @@ describe('Reading', () => {
     });
 
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
 
     const tap = screen.getByRole('button', { name: '재택근무' });
     await user.click(tap);
@@ -322,7 +346,7 @@ describe('Reading', () => {
     vi.mocked(enrich).mockRejectedValue(new Error('claude timeout'));
 
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
 
     const tap = screen.getByRole('button', { name: '재택근무' });
     await user.click(tap);
@@ -335,32 +359,96 @@ describe('Reading', () => {
     });
   });
 
-  it('add-to-bank flips the local mined set without firing a network call (Pass 3 deferred — FU-NF-33)', async () => {
-    // Pass 3 tightening cycle: the misleading `initCards({ corpus, limit:
-    // 1 })` slice-call was removed because the tap-anything chain
-    // resolves a KRDICT entry id, not a `vocab_entries.id`. The local
-    // mined Set still flips so the dotted-underline UX is honest; the
-    // server-side wire is deferred to Pass 4 (FU-NF-33). The contract
-    // this test enforces: NO vocab service network call fires on add,
-    // and the Add button locks to "Added".
+  /**
+   * Drive the slow path to a resolved popover so the Add gesture carries the
+   * KRDICT entry id (`/define` entries[0].id) the way the real chain does.
+   * Returns the userEvent handle so callers can keep interacting.
+   */
+  async function openSlowPathPopover(): Promise<ReturnType<typeof userEvent.setup>> {
     hoisted.hookState.current = {
       kind: 'data',
-      data: PASSAGE_WITH_GLOSS,
-      isMock: true,
+      data: PASSAGE_PLACEHOLDER,
+      isMock: false,
     };
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '재택근무', lemma: '재택근무', tag: 'NNG', start: 0, length: 4 },
+    ]);
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '재택근무',
+      entries: [
+        {
+          id: 4242,
+          headword: '재택근무',
+          part_of_speech: 'n.',
+          senses: null,
+          examples: null,
+        },
+      ],
+    });
+    vi.mocked(enrich).mockResolvedValue({
+      result: { summary: 'working from home' },
+    });
 
     const user = userEvent.setup();
-    render(<Reading />);
-
+    renderReading();
     await user.click(screen.getByRole('button', { name: '재택근무' }));
+    // Wait for the chain to resolve so the Add action (suppressed while
+    // loading) appears.
+    await screen.findByRole('button', { name: /Add to vocab/i });
+    return user;
+  }
+
+  it('add-to-bank fires mineWord with the resolved KRDICT entry id + optimistic flip (FU-NF-33)', async () => {
+    const user = await openSlowPathPopover();
+
     await user.click(screen.getByRole('button', { name: /Add to vocab/i }));
 
-    // Button locks to "Added".
+    // The bank fires with the lemma + resolved KRDICT entry id + gloss.
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /Added to vocab/i }),
-      ).toBeInTheDocument();
+      expect(vi.mocked(mineWord)).toHaveBeenCalledTimes(1);
     });
+    const [body, signal] = vi.mocked(mineWord).mock.calls[0] ?? [];
+    expect(body).toMatchObject({
+      lemma: '재택근무',
+      krdictEntryId: 4242,
+      english: 'working from home',
+    });
+    // The popover-scoped abort signal is threaded through.
+    expect(signal).toBeInstanceOf(AbortSignal);
+
+    // The Add button locks to "Added" (optimistic flip).
+    expect(
+      screen.getByRole('button', { name: /Added to vocab/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('rolls the optimistic flip back + toasts when the bank fails (FU-NF-33)', async () => {
+    vi.mocked(mineWord).mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    const user = await openSlowPathPopover();
+
+    await user.click(screen.getByRole('button', { name: /Add to vocab/i }));
+
+    // The non-blocking failure toast surfaces fixed copy (never server text).
+    expect(await screen.findByText(/Couldn't bank — try again/i)).toBeInTheDocument();
+    // The tap UX is intact — the popover is still open and usable.
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('swallows a canceled bank (popover close) without toasting (FU-NF-33)', async () => {
+    vi.mocked(mineWord).mockRejectedValue(
+      new ApiError('request canceled', { status: 0, code: 'canceled' }),
+    );
+    const user = await openSlowPathPopover();
+
+    await user.click(screen.getByRole('button', { name: /Add to vocab/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(mineWord)).toHaveBeenCalledTimes(1);
+    });
+    // No failure toast for an aborted request.
+    expect(screen.queryByText(/Couldn't bank/i)).not.toBeInTheDocument();
   });
 
   it('slow-path opens the popover IMMEDIATELY with a loading affordance (C-SF-1)', async () => {
@@ -382,7 +470,7 @@ describe('Reading', () => {
     );
 
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
 
     await user.click(screen.getByRole('button', { name: '재택근무' }));
 
@@ -411,7 +499,7 @@ describe('Reading', () => {
     });
 
     const user = userEvent.setup();
-    render(<Reading />);
+    renderReading();
 
     // The grammar span renders as a single role=button covering the run.
     const span = screen.getByRole('button', {

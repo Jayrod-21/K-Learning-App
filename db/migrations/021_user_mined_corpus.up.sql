@@ -1,0 +1,35 @@
+-- =============================================================================
+-- Migration 021 — user_mined corpus enum value (FU-NF-33, "tap anything → bank")
+--   UP — extends the `corpus` enum with 'user_mined': the corpus under which a
+--        word the learner tapped or OCR'd (resolved through KRDICT) is upserted
+--        as a `vocab_entries` row and then banked as a normal recognition card.
+--        This reuses the entire existing card / FSRS / Review stack — no new
+--        card target, no Review render change. The locked product decision
+--        (user, 2026-05-31) is "ad-hoc into vocab_entries via a new user_mined
+--        corpus" — see FU_NF_33_CONTRACT.md.
+--   Reverse: 021_user_mined_corpus.down.sql
+--   Depends on: 001_core_schema (defines the `corpus` enum).
+--
+-- WHY THIS MIGRATION DOES NOTHING ELSE — THE PG ENUM GOTCHA (mirrors 016)
+--   A newly added enum value CANNOT be USED in the SAME transaction that added
+--   it. The runner (migrate.py) wraps EACH migration body in its own
+--   transaction together with the bookkeeping write (ADR-013). So this
+--   migration ONLY adds the value (and commits). Migration 022 — a SEPARATE
+--   migration, therefore a SEPARATE transaction — is where 'user_mined' is
+--   first USED: it relaxes the vocab_entries CHECKs to admit the value and
+--   seeds the single corpus_sources row keyed on it. Combining the two into one
+--   file would put the ADD VALUE and its first USE in the same runner
+--   transaction and fail at apply time. This is exactly the split migration 016
+--   used for 'hanja' (016 added the value; the loader used it later, in its own
+--   process and transaction).
+--
+--   `ADD VALUE IF NOT EXISTS` mirrors 016 / 002 so re-applying is a no-op.
+--
+-- TRANSACTION OWNERSHIP (ADR-013):
+--   No top-level BEGIN/COMMIT — `migrate.py` wraps this body in a single
+--   transaction together with the schema_migrations bookkeeping write.
+-- =============================================================================
+
+ALTER TYPE corpus ADD VALUE IF NOT EXISTS 'user_mined';
+
+-- End of 021_user_mined_corpus.up.sql — runner owns the transaction (ADR-013).

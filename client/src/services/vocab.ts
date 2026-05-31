@@ -26,6 +26,8 @@ import type {
   InitCardsBody,
   InitCardsResult,
   ListListsResponse,
+  MineWordInput,
+  MineWordResult,
   PatchListBody,
   ReviewResult,
   ReviewSubmission,
@@ -158,6 +160,36 @@ export async function bankEntry(
   return api.post<{ card: { id: number; version: number } }>(
     `/vocab/entries/${String(entryId)}/bank`,
     {},
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /vocab/mine — the "tap anything → bank it" path (FU-NF-33). The shared
+ * KRDICT→bank helper both the Reading tap-chain and the Images OCR list call.
+ *
+ * A tapped/OCR'd word, resolved through KRDICT, is upserted into the shared
+ * `user_mined` corpus and banked as a recognition card for the current user.
+ * Unlike `bankEntry` (which needs a pre-existing `vocab_entries.id`), this
+ * accepts the lemma + optional KRDICT entry id the tap chain actually resolves,
+ * so the gesture reaches the bank without a separate lemma→entry resolver.
+ *
+ * Idempotent on the server: the entry is keyed on `krdict-{id}` (or
+ * `lemma-{lemma}` when no id is given) and the card on (user, entry,
+ * recognition), so a double-tap returns the same `card.id` — safe to call from
+ * an optimistic-flip handler.
+ *
+ * `signal` is the popover-scoped `AbortController.signal`: a popover close or a
+ * new tap aborts the in-flight request, and the caller swallows the resulting
+ * cancellation rather than treating it as a bank failure.
+ */
+export async function mineWord(
+  input: MineWordInput,
+  signal?: AbortSignal,
+): Promise<MineWordResult> {
+  return api.post<MineWordResult>(
+    '/vocab/mine',
+    stripUndef({ ...input }),
     signal !== undefined ? { signal } : undefined,
   );
 }

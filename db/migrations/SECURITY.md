@@ -319,3 +319,93 @@ So the attack surface here is:
 - Kiwi service threat model (Phase B).
 - Claude API proxy threat model — a separate component.
 
+---
+
+## user_mined corpus (migrations 021 + 022) — FU-NF-33
+
+### Threat surface in scope
+
+FU-NF-33 ("tap anything → bank it") adds a `user_mined` value to the `corpus`
+enum (migration 021), relaxes the two vocab_entries corpus/level CHECKs to
+admit it, and seeds one `corpus_sources` row for it (migration 022). The
+write path is `POST /vocab/mine`: an authenticated learner taps/OCR's a word,
+the client resolves it through KRDICT, and the server upserts a `vocab_entries`
+row under `user_mined` then banks a recognition `vocab_cards` row.
+
+The key shape: the **vocab_entries row is SHARED public reference data** (just
+a dictionary lemma + gloss — no user data); the **card is user-scoped private
+state**. This is unlike every other write endpoint, where the written row is
+user-owned. The distinction is the central thing to get right.
+
+### Attack vectors and defenses
+
+#### M-1. Cross-user data leak via the shared entry
+
+- **Vector:** Because the `user_mined` vocab_entries row is shared (two users
+  who mine 사과 reuse one entry), a naive design might store user-identifying
+  data on the entry, leaking one user's activity to another.
+- **Defense (DB layer):**
+  - The entry holds ONLY `korean` (the lemma), `english` (the public gloss),
+    and fixed provenance columns — no `user_id`, no timestamps tied to a
+    user, no free-form notes. There is nothing user-identifying to leak.
+  - Per-user state lives exclusively in `vocab_cards` (`user_id NOT NULL`,
+    FK CASCADE to users) — the same user-isolation the rest of the SRS stack
+    relies on (see §7 above).
+- **Defense (app layer):**
+  - `POST /vocab/mine` writes the card with `user_id = $session.user_id`; the
+    idempotency SELECT is scoped to the same `user_id`. A second user mining
+    the same lemma gets a DISTINCT card against the SAME shared entry.
+
+#### M-2. Unbounded / malicious text in the shared dictionary row
+
+- **Vector:** A hostile client posts a megabyte-long `lemma`/`english`, or a
+  crafted string, into the shared `user_mined` entry — bloating the shared
+  table or planting content that renders to other users.
+- **Defense (DB layer):**
+  - Values land via parameterized statements only — no string interpolation,
+    so there is no SQL-injection path (the values are stored as data, never
+    executed).
+- **Defense (app layer):**
+  - Zod `.strict()` body: `lemma` ≤ 100 chars (trimmed, non-empty),
+    `english` ≤ 500, `pos` ≤ 50, `krdictEntryId` a positive int. Oversized or
+    unexpected fields are rejected at the boundary (400).
+  - The shared row is rendered as TEXT (React default escaping); it is never
+    treated as HTML or as an instruction to Claude.
+
+#### M-3. Duplicate-write / double-tap amplification
+
+- **Vector:** A retried or double-tapped request mints duplicate entries or
+  cards, inflating storage and corrupting the due queue.
+- **Defense (DB layer):**
+  - `UNIQUE (corpus, source_id)` on vocab_entries makes the entry upsert
+    idempotent — the dedup key (`krdict-<id>` or `lemma-<lemma>`) collapses
+    repeats onto one row (the gloss is COALESCE-merged, the version bumped).
+- **Defense (app layer):**
+  - The card insert is guarded by an existence SELECT on
+    (user_id, vocab_entry_id, face='recognition', deleted_at IS NULL) inside
+    the same transaction — a repeat returns the existing card unchanged.
+  - `requireAuth` + `cheapLimiter` bound request volume.
+
+#### M-4. Migration-dependency footgun (enum ADD VALUE in-transaction)
+
+- **Vector:** Combining the enum `ADD VALUE` and its first USE in one
+  migration fails at apply time (PG forbids using a freshly added enum value
+  in the same transaction), potentially leaving a half-applied schema.
+- **Defense (DB layer):**
+  - The work is split: migration 021 ONLY runs `ALTER TYPE corpus ADD VALUE
+    IF NOT EXISTS 'user_mined'` (committed in its own runner transaction,
+    ADR-013); migration 022 — a separate transaction — is the first to USE
+    the value (CHECK relaxation + corpus_sources seed). This mirrors migration
+    016's 'hanja' split exactly.
+  - The relaxed CHECKs are strictly more permissive than the originals, so no
+    existing vocab_entries row can be invalidated.
+  - `POST /vocab/mine` resolves the seeded `user_mined` corpus_sources row and
+    fails LOUDLY (500) if it is absent, surfacing a missing migration 022
+    rather than minting an entry with dangling provenance.
+
+### Out of scope for these migrations
+
+- Client-side KRDICT lookup and the optimistic tap UX (FU-NF-33 Part B).
+- Rate-limit tuning for the tap-a-word flow (covered by the shared
+  `cheapLimiter`).
+

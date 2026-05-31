@@ -27,15 +27,21 @@ no top-level BEGIN/COMMIT in the SQL.
 ```bash
 docker compose up -d postgres            # or the compose service name for PG
 # apply every migration forward
-python db/migrate.py up                  # expect 001 … 019 applied, no error
+python db/migrate.py up                  # expect 001 … 022 applied, no error
 # round-trip the most recent ones down then up to prove reversibility
-python db/migrate.py down --to 017       # 019 → 018 → 017 downgrades cleanly
-python db/migrate.py up                  # back to 019
+python db/migrate.py down --to 019       # 022 → 021 → 020 → 019 downgrade cleanly
+python db/migrate.py up                  # back to 022
 ```
 
-Pass criteria: forward applies 001–019 with no error; the down/up round-trip
-succeeds (each `*.down.sql` reverses its `*.up.sql`). 018 = `users.preferences`
-JSONB; 019 = `grammar_drill_attempts`.
+Pass criteria: forward applies 001–022 with no error; the down/up round-trip
+succeeds (each `*.down.sql` reverses its `*.up.sql`). New since the last run:
+018 = `users.preferences` JSONB; 019 = `grammar_drill_attempts`; 020 = the
+grammar-production-card unique index; 021 = the `user_mined` corpus enum value
+(its down is a documented no-op — Postgres has no DROP VALUE); 022 = the
+`user_mined` vocab CHECK relaxations + corpus_sources seed (the 021→022 split is
+required — a freshly-added enum value can't be used in the tx that adds it).
+This down round-trip is where 020–022's reversibility is exercised (closes the
+FU-NF-33-review note that the downs were reasoned but not yet run).
 
 > Note: `migrate.py down` for 001 requires `--allow-destructive` (it's a
 > DROP TABLE) — see `db/migrations/README.md`.

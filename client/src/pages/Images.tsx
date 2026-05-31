@@ -20,10 +20,13 @@
  *       so the gesture matches Reading, and an Add/Added toggle banks it into
  *       the per-capture session set.
  *
- * Local-only banking: the per-capture added-set + Add/Added is session state.
- * Server-side vocab-banking from OCR shares the deferred KRDICT → vocab_entries
- * mapping (FU-NF-33), so this pass does NOT write to the bank — it only tracks
- * the visual "added" state for the current session.
+ * Banking (FU-NF-33): tapping Add on a detected word fires `mineWord` against
+ * `POST /vocab/mine`. OCR words carry a Korean surface + gloss but no `/define`
+ * lookup, so they mine by lemma (`krdictEntryId` omitted → the server keys the
+ * shared `user_mined` entry on `lemma-{lemma}`). The per-capture added-set
+ * flips OPTIMISTICALLY so the Added pill lands instantly; a failed bank rolls
+ * the word back out of the set and surfaces a non-blocking error toast — a
+ * server hiccup never breaks the capture view.
  *
  * Threat model:
  *   - The upload path sends a raw `File` to the server, which enforces the
@@ -55,6 +58,8 @@ import { loadImagesMock } from '../data/mocks/images';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { ApiError } from '../services/api';
 import { fetchImage, fetchImages, uploadImage } from '../services/images';
+import { mineWord } from '../services/vocab';
+import { useToast } from '../components/useToast';
 import type { ImageCapture, OcrWord } from '../types/domain';
 
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
@@ -83,6 +88,7 @@ export default function Images(): JSX.Element {
   const [popData, setPopData] = useState<WordPopoverData | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const { toast } = useToast();
 
   // Seed `history` from the loaded captures once data arrives — the first
   // capture's id is the most-recent placeholder so the "Recent captures" grid
@@ -141,13 +147,45 @@ export default function Images(): JSX.Element {
     }
   };
 
-  const addWord = (capId: string, wordId: string): void => {
+  /**
+   * Add a detected word to the bank (FU-NF-33). OCR words have no `/define`
+   * lookup, so we mine by lemma (`krdictEntryId` omitted). The per-capture
+   * added-set flips optimistically — the Added pill lands instantly — then
+   * `mineWord` fires. A failed bank rolls the word back out of the set and
+   * surfaces a non-blocking error toast so a server hiccup never breaks the
+   * capture view. Already-added words short-circuit (idempotent on the UI
+   * side, mirroring the server's idempotent mine). Server error text is never
+   * echoed; the toast copy is fixed here.
+   */
+  const addWord = (capId: string, word: OcrWord): void => {
+    let alreadyAdded = false;
     setAddedByCapture((prev) => {
       const existing = prev[capId] ?? new Set<string>();
-      if (existing.has(wordId)) return prev;
+      if (existing.has(word.id)) {
+        alreadyAdded = true;
+        return prev;
+      }
       const next = new Set(existing);
-      next.add(wordId);
+      next.add(word.id);
       return { ...prev, [capId]: next };
+    });
+    if (alreadyAdded) return;
+
+    void mineWord({
+      lemma: word.kr,
+      ...(word.en ? { english: word.en } : {}),
+      ...(word.pos ? { pos: word.pos } : {}),
+    }).catch(() => {
+      // Roll the optimistic flip back so the Added pill stays honest, then
+      // surface a fixed, non-blocking failure notice (no server text).
+      setAddedByCapture((prev) => {
+        const existing = prev[capId];
+        if (!existing?.has(word.id)) return prev;
+        const next = new Set(existing);
+        next.delete(word.id);
+        return { ...prev, [capId]: next };
+      });
+      toast({ message: "Couldn't bank — try again", tone: 'error' });
     });
   };
 
@@ -204,12 +242,12 @@ export default function Images(): JSX.Element {
           onOpenWord={(w) => {
             setPopData(wordToPopover(w));
           }}
-          onAddOne={(wordId) => {
-            addWord(cap.id, wordId);
+          onAddOne={(w) => {
+            addWord(cap.id, w);
           }}
           onAddAll={() => {
             cap.words.forEach((w) => {
-              addWord(cap.id, w.id);
+              addWord(cap.id, w);
             });
           }}
         />
@@ -526,7 +564,7 @@ function CaptureView({
   added: ReadonlySet<string>;
   onBack: () => void;
   onOpenWord: (w: OcrWord) => void;
-  onAddOne: (wordId: string) => void;
+  onAddOne: (word: OcrWord) => void;
   onAddAll: () => void;
 }): JSX.Element {
   return (
@@ -639,7 +677,7 @@ function CaptureView({
                   <button
                     type="button"
                     onClick={() => {
-                      if (!isAdded) onAddOne(w.id);
+                      if (!isAdded) onAddOne(w);
                     }}
                     disabled={isAdded}
                     aria-pressed={isAdded}

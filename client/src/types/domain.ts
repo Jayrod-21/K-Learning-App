@@ -728,6 +728,36 @@ export interface VocabEntriesPage {
   offset: number;
 }
 
+/**
+ * Body accepted by `POST /vocab/mine` (FU-NF-33) — the "tap anything → bank
+ * it" path. A tapped/OCR'd word, resolved through KRDICT, is upserted into a
+ * shared `user_mined` corpus and banked as a recognition card for the caller.
+ *
+ *   - `lemma`         — the KRDICT headword / tapped surface (required).
+ *   - `english`       — gloss from enrich/define, when available.
+ *   - `pos`           — part of speech, when available.
+ *   - `krdictEntryId` — the `/define` `entries[0].id`, used for stable dedup
+ *                       (homographs stay distinct by KRDICT id). Omitted for
+ *                       OCR words with no `/define` lookup → the server keys
+ *                       the shared entry on the lemma instead.
+ */
+export interface MineWordInput {
+  lemma: string;
+  english?: string;
+  pos?: string;
+  krdictEntryId?: number;
+}
+
+/**
+ * Envelope returned by `POST /vocab/mine`. Mirrors the server builder shape:
+ * the upserted shared `vocab_entries.id` plus the user-scoped recognition
+ * card (idempotent — a double-tap returns the same `card.id`).
+ */
+export interface MineWordResult {
+  entryId: number;
+  card: { id: number; version: number };
+}
+
 /** One due card row from `GET /vocab/cards/due`. */
 export interface DueCard {
   id: number;

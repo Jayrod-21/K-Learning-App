@@ -18,17 +18,16 @@
  *   4. Grammar span tap → `identifyPattern`, opens popover in grammar
  *      mode with the returned pattern shape rendered into the popover's
  *      `desc` slot.
- *   5. Add-to-bank — local-only Set update for Pass 3. The per-entry
- *      `POST /vocab/entries/:entryId/bank` endpoint exists server-side and
- *      `services.vocab.bankEntry(entryId)` exists client-side, but the
- *      tap-anything chain (lemmatize → define → enrich) only resolves a
- *      KRDICT entry id — NOT the `vocab_entries.id` the bank endpoint
- *      expects. Wiring the gesture end-to-end needs a lemma→vocab_entries
- *      resolver on the server, tracked in FU-NF-33. Pass 3 keeps the
- *      local bank set + dotted-underline UX honest; the no-op network
- *      side was REMOVED in the Pass 3 tightening cycle to stop the
- *      misleading `initCards({ corpus, limit: 1 })` slice-call from
- *      pretending it was banking the tapped word.
+ *   5. Add-to-bank (vocab) — `services.vocab.mineWord(...)` against
+ *      `POST /vocab/mine` (FU-NF-33). The tap chain resolves the KRDICT
+ *      entry id (`/define` `entries[0].id`), threaded through the popover;
+ *      the server upserts a shared `user_mined` entry and banks a
+ *      recognition card. The flip is OPTIMISTIC: `minedIds` gains the
+ *      lemma the instant the user taps Add, then rolls back (and surfaces a
+ *      non-blocking toast) if the bank fails — a failed bank never breaks
+ *      the tap UX, and the dotted-underline stays honest. A close-aborted
+ *      request is swallowed (no rollback, no toast). The grammar branch
+ *      stays local-only (no server `pattern_key` from `identifyPattern`).
  *
  * Layout (per design README §3):
  *   1. Topbar: passage level/min eyebrow + 읽기 · Read serif title.
@@ -81,17 +80,16 @@
  *   - **Passage rendering.** Tokens render as React children → escaped.
  *     The server contract (see types/domain.ts `ReadingSentenceRow`)
  *     keeps `korean` as a text field; never HTML.
- *   - **Add-to-bank deferred to Pass 4 (FU-NF-33).** The Pass 3 tightening
- *     cycle removed the misleading `initCards({ corpus, limit: 1 })`
- *     slice-call that pretended to bank the tapped lemma but actually
- *     seeded N random cards from the default corpus. The per-entry route
- *     (`POST /vocab/entries/:entryId/bank`) and client service
- *     (`services.vocab.bankEntry`) both exist, but the tap-anything chain
- *     resolves a KRDICT entry id rather than a `vocab_entries.id`, so the
- *     gesture cannot reach the endpoint without a lemma→entry resolver.
- *     The local mined Set update keeps the dotted-underline UX honest; a
- *     follow-up pass wires the server-side resolver and rewires this
- *     handler to call `bankEntry`.
+ *   - **Add-to-bank failure-safety (FU-NF-33).** The vocab Add gesture fires
+ *     `mineWord` against `POST /vocab/mine`. The `minedIds` flip is
+ *     optimistic so the dotted-underline lands instantly; a failed bank
+ *     rolls the lemma back out of the set and surfaces a non-blocking error
+ *     toast rather than throwing — a server hiccup must never break the tap
+ *     UX or strand the underline in a lying "banked" state. Server failure
+ *     text is NEVER echoed: the toast copy is fixed client-side (closes the
+ *     same error-leak vector as `ErrorCard`). A request the user aborts by
+ *     closing the popover is swallowed (no rollback, no toast). The request
+ *     is scoped to `inFlightCtrlRef` so a popover close cancels it.
  */
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { Topbar } from '../components/Topbar';
@@ -109,7 +107,9 @@ import { lemmatize } from '../services/lemmatize';
 import { defineEntry } from '../services/define';
 import { enrich } from '../services/enrich';
 import { identifyPattern } from '../services/grammar';
+import { mineWord } from '../services/vocab';
 import { ApiError } from '../services/api';
+import { useToast } from '../components/useToast';
 import type {
   DefineResult,
   EnrichResult,
@@ -266,6 +266,10 @@ function popoverFromDefine(
     kr: first?.headword ?? lemma,
     en: enrichSummary ?? 'Dictionary entry',
     pos: first?.part_of_speech ?? 'word',
+    // The KRDICT entry id is what FU-NF-33 mines on — it gives the server a
+    // stable, homograph-safe dedup key. Absent only when `/define` returned
+    // no entries (the fallback popover keys on the lemma instead).
+    ...(first ? { krdictEntryId: first.id } : {}),
     ex_kr: '',
     ex_en: '',
   };
@@ -325,6 +329,7 @@ export function Reading(): JSX.Element {
     loadReadingMock,
     { realFn: loadReadingReal },
   );
+  const { toast } = useToast();
 
   // popData null = closed. The same component renders for vocab and grammar
   // (kind discriminator on `WordPopoverData`).
@@ -526,34 +531,81 @@ export function Reading(): JSX.Element {
   );
 
   /**
-   * Add-to-bank handler. Local-only Set update for Pass 3 (see the file-
-   * header threat model + FU-NF-33). The previous version fired
-   * `initCards({ corpus, limit: 1 })` which seeded N random cards from
-   * the default corpus rather than banking the tapped lemma — a
-   * misleading gesture-to-server mapping that the Pass 3 tightening
-   * cycle removed. The local Set still flips so the dotted-underline UX
-   * keeps the user's intent visible while the server-side lemma→entry
-   * resolver lands in Pass 4.
+   * Add-to-bank handler (FU-NF-33 for vocab).
    *
-   * For grammar we keep the local-only bank set since `bankPattern`
-   * requires a server `pattern_key` we don't have from
-   * `identifyPattern`'s opaque result envelope.
+   * Vocab branch: optimistically flip `minedIds` so the dotted-underline
+   * lands the instant the user taps Add, then fire `mineWord` against
+   * `POST /vocab/mine` (popover-scoped signal). On failure we roll the lemma
+   * back out of the set and surface a non-blocking error toast — a failed
+   * bank must never break the tap UX or leave the underline lying. A request
+   * the user aborts by closing the popover (code `canceled`) is swallowed:
+   * no rollback, no toast (the popover is already gone). Server error text is
+   * never echoed; the toast copy is fixed here.
+   *
+   * Grammar branch: still local-only — `bankPattern` requires a server
+   * `pattern_key` we don't have from `identifyPattern`'s opaque envelope.
    */
-  const handleAdd = useCallback((d: WordPopoverData): void => {
-    if (d.kind === 'grammar') {
-      setBankedGrammar((prev) => {
+  const handleAdd = useCallback(
+    (d: WordPopoverData): void | Promise<void> => {
+      if (d.kind === 'grammar') {
+        setBankedGrammar((prev) => {
+          const next = new Set(prev);
+          next.add(d.kr);
+          return next;
+        });
+        return;
+      }
+
+      const lemma = d.kr;
+      // Optimistic flip — the underline lands immediately.
+      setMinedIds((prev) => {
         const next = new Set(prev);
-        next.add(d.kr);
+        next.add(lemma);
         return next;
       });
-      return;
-    }
-    setMinedIds((prev) => {
-      const next = new Set(prev);
-      next.add(d.kr);
-      return next;
-    });
-  }, []);
+
+      // Reuse the popover-scoped controller so a popover close cancels the
+      // bank too; fall back to a fresh one if the chain already cleared it.
+      const ctrl = inFlightCtrlRef.current ?? new AbortController();
+      inFlightCtrlRef.current = ctrl;
+
+      // Returned so WordPopover can roll its own "Added" button back on a real
+      // failure (resolve on success/cancel = button stays; reject = button
+      // resets, matching the underline rollback below).
+      return mineWord(
+        {
+          lemma,
+          ...(d.en && d.en !== 'Dictionary entry' && d.en !== 'Definition unavailable'
+            ? { english: d.en }
+            : {}),
+          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
+          ...(d.krdictEntryId !== undefined
+            ? { krdictEntryId: d.krdictEntryId }
+            : {}),
+        },
+        ctrl.signal,
+      ).then(
+        () => undefined,
+        (err: unknown) => {
+          // A close-aborted request is expected — swallow it (resolves, so the
+          // popover button isn't reset; the popover is closing anyway).
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          // Roll the optimistic flip back so the underline stays honest, then
+          // surface a fixed, non-blocking failure notice (no server text).
+          setMinedIds((prev) => {
+            if (!prev.has(lemma)) return prev;
+            const next = new Set(prev);
+            next.delete(lemma);
+            return next;
+          });
+          toast({ message: "Couldn't bank — try again", tone: 'error' });
+          // Re-throw so WordPopover rolls its "Added" button back too.
+          throw err instanceof Error ? err : new Error('bank failed');
+        },
+      );
+    },
+    [toast],
+  );
 
   /** Close the popover and abort any still-pending chain. */
   const handleClose = useCallback((): void => {

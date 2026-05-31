@@ -16,6 +16,9 @@ import { ConflictError, NotFoundError } from '../middleware/errors.js';
 const router = Router();
 router.use(requireAuth);
 
+/** Non-empty, trimmed text — mirrors the convention in services/claude/models.ts. */
+const NonEmptyText = z.string().trim().min(1);
+
 /* ---------- Corpus lookup (vocab_entries from migration 002) ---------- */
 
 const VocabSearchQuerySchema = z.object({
@@ -425,6 +428,143 @@ router.post(
         return ins.rows[0]!;
       });
       res.status(201).json({ card: out });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- FU-NF-33: tap anything → bank it (KRDICT → review card) ---------- */
+
+const MineBodySchema = z
+  .object({
+    // The KRDICT headword / tapped surface form. Bounded so a hostile client
+    // can't store an unbounded blob in the shared dictionary table.
+    lemma: NonEmptyText.max(100),
+    // Gloss from /define or /enrich. Optional — a bare lemma is still bankable.
+    english: z.string().trim().max(500).optional(),
+    // Part of speech (accepted for forward compatibility; not stored today —
+    // vocab_entries.part_of_speech is loader-curated and the mined path keeps
+    // the shared row minimal). Bounded to reject oversized input.
+    pos: z.string().trim().max(50).optional(),
+    // The /define entries[0].id — gives a stable dedup key so homographs stay
+    // distinct (krdict-<id>) rather than colliding on the surface form.
+    krdictEntryId: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
+ * POST /vocab/mine — "tap anything → bank it" (FU-NF-33).
+ *
+ * Resolves a tapped/OCR'd word (already looked up through KRDICT on the
+ * client) into a SHARED `user_mined` vocab_entries row, then banks it as a
+ * normal recognition card for the requesting user. This reuses the entire
+ * existing card / FSRS / Review stack — no new card target.
+ *
+ * One transaction:
+ *   1. Resolve the shared `user_mined` corpus_sources id (seeded by migration
+ *      022). Absent → 500 loudly: the migration is a hard dependency.
+ *   2. Upsert the vocab_entries row (SHARED, NOT user-scoped — it is just the
+ *      public dictionary lemma + gloss, carrying no user data). Dedup key is
+ *      `krdict-<id>` when a KRDICT id is supplied, else `lemma-<lemma>`. On
+ *      conflict we coalesce a newly-supplied gloss and bump the version.
+ *   3. Bank a recognition card for THIS user, idempotent on
+ *      (user_id, vocab_entry_id, face='recognition', deleted_at IS NULL) —
+ *      identical to POST /vocab/entries/:entryId/bank, so a double-tap returns
+ *      the same card instead of minting a duplicate.
+ *
+ * Returns `201 { entryId, card: { id, version } }`. `card.version` is what the
+ * client threads into the first review's `expected_version`.
+ *
+ * Threat model (see db/migrations/SECURITY.md addendum, migrations 021/022):
+ *   - The vocab_entries upsert is SHARED and holds no user data — two users
+ *     mining 사과 reuse one public entry; their cards stay private (user_id-
+ *     scoped). So there is no cross-user data leak in the shared row.
+ *   - `lemma` / `english` / `pos` are length-bounded, trimmed text stored as
+ *     data via parameterized queries (no injection — values are never
+ *     interpolated into SQL, and they are rendered as text, not executed).
+ *   - Idempotent on both the entry (ON CONFLICT) and the card (existence
+ *     check), so a retried or double-tapped request is safe.
+ *   - requireAuth + cheapLimiter bound abuse (no unbounded write loop).
+ */
+router.post(
+  '/mine',
+  cheapLimiter(),
+  validateBody(MineBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof MineBodySchema>;
+      // Stable dedup key: prefer the KRDICT id (homographs stay distinct),
+      // else fall back to the surface lemma. Built here so the SQL stays a
+      // pure parameterized statement.
+      const sourceId =
+        body.krdictEntryId !== undefined
+          ? `krdict-${body.krdictEntryId}`
+          : `lemma-${body.lemma}`;
+
+      const out = await withTransaction(async (client) => {
+        // 1. Resolve the shared user_mined corpus source (seeded by mig 022).
+        const src = await client.query<{ id: number }>(
+          `SELECT id
+             FROM corpus_sources
+            WHERE corpus = 'user_mined'::corpus
+            LIMIT 1`,
+        );
+        if (src.rowCount === 0) {
+          // Migration 022 is a hard dependency — fail loudly rather than
+          // silently mint an entry with a dangling provenance.
+          throw new Error(
+            'user_mined corpus_sources row missing — run migration 022',
+          );
+        }
+        const corpusSourceId = src.rows[0]!.id;
+
+        // 2. Upsert the SHARED vocab_entries row. korean=lemma satisfies the
+        //    korean-required CHECK; proficiency 'L3' satisfies proficiency-
+        //    required; book_level 'beginner' is the inert sentinel the relaxed
+        //    ck_vocab_entries_level_matches_corpus allows for user_mined.
+        const entry = await client.query<{ id: number }>(
+          `INSERT INTO vocab_entries (
+              corpus_source_id, corpus, source_id, book_level, entry_type,
+              source_book, korean, english, proficiency, domain)
+            VALUES ($1, 'user_mined'::corpus, $2, 'beginner'::book_level,
+                    'word'::vocab_entry_type, 'user-mined', $3, $4,
+                    'L3'::proficiency_level, 'general'::content_domain)
+            ON CONFLICT (corpus, source_id) DO UPDATE
+               SET english = COALESCE(EXCLUDED.english, vocab_entries.english),
+                   version = vocab_entries.version + 1
+            RETURNING id`,
+          [corpusSourceId, sourceId, body.lemma, body.english ?? null],
+        );
+        const entryId = entry.rows[0]!.id;
+
+        // 3. Bank a recognition card, idempotent — mirrors
+        //    POST /vocab/entries/:entryId/bank exactly.
+        const existing = await client.query<{ id: number; version: number }>(
+          `SELECT id, version
+             FROM vocab_cards
+            WHERE user_id = $1
+              AND vocab_entry_id = $2
+              AND face = 'recognition'
+              AND deleted_at IS NULL
+            LIMIT 1`,
+          [userId, entryId],
+        );
+        if (existing.rowCount && existing.rowCount > 0) {
+          return { entryId, card: existing.rows[0]! };
+        }
+        const ins = await client.query<{ id: number; version: number }>(
+          `INSERT INTO vocab_cards (
+              user_id, face, vocab_entry_id, proficiency, due_at)
+            VALUES ($1, 'recognition'::card_face, $2,
+                    'L3'::proficiency_level, now())
+            RETURNING id, version`,
+          [userId, entryId],
+        );
+        return { entryId, card: ins.rows[0]! };
+      });
+      res.status(201).json(out);
     } catch (err) {
       next(err);
     }

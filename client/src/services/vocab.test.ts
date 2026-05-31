@@ -11,6 +11,7 @@ import {
   getList,
   initCards,
   listLists,
+  mineWord,
   patchList,
   removeListEntry,
   searchEntries,
@@ -202,6 +203,50 @@ describe('initCards', () => {
       undefined,
     );
     expect(out.inserted).toBe(7);
+  });
+});
+
+describe('mineWord', () => {
+  it('POSTs /vocab/mine with the input + signal and returns the envelope', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      entryId: 77,
+      card: { id: 12, version: 1 },
+    });
+    const ctrl = new AbortController();
+
+    const out = await mineWord(
+      { lemma: '사과', english: 'apple', pos: 'n.', krdictEntryId: 4242 },
+      ctrl.signal,
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      '/vocab/mine',
+      { lemma: '사과', english: 'apple', pos: 'n.', krdictEntryId: 4242 },
+      { signal: ctrl.signal },
+    );
+    expect(out.entryId).toBe(77);
+    expect(out.card).toEqual({ id: 12, version: 1 });
+  });
+
+  it('strips undefined optionals so the server never sees them (lemma-only mine)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      entryId: 1,
+      card: { id: 2, version: 1 },
+    });
+
+    await mineWord({ lemma: '버스' });
+
+    expect(spy).toHaveBeenCalledWith('/vocab/mine', { lemma: '버스' }, undefined);
+  });
+
+  it('surfaces a canceled abort as a discriminable ApiError', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('request canceled', { status: 0, code: 'canceled' }),
+    );
+
+    await expect(mineWord({ lemma: '학교' })).rejects.toMatchObject({
+      code: 'canceled',
+    });
   });
 });
 

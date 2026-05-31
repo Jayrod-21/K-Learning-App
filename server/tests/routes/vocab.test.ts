@@ -7,6 +7,7 @@
  *   GET  /vocab/cards/due
  *   POST /vocab/cards/init
  *   POST /vocab/cards/:cardId/reviews
+ *   POST /vocab/mine        (FU-NF-33: tap anything → bank it)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -41,6 +42,7 @@ describe('vocab — auth required', () => {
     ['GET', '/vocab/entries/1'],
     ['GET', '/vocab/cards/due'],
     ['POST', '/vocab/cards/init'],
+    ['POST', '/vocab/mine'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
     const r =
       method === 'GET'
@@ -339,6 +341,144 @@ describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('POST /vocab/mine — tap anything → bank it (FU-NF-33)', () => {
+  // The `user_mined` corpus_sources row is seeded by migration 022 and is NOT
+  // truncated by the per-test beforeEach (which only clears user-scoped tables
+  // + vocab_cards). Each test mines a UNIQUE lemma so accumulated shared
+  // vocab_entries rows across tests never collide on (corpus, source_id).
+  const uniqueLemma = (): string => `단어${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+  it('creates a user_mined entry + a recognition card (201)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const res = await agent
+      .post('/vocab/mine')
+      .send({ lemma, english: 'a word', pos: 'noun' });
+    expect(res.status).toBe(201);
+    expect(typeof res.body.entryId).toBe('number');
+    expect(typeof res.body.card.id).toBe('number');
+    expect(typeof res.body.card.version).toBe('number');
+
+    // The shared entry is keyed lemma-<lemma> (no krdictEntryId given), under
+    // the user_mined corpus, korean = lemma.
+    const entry = await pg.pool.query<{
+      corpus: string;
+      source_id: string;
+      korean: string;
+      english: string;
+    }>(
+      `SELECT corpus, source_id, korean, english
+         FROM vocab_entries WHERE id = $1`,
+      [res.body.entryId],
+    );
+    expect(entry.rows[0]!.corpus).toBe('user_mined');
+    expect(entry.rows[0]!.source_id).toBe(`lemma-${lemma}`);
+    expect(entry.rows[0]!.korean).toBe(lemma);
+    expect(entry.rows[0]!.english).toBe('a word');
+
+    // The card is a recognition card pointing at that entry.
+    const card = await pg.pool.query<{ face: string; vocab_entry_id: string }>(
+      `SELECT face, vocab_entry_id FROM vocab_cards WHERE id = $1`,
+      [res.body.card.id],
+    );
+    expect(card.rows[0]!.face).toBe('recognition');
+    expect(Number(card.rows[0]!.vocab_entry_id)).toBe(res.body.entryId);
+  });
+
+  it('is idempotent — a second identical mine returns the same entry + card, no dupes', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const first = await agent.post('/vocab/mine').send({ lemma, english: 'apple' });
+    expect(first.status).toBe(201);
+    const second = await agent.post('/vocab/mine').send({ lemma, english: 'apple' });
+    expect(second.status).toBe(201);
+
+    expect(second.body.entryId).toBe(first.body.entryId);
+    expect(second.body.card.id).toBe(first.body.card.id);
+
+    const entryCount = await pg.pool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM vocab_entries WHERE source_id = $1`,
+      [`lemma-${lemma}`],
+    );
+    expect(Number(entryCount.rows[0]!.n)).toBe(1);
+    const cardCount = await pg.pool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM vocab_cards
+        WHERE vocab_entry_id = $1 AND face = 'recognition'`,
+      [first.body.entryId],
+    );
+    expect(Number(cardCount.rows[0]!.n)).toBe(1);
+  });
+
+  it('two users mining the same lemma share the entry but get distinct cards', async () => {
+    const lemma = uniqueLemma();
+    const { agent: a } = await registerUser(t.app, pg.pool);
+    const { agent: b } = await registerUser(t.app, pg.pool);
+    const ra = await a.post('/vocab/mine').send({ lemma });
+    const rb = await b.post('/vocab/mine').send({ lemma });
+    expect(ra.status).toBe(201);
+    expect(rb.status).toBe(201);
+    // Shared public entry…
+    expect(rb.body.entryId).toBe(ra.body.entryId);
+    // …distinct private cards.
+    expect(rb.body.card.id).not.toBe(ra.body.card.id);
+  });
+
+  it('krdictEntryId keys the entry by krdict-<id> (homographs stay distinct)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const krdictEntryId = Math.floor(Math.random() * 1e9) + 1;
+    const res = await agent.post('/vocab/mine').send({ lemma, krdictEntryId });
+    expect(res.status).toBe(201);
+    const entry = await pg.pool.query<{ source_id: string }>(
+      `SELECT source_id FROM vocab_entries WHERE id = $1`,
+      [res.body.entryId],
+    );
+    expect(entry.rows[0]!.source_id).toBe(`krdict-${krdictEntryId}`);
+  });
+
+  it('a freshly mined card enters the due queue', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const mine = await agent.post('/vocab/mine').send({ lemma });
+    expect(mine.status).toBe(201);
+    const due = await agent.get('/vocab/cards/due?limit=50').expect(200);
+    const ids = (due.body.cards as Array<{ id: number }>).map((c) => c.id);
+    expect(ids).toContain(mine.body.card.id);
+  });
+
+  it('missing lemma → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/vocab/mine').send({ english: 'no lemma' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('lemma too long → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/vocab/mine').send({ lemma: 'x'.repeat(101) });
+    expect(res.status).toBe(400);
+  });
+
+  it('unexpected field (strict body) → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/vocab/mine')
+      .send({ lemma: uniqueLemma(), surprise: 'nope' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// MIGRATION ROUND-TRIP NOTE (021 → 022, Docker-gated by the test harness):
+//   021 must commit BEFORE 022 runs, because PostgreSQL forbids USING a newly
+//   added enum value in the same transaction that added it (ADR-013 wraps each
+//   migration in its own tx). 021 only runs `ALTER TYPE corpus ADD VALUE
+//   'user_mined'`; 022 is the first to USE it (CHECK relaxation + corpus_sources
+//   seed). The test DB applies all migrations in order, so by the time these
+//   tests run the `user_mined` corpus_sources row exists and the relaxed CHECKs
+//   admit the mined entries asserted above. 021's down is a documented no-op
+//   (PG cannot DROP an enum value); 022's down restores the original CHECKs and
+//   deletes the seed row only when no vocab_entries reference it.
 
 describe('vocab — DB error', () => {
   it('GET /vocab/entries with vocab_entries missing → 500 with no SQL leak', async () => {

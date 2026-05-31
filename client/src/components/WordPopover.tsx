@@ -65,6 +65,13 @@ export interface WordPopoverData {
   ex_en: string;
   /** Pre-banked flag — shows "already banked" sub-pill. */
   mined?: boolean;
+  /**
+   * KRDICT dictionary entry id (the `/define` `entries[0].id`), threaded so
+   * the Add-to-bank gesture can mine the word with stable, homograph-safe
+   * dedup (FU-NF-33). Optional — grammar + mock popovers leave it unset, and
+   * OCR words with no `/define` lookup mine by lemma instead.
+   */
+  krdictEntryId?: number;
   /** Extra examples list — feeds the "More examples" drawer. */
   extra?: VocabExample[];
   /** Usage notes — shown in the drawer. */
@@ -79,7 +86,7 @@ export interface WordPopoverProps {
   /** Fires when Esc / backdrop / close button is hit. */
   onClose: () => void;
   /** Fires once when the learner taps Add — button then locks to "Added". */
-  onAdd?: (data: WordPopoverData) => void;
+  onAdd?: (data: WordPopoverData) => void | Promise<void>;
   /**
    * Slow-path loading affordance. When true, the popover renders an inline
    * spinner placeholder in place of the gloss + example body while the
@@ -124,7 +131,17 @@ export function WordPopover({
   const handleAdd = (): void => {
     if (added) return;
     setAdded(true);
-    onAdd?.(data);
+    // Optimistic: flip the button immediately, but if the parent's add reports
+    // failure (its promise rejects), roll the button back so it can't read
+    // "Added" while the durable signal (e.g. Reading's mined underline) was
+    // itself rolled back. A canceled add is swallowed by the parent (resolves),
+    // so the button only resets on a real failure.
+    const result = onAdd?.(data);
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      void (result as Promise<void>).then(undefined, () => {
+        setAdded(false);
+      });
+    }
   };
 
   const extras = data.extra ?? [];
