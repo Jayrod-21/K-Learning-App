@@ -1027,16 +1027,38 @@ function parseGradeToolResult(resp: import('./client').MessageResponse): unknown
     return { __parse_error__: 'grade response did not call submit_grade tool' };
   }
   const input = submit.input as Record<string, unknown>;
-  // Convert tool's snake_case fields into the Zod schema's camelCase.
+  // Convert the tool's snake_case fields into the Zod schema's camelCase —
+  // INCLUDING the nested dimension objects, whose `max_score` must become
+  // `maxScore` (DimensionScoreSchema requires it). Remapping only the
+  // top-level fields leaves content/organization/languageUse carrying
+  // snake_case `max_score`, which fails the schema → ClaudeOutputSchemaError
+  // on every real call. Pinned by the gradeWriting tool-use test, which only
+  // started running once LOG_LEVEL='silent' was accepted by the config enum.
   return {
     rubric: input.rubric,
-    content: input.content,
-    organization: input.organization,
-    languageUse: input.language_use,
+    content: mapGradeDimension(input.content),
+    organization: mapGradeDimension(input.organization),
+    languageUse: mapGradeDimension(input.language_use),
     totalScore: input.total_score,
     maxTotal: input.max_total,
     estimatedLevel: input.estimated_level,
     overallComment: input.overall_comment,
+  };
+}
+
+/**
+ * Remap one rubric dimension from the tool's snake_case (`max_score`) to the
+ * Zod schema's camelCase (`maxScore`). Non-object inputs pass through untouched
+ * so `safeParse` remains the single authority that rejects a malformed shape.
+ */
+function mapGradeDimension(dimension: unknown): unknown {
+  if (dimension === null || typeof dimension !== 'object') return dimension;
+  const d = dimension as Record<string, unknown>;
+  return {
+    score: d.score,
+    maxScore: d.max_score,
+    evidence: d.evidence,
+    improvements: d.improvements,
   };
 }
 

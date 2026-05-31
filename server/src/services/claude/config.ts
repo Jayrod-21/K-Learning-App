@@ -106,8 +106,12 @@ const EnvSchema = z.object({
   CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
   CLAUDE_RATE_LIMIT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
 
-  // Logging
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  // Logging. 'silent' is a valid pino level (disables all output) and is what
+  // the test harness sets; include it so loadConfig() accepts it rather than
+  // throwing on an otherwise-legal pino level.
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .default('info'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
