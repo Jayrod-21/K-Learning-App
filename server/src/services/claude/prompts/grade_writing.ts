@@ -160,7 +160,12 @@ export function buildGradeWritingRequest(
     {
       type: 'text',
       text: SYSTEM_PROMPT,
-      cache_control: { type: 'ephemeral' },
+      // Must be '1h' to match the rubric block below: Anthropic processes
+      // cache_control blocks in order and rejects (400) a longer-TTL block
+      // that comes AFTER a shorter-TTL one. The system prompt is as stable as
+      // the rubric (fixed grader instructions), so a 1h TTL is correct here
+      // and keeps the whole cacheable prefix on one consistent TTL.
+      cache_control: { type: 'ephemeral', ttl: '1h' },
     },
     {
       type: 'text',
