@@ -22,6 +22,7 @@ import {
 } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
   BankedGrammarList,
   KgiuEntryDetail,
@@ -51,7 +52,28 @@ vi.mock('../services/grammarDrill', () => drillServices);
 vi.mock('../data/mocks/grammar', () => mocks);
 
 import Grammar from './Grammar';
+import type { DrillTarget } from './Grammar';
 import { ApiError } from '../services/api';
+
+/**
+ * Render `<Grammar />` inside a MemoryRouter. `drillTarget`, when supplied,
+ * seeds `location.state.drillTarget` so the FU-NF-42 deep-link path (Drill tab
+ * opens focused on a specific pattern) can be exercised exactly as the Review
+ * screen drives it.
+ */
+function renderGrammar(drillTarget?: DrillTarget): ReturnType<typeof render> {
+  return render(
+    <MemoryRouter
+      initialEntries={[
+        drillTarget ? { pathname: '/grammar', state: { drillTarget } } : '/grammar',
+      ]}
+    >
+      <Routes>
+        <Route path="/grammar" element={<Grammar />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
 
 const ROW: KgiuEntrySummary = {
   id: 42,
@@ -132,7 +154,7 @@ describe('Grammar — list tab', () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
-    render(<Grammar />);
+    renderGrammar();
 
     expect(await screen.findByText('-더라도')).toBeInTheDocument();
     expect(screen.getByText('-느라고')).toBeInTheDocument();
@@ -145,7 +167,7 @@ describe('Grammar — list tab', () => {
     services.bankPattern.mockResolvedValue({ id: 1 });
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
 
     const bankBtn = await screen.findByRole('button', { name: /^Bank -더라도$/ });
     await user.click(bankBtn);
@@ -178,7 +200,7 @@ describe('Grammar — list tab', () => {
     );
     mocks.loadGrammarMock.mockRejectedValue(new Error('mock boom'));
 
-    render(<Grammar />);
+    renderGrammar();
 
     expect(
       await screen.findByText(/The grammar patterns couldn't be loaded/i),
@@ -216,7 +238,7 @@ describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
     services.bankPattern.mockResolvedValue({ id: 1 });
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
 
     // Bank the row.
     const bankBtn = await screen.findByRole('button', {
@@ -251,7 +273,7 @@ describe('Grammar — detail Sheet', () => {
     services.getPattern.mockResolvedValue(DETAIL);
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
 
     const rowBtn = await screen.findByRole('button', {
       name: '-더라도 even if / even though',
@@ -299,7 +321,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     drillServices.submitDrill.mockResolvedValue(SCORE);
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
 
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
@@ -357,7 +379,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
     expect(await screen.findByText('Seed — fill the blank')).toBeInTheDocument();
@@ -383,7 +405,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
     expect(await screen.findByText('They say')).toBeInTheDocument();
@@ -398,7 +420,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     );
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
     // The screen does NOT blank — a mock drill renders + the MockBadge shows.
@@ -417,7 +439,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     );
 
     const user = userEvent.setup();
-    render(<Grammar />);
+    renderGrammar();
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
     const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
@@ -432,5 +454,131 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     ).toBe('비가 오더라도 갈 거예요.');
     // Submit button is back (not stuck on a spinner).
     expect(screen.getByRole('button', { name: /^submit$/i })).toBeInTheDocument();
+  });
+
+  // ── FU-NF-42 B2: reveal shows the server-derived schedule line ──────────
+
+  it('shows the "next in N days" schedule line on the reveal when the score carries a schedule', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      schedule: {
+        rating: 'good',
+        dueAt: '2026-06-02T00:00:00Z',
+        scheduledDays: 3,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    expect(
+      await screen.findByText('Added to your review · next in 3 days'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the ~10 minutes variant when scheduledDays is 0 (again relearning step)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      verdict: 'incorrect' as const,
+      schedule: {
+        rating: 'again',
+        dueAt: '2026-05-30T00:10:00Z',
+        scheduledDays: 0,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 와요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    expect(
+      await screen.findByText('Added to your review · next in ~10 minutes'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the schedule line when the score has no schedule (pre-bump server)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue(SCORE);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // The reveal lands (score visible) but no schedule line is shown.
+    expect(await screen.findByText('82')).toBeInTheDocument();
+    expect(screen.queryByText(/Added to your review/)).not.toBeInTheDocument();
+  });
+
+  // ── FU-NF-42 B3: Drill tab opens focused on a deep-link target ──────────
+
+  it('drills the deep-linked pattern from router state instead of the rotation', async () => {
+    // The list fetch resolves a DIFFERENT pattern than the deep-link target, so
+    // we can prove the generate body came from the target, not items[idx].
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+
+    renderGrammar({
+      patternKey: 'KGIU-INT-099',
+      display: '-는 바람에',
+      meaning: 'as a result of (unexpected)',
+    });
+
+    // Opens straight on the Drill tab (no manual tab click) and generates for
+    // the targeted pattern.
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'KGIU-INT-099',
+      patternDisplay: '-는 바람에',
+      meaning: 'as a result of (unexpected)',
+    });
+  });
+
+  it('still drills a deep-link target when the pattern list is empty', async () => {
+    // No banked patterns at all — the target must carry its own display/meaning.
+    services.listPatterns.mockResolvedValue([]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    mocks.loadGrammarMock.mockResolvedValue([]);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+
+    renderGrammar({
+      patternKey: 'KGIU-INT-099',
+      display: '-는 바람에',
+      meaning: 'as a result of (unexpected)',
+    });
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'KGIU-INT-099',
+    });
+    // The "no patterns to drill" empty state must NOT win over the target.
+    expect(
+      screen.queryByText(/No grammar patterns to drill yet/i),
+    ).not.toBeInTheDocument();
   });
 });

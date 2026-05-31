@@ -40,10 +40,16 @@ import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
-import { query } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { DrillType, GrammarDrillItem } from '../services/claudeProxy.js';
+import {
+  ratingFromVerdict,
+  schedule,
+  type CardFsrs,
+  type FsrsStateName,
+} from '../services/grammarScheduler.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -149,9 +155,27 @@ const SubmitBodySchema = z
 interface AttemptRow {
   id: string;
   drill_type: DrillType;
+  pattern_key: string;
   pattern_display: string;
   item: GrammarDrillItem;
   scored_at: Date | null;
+}
+
+/** Milliseconds added to now() when a lapse (rating 'again') re-queues a card.
+ *  scheduledDays 0 + relearning ⇒ "see it again very soon" rather than now+0d. */
+const RELEARN_DELAY_MS = 10 * 60 * 1000;
+
+/** The production card's FSRS columns we read before advancing it. NUMERIC
+ *  columns (stability/difficulty) arrive as strings from `pg`; we Number() them
+ *  at the call site before handing to the (numeric) scheduler. */
+interface CardRow {
+  id: string;
+  fsrs_state: FsrsStateName;
+  stability: string;
+  difficulty: string;
+  reps: number;
+  lapses: number;
+  version: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +267,7 @@ router.post(
       // 1. Load the attempt user-scoped. Not theirs / missing → 404 (IDOR
       //    defense; don't confirm existence). Already scored → 409.
       const { rows } = await query<AttemptRow>(
-        `SELECT id::text AS id, drill_type, pattern_display, item, scored_at
+        `SELECT id::text AS id, drill_type, pattern_key, pattern_display, item, scored_at
            FROM grammar_drill_attempts
           WHERE id = $1 AND user_id = $2`,
         [attemptId, userId],
@@ -275,48 +299,203 @@ router.post(
         { ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}), userId },
       );
 
-      // 4. Single-shot UPDATE gated on `scored_at IS NULL`. A single UPDATE …
-      //    WHERE scored_at IS NULL is itself atomic: Postgres serializes the two
-      //    racers on the row write-lock the UPDATE takes, so AT MOST ONE matches
-      //    the predicate (rowCount 1) and the loser sees rowCount 0 → 409. There
-      //    is nothing to compute under a lock here (the score is already in hand
-      //    from the Claude call above), so — unlike diagnostic.ts, whose FOR
-      //    UPDATE read is load-bearing because it derives θ/the pending item
-      //    under the lock — a separate lock-read would be a redundant round-trip.
-      //    The rowCount gate is the authoritative single-shot guard; the cheap
-      //    pre-check above (step 1) only spares the already-scored common case a
-      //    Claude call, it is NOT relied upon for correctness. The loser's Claude
-      //    call is simply discarded (paid-but-unused, bounded by the limiter).
+      // 4. Persist the score AND advance the production FSRS card in ONE
+      //    transaction (FU-NF-42). All-or-nothing: the score UPDATE, the
+      //    grammar-entry auto-bank, the production-card upsert, the card UPDATE,
+      //    and the card_reviews snapshot either ALL commit or ALL roll back. A
+      //    scheduling bug therefore 500s the submit LOUDLY (mapped below) and
+      //    never half-persists a score with no schedule — a deliberate decision
+      //    (contract A3.6): correctness over best-effort. This is a DELIBERATE,
+      //    documented divergence from ADR-003's client-computes-FSRS model —
+      //    justified because a server-scored production attempt has no client
+      //    self-rating step (see services/grammarScheduler.ts; FU-NF-45 unifies).
       const feedback = {
         summary: scored.summary,
         usesPattern: scored.usesPattern,
         corrections: scored.corrections,
       };
-      const upd = await query(
-        `UPDATE grammar_drill_attempts
-            SET user_answer = $3,
-                score       = $4,
-                verdict     = $5,
-                feedback    = $6::jsonb,
-                scored_at   = now()
-          WHERE id = $1 AND user_id = $2 AND scored_at IS NULL`,
-        [
-          attemptId,
-          userId,
-          answer,
-          scored.score,
-          scored.verdict,
-          JSON.stringify(feedback),
-        ],
-      );
-      if (upd.rowCount !== 1) {
-        // A concurrent submit won the race and flipped scored_at first (or the
-        // row vanished). Either way this attempt is already scored → 409.
-        throw new ConflictError('grammar drill attempt already scored');
-      }
 
-      // 5. Reveal the reference model answer NOW (post-submit). The score block
-      //    carries the full feedback + the model answer the learner can compare.
+      // Map the verdict to an FSRS rating up front (pure; needs no DB). The
+      // schedule itself depends on the card's CURRENT state, resolved in-tx below.
+      const rating = ratingFromVerdict(scored.verdict, scored.usesPattern);
+
+      const txOut = await withTransaction(async (client) => {
+        // 4a. Single-shot scoring UPDATE gated on `scored_at IS NULL`. A single
+        //     UPDATE … WHERE scored_at IS NULL is itself atomic: Postgres
+        //     serializes the two racers on the row write-lock the UPDATE takes,
+        //     so AT MOST ONE matches the predicate (rowCount 1) and the loser
+        //     sees rowCount 0 → 409. The rowCount gate is the authoritative
+        //     single-shot guard; the cheap pre-check (step 1) only spares the
+        //     already-scored common case a Claude call, it is NOT relied upon for
+        //     correctness. The loser's Claude call is simply discarded
+        //     (paid-but-unused, bounded by the limiter). Because this UPDATE is
+        //     the first write in the tx, a concurrent winner's COMMIT makes our
+        //     predicate fail and we roll back the whole (empty-so-far) tx → 409;
+        //     the scheduling writes below NEVER run for the loser.
+        const upd = await client.query(
+          `UPDATE grammar_drill_attempts
+              SET user_answer = $3,
+                  score       = $4,
+                  verdict     = $5,
+                  feedback    = $6::jsonb,
+                  scored_at   = now()
+            WHERE id = $1 AND user_id = $2 AND scored_at IS NULL`,
+          [attemptId, userId, answer, scored.score, scored.verdict, JSON.stringify(feedback)],
+        );
+        if (upd.rowCount !== 1) {
+          // A concurrent submit won the race and flipped scored_at first (or the
+          // row vanished). Either way this attempt is already scored → 409.
+          throw new ConflictError('grammar drill attempt already scored');
+        }
+
+        // 4b. Auto-bank the grammar pattern (resolve-or-create the entry). On
+        //     first INSERT, summary_en falls back to pattern_display (we have no
+        //     real gloss from a drill); the DO UPDATE deliberately does NOT
+        //     clobber summary_en so a previously banked, human-meaningful summary
+        //     survives — it only bumps version so the row reflects renewed
+        //     activity. Every column is user-scoped; pattern_key/_display come
+        //     from the SERVER-stored attempt row, never from client input.
+        //
+        //     category = 'other': the contract's literal 'pattern' is NOT in
+        //     ck_grammar_entries_category_known (migration 001) and would fail the
+        //     CHECK; 'other' is that constraint's explicit catch-all and is the
+        //     honest value for a drill auto-bank, which has no linguistic category
+        //     signal. discovered_via = 'drill' is added to
+        //     ck_grammar_entries_discovered_via_known by migration 020 (this
+        //     feature). Both columns are CHECK-constrained backstops.
+        const entryRes = await client.query<{ id: string }>(
+          `INSERT INTO grammar_entries
+             (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+           VALUES ($1, $2, $3, $3, 'L3'::proficiency_level, 'other', 'drill')
+           ON CONFLICT (user_id, pattern_key)
+             DO UPDATE SET version = grammar_entries.version + 1
+           RETURNING id::text AS id`,
+          [userId, attempt.pattern_key, attempt.pattern_display],
+        );
+        const grammarEntryId = entryRes.rows[0]!.id;
+
+        // 4c. Resolve-or-create the production card for this pattern. The partial
+        //     unique index uq_vocab_cards_user_grammar_production (migration 020)
+        //     guarantees at most one such row per (user, pattern); a concurrent
+        //     racer that slips past the SELECT would hit a 23505 on the INSERT —
+        //     but the scored-once gate in 4a already serializes submits per
+        //     attempt, so this is a belt-and-suspenders invariant. Both queries
+        //     are user-scoped (IDOR defense).
+        const existingCard = await client.query<CardRow>(
+          `SELECT id, fsrs_state, stability, difficulty, reps, lapses, version
+             FROM vocab_cards
+            WHERE user_id = $1
+              AND grammar_entry_id = $2
+              AND face = 'production'
+              AND deleted_at IS NULL
+            FOR UPDATE`,
+          [userId, grammarEntryId],
+        );
+
+        let card: CardRow;
+        if (existingCard.rowCount && existingCard.rowCount > 0) {
+          card = existingCard.rows[0]!;
+        } else {
+          const insCard = await client.query<CardRow>(
+            `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+             VALUES ($1, 'production'::card_face, $2, 'L3'::proficiency_level, now())
+             RETURNING id, fsrs_state, stability, difficulty, reps, lapses, version`,
+            [userId, grammarEntryId],
+          );
+          card = insCard.rows[0]!;
+        }
+
+        // 4d. Compute the next FSRS state from the card's CURRENT state + rating.
+        const current: CardFsrs = {
+          state: card.fsrs_state,
+          stability: Number(card.stability),
+          difficulty: Number(card.difficulty),
+          reps: card.reps,
+          lapses: card.lapses,
+        };
+        const next = schedule(current, rating);
+
+        // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
+        // re-queues ~10 min from now (relearning) rather than immediately.
+        const dueAt =
+          rating === 'again'
+            ? new Date(Date.now() + RELEARN_DELAY_MS)
+            : new Date(Date.now() + next.scheduledDays * 86_400_000);
+
+        // 4e. Advance the card (mirror vocab.ts review write). Optimistic version
+        //     gate: low contention here (same tx, same user, FOR UPDATE row lock
+        //     held) but the gate is kept for defense-in-depth and to match the
+        //     vocab path's idiom. lapses += 1 only on a lapse.
+        const cardUpd = await client.query<{ version: number }>(
+          `UPDATE vocab_cards
+              SET fsrs_state       = $3::fsrs_state,
+                  stability        = $4,
+                  difficulty       = $5,
+                  elapsed_days     = 0,
+                  scheduled_days   = $6,
+                  reps             = reps + 1,
+                  lapses           = lapses + CASE WHEN $7::fsrs_rating = 'again' THEN 1 ELSE 0 END,
+                  last_reviewed_at = now(),
+                  due_at           = $8,
+                  version          = version + 1
+            WHERE id = $1
+              AND user_id = $2
+              AND version = $9
+              AND deleted_at IS NULL`,
+          [
+            card.id,
+            userId,
+            next.state,
+            next.stability,
+            next.difficulty,
+            next.scheduledDays,
+            rating,
+            dueAt,
+            card.version,
+          ],
+        );
+        if (cardUpd.rowCount !== 1) {
+          // The row was locked FOR UPDATE inside this tx, so the only way the
+          // versioned UPDATE misses is a genuine concurrent advance — surface it
+          // as a conflict (the whole tx rolls back; the score is not persisted).
+          throw new ConflictError('grammar production card version is stale');
+        }
+
+        // 4f. Append the immutable review snapshot (before → after + rating).
+        await client.query(
+          `INSERT INTO card_reviews (
+                card_id, user_id, rating,
+                state_before, stability_before, difficulty_before, elapsed_days_before,
+                state_after, stability_after, difficulty_after, scheduled_days_after,
+                duration_ms)
+            VALUES ($1,$2,$3::fsrs_rating,
+                    $4::fsrs_state,$5,$6,$7,
+                    $8::fsrs_state,$9,$10,$11,
+                    $12)`,
+          [
+            card.id,
+            userId,
+            rating,
+            current.state,
+            current.stability,
+            current.difficulty,
+            // First-ever review has no elapsed history; -1 is the never-reviewed
+            // sentinel (ck_card_reviews_elapsed_before_min allows >= -1).
+            card.reps === 0 ? -1 : 0,
+            next.state,
+            next.stability,
+            next.difficulty,
+            next.scheduledDays,
+            null,
+          ],
+        );
+
+        return { dueAt, scheduledDays: next.scheduledDays };
+      });
+
+      // 5. Reveal the reference model answer NOW (post-submit) and surface the
+      //    derived schedule so the client can show "next review in N days"
+      //    (~10 min when again/scheduledDays 0). Existing fields are unchanged.
       res.status(200).json({
         score: scored.score,
         verdict: scored.verdict,
@@ -325,6 +504,11 @@ router.post(
         corrections: scored.corrections,
         referenceModelKr: item.referenceModelKr,
         referenceModelEn: item.referenceModelEn,
+        schedule: {
+          rating,
+          dueAt: txOut.dueAt.toISOString(),
+          scheduledDays: txOut.scheduledDays,
+        },
       });
     } catch (err) {
       next(mapClaudeError(err));

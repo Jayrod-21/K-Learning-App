@@ -2053,6 +2053,17 @@ body {
 }
 .km-grammar__tutor-label { color: var(--vermilion); font-weight: 500; }
 
+/* FU-NF-42 B2: production schedule line inside the drill reveal. Subtle,
+   hanji-toned, sits below the model answer. */
+.km-grammar__schedule {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--paper-mute);
+  letter-spacing: 0.01em;
+}
+
 /* ── Drill reveal (score + verdict + corrections + reference model) ── */
 .km-grammar__score-head {
   display: flex;
@@ -2351,6 +2362,37 @@ body {
 .km-review__sectionTitle { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
 .km-review__sourcesMeta { font-size: 11px; color: var(--paper-mute); }
 .km-review__listsCol { display: flex; flex-direction: column; gap: 8px; }
+
+/* FU-NF-42 B3: grammar production review section. Mirrors the list-row idiom
+   so a "Drill" row sits naturally above the vocab flashcard. */
+.km-review__grammarCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.km-review__grammarRow {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: inherit;
+}
+.km-review__grammarBody { flex: 1; min-width: 0; }
+.km-review__grammarPattern {
+  display: block;
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--paper);
+}
+.km-review__grammarSummary {
+  display: block;
+  font-size: 12px;
+  color: var(--paper-mute);
+  margin-top: 2px;
+}
 
 .km-review__listRow {
   width: 100%;

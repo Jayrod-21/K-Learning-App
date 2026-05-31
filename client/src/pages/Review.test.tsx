@@ -17,6 +17,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { JSX } from 'react';
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom';
 import type {
   DueCard,
   ServerVocabList,
@@ -137,6 +144,34 @@ import { Review } from './Review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
 
+/**
+ * Captures the most recent navigation target + router state so the FU-NF-42
+ * deep-link test can assert that activating a grammar production card routes to
+ * `/grammar` with the right `drillTarget`. A sibling route under the same
+ * MemoryRouter renders its own location into the DOM for inspection.
+ */
+function GrammarStub(): JSX.Element {
+  const loc = useLocation();
+  return (
+    <div data-testid="grammar-stub">
+      GRAMMAR PAGE
+      <span data-testid="grammar-state">{JSON.stringify(loc.state)}</span>
+    </div>
+  );
+}
+
+/** Render `<Review />` inside a MemoryRouter with a `/grammar` deep-link target. */
+function renderReview(): ReturnType<typeof render> {
+  return render(
+    <MemoryRouter initialEntries={['/review']}>
+      <Routes>
+        <Route path="/review" element={<Review />} />
+        <Route path="/grammar" element={<GrammarStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 // ── Fixtures ─────────────────────────────────────────────────────────
 const DUE_VOCAB: Vocab[] = [
   {
@@ -163,6 +198,28 @@ const DUE_RAW: DueCard[] = [
     source_sentence_id: null,
     topik_item_id: null,
     version: 1,
+  },
+];
+
+// FU-NF-42: a grammar PRODUCTION due card (face 'production' + JOINed display).
+// `getDueCards` has already normalised the snake-case wire fields to camelCase,
+// so the fixture mirrors the normalised `DueCard`.
+const GRAMMAR_DUE: DueCard[] = [
+  {
+    id: 555,
+    face: 'production',
+    due_at: new Date().toISOString(),
+    stability: '3',
+    difficulty: '5',
+    fsrs_state: 'review',
+    vocab_entry_id: null,
+    grammar_entry_id: 11,
+    source_sentence_id: null,
+    topik_item_id: null,
+    version: 2,
+    grammarPatternDisplay: '-더라도',
+    grammarSummaryEn: 'even if / even though',
+    grammarPatternKey: 'KGIU-INT-007',
   },
 ];
 
@@ -221,7 +278,7 @@ afterEach(() => {
 
 describe('Review', () => {
   it('renders the skeleton while loading', () => {
-    render(<Review />);
+    renderReview();
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
   });
@@ -229,7 +286,7 @@ describe('Review', () => {
   it('renders the session panel with the first due card', () => {
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-    render(<Review />);
+    renderReview();
 
     expect(screen.getByText('복습 · Review')).toBeInTheDocument();
     expect(screen.getByText('Active list')).toBeInTheDocument();
@@ -249,7 +306,7 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
     const user = userEvent.setup();
-    render(<Review />);
+    renderReview();
 
     // Prime the index by invoking the captured realFn.
     await act(async () => {
@@ -273,7 +330,7 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
     const user = userEvent.setup();
-    render(<Review />);
+    renderReview();
 
     await user.click(screen.getByRole('tab', { name: 'Lists' }));
     expect(screen.getByText('My lists')).toBeInTheDocument();
@@ -292,7 +349,7 @@ describe('Review', () => {
     hoisted.all.state = { kind: 'data', data: [], isMock: false };
 
     const user = userEvent.setup();
-    render(<Review />);
+    renderReview();
 
     await user.click(screen.getByRole('tab', { name: 'All cards' }));
 
@@ -319,7 +376,7 @@ describe('Review', () => {
   it('renders EmptyCard (not ErrorCard) when the bank is empty', () => {
     hoisted.due.state = { kind: 'data', data: [], isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-    render(<Review />);
+    renderReview();
 
     expect(screen.getByText(/0 cards in your bank yet/)).toBeInTheDocument();
     // No vermilion ErrorCard / Retry button on an empty bank.
@@ -332,7 +389,7 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
     const user = userEvent.setup();
-    render(<Review />);
+    renderReview();
 
     const retry = screen.getByRole('button', { name: /Retry/i });
     expect(retry).toBeInTheDocument();
@@ -348,7 +405,7 @@ describe('Review', () => {
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
-    render(<Review />);
+    renderReview();
 
     // Before reveal: the Flashcard's aria-expanded reads false. (The
     // component uses aria-expanded — semantically appropriate for a flip
@@ -374,7 +431,7 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
     const user = userEvent.setup();
-    render(<Review />);
+    renderReview();
 
     // Open ListDetailSheet by switching to Lists and tapping the active row.
     await user.click(screen.getByRole('tab', { name: 'Lists' }));
@@ -416,7 +473,7 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
     const user = userEvent.setup();
-    const { unmount } = render(<Review />);
+    const { unmount } = renderReview();
 
     await act(async () => {
       await hoisted.capturedRealFns.due?.();
@@ -428,6 +485,92 @@ describe('Review', () => {
 
     expect(progressService.logStudy).toHaveBeenCalledWith(
       expect.objectContaining({ activity: 'review' }),
+    );
+  });
+
+  // ── FU-NF-42 B3: grammar production cards in the Review loop ─────────────
+
+  it('renders a grammar production section from due grammar cards', async () => {
+    // getDueCards returns ONLY a grammar production card; the realFn partitions
+    // it into the grammar section (and out of the vocab deck). The hook's data
+    // is the vocab deck (empty here), so we drive `setGrammarCards` via the
+    // captured realFn.
+    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    hoisted.due.state = { kind: 'data', data: [], isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    renderReview();
+
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+
+    expect(
+      await screen.findByText('Grammar production · 1 due'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('-더라도')).toBeInTheDocument();
+    expect(screen.getByText('even if / even though')).toBeInTheDocument();
+    // The vocab "empty bank" state must NOT show — there is work to do.
+    expect(screen.queryByText(/0 cards in your bank yet/)).not.toBeInTheDocument();
+  });
+
+  it('navigates to the Grammar Drill tab with the pattern when a grammar card is activated', async () => {
+    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    hoisted.due.state = { kind: 'data', data: [], isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+
+    await user.click(screen.getByRole('button', { name: /Drill -더라도/ }));
+
+    // The deep-link landed on /grammar carrying the drillTarget in router state.
+    expect(await screen.findByTestId('grammar-stub')).toBeInTheDocument();
+    const state = JSON.parse(
+      screen.getByTestId('grammar-state').textContent ?? 'null',
+    ) as { drillTarget?: { patternKey: string; display: string; meaning: string } };
+    expect(state.drillTarget).toEqual({
+      patternKey: 'KGIU-INT-007',
+      display: '-더라도',
+      meaning: 'even if / even though',
+    });
+  });
+
+  it('keeps the vocab flashcard flow intact alongside a grammar card (no regression)', async () => {
+    // Both a grammar production card AND a vocab card are due. The vocab card
+    // must still flow through the flashcard deck untouched.
+    vi.mocked(vocabService.getDueCards).mockResolvedValue([
+      ...GRAMMAR_DUE,
+      ...DUE_RAW,
+    ]);
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+    });
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+
+    // Grammar section renders…
+    expect(
+      await screen.findByText('Grammar production · 1 due'),
+    ).toBeInTheDocument();
+    // …and the vocab flashcard rating still works exactly as before.
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Again/ }));
+    expect(vocabService.submitReview).toHaveBeenCalledWith(
+      101,
+      expect.objectContaining({ rating: 'again' }),
     );
   });
 });

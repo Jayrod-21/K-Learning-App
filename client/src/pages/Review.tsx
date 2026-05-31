@@ -57,6 +57,7 @@ import {
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
@@ -118,6 +119,74 @@ function decodeId(uiId: string): number | null {
   if (!m) return null;
   const n = Number.parseInt(m[1]!, 10);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * FU-NF-42: a grammar production card surfaced from the due queue. Reviewing
+ * one means DRILLING it (no self-rate UX) — the row deep-links into the
+ * Grammar Drill tab. We carry the `patternKey` (the drill's generate key,
+ * sourced from the card's `grammar_entry_id`), the Korean display, and the EN
+ * summary. The numeric `cardId` is retained for keys + future use.
+ */
+interface GrammarProductionCard {
+  cardId: number;
+  /** Server dedup key for the drill — the grammar entry id, stringified. */
+  patternKey: string;
+  /** Korean pattern display ("-더라도"). */
+  display: string;
+  /** EN summary of the pattern. */
+  summary: string;
+}
+
+/**
+ * A due card is a grammar production card iff its face is 'production' AND the
+ * due query JOINed a grammar pattern display onto it. Both conditions guard the
+ * branch so a malformed row (production face but no JOINed display, or vice
+ * versa) falls through to the vocab path rather than rendering a blank drill
+ * row — failure-safe over the wire contract.
+ */
+function isGrammarProductionCard(d: DueCard): boolean {
+  return (
+    d.face === 'production' &&
+    d.grammar_entry_id !== null &&
+    typeof d.grammarPatternDisplay === 'string' &&
+    d.grammarPatternDisplay.length > 0
+  );
+}
+
+/** DueCard → GrammarProductionCard. Caller has already gated on the predicate. */
+function dueCardToGrammar(d: DueCard): GrammarProductionCard {
+  return {
+    cardId: d.id,
+    // The drill's generate route resolves-or-creates a grammar_entry on
+    // `(user, pattern_key)`, so the deep-link MUST hand back the original
+    // `pattern_key` to advance the SAME production card. Prefer the server's
+    // `grammarPatternKey` when present (A4 must alias it — see DueCard JSDoc);
+    // fall back to the display string so the deep-link still navigates against
+    // a pre-bump server, with the round-trip becoming exact once A4 ships.
+    patternKey: d.grammarPatternKey ?? d.grammarPatternDisplay ?? '',
+    display: d.grammarPatternDisplay ?? '',
+    summary: d.grammarSummaryEn ?? '',
+  };
+}
+
+/**
+ * Shallow value-equality for two grammar-card lists, so a refetch that returns
+ * the same cards preserves the state identity (no needless re-render). Compares
+ * cardId + patternKey positionally — enough to detect a real change without a
+ * deep walk of the summary strings.
+ */
+function sameGrammarCards(
+  a: readonly GrammarProductionCard[],
+  b: readonly GrammarProductionCard[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i]!.cardId !== b[i]!.cardId || a[i]!.patternKey !== b[i]!.patternKey) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** DueCard → Vocab (UI). Wire fields not present in DueCard get sensible blanks. */
@@ -307,10 +376,21 @@ function makeLoadAllMock(query: string): () => Promise<Vocab[]> {
 // ─────────────────────────────────────────────────────────────
 
 export function Review(): JSX.Element {
+  const navigate = useNavigate();
+
   // Track DueCard snapshots keyed by their UI-encoded id so the rate handler
   // can reach the wire payload it needs for submitReview. Populated by the
   // realFn adapter on each successful fetch. Stable across renders.
   const dueCardIndex = useRef<Map<string, DueCard>>(new Map());
+
+  // FU-NF-42: grammar production cards split out of the due queue. These render
+  // as a distinct Review section and deep-link into the Grammar Drill tab
+  // (reviewing = drilling), so they never enter the vocab flashcard deck. The
+  // realFn below populates this from the latest fetch; the mock fallback never
+  // sets it, so 🅂/mock parity is preserved (the section simply stays empty).
+  const [grammarCards, setGrammarCards] = useState<readonly GrammarProductionCard[]>(
+    [],
+  );
 
   // Capture session start so logStudy on unmount can report duration. We
   // use `useState`'s lazy initializer (allowed by `react-hooks/purity` —
@@ -323,12 +403,26 @@ export function Review(): JSX.Element {
   const dueRealFn = useCallback(async (): Promise<Vocab[]> => {
     const rows = await vocabService.getDueCards();
     const next = new Map<string, DueCard>();
-    const ui = rows.map((d) => {
+    const grammar: GrammarProductionCard[] = [];
+    const ui: Vocab[] = [];
+    for (const d of rows) {
+      // FU-NF-42: route grammar production cards to their own section so the
+      // vocab flashcard deck stays exactly as it was. Everything else (vocab,
+      // sentence, topik recognition cards) flows through the existing path.
+      if (isGrammarProductionCard(d)) {
+        grammar.push(dueCardToGrammar(d));
+        continue;
+      }
       const v = dueCardToVocab(d);
       next.set(v.id, d);
-      return v;
-    });
+      ui.push(v);
+    }
     dueCardIndex.current = next;
+    // Setting state from the realFn mirrors the existing `dueCardIndex` ref
+    // population — both are side effects of a successful fetch that the hook
+    // drives from its effect. Identity-stable when nothing changed so a
+    // refetch returning the same grammar set doesn't churn the section.
+    setGrammarCards((prev) => (sameGrammarCards(prev, grammar) ? prev : grammar));
     return ui;
   }, []);
 
@@ -495,6 +589,26 @@ export function Review(): JSX.Element {
     [card, idx, ratings],
   );
 
+  // FU-NF-42: activating a grammar production card = drilling it. Deep-link
+  // into the Grammar Drill tab with the pattern in router state; the Grammar
+  // screen reads `location.state.drillTarget`, opens the Drill tab focused on
+  // it, generates a drill, and on submit the server re-schedules the card —
+  // which drops it from this queue on the next fetch. No self-rate UX here.
+  const drillGrammarCard = useCallback(
+    (gc: GrammarProductionCard): void => {
+      navigate('/grammar', {
+        state: {
+          drillTarget: {
+            patternKey: gc.patternKey,
+            display: gc.display,
+            meaning: gc.summary,
+          },
+        },
+      });
+    },
+    [navigate],
+  );
+
   // Retry routes through both fetches' refetch — both are needed by
   // the session, and either failing should block render.
   const retry = useCallback((): void => {
@@ -582,6 +696,8 @@ export function Review(): JSX.Element {
           drawer={drawer}
           lastRating={lastRating}
           rateError={rateError}
+          grammarCards={grammarCards}
+          onDrillGrammar={drillGrammarCard}
           activeList={lists.data ? findActiveList(lists.data) : null}
           onFlip={() => {
             setFlipped((f) => !f);
@@ -668,6 +784,10 @@ interface SessionPanelProps {
   lastRating: RatingId | null;
   /** Inline error from the last submitReview attempt; null when none. */
   rateError: string | null;
+  /** FU-NF-42: grammar production cards due — rendered as a distinct section. */
+  grammarCards: readonly GrammarProductionCard[];
+  /** Activate a grammar production card → deep-link into the Grammar Drill tab. */
+  onDrillGrammar: (gc: GrammarProductionCard) => void;
   activeList: CustomVocabList | SourceVocabListItem | null;
   onFlip: () => void;
   onToggleDrawer: () => void;
@@ -702,6 +822,8 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
     drawer,
     lastRating,
     rateError,
+    grammarCards,
+    onDrillGrammar,
     activeList,
     onFlip,
     onToggleDrawer,
@@ -718,7 +840,19 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
       />
     );
   }
+  const hasGrammar = grammarCards.length > 0;
+  // The grammar production section renders above the vocab flashcard whenever
+  // any grammar card is due — independent of the vocab deck's state.
+  const grammarSection = hasGrammar ? (
+    <GrammarReviewSection cards={grammarCards} onDrill={onDrillGrammar} />
+  ) : null;
+
+  // When the vocab deck is empty/exhausted BUT grammar cards remain, show the
+  // grammar section rather than the "0 cards in your bank" empty state — the
+  // session still has work to do. Only fall to the empty state when BOTH the
+  // vocab deck and the grammar section are empty.
   if (bankEmpty || !card) {
+    if (hasGrammar) return <>{grammarSection}</>;
     return (
       <EmptyCard
         message="0 cards in your bank yet."
@@ -734,6 +868,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
 
   return (
     <>
+      {grammarSection}
       {/* Active list strip */}
       <Card variant="default" className="km-review__strip">
         <SealStamp char="復" size="sm" />
@@ -865,6 +1000,62 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
         </div>
       ) : null}
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Grammar production section (FU-NF-42)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Distinct Review section for due grammar PRODUCTION cards. Reviewing one =
+ * drilling it, so each row deep-links into the Grammar Drill tab (no in-place
+ * self-rate buttons). The section is its own labelled region so AT announces
+ * "Grammar production · N due" separately from the vocab flashcard.
+ *
+ * Threat model: `display` + `summary` render as React text children (escaped);
+ * a compromised pattern row can't inject HTML here. The `patternKey` only ever
+ * flows into router state for the drill deep-link, never into markup.
+ */
+function GrammarReviewSection({
+  cards,
+  onDrill,
+}: {
+  cards: readonly GrammarProductionCard[];
+  onDrill: (gc: GrammarProductionCard) => void;
+}): JSX.Element {
+  return (
+    <section
+      className="km-review__grammar"
+      aria-labelledby="review-grammar-head"
+      style={{ marginBottom: 16 }}
+    >
+      <div className="km-eyebrow" id="review-grammar-head" style={{ marginBottom: 8 }}>
+        Grammar production · {cards.length} due
+      </div>
+      <div className="km-review__grammarCol">
+        {cards.map((gc) => (
+          <button
+            key={gc.cardId}
+            type="button"
+            onClick={() => {
+              onDrill(gc);
+            }}
+            className="km-review__grammarRow km-card km-card--default focusring"
+            aria-label={`Drill ${gc.display}${gc.summary ? ` — ${gc.summary}` : ''}`}
+          >
+            <div className="km-review__grammarBody">
+              <span className="kr km-review__grammarPattern">{gc.display}</span>
+              {gc.summary ? (
+                <span className="km-review__grammarSummary">{gc.summary}</span>
+              ) : null}
+            </div>
+            <span className="km-pill km-pill--gold">Drill</span>
+            <Icon name="chevron-right" size={16} />
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 

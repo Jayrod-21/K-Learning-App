@@ -76,13 +76,50 @@ import { ApiError } from '../services/api';
 import type {
   BankGrammarBody,
   DrillItemPublic,
+  DrillSchedule,
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
   ServerProficiency,
 } from '../types/domain';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 type Tab = 'list' | 'banked' | 'drill';
+
+/**
+ * Deep-link payload the Review screen hands to the Drill tab (FU-NF-42 B3).
+ * When a grammar production card is activated in Review, it navigates to
+ * `/grammar` with this object in `location.state.drillTarget`. The Drill tab
+ * then opens focused on this pattern (generating a drill for it) instead of
+ * cycling its default `items[idx]` rotation. `patternKey` is the server dedup
+ * key; `display` + `meaning` seed the generate body so the drill renders even
+ * when the pattern isn't in the (possibly mock) list fetch.
+ */
+export interface DrillTarget {
+  patternKey: string;
+  display: string;
+  meaning: string;
+}
+
+/** The shape we look for in `location.state` when the Drill tab is deep-linked. */
+interface GrammarLocationState {
+  drillTarget?: DrillTarget;
+}
+
+/** Narrow an opaque `location.state` to a `DrillTarget`, or null if absent/malformed. */
+function readDrillTarget(state: unknown): DrillTarget | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const candidate = (state as GrammarLocationState).drillTarget;
+  if (
+    candidate &&
+    typeof candidate.patternKey === 'string' &&
+    typeof candidate.display === 'string' &&
+    typeof candidate.meaning === 'string'
+  ) {
+    return candidate;
+  }
+  return null;
+}
 
 const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'list', label: 'List' },
@@ -195,7 +232,41 @@ async function loadRealBankedKeys(): Promise<ReadonlySet<string>> {
 }
 
 function Grammar(): JSX.Element {
-  const [tab, setTab] = useState<Tab>('list');
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // FU-NF-42 B3: a deep-link from the Review screen lands here with a
+  // `drillTarget` in router state. Read it once on mount so the Drill tab can
+  // open focused on that pattern. We snapshot it into state (rather than
+  // reading `location.state` every render) so that clearing the history
+  // entry's state below — which prevents a Back/refresh from re-triggering the
+  // drill — doesn't yank the target out from under the in-flight drill.
+  const [drillTarget, setDrillTarget] = useState<DrillTarget | null>(() =>
+    readDrillTarget(location.state),
+  );
+  const [tab, setTab] = useState<Tab>(() =>
+    readDrillTarget(location.state) ? 'drill' : 'list',
+  );
+
+  // Scrub the consumed target out of the history entry so a Back navigation or
+  // a reload doesn't replay the deep-link. Runs once on mount when a target was
+  // present; `navigate(replace)` swaps the current entry's state for an empty
+  // one without adding to the stack. Guarded on `location.state` so it doesn't
+  // fight a fresh deep-link arriving while mounted (React Router remounts the
+  // route element on a same-path state change anyway).
+  useEffect(() => {
+    if (readDrillTarget(location.state)) {
+      navigate(location.pathname, { replace: true, state: null });
+    }
+    // Mount-only: we captured the target into local state above; re-running on
+    // every `location` change would clear a target before the drill consumes it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Clear the focused drill target → return the Drill tab to its rotation. */
+  const clearDrillTarget = useCallback((): void => {
+    setDrillTarget(null);
+  }, []);
 
   // Pattern list — real first, mock fallback. The hook's `isMock` flips
   // false on a real resolve; that's how the 🅂 badge stays off here.
@@ -441,6 +512,8 @@ function Grammar(): JSX.Element {
         <DrillPanel
           loading={listState.loading}
           items={items}
+          target={drillTarget}
+          onClearTarget={clearDrillTarget}
         />
       ) : null}
 
@@ -650,6 +723,43 @@ function BankedPanel({
 interface DrillPanelProps {
   loading: boolean;
   items: readonly PatternListItem[];
+  /**
+   * FU-NF-42 B3: an externally-supplied pattern to drill (a Review deep-link).
+   * When set, the panel generates a drill for THIS pattern instead of its
+   * default `items[idx]` rotation. `null` → the existing rotation behaviour.
+   */
+  target?: DrillTarget | null;
+  /**
+   * Invoked when the learner moves past the targeted pattern (Skip / Next), so
+   * the parent can drop the deep-link target and the panel falls back to its
+   * normal rotation. No-op when no target was supplied.
+   */
+  onClearTarget?: () => void;
+}
+
+/** Minimal source a DrillPanel needs to generate a drill for one pattern. */
+interface DrillSource {
+  patternKey: string;
+  patternDisplay: string;
+  meaning: string;
+}
+
+/** Project a deep-link target onto the generate-body source shape. */
+function targetToSource(target: DrillTarget): DrillSource {
+  return {
+    patternKey: target.patternKey,
+    patternDisplay: target.display,
+    meaning: target.meaning,
+  };
+}
+
+/** Project a list row onto the generate-body source shape. */
+function rowToSource(row: PatternListItem): DrillSource {
+  return {
+    patternKey: row.patternKey,
+    patternDisplay: row.pattern,
+    meaning: row.title,
+  };
 }
 
 /**
@@ -737,7 +847,12 @@ function mockReferenceKr(item: DrillItemPublic): string {
   }
 }
 
-function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
+function DrillPanel({
+  loading,
+  items,
+  target = null,
+  onClearTarget,
+}: DrillPanelProps): JSX.Element {
   // Which pattern (by index into `items`) we're drilling. Wraps with `%`.
   const [idx, setIdx] = useState(0);
   const [phase, setPhase] = useState<DrillPhase>('generating');
@@ -753,9 +868,16 @@ function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
   // effect without advancing the pattern (mirrors useEndpointOrMock's `tick`).
   const [retryTick, setRetryTick] = useState(0);
 
-  // The pattern this index points at. `null` when the list is empty.
-  const pattern = items.length > 0 ? items[idx % items.length] : null;
-  const patternKey = pattern?.patternKey ?? null;
+  // FU-NF-42 B3: a deep-link target wins over the rotation. When present we
+  // drill exactly that pattern; otherwise we cycle `items[idx]` as before. The
+  // targeted pattern can be drilled even when `items` is empty (the list fetch
+  // is mock/empty) — the target carries its own display + meaning.
+  const source: DrillSource | null = target
+    ? targetToSource(target)
+    : items.length > 0
+      ? rowToSource(items[idx % items.length]!)
+      : null;
+  const patternKey = source?.patternKey ?? null;
 
   // Generate-in-flight controller so navigating away (Skip/Next) or unmount
   // aborts a stale generate and its settle doesn't clobber the next pattern.
@@ -773,7 +895,7 @@ function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
   // falls to a local mock drill so the screen never dead-ends. A stale settle
   // is dropped via the abort signal.
   useEffect(() => {
-    if (!pattern) return;
+    if (!source) return;
     genCtrlRef.current?.abort();
     const ctrl = new AbortController();
     genCtrlRef.current = ctrl;
@@ -795,9 +917,9 @@ function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
       try {
         const gen = await generateDrill(
           {
-            patternKey: pattern.patternKey,
-            patternDisplay: pattern.pattern,
-            meaning: pattern.title,
+            patternKey: source.patternKey,
+            patternDisplay: source.patternDisplay,
+            meaning: source.meaning,
           },
           ctrl.signal,
         );
@@ -817,16 +939,25 @@ function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
         setPhase('ready');
       }
     })();
-    // `idx` + `patternKey` are the stable triggers (`pattern` is a fresh object
-    // each render); `retryTick` re-runs on demand. `pattern.title` / `.pattern`
-    // are read off the same row, so the minimal dep array stays correct.
+    // `idx` + `patternKey` are the stable triggers (`source` is a fresh object
+    // each render); `retryTick` re-runs on demand. A deep-link target swaps the
+    // `patternKey` (vs. the rotation), so it re-fires the generate cleanly. The
+    // display/meaning are read off the same source, so the minimal deps hold.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, patternKey, retryTick]);
 
+  // Move past the current pattern. With a deep-link target active there is no
+  // `idx` rotation to advance into, so we drop the target (→ parent clears it)
+  // and the panel falls back to its `items[idx]` rotation. Without a target we
+  // bump `idx` as before.
   const advance = useCallback((): void => {
     submitCtrlRef.current?.abort();
+    if (target) {
+      onClearTarget?.();
+      return;
+    }
     setIdx((i) => i + 1);
-  }, []);
+  }, [target, onClearTarget]);
 
   const retryGenerate = useCallback((): void => {
     setRetryTick((t) => t + 1);
@@ -868,14 +999,17 @@ function DrillPanel({ loading, items }: DrillPanelProps): JSX.Element {
     }
   }, [item, userInput, isMock, attemptId]);
 
-  if (loading && items.length === 0) {
+  // A deep-link target carries its own pattern, so it can drill even with an
+  // empty/mock list fetch — only gate the loading/empty states when there's no
+  // target to fall back on.
+  if (loading && items.length === 0 && !target) {
     return (
       <div className="km-grammar__state" role="status">
         Loading drill…
       </div>
     );
   }
-  if (items.length === 0) {
+  if (items.length === 0 && !target) {
     return (
       <div className="km-grammar__state" role="status">
         No grammar patterns to drill yet. Bank or browse patterns first.
@@ -1121,8 +1255,30 @@ function DrillReveal({
       <Eyebrow className="km-grammar__seed-eyebrow">Model answer</Eyebrow>
       <p className="kr km-grammar__model">{score.referenceModelKr}</p>
       <p className="km-grammar__model-en">{score.referenceModelEn}</p>
+
+      {/* FU-NF-42 B2: server-derived production schedule. Subtle, hanji-styled,
+          and inside the already-announced reveal region (the card carries
+          `aria-describedby={revealId}` while revealed), so AT picks it up with
+          the rest of the grade without a second live announcement. Omitted when
+          the server didn't return a schedule (pre-bump server / offline mock). */}
+      {score.schedule ? (
+        <p className="km-grammar__schedule">{scheduleLine(score.schedule)}</p>
+      ) : null}
     </Card>
   );
+}
+
+/**
+ * Render the "added to your review" line from a production schedule.
+ * `scheduledDays === 0` (an `again` relearning step) reads as "~10 minutes";
+ * a 1-day interval drops the plural so it reads "1 day" not "1 days".
+ */
+function scheduleLine(schedule: DrillSchedule): string {
+  if (schedule.scheduledDays <= 0) {
+    return 'Added to your review · next in ~10 minutes';
+  }
+  const days = schedule.scheduledDays;
+  return `Added to your review · next in ${String(days)} day${days === 1 ? '' : 's'}`;
 }
 
 // ─────────────────────────────────────────────────────────────

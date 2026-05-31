@@ -130,6 +130,50 @@ describe('GET /vocab/cards/due', () => {
     const res = await agent.get('/vocab/cards/due?limit=500');
     expect(res.status).toBe(400);
   });
+
+  // FU-NF-42: the due query LEFT JOINs grammar_entries so a grammar production
+  // card carries its pattern display + summary; non-grammar cards get NULLs.
+  it('surfaces grammar_pattern_display / grammar_summary_en for a grammar production card', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const entry = await pg.pool.query<{ id: string }>(
+      `INSERT INTO grammar_entries
+         (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+       VALUES ($1, 'GR-eun-neun', '-은/는', 'topic-marking particle', 'L3', 'particle', 'manual')
+       RETURNING id::text AS id`,
+      [userId],
+    );
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+       VALUES ($1, 'production'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [userId, entry.rows[0]!.id],
+    );
+
+    const res = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.face === 'production',
+    );
+    expect(card).toBeDefined();
+    expect(card!.grammar_pattern_display).toBe('-은/는');
+    expect(card!.grammar_summary_en).toBe('topic-marking particle');
+  });
+
+  it('leaves grammar_pattern_display / grammar_summary_en NULL for a non-grammar (vocab) card', async () => {
+    const entryId = await seedVocabEntry(pg.pool, { corpus: 'vocab_2000_intermediate' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [userId, entryId],
+    );
+
+    const res = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.face === 'recognition',
+    );
+    expect(card).toBeDefined();
+    expect(card!.grammar_pattern_display).toBeNull();
+    expect(card!.grammar_summary_en).toBeNull();
+  });
 });
 
 describe('POST /vocab/cards/init', () => {

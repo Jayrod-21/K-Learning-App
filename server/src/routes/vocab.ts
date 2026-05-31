@@ -85,6 +85,16 @@ router.get(
       const q = (req as typeof req & {
         validatedQuery: z.infer<typeof DueQuerySchema>;
       }).validatedQuery;
+      // FU-NF-42: LEFT JOIN grammar_entries so a grammar PRODUCTION card carries
+      // its pattern display + summary inline (the client renders these to label
+      // the card and route into the drill). The join is LEFT so non-grammar cards
+      // (vocab / sentence / topik) are unaffected — their grammar_* columns come
+      // back NULL. We alias g.* to grammar_pattern_display / grammar_summary_en to
+      // avoid colliding with any vocab field name and to make the wire contract
+      // explicit. Joining on the user-scoped grammar_entry_id (and ge.user_id) keeps
+      // the read user-isolated even if a card's FK were ever cross-user (it cannot
+      // be — FK + per-user writes — but defense-in-depth). Vocab semantics are
+      // unchanged: same WHERE/ORDER/LIMIT, same existing columns.
       const { rows } = await query<{
         id: number;
         face: string;
@@ -96,15 +106,29 @@ router.get(
         grammar_entry_id: number | null;
         source_sentence_id: number | null;
         topik_item_id: number | null;
+        grammar_pattern_display: string | null;
+        grammar_summary_en: string | null;
+        grammar_pattern_key: string | null;
       }>(
-        `SELECT id, face, due_at, stability, difficulty, fsrs_state,
-                vocab_entry_id, grammar_entry_id, source_sentence_id, topik_item_id
-           FROM vocab_cards
-          WHERE user_id = $1
-            AND deleted_at IS NULL
-            AND suspended_at IS NULL
-            AND due_at <= now()
-          ORDER BY due_at
+        // grammar_pattern_key is what a Review→Drill deep-link must hand back so
+        // the drill resolves the SAME grammar_entries row (the server keys on
+        // (user, pattern_key), not the numeric id). Without it the re-drill mints
+        // a parallel entry and the due card never clears. See FU-NF-42 B3.
+        `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state,
+                c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
+                ge.pattern_display AS grammar_pattern_display,
+                ge.summary_en      AS grammar_summary_en,
+                ge.pattern_key     AS grammar_pattern_key
+           FROM vocab_cards c
+           LEFT JOIN grammar_entries ge
+                  ON ge.id = c.grammar_entry_id
+                 AND ge.user_id = c.user_id
+                 AND ge.deleted_at IS NULL
+          WHERE c.user_id = $1
+            AND c.deleted_at IS NULL
+            AND c.suspended_at IS NULL
+            AND c.due_at <= now()
+          ORDER BY c.due_at
           LIMIT $2`,
         [userId, q.limit],
       );

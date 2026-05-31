@@ -78,6 +78,67 @@ describe('getDueCards', () => {
 
     expect(spy).toHaveBeenCalledWith('/vocab/cards/due', { params: undefined });
   });
+
+  it('maps the snake-case grammar JOIN columns onto camelCase fields (FU-NF-42)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      cards: [
+        {
+          id: 7,
+          face: 'production',
+          due_at: '2026-05-30T00:00:00Z',
+          stability: '3',
+          difficulty: '5',
+          fsrs_state: 'review',
+          version: 2,
+          vocab_entry_id: null,
+          grammar_entry_id: 11,
+          source_sentence_id: null,
+          topik_item_id: null,
+          grammar_pattern_display: '-더라도',
+          grammar_summary_en: 'even if / even though',
+          grammar_pattern_key: 'KGIU-INT-007',
+        },
+      ],
+    });
+
+    const [card] = await getDueCards();
+
+    expect(card?.grammarPatternDisplay).toBe('-더라도');
+    expect(card?.grammarSummaryEn).toBe('even if / even though');
+    expect(card?.grammarPatternKey).toBe('KGIU-INT-007');
+    // The snake-case wire keys must not leak through onto the domain shape.
+    expect(card).not.toHaveProperty('grammar_pattern_display');
+    expect(card).not.toHaveProperty('grammar_pattern_key');
+  });
+
+  it('leaves grammar fields absent for a vocab card (NULL JOIN columns)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      cards: [
+        {
+          id: 1,
+          face: 'recognition',
+          due_at: '2026-05-30T00:00:00Z',
+          stability: '0',
+          difficulty: '5',
+          fsrs_state: 'new',
+          version: 1,
+          vocab_entry_id: 9,
+          grammar_entry_id: null,
+          source_sentence_id: null,
+          topik_item_id: null,
+          grammar_pattern_display: null,
+          grammar_summary_en: null,
+          grammar_pattern_key: null,
+        },
+      ],
+    });
+
+    const [card] = await getDueCards();
+
+    expect(card?.grammarPatternDisplay).toBeUndefined();
+    expect(card?.grammarSummaryEn).toBeUndefined();
+    expect(card?.grammarPatternKey).toBeUndefined();
+  });
 });
 
 describe('submitReview', () => {

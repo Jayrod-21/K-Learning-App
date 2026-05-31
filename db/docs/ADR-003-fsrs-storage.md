@@ -84,6 +84,20 @@ suspension (`suspended_at`) because the user's review queue scope is small;
   AND deleted_at IS NULL`) is supported by `ix_vocab_cards_due_queue`, a
   partial composite index on `(user_id, due_at)`.
 
+## Amendment (FU-NF-42, 2026-05-31) — server-derived scheduling for grammar drills
+
+The "client computes the transition, server stores snapshots" rule assumes a
+human self-rating (Again/Hard/Good/Easy). Grammar **production drills** (Pass 9)
+have no such step — the attempt is scored by Claude on the server. So for the
+production-card review written on drill submit, the **server** maps the drill's
+verdict/score → an FSRS rating and derives the next state via a small interim
+scheduler (`server/src/services/grammarScheduler.ts`), then writes the
+`vocab_cards` row + `card_reviews` snapshot through the exact storage shape this
+ADR defines. Deliberate, scoped divergence: the storage model is unchanged; only
+the *compute location* differs, and only for server-scored drills. The grammar
+scheduler is interim FSRS-lite — **FU-NF-45** tracks replacing both it and the
+(currently stubbed) client vocab scheduler with one shared `ts-fsrs` engine.
+
 ## Open questions
 
 - Whether to materialize per-day review counts for the heatmap, or compute

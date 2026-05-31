@@ -20,6 +20,11 @@
  *   - submit 409 when already scored (scored-once)
  *   - history-based drill-type rotation is deterministic
  *     (transformation → cloze → conversation → transformation)
+ *   - FU-NF-42 production scheduling on submit: auto-bank + production card
+ *     created on first drill, advanced (not duplicated) on the second, a
+ *     card_reviews snapshot written, due_at moves, response.schedule present,
+ *     usesPattern=false forces a lapse, and the scored-once gate keeps the whole
+ *     scheduling tx idempotent (a second submit 409s with no second card/review)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -252,6 +257,195 @@ describe('POST /grammar-drill/:attemptId/submit — score + reveal', () => {
     } finally {
       await teardownTestApp(failApp);
     }
+  });
+});
+
+describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF-42)', () => {
+  it('auto-banks the pattern, creates a production card, advances it, logs a review, and returns schedule', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const gen = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+    const attemptId = gen.body.attemptId as number;
+
+    const res = await agent
+      .post(`/grammar-drill/${attemptId}/submit`)
+      .send({ answer: '다 먹어 버렸어요.' })
+      .expect(200);
+
+    // Response carries the schedule block. The stub scores verdict 'good' +
+    // usesPattern true → rating 'good' → a NEW card seeds stability 3 → 3 days.
+    expect(res.body.schedule).toBeDefined();
+    expect(res.body.schedule.rating).toBe('good');
+    expect(res.body.schedule.scheduledDays).toBe(3);
+    expect(typeof res.body.schedule.dueAt).toBe('string');
+    expect(Number.isNaN(Date.parse(res.body.schedule.dueAt))).toBe(false);
+    // Existing fields are preserved alongside the new block.
+    expect(res.body.score).toBe(82);
+    expect(res.body.referenceModelKr).toBe('모델 답안입니다.');
+
+    // Auto-bank: a grammar_entries row for this (user, patternKey) exists, with
+    // summary_en falling back to pattern_display and discovered_via = 'drill'.
+    const entry = await pg.pool.query<{
+      id: string;
+      summary_en: string;
+      pattern_display: string;
+      discovered_via: string;
+      category: string;
+    }>(
+      `SELECT id::text AS id, summary_en, pattern_display, discovered_via, category
+         FROM grammar_entries WHERE user_id = $1 AND pattern_key = $2`,
+      [userId, GEN_BODY.patternKey],
+    );
+    expect(entry.rowCount).toBe(1);
+    expect(entry.rows[0]!.summary_en).toBe(GEN_BODY.patternDisplay);
+    expect(entry.rows[0]!.discovered_via).toBe('drill');
+    expect(entry.rows[0]!.category).toBe('other');
+
+    // Production card created, face 'production', advanced (reps 1), due ~3d out.
+    const card = await pg.pool.query<{
+      id: string;
+      face: string;
+      fsrs_state: string;
+      reps: number;
+      scheduled_days: number;
+      version: number;
+      due_at: Date;
+    }>(
+      `SELECT id::text AS id, face, fsrs_state, reps, scheduled_days, version, due_at
+         FROM vocab_cards
+        WHERE user_id = $1 AND grammar_entry_id = $2 AND face = 'production'`,
+      [userId, entry.rows[0]!.id],
+    );
+    expect(card.rowCount).toBe(1);
+    expect(card.rows[0]!.face).toBe('production');
+    expect(card.rows[0]!.fsrs_state).toBe('learning');
+    expect(card.rows[0]!.reps).toBe(1);
+    expect(card.rows[0]!.scheduled_days).toBe(3);
+    expect(card.rows[0]!.version).toBe(2); // 1 (insert) → +1 (advance)
+    const dueMs = new Date(card.rows[0]!.due_at).getTime() - Date.now();
+    expect(dueMs).toBeGreaterThan(2.5 * 86_400_000);
+    expect(dueMs).toBeLessThan(3.5 * 86_400_000);
+
+    // A card_reviews snapshot was appended (rating good, before → after).
+    const reviews = await pg.pool.query<{ rating: string }>(
+      `SELECT rating FROM card_reviews WHERE card_id = $1 AND user_id = $2`,
+      [card.rows[0]!.id, userId],
+    );
+    expect(reviews.rowCount).toBe(1);
+    expect(reviews.rows[0]!.rating).toBe('good');
+  });
+
+  it('advances the SAME production card on a second drill of the same pattern (no duplicate)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    const gen1 = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+    await agent
+      .post(`/grammar-drill/${gen1.body.attemptId as number}/submit`)
+      .send({ answer: '다 먹어 버렸어요.' })
+      .expect(200);
+
+    const gen2 = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+    const res2 = await agent
+      .post(`/grammar-drill/${gen2.body.attemptId as number}/submit`)
+      .send({ answer: '다 써 버렸어요.' })
+      .expect(200);
+
+    // Second good review multiplies prior stability (3 → ×2.0 = 6) → 6 days.
+    expect(res2.body.schedule.scheduledDays).toBe(6);
+
+    // Exactly ONE production card for this pattern (the unique index holds).
+    const cards = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM vocab_cards c
+         JOIN grammar_entries g ON g.id = c.grammar_entry_id
+        WHERE c.user_id = $1 AND g.pattern_key = $2 AND c.face = 'production'`,
+      [userId, GEN_BODY.patternKey],
+    );
+    expect(cards.rows[0]!.n).toBe('1');
+
+    // Two review rows now exist for that one card.
+    const reviews = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM card_reviews WHERE user_id = $1`,
+      [userId],
+    );
+    expect(reviews.rows[0]!.n).toBe('2');
+  });
+
+  it('does NOT advance the card when the answer ignores the pattern (usesPattern false → again)', async () => {
+    // Override the scorer to return a fluent-but-off-pattern result.
+    const offPatternApp = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        scoreGrammarDrill: async () => ({
+          result: {
+            score: 90,
+            verdict: 'excellent' as const,
+            usesPattern: false,
+            summary: 'fluent but did not use the target pattern',
+            corrections: [],
+          },
+          metadata: {
+            requestId: 'test-off-pattern',
+            model: 'claude-sonnet-4-6' as const,
+            cacheHit: false,
+            latencyMs: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costEstimateUsd: 0,
+          },
+        }),
+      },
+    });
+    try {
+      const { agent, userId } = await registerUser(offPatternApp.app, pg.pool);
+      const gen = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+      const res = await agent
+        .post(`/grammar-drill/${gen.body.attemptId as number}/submit`)
+        .send({ answer: '안녕하세요. 날씨가 좋네요.' })
+        .expect(200);
+
+      // usesPattern false forces 'again' even though the verdict is 'excellent'.
+      expect(res.body.schedule.rating).toBe('again');
+      expect(res.body.schedule.scheduledDays).toBe(0);
+
+      // The card lapsed into relearning and is due ~10 min out, not days.
+      const card = await pg.pool.query<{ fsrs_state: string; lapses: number; due_at: Date }>(
+        `SELECT c.fsrs_state, c.lapses, c.due_at
+           FROM vocab_cards c
+           JOIN grammar_entries g ON g.id = c.grammar_entry_id
+          WHERE c.user_id = $1 AND g.pattern_key = $2 AND c.face = 'production'`,
+        [userId, GEN_BODY.patternKey],
+      );
+      expect(card.rows[0]!.fsrs_state).toBe('relearning');
+      expect(card.rows[0]!.lapses).toBe(1);
+      const dueMs = new Date(card.rows[0]!.due_at).getTime() - Date.now();
+      expect(dueMs).toBeGreaterThan(0);
+      expect(dueMs).toBeLessThan(30 * 60 * 1000);
+    } finally {
+      await teardownTestApp(offPatternApp);
+    }
+  });
+
+  it('is idempotent under the scored-once gate (a second submit 409s and writes no second card/review)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const gen = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+    const attemptId = gen.body.attemptId as number;
+
+    await agent.post(`/grammar-drill/${attemptId}/submit`).send({ answer: '첫 답.' }).expect(200);
+    await agent.post(`/grammar-drill/${attemptId}/submit`).send({ answer: '둘째 답.' }).expect(409);
+
+    // Still exactly one card + one review (the 409 rolled back its whole tx).
+    const cards = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM vocab_cards WHERE user_id = $1 AND face = 'production'`,
+      [userId],
+    );
+    expect(cards.rows[0]!.n).toBe('1');
+    const reviews = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM card_reviews WHERE user_id = $1`,
+      [userId],
+    );
+    expect(reviews.rows[0]!.n).toBe('1');
   });
 });
 

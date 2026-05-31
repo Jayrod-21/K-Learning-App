@@ -650,6 +650,35 @@ export interface DueCard {
   grammar_entry_id: number | null;
   source_sentence_id: number | null;
   topik_item_id: number | null;
+  /**
+   * Grammar-pattern display for a production card (FU-NF-42). Present only when
+   * `grammar_entry_id` is set — the due query LEFT JOINs `grammar_entries` and
+   * carries the pattern display so the Review screen can render a grammar
+   * production card without a second round-trip. `null`/absent for vocab cards.
+   * The service maps the server's snake-case `grammar_pattern_display` onto
+   * this camelCase field at the wire boundary.
+   */
+  grammarPatternDisplay?: string;
+  /**
+   * EN summary for a production card's pattern (FU-NF-42). Same JOIN/origin as
+   * `grammarPatternDisplay`; absent for vocab cards.
+   */
+  grammarSummaryEn?: string;
+  /**
+   * Server dedup key for the pattern (FU-NF-42). REQUIRED for a Review →
+   * Drill deep-link to round-trip to the SAME production card: the drill's
+   * generate route resolves-or-creates a grammar_entry on `(user, pattern_key)`,
+   * so re-drilling must hand back the original `pattern_key` — NOT the entry's
+   * numeric id — or the server would mint a parallel entry and the due card
+   * would never leave the queue. The current A4 due query (vocab.ts) JOINs only
+   * `pattern_display` + `summary_en`; it must also alias `ge.pattern_key AS
+   * grammar_pattern_key` for the loop to close. Optional here so the client
+   * type-checks against the pre-bump server; when absent the Review screen
+   * falls back to the display string as a best-effort key (see
+   * `dueCardToGrammar`) and the deep-link still navigates, but the re-schedule
+   * round-trip is only exact once the server exposes this field.
+   */
+  grammarPatternKey?: string;
 }
 
 /** FSRS rating button. */
@@ -926,6 +955,29 @@ export interface DrillScore {
   referenceModelKr: string;
   /** English gloss of the model answer. */
   referenceModelEn: string;
+  /**
+   * Server-derived production schedule (FU-NF-42). The submit route maps the
+   * verdict → an FSRS rating, advances the production card, and returns the
+   * resulting interval so the reveal can tell the learner when the pattern
+   * comes back. `scheduledDays === 0` (rating `again`) means a ~10-minute
+   * relearning step rather than a day-grained interval. Optional so a server
+   * that predates the FU-NF-42 wire bump (or a synthesized offline-mock score)
+   * still type-checks — the reveal line simply omits itself when absent.
+   */
+  schedule?: DrillSchedule;
+}
+
+/** Production-card schedule echoed back by the drill-submit route (FU-NF-42). */
+export interface DrillSchedule {
+  /** The FSRS rating the server derived from the verdict (+ pattern usage). */
+  rating: FsrsRating;
+  /** ISO timestamp the production card next becomes due. */
+  dueAt: string;
+  /**
+   * Whole-day interval until the next review. `0` denotes an intra-day
+   * relearning step (the route schedules it ~10 minutes out).
+   */
+  scheduledDays: number;
 }
 
 // ── Progress wire shapes ──────────────────────────────────────────────

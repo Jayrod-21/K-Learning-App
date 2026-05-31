@@ -70,17 +70,52 @@ export async function getEntry(
   );
 }
 
+/**
+ * Raw wire row for a due card. The server speaks snake_case; for grammar
+ * production cards it LEFT JOINs `grammar_entries` and carries
+ * `grammar_pattern_display` / `grammar_summary_en` (NULL for vocab cards,
+ * FU-NF-42 A4). `getDueCards` normalises those two onto the camelCase
+ * `DueCard` fields so the screens never reach across the wire boundary.
+ */
+interface DueCardWire extends DueCard {
+  grammar_pattern_display?: string | null;
+  grammar_summary_en?: string | null;
+  grammar_pattern_key?: string | null;
+}
+
 /** GET /vocab/cards/due — paginated due cards for the current user. */
 export async function getDueCards(
   limit?: number,
   signal?: AbortSignal,
 ): Promise<DueCard[]> {
   const params = limit !== undefined ? { limit } : undefined;
-  const res = await api.get<{ cards: DueCard[] }>('/vocab/cards/due', {
+  const res = await api.get<{ cards: DueCardWire[] }>('/vocab/cards/due', {
     ...(params !== undefined ? { params } : {}),
     ...(signal !== undefined ? { signal } : {}),
   });
-  return res.cards;
+  return res.cards.map(normalizeDueCard);
+}
+
+/**
+ * Map the server's snake-case grammar JOIN columns onto the camelCase
+ * `DueCard` fields. NULLs collapse to `undefined` so a vocab card's
+ * `grammarPatternDisplay` stays absent (the Review branch keys on it being
+ * present + the card face). Spreads the row first so any field the server
+ * adds later survives untouched.
+ */
+function normalizeDueCard(row: DueCardWire): DueCard {
+  const {
+    grammar_pattern_display: display,
+    grammar_summary_en: summary,
+    grammar_pattern_key: patternKey,
+    ...rest
+  } = row;
+  return {
+    ...rest,
+    ...(display != null ? { grammarPatternDisplay: display } : {}),
+    ...(summary != null ? { grammarSummaryEn: summary } : {}),
+    ...(patternKey != null ? { grammarPatternKey: patternKey } : {}),
+  };
 }
 
 /** POST /vocab/cards/:cardId/reviews — record an FSRS review. */

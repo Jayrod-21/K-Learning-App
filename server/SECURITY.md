@@ -859,8 +859,58 @@ scored-once + Claude-cost properties as the Diagnostic (§13).
 
 ### 17.6 Deferred / known gaps
 
-- **FSRS-production scheduling is NOT wired this pass (FU-NF-42).** Attempts are
-  persisted with their score, but the score does NOT yet feed an FSRS rating into
-  a production-face `vocab_cards` row — production progress does not yet flow into
-  Review. There is no `vocab_cards`/`card_reviews` coupling on submit, so the
-  attempt log is a standalone table this pass.
+- **FSRS-production scheduling — NOW WIRED (FU-NF-42; see §17.7).** Originally
+  deferred this pass; the grammar-drill submit handler now maps the score → an
+  FSRS rating → a concrete interval and advances a production-face `vocab_cards`
+  row + appends a `card_reviews` snapshot, in the SAME transaction as the score
+  write. The threat model for that write is §17.7.
+
+### 17.7 Grammar production-scheduling write (FU-NF-42 addendum)
+
+The submit handler, AFTER the scored-once UPDATE succeeds and INSIDE the same
+transaction (`withTransaction`), auto-banks the grammar pattern, resolves-or-
+creates the learner's production card for it, computes the next FSRS state via
+the pure `grammarScheduler` module, advances the card, and appends an immutable
+`card_reviews` row. Threats considered:
+
+- **IDOR / cross-user write.** Every statement is user-scoped: the grammar-entry
+  upsert keys on `(user_id, pattern_key)`; the production-card SELECT/INSERT/
+  UPDATE all carry `WHERE … user_id = $userId`; the `card_reviews` INSERT stamps
+  the same `user_id`. `pattern_key`/`pattern_display` are read from the SERVER-
+  stored attempt row (itself loaded user-scoped at step 1), never from request
+  body — a client cannot steer the auto-bank at submit time. No statement can
+  read or mutate another user's grammar entry or card.
+
+- **Production-card duplication under concurrent double-submit.** A naive
+  "SELECT card; else INSERT" can race two submits into two cards for one pattern,
+  splitting the FSRS history. Two guards: (1) the scored-once gate (§17.3) is the
+  FIRST write in the tx, so only one submit per attempt proceeds to the
+  scheduling writes — the loser rolls back the whole (empty-so-far) tx → 409; and
+  (2) the partial unique index `uq_vocab_cards_user_grammar_production` (migration
+  020) makes "one production card per (user, pattern)" a DB-level invariant, so
+  even a hypothetical cross-attempt race on the same pattern fails the second
+  INSERT with `23505` rather than banking a duplicate. The card SELECT also takes
+  `FOR UPDATE`, serializing concurrent advances of the same card row.
+
+- **Atomicity — no half-persisted score.** The score UPDATE, auto-bank, card
+  upsert, card advance, and review snapshot all run in ONE transaction. If any
+  scheduling sub-step throws (a constraint violation, a stale-version conflict,
+  an unexpected error), the ENTIRE tx rolls back — the score is NOT persisted
+  half-way. A scheduling bug therefore surfaces as a loud 500 / 409 and the
+  learner can retry against an unscored attempt; it never leaves a scored attempt
+  with no schedule, nor a card advanced without its review-log row. This is a
+  deliberate "correctness over best-effort" choice (contract A3.6).
+
+- **Constraint backstops.** The scheduler clamps difficulty to `[1,10]`, floors
+  stability at `0`, and emits a non-negative integer `scheduled_days`, so the
+  card UPDATE and `card_reviews` INSERT can never violate
+  `ck_vocab_cards_difficulty_range` / `_stability_nonneg` / `_scheduled_nonneg`
+  (or their `card_reviews` twins) even if a card row were somehow corrupt. The
+  auto-bank uses `category = 'other'` and `discovered_via = 'drill'`, both of
+  which satisfy the (020-extended) `grammar_entries` CHECK allow-lists — the DB
+  is the final backstop for those domains.
+
+- **No new Claude call / no new injection surface.** Scheduling is pure + DB
+  only; it adds no model call and concatenates no user text into SQL
+  (parameterized throughout) — the cost + injection posture of §17.5 is
+  unchanged.
