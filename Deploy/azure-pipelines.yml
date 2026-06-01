@@ -35,6 +35,8 @@ trigger:
     include:
       - main
 
+pool: "Linux"
+
 # Don't run this deploy pipeline on PRs — GitHub Actions ci.yml covers PR CI.
 pr: none
 
