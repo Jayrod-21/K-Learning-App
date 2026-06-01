@@ -135,9 +135,11 @@ load_environment() {
     [[ "$had_allexport" -eq 0 ]] && set +a
 
     # Validate keys the state machine depends on. We check presence only and
-    # NEVER log the values.
+    # NEVER log the values. DATABASE_URL is intentionally NOT required here — the
+    # POSTGRES_* primitives are the single source of truth for the credentials
+    # (.env.example documents this), and DATABASE_URL is DERIVED below.
     local missing=()
-    local required=(ACTIVE_ENVIRONMENT POSTGRES_USER POSTGRES_DB DATABASE_URL)
+    local required=(ACTIVE_ENVIRONMENT POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB)
     local key
     for key in "${required[@]}"; do
         if [[ -z "${!key:-}" ]]; then
@@ -152,6 +154,17 @@ load_environment() {
     if [[ "$ACTIVE_ENVIRONMENT" != "blue" && "$ACTIVE_ENVIRONMENT" != "green" ]]; then
         log_err "ACTIVE_ENVIRONMENT must be 'blue' or 'green', got an unexpected value."
         return 1
+    fi
+
+    # Derive DATABASE_URL for HOST-run tooling (db/migrate.py reads it from the
+    # environment) from the single-source-of-truth POSTGRES_* primitives, unless
+    # the operator pinned an explicit one in the .env. The host reaches the shared
+    # km-db over the loopback-mapped port (POSTGRES_HOST_PORT, default 5432); the
+    # CONTAINERS compose their own DATABASE_URL (@km-db) independently. Keeping the
+    # credentials in exactly one place (the POSTGRES_* trio) means a rotated
+    # password can never drift between a stored URL and the primitives.
+    if [[ -z "${DATABASE_URL:-}" ]]; then
+        export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5432}/${POSTGRES_DB}"
     fi
 
     log_info "environment loaded from ${ENV_FILE} (active=${ACTIVE_ENVIRONMENT})"
