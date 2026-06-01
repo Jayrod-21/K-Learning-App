@@ -126,15 +126,23 @@ export async function getActiveSession(rawToken: string): Promise<{
     /* swallow — observability happens at the pool layer */
   }
 
+  // pg returns BIGINT (sessions.id, sessions.user_id) as strings. This function
+  // is the single source of truth for the authenticated principal — every
+  // route reads req.user.id / getUserId(req) and the return type contract is
+  // `number`. Coerce here so a string id never leaks downstream (e.g. into
+  // saveBlob's Number.isInteger guard, or a `typeof id === 'number'` DTO
+  // assertion). Ids fit comfortably in Number.MAX_SAFE_INTEGER.
+  const id = Number(row.id);
+  const userId = Number(row.user_id);
   return {
     session: {
-      id: row.id,
-      user_id: row.user_id,
+      id,
+      user_id: userId,
       expires_at: row.expires_at,
       last_seen_at: row.last_seen_at,
       revoked_at: row.revoked_at,
     },
-    user: { id: row.user_id, email: row.email },
+    user: { id: userId, email: row.email },
   };
 }
 

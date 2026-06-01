@@ -6,8 +6,9 @@ import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { _setConfigForTesting, TEST_TOTP_SECRET_ENC_KEY } from '../../src/config/index.js';
 import { _resetEncryptionKeyForTesting } from '../../src/crypto/encryption.js';
-import { setPoolForTesting } from '../../src/db/pool.js';
+import { getPoolForTesting, setPoolForTesting } from '../../src/db/pool.js';
 import {
+  getClaudeProxyForTesting,
   resetClaudeProxyForTesting,
   setClaudeProxy,
   type ClaudeProxy,
@@ -19,6 +20,20 @@ import { createApp } from '../../src/app.js';
 export interface TestApp {
   app: ReturnType<typeof createApp>;
   pool: Pool;
+  /**
+   * The pool that was installed as the global db pool BEFORE this app replaced
+   * it (null if none). teardownTestApp restores it so tearing down an ephemeral
+   * per-test app (e.g. one wired to a failing Claude proxy) does NOT leave the
+   * shared suite app pointing at an ended pool.
+   */
+  previousPool: Pool | null;
+  /**
+   * The Claude proxy that was installed globally BEFORE this app replaced it
+   * (null if none). teardownTestApp restores it so an ephemeral per-test app
+   * wired to a failing/odd stub proxy does not leak that stub into the shared
+   * suite app after teardown.
+   */
+  previousProxy: ClaudeProxy | null;
 }
 
 export interface BuildOptions {
@@ -271,9 +286,17 @@ export function buildTestApp(opts: BuildOptions): TestApp {
     REGISTRATION_ENABLED: opts.registrationEnabled ?? true,
   });
 
+  // Capture the pool currently installed as the global so teardown can restore
+  // it. Without this, an ephemeral per-test app's teardown (t.pool.end()) ends
+  // the pool that is STILL the global _pool, breaking the shared suite app.
+  const previousPool = getPoolForTesting();
   const pool = new Pool({ connectionString: opts.connectionString, max: 5 });
   setPoolForTesting(pool);
 
+  // Capture the global proxy before replacing it, so teardown can restore it
+  // (symmetric with previousPool) and an ephemeral failing-stub app cannot leak
+  // its proxy into the shared suite app.
+  const previousProxy = getClaudeProxyForTesting();
   resetClaudeProxyForTesting();
   setClaudeProxy(makeStubProxy(opts.claudeProxy));
 
@@ -284,9 +307,19 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   _resetEncryptionKeyForTesting();
 
   const app = createApp();
-  return { app, pool };
+  return { app, pool, previousPool, previousProxy };
 }
 
 export async function teardownTestApp(t: TestApp): Promise<void> {
+  // Restore the global pool + Claude proxy to whatever was installed before
+  // this app, so the shared suite app keeps working after an ephemeral per-test
+  // app is torn down. Only restore if WE are still the active pool (defends
+  // against out-of-order teardown). Then end our own pool.
+  if (t.previousPool && getPoolForTesting() === t.pool) {
+    setPoolForTesting(t.previousPool);
+  }
+  if (t.previousProxy) {
+    setClaudeProxy(t.previousProxy);
+  }
   await t.pool.end().catch(() => undefined);
 }

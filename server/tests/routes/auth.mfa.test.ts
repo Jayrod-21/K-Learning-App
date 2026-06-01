@@ -396,8 +396,20 @@ describe('challenge single-use / expiry / purpose', () => {
     const agent = request.agent(t.app);
     const login = await agent.post('/auth/login').send({ email: EMAIL, password: PASSWORD });
     const challengeToken = login.body.challenge_token as string;
-    // Force-expire every active challenge.
-    await pg.pool.query(`UPDATE mfa_login_challenges SET expires_at = now() - interval '1 minute'`);
+    // Force-expire every active challenge. We age BOTH created_at and
+    // expires_at backwards so the row stays consistent with the born-valid
+    // invariant ck_mfa_chal_expiry (expires_at > created_at, mirroring
+    // sessions' ck_sessions_expires_after_issue). The route's active-lookup
+    // predicate is `expires_at > now()`, so an expires_at of now()-1min is
+    // already expired regardless of created_at. (Setting only expires_at into
+    // the past would violate the CHECK — that constraint is a genuine
+    // data-integrity invariant, not a bug, so we simulate expiry the way it
+    // actually happens: the clock moves forward past a still-ordered window.)
+    await pg.pool.query(
+      `UPDATE mfa_login_challenges
+          SET created_at = now() - interval '10 minutes',
+              expires_at = now() - interval '1 minute'`,
+    );
     const res = await agent.post('/auth/login/totp').send({ challenge_token: challengeToken, code: '000000' });
     expect(res.status).toBe(401);
     expect(res.body.error.code).toBe('challenge_invalid');

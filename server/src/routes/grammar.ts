@@ -76,7 +76,9 @@ router.get(
         [id],
       );
       if (rows.length === 0) throw new NotFoundError('kgiu entry not found');
-      res.status(200).json(rows[0]);
+      // pg returns BIGINT (id) as a string; the API contract documents id as a
+      // JSON number. kgiu_entries.id fits comfortably in Number.MAX_SAFE_INTEGER.
+      res.status(200).json({ ...rows[0], id: Number((rows[0] as { id: unknown }).id) });
     } catch (err) {
       next(err);
     }
@@ -138,7 +140,9 @@ router.post('/bank', cheapLimiter(), validateBody(BankBodySchema), async (req, r
         body.discovered_via,
       ],
     );
-    res.status(201).json({ id: rows[0]!.id });
+    // pg returns BIGINT as a string; the API contract documents id as a JSON
+    // number (grammar_entries.id fits comfortably in Number.MAX_SAFE_INTEGER).
+    res.status(201).json({ id: Number(rows[0]!.id) });
   } catch (err) {
     if ((err as { code?: string }).code === '23505') {
       next(new ConflictError('grammar entry conflict'));

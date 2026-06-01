@@ -13,15 +13,30 @@ import { UpstreamError } from '../middleware/errors.js';
 
 const router = Router();
 
-// Mirror the proxy's GradeInput contract exactly: `rubric` is a required TOPIK
-// rubric enum, not a free string. (A loose/absent rubric used to pass edge
-// validation here and then get rejected by the proxy's own input parse as a
-// 502 — validate it at the edge instead so a bad rubric is a clean 400.)
-const GradeSchema = z.object({
-  prompt: z.string().min(1).max(2_000).optional(),
-  sample: z.string().min(1).max(16_000),
-  rubric: z.enum(['topik_ii_53', 'topik_ii_54']),
-});
+// Edge contract for POST /grade-writing. Validated here so malformed input is a
+// clean 400 rather than a 502 from the proxy's own input parse, and so the body
+// is .strict() — an unexpected field (e.g. an attacker probing `model` or a
+// typo'd key) is rejected outright per the global input-validation posture.
+//
+//   * prompt     — REQUIRED. The grader needs the question the learner answered;
+//                  grading a sample with no prompt is meaningless. Bounded 1..2000.
+//   * sample     — REQUIRED. The learner's writing. Bounded 1..5000 (a TOPIK II
+//                  Q54 essay is ~700 Korean chars; 5000 is generous head-room
+//                  while still rejecting paste-bomb DoS input).
+//   * rubric     — OPTIONAL, defaults to TOPIK II Q54 (the more general rubric).
+//                  A *present but invalid* value is still a 400.
+//   * targetLevel — OPTIONAL proficiency band hint (proficiency_level enum). An
+//                  out-of-set value (e.g. 'L9') is a 400. Accepted at the edge
+//                  for forward-compat but NOT forwarded to the proxy (the grader
+//                  derives the level from the sample; see GradeInput).
+const GradeSchema = z
+  .object({
+    prompt: z.string().min(1).max(2_000),
+    sample: z.string().min(1).max(5_000),
+    rubric: z.enum(['topik_ii_53', 'topik_ii_54']).default('topik_ii_54'),
+    targetLevel: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
+  })
+  .strict();
 
 router.post(
   '/',
@@ -32,10 +47,15 @@ router.post(
     try {
       const body = req.body as z.infer<typeof GradeSchema>;
       const proxy = getClaudeProxy();
-      const result = await proxy.gradeWriting(body, {
-        requestId: req.correlationId,
-        userId: req.user?.id ?? null,
-      });
+      // Forward only the fields the proxy's GradeInput contract accepts —
+      // targetLevel is an edge-only hint and is intentionally not passed through.
+      const result = await proxy.gradeWriting(
+        { prompt: body.prompt, sample: body.sample, rubric: body.rubric },
+        {
+          requestId: req.correlationId,
+          userId: req.user?.id ?? null,
+        },
+      );
       res.status(200).json(result);
     } catch (err) {
       if (err && typeof err === 'object' && 'httpStatus' in err) {

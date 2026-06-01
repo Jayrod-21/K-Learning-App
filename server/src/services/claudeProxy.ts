@@ -88,5 +88,17 @@ export function resetClaudeProxyForTesting(): void {
   _proxy = null;
 }
 
+/**
+ * Read the currently-installed proxy without throwing when none is set.
+ * Test-only — lets a helper capture the active proxy before installing an
+ * ephemeral replacement (e.g. one whose generate* method throws to exercise a
+ * 502 path) and restore it afterwards, so tearing down the ephemeral app does
+ * NOT leave the shared suite app wired to the failing stub. Returns null if
+ * none installed.
+ */
+export function getClaudeProxyForTesting(): ClaudeProxy | null {
+  return _proxy;
+}
+
 // Convenience for tests that want to install the real proxy.
 export { createClaudeProxyImpl as createClaudeProxy };

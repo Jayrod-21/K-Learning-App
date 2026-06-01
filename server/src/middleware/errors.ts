@@ -65,8 +65,23 @@ export class PayloadTooLargeError extends AppError {
 }
 
 export class UpstreamError extends AppError {
+  /**
+   * Maps an upstream (Claude / Kiwi) failure to an HTTP response. Defaults to
+   * 502 Bad Gateway, but callers can override the status when the upstream
+   * surfaced a meaningful one (e.g. a 429 rate-limit or a 504 timeout from the
+   * Claude proxy) so the client sees the real failure class rather than a
+   * blanket 502. Pass `{ status }` in details to override; the code stays
+   * `upstream_error` for a consistent wire shape. (Previously the status
+   * argument was silently ignored — every upstream error became a 502.)
+   */
   public constructor(message: string, details?: unknown) {
-    super(502, 'upstream_error', message, details);
+    const status =
+      details &&
+      typeof details === 'object' &&
+      typeof (details as { status?: unknown }).status === 'number'
+        ? (details as { status: number }).status
+        : 502;
+    super(status, 'upstream_error', message, details);
     this.name = 'UpstreamError';
   }
 }

@@ -142,7 +142,14 @@ export function _setConfigForTesting(overrides: Partial<Config>): Config {
   if (!process.env.TOTP_SECRET_ENC_KEY) {
     process.env.TOTP_SECRET_ENC_KEY = TEST_TOTP_SECRET_ENC_KEY;
   }
-  const base = _config ?? EnvSchema.parse(process.env);
+  // Re-parse process.env FRESH rather than reusing a previously-cached _config.
+  // buildTestApp mutates process.env (KIWI_URL, rate-limit knobs, etc.) right
+  // before calling this; reusing a stale _config as the base silently dropped
+  // those new values (e.g. a per-test app pointed at a fake Kiwi server would
+  // keep talking to the previous suite's KIWI_URL). The schema is still the
+  // single source of truth — env flows through validation — and the explicit
+  // overrides win on top.
+  const base = EnvSchema.parse(process.env);
   _config = { ...base, ...overrides };
   return _config;
 }

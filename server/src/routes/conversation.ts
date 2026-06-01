@@ -79,7 +79,10 @@ router.post(
          RETURNING id`,
         [userId, body.mode, body.target_register ?? null],
       );
-      res.status(201).json({ conversation: rows[0] });
+      // pg returns BIGINT (id) as a string; the API contract documents the
+      // conversation id as a JSON number. conversations.id fits in
+      // Number.MAX_SAFE_INTEGER.
+      res.status(201).json({ conversation: { id: Number(rows[0]!.id) } });
     } catch (err) {
       next(err);
     }
@@ -629,7 +632,13 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
         LIMIT 50`,
       [userId],
     );
-    res.status(200).json({ conversations: rows });
+    // pg returns BIGINT (id) as a string; the API contract documents the
+    // conversation id as a JSON number (matches POST /conversation's shape).
+    const conversations = rows.map((c) => ({
+      ...c,
+      id: Number((c as { id: unknown }).id),
+    }));
+    res.status(200).json({ conversations });
   } catch (err) {
     next(err);
   }

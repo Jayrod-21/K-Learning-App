@@ -61,9 +61,32 @@ export async function closePool(): Promise<void> {
 /**
  * Replace the pool with one bound to a different connection string.
  * Test-only — production startup creates one pool and keeps it.
+ *
+ * We attach the same idle-client 'error' handler that getPool() installs.
+ * A node-postgres Pool with no 'error' listener rethrows errors emitted by
+ * idle clients as a process-level uncaught exception — so an active pool must
+ * ALWAYS carry a handler, however it was constructed. Without this, a backend
+ * connection severed out from under an idle client (e.g. a torn-down test
+ * container, or a pool orphaned by a later setPoolForTesting call) crashes the
+ * process instead of being logged. This mirrors production's resilience
+ * contract: every installed pool is crash-safe.
  */
 export function setPoolForTesting(pool: Pool): void {
+  pool.on('error', (err) => {
+    getLogger().error({ err: serializeError(err) }, 'pg pool unexpected error');
+  });
   _pool = pool;
+}
+
+/**
+ * Read the currently-installed pool without lazily constructing one.
+ * Test-only — lets a helper capture the active pool before it installs an
+ * ephemeral replacement (e.g. a per-test app wired to a stub Claude proxy) and
+ * restore it afterwards, so tearing down the ephemeral app does NOT leave the
+ * shared suite app pointing at an ended pool. Returns null if none installed.
+ */
+export function getPoolForTesting(): Pool | null {
+  return _pool;
 }
 
 /**

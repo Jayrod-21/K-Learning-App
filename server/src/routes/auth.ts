@@ -287,7 +287,8 @@ router.post(
         );
         const r = rows[0];
         if (!r) throw new Error('register insert returned no rows');
-        userId = r.id;
+        // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+        userId = Number(r.id);
       } catch (err) {
         // 23505 = unique_violation. Surface a deliberately vague conflict;
         // do NOT leak which field collided.
@@ -328,13 +329,15 @@ router.post(
           LIMIT 1`,
         [email],
       );
-      const user = rows[0];
+      const row = rows[0];
       // CRITICAL: same shape and approximately same timing whether email
       // exists or not. We run verifyPassword either way.
-      if (!user || user.deleted_at) {
+      if (!row || row.deleted_at) {
         await safeDummyVerify();
         throw new UnauthorizedError('invalid credentials');
       }
+      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+      const user = { ...row, id: Number(row.id) };
       const ok = await verifyPassword(user.password_hash, body.password);
       if (!ok) {
         throw new UnauthorizedError('invalid credentials');
@@ -586,7 +589,8 @@ router.post(
         sendError(res, 401, 'challenge_invalid', 'sign-in challenge is invalid or expired');
         return;
       }
-      const publicUser = await finishLogin(req, res, userRow);
+      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+      const publicUser = await finishLogin(req, res, { ...userRow, id: Number(userRow.id) });
       req.log.info(
         { userId, via: recoverySpent ? 'recovery_code' : 'totp' },
         'login step 2 ok — authenticated',
@@ -861,7 +865,8 @@ router.post(
           sendError(res, 401, 'challenge_invalid', 'sign-in challenge is invalid or expired');
           return;
         }
-        const publicUser = await finishLogin(req, res, userRow);
+        // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+        const publicUser = await finishLogin(req, res, { ...userRow, id: Number(userRow.id) });
         req.log.info({ userId: auth.userId }, 'mfa enrollment confirmed — authenticated');
         res.status(200).json({
           status: 'authenticated',
@@ -978,12 +983,14 @@ router.get('/me', requireAuth, async (req, res, next) => {
         LIMIT 1`,
       [userId],
     );
-    const user = rows[0];
-    if (!user) {
+    const row = rows[0];
+    if (!row) {
       // Session points at a soft-deleted or vanished user — surface as 401
       // (their session shouldn't be trusted), not 500.
       throw new UnauthorizedError('user no longer exists');
     }
+    // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+    const user = { ...row, id: Number(row.id) };
     res.status(200).json({ user });
   } catch (err) {
     next(err);
@@ -1135,7 +1142,8 @@ router.patch(
         );
       }
 
-      res.status(200).json({ user: updated });
+      // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+      res.status(200).json({ user: { ...updated, id: Number(updated.id) } });
     } catch (err) {
       next(err);
     }

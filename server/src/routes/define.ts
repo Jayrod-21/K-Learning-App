@@ -28,8 +28,11 @@ interface KrdictRow {
   id: number;
   headword: string;
   part_of_speech: string | null;
-  senses: unknown; // jsonb
-  examples: unknown; // jsonb
+  // First-sense definitions are denormalized onto krdict_entries (ADR-015 §D5);
+  // the multi-sense / example rows live in the krdict_senses / krdict_examples
+  // tables, not as jsonb columns here.
+  definition_korean: string | null;
+  definition_english: string | null;
 }
 
 /**
@@ -122,7 +125,7 @@ router.get(
       let rows: KrdictRow[];
       try {
         const result = await query<KrdictRow>(
-          `SELECT id, headword, part_of_speech, senses, examples
+          `SELECT id, headword, part_of_speech, definition_korean, definition_english
              FROM krdict_entries
             WHERE headword = $1
             ORDER BY id ASC
@@ -149,7 +152,11 @@ router.get(
         // log already.
         throw new NotFoundError('no dictionary entry for requested word');
       }
-      res.status(200).json({ word, entries: rows });
+      // pg returns BIGINT columns as strings to avoid silent precision loss.
+      // The /define DTO documents `id` as a JSON number, so coerce here. KRDICT
+      // entry ids are well within Number.MAX_SAFE_INTEGER (a few hundred k rows).
+      const entries = rows.map((r) => ({ ...r, id: Number(r.id) }));
+      res.status(200).json({ word, entries });
     } catch (err) {
       next(err);
     }

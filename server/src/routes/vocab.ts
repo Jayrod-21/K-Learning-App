@@ -135,7 +135,19 @@ router.get(
           LIMIT $2`,
         [userId, q.limit],
       );
-      res.status(200).json({ cards: rows });
+      // pg returns BIGINT columns as strings; the card DTO documents the id +
+      // FK id fields as JSON numbers (nullable FKs stay null). NUMERIC columns
+      // stability/difficulty are intentionally left as strings (precision-safe).
+      const cards = rows.map((c) => ({
+        ...c,
+        id: Number(c.id),
+        vocab_entry_id: c.vocab_entry_id === null ? null : Number(c.vocab_entry_id),
+        grammar_entry_id: c.grammar_entry_id === null ? null : Number(c.grammar_entry_id),
+        source_sentence_id:
+          c.source_sentence_id === null ? null : Number(c.source_sentence_id),
+        topik_item_id: c.topik_item_id === null ? null : Number(c.topik_item_id),
+      }));
+      res.status(200).json({ cards });
     } catch (err) {
       next(err);
     }
@@ -356,7 +368,9 @@ router.get(
         [id],
       );
       if (rows.length === 0) throw new NotFoundError('vocab entry not found');
-      res.status(200).json(rows[0]);
+      // pg returns BIGINT (id) as a string; the API contract documents id as a
+      // JSON number. vocab_entries.id fits comfortably in Number.MAX_SAFE_INTEGER.
+      res.status(200).json({ ...rows[0], id: Number((rows[0] as { id: unknown }).id) });
     } catch (err) {
       next(err);
     }
@@ -427,7 +441,9 @@ router.post(
         );
         return ins.rows[0]!;
       });
-      res.status(201).json({ card: out });
+      // pg returns BIGINT (card.id) as a string; the API contract documents id
+      // as a JSON number. vocab_cards.id fits in Number.MAX_SAFE_INTEGER.
+      res.status(201).json({ card: { ...out, id: Number(out.id) } });
     } catch (err) {
       next(err);
     }
@@ -564,7 +580,12 @@ router.post(
         );
         return { entryId, card: ins.rows[0]! };
       });
-      res.status(201).json(out);
+      // pg returns BIGINT (entryId, card.id) as strings; the API contract
+      // documents both as JSON numbers. Both fit in Number.MAX_SAFE_INTEGER.
+      res.status(201).json({
+        entryId: Number(out.entryId),
+        card: { ...out.card, id: Number(out.card.id) },
+      });
     } catch (err) {
       next(err);
     }
