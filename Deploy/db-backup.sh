@@ -187,12 +187,15 @@ fi
 
 # Retention prune — AFTER the new dump is durable. -mtime +N = older than N
 # days. We prune local dumps only; off-site retention is the off-site system's
-# job (and we don't want to silently delete the last remote copy).
+# job (and we don't want to silently delete the last remote copy). Each dump's
+# per-dump .info sidecar (P-SF6) is pruned together with it so metadata never
+# orphans or outlives the backup it describes.
 log_info "db-backup: pruning local dumps older than ${RETENTION_DAYS}d in $BACKUP_DIR"
 PRUNED=0
 while IFS= read -r -d '' f; do
   log_info "db-backup: pruned $f"
   rm -f -- "$f" || true
+  rm -f -- "$f.info" || true
   PRUNED=$((PRUNED + 1))
 done < <(
   find "$BACKUP_DIR" -maxdepth 1 -type f -name 'km-*.dump' \
