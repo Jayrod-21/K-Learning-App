@@ -223,13 +223,16 @@ save_env_var() {
 }
 
 # =============================================================================
-# _nginx_active_color_from_lb — read the live km-lb config's prod API upstream
+# _nginx_active_color_from_lb — read the live km-lb config's PROD API backend
 # and infer the color, or print nothing if the LB isn't reachable.
 # -----------------------------------------------------------------------------
 # The km-lb container holds the swapped nginx.conf at /etc/nginx/nginx.conf. The
-# `upstream km_prod_api { server km-server-<color>:4000; }` block names the
-# active color. We read it from inside the container so we reflect what is
-# actually live (not just the file on disk). Falls back to the on-disk live conf
+# PROD server (`listen 1840`) routes the API to the ACTIVE color via
+# `set $api_backend "km-server-<color>:4000";`. We read the config from inside
+# the container so we reflect what is actually live (not just the file on disk),
+# scope the match to the prod (1840) server block so the test (1841) backend for
+# the inactive color can never be mistaken for active, and take the FIRST
+# km-server-<color> at/after `listen 1840`. Falls back to the on-disk live conf
 # if `docker exec` is unavailable. Prints "blue" | "green" | "" (unknown).
 # =============================================================================
 _nginx_active_color_from_lb() {
@@ -246,22 +249,29 @@ _nginx_active_color_from_lb() {
         return 0
     fi
 
-    # Parse the km_prod_api upstream's server line. Match the color in
-    # km-server-<color>:4000 within (or just after) the km_prod_api block.
-    # SC2016: the awk program is single-quoted ON PURPOSE — $0 and m[1] are awk
-    # tokens that must NOT be expanded by the shell. The 3-arg match() is a gawk
-    # extension; the grep fallback just below covers mawk/busybox awk builds that
-    # lack it, so the parse stays portable.
+    # Scope to the PROD (listen 1840) server block, then take the color of the
+    # first km-server-<color> backend inside it. awk is portable here (no gawk
+    # 3-arg match()): once inside the 1840 block, gsub strips everything around
+    # the color token on the matching line. The grep fallback below covers any
+    # awk that mis-handles this. Both anchor on `listen 1840` so the inactive
+    # color's test-port (1841) backend is never read as active.
     local color
     # shellcheck disable=SC2016
     color="$(printf '%s\n' "$conf" \
         | awk '
-            /upstream[[:space:]]+km_prod_api/ { inblk=1 }
-            inblk && match($0, /km-server-(blue|green)/, m) { print m[1]; exit }
-            inblk && /}/ { inblk=0 }
+            /listen[[:space:]]+1840/ { inprod=1 }
+            inprod && /listen[[:space:]]+1841/ { inprod=0 }
+            inprod && /km-server-(blue|green)/ {
+                line=$0
+                sub(/.*km-server-/, "", line)
+                sub(/[^a-z].*/, "", line)
+                print line
+                exit
+            }
         ' 2>/dev/null || true)"
 
-    # Fallback for awk builds without match() capture groups (mawk): grep it.
+    # Fallback: the prod (1840) block precedes the test (1841) block in the file,
+    # so the FIRST km-server-<color> in the whole config is the active one.
     if [[ -z "$color" ]]; then
         color="$(printf '%s\n' "$conf" \
             | grep -oE 'km-server-(blue|green)' \
