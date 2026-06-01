@@ -56,8 +56,9 @@ stages:
       - job: BuildJob
         displayName: Lint, typecheck, test, build images
         pool: 
-              demands:
-                - Build -equals True
+          name: "Linux"
+          demands:
+            - Build -equals True
         steps:
           - checkout: self
             displayName: Checkout source
@@ -149,6 +150,7 @@ stages:
         displayName: Deploy inactive
         environment: km-inactive
         pool:
+          name: "Linux"
           demands:
             - Deploy -equals True
         strategy:
@@ -229,6 +231,7 @@ stages:
         displayName: Switch production
         environment: km-production
         pool:
+          name: "Linux"
           demands:
             - Deploy -equals True
         strategy:
