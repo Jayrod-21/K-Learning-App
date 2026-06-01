@@ -59,6 +59,18 @@ main() {
     log_info "ensuring shared named volumes exist"
     bash "${DEPLOY_DIR}/ensure-shared-volume.sh"
 
+    # Seed the live nginx.conf BEFORE km-lb starts. km-lb bind-mounts this file
+    # (docker-compose.shared.yml) — if it's absent, Docker creates the path as a
+    # DIRECTORY and the file mount fails ("mount a directory onto a file"). The
+    # live config is per-host mutable state (gitignored) that update_nginx_config
+    # swaps on each switch; on a cold box / fresh checkout it doesn't exist yet, so
+    # seed it from the CURRENT active color's routing template. If it already
+    # exists (mid-life host), leave it — the switch owns it from here on.
+    if [[ ! -f "${DEPLOY_DIR}/nginx.conf" ]]; then
+        log_info "seeding live nginx.conf from nginx-${ACTIVE_ENVIRONMENT}-active.conf"
+        cp -- "${DEPLOY_DIR}/nginx-${ACTIVE_ENVIRONMENT}-active.conf" "${DEPLOY_DIR}/nginx.conf"
+    fi
+
     log_info "bringing the shared trio up (km-lb / km-db / km-backup)"
     compose_shared up
 
