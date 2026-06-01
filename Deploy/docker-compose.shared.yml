@@ -230,45 +230,36 @@ services:
       - no-new-privileges:true
 
 # -----------------------------------------------------------------------------
-# Networks — name-pinned so km-blue / km-green attach to the SAME objects.
-#   km-internal: bridge + internal:true → no egress. km-db, km-server-*, km-kiwi-*.
+# Networks — ALL THREE compose projects (km-shared / km-blue / km-green) treat
+# these as EXTERNAL. ensure-shared-volume.sh is the SINGLE creator (it runs first
+# in every deploy + on a cold box), creating km-internal with --internal and
+# km-edge as a plain bridge. Declaring them `external: true` here (rather than as
+# a second inline creator) avoids the "network exists but was not created by
+# compose / incorrect label" conflict that arises when two creators race.
+#   km-internal: bridge + --internal → no egress. km-db, km-server-*, km-kiwi-*.
 #   km-edge:     bridge → LB ↔ client/server; server egress to the Claude API.
-# This file is a creator (declares them inline). blue/green mark them external:true.
-# ensure-shared-volume.sh also (idempotently) creates both so a color can come up
-# on a cold box before km-shared and external:true never errors.
 # -----------------------------------------------------------------------------
 networks:
   km-internal:
+    external: true
     name: km-internal
-    driver: bridge
-    internal: true
   km-edge:
+    external: true
     name: km-edge
-    driver: bridge
 
 # -----------------------------------------------------------------------------
-# Volumes — name-pinned (explicit `name:`) so the real docker objects are
-# km_db_data / km_images / km_backups, NOT km-shared_km_db_data. blue/green and
-# ensure-shared-volume.sh reference the same names. km_images is declared here too
-# (even though km-shared mounts no images) so a single creator owns all three and
-# `docker volume inspect` shows consistent labels.
+# Volumes — EXTERNAL in all three projects; ensure-shared-volume.sh is the single
+# creator (same single-creator rationale as the networks above). Name-pinned so
+# the real docker objects are km_db_data / km_images / km_backups (not
+# km-shared_km_db_data) and every project attaches to the same ones.
 # -----------------------------------------------------------------------------
 volumes:
   km_db_data:
+    external: true
     name: km_db_data
-    labels:
-      app: "korean-master"
-      component: "db"
-      purpose: "pgdata"
   km_images:
+    external: true
     name: km_images
-    labels:
-      app: "korean-master"
-      component: "server"
-      purpose: "user-uploaded-ocr-images"
   km_backups:
+    external: true
     name: km_backups
-    labels:
-      app: "korean-master"
-      component: "db"
-      purpose: "pg_dump-backups"
