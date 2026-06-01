@@ -51,14 +51,16 @@ services:
       - "1841:1841"
 
     volumes:
-      # The LIVE config the LB serves. `update_nginx_config <color>` (Builder B)
-      # copies nginx-<color>-active.conf onto ./nginx.conf and reloads — this is
-      # the file that actually decides which color is prod. Mounted read-only; the
-      # swap happens on the host side, then `nginx -s reload` re-reads it.
-      # nginx.conf is gitignored (it is per-host mutable state, not source).
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      # Both color templates, read-only, for reference/debugging inside the box and
-      # so an operator can diff the live conf against the intended states.
+      # The LIVE config the LB serves. `update_nginx_config <color>` copies
+      # nginx-<color>-active.conf onto this file and reloads — it decides which
+      # color is prod. Mounted from a STABLE host path (KM_LIVE_NGINX_CONF),
+      # NOT the pipeline checkout: the checkout is wiped every run, and a missing
+      # bind-mount source makes Docker create the path as a DIRECTORY (which then
+      # breaks the file mount). KM_LIVE_NGINX_CONF defaults to ./nginx.conf for
+      # local/dev use; the deploy sets it to a persistent path next to the .env.
+      - ${KM_LIVE_NGINX_CONF:-./nginx.conf}:/etc/nginx/nginx.conf:ro
+      # Both color templates (these ARE in git), read-only, for reference/debugging
+      # inside the box and so an operator can diff the live conf against intent.
       - ./nginx-blue-active.conf:/etc/nginx/nginx-blue-active.conf:ro
       - ./nginx-green-active.conf:/etc/nginx/nginx-green-active.conf:ro
 

@@ -51,6 +51,10 @@ variables:
   # KM_ENV_FILE (else it would default to the ephemeral ./Deploy/.env). Override
   # this variable in the Azure UI if the agent home differs from /home/patrick.
   KM_ENV_FILE: /home/patrick/Services/KoreanMaster/.env
+  # The PERSISTENT live nginx.conf km-lb bind-mounts. Same reason as KM_ENV_FILE:
+  # the checkout is wiped each run, and a missing bind-mount source makes Docker
+  # create the path as a directory. Kept next to the .env on a stable host path.
+  KM_LIVE_NGINX_CONF: /home/patrick/Services/KoreanMaster/nginx.conf
 
 stages:
   # ===========================================================================
@@ -235,6 +239,7 @@ stages:
                   displayName: "Ensure server .env exists (seed on first deploy)"
                   env:
                     KM_ENV_FILE: $(KM_ENV_FILE)
+                    KM_LIVE_NGINX_CONF: $(KM_LIVE_NGINX_CONF)
 
                 # Write/refresh the runtime secrets into the persistent server
                 # .env. save_env_var (deployment-utils.sh) is idempotent and
@@ -251,6 +256,7 @@ stages:
                   displayName: "Refresh runtime secrets in server .env"
                   env:
                     KM_ENV_FILE: $(KM_ENV_FILE)
+                    KM_LIVE_NGINX_CONF: $(KM_LIVE_NGINX_CONF)
                     POSTGRES_PASSWORD: $(POSTGRES_PASSWORD)
                     ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
                     TOTP_SECRET_ENC_KEY: $(TOTP_SECRET_ENC_KEY)
@@ -261,6 +267,7 @@ stages:
                   displayName: "Deploy to inactive color (migrate + deploy + verify on :1841)"
                   env:
                     KM_ENV_FILE: $(KM_ENV_FILE)
+                    KM_LIVE_NGINX_CONF: $(KM_LIVE_NGINX_CONF)
 
                 - script: |
                     set -euo pipefail
@@ -300,6 +307,7 @@ stages:
                   displayName: "Switch LB to new color (verify :1840, auto-rollback on fail)"
                   env:
                     KM_ENV_FILE: $(KM_ENV_FILE)
+                    KM_LIVE_NGINX_CONF: $(KM_LIVE_NGINX_CONF)
 
                 - script: |
                     set -euo pipefail

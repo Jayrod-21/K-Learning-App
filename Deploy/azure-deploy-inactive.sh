@@ -60,15 +60,22 @@ main() {
     bash "${DEPLOY_DIR}/ensure-shared-volume.sh"
 
     # Seed the live nginx.conf BEFORE km-lb starts. km-lb bind-mounts this file
-    # (docker-compose.shared.yml) — if it's absent, Docker creates the path as a
-    # DIRECTORY and the file mount fails ("mount a directory onto a file"). The
-    # live config is per-host mutable state (gitignored) that update_nginx_config
-    # swaps on each switch; on a cold box / fresh checkout it doesn't exist yet, so
-    # seed it from the CURRENT active color's routing template. If it already
-    # exists (mid-life host), leave it — the switch owns it from here on.
-    if [[ ! -f "${DEPLOY_DIR}/nginx.conf" ]]; then
-        log_info "seeding live nginx.conf from nginx-${ACTIVE_ENVIRONMENT}-active.conf"
-        cp -- "${DEPLOY_DIR}/nginx-${ACTIVE_ENVIRONMENT}-active.conf" "${DEPLOY_DIR}/nginx.conf"
+    # (docker-compose.shared.yml) from the STABLE host path LIVE_NGINX_CONF
+    # (KM_LIVE_NGINX_CONF, set by the deploy to a persistent dir next to the .env).
+    # The live config is per-host mutable state that update_nginx_config swaps on
+    # each switch; on a cold box it doesn't exist yet, so seed it from the CURRENT
+    # active color's routing template. A missing bind-mount source makes Docker
+    # create the path as a DIRECTORY, so if a prior failed run left a directory
+    # there, remove it first. If a real file already exists, leave it (the switch
+    # owns it from here on).
+    if [[ -d "$LIVE_NGINX_CONF" ]]; then
+        log_warn "live nginx.conf path is a directory (stale from a prior failed mount); removing it"
+        rmdir "$LIVE_NGINX_CONF" 2>/dev/null || rm -rf -- "$LIVE_NGINX_CONF"
+    fi
+    if [[ ! -f "$LIVE_NGINX_CONF" ]]; then
+        log_info "seeding live nginx.conf at ${LIVE_NGINX_CONF} from nginx-${ACTIVE_ENVIRONMENT}-active.conf"
+        mkdir -p "$(dirname "$LIVE_NGINX_CONF")"
+        cp -- "${DEPLOY_DIR}/nginx-${ACTIVE_ENVIRONMENT}-active.conf" "$LIVE_NGINX_CONF"
     fi
 
     log_info "bringing the shared trio up (km-lb / km-db / km-backup)"
