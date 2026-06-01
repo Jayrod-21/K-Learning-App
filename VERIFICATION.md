@@ -182,6 +182,122 @@ The login is the public gate, so the prod box must be set up deliberately:
 - **FU-NF-43 (c)** — confirmed here: the route suites run green under Docker.
 - The §3 Vision smoke case (above).
 
+## 8. Deploy stand-up (Docker finalize — blue/green on dad's server)
+
+This section exercises the `Deploy/` blue/green stack for real (it is
+correct-by-construction in the build env — no Docker daemon here). Run it on the
+deploy host. See `Deploy/README.md` for the runbook narrative and `Deploy/SECURITY.md`
+for the threat model.
+
+### 8.1 Pre-flight (before the first deploy)
+
+**HARD GATE — production approval check (P-SF1).** Before the first pipeline run,
+confirm the `km-production` Azure DevOps Environment has **at least one approval
+check with ≥1 approver**. The pipeline YAML cannot enforce this: the approval is a
+property of the Environment object (Azure UI), and Stage 2 (deploy-to-inactive) is
+intentionally ungated. If `km-production` has no approval, Stage 3
+(`SwitchToProduction`) flips production **unattended** — that approval is the only
+human gate between an auto-deploy and a prod flip.
+
+- [ ] **Operator MUST verify:** *Pipelines → Environments → `km-production` →
+  Approvals and checks* lists an **Approvals** check with one or more approvers.
+  Do NOT proceed to the first real run until this box is checked.
+
+```bash
+# Shared volumes + networks exist (idempotent).
+Deploy/ensure-shared-volume.sh
+
+# The server .env is present and locked down (creds live here at rest).
+ls -l Deploy/.env && stat -c '%a' Deploy/.env   # expect 600
+
+# Secret-scan stays green: no real key shipped in the template.
+grep -rn 'sk-ant-' Deploy/.env.example          # only the REPLACE-ME placeholder
+```
+
+### 8.2 Bring up shared + the active color
+
+```bash
+# Bring up the long-lived shared trio (LB / shared DB / backup sidecar).
+( source Deploy/deployment-utils.sh && load_environment && compose_shared up && wait_healthy km-db )
+
+# Initialize / migrate the shared schema (expand/contract).
+python db/migrate.py up
+
+# Bring up the recorded active color and assert routing.
+( source Deploy/deployment-utils.sh && load_environment \
+    && compose_color "$ACTIVE_ENVIRONMENT" up \
+    && update_nginx_config "$ACTIVE_ENVIRONMENT" )
+Deploy/bg-health.sh                              # prod + LB liveness PASS
+```
+
+Pass criteria: km-db healthy; the active color's three containers reach `healthy`
+(the km-server healthcheck added in C-SF1 is what `wait_healthy` polls); `:1840`
+serves `/health` 200 and `:1840/healthz` (LB own liveness) 200.
+
+### 8.3 Deploy to inactive + validate on :1841
+
+```bash
+Deploy/azure-deploy-inactive.sh "$(git rev-parse --short HEAD)"
+```
+
+Pass criteria: pre-deploy backup taken BEFORE migrate; migrate dry-run then apply
+succeed (a non-additive migration ABORTS here); the inactive trio reaches healthy;
+`:1841` serves `/health` 200. The active color keeps serving `:1840` throughout.
+Note (C-SF2): `:1841` is for automated/unauthenticated checks — a browser cannot
+exercise authenticated flows there (CORS + SameSite=Strict are scoped to the prod
+origin); that is by design.
+
+### 8.4 Switch + verify :1840 (with auto-rollback)
+
+```bash
+Deploy/azure-switch-production.sh "$(git rev-parse --short HEAD)"
+Deploy/check-active-env.sh                       # .env and live LB agree
+```
+
+Pass criteria: the split-brain gate passes (S-SF3); the flip happens; `:1840` is
+healthy on the new color; ONLY THEN is `ACTIVE_ENVIRONMENT` persisted (S-SF1).
+Negative test (optional, in a window): force a post-switch failure and confirm the
+flip auto-rolls-back to the prior color and exits non-zero, with `.env` still on
+the prior color.
+
+### 8.5 Backup / restore drill
+
+```bash
+Deploy/db-backup.sh
+Deploy/db-validate.sh "$BACKUP_DIR/<the dump just written>"
+
+# Full restore drill (DESTRUCTIVE — only in a recovery window). After the restore,
+# reconcile the schema before serving (P-SF3): a restored OLDER dump can be behind
+# the deployed code, so forward-migrate if `status` reports drift.
+Deploy/db-restore.sh "$BACKUP_DIR/<dump>" --force
+python db/migrate.py status     # 1. is the restored dump behind the running code?
+python db/migrate.py up         # 2. IF behind: forward-migrate (expand/contract = safe)
+Deploy/rebuild-environment.sh   # 3. restart the active color so it reconnects
+```
+
+Pass criteria: backup writes a `0600` `km-<stamp>.dump`; `db-validate.sh` restores
+it into a scratch DB and reports a clean structural match (row-count drift may be
+expected). The restore drill drops/recreates the shared DB and the schema is
+reconciled forward before the app reconnects.
+
+> Note (P-SF6): `backup-info.txt` describes only the **latest** dump (overwritten
+> each run). For an older dump, read it directly with
+> `docker exec km-db pg_restore --list "/backups/km-<stamp>.dump"`.
+
+### 8.6 Security spot-checks (deploy surface)
+
+```bash
+# Only the LB faces the host's non-loopback interface; db/kiwi/client never do.
+ss -tlnp | grep -E ':(1840|1841)\b'              # bound to host (LB only)
+ss -tlnp | grep -E '127\.0\.0\.1:(1842|1843|5432)\b'  # loopback-only
+# kiwi has no egress (km-internal internal:true).
+docker exec km-kiwi-"$(Deploy/check-active-env.sh --get-active)" \
+  sh -c 'wget -qO- --timeout=3 https://example.com' ; echo "exit=$?"  # expect failure (no egress)
+```
+
+Pass criteria: 1840/1841 host-bound; 1842/1843/5432 loopback-only; kiwi egress
+blocked; no secret in any committed Deploy file.
+
 ## Checklist
 
 - [ ] §1 migrations 001–025 apply + round-trip
@@ -191,4 +307,10 @@ The login is the public gate, so the prod box must be set up deliberately:
 - [ ] §5 SW registers · offline shell · install flow · Lighthouse PWA+a11y ≥ 90
 - [ ] §6 SW excludes the API · `npm audit --omit=dev` 0 (post FU-NF-44)
 - [ ] §7a prod auth: key generated+backed up · registration locked · account seeded · enroll/code/recovery/lockout smoked
+- [ ] §8.1 **`km-production` approval check verified (≥1 approver) — HARD GATE**
+- [ ] §8.2 shared + active color up · km-db + trio healthy · `:1840` health 200
+- [ ] §8.3 deploy-inactive: backup-before-migrate · inactive healthy · `:1841` 200
+- [ ] §8.4 switch: split-brain gate · `:1840` healthy on new color · state persisted after verify · rollback works
+- [ ] §8.5 backup `0600` · `db-validate` structural match · restore→status→up→restart
+- [ ] §8.6 1840/1841 host-bound · 1842/1843/5432 loopback · kiwi no egress · no secret committed
 - [ ] §7 promote rebuild → main

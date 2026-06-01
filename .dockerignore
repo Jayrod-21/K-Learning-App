@@ -1,0 +1,55 @@
+# =============================================================================
+# Repo-root .dockerignore
+# -----------------------------------------------------------------------------
+# The client production image (client/Dockerfile.prod) builds with the REPOSITORY
+# ROOT as its build context (it COPYs both client/ and Deploy/client-nginx.conf),
+# so the context would otherwise sweep in every lane's node_modules, build output,
+# and local state. Keep the context lean and prevent host artifacts (incl. any
+# local .env with real secrets) from ever entering an image layer.
+#
+# NOTE: each COPY in the Dockerfiles is explicit (client/package.json, client/,
+# Deploy/client-nginx.conf), so this file is defense-in-depth + build-speed, not
+# the sole guard. server/ and services/kiwi/ build from their own lane contexts
+# and have (or should have) their own ignores; this root file governs the
+# repo-root-context client build.
+# =============================================================================
+
+# Dependencies / build output (rebuilt inside the image)
+**/node_modules
+**/dist
+**/build
+client/.vite
+
+# Secrets + local env — MUST never enter an image layer
+**/.env
+**/.env.*
+!**/.env.example
+Deploy/nginx.conf
+**/*.tar
+
+# Python / loader caches (not needed by the client image)
+**/__pycache__
+**/.venv
+**/*.pyc
+tools/ingest/output
+db/_work
+
+# Local images / backups / blobs
+Deploy/backups
+**/var/images
+server/var
+
+# VCS + editor + OS noise
+.git
+.gitignore
+**/.DS_Store
+**/*.swp
+**/*Zone.Identifier
+
+# Tests / coverage (not needed at image build)
+**/coverage
+**/.pytest_cache
+
+# Process/handoff docs live OUTSIDE Repository/, but guard anyway
+**/REVIEW_*.md
+**/FIX_REPORT_*.md

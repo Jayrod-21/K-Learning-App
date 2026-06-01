@@ -1,0 +1,247 @@
+# =============================================================================
+# Korean Master — Azure DevOps pipeline (build -> deploy-to-inactive -> switch)
+# =============================================================================
+# RELATIONSHIP TO GITHUB ACTIONS:
+#   .github/workflows/ci.yml owns PR CI (lint/typecheck/test/build/audit on every
+#   pull request). THIS pipeline owns build -> deploy on pushes to main. They are
+#   complementary, not redundant: GH gates merges; Azure ships what merged.
+#
+# ARCHITECTURE (see Deploy/README.md):
+#   * Blue/green on ONE host. ONE shared Postgres (km-db) both colors point to.
+#   * Image delivery is by TAR ARTIFACT — we `docker build` + `docker save` on a
+#     hosted agent and the self-hosted agent on dad's server `docker load`s them.
+#     There is NO external registry (smaller attack surface, no registry creds).
+#   * Three images per release, all tagged $(deployTag):
+#       km-server  <- server/Dockerfile
+#       km-client  <- client/Dockerfile.prod  (static nginx, same-origin build)
+#       km-kiwi    <- services/kiwi/Dockerfile
+#
+# PATHS: this repo's checkout root contains Deploy/, server/, client/,
+#   services/, db/, .github/ as siblings. Steps that build a lane set
+#   workingDirectory to that lane; steps that run a deploy script invoke it as
+#   Deploy/<script>.sh from the checkout root (the scripts cd to their own dir).
+#
+# SECRETS (D2 hybrid — see SECURITY.md):
+#   POSTGRES_PASSWORD / ANTHROPIC_API_KEY / TOTP_SECRET_ENC_KEY are stored as
+#   SECRET pipeline variables (set in the Azure UI / a variable group, never in
+#   this file). The deploy stage passes them as ENV to the deploy step, which
+#   writes them into the persistent server .env via deployment-utils.sh's
+#   save_env_var (never echoed, never logged). Azure auto-masks secret variables
+#   in logs; we additionally never `echo` them.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+# Don't run this deploy pipeline on PRs — GitHub Actions ci.yml covers PR CI.
+pr: none
+
+variables:
+  # The build tag every image and the deploy scripts agree on. BuildId is
+  # monotonic and unique per run, so it's a safe, traceable image tag.
+  deployTag: $(Build.BuildId)
+  imageArtifactName: km-images
+
+stages:
+  # ===========================================================================
+  # Stage 1 — BuildAndTest  (Microsoft-hosted ubuntu agent)
+  # ===========================================================================
+  - stage: BuildAndTest
+    displayName: Build and test
+    jobs:
+      - job: BuildJob
+        displayName: Lint, typecheck, test, build images
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            displayName: Checkout source
+
+          - task: NodeTool@0
+            displayName: Use Node 20
+            inputs:
+              versionSpec: "20.x"
+
+          # --- Server lane (mirrors ci.yml server-checks) ---------------------
+          - script: |
+              set -euo pipefail
+              npm ci
+              npm run lint
+              npm run typecheck
+              npm test
+            workingDirectory: server
+            displayName: "Server: ci + lint + typecheck + test"
+
+          # --- Client lane (mirrors ci.yml client-checks) ---------------------
+          - script: |
+              set -euo pipefail
+              npm ci
+              npm run lint
+              npm run build
+            workingDirectory: client
+            displayName: "Client: ci + lint + build"
+
+          # --- Build the three production images ------------------------------
+          # Build context per image. The client uses Dockerfile.prod (static
+          # nginx, VITE_API_URL UNSET -> same-origin). Tags are $(deployTag).
+          # NOTE: client/Dockerfile.prod COPYs Deploy/client-nginx.conf, so the
+          # client build context is the repo root (".") not the client lane.
+          - task: Docker@2
+            displayName: "Build km-server image"
+            inputs:
+              command: build
+              repository: km-server
+              Dockerfile: server/Dockerfile
+              buildContext: server
+              tags: $(deployTag)
+
+          - task: Docker@2
+            displayName: "Build km-client image (prod static nginx)"
+            inputs:
+              command: build
+              repository: km-client
+              Dockerfile: client/Dockerfile.prod
+              buildContext: "."
+              tags: $(deployTag)
+
+          - task: Docker@2
+            displayName: "Build km-kiwi image"
+            inputs:
+              command: build
+              repository: km-kiwi
+              Dockerfile: services/kiwi/Dockerfile
+              buildContext: services/kiwi
+              tags: $(deployTag)
+
+          # --- Save each image to a tar (no registry) -------------------------
+          - script: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)"
+              docker save -o "$(Build.ArtifactStagingDirectory)/km-server-$(deployTag).tar" "km-server:$(deployTag)"
+              docker save -o "$(Build.ArtifactStagingDirectory)/km-client-$(deployTag).tar" "km-client:$(deployTag)"
+              docker save -o "$(Build.ArtifactStagingDirectory)/km-kiwi-$(deployTag).tar"   "km-kiwi:$(deployTag)"
+              ls -lh "$(Build.ArtifactStagingDirectory)"
+            displayName: "Save images to tar artifacts"
+
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: $(imageArtifactName)
+            displayName: "Publish image tar artifacts"
+
+  # ===========================================================================
+  # Stage 2 — DeployToInactive  (self-hosted agent on dad's server)
+  # ===========================================================================
+  # Loads the images, refreshes secrets into the server .env, deploys the
+  # INACTIVE color, runs DB migrate (expand/contract) + a pre-deploy backup
+  # (inside azure-deploy-inactive.sh), validates on the TEST port. No switch.
+  # The Environment 'km-inactive' is intentionally UNGATED (auto-deploy).
+  - stage: DeployToInactive
+    displayName: Deploy to inactive color
+    dependsOn: BuildAndTest
+    condition: succeeded()
+    jobs:
+      - deployment: DeployInactiveJob
+        displayName: Deploy inactive
+        environment: km-inactive
+        pool:
+          name: Default
+          demands:
+            - Deploy -equals True
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: Checkout source
+
+                - download: current
+                  artifact: $(imageArtifactName)
+                  displayName: "Download image tar artifacts"
+
+                - script: |
+                    set -euo pipefail
+                    ART="$(Pipeline.Workspace)/$(imageArtifactName)"
+                    docker load -i "$ART/km-server-$(deployTag).tar"
+                    docker load -i "$ART/km-client-$(deployTag).tar"
+                    docker load -i "$ART/km-kiwi-$(deployTag).tar"
+                    # P-SF5: assert all three images actually loaded at the expected
+                    # tag. A corrupt/partial tar otherwise surfaces much later as a
+                    # confusing "image not found" at compose_color up — fail fast here.
+                    for img in km-server km-client km-kiwi; do
+                      if ! docker image inspect "$img:$(deployTag)" >/dev/null 2>&1; then
+                        echo "ERROR: $img:$(deployTag) did not load from its tar artifact" >&2
+                        exit 1
+                      fi
+                    done
+                    docker images | grep -E 'km-(server|client|kiwi)'
+                  displayName: "Load images from tar"
+
+                # Write/refresh the runtime secrets into the persistent server
+                # .env. save_env_var (deployment-utils.sh) is idempotent and
+                # NEVER logs the value. The values arrive as ENV from secret
+                # pipeline variables (auto-masked by Azure); we never echo them.
+                - script: |
+                    set -euo pipefail
+                    # P-SF2: no `cd Deploy` is needed — save_env_var writes to
+                    # ENV_FILE=${DEPLOY_DIR}/.env, and DEPLOY_DIR is resolved from
+                    # deployment-utils.sh's own BASH_SOURCE path (deployment-utils.sh),
+                    # so secrets always land in the persistent Deploy/.env regardless
+                    # of the agent's CWD. Values arrive via the masked env: block
+                    # below and are never echoed.
+                    source Deploy/deployment-utils.sh
+                    save_env_var POSTGRES_PASSWORD     "$POSTGRES_PASSWORD"
+                    save_env_var ANTHROPIC_API_KEY     "$ANTHROPIC_API_KEY"
+                    save_env_var TOTP_SECRET_ENC_KEY   "$TOTP_SECRET_ENC_KEY"
+                  displayName: "Refresh runtime secrets in server .env"
+                  env:
+                    POSTGRES_PASSWORD: $(POSTGRES_PASSWORD)
+                    ANTHROPIC_API_KEY: $(ANTHROPIC_API_KEY)
+                    TOTP_SECRET_ENC_KEY: $(TOTP_SECRET_ENC_KEY)
+
+                - script: |
+                    set -euo pipefail
+                    Deploy/azure-deploy-inactive.sh "$(deployTag)"
+                  displayName: "Deploy to inactive color (migrate + deploy + verify on :1841)"
+
+                - script: |
+                    set -euo pipefail
+                    Deploy/cleanup.sh
+                  displayName: "Cleanup old images/containers"
+
+  # ===========================================================================
+  # Stage 3 — SwitchToProduction  (self-hosted agent, MANUAL approval gate)
+  # ===========================================================================
+  # Flips the LB from the old color to the freshly-deployed inactive color.
+  # The Environment 'km-production' MUST be configured in Azure DevOps with a
+  # manual-approval check — that approval IS the human gate for production.
+  - stage: SwitchToProduction
+    displayName: Switch to production (manual approval)
+    dependsOn:
+      - BuildAndTest
+      - DeployToInactive
+    condition: succeeded()
+    jobs:
+      - deployment: SwitchProductionJob
+        displayName: Switch production
+        environment: km-production
+        pool:
+          name: Default
+          demands:
+            - Deploy -equals True
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: Checkout source
+
+                - script: |
+                    set -euo pipefail
+                    Deploy/azure-switch-production.sh "$(deployTag)"
+                  displayName: "Switch LB to new color (verify :1840, auto-rollback on fail)"
+
+                - script: |
+                    set -euo pipefail
+                    Deploy/cleanup.sh
+                  displayName: "Cleanup old images/containers"

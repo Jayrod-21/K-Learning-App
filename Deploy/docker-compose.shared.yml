@@ -1,0 +1,274 @@
+# =============================================================================
+# Korean Master — SHARED stack (km-shared compose project)
+# -----------------------------------------------------------------------------
+# Blue/green is run as THREE separate compose projects on one host:
+#   * km-shared  (this file)  — the load balancer, the ONE shared Postgres, and
+#                               the nightly backup sidecar. Long-lived; survives
+#                               every color switch.
+#   * km-blue    (docker-compose.blue.yml)  — the blue color trio.
+#   * km-green   (docker-compose.green.yml) — the green color trio.
+#
+# WHY a shared stack: the switch is a pure nginx flip (prod port 1840 → the new
+# color). Both colors point at the SAME Postgres and the SAME image volume, so a
+# switch copies no data and user uploads survive. The DB therefore CANNOT live in
+# a per-color project — it lives here and outlives any single color.
+#
+# CROSS-PROJECT SHARING DECISION (the crux — read before editing any compose file)
+# ---------------------------------------------------------------------------------
+# The three compose projects must reference the SAME docker network + volume
+# objects. Compose normally namespaces these by project (`<project>_<name>`), which
+# would give km-blue a DIFFERENT `km-internal` than km-shared and the colors could
+# never reach km-db. We defeat that namespacing with NAME-PINNED objects:
+#   * every network/volume here declares an explicit top-level `name:` (e.g.
+#     `name: km-internal`), so the real docker object is `km-internal`, not
+#     `km-shared_km-internal`.
+#   * blue/green declare the same objects as `external: true` with the same `name:`,
+#     i.e. "do NOT create these, attach to the pre-existing pinned object".
+# This file (or ensure-shared-volume.sh, run first) is the single creator of those
+# objects; blue/green only attach. ensure-shared-volume.sh idempotently creates the
+# volumes AND the two networks so a color can be brought up even before km-shared,
+# and so `external: true` never errors on a cold box. Keep all four files in sync:
+# this file, docker-compose.blue.yml, docker-compose.green.yml, ensure-shared-volume.sh.
+# =============================================================================
+
+name: km-shared
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # km-lb — nginx load balancer. The ONLY public ingress (Cloudflare Tunnel sits
+  # in front of it). Routes prod:1840 → active color, test:1841 → inactive color.
+  # ---------------------------------------------------------------------------
+  km-lb:
+    image: nginx:1.27-alpine
+    container_name: km-lb
+    restart: unless-stopped
+
+    # Host bindings. Cloudflare Tunnel terminates TLS and forwards to these.
+    # 1840 = prod (active color), 1841 = test (inactive color, validate before flip).
+    ports:
+      - "1840:1840"
+      - "1841:1841"
+
+    volumes:
+      # The LIVE config the LB serves. `update_nginx_config <color>` (Builder B)
+      # copies nginx-<color>-active.conf onto ./nginx.conf and reloads — this is
+      # the file that actually decides which color is prod. Mounted read-only; the
+      # swap happens on the host side, then `nginx -s reload` re-reads it.
+      # nginx.conf is gitignored (it is per-host mutable state, not source).
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # Both color templates, read-only, for reference/debugging inside the box and
+      # so an operator can diff the live conf against the intended states.
+      - ./nginx-blue-active.conf:/etc/nginx/nginx-blue-active.conf:ro
+      - ./nginx-green-active.conf:/etc/nginx/nginx-green-active.conf:ro
+
+    healthcheck:
+      # The LB's OWN liveness endpoint (location = /healthz returns a static 200),
+      # NOT a proxied color /health — the LB must report healthy even when a color
+      # is mid-deploy or down. nginx:alpine ships curl is NOT guaranteed; use the
+      # bundled wget instead to avoid a missing-binary false negative.
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:1840/healthz || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      # Edge only. The LB talks to km-client-* and km-server-* over km-edge; it has
+      # no business on the internal DB network.
+      - km-edge
+
+    deploy:
+      resources:
+        limits:
+          memory: ${LB_MEM_LIMIT:-256m}
+          cpus: "${LB_CPU_LIMIT:-1.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # km-db — the ONE shared Postgres both colors point at. Mirrors the dev compose
+  # (Repository/docker-compose.yml) hardening verbatim so prod ≡ dev DB posture.
+  # See db/README.md, db/SECURITY.md.
+  # ---------------------------------------------------------------------------
+  km-db:
+    image: postgres:16-alpine
+    container_name: km-db
+    restart: unless-stopped
+
+    # Loopback ONLY — host-side access goes through 127.0.0.1 (migrate.py, psql,
+    # pg_dump from the host). The tunnel never reaches the DB. `internal: true` on
+    # km-internal blocks container egress; this port binding is a separate
+    # kernel-level construct and is intentionally loopback-scoped.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGAPPNAME: km-db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+
+    # Identical role-level flags to dev: bound runaway queries / abandoned txs and
+    # turn on the diagnostic logging the backup/restore tooling relies on. NB:
+    # migrate.py SETs statement_timeout=0 + idle_in_transaction_session_timeout=0
+    # on its own connection so expand-style migrations (CREATE INDEX, backfills)
+    # are not killed by the 30s role cap.
+    command:
+      - "postgres"
+      - "-c"
+      - "statement_timeout=30000"
+      - "-c"
+      - "idle_in_transaction_session_timeout=60000"
+      - "-c"
+      - "log_min_duration_statement=1000"
+      - "-c"
+      - "log_connections=on"
+      - "-c"
+      - "log_disconnections=on"
+      - "-c"
+      - "log_lock_waits=on"
+
+    volumes:
+      - km_db_data:/var/lib/postgresql/data
+      # Shared backup target. km-backup writes pg_dumps here; km-db has it mounted
+      # so an operator can also run a manual dump from inside the DB container.
+      - km_backups:/backups
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+    networks:
+      # Internal ONLY (no egress) — matches the dev posture. Defends against a
+      # malicious dump's COPY FROM PROGRAM 'curl …' exfiltration (db/SECURITY.md T6).
+      - km-internal
+
+    deploy:
+      resources:
+        limits:
+          memory: ${DB_MEM_LIMIT:-2g}
+          cpus: "${DB_CPU_LIMIT:-2.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # km-backup — nightly pg_dump sidecar (Builder C owns km-backup-entrypoint.sh).
+  # Same image as km-db so pg_dump matches the server version exactly. Loops:
+  # sleep until $BACKUP_TIME in $BACKUP_TZ, dump the shared DB, prune by retention.
+  # NO host port. Internal-only (it only needs the DB + the backups volume).
+  # ---------------------------------------------------------------------------
+  km-backup:
+    image: postgres:16-alpine
+    container_name: km-backup
+    restart: unless-stopped
+
+    # Entrypoint script is authored by Builder C and mounted from this Deploy/ dir.
+    # Referenced by path only here — we do not author it. /bin/bash is present in
+    # postgres:16-alpine (it bundles bash), so the bash shebang/loop is safe.
+    entrypoint: ["/bin/bash", "/opt/km/km-backup-entrypoint.sh"]
+
+    volumes:
+      # Mount the Deploy/ dir read-only so the container can run the entrypoint
+      # script (and reach db-backup.sh, which it calls). Read-only: the backup
+      # loop must never mutate deploy source.
+      - ./:/opt/km:ro
+      - km_backups:/backups
+
+    environment:
+      # PG* creds for pg_dump come from the server .env (passed by compose via the
+      # --env-file the orchestrator supplies). NEVER echoed by the entrypoint.
+      PGHOST: km-db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      BACKUP_DIR: ${BACKUP_DIR:-/backups}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
+      BACKUP_TIME: ${BACKUP_TIME:-03:00}
+      BACKUP_TZ: ${BACKUP_TZ:-America/Chicago}
+      BACKUP_OFFSITE_DIR: ${BACKUP_OFFSITE_DIR:-}
+
+    depends_on:
+      km-db:
+        condition: service_healthy
+
+    networks:
+      - km-internal
+
+    deploy:
+      resources:
+        limits:
+          memory: ${BACKUP_MEM_LIMIT:-256m}
+          cpus: "${BACKUP_CPU_LIMIT:-1.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+# -----------------------------------------------------------------------------
+# Networks — name-pinned so km-blue / km-green attach to the SAME objects.
+#   km-internal: bridge + internal:true → no egress. km-db, km-server-*, km-kiwi-*.
+#   km-edge:     bridge → LB ↔ client/server; server egress to the Claude API.
+# This file is a creator (declares them inline). blue/green mark them external:true.
+# ensure-shared-volume.sh also (idempotently) creates both so a color can come up
+# on a cold box before km-shared and external:true never errors.
+# -----------------------------------------------------------------------------
+networks:
+  km-internal:
+    name: km-internal
+    driver: bridge
+    internal: true
+  km-edge:
+    name: km-edge
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# Volumes — name-pinned (explicit `name:`) so the real docker objects are
+# km_db_data / km_images / km_backups, NOT km-shared_km_db_data. blue/green and
+# ensure-shared-volume.sh reference the same names. km_images is declared here too
+# (even though km-shared mounts no images) so a single creator owns all three and
+# `docker volume inspect` shows consistent labels.
+# -----------------------------------------------------------------------------
+volumes:
+  km_db_data:
+    name: km_db_data
+    labels:
+      app: "korean-master"
+      component: "db"
+      purpose: "pgdata"
+  km_images:
+    name: km_images
+    labels:
+      app: "korean-master"
+      component: "server"
+      purpose: "user-uploaded-ocr-images"
+  km_backups:
+    name: km_backups
+    labels:
+      app: "korean-master"
+      component: "db"
+      purpose: "pg_dump-backups"

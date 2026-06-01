@@ -1,0 +1,226 @@
+# =============================================================================
+# Korean Master — BLUE color trio (km-blue compose project)
+# -----------------------------------------------------------------------------
+# One of two interchangeable color stacks (see docker-compose.green.yml — this
+# file's exact mirror with green/blue and 1843/1842 swapped). A "color" is the
+# trio km-server-blue + km-client-blue + km-kiwi-blue. The load balancer
+# (km-shared) decides which color is prod (1840) vs test (1841); bringing a color
+# up does NOT make it live — only `nginx_switch` (Builder B) flips traffic.
+#
+# PREBUILT IMAGES, NOT build: — the Azure pipeline builds km-server / km-client /
+# km-kiwi, `docker save`s them to tar artifacts, and the self-hosted agent
+# `docker load`s them on the box. We reference them by tag only. BLUE_IMAGE_TAG
+# pins the whole trio to ONE version per color (set by save_env_var on deploy).
+#
+# CROSS-PROJECT SHARING (see docker-compose.shared.yml header for the full rationale):
+# km-internal / km-edge / km_images are declared `external: true` + name-pinned
+# here, so this project ATTACHES to the objects km-shared (or ensure-shared-volume.sh)
+# created rather than minting its own namespaced copies. Both colors mount the SAME
+# km_images volume so user-uploaded OCR images survive a switch.
+# =============================================================================
+
+name: km-blue
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # km-kiwi-blue — Korean morphological analyzer. Internal-only, no creds, no
+  # egress, read-only FS. Declared first so depends_on can gate the server on it.
+  # ---------------------------------------------------------------------------
+  km-kiwi-blue:
+    image: km-kiwi:${BLUE_IMAGE_TAG:-latest}
+    container_name: km-kiwi-blue
+    restart: unless-stopped
+
+    # Env mirrors the dev kiwi service (Repository/docker-compose.yml). No DB
+    # creds, no API key — defense in depth: a hypothetical RCE here reaches nothing.
+    environment:
+      - KIWI_HOST=0.0.0.0
+      - KIWI_PORT=8000
+      - KIWI_MODEL_SIZE=${KIWI_MODEL_SIZE:-base}
+      - KIWI_LOG_LEVEL=${KIWI_LOG_LEVEL:-INFO}
+      - KIWI_MAX_INPUT_CHARS=${KIWI_MAX_INPUT_CHARS:-4096}
+      - KIWI_SERVICE_NAME=kiwi-service
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health | grep -q '\"model_loaded\": *true' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      # Internal ONLY — no host port, reached as http://km-kiwi-blue:8000 by the
+      # same-color server over km-internal. No egress (internal:true network).
+      - km-internal
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+
+    deploy:
+      resources:
+        limits:
+          memory: ${KIWI_MEM_LIMIT:-512m}
+          cpus: "${KIWI_CPU_LIMIT:-1.5}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # km-server-blue — Express API + Claude proxy. Straddles km-internal (DB + kiwi)
+  # and km-edge (LB routes here; server egresses to the Anthropic API).
+  # ---------------------------------------------------------------------------
+  km-server-blue:
+    # ${BLUE_IMAGE_TAG:-latest}: the pipeline ALWAYS sets a real, unique tag (the
+    # CI Build.BuildId) via save_env_var BEFORE `compose_color up`, so `latest` is
+    # never the intended runtime tag — it is only a last-ditch fallback if the .env
+    # line is missing (C-SF4). There is no registry, so a stray `latest` would run a
+    # leftover/absent image: a color running `latest` is a red flag. See README
+    # "Reading and flipping the active color".
+    image: km-server:${BLUE_IMAGE_TAG:-latest}
+    container_name: km-server-blue
+    restart: unless-stopped
+
+    environment:
+      - PORT=4000
+      # Shared DB on km-internal. DATABASE_URL composed from the .env creds — the
+      # host is the shared km-db, identical for both colors (the switch is a pure
+      # nginx flip; no per-color DB).
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}
+      - PGAPPNAME=km-server-blue
+      # Same-color kiwi — NOT cross-color. KIWI_URL is set here by compose, never
+      # in the .env (the .env is color-agnostic; the URL is per-color).
+      - KIWI_URL=http://km-kiwi-blue:8000
+      # CLIENT_ORIGIN is the SINGLE public prod URL for BOTH colors (CORS +
+      # SameSite=Strict require the real origin). Consequence (C-SF2): browsing the
+      # inactive color on the LB test port :1841 cannot exercise authenticated flows
+      # — credentialed XHR from a :1841 origin is correctly rejected by CORS, and
+      # Strict cookies aren't sent cross-port. That is BY DESIGN: :1841 is for
+      # automated + unauthenticated health/smoke checks; full authenticated
+      # validation happens post-switch on :1840 (the auto-rollback is the safety net).
+      - CLIENT_ORIGIN=${CLIENT_ORIGIN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TOTP_SECRET_ENC_KEY=${TOTP_SECRET_ENC_KEY}
+      - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
+      - MFA_REQUIRED=${MFA_REQUIRED:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - IMAGE_STORAGE_DIR=${IMAGE_STORAGE_DIR:-/app/var/images}
+
+    volumes:
+      # SHARED image volume — BOTH colors mount km_images at the same path so
+      # user-uploaded OCR images persist across a color switch.
+      - km_images:${IMAGE_STORAGE_DIR:-/app/var/images}
+
+    ports:
+      # Direct debug port, LOOPBACK ONLY (operator curls the color in isolation,
+      # bypassing the LB). Public traffic only ever reaches the LB.
+      - "127.0.0.1:${BLUE_PORT:-1842}:4000"
+
+    depends_on:
+      km-kiwi-blue:
+        condition: service_healthy
+
+    # Readiness signal the orchestrator polls — deployment-utils.sh wait_healthy
+    # km-server-blue gates the deploy on this (C-SF1). GET /health is unauthenticated
+    # and returns 200/503 (server/src/routes/health.ts). Uses node (guaranteed in the
+    # node:20-alpine runtime) rather than assuming a wget/curl binary. start_period is
+    # generous: the server waits on km-db + km-kiwi at boot.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "node -e \"require('http').get('http://127.0.0.1:4000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+    # NOTE: km-server is intentionally NOT read_only (C-SF5). The Node process
+    # writes user-uploaded OCR images to the km_images volume mount; the rest of
+    # its writes (tmp, logs) are not volume-backed, so a read_only root would need
+    # a tmpfs audit we defer. The client (pure static nginx) IS read_only below.
+    networks:
+      - km-internal
+      - km-edge
+
+    deploy:
+      resources:
+        limits:
+          memory: ${SERVER_MEM_LIMIT:-1g}
+          cpus: "${SERVER_CPU_LIMIT:-2.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------------
+  # km-client-blue — prod static-nginx SPA image (client/Dockerfile.prod). Serves
+  # the built bundle + /healthz; the API split is done one layer up at the LB. NO
+  # host port — reached as http://km-client-blue:80 by the LB over km-edge.
+  # ---------------------------------------------------------------------------
+  km-client-blue:
+    image: km-client:${BLUE_IMAGE_TAG:-latest}
+    container_name: km-client-blue
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:80/healthz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    # Least-privilege parity with km-kiwi (C-SF5): a pure static-nginx image needs
+    # no writable root — only the two paths nginx writes at runtime, as tmpfs.
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m
+      - /var/run:size=1m
+
+    networks:
+      - km-edge
+
+    deploy:
+      resources:
+        limits:
+          memory: ${CLIENT_MEM_LIMIT:-128m}
+          cpus: "${CLIENT_CPU_LIMIT:-1.0}"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    security_opt:
+      - no-new-privileges:true
+
+# -----------------------------------------------------------------------------
+# External (name-pinned) networks + volume — created by km-shared /
+# ensure-shared-volume.sh; this color project only ATTACHES. `external: true`
+# means compose will NOT create them and will error if they are missing — run
+# ensure-shared-volume.sh (or `compose_shared up`) first. See shared.yml header.
+# -----------------------------------------------------------------------------
+networks:
+  km-internal:
+    external: true
+    name: km-internal
+  km-edge:
+    external: true
+    name: km-edge
+
+volumes:
+  km_images:
+    external: true
+    name: km_images

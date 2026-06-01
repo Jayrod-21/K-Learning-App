@@ -1,0 +1,16 @@
+# Deploy/ live, host-specific, or secret artifacts — never commit these.
+#
+# The persistent runtime secrets file (copied from .env.example on the server).
+.env
+.env.*
+!.env.example
+# The live nginx.conf that update_nginx_config swaps in (per-host mutable state).
+nginx.conf
+# Saved Docker image tarballs (pipeline artifacts loaded on the agent).
+*.tar
+# Backups live in the km_backups volume / BACKUP_DIR, not in git.
+backups/
+
+# VCS / editor noise
+*.swp
+.DS_Store
