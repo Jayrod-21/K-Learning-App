@@ -55,8 +55,6 @@ stages:
     jobs:
       - job: BuildJob
         displayName: Lint, typecheck, test, build images
-        pool:
-          vmImage: ubuntu-latest
         steps:
           - checkout: self
             displayName: Checkout source
@@ -146,10 +144,6 @@ stages:
       - deployment: DeployInactiveJob
         displayName: Deploy inactive
         environment: km-inactive
-        pool:
-          name: Default
-          demands:
-            - Deploy -equals True
         strategy:
           runOnce:
             deploy:
@@ -227,10 +221,6 @@ stages:
       - deployment: SwitchProductionJob
         displayName: Switch production
         environment: km-production
-        pool:
-          name: Default
-          demands:
-            - Deploy -equals True
         strategy:
           runOnce:
             deploy:
