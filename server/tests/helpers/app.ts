@@ -245,7 +245,11 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
 
 export function buildTestApp(opts: BuildOptions): TestApp {
   process.env.NODE_ENV = 'test';
-  process.env.PORT = '0';
+  // The config schema requires PORT to be a positive integer. Supertest drives the
+  // app in-process (it never calls listen()), so the value is unused at runtime —
+  // but it must still pass validation. (Previously '0' threw "must be > 0", which
+  // failed config parse for the whole single-fork test process.)
+  process.env.PORT = '4000';
   process.env.DATABASE_URL = opts.connectionString;
   process.env.KIWI_URL = opts.kiwiUrl ?? 'http://kiwi.invalid/';
   process.env.CLIENT_ORIGIN = 'http://localhost:5173';

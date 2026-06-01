@@ -164,12 +164,23 @@ export async function revokeAllUserSessions(
   });
 }
 
+/**
+ * Secure cookies only in production (ADR-002 D3). Production runs behind
+ * Cloudflare/origin TLS, so the cookie is HTTPS-only there. In `development` and
+ * `test` the app is reached over plain HTTP (the dev server; supertest in the
+ * route suite), and a `Secure` cookie would never be sent back over HTTP — which
+ * silently breaks every authenticated request (the session simply never arrives).
+ */
+function cookieSecure(cfg: ReturnType<typeof loadConfig>): boolean {
+  return cfg.NODE_ENV === 'production';
+}
+
 /** Set the session cookie on the response with locked attributes (ADR-002 D3). */
 export function setSessionCookie(res: Response, rawToken: string, expiresAt: Date): void {
   const cfg = loadConfig();
   res.cookie(cfg.SESSION_COOKIE_NAME, rawToken, {
     httpOnly: true,
-    secure: cfg.NODE_ENV !== 'development',
+    secure: cookieSecure(cfg),
     sameSite: 'strict',
     path: '/',
     expires: expiresAt,
@@ -180,7 +191,7 @@ export function clearSessionCookie(res: Response): void {
   const cfg = loadConfig();
   res.clearCookie(cfg.SESSION_COOKIE_NAME, {
     httpOnly: true,
-    secure: cfg.NODE_ENV !== 'development',
+    secure: cookieSecure(cfg),
     sameSite: 'strict',
     path: '/',
   });

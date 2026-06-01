@@ -269,11 +269,15 @@ function bandForPercentage(percentage: number): string {
 }
 
 /** The SELECT column list shared by every item-fetching query. */
-const ITEM_COLUMNS = `id::text AS id,
-                      section::text AS section,
-                      item_number,
-                      proficiency::text AS proficiency,
-                      stem, prompt, options, answer, extra`;
+// Columns are qualified with the `i` alias because several queries below JOIN
+// topik_tests (which also has an `id` column) — an unqualified `id` is ambiguous
+// (Postgres error 42702). Every query that uses ITEM_COLUMNS aliases topik_items
+// as `i` (the single-table queries alias it too, so this list works everywhere).
+const ITEM_COLUMNS = `i.id::text AS id,
+                      i.section::text AS section,
+                      i.item_number,
+                      i.proficiency::text AS proficiency,
+                      i.stem, i.prompt, i.options, i.answer, i.extra`;
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -638,7 +642,7 @@ router.post('/study', cheapLimiter(), validateBody(StudyBodySchema), async (req,
     params.push(body.limit);
     const { rows } = await query<TopikItemRow>(
       `SELECT ${ITEM_COLUMNS}
-         FROM topik_items
+         FROM topik_items i
         ${whereClause}
         ORDER BY random()
         LIMIT $${params.length}`,
@@ -691,8 +695,8 @@ router.post(
       // missing id is a clean 404 rather than a silent insert against nothing.
       const { rows } = await query<TopikItemRow>(
         `SELECT ${ITEM_COLUMNS}
-           FROM topik_items
-          WHERE id = $1`,
+           FROM topik_items i
+          WHERE i.id = $1`,
         [params.itemId],
       );
       const row = rows[0];
