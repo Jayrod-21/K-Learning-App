@@ -70,18 +70,26 @@ stages:
               versionSpec: "20.x"
 
           # --- Server lane (mirrors ci.yml server-checks) ---------------------
-          # NOTE: `npm test` is intentionally NOT run here. The server suite's
-          # route tests need a live Postgres (testcontainers) that isn't up during
-          # the build; they run against the real DB at the deploy/verification
-          # stage (VERIFICATION.md §2). The build stage only proves the code lints,
-          # typechecks, and the images build.
+          # The route tests self-provision a throwaway Postgres via testcontainers
+          # (auto-torn-down after the run) — the agent has Docker, so this is the
+          # proper place to run them. The env vars below are PLACEHOLDERS that only
+          # satisfy the import-time config validation (loadConfig runs when route
+          # modules load, before any test body); testcontainers then overrides
+          # DATABASE_URL with the real container at runtime. None are secrets.
           - script: |
               set -euo pipefail
               npm ci
               npm run lint
               npm run typecheck
+              npm test
             workingDirectory: server
             displayName: "Server: ci + lint + typecheck + test"
+            env:
+              DATABASE_URL: "postgres://test:test@localhost:5432/test"
+              KIWI_URL: "http://kiwi.invalid/"
+              CLIENT_ORIGIN: "http://localhost:5173"
+              TOTP_SECRET_ENC_KEY: "dGVzdC10ZXN0LXRlc3QtdGVzdC10ZXN0LXRlc3QtMzI="
+              PORT: "4000"
 
           # --- Client lane (mirrors ci.yml client-checks) ---------------------
           - script: |
