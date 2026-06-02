@@ -141,9 +141,14 @@ services:
 
     volumes:
       - km_db_data:/var/lib/postgresql/data
-      # Shared backup target. km-backup writes pg_dumps here; km-db has it mounted
-      # so an operator can also run a manual dump from inside the DB container.
-      - km_backups:/backups
+      # Shared backup target — a BIND mount of the host BACKUP_DIR, NOT a named
+      # volume. db-backup.sh runs pg_dump in this container but redirects stdout to
+      # the HOST path ($BACKUP_DIR/km-*.dump), and db-restore.sh path-translates a
+      # host dump to /backups so pg_restore can open it as a seekable file. For
+      # that host<->container translation to address the SAME bytes, /backups must
+      # BE the host BACKUP_DIR. (A named volume is a separate filesystem, which is
+      # what caused dumps to land nowhere reachable.)
+      - ${BACKUP_DIR:-./backups}:/backups
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -193,7 +198,9 @@ services:
       # script (and reach db-backup.sh, which it calls). Read-only: the backup
       # loop must never mutate deploy source.
       - ./:/opt/km:ro
-      - km_backups:/backups
+      # Same host BACKUP_DIR bind as km-db (see km-db above) so dumps land in one
+      # place reachable by the host scripts, km-db, and this sidecar alike.
+      - ${BACKUP_DIR:-./backups}:/backups
 
     environment:
       # PG* creds for pg_dump come from the server .env (passed by compose via the
@@ -252,8 +259,10 @@ networks:
 # -----------------------------------------------------------------------------
 # Volumes — EXTERNAL in all three projects; ensure-shared-volume.sh is the single
 # creator (same single-creator rationale as the networks above). Name-pinned so
-# the real docker objects are km_db_data / km_images / km_backups (not
-# km-shared_km_db_data) and every project attaches to the same ones.
+# the real docker objects are km_db_data / km_images (not km-shared_km_db_data)
+# and every project attaches to the same ones. NOTE: backups are NOT a named
+# volume — they use a host BIND mount (${BACKUP_DIR}) so the host backup/restore
+# scripts and the containers address the same files (see the km-db volumes).
 # -----------------------------------------------------------------------------
 volumes:
   km_db_data:
@@ -262,6 +271,3 @@ volumes:
   km_images:
     external: true
     name: km_images
-  km_backups:
-    external: true
-    name: km_backups

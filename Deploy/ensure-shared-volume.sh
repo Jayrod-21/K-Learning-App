@@ -29,7 +29,7 @@ log() { printf '[ensure-shared-volume] %s\n' "$*"; }
 # --- Named volumes -----------------------------------------------------------
 # km_db_data  → km-db pgdata (shared DB; the switch never copies it)
 # km_images   → user-uploaded OCR images, mounted by BOTH colors' servers
-# km_backups  → pg_dump target (km-backup + km-db)
+# (backups use a host BIND mount, not a named volume — see azure-deploy-inactive.sh)
 ensure_volume() {
     local volume="$1"
     if docker volume inspect "${volume}" >/dev/null 2>&1; then
@@ -68,7 +68,10 @@ main() {
 
     ensure_volume km_db_data
     ensure_volume km_images
-    ensure_volume km_backups
+    # NOTE: backups are NOT a named volume — they are a host BIND mount
+    # (${BACKUP_DIR}) so the host scripts and the containers share one location.
+    # The deploy creates that host dir (it needs the loaded .env); see
+    # azure-deploy-inactive.sh.
 
     # km-internal is --internal (matches shared.yml internal: true).
     ensure_network km-internal --internal

@@ -167,6 +167,15 @@ load_environment() {
         export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_HOST_PORT:-5432}/${POSTGRES_DB}"
     fi
 
+    # BACKUP_DIR must be a HOST directory (db-backup.sh redirects pg_dump stdout to
+    # it on the host; the containers bind-mount it at /backups). If it is unset, or
+    # it is the legacy in-CONTAINER value "/backups" (not writable from the host —
+    # a root-owned mount point), normalize it to a persistent host dir next to the
+    # .env. An operator can still pin any other absolute host path explicitly.
+    if [[ -z "${BACKUP_DIR:-}" || "${BACKUP_DIR}" == "/backups" ]]; then
+        export BACKUP_DIR="$(dirname -- "$ENV_FILE")/backups"
+    fi
+
     log_info "environment loaded from ${ENV_FILE} (active=${ACTIVE_ENVIRONMENT})"
 }
 

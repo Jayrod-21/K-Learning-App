@@ -235,6 +235,10 @@ stages:
                     set_kv REGISTRATION_ENABLED false
                     set_kv MFA_REQUIRED true
                     set_kv LOG_LEVEL info
+                    # BACKUP_DIR is a HOST path (the containers bind-mount it at
+                    # /backups). Keep it next to the .env on the persistent host dir,
+                    # NOT the in-container /backups.
+                    set_kv BACKUP_DIR "$(dirname "$ENV_FILE")/backups"
                     echo "seeded $ENV_FILE (non-secret defaults set; secrets next)"
                   displayName: "Ensure server .env exists (seed on first deploy)"
                   env:

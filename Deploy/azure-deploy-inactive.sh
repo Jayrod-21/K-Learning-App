@@ -59,6 +59,17 @@ main() {
     log_info "ensuring shared named volumes exist"
     bash "${DEPLOY_DIR}/ensure-shared-volume.sh"
 
+    # Backups use a HOST bind mount (not a named volume) so the host backup/restore
+    # scripts and the containers address the same files. Create the host dir before
+    # compose mounts it; ${BACKUP_DIR} comes from the loaded .env (a stable host
+    # path on the server, e.g. <KoreanMaster>/backups — NOT the in-container
+    # /backups). A missing bind source would otherwise be auto-created as root.
+    if [[ -n "${BACKUP_DIR:-}" ]]; then
+        log_info "ensuring host backup dir exists: ${BACKUP_DIR}"
+        mkdir -p "$BACKUP_DIR"
+        chmod 0700 "$BACKUP_DIR" 2>/dev/null || true
+    fi
+
     # Seed the live nginx.conf BEFORE km-lb starts. km-lb bind-mounts this file
     # (docker-compose.shared.yml) from the STABLE host path LIVE_NGINX_CONF
     # (KM_LIVE_NGINX_CONF, set by the deploy to a persistent dir next to the .env).
