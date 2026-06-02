@@ -196,6 +196,11 @@ stages:
                 - checkout: self
                   displayName: Checkout source
 
+                # Make Deploy/*.sh executable in THIS job's fresh checkout before
+                # any step runs them as commands (avoids exit 126). Shared template
+                # so the deploy + switch jobs stay in sync. See the template header.
+                - template: templates/prepare-scripts.yml
+
                 - download: current
                   artifact: $(imageArtifactName)
                   displayName: "Download image tar artifacts"
@@ -320,6 +325,9 @@ stages:
               steps:
                 - checkout: self
                   displayName: Checkout source
+
+                # Same self-heal as the deploy job: this job has its own checkout.
+                - template: templates/prepare-scripts.yml
 
                 - script: |
                     set -euo pipefail

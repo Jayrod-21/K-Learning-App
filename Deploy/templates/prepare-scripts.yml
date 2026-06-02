@@ -1,0 +1,33 @@
+# =============================================================================
+# Korean Master — reusable steps template: make Deploy/*.sh executable
+# =============================================================================
+# WHY THIS EXISTS:
+#   Azure DevOps checks out the repo FRESH, PER JOB. The DeployToInactive and
+#   SwitchToProduction jobs each invoke Deploy/<script>.sh directly (e.g.
+#   `Deploy/azure-deploy-inactive.sh`), which requires the executable bit. Git
+#   file-mode bits can be absent or stripped (files added without +x, checkouts
+#   on filesystems that don't preserve modes, archive/export round-trips), which
+#   surfaces as `exit 126 / Permission denied`. Each deploy job therefore
+#   self-heals by chmod-ing the scripts right after its OWN checkout.
+#
+#   It lives in a template — defined ONCE, reused via `- template:` — so the two
+#   jobs can never drift, and a new deploy stage gets the fix by adding one line.
+#
+# SCOPE:
+#   Only Deploy/*.sh need this. They are the scripts the pipeline runs as
+#   commands. deployment-utils.sh is only ever `source`d (it self-rejects direct
+#   execution), so it does not require the bit; chmod-ing it here is harmless in
+#   the ephemeral CI workspace and keeps the step a single, obvious glob.
+#
+# USAGE (inside a job's steps:, AFTER `- checkout: self`):
+#   - template: templates/prepare-scripts.yml
+#   (Path is relative to Deploy/azure-pipelines.yml, the referencing file.)
+# =============================================================================
+steps:
+  - script: |
+      set -euo pipefail
+      chmod +x Deploy/*.sh
+      # Surface the resulting modes so a future permission regression is visible
+      # in the log at a glance (no secrets are printed).
+      ls -l Deploy/*.sh
+    displayName: "Make Deploy scripts executable"
