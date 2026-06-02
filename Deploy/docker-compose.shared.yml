@@ -68,8 +68,12 @@ services:
       # The LB's OWN liveness endpoint (location = /healthz returns a static 200),
       # NOT a proxied color /health — the LB must report healthy even when a color
       # is mid-deploy or down. nginx:alpine ships curl is NOT guaranteed; use the
-      # bundled wget instead to avoid a missing-binary false negative.
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:1840/healthz || exit 1"]
+      # bundled (busybox) wget instead to avoid a missing-binary false negative.
+      # 127.0.0.1, NOT localhost: nginx listens IPv4-only, but `localhost`
+      # resolves to ::1 (IPv6) first -> busybox wget connection-refused -> the LB
+      # reports unhealthy forever. -q/--spider are the only busybox-supported
+      # forms (no --quiet/--tries in BusyBox wget).
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:1840/healthz || exit 1"]
       interval: 15s
       timeout: 3s
       retries: 3
