@@ -80,9 +80,17 @@ services:
       start_period: 10s
 
     networks:
-      # Edge only. The LB talks to km-client-* and km-server-* over km-edge; it has
-      # no business on the internal DB network.
+      # km-edge: the LB talks to km-client-* and km-server-* here; it has no
+      # business on the internal DB network.
       - km-edge
+      # services_default: the shared bridge where the Cloudflare tunnel
+      # (cloudflared) runs. km-lb joins it so the tunnel can resolve and reach
+      # this container as `km-lb:1840`. ONLY the LB joins it — the client/server/
+      # kiwi/db stay off it so the tunnel's only path in is through the LB.
+      # NOTE: this is an external network owned by the cloudflared compose
+      # project; that stack must be up (so the network exists) before km-shared
+      # starts, or `external: true` resolution will fail.
+      - services_default
 
     deploy:
       resources:
@@ -259,6 +267,13 @@ networks:
   km-edge:
     external: true
     name: km-edge
+  # The Cloudflare tunnel's bridge network (owned by the cloudflared/services
+  # compose project). Declared external so km-lb can attach to it for tunnel
+  # ingress; the cloudflared stack is its single creator. If your tunnel's
+  # network is named differently, change `name:` to match `docker network ls`.
+  services_default:
+    external: true
+    name: services_default
 
 # -----------------------------------------------------------------------------
 # Volumes — EXTERNAL in all three projects; ensure-shared-volume.sh is the single
