@@ -365,28 +365,37 @@ update_nginx_config() {
         log_warn "km-lb not running (or template not mounted); cannot pre-validate ${color} — will validate on (re)start."
     fi
 
-    # Atomic swap of the live file (temp + mv) so km-lb never reads a partial
-    # file even if it re-reads mid-copy.
-    local tmp
-    tmp="$(mktemp "${LIVE_NGINX_CONF}.XXXXXX")"
-    cat "$src" >"$tmp"
-    mv -f "$tmp" "$LIVE_NGINX_CONF"
+    # Write the new live config IN PLACE (cp truncates + rewrites the SAME file),
+    # NOT via mktemp+mv. km-lb bind-mounts this single file
+    # (docker-compose.shared.yml). A single-file bind mount is pinned to the
+    # file's INODE at container creation: mv/rename installs a NEW inode at the
+    # path, so a RUNNING km-lb keeps reading the OLD file and `nginx -s reload`
+    # reloads stale config — the color switch then silently no-ops and prod
+    # returns 502 on the supposedly-new color. (Verified: an mv over a
+    # bind-mounted file is invisible to the container; an in-place cp is visible.)
+    if ! cp -f "$src" "$LIVE_NGINX_CONF"; then
+        log_err "update_nginx_config: failed writing live config ${LIVE_NGINX_CONF}"
+        return 1
+    fi
     log_info "wrote live nginx.conf from nginx-${color}-active.conf"
 
-    # Reload gracefully; the candidate was already validated above.
-    if docker exec km-lb nginx -t >/dev/null 2>&1; then
-        if docker exec km-lb nginx -s reload >/dev/null 2>&1; then
-            log_info "km-lb reloaded gracefully (prod -> ${color})"
-            return 0
-        fi
-        log_warn "graceful reload failed despite valid config; force-recreating km-lb"
-    else
-        log_warn "nginx -t failed inside km-lb (or container down); force-recreating km-lb"
+    # Apply by FORCE-RECREATING km-lb rather than `nginx -s reload`. Recreating
+    # re-binds whatever inode the live path currently points to AND loads it,
+    # which (a) applies the new config deterministically and (b) RECOVERS a km-lb
+    # that was previously started against a since-replaced inode (the historical
+    # mv bug above). A graceful reload cannot do (b): on a stale-bound container
+    # it "succeeds" but reloads the old in-container file. The colors stay up;
+    # only the LB proxy blips (~1-2s) — an acceptable trade for a correct,
+    # deterministic switch on this single-host deploy. The candidate was already
+    # `nginx -t`-validated above, so this will not boot km-lb onto a bad config.
+    # (A fully zero-downtime alternative is to bind-mount a DIRECTORY and reload,
+    # since renames within a mounted dir ARE visible — left as a future change.)
+    if docker compose -p "$SHARED_PROJECT" --env-file "$ENV_FILE" -f "$COMPOSE_SHARED_FILE" up -d --force-recreate km-lb >/dev/null 2>&1; then
+        log_info "km-lb recreated (prod -> ${color})"
+        return 0
     fi
-
-    # Fallback: recreate just the LB from the shared project.
-    docker compose -p "$SHARED_PROJECT" -f "$COMPOSE_SHARED_FILE" up -d --force-recreate km-lb
-    log_info "km-lb force-recreated (prod -> ${color})"
+    log_err "update_nginx_config: failed to recreate km-lb (prod -> ${color})"
+    return 1
 }
 
 # =============================================================================
