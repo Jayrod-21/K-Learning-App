@@ -211,7 +211,12 @@ services:
       # loop must never mutate deploy source.
       - ./:/opt/km:ro
       # Same host BACKUP_DIR bind as km-db (see km-db above) so dumps land in one
-      # place reachable by the host scripts, km-db, and this sidecar alike.
+      # place reachable by the host scripts, km-db, and this sidecar alike. In
+      # production BACKUP_DIR (in the server .env) is the host's NFS mount point
+      # for the NAS share, so dumps written to /backups are stored on the NAS.
+      # The host must have that NFS export mounted (fstab) BEFORE the stack comes
+      # up, or this bind maps the empty local underlay (BACKUP_REQUIRE_MOUNT in
+      # the host pre-deploy backup guards against that case).
       - ${BACKUP_DIR:-./backups}:/backups
 
     environment:
@@ -222,7 +227,16 @@ services:
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
-      BACKUP_DIR: ${BACKUP_DIR:-/backups}
+      # Dump over the network from inside this postgres image — no Docker socket,
+      # no docker CLI, no .env file. (Mounting the Docker socket into a backup
+      # container would be host-root-equivalent — deliberately avoided.) See
+      # db-backup.sh BACKUP_DB_ACCESS.
+      BACKUP_DB_ACCESS: direct
+      # Where dumps land INSIDE the container: always /backups, the bind-mount
+      # target below — NOT the host ${BACKUP_DIR} (that host path, e.g. the NFS
+      # mount, does not exist by that name in here). The bind maps the host NAS
+      # directory -> /backups, so dumps written here land on the NAS.
+      BACKUP_DIR: /backups
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
       BACKUP_TIME: ${BACKUP_TIME:-03:00}
       BACKUP_TZ: ${BACKUP_TZ:-America/Chicago}

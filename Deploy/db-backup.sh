@@ -45,6 +45,19 @@ trap 'log_err "db-backup.sh failed at line $LINENO (exit $?)"' ERR
 
 DB_CONTAINER="${DB_CONTAINER:-km-db}"
 
+# How this script reaches Postgres to run pg_dump:
+#   exec   (default) — HOST context: `docker exec km-db pg_dump`. The host has no
+#                      postgres-client installed, so we borrow km-db's pg_dump and
+#                      the password never leaves the container. Used by the
+#                      pre-deploy backup in azure-deploy-inactive.sh.
+#   direct           — IN-CONTAINER context (the km-backup sidecar): connect over
+#                      the network with `pg_dump -h $PGHOST`. The sidecar IS a
+#                      postgres image on km-internal with the creds injected, so
+#                      it needs neither the Docker socket nor a docker CLI. This is
+#                      the model the reference deployment uses. The sidecar sets
+#                      BACKUP_DB_ACCESS=direct in docker-compose.shared.yml.
+BACKUP_DB_ACCESS="${BACKUP_DB_ACCESS:-exec}"
+
 usage() {
   cat >&2 <<'EOF'
 Usage: db-backup.sh [--dir DIR]
@@ -84,11 +97,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Load the persistent server .env (POSTGRES_*, BACKUP_*). Fails loud if missing.
-load_environment
+# Config source: on the HOST the persistent server .env is the source of truth;
+# inside the km-backup sidecar there is NO .env (config is injected via the
+# compose environment), so load it only when present. db-backup.sh then validates
+# the specific values it needs below — regardless of which path supplied them.
+load_environment_optional
 
-: "${POSTGRES_USER:?POSTGRES_USER required (set it in the server .env)}"
-: "${POSTGRES_DB:?POSTGRES_DB required (set it in the server .env)}"
+# Reconcile the two credential namespaces. The host .env uses POSTGRES_*; the
+# sidecar's compose environment uses libpq's PG* names. Accept either so the same
+# script serves both contexts.
+POSTGRES_USER="${POSTGRES_USER:-${PGUSER:-}}"
+POSTGRES_DB="${POSTGRES_DB:-${PGDATABASE:-}}"
+PGHOST="${PGHOST:-$DB_CONTAINER}"
+
+: "${POSTGRES_USER:?POSTGRES_USER (or PGUSER) required — set it in the server .env or the km-backup environment}"
+: "${POSTGRES_DB:?POSTGRES_DB (or PGDATABASE) required — set it in the server .env or the km-backup environment}"
 
 # Identifier hardening (mirrors db/scripts/restore.sh): these values are
 # interpolated into a docker exec argument list. Reject anything that isn't a
@@ -106,9 +129,27 @@ BACKUP_DIR="${DIR_OVERRIDE:-${BACKUP_DIR:-$SCRIPT_DIR/backups}}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-90}"
 OFFSITE_DIR="${BACKUP_OFFSITE_DIR:-}"
 
-# 0700 dir, 0600 files — dumps are the full dataset. Owner-only on the host FS.
+# NAS safety net. When backups target a network (NFS) mount, a silent fallback to
+# local disk — because the share happens to be unmounted — is a classic data-loss
+# trap: dumps appear to succeed but aren't on the NAS. With BACKUP_REQUIRE_MOUNT
+# =true we refuse to run unless BACKUP_DIR is a real mountpoint. Checked only in
+# `exec` mode: that runs on the HOST, where BACKUP_DIR IS the NFS mount. In the
+# sidecar BACKUP_DIR is the in-container /backups bind, whose mount state can't
+# reflect the host NFS, so the check there would be meaningless.
+if [[ "$BACKUP_DB_ACCESS" == "exec" && "${BACKUP_REQUIRE_MOUNT:-false}" == "true" ]]; then
+  if ! mountpoint -q -- "$BACKUP_DIR"; then
+    log_err "BACKUP_REQUIRE_MOUNT=true but '$BACKUP_DIR' is not a mountpoint — NFS share not mounted? Refusing to back up to local disk."
+    exit 1
+  fi
+fi
+
+# 0700 dir, 0600 files — dumps are the full dataset. On a local FS we own the dir
+# and can lock it down; on an NFS export the server controls the mode, so a failed
+# chmod on the mount root is a warning, not a hard error (per-dump files are still
+# created 0600 below, which we DO own).
 mkdir -p "$BACKUP_DIR"
-chmod 0700 "$BACKUP_DIR"
+chmod 0700 "$BACKUP_DIR" 2>/dev/null \
+  || log_warn "could not chmod 0700 '$BACKUP_DIR' (network mount?); relying on the share's own permissions"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$BACKUP_DIR/km-$TS.dump"
@@ -119,23 +160,41 @@ ACTIVE_COLOR="$(get_active_environment 2>/dev/null || echo 'unknown')"
 
 log_info "db-backup: dumping shared $POSTGRES_DB from $DB_CONTAINER -> $OUT (active color: $ACTIVE_COLOR)"
 
-# Verify the DB container is actually up before we create a 0-byte partial.
-if ! docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" >/dev/null 2>&1; then
-  log_err "DB container '$DB_CONTAINER' is not running — cannot back up"
-  exit 1
-fi
-
-# pg_dump runs INSIDE km-db so we don't install postgres-client on the host and
-# the password never leaves the container. -Fc = custom format (introspectable
-# via pg_restore --list, per-table restore). -Z 6 = moderate compression.
+# Dump flags are identical in both modes so a host dump and a sidecar dump are
+# interchangeable for pg_restore: -Fc = custom format (introspectable via
+# pg_restore --list, per-table restore); -Z 6 = moderate compression;
 # --no-owner/--no-privileges keeps the dump portable across roles.
-docker exec "$DB_CONTAINER" \
+if [[ "$BACKUP_DB_ACCESS" == "direct" ]]; then
+  # IN-CONTAINER: connect to the shared km-db over the network. PGPASSWORD is
+  # supplied by the compose environment (never echoed). Verify reachability
+  # before creating a 0-byte partial.
+  : "${PGPASSWORD:?PGPASSWORD required in direct mode (set it in the km-backup environment)}"
+  if ! pg_isready -h "$PGHOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+    log_err "shared DB not reachable at '$PGHOST' — cannot back up"
+    exit 1
+  fi
   pg_dump \
+    -h "$PGHOST" \
     -U "$POSTGRES_USER" \
     -d "$POSTGRES_DB" \
     -Fc -Z 6 \
     --no-owner --no-privileges \
   > "$OUT.partial"
+else
+  # HOST: pg_dump runs INSIDE km-db (no postgres-client on the host; the password
+  # never leaves the container). Verify the container is up first.
+  if ! docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" >/dev/null 2>&1; then
+    log_err "DB container '$DB_CONTAINER' is not running — cannot back up"
+    exit 1
+  fi
+  docker exec "$DB_CONTAINER" \
+    pg_dump \
+      -U "$POSTGRES_USER" \
+      -d "$POSTGRES_DB" \
+      -Fc -Z 6 \
+      --no-owner --no-privileges \
+  > "$OUT.partial"
+fi
 
 # Atomic publish: rename only after the dump completed without error.
 mv "$OUT.partial" "$OUT"

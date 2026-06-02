@@ -72,8 +72,11 @@ seconds_until_next() {
   echo $(( target - now ))
 }
 
-# Load schedule config from the server .env (BACKUP_TIME, BACKUP_TZ, etc.).
-load_environment
+# Schedule + DB config reach this container via the compose `environment:` block
+# (no .env is mounted into the sidecar). If a .env IS present (host/dev runs), pick
+# it up too — but NEVER hard-fail on its absence: that is what was crash-looping
+# the container. db-backup.sh applies the same tolerant rule when it runs.
+load_environment_optional
 BACKUP_TIME="${BACKUP_TIME:-03:00}"
 BACKUP_TZ="${BACKUP_TZ:-America/Chicago}"
 

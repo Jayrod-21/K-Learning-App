@@ -180,6 +180,26 @@ load_environment() {
 }
 
 # =============================================================================
+# load_environment_optional — like load_environment, but tolerate a MISSING .env.
+# -----------------------------------------------------------------------------
+# The km-backup sidecar receives its config through the compose `environment:`
+# block (PG* creds + BACKUP_* schedule); NO .env is mounted into that container.
+# Calling the strict load_environment there crash-loops the container ("env file
+# not found"). This variant sources the .env when it IS present (host/dev runs,
+# where it remains the source of truth and full validation applies), and
+# otherwise returns 0 so the caller proceeds on the process environment alone.
+# Callers validate whatever THEY actually need (db-backup.sh checks its creds).
+# =============================================================================
+load_environment_optional() {
+    if [[ -f "$ENV_FILE" ]]; then
+        load_environment
+        return
+    fi
+    log_info "no env file at ${ENV_FILE}; using the injected process environment as-is"
+    return 0
+}
+
+# =============================================================================
 # save_env_var KEY VALUE — idempotent sed-or-append into the server .env.
 # -----------------------------------------------------------------------------
 # Updates an existing `KEY=...` line in place, or appends `KEY=VALUE` if absent.
