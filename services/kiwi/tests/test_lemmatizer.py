@@ -26,6 +26,7 @@ from kiwi_service.lemmatizer import (
     LemmatizationError,
     Lemmatizer,
     _build_utf16_offset_table,
+    base_pos,
 )
 
 
@@ -166,6 +167,46 @@ class TestLemmatizerWithFake:
         lem = Lemmatizer(model_size="base", _engine=ExplodingKiwi())
         with pytest.raises(LemmatizationError):
             lem.lemmatize("아무거나")
+
+
+# ---------------------------------------------------------------------------
+# POS normalization — Kiwi tags irregular verbs/adjectives as VV-I / VA-I etc.
+# The FakeKiwi corpus uses bare tags, so these tests guard the suffix-stripping
+# at the unit level (the real-Kiwi layer is `slow` and may not run everywhere).
+# ---------------------------------------------------------------------------
+
+
+class TestPosNormalization:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("VV-I", "VV"),       # ㄷ/ㅂ/ㅅ-irregular verb (e.g. 듣다, 굽다)
+            ("VA-I", "VA"),       # irregular adjective (e.g. 덥다)
+            ("VV-R", "VV"),       # explicitly-regular verb
+            ("VA-R", "VA"),
+            ("VV", "VV"),         # already bare — unchanged
+            ("NNG", "NNG"),       # nominal — unchanged
+            ("W_URL", "W_URL"),   # underscore tag is not a conjugation suffix
+            ("SF", "SF"),
+        ],
+    )
+    def test_base_pos_strips_conjugation_suffix(self, raw: str, expected: str) -> None:
+        assert base_pos(raw) == expected
+
+    def test_irregular_verb_gets_verbal_lemma_and_canonical_pos(self) -> None:
+        """A VV-I token (Kiwi's tag for irregular verbs like 듣다) must get the
+        verbal 다 appended AND surface a canonical VV pos. Before the suffix was
+        normalized this produced '듣' / 'VV-I' — wrong lemma for every irregular."""
+        from tests.conftest import _FakeToken
+
+        class IrregularKiwi:
+            def analyze(self, text: str, top_n: int = 1):  # type: ignore[override]
+                return [([_FakeToken(form="듣", tag="VV-I", start=0, len=1)], 1.0)]
+
+        lem = Lemmatizer(model_size="base", _engine=IrregularKiwi())
+        (tok,) = lem.lemmatize("듣")
+        assert tok.lemma == "듣다"
+        assert tok.pos == "VV"
 
 
 # ---------------------------------------------------------------------------

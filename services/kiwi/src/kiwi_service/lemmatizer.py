@@ -105,7 +105,13 @@ class Lemmatizer:
         """Initialize and warm the model.
 
         Args:
-            model_size: Kiwi model size — `small`, `base`, or `large`.
+            model_size: Logical model size label (`small`/`base`/`large`). NOTE:
+                kiwipiepy 0.20 (our pin) bundles a SINGLE model — the "base"
+                model shipped by the `kiwipiepy_model` dependency — and has no
+                small/large variants on PyPI. So this label is reporting-only:
+                whatever is requested, we load the one bundled model. A non-base
+                request is honoured as best-effort (base) with a warning rather
+                than failing the service.
             _engine: Test seam. If supplied, used instead of constructing Kiwi.
         """
         self._model_size = model_size
@@ -114,17 +120,23 @@ class Lemmatizer:
             self._loaded = True
             return
 
+        # IMPORTANT: do NOT pass model_size to Kiwi(model_type=...). In kiwipiepy
+        # 0.20 `model_type` selects the LANGUAGE MODEL ('knlm' default | 'sbg'),
+        # NOT a size — `Kiwi(model_type='base')` raises ValueError ("`model_type`
+        # should be one of ('knlm', 'sbg')"), which crashed startup. The bundled
+        # model is loaded by the default constructor; size selection is not a
+        # constructor knob in this version (no small/large packages exist).
+        if model_size != "base":
+            log.warning(
+                "kiwi.model_size_unavailable_using_base",
+                requested=model_size,
+                reason="pinned kiwipiepy 0.20 ships only the bundled base model",
+            )
+
         log.info("kiwi.loading", model_size=model_size)
         try:
-            # kiwipiepy.Kiwi(model_type='base') as of 0.20+. Older builds use
-            # `model_size`; the kwarg name has churned. We pass positional so
-            # the binding picks its default → minimal coupling.
-            self._kiwi = Kiwi(model_type=model_size)
-        except TypeError:
-            # Older kiwipiepy: no model_type kwarg. Fall back to default model.
-            log.warning("kiwi.model_type_unsupported_falling_back_to_default")
             self._kiwi = Kiwi()
-        except Exception as exc:  # noqa: BLE001 — we want the broad catch at boundary
+        except Exception as exc:  # broad catch at the model-load boundary
             log.critical("kiwi.load_failed", error=str(exc))
             raise RuntimeError(f"Failed to load Kiwi model ({model_size}): {exc}") from exc
         self._loaded = True
@@ -150,7 +162,7 @@ class Lemmatizer:
 
         try:
             results = self._kiwi.analyze(text, top_n=1)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # broad catch at the analyze boundary
             log.error("kiwi.analyze_failed", error=str(exc), text_len=len(text))
             raise LemmatizationError(str(exc)) from exc
 
@@ -172,7 +184,10 @@ class Lemmatizer:
             end_cp = max(start_cp, min(end_cp, len(text)))
 
             surface = str(getattr(tok, "form", ""))
-            tag = str(getattr(tok, "tag", ""))
+            # Normalize Kiwi's -I/-R conjugation suffix to the bare Sejong tag so
+            # irregular verbs/adjectives (VV-I, VA-I, …) lemmatize correctly and
+            # the reported POS is canonical. See base_pos().
+            tag = base_pos(str(getattr(tok, "tag", "")))
             # Verbs/adjectives: Kiwi reports the stem (e.g. `만나`) with tag VV.
             # The conventional lemma adds `다`. We do this for VV/VA/VX/VCP/VCN.
             lemma = _stem_to_lemma(surface_from_tag_stem(tok), tag)
@@ -204,6 +219,23 @@ class Lemmatizer:
 # Pre-final & final endings (EP/EF/ETM/...) are NOT lemmatized — they're
 # functional morphemes, no dictionary form.
 _VERBAL_POS: frozenset[str] = frozenset({"VV", "VA", "VX", "VCP", "VCN"})
+
+
+def base_pos(pos: str) -> str:
+    """Normalize a Kiwi POS tag to its base Sejong tag.
+
+    kiwipiepy annotates the conjugation class of verbs and adjectives with a
+    trailing ``-I`` (irregular) or ``-R`` (regular) suffix — e.g. it tags the
+    ㄷ-irregular 듣다 as ``VV-I`` and ㅂ-irregular 덥다 as ``VA-I``. The Sejong
+    tagset our consumers and `_VERBAL_POS` speak uses the BARE tag (``VV``,
+    ``VA``). Without stripping the suffix, every irregular verb/adjective would
+    miss the verbal-lemma reconstruction (`듣` instead of `듣다`) and surface a
+    non-canonical POS to the client. Strip only the documented ``-I``/``-R``
+    conjugation suffix; all other tags (NNG, JKO, SF, W_URL, …) pass through.
+    """
+    if pos.endswith(("-I", "-R")):
+        return pos[:-2]
+    return pos
 
 
 def surface_from_tag_stem(tok: object) -> str:
