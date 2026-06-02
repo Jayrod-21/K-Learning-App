@@ -175,7 +175,11 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:80/healthz || exit 1"]
+      # 127.0.0.1, NOT localhost: nginx `listen 80` binds IPv4 only, but inside
+      # the container `localhost` resolves to ::1 (IPv6) first, so busybox wget
+      # gets connection-refused and the container never goes healthy. -q/--spider
+      # are the only busybox-supported forms (no --quiet/--tries in BusyBox wget).
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/healthz || exit 1"]
       interval: 30s
       timeout: 3s
       retries: 3
