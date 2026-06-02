@@ -1,0 +1,17 @@
+{
+  // Production build config. The base tsconfig.json uses rootDir "." and
+  // includes tests/ so `tsc --noEmit` (typecheck) and the IDE see the whole
+  // tree — but that emits to dist/src/index.js and would ship compiled tests.
+  // For the runtime image we compile ONLY src with rootDir "src" so the entry
+  // lands at dist/index.js (matching package.json "main"/"start"), and tests +
+  // type declarations are excluded.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

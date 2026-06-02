@@ -1,0 +1,11 @@
+# Keep the build context lean and reproducible. node_modules and dist are
+# recreated inside the image; the BuildAndTest server lane runs `npm ci` in this
+# directory on the agent, so without this they'd be copied into the build
+# context (slow, and host-arch node_modules could leak into the image).
+node_modules
+dist
+tests
+*.log
+.git
+.env
+.env.*
