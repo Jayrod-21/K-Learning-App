@@ -96,4 +96,13 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # uvicorn with one worker — Kiwi holds the model in memory and the workload
 # is CPU-bound; multiple workers multiply memory without improving throughput
 # meaningfully for our scale (single user). Scale horizontally if needed.
-CMD ["sh", "-c", "exec uvicorn kiwi_service.app:app --host ${KIWI_HOST} --port ${KIWI_PORT} --log-config /dev/null"]
+#
+# --no-access-log: the app's middleware already emits one structlog JSON
+# `http.request` event per request, so uvicorn's own access log would be a
+# duplicate (and in plaintext, breaking the JSON log stream). We disable it
+# rather than pass `--log-config /dev/null`: uvicorn treats /dev/null as an INI
+# logging-config file and `logging.config.fileConfig` aborts on an empty file
+# ("RuntimeError: /dev/null is an empty file"), which crashed the process at
+# startup before the app was even imported. uvicorn's brief startup/error lines
+# are kept — they're useful operational signal and only emit at boot.
+CMD ["sh", "-c", "exec uvicorn kiwi_service.app:app --host ${KIWI_HOST} --port ${KIWI_PORT} --no-access-log"]
