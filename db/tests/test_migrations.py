@@ -142,6 +142,20 @@ def test_destructive_detected() -> None:
     assert migrate.contains_destructive("DROP TABLE foo;")
     assert migrate.contains_destructive("truncate table foo;")
     assert migrate.contains_destructive("ALTER TABLE x;\nDROP   TABLE y;")
+    assert migrate.contains_destructive("DROP SCHEMA public CASCADE;")
+    assert migrate.contains_destructive("DROP DATABASE kmdb;")
+
+
+def test_destructive_ignores_recreatable_schema_objects() -> None:
+    # Dropping recreatable schema objects is NOT data loss — our forward
+    # migrations use the idempotent DROP ... IF EXISTS + recreate pattern to
+    # redefine constraints/indexes/enums. These must NOT require
+    # --allow-destructive (else every additive migration would be blocked).
+    assert not migrate.contains_destructive("DROP INDEX IF EXISTS ix_foo;")
+    assert not migrate.contains_destructive("DROP TYPE IF EXISTS my_enum;")
+    assert not migrate.contains_destructive(
+        "ALTER TABLE t DROP CONSTRAINT IF EXISTS ck_t_shape;"
+    )
 
 
 def test_destructive_ignores_comments() -> None:

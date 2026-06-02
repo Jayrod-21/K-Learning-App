@@ -108,22 +108,13 @@ main() {
     bash "${DEPLOY_DIR}/db-backup.sh"
 
     # --- Step 4: expand/contract migrations on the SHARED DB -----------------
-    # Run from the repo root so db/migrate.py resolves and reads DATABASE_URL
-    # from the (already-exported) environment. Dry-run is the safety gate: if it
-    # reports a destructive/non-additive change, we ABORT — the active old code
-    # is still live against this shared DB.
-    local py
-    if command -v python3 >/dev/null 2>&1; then
-        py="$(command -v python3)"
-    elif command -v python >/dev/null 2>&1; then
-        py="$(command -v python)"
-    else
-        log_err "neither python3 nor python is on PATH; cannot run db/migrate.py"
-        return 1
-    fi
-
+    # migrate.py runs in a throwaway python:3.12-slim container on km-internal
+    # (run_migrate, deployment-utils.sh) — no host Python deps. --dry-run is a
+    # GLOBAL flag and MUST precede the `up` subcommand. The dry-run is the safety
+    # gate: if it reports a destructive/non-additive change we ABORT, because the
+    # still-live ACTIVE color's code expects the old schema on this shared DB.
     log_info "migration dry-run (expand/contract gate)"
-    if ! ( cd "$REPO_ROOT" && "$py" db/migrate.py up --dry-run ); then
+    if ! run_migrate --dry-run up; then
         log_err "migration DRY-RUN failed. Aborting BEFORE any change."
         log_err "If this is a non-additive (destructive) migration it MUST NOT run on the shared blue/green DB:"
         log_err "the still-live ACTIVE color's code expects the old schema. Rework the migration to be"
@@ -132,7 +123,7 @@ main() {
     fi
 
     log_info "applying migrations to the shared DB"
-    if ! ( cd "$REPO_ROOT" && "$py" db/migrate.py up ); then
+    if ! run_migrate up; then
         log_err "migration APPLY failed. Production (active=${ACTIVE_ENVIRONMENT}) is untouched."
         log_err "Investigate; restore from the pre-deploy backup if the schema is in a bad state."
         return 1

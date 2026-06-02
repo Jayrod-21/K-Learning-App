@@ -67,8 +67,17 @@ MIGRATIONS_DIR_DEFAULT = pathlib.Path(__file__).parent / "migrations"
 # write `1000_foo.up.sql` it will sort before `999_bar.up.sql`. Bump everyone
 # to 4 digits at that point, or change discover_migrations to int-sort.
 MIGRATION_PATTERN = re.compile(r"^(?P<version>\d{3,})_(?P<name>[a-z0-9_]+)\.(?P<dir>up|down)\.sql$")
+# "Destructive" means IRRECOVERABLE DATA LOSS — the gate that requires an
+# explicit --allow-destructive. That is dropping/emptying a TABLE, SCHEMA, or
+# DATABASE. It is deliberately NOT triggered by dropping recreatable SCHEMA
+# OBJECTS (DROP INDEX / DROP TYPE / DROP CONSTRAINT), which our forward
+# migrations routinely use in the idempotent `DROP ... IF EXISTS` + recreate
+# pattern to redefine a constraint/index/enum — no row is lost. Flagging those
+# as destructive would force every additive migration through
+# --allow-destructive and defeat the blue/green expand-contract safety gate
+# (which exists to catch genuine data loss, not constraint reshaping).
 DESTRUCTIVE_PATTERNS = re.compile(
-    r"\b(DROP\s+TABLE|DROP\s+SCHEMA|TRUNCATE|DROP\s+DATABASE|DROP\s+TYPE|DROP\s+INDEX)\b",
+    r"\b(DROP\s+TABLE|DROP\s+SCHEMA|DROP\s+DATABASE|TRUNCATE)\b",
     re.IGNORECASE,
 )
 

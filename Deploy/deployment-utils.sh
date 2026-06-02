@@ -402,6 +402,43 @@ nginx_switch() {
 }
 
 # =============================================================================
+# run_migrate ARGS... — run db/migrate.py in a throwaway python container.
+# -----------------------------------------------------------------------------
+# WHY a container, not the host's Python: migrate.py needs psycopg[v3] +
+# structlog + Python 3.10+, which the deploy agent may not have (and we don't
+# want to mutate host Python). Running it in python:3.12-slim on the km-internal
+# network — the same place km-db lives — keeps the deploy self-contained and
+# reproducible, with ZERO host Python dependencies. The repo is mounted read-only
+# (migrations never write to source), and the container reaches the shared DB by
+# its compose hostname (km-db:5432), so this works regardless of host port maps.
+# Deps are pinned for reproducibility. Pass the migrate.py args verbatim, e.g.
+#   run_migrate --dry-run up
+#   run_migrate up
+# (NOTE: --dry-run is a GLOBAL flag and must precede the subcommand.)
+# =============================================================================
+run_migrate() {
+    require_cmd docker
+    : "${POSTGRES_USER:?run_migrate: POSTGRES_USER not set (call load_environment)}"
+    : "${POSTGRES_PASSWORD:?run_migrate: POSTGRES_PASSWORD not set}"
+    : "${POSTGRES_DB:?run_migrate: POSTGRES_DB not set}"
+
+    # In-container DSN: reach km-db over the shared network by hostname (NOT the
+    # host loopback DATABASE_URL the host tooling uses).
+    local container_dsn="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}"
+
+    # Pinned deps for a reproducible migrate run.
+    local pip_pkgs="psycopg[binary]==3.2.3 structlog==24.4.0"
+
+    docker run --rm \
+        --network km-internal \
+        -v "${REPO_ROOT}:/repo:ro" \
+        -w /repo \
+        -e DATABASE_URL="$container_dsn" \
+        python:3.12-slim \
+        bash -c "pip install --quiet --no-input ${pip_pkgs} && python db/migrate.py $*"
+}
+
+# =============================================================================
 # compose_color COLOR up|down — bring a color trio up or down.
 # -----------------------------------------------------------------------------
 # Each color is its own compose project (km-blue / km-green) sharing the named
