@@ -1,216 +1,184 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE LexicalResource SYSTEM "https://krdict.korean.go.kr/dtd/DTD_LMF_REV_16.dtd">
 <!--
-  Hand-crafted KRDICT fixture, 8 entries covering the variation matrix:
-    * 가족   — monosemous noun, English+Korean def, hanja, no register
-    * 먹다   — polysemous verb (3 senses), 6 inflections, examples
-    * 예쁘다 — adjective, 2 senses, examples
-    * 안녕   — interjection, register tagged 해요체
-    * 그리고 — conjunction-adverb, no English example translation
-    * 사과   — homograph #1 (apple), 명사
-    * 사과   — homograph #2 (apology), 명사
-    * 학교   — noun with sense-level domain tag
-  The fixture also includes ONE malformed entry the parser should skip
-  gracefully (no <entry_id>) to exercise the skip-with-log path.
+  Hand-crafted KRDICT LMF fixture (DTD_LMF_REV_16 shape), covering the matrix:
+    * 가족    — monosemous noun, hanja (origin=家族), vocabularyLevel 초급,
+                English Equivalent, 구 + 문장 examples
+    * 먹다    — polysemous verb (2 senses), WordForm[활용] inflections, a 대화
+                example with two example feats (dialogue)
+    * 사과 #1 — homograph (homonym_number=1), apple, origin 沙果
+    * 사과 #2 — homograph (homonym_number=2), apology, origin 謝過, DIFFERENT id
+    * 버스    — loanword, origin "bus" (NOT hanja -> must NOT land in hanja col)
+    * 안녕    — uses camelCase homonymNumber + a doubled HTML entity (&amp;quot;)
+    * (malformed) — a LexicalEntry with no Lemma the parser must skip + log
+  The DOCTYPE above is intentional: real KRDICT files declare a SYSTEM DTD, and
+  the parser must tolerate it (forbid_dtd=False) without fetching it.
 -->
-<dictionary>
-    <entry>
-        <entry_id>10001</entry_id>
-        <headword>가족</headword>
-        <pronunciation>[가족]</pronunciation>
-        <pos>명사</pos>
-        <hanja>家族</hanja>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>부모, 자식, 형제 등 한집에서 함께 사는 사람들.</definition_ko>
-            <definition_en>family; people who live together in one house, such as parents, children, and siblings.</definition_en>
-            <example>
-                <example_ko>저는 가족과 함께 살아요.</example_ko>
-                <example_en>I live with my family.</example_en>
-            </example>
-            <example>
-                <example_ko>우리 가족은 네 명이에요.</example_ko>
-                <example_en>There are four people in my family.</example_en>
-            </example>
-        </sense>
-    </entry>
+<LexicalResource dtdVersion="16">
+	<GlobalInformation>
+		<feat att="label" val="한국어기초사전 - 국립국어원 제공" />
+	</GlobalInformation>
+	<Lexicon>
+		<feat att="language" val="kor" />
 
-    <entry>
-        <entry_id>10002</entry_id>
-        <headword>먹다</headword>
-        <pronunciation>[먹따]</pronunciation>
-        <pos>동사</pos>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>음식 등을 입에 넣고 씹어 삼키다.</definition_ko>
-            <definition_en>to eat; to put food in one's mouth, chew, and swallow.</definition_en>
-            <example>
-                <example_ko>아침을 먹었어요.</example_ko>
-                <example_en>I ate breakfast.</example_en>
-            </example>
-            <example>
-                <example_ko>천천히 먹어요.</example_ko>
-                <example_en>Eat slowly.</example_en>
-            </example>
-        </sense>
-        <sense>
-            <sense_num>2</sense_num>
-            <definition_ko>일정한 나이가 되다.</definition_ko>
-            <definition_en>to reach a particular age.</definition_en>
-            <example>
-                <example_ko>내일이면 한 살을 더 먹어요.</example_ko>
-                <example_en>Tomorrow I'll be a year older.</example_en>
-            </example>
-        </sense>
-        <sense>
-            <sense_num>3</sense_num>
-            <definition_ko>(속어) 욕이나 비난 등을 듣다.</definition_ko>
-            <!-- English translation deliberately omitted -->
-            <example>
-                <example_ko>오늘 또 욕을 먹었어요.</example_ko>
-            </example>
-        </sense>
-        <inflection>
-            <form>먹어요</form>
-            <label>해요체 현재형</label>
-        </inflection>
-        <inflection>
-            <form>먹었어요</form>
-            <label>해요체 과거형</label>
-        </inflection>
-        <inflection>
-            <form>먹습니다</form>
-            <label>합쇼체 현재형</label>
-        </inflection>
-        <inflection>
-            <form>먹겠습니다</form>
-            <label>합쇼체 미래형</label>
-        </inflection>
-        <inflection>
-            <form>먹어</form>
-            <label>반말 현재형</label>
-        </inflection>
-        <inflection>
-            <form>먹어라</form>
-            <label>반말 명령형</label>
-        </inflection>
-    </entry>
+		<LexicalEntry att="id" val="10001">
+			<feat att="homonym_number" val="0" />
+			<feat att="lexicalUnit" val="단어" />
+			<feat att="partOfSpeech" val="명사" />
+			<Lemma>
+				<feat att="writtenForm" val="가족" />
+			</Lemma>
+			<feat att="origin" val="家族" />
+			<WordForm>
+				<feat att="type" val="발음" />
+				<feat att="pronunciation" val="가족" />
+			</WordForm>
+			<feat att="vocabularyLevel" val="초급" />
+			<feat att="semanticCategory" val="삶 > 친족 관계" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="부모, 자식 등 한집에서 사는 사람들." />
+				<SenseExample>
+					<feat att="type" val="구" />
+					<feat att="example" val="우리 가족." />
+				</SenseExample>
+				<SenseExample>
+					<feat att="type" val="문장" />
+					<feat att="example" val="저는 가족과 함께 살아요." />
+				</SenseExample>
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="family" />
+					<feat att="definition" val="People who live together in one house, such as parents and children." />
+				</Equivalent>
+				<Equivalent>
+					<feat att="language" val="일본어" />
+					<feat att="lemma" val="かぞく【家族】" />
+					<feat att="definition" val="親や子供など、一つの家で一緒に住む人々。" />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10003</entry_id>
-        <headword>예쁘다</headword>
-        <pronunciation>[예쁘다]</pronunciation>
-        <pos>형용사</pos>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>보기에 좋다.</definition_ko>
-            <definition_en>to be pretty; to look good.</definition_en>
-            <example>
-                <example_ko>이 꽃이 예뻐요.</example_ko>
-                <example_en>This flower is pretty.</example_en>
-            </example>
-        </sense>
-        <sense>
-            <sense_num>2</sense_num>
-            <definition_ko>행동이 사랑스럽다.</definition_ko>
-            <definition_en>to be lovely; (of behaviour) endearing.</definition_en>
-            <example>
-                <example_ko>아이가 참 예뻐요.</example_ko>
-                <example_en>The child is so lovely.</example_en>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10002">
+			<feat att="homonym_number" val="0" />
+			<feat att="partOfSpeech" val="동사" />
+			<Lemma>
+				<feat att="writtenForm" val="먹다" />
+			</Lemma>
+			<WordForm>
+				<feat att="type" val="발음" />
+				<feat att="pronunciation" val="먹따" />
+			</WordForm>
+			<WordForm>
+				<feat att="type" val="활용" />
+				<feat att="writtenForm" val="먹어" />
+				<feat att="pronunciation" val="머거" />
+			</WordForm>
+			<WordForm>
+				<feat att="type" val="활용" />
+				<feat att="writtenForm" val="먹으니" />
+			</WordForm>
+			<feat att="vocabularyLevel" val="초급" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="음식을 입에 넣고 씹어 삼키다." />
+				<SenseExample>
+					<feat att="type" val="대화" />
+					<feat att="example" val="밥 먹었어요?" />
+					<feat att="example" val="네, 먹었어요." />
+				</SenseExample>
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="eat" />
+					<feat att="definition" val="To put food in the mouth and swallow it." />
+				</Equivalent>
+			</Sense>
+			<Sense att="id" val="2">
+				<feat att="definition" val="나이를 더하다." />
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="get (older)" />
+					<feat att="definition" val="To grow older." />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10004</entry_id>
-        <headword>안녕</headword>
-        <pos>감탄사</pos>
-        <register>해요체</register>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>친한 사이에서 인사할 때 쓰는 말.</definition_ko>
-            <definition_en>hello / goodbye (used among friends).</definition_en>
-            <example>
-                <example_ko>안녕, 잘 지내?</example_ko>
-                <example_en>Hi, how are you?</example_en>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10003">
+			<feat att="homonym_number" val="1" />
+			<feat att="partOfSpeech" val="명사" />
+			<Lemma>
+				<feat att="writtenForm" val="사과" />
+			</Lemma>
+			<feat att="origin" val="沙果" />
+			<feat att="vocabularyLevel" val="초급" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="둥글고 빨간 과일." />
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="apple" />
+					<feat att="definition" val="A round, red fruit." />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10005</entry_id>
-        <headword>그리고</headword>
-        <pos>부사</pos>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>앞의 내용에 이어서 다음 내용을 덧붙일 때 쓰는 말.</definition_ko>
-            <definition_en>and; in addition.</definition_en>
-            <example>
-                <example_ko>비가 왔어요. 그리고 바람도 불었어요.</example_ko>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10004">
+			<feat att="homonym_number" val="2" />
+			<feat att="partOfSpeech" val="명사" />
+			<Lemma>
+				<feat att="writtenForm" val="사과" />
+			</Lemma>
+			<feat att="origin" val="謝過" />
+			<feat att="vocabularyLevel" val="중급" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="잘못을 비는 일." />
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="apology" />
+					<feat att="definition" val="An act of asking forgiveness for a wrong." />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10006</entry_id>
-        <homograph_num>1</homograph_num>
-        <headword>사과</headword>
-        <pronunciation>[사과]</pronunciation>
-        <pos>명사</pos>
-        <hanja />
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>사과나무의 열매.</definition_ko>
-            <definition_en>apple; the fruit of the apple tree.</definition_en>
-            <example>
-                <example_ko>사과 한 개를 먹었어요.</example_ko>
-                <example_en>I ate one apple.</example_en>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10005">
+			<feat att="homonym_number" val="0" />
+			<feat att="partOfSpeech" val="명사" />
+			<Lemma>
+				<feat att="writtenForm" val="버스" />
+			</Lemma>
+			<feat att="origin" val="bus" />
+			<feat att="vocabularyLevel" val="초급" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="많은 사람을 태우고 다니는 차." />
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="bus" />
+					<feat att="definition" val="A large vehicle that carries many passengers." />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10006</entry_id>
-        <homograph_num>2</homograph_num>
-        <headword>사과</headword>
-        <pronunciation>[사과]</pronunciation>
-        <pos>명사</pos>
-        <hanja>謝過</hanja>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>자기의 잘못을 인정하고 용서를 비는 일.</definition_ko>
-            <definition_en>apology; the act of admitting one's mistake and asking forgiveness.</definition_en>
-            <example>
-                <example_ko>그가 사과를 했어요.</example_ko>
-                <example_en>He apologized.</example_en>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10006">
+			<feat att="homonymNumber" val="0" />
+			<feat att="partOfSpeech" val="감탄사" />
+			<Lemma>
+				<feat att="writtenForm" val="안녕" />
+			</Lemma>
+			<feat att="vocabularyLevel" val="초급" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="친구를 만나거나 헤어질 때 하는 인사말." />
+				<Equivalent>
+					<feat att="language" val="영어" />
+					<feat att="lemma" val="hi; bye" />
+					<feat att="definition" val="A greeting that means &amp;quot;hello&amp;quot; or &amp;quot;goodbye&amp;quot;." />
+				</Equivalent>
+			</Sense>
+		</LexicalEntry>
 
-    <entry>
-        <entry_id>10007</entry_id>
-        <headword>학교</headword>
-        <pronunciation>[학꾜]</pronunciation>
-        <pos>명사</pos>
-        <hanja>學校</hanja>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>학생을 가르치는 기관.</definition_ko>
-            <definition_en>school; an institution that teaches students.</definition_en>
-            <domain>교육</domain>
-            <example>
-                <example_ko>아이가 학교에 다녀요.</example_ko>
-                <example_en>The child goes to school.</example_en>
-            </example>
-        </sense>
-    </entry>
+		<LexicalEntry att="id" val="10007">
+			<feat att="homonym_number" val="0" />
+			<feat att="partOfSpeech" val="명사" />
+			<Sense att="id" val="1">
+				<feat att="definition" val="이 항목은 표제어가 없어 건너뛰어야 한다." />
+			</Sense>
+		</LexicalEntry>
 
-    <!-- Malformed: no <entry_id>. Parser must skip with a logged warning. -->
-    <entry>
-        <headword>없는단어</headword>
-        <pos>명사</pos>
-        <sense>
-            <sense_num>1</sense_num>
-            <definition_ko>missing entry_id; parser must skip this.</definition_ko>
-        </sense>
-    </entry>
-</dictionary>
+	</Lexicon>
+</LexicalResource>

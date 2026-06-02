@@ -223,11 +223,12 @@ SQL_FETCH_SOURCE_ID = "SELECT id FROM krdict_source WHERE source_label = %(label
 SQL_UPSERT_ENTRY = """
 INSERT INTO krdict_entries (
     krdict_source_id, source_id, homograph_index,
-    headword, pronunciation, part_of_speech, hanja, register,
+    headword, pronunciation, part_of_speech, hanja, register, vocabulary_level,
     definition_korean, definition_english
 ) VALUES (
     %(krdict_source_id)s, %(source_id)s, %(homograph_index)s,
     %(headword)s, %(pronunciation)s, %(part_of_speech)s, %(hanja)s, %(register)s,
+    %(vocabulary_level)s,
     %(definition_korean)s, %(definition_english)s
 )
 ON CONFLICT (source_id, homograph_index) DO UPDATE SET
@@ -237,6 +238,7 @@ ON CONFLICT (source_id, homograph_index) DO UPDATE SET
     part_of_speech      = EXCLUDED.part_of_speech,
     hanja               = EXCLUDED.hanja,
     register            = EXCLUDED.register,
+    vocabulary_level    = EXCLUDED.vocabulary_level,
     definition_korean   = EXCLUDED.definition_korean,
     definition_english  = EXCLUDED.definition_english,
     updated_at          = now(),
@@ -247,6 +249,7 @@ WHERE
  OR krdict_entries.part_of_speech     IS DISTINCT FROM EXCLUDED.part_of_speech
  OR krdict_entries.hanja              IS DISTINCT FROM EXCLUDED.hanja
  OR krdict_entries.register           IS DISTINCT FROM EXCLUDED.register
+ OR krdict_entries.vocabulary_level   IS DISTINCT FROM EXCLUDED.vocabulary_level
  OR krdict_entries.definition_korean  IS DISTINCT FROM EXCLUDED.definition_korean
  OR krdict_entries.definition_english IS DISTINCT FROM EXCLUDED.definition_english
 RETURNING id;
@@ -386,6 +389,9 @@ def _entry_params(model: KrdictEntryModel, source_pk: int) -> dict:
         "part_of_speech": model.part_of_speech,
         "hanja": model.hanja,
         "register": model.register.value if model.register else None,
+        "vocabulary_level": (
+            model.vocabulary_level.value if model.vocabulary_level else None
+        ),
         "definition_korean": first_sense.definition_korean,
         "definition_english": first_sense.definition_english,
     }

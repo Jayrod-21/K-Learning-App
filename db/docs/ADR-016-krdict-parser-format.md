@@ -1,10 +1,26 @@
 # ADR-016: KRDICT parser input format — XML (TEI-lite)
 
-**Status:** Accepted
+**Status:** Accepted, **AMENDED 2026-06** (see "Correction" below)
 **Date:** 2026-05-28
 **Implemented in:** `tools/ingest/krdict_parser.py`
 **Owner:** Agent B2 (KRDICT)
 **Relates to:** ADR-015 (KRDICT schema), ADR-001 §"Security"
+
+> ## Correction (2026-06)
+> The "XML, not JSON" call was right; the **schema** was wrong. The actual KRDICT
+> bulk download (krdict.korean.go.kr → 사전 전체 내려받기, the 2026-05 export) is
+> **LMF** (Lexical Markup Framework, `DTD_LMF_REV_16`):
+> `<LexicalResource><Lexicon><LexicalEntry>` with every value as a
+> `<feat att="X" val="Y"/>` pair — not the assumed `<entry><form><sense><cit>`
+> TEI-Lite shape (the original fixture was hand-crafted/fictional).
+> `krdict_parser.py` was rewritten for LMF. The rest of this ADR still holds:
+> XML over JSON/CSV (LMF carries the `WordForm[type=활용]` conjugation tables and
+> the multilingual `Equivalent` blocks JSON drops), defusedxml, streaming
+> `iterparse`. Two LMF-specific additions: `forbid_dtd=False` (every real file
+> declares a SYSTEM DOCTYPE; `forbid_entities`/`forbid_external` stay the real
+> XXE defenses) and a byte-level control-character filter (KRDICT embeds
+> XML-illegal control chars that otherwise abort expat mid-file). License is
+> CC BY-SA 2.0 KR, not KOGL Type 1 (see KRDICT_README.md).
 
 ## Context
 

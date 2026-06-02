@@ -489,6 +489,74 @@ run_migrate() {
 }
 
 # =============================================================================
+# run_loader DATA_DIR WORKDIR -- CMD...  — run a baked loader against km-db.
+# -----------------------------------------------------------------------------
+# Runs the km-loader image (loader code + deps baked in) on km-internal so it can
+# reach the shared km-db by hostname, with the host DATA_DIR bind-mounted
+# read-only at /data. Used for the MANUAL corpus / KRDICT load: the data is
+# gitignored and arrives by USB, so only DATA crosses the mount; CODE ships in the
+# image. Mirrors run_migrate (same image-presence guard, same in-container DSN).
+#
+#   run_loader /srv/usb/corpora /app -- \
+#       python -m tools.ingest.load_to_postgres --input-dir /data --corpus all
+#
+# DATA_DIR  host directory to expose at /data (must exist).
+# WORKDIR   container working directory (/app for the corpus loader package;
+#           /app/tools/ingest for `python -m load_krdict`).
+# CMD...    the loader invocation (everything after the literal `--`).
+# =============================================================================
+run_loader() {
+    require_cmd docker
+    : "${POSTGRES_USER:?run_loader: POSTGRES_USER not set (call load_environment)}"
+    : "${POSTGRES_PASSWORD:?run_loader: POSTGRES_PASSWORD not set}"
+    : "${POSTGRES_DB:?run_loader: POSTGRES_DB not set}"
+    : "${DEPLOY_TAG:?run_loader: DEPLOY_TAG not set (export the release tag before calling)}"
+
+    local data_dir="$1"
+    local workdir="$2"
+    shift 2
+    if [[ "${1:-}" == "--" ]]; then
+        shift
+    fi
+    if [[ $# -eq 0 ]]; then
+        log_err "run_loader: no loader command given after '--'."
+        return 2
+    fi
+    if [[ ! -d "$data_dir" ]]; then
+        log_err "run_loader: data dir not found: ${data_dir}"
+        return 1
+    fi
+    local data_abs
+    data_abs="$(cd "$data_dir" && pwd -P)"
+
+    local loader_image="km-loader:${DEPLOY_TAG}"
+    # Same contract as run_migrate: built + saved in BuildAndTest, docker-load'd
+    # in DeployToInactive. Never built/pip-installed here (km-internal has no
+    # egress). Fail fast if the load step didn't run.
+    if ! docker image inspect "$loader_image" >/dev/null 2>&1; then
+        log_err "run_loader: image ${loader_image} not found locally."
+        log_err "It is built + saved in BuildAndTest and docker-load'd in DeployToInactive."
+        log_err "Running manually? docker load the km-loader-<tag>.tar artifact, or"
+        log_err "build it: docker build -t ${loader_image} -f Deploy/loader.Dockerfile ${REPO_ROOT}"
+        return 1
+    fi
+
+    # In-container DSN: reach km-db over the shared network by hostname (NOT the
+    # host loopback DATABASE_URL). DATA_DIR is mounted read-only — loaders only
+    # read it.
+    local container_dsn="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}"
+
+    log_info "run_loader: ${loader_image} (data=${data_abs}) -> ${*}"
+    docker run --rm \
+        --network km-internal \
+        -v "${data_abs}:/data:ro" \
+        -w "$workdir" \
+        -e DATABASE_URL="$container_dsn" \
+        "$loader_image" \
+        "$@"
+}
+
+# =============================================================================
 # compose_color COLOR up|down — bring a color trio up or down.
 # -----------------------------------------------------------------------------
 # Each color is its own compose project (km-blue / km-green) sharing the named

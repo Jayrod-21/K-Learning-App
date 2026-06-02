@@ -32,6 +32,28 @@ The DB migration is `db/migrations/003_krdict.up.sql` / `003_krdict.down.sql`.
 
 ## Downloading the KRDICT dataset
 
+> **CORRECTED 2026-06 (verified against the real download).** The bulk dataset
+> is **LMF** (Lexical Markup Framework, `DTD_LMF_REV_16`) — every value is a
+> `<feat att="X" val="Y"/>` pair under `<LexicalResource><Lexicon><LexicalEntry>`
+> — **not** the TEI-Lite shape an earlier version of this README and ADR-016
+> assumed. `krdict_parser.py` has been rewritten for LMF. Concretely:
+>
+> 1. Open **https://krdict.korean.go.kr/download/downloadPopup** (from the site:
+>    "사전 내려받기" → "사전 전체 내려받기"). No API key is needed for the bulk file.
+> 2. Choose **"XML 전체 내려받기"** (XML, not Excel/JSON — XML carries
+>    conjugations + multilingual equivalents).
+> 3. Unzip to `data/krdict/`. The 2026-05 export is **11 volumes**, e.g.
+>    `1_5000_20260529.xml … 11_3671_20260529.xml` (~386 MB unzipped, ~54k
+>    entries). The parser reads every `*.xml` under the directory in sorted order.
+> 4. Record the zip's SHA-256 for `krdict_source.source_sha256`.
+>
+> The KRDICT **Open API** (`/api/search`, 32-hex key, 50k calls/day) returns a
+> *different* schema (`<channel><item>…`) and is intended as the **fallback /
+> cache-miss** path, not the bulk loader — it needs its own small mapper.
+>
+> The original (TEI-Lite) instructions below are retained for history but are
+> superseded by the above.
+
 > **This is a manual / external step. The loader expects the data to be on
 > disk already at `Repository/data/krdict/`. The loader DOES NOT download
 > anything itself.**
@@ -58,6 +80,14 @@ The DB migration is `db/migrations/003_krdict.up.sql` / `003_krdict.down.sql`.
    this in `krdict_source.source_sha256` for provenance.
 
 ### License
+
+> **CORRECTED 2026-06:** KRDICT is distributed under **CC BY-SA 2.0 KR**
+> (저작자표시-동일조건변경허락 — attribution + **share-alike**), per
+> https://krdict.korean.go.kr, **not** KOGL Type 1 (the note below is wrong).
+> Attribute "국립국어원 한국어기초사전". ShareAlike adds a copyleft clause: a
+> redistributed *derivative* of the data must use the same license. For this
+> single-user, non-redistributed app it never triggers. `krdict_models.py`
+> `KrdictSourceMetadata` now defaults to the CC BY-SA 2.0 KR string + URL.
 
 KRDICT is distributed under **KOGL Type 1** (공공누리 제1유형 — attribution).
 Free for any use including commercial, must attribute "국립국어원

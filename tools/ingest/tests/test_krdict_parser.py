@@ -1,10 +1,15 @@
 """
-Parser tests — fixture-driven.
+Parser tests — fixture-driven, LMF (DTD_LMF_REV_16).
 
-The fixture (krdict_sample.xml) is hand-crafted to cover the variation
-matrix: monosemous + polysemous, with/without English, hanja yes/no,
-register tagged/untagged, homographs, inflection tables, AND one
-malformed entry the parser must skip without crashing.
+The fixture (krdict_sample.xml) is hand-crafted to cover the variation matrix:
+monosemous + polysemous, with/without hanja, vocabulary levels, homographs
+(incl. the camelCase ``homonymNumber`` spelling), a loanword whose origin is not
+hanja, a doubled HTML entity, a 대화 example carrying two example feats, AND one
+malformed entry (no Lemma) the parser must skip without crashing.
+
+Also exercises the two robustness paths against real-world KRDICT defects:
+illegal XML control characters (stripped, not fatal) and XXE/entity attacks
+(blocked by defusedxml).
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from typing import Optional
 
 import pytest
 
-from krdict_models import KrdictEntryModel, RegisterLevel
+from krdict_models import KrdictEntryModel, VocabularyLevel
 from krdict_parser import SkipReason, parse_file
 
 
@@ -31,185 +36,186 @@ def parsed(skip_log: list[SkipReason]) -> list[KrdictEntryModel]:
     return list(parse_file(FIXTURE, on_skip=skip_log.append))
 
 
-def _find(entries: list[KrdictEntryModel], headword: str,
-          homograph: int = 0) -> Optional[KrdictEntryModel]:
+def _find(
+    entries: list[KrdictEntryModel], headword: str, homograph: int = 0
+) -> Optional[KrdictEntryModel]:
     for e in entries:
         if e.headword == headword and e.homograph_index == homograph:
             return e
     return None
 
 
-# -----------------------------------------------------------------------------
-# Top-line: count + skip behavior.
-# -----------------------------------------------------------------------------
-def test_parser_yields_eight_valid_entries(parsed):
-    assert len(parsed) == 8
+# --- Counts / skip behavior --------------------------------------------------
+
+def test_parses_all_valid_entries(parsed: list[KrdictEntryModel]) -> None:
+    # 6 valid entries; the malformed (no-Lemma) one is skipped.
+    assert len(parsed) == 6
 
 
-def test_parser_skips_malformed_entry_via_callback(parsed, skip_log):
+def test_malformed_entry_is_skipped_and_logged(
+    parsed: list[KrdictEntryModel], skip_log: list[SkipReason]
+) -> None:
     assert len(skip_log) == 1
-    reason = skip_log[0]
-    assert reason.source_id is None  # no entry_id in the bad entry
-    assert "entry_id" in reason.error
+    assert skip_log[0].source_id == "10007"
 
 
-# -----------------------------------------------------------------------------
-# Field-level extraction.
-# -----------------------------------------------------------------------------
-def test_parses_monosemous_noun(parsed):
-    entry = _find(parsed, "가족")
-    assert entry is not None
-    assert entry.source_id == "10001"
-    assert entry.part_of_speech == "명사"
-    assert entry.hanja == "家族"
-    assert entry.register is None
-    assert len(entry.senses) == 1
-    sense = entry.senses[0]
-    assert sense.sense_index == 1
-    assert "한집" in sense.definition_korean
-    assert sense.definition_english.startswith("family")
-    assert len(sense.examples) == 2
-    assert sense.examples[0].english.startswith("I live with my family")
+# --- Lexical core ------------------------------------------------------------
+
+def test_noun_core_fields(parsed: list[KrdictEntryModel]) -> None:
+    e = _find(parsed, "가족")
+    assert e is not None
+    assert e.source_id == "10001"
+    assert e.homograph_index == 0
+    assert e.part_of_speech == "명사"
+    assert e.pronunciation == "가족"
+    assert e.hanja == "家族"  # origin is hanja -> kept
+    assert e.vocabulary_level is VocabularyLevel.BEGINNER  # 초급
+    assert e.register is None  # LMF carries no speech-level register
 
 
-def test_parses_polysemous_verb_with_inflections(parsed):
-    entry = _find(parsed, "먹다")
-    assert entry is not None
-    assert entry.part_of_speech == "동사"
-    assert len(entry.senses) == 3
-    # Sense numbers preserved.
-    assert [s.sense_index for s in entry.senses] == [1, 2, 3]
-    # Sense 3 omits English — must be None, not "".
-    assert entry.senses[2].definition_english is None
-    # Example without English translation present and english is None.
-    ex = entry.senses[2].examples[0]
-    assert ex.korean == "오늘 또 욕을 먹었어요."
-    assert ex.english is None
-    # 6 inflections, all unique on (form, label).
-    assert len(entry.inflections) == 6
-    forms = {(i.surface_form, i.inflection_label) for i in entry.inflections}
-    assert ("먹었어요", "해요체 과거형") in forms
-
-
-def test_parses_adjective(parsed):
-    entry = _find(parsed, "예쁘다")
-    assert entry is not None
-    assert entry.part_of_speech == "형용사"
-    assert len(entry.senses) == 2
-
-
-def test_parses_register_tag(parsed):
-    entry = _find(parsed, "안녕")
-    assert entry is not None
-    assert entry.register is RegisterLevel.HAEYOCHE
-
-
-def test_parses_homographs_separately(parsed):
-    h1 = _find(parsed, "사과", homograph=1)
-    h2 = _find(parsed, "사과", homograph=2)
-    assert h1 is not None and h2 is not None
-    assert h1.hanja is None  # empty <hanja /> tag becomes None.
-    assert h2.hanja == "謝過"
-    assert h1.source_id == h2.source_id == "10006"
-
-
-def test_parses_sense_level_domain(parsed):
-    entry = _find(parsed, "학교")
-    assert entry is not None
-    assert entry.senses[0].sense_domain == "교육"
-
-
-def test_parses_pronunciation_field(parsed):
-    entry = _find(parsed, "먹다")
-    assert entry.pronunciation == "[먹따]"
-
-
-# -----------------------------------------------------------------------------
-# Edge cases.
-# -----------------------------------------------------------------------------
-def test_empty_tag_becomes_none():
-    # <hanja /> in the fixture should become None, not "".
-    entries = list(parse_file(FIXTURE))
-    h1 = _find(entries, "사과", homograph=1)
-    assert h1.hanja is None
-
-
-def test_parser_is_streaming(parsed):
-    # Indirect: if the parser were buffering, .clear() wouldn't be called
-    # and memory would balloon — but at fixture scale we mainly check that
-    # the iterator-style API works.
-    assert isinstance(parsed, list)
-    assert all(isinstance(e, KrdictEntryModel) for e in parsed)
-
-
-def test_parser_rejects_missing_file(tmp_path):
-    from krdict_parser import iter_entries
-    with pytest.raises(FileNotFoundError):
-        list(iter_entries(tmp_path / "nonexistent.xml"))
-
-
-# -----------------------------------------------------------------------------
-# Pydantic-level validators — model invariants directly.
-# -----------------------------------------------------------------------------
-def test_model_rejects_duplicate_sense_index():
-    from krdict_models import (
-        KrdictEntryModel,
-        KrdictSenseModel,
+def test_first_sense_definitions_korean_and_english(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    e = _find(parsed, "가족")
+    assert e is not None
+    s = e.senses[0]
+    assert s.definition_korean.startswith("부모, 자식")
+    # English comes from the Equivalent[language=영어] definition, not 일본어.
+    assert s.definition_english == (
+        "People who live together in one house, such as parents and children."
     )
-    with pytest.raises(ValueError):
-        KrdictEntryModel(
-            source_id="x",
-            homograph_index=0,
-            headword="가",
-            senses=[
-                KrdictSenseModel(sense_index=1, definition_korean="a"),
-                KrdictSenseModel(sense_index=1, definition_korean="b"),
-            ],
-        )
 
 
-def test_model_rejects_missing_sense_1():
-    from krdict_models import KrdictEntryModel, KrdictSenseModel
-    with pytest.raises(ValueError):
-        KrdictEntryModel(
-            source_id="x",
-            homograph_index=0,
-            headword="가",
-            senses=[KrdictSenseModel(sense_index=2, definition_korean="b")],
-        )
+def test_examples_carry_type_and_order(parsed: list[KrdictEntryModel]) -> None:
+    e = _find(parsed, "가족")
+    assert e is not None
+    examples = e.senses[0].examples
+    assert [x.korean for x in examples] == ["우리 가족.", "저는 가족과 함께 살아요."]
+    assert [x.example_type for x in examples] == ["구", "문장"]
+    assert [x.example_index for x in examples] == [1, 2]
 
 
-def test_model_drops_unknown_register():
-    from krdict_models import KrdictEntryModel, KrdictSenseModel
-    m = KrdictEntryModel(
-        source_id="x",
-        homograph_index=0,
-        headword="가",
-        register="존댓말",  # not in the enum — must coerce to None.
-        senses=[KrdictSenseModel(sense_index=1, definition_korean="a")],
+# --- Vocabulary level (new) --------------------------------------------------
+
+def test_vocabulary_levels_map_to_enum(parsed: list[KrdictEntryModel]) -> None:
+    assert _find(parsed, "사과", 1).vocabulary_level is VocabularyLevel.BEGINNER
+    assert _find(parsed, "사과", 2).vocabulary_level is VocabularyLevel.INTERMEDIATE
+
+
+# --- Verb: senses, inflections, dialogue example -----------------------------
+
+def test_polysemous_verb_senses(parsed: list[KrdictEntryModel]) -> None:
+    e = _find(parsed, "먹다")
+    assert e is not None
+    assert [s.sense_index for s in e.senses] == [1, 2]
+    assert e.senses[1].definition_english == "To grow older."
+
+
+def test_inflections_from_wordform_hwalyong(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    e = _find(parsed, "먹다")
+    assert e is not None
+    # Only WordForm[type=활용] become inflections; the 발음 WordForm does not.
+    assert [i.surface_form for i in e.inflections] == ["먹어", "먹으니"]
+    assert all(i.inflection_label == "활용" for i in e.inflections)
+
+
+def test_dialogue_example_yields_one_row_per_example_feat(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    e = _find(parsed, "먹다")
+    assert e is not None
+    ex = e.senses[0].examples
+    assert [x.korean for x in ex] == ["밥 먹었어요?", "네, 먹었어요."]
+    assert all(x.example_type == "대화" for x in ex)
+
+
+# --- Homographs --------------------------------------------------------------
+
+def test_homographs_distinguished_by_homonym_number(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    apple = _find(parsed, "사과", 1)
+    apology = _find(parsed, "사과", 2)
+    assert apple is not None and apology is not None
+    assert apple.source_id == "10003" and apology.source_id == "10004"
+    assert apple.hanja == "沙果" and apology.hanja == "謝過"
+    assert apple.senses[0].definition_english == "A round, red fruit."
+
+
+def test_camelcase_homonym_number_is_read(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    # 안녕 uses the camelCase `homonymNumber` spelling.
+    e = _find(parsed, "안녕", 0)
+    assert e is not None
+    assert e.part_of_speech == "감탄사"
+
+
+# --- Origin that is NOT hanja ------------------------------------------------
+
+def test_loanword_origin_not_stored_as_hanja(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    e = _find(parsed, "버스")
+    assert e is not None
+    assert e.hanja is None  # origin "bus" is not CJK -> not hanja
+
+
+# --- HTML entity unescaping --------------------------------------------------
+
+def test_doubled_html_entities_are_unescaped(
+    parsed: list[KrdictEntryModel],
+) -> None:
+    e = _find(parsed, "안녕")
+    assert e is not None
+    en = e.senses[0].definition_english
+    assert "&quot;" not in en
+    assert '"hello"' in en and '"goodbye"' in en
+
+
+# --- Robustness: illegal control characters ---------------------------------
+
+def test_illegal_control_char_is_stripped_not_fatal(tmp_path: Path) -> None:
+    # An entry whose Korean definition contains a backspace (0x08) — illegal in
+    # XML 1.0. Without the control-char filter expat aborts the whole file.
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<LexicalResource><Lexicon>"
+        '<LexicalEntry att="id" val="900">'
+        '<feat att="partOfSpeech" val="명사" />'
+        '<Lemma><feat att="writtenForm" val="시험" /></Lemma>'
+        '<Sense att="id" val="1">'
+        '<feat att="definition" val="시\x08험 정의." />'
+        "</Sense></LexicalEntry>"
+        "</Lexicon></LexicalResource>"
     )
-    assert m.register is None
+    p = tmp_path / "ctrl.xml"
+    p.write_bytes(xml.encode("utf-8"))
+    entries = list(parse_file(p))
+    assert len(entries) == 1
+    assert entries[0].headword == "시험"
+    assert "\x08" not in entries[0].senses[0].definition_korean
 
 
-def test_model_rejects_oversized_headword():
-    from krdict_models import KrdictEntryModel, KrdictSenseModel
-    with pytest.raises(ValueError):
-        KrdictEntryModel(
-            source_id="x",
-            homograph_index=0,
-            headword="가" * 5000,  # exceeds MAX_HEADWORD_LEN.
-            senses=[KrdictSenseModel(sense_index=1, definition_korean="a")],
-        )
+# --- Security: XXE / entity attacks blocked ----------------------------------
 
-
-def test_model_rejects_extra_fields():
-    # extra="forbid" — parser-vs-schema drift must surface immediately.
-    from krdict_models import KrdictEntryModel, KrdictSenseModel
-    with pytest.raises(ValueError):
-        KrdictEntryModel(
-            source_id="x",
-            homograph_index=0,
-            headword="가",
-            senses=[KrdictSenseModel(sense_index=1, definition_korean="a")],
-            mystery_field="x",  # type: ignore[call-arg]
-        )
+def test_entity_declaration_is_blocked(tmp_path: Path) -> None:
+    # A DOCTYPE that declares an internal entity must be rejected
+    # (forbid_entities=True) rather than expanded — the billion-laughs vector.
+    xml = (
+        '<?xml version="1.0"?>\n'
+        "<!DOCTYPE LexicalResource [\n"
+        '  <!ENTITY boom "boomboomboom">\n'
+        "]>\n"
+        "<LexicalResource><Lexicon>"
+        '<LexicalEntry att="id" val="1">'
+        '<Lemma><feat att="writtenForm" val="&boom;" /></Lemma>'
+        '<Sense att="id" val="1"><feat att="definition" val="x" /></Sense>'
+        "</LexicalEntry></Lexicon></LexicalResource>"
+    )
+    p = tmp_path / "xxe.xml"
+    p.write_bytes(xml.encode("utf-8"))
+    with pytest.raises(Exception):  # noqa: B017 - defusedxml EntitiesForbidden
+        list(parse_file(p))

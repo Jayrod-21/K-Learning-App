@@ -41,6 +41,19 @@ class RegisterLevel(str, Enum):
     HAGECHE = "하게체"
 
 
+class VocabularyLevel(str, Enum):
+    """KRDICT vocabulary grade (LMF feat ``vocabularyLevel``).
+
+    Maps onto the app's proficiency tagging: 초급→basic, 중급→L3, 고급→L4
+    (see DESIGN_SPEC). Mirrors the ck_krdict_entries_vocab_level CHECK in
+    migration 026 — that DB constraint is the second wall.
+    """
+
+    BEGINNER = "초급"
+    INTERMEDIATE = "중급"
+    ADVANCED = "고급"
+
+
 # Defensive length bounds. Match the DB CHECK constraints in
 # 003_krdict.up.sql so the loader rejects bad input before the DB does.
 MAX_HEADWORD_LEN = 200
@@ -154,6 +167,7 @@ class KrdictEntryModel(BaseModel):
     part_of_speech: Optional[str] = Field(default=None, max_length=MAX_POS_LEN)
     hanja: Optional[str] = Field(default=None, max_length=MAX_HANJA_LEN)
     register: Optional[RegisterLevel] = None
+    vocabulary_level: Optional[VocabularyLevel] = None
 
     # Children.
     senses: list[KrdictSenseModel] = Field(..., min_length=1)
@@ -182,6 +196,22 @@ class KrdictEntryModel(BaseModel):
         s = v.strip()
         try:
             return RegisterLevel(s)
+        except ValueError:
+            return None
+
+    @field_validator("vocabulary_level", mode="before")
+    @classmethod
+    def _coerce_vocabulary_level(cls, v: object) -> object:
+        # Same defense as register: an unexpected grade string (a future KRDICT
+        # value) coerces to None rather than crashing the entry. The DB CHECK
+        # in 026 is the second wall.
+        if v is None or isinstance(v, VocabularyLevel):
+            return v
+        if not isinstance(v, str):
+            return None
+        s = v.strip()
+        try:
+            return VocabularyLevel(s)
         except ValueError:
             return None
 
@@ -231,8 +261,18 @@ class KrdictSourceMetadata(BaseModel):
     source_label: str = Field(..., min_length=1, max_length=200)
     source_path: str = Field(..., min_length=1, max_length=4000)
     source_sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
-    license: str = Field(default="KOGL Type 1 (attribution)", max_length=200)
-    license_url: Optional[str] = Field(default=None, max_length=500)
+    # KRDICT is distributed under CC BY-SA 2.0 KR (저작자표시-동일조건변경허락),
+    # per https://krdict.korean.go.kr — NOT KOGL Type 1 (an earlier wrong note,
+    # corrected after inspecting the actual download). Attribution: 국립국어원
+    # 한국어기초사전. ShareAlike applies to redistributed derivatives.
+    license: str = Field(
+        default="CC BY-SA 2.0 KR (저작자표시-동일조건변경허락) — 국립국어원 한국어기초사전",
+        max_length=200,
+    )
+    license_url: Optional[str] = Field(
+        default="https://creativecommons.org/licenses/by-sa/2.0/kr/",
+        max_length=500,
+    )
     publisher: str = Field(
         default="국립국어원 (National Institute of Korean Language)",
         max_length=200,

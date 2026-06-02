@@ -161,6 +161,20 @@ stages:
               buildContext: Deploy
               tags: $(deployTag)
 
+          # km-loader bakes the corpus + KRDICT loaders (tools/) + their deps. Run
+          # MANUALLY on the server (run_loader / load-corpora.sh / load-krdict.sh)
+          # to populate km-db from USB-copied data; the pipeline only builds +
+          # ships the image (no corpus data exists in CI). Built with the REPO ROOT
+          # as context so `COPY tools` works. See Deploy/loader.Dockerfile.
+          - task: Docker@2
+            displayName: "Build km-loader image (corpus + KRDICT loaders)"
+            inputs:
+              command: build
+              repository: km-loader
+              Dockerfile: Deploy/loader.Dockerfile
+              buildContext: "."
+              tags: $(deployTag)
+
           # --- Save each image to a tar (no registry) -------------------------
           - script: |
               set -euo pipefail
@@ -169,6 +183,7 @@ stages:
               docker save -o "$(Build.ArtifactStagingDirectory)/km-client-$(deployTag).tar" "km-client:$(deployTag)"
               docker save -o "$(Build.ArtifactStagingDirectory)/km-kiwi-$(deployTag).tar"   "km-kiwi:$(deployTag)"
               docker save -o "$(Build.ArtifactStagingDirectory)/km-migrate-$(deployTag).tar" "km-migrate:$(deployTag)"
+              docker save -o "$(Build.ArtifactStagingDirectory)/km-loader-$(deployTag).tar" "km-loader:$(deployTag)"
               ls -lh "$(Build.ArtifactStagingDirectory)"
             displayName: "Save images to tar artifacts"
 
@@ -218,11 +233,12 @@ stages:
                     docker load -i "$ART/km-client-$(deployTag).tar"
                     docker load -i "$ART/km-kiwi-$(deployTag).tar"
                     docker load -i "$ART/km-migrate-$(deployTag).tar"
+                    docker load -i "$ART/km-loader-$(deployTag).tar"
                     # P-SF5: assert all images actually loaded at the expected tag.
                     # A corrupt/partial tar otherwise surfaces much later as a
                     # confusing "image not found" at compose_color up (or at the
                     # migration dry-run for km-migrate) — fail fast here.
-                    for img in km-server km-client km-kiwi km-migrate; do
+                    for img in km-server km-client km-kiwi km-migrate km-loader; do
                       if ! docker image inspect "$img:$(deployTag)" >/dev/null 2>&1; then
                         echo "ERROR: $img:$(deployTag) did not load from its tar artifact" >&2
                         exit 1
