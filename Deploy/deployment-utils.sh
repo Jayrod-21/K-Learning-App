@@ -402,16 +402,26 @@ nginx_switch() {
 }
 
 # =============================================================================
-# run_migrate ARGS... — run db/migrate.py in a throwaway python container.
+# run_migrate ARGS... — run db/migrate.py in the pre-built km-migrate container.
 # -----------------------------------------------------------------------------
 # WHY a container, not the host's Python: migrate.py needs psycopg[v3] +
 # structlog + Python 3.10+, which the deploy agent may not have (and we don't
-# want to mutate host Python). Running it in python:3.12-slim on the km-internal
-# network — the same place km-db lives — keeps the deploy self-contained and
-# reproducible, with ZERO host Python dependencies. The repo is mounted read-only
-# (migrations never write to source), and the container reaches the shared DB by
-# its compose hostname (km-db:5432), so this works regardless of host port maps.
-# Deps are pinned for reproducibility. Pass the migrate.py args verbatim, e.g.
+# want to mutate host Python). It must also run ON the km-internal network — the
+# same place km-db lives — so it reaches the DB by compose hostname (km-db:5432)
+# regardless of host port maps.
+#
+# WHY a PRE-BUILT image, not a runtime `pip install`: km-internal is declared
+# `internal: true` (docker-compose.shared.yml) and therefore has NO internet
+# egress, so a container on it CANNOT reach PyPI. The deps are instead baked into
+# km-migrate on the hosted build agent (Deploy/migrate.Dockerfile) and the image
+# is docker-load'd on the server alongside km-server/client/kiwi. So this helper
+# performs ZERO network installs — it only talks to km-db.
+#
+# The image carries deps only; the repo (migrate.py + migration SQL) is mounted
+# read-only so the migration set matches the deployed revision and the image
+# never needs a rebuild when a migration is added. The image tag tracks the
+# release: DEPLOY_TAG must be exported by the caller (azure-deploy-inactive.sh).
+# Pass the migrate.py args verbatim, e.g.
 #   run_migrate --dry-run up
 #   run_migrate up
 # (NOTE: --dry-run is a GLOBAL flag and must precede the subcommand.)
@@ -421,21 +431,32 @@ run_migrate() {
     : "${POSTGRES_USER:?run_migrate: POSTGRES_USER not set (call load_environment)}"
     : "${POSTGRES_PASSWORD:?run_migrate: POSTGRES_PASSWORD not set}"
     : "${POSTGRES_DB:?run_migrate: POSTGRES_DB not set}"
+    : "${DEPLOY_TAG:?run_migrate: DEPLOY_TAG not set (export the release tag before calling)}"
+
+    local migrate_image="km-migrate:${DEPLOY_TAG}"
+    # The image is built + saved in BuildAndTest and docker-load'd in
+    # DeployToInactive (azure-pipelines.yml). It is NEVER built or pip-installed
+    # here — km-internal is egress-blocked by design, so a runtime install is
+    # impossible. Fail fast with a clear message if the load step didn't run.
+    if ! docker image inspect "$migrate_image" >/dev/null 2>&1; then
+        log_err "run_migrate: image ${migrate_image} not found locally."
+        log_err "It is built + saved in BuildAndTest and docker-load'd in DeployToInactive."
+        log_err "Running manually? docker load the km-migrate-<tag>.tar artifact, or"
+        log_err "build it: docker build -t ${migrate_image} -f Deploy/migrate.Dockerfile Deploy"
+        return 1
+    fi
 
     # In-container DSN: reach km-db over the shared network by hostname (NOT the
     # host loopback DATABASE_URL the host tooling uses).
     local container_dsn="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}"
-
-    # Pinned deps for a reproducible migrate run.
-    local pip_pkgs="psycopg[binary]==3.2.3 structlog==24.4.0"
 
     docker run --rm \
         --network km-internal \
         -v "${REPO_ROOT}:/repo:ro" \
         -w /repo \
         -e DATABASE_URL="$container_dsn" \
-        python:3.12-slim \
-        bash -c "pip install --quiet --no-input ${pip_pkgs} && python db/migrate.py $*"
+        "$migrate_image" \
+        python db/migrate.py "$@"
 }
 
 # =============================================================================

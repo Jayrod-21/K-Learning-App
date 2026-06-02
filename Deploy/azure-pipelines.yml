@@ -142,6 +142,19 @@ stages:
               buildContext: services/kiwi
               tags: $(deployTag)
 
+          # km-migrate is a deps-only image (psycopg[v3] + structlog) used to run
+          # db/migrate.py on the egress-blocked km-internal network at deploy time.
+          # Built HERE (the agent has internet) so the server never pip-installs.
+          # See Deploy/migrate.Dockerfile and run_migrate (deployment-utils.sh).
+          - task: Docker@2
+            displayName: "Build km-migrate image (deps-only migration runner)"
+            inputs:
+              command: build
+              repository: km-migrate
+              Dockerfile: Deploy/migrate.Dockerfile
+              buildContext: Deploy
+              tags: $(deployTag)
+
           # --- Save each image to a tar (no registry) -------------------------
           - script: |
               set -euo pipefail
@@ -149,6 +162,7 @@ stages:
               docker save -o "$(Build.ArtifactStagingDirectory)/km-server-$(deployTag).tar" "km-server:$(deployTag)"
               docker save -o "$(Build.ArtifactStagingDirectory)/km-client-$(deployTag).tar" "km-client:$(deployTag)"
               docker save -o "$(Build.ArtifactStagingDirectory)/km-kiwi-$(deployTag).tar"   "km-kiwi:$(deployTag)"
+              docker save -o "$(Build.ArtifactStagingDirectory)/km-migrate-$(deployTag).tar" "km-migrate:$(deployTag)"
               ls -lh "$(Build.ArtifactStagingDirectory)"
             displayName: "Save images to tar artifacts"
 
@@ -192,16 +206,18 @@ stages:
                     docker load -i "$ART/km-server-$(deployTag).tar"
                     docker load -i "$ART/km-client-$(deployTag).tar"
                     docker load -i "$ART/km-kiwi-$(deployTag).tar"
-                    # P-SF5: assert all three images actually loaded at the expected
-                    # tag. A corrupt/partial tar otherwise surfaces much later as a
-                    # confusing "image not found" at compose_color up — fail fast here.
-                    for img in km-server km-client km-kiwi; do
+                    docker load -i "$ART/km-migrate-$(deployTag).tar"
+                    # P-SF5: assert all images actually loaded at the expected tag.
+                    # A corrupt/partial tar otherwise surfaces much later as a
+                    # confusing "image not found" at compose_color up (or at the
+                    # migration dry-run for km-migrate) — fail fast here.
+                    for img in km-server km-client km-kiwi km-migrate; do
                       if ! docker image inspect "$img:$(deployTag)" >/dev/null 2>&1; then
                         echo "ERROR: $img:$(deployTag) did not load from its tar artifact" >&2
                         exit 1
                       fi
                     done
-                    docker images | grep -E 'km-(server|client|kiwi)'
+                    docker images | grep -E 'km-(server|client|kiwi|migrate)'
                   displayName: "Load images from tar"
 
                 # Ensure the PERSISTENT server .env exists (KM_ENV_FILE) before any

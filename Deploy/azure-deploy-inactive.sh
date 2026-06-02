@@ -51,6 +51,10 @@ main() {
         usage
         return 2
     fi
+    # run_migrate selects the km-migrate:<tag> image by DEPLOY_TAG. Export the
+    # release tag so the migration dry-run/apply use the image built for THIS
+    # release (loaded by the pipeline's "Load images from tar" step).
+    export DEPLOY_TAG="$deploy_tag"
 
     # --- Step 1: environment + shared infra ---------------------------------
     log_info "=== deploy-to-inactive START (tag=${deploy_tag}) ==="
@@ -108,9 +112,10 @@ main() {
     bash "${DEPLOY_DIR}/db-backup.sh"
 
     # --- Step 4: expand/contract migrations on the SHARED DB -----------------
-    # migrate.py runs in a throwaway python:3.12-slim container on km-internal
-    # (run_migrate, deployment-utils.sh) — no host Python deps. --dry-run is a
-    # GLOBAL flag and MUST precede the `up` subcommand. The dry-run is the safety
+    # migrate.py runs in the pre-built km-migrate container on km-internal
+    # (run_migrate, deployment-utils.sh) — deps baked in, no host Python deps and
+    # no runtime pip (km-internal is egress-blocked). --dry-run is a GLOBAL flag
+    # and MUST precede the `up` subcommand. The dry-run is the safety
     # gate: if it reports a destructive/non-additive change we ABORT, because the
     # still-live ACTIVE color's code expects the old schema on this shared DB.
     log_info "migration dry-run (expand/contract gate)"
