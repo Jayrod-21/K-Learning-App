@@ -199,6 +199,30 @@ def test_illegal_control_char_is_stripped_not_fatal(tmp_path: Path) -> None:
     assert "\x08" not in entries[0].senses[0].definition_korean
 
 
+# --- Sense re-indexing (KRDICT @val is not a reliable 1-based index) ---------
+
+def test_single_sense_with_nonone_val_reindexed_to_one(tmp_path: Path) -> None:
+    # A synonym/cross-ref entry can carry a lone Sense numbered e.g. "3" (the
+    # sense number of the entry it points at). It must still parse, re-indexed to
+    # sense_index 1 — not be dropped for "missing sense_index = 1".
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<LexicalResource><Lexicon>"
+        '<LexicalEntry att="id" val="79620">'
+        '<feat att="partOfSpeech" val="명사" />'
+        '<Lemma><feat att="writtenForm" val="초야" /></Lemma>'
+        '<Sense att="id" val="3">'
+        '<feat att="definition" val="신랑과 신부가 처음으로 함께 자는 밤." />'
+        "</Sense></LexicalEntry>"
+        "</Lexicon></LexicalResource>"
+    )
+    p = tmp_path / "synonym.xml"
+    p.write_bytes(xml.encode("utf-8"))
+    entries = list(parse_file(p))
+    assert len(entries) == 1
+    assert [s.sense_index for s in entries[0].senses] == [1]
+
+
 # --- Security: XXE / entity attacks blocked ----------------------------------
 
 def test_entity_declaration_is_blocked(tmp_path: Path) -> None:

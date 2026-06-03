@@ -168,7 +168,14 @@ async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) 
             raise
 
 
-_VALID_ENTRY_TYPES = {"word", "theme_intro", "subsection_intro", "reference"}
+_VALID_ENTRY_TYPES = {
+    "word",
+    "theme_intro",
+    "subsection_intro",
+    "reference",
+    "lets_check",  # "Let's Check" review/exercise pages (non-word section)
+    "hanja_extension",  # hanja supplement sections (non-word section)
+}
 
 
 async def _insert_item_batch(

@@ -75,6 +75,7 @@ from krdict_models import (
     KrdictExampleModel,
     KrdictInflectionModel,
     KrdictSenseModel,
+    VocabularyLevel,
 )
 
 
@@ -227,6 +228,24 @@ def _hanja(elem) -> Optional[str]:
     return None
 
 
+def _vocab_level(elem) -> Optional[VocabularyLevel]:
+    """Map ``feat vocabularyLevel`` to the enum; unknown/absent → None.
+
+    Coercing here (rather than passing the raw str to the model) keeps the value
+    type-correct for KrdictEntryModel.vocabulary_level. The model's
+    ``_coerce_vocabulary_level`` validator stays as a boundary guard for other
+    construction paths (tests, a future API mapper).
+    """
+    raw = _feat(elem, FEAT_VOCAB_LEVEL)
+    if raw is None:
+        return None
+    try:
+        return VocabularyLevel(raw)
+    except ValueError:
+        # A grade KRDICT might add later → None, same as the model guard.
+        return None
+
+
 def _english_definition(sense_elem) -> Optional[str]:
     """The English gloss lives in the Equivalent whose language feat is 영어."""
     for eq in sense_elem.findall(TAG_EQUIVALENT):
@@ -261,18 +280,22 @@ def _parse_examples(sense_elem) -> list[KrdictExampleModel]:
 
 def _parse_senses(entry_elem) -> list[KrdictSenseModel]:
     senses: list[KrdictSenseModel] = []
-    for fallback_idx, s in enumerate(entry_elem.findall(TAG_SENSE), start=1):
+    for s in entry_elem.findall(TAG_SENSE):
         def_ko = _feat(s, FEAT_DEFINITION)
         if not def_ko:
             # A sense with no Korean definition is malformed. Skip it — the
-            # entry validator catches a missing sense_index = 1.
+            # entry validator catches an entry left with no senses at all.
             continue
-        sense_index = _int_or_default(s.get("val"), fallback_idx)
-        if sense_index < 1:
-            sense_index = fallback_idx
+        # Re-index POSITIONALLY (1..N in document order). KRDICT's Sense @val is
+        # NOT a reliable per-entry 1-based index: a synonym / cross-reference
+        # entry can carry a single sense numbered e.g. "3" (the sense number of
+        # the entry it points at — e.g. 초야 → 첫날밤 sense 3). Trusting @val made
+        # the model reject such entries ("must have sense_index = 1"). Our schema
+        # only needs contiguous indices from 1 in document order, so assign by
+        # position.
         senses.append(
             KrdictSenseModel(
-                sense_index=sense_index,
+                sense_index=len(senses) + 1,
                 definition_korean=def_ko,
                 definition_english=_english_definition(s),
                 sense_domain=None,  # KRDICT tags category at entry scope, not sense
@@ -335,7 +358,7 @@ def _entry_from_xml(elem) -> KrdictEntryModel:
         pronunciation=_pronunciation(elem),
         part_of_speech=_feat(elem, FEAT_POS),
         hanja=_hanja(elem),
-        vocabulary_level=_feat(elem, FEAT_VOCAB_LEVEL),
+        vocabulary_level=_vocab_level(elem),
         register=None,  # KRDICT LMF does not tag speech-level register
         senses=senses,
         inflections=_parse_inflections(elem),

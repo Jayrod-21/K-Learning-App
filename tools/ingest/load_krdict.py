@@ -634,14 +634,28 @@ def _batched(
 
 @contextmanager
 def _connect(dsn: str):
-    """Open a psycopg connection with conservative settings."""
+    """Open a psycopg connection with conservative settings.
+
+    autocommit=True is REQUIRED, not incidental. The loader commits per batch via
+    ``with conn.transaction():`` blocks (and one for the source row + each
+    checkpoint). In psycopg3, ``conn.transaction()`` starts a REAL transaction
+    (committed on block exit) ONLY when no transaction is already open; if one is
+    already in progress it degrades to a SAVEPOINT, which is *released*, never
+    COMMITted. With autocommit=False the very first statement below
+    (``SET statement_timeout``) opens an implicit transaction, so every later
+    ``conn.transaction()`` became a savepoint and the outer transaction was never
+    committed — ``conn.close()`` then rolled the entire load back. The loader
+    logged "batch_committed/completed" while persisting NOTHING. autocommit=True
+    makes each transaction() block a real, durable commit.
+    """
     conn = psycopg.connect(
         dsn,
         application_name="korean-master-krdict-loader",
-        autocommit=False,
+        autocommit=True,
     )
     try:
         # Loaders may run long — disable statement timeout for this session.
+        # Session-level SET; persists regardless of autocommit.
         with conn.cursor() as cur:
             cur.execute("SET statement_timeout = 0;")
         yield conn
