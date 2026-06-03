@@ -164,8 +164,10 @@ def compute_source_sha256(source: Path) -> str:
 
 
 def count_xml_entries(source: Path) -> int:
-    """Cheap pre-scan for sanity-checking. Counts `<entry>` substrings,
-    NOT an XML parse — purely defensive (avoid blowing memory on a count)."""
+
+    """Cheap pre-scan for sanity-checking. Counts `<LexicalEntry>` open tags
+    (LMF, DTD_LMF_REV_16), NOT an XML parse — purely defensive (avoid blowing
+    memory on a count of a multi-GB archive)."""
     total = 0
     files: list[Path]
     if source.is_dir():
@@ -174,10 +176,12 @@ def count_xml_entries(source: Path) -> int:
         files = [source]
     for f in files:
         # Process line-by-line so even a multi-GB file is fine. Counting
-        # `<entry>` open tags is a heuristic — not a parse.
+        # `<LexicalEntry>` open tags is a heuristic — not a parse. Real KRDICT
+        # entries carry attributes (`<LexicalEntry att="id" val="...">`), so
+        # match both the bare and attributed open-tag forms.
         with f.open("rb") as fp:
             for line in fp:
-                total += line.count(b"<entry>") + line.count(b"<entry ")
+                total += line.count(b"<LexicalEntry>") + line.count(b"<LexicalEntry ")
     return total
 
 

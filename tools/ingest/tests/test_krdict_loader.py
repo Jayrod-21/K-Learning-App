@@ -60,7 +60,7 @@ def test_compute_source_sha256_rejects_missing_path(tmp_path):
 def test_count_xml_entries_matches_parsed_plus_skipped():
     parsed = list(parse_file(FIXTURE))
     counted = load_krdict.count_xml_entries(FIXTURE)
-    # 8 valid + 1 malformed = 9 `<entry>` tags in the fixture.
+    # 6 valid + 1 malformed = 7 `<LexicalEntry>` tags in the LMF fixture.
     assert counted == len(parsed) + 1
 
 
@@ -118,10 +118,10 @@ def test_dry_run_reports_stats(caplog):
         source_label="TEST",
         source_path=str(FIXTURE),
         source_sha256="0" * 64,
-        item_count=9,
+        item_count=7,
     )
     stats = load_krdict.dry_run(source=FIXTURE, metadata=metadata)
-    assert stats.entries_inserted_or_updated == 8
+    assert stats.entries_inserted_or_updated == 6
     assert stats.entries_skipped == 1
 
 
