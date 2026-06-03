@@ -12,9 +12,26 @@ import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateQuery, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError } from '../middleware/errors.js';
+import { escapeLikePattern } from '../db/like.js';
 
 const router = Router();
 router.use(requireAuth);
+
+/**
+ * The week-rollover boundary expression for the weekly-suggestion hash. Pinned
+ * to the app's target locale ('Asia/Seoul') and ISO-week numbering so the same
+ * 15 picks are returned all week and rotate at local Monday-00:00 regardless of
+ * the DB session timezone. `IYYY-IW` is ISO-year + ISO-week (e.g. `2026-23`);
+ * we use it — not `current_date` — for the same reason plan.ts uses
+ * `(now() AT TIME ZONE 'Asia/Seoul')::date`: a bare date evaluates in the
+ * session TimeZone GUC (UTC on a stock container) and would roll the week over
+ * at 09:00 KST for a Korea-resident learner. The zone + format are server-side
+ * SQL literals, never client input — no injection surface.
+ */
+const ISO_WEEK_SQL = `to_char((now() AT TIME ZONE 'Asia/Seoul'), 'IYYY-IW')`;
+
+/** How many vocab picks the weekly-suggestion endpoint returns. */
+const WEEKLY_SUGGESTION_LIMIT = 15;
 
 /** Non-empty, trimmed text — mirrors the convention in services/claude/models.ts. */
 const NonEmptyText = z.string().trim().min(1);
@@ -22,12 +39,20 @@ const NonEmptyText = z.string().trim().min(1);
 /* ---------- Corpus lookup (vocab_entries from migration 002) ---------- */
 
 const VocabSearchQuerySchema = z.object({
-  q: z.string().min(1).max(64).optional(),
+  // Free-text search. ILIKE substring over korean + english so the Resources
+  // "Vocabulary" tab search box finds a word by either its Hangul headword or
+  // its English gloss. Metacharacters are escaped (see escapeLikePattern) so a
+  // term like "100%" matches literally and an all-wildcard term can't scan the
+  // whole table.
+  q: z.string().trim().min(1).max(64).optional(),
   corpus: z
     .enum(['vocab_2000_beginner', 'vocab_2000_intermediate'])
     .optional(),
   proficiency: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  // Browse needs a higher ceiling than the original tap-lookup default — the
+  // Resources tab pages the full 3,131-row curated corpus. 200 mirrors
+  // /vocab/cards/due; the client paginates with offset + the `total` count.
+  limit: z.coerce.number().int().min(1).max(200).default(20),
   offset: z.coerce.number().int().nonnegative().default(0),
 });
 
@@ -40,7 +65,15 @@ router.get(
       const q = (req as typeof req & {
         validatedQuery: z.infer<typeof VocabSearchQuerySchema>;
       }).validatedQuery;
+      // The ILIKE operand is the escaped term wrapped in %…% for substring
+      // match; null when no search term is given (the filter short-circuits).
+      // Escaping happens in JS, the value is still bound as a parameter — no
+      // string interpolation of user input into SQL.
+      const likePattern =
+        q.q !== undefined ? `%${escapeLikePattern(q.q)}%` : null;
       // Build a single parameterized query — no string concatenation of values.
+      // window COUNT(*) OVER () returns the total matching rows alongside the
+      // page so the client can paginate without a second round-trip.
       const { rows } = await query<{
         id: number;
         corpus: string;
@@ -48,24 +81,34 @@ router.get(
         english: string | null;
         proficiency: string | null;
         theme: string | null;
+        total: string;
       }>(
-        `SELECT id, corpus, korean, english, proficiency, theme
+        `SELECT id, corpus, korean, english, proficiency, theme,
+                COUNT(*) OVER ()::text AS total
            FROM vocab_entries
           WHERE entry_type = 'word'
-            AND ($1::text IS NULL OR korean = $1)
+            AND ($1::text IS NULL
+                 OR korean  ILIKE $1 ESCAPE '\\'
+                 OR english ILIKE $1 ESCAPE '\\')
             AND ($2::corpus IS NULL OR corpus = $2::corpus)
             AND ($3::proficiency_level IS NULL OR proficiency = $3::proficiency_level)
           ORDER BY id
           LIMIT $4 OFFSET $5`,
         [
-          q.q ?? null,
+          likePattern,
           q.corpus ?? null,
           q.proficiency ?? null,
           q.limit,
           q.offset,
         ],
       );
-      res.status(200).json({ entries: rows, limit: q.limit, offset: q.offset });
+      // COUNT(*) OVER () is identical on every row; an empty page (offset past
+      // the end, or no matches) yields no rows, so total is 0 there.
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      // Strip the per-row window total from the entry DTOs — it's surfaced once
+      // at the top level, not repeated on every entry.
+      const entries = rows.map(({ total: _total, ...rest }) => rest);
+      res.status(200).json({ entries, total, limit: q.limit, offset: q.offset });
     } catch (err) {
       next(err);
     }
@@ -591,5 +634,70 @@ router.post(
     }
   },
 );
+
+/* ---------- Weekly suggestions (suggest-only — no auto-add) ---------- */
+
+/**
+ * GET /vocab/suggestions/weekly — 15 curated vocab the user hasn't carded yet,
+ * stable for the whole ISO week and rotating the next.
+ *
+ * Suggest-only: this endpoint NEVER writes a card. The client renders each pick
+ * with an [Add] button that POSTs /vocab/entries/:entryId/bank (the existing
+ * add-to-deck path) — there is no parallel card-create here.
+ *
+ * Selection model — "stable per (user, ISO week), excludes what's already
+ * studied" (mirrors plan.ts / hanja.ts deterministic-hash selection):
+ *   - Source: curated `vocab_2000_*` corpora only (entry_type = 'word'). The
+ *     mined / KRDICT corpora are user-driven, not a curated suggestion pool.
+ *   - Exclusion: any vocab_entry the user already has a live recognition card
+ *     for (NOT EXISTS on vocab_cards) is dropped — we never re-suggest a word
+ *     the learner has already banked.
+ *   - Ordering: md5(iso_week || user_id || entry.id). The same set of 15 comes
+ *     back all week (idempotent refetch — no reshuffle under the user) and a
+ *     fresh set surfaces when the ISO week rolls over (Asia/Seoul Monday).
+ *   - LIMIT 15. Fewer rows only when the user has carded almost the whole
+ *     corpus — then the week's pool is genuinely smaller.
+ *
+ * Read-only, auth-required, cheap limiter. No body, no params: the only SQL
+ * input is the session user id (never client-supplied) and server-side date.
+ */
+router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{
+      id: number;
+      corpus: string;
+      korean: string | null;
+      english: string | null;
+      proficiency: string | null;
+      theme: string | null;
+    }>(
+      `SELECT v.id, v.corpus, v.korean, v.english, v.proficiency, v.theme
+         FROM vocab_entries v
+        WHERE v.entry_type = 'word'
+          AND v.corpus IN ('vocab_2000_beginner'::corpus,
+                           'vocab_2000_intermediate'::corpus)
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM vocab_cards c
+                 WHERE c.user_id = $1
+                   AND c.vocab_entry_id = v.id
+                   AND c.face = 'recognition'
+                   AND c.deleted_at IS NULL
+              )
+        ORDER BY md5(${ISO_WEEK_SQL} || $1::text || v.id::text)
+        LIMIT $2`,
+      [userId, WEEKLY_SUGGESTION_LIMIT],
+    );
+    // pg returns BIGINT (id) as a string; the DTO documents id as a JSON number
+    // (vocab_entries.id fits comfortably in Number.MAX_SAFE_INTEGER). The wire
+    // key is `entries` (matches the client's VocabSuggestionsResponse — the rows
+    // are plain VocabEntry shapes, bankable via the existing per-entry path).
+    const entries = rows.map((r) => ({ ...r, id: Number(r.id) }));
+    res.status(200).json({ entries });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

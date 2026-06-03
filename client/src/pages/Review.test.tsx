@@ -123,7 +123,7 @@ vi.mock('../services/vocab', () => ({
   getDueCards: vi.fn(),
   submitReview: vi.fn(),
   listLists: vi.fn(),
-  getList: vi.fn(),
+  getListDetail: vi.fn(),
   createList: vi.fn(),
   patchList: vi.fn(),
   deleteList: vi.fn(),
@@ -243,12 +243,20 @@ const BUNDLE: VocabListBundle = {
 
 const SERVER_LIST: ServerVocabList = {
   id: 7,
-  name: '병원 어휘',
+  name_kr: '병원 어휘',
+  name_en: 'Hospital words',
   kind: 'vocab',
-  description: 'Hospital words',
+  version: 1,
   entry_count: 5,
   created_at: '2025-01-01T00:00:00Z',
   updated_at: '2025-01-01T00:00:00Z',
+};
+
+const SERVER_LIST_DETAIL = {
+  list: SERVER_LIST,
+  entries: [],
+  entry_limit: 100,
+  entry_offset: 0,
 };
 
 const SERVER_ENTRIES: VocabEntry[] = [
@@ -324,8 +332,8 @@ describe('Review', () => {
     );
   });
 
-  it('switches to Lists tab and opens ListDetailSheet via getList', async () => {
-    vi.mocked(vocabService.getList).mockResolvedValue(SERVER_LIST);
+  it('switches to Lists tab and opens ListDetailSheet via getListDetail', async () => {
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(SERVER_LIST_DETAIL);
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
@@ -338,7 +346,7 @@ describe('Review', () => {
     await user.click(screen.getByRole('button', { name: /병원 어휘/ }));
 
     await waitFor(() => {
-      expect(vocabService.getList).toHaveBeenCalledWith(7);
+      expect(vocabService.getListDetail).toHaveBeenCalledWith(7);
     });
   });
 
@@ -426,7 +434,7 @@ describe('Review', () => {
   });
 
   it('spacebar is ignored while a Sheet is open (D-B3 sheet-open guard)', async () => {
-    vi.mocked(vocabService.getList).mockResolvedValue(SERVER_LIST);
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(SERVER_LIST_DETAIL);
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
@@ -437,7 +445,7 @@ describe('Review', () => {
     await user.click(screen.getByRole('tab', { name: 'Lists' }));
     await user.click(screen.getByRole('button', { name: /병원 어휘/ }));
     await waitFor(() => {
-      expect(vocabService.getList).toHaveBeenCalledWith(7);
+      expect(vocabService.getListDetail).toHaveBeenCalledWith(7);
     });
 
     // Back to the Session tab so the flashcard is rendered behind the open

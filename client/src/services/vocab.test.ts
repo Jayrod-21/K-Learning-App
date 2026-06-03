@@ -8,13 +8,14 @@ import {
   deleteList,
   getDueCards,
   getEntry,
-  getList,
+  getListDetail,
   initCards,
   listLists,
   mineWord,
   patchList,
   removeListEntry,
   searchEntries,
+  searchEntriesPage,
   submitReview,
 } from './vocab';
 import { api, ApiError } from './api';
@@ -251,47 +252,91 @@ describe('mineWord', () => {
 });
 
 describe('lists CRUD', () => {
-  it('listLists unwraps `lists`', async () => {
+  it('listLists unwraps `lists` (real name_kr/name_en/version shape)', async () => {
     vi.spyOn(api, 'get').mockResolvedValueOnce({
       lists: [
         {
           id: 1,
-          name: 'a',
+          name_kr: '병원 어휘',
+          name_en: 'Hospital words',
           kind: 'vocab',
-          description: null,
+          version: 1,
           entry_count: 0,
           created_at: 'x',
           updated_at: 'y',
         },
       ],
+      limit: 50,
+      offset: 0,
     });
 
     const lists = await listLists();
     expect(lists).toHaveLength(1);
+    expect(lists[0]?.name_kr).toBe('병원 어휘');
   });
 
-  it('createList POSTs /vocab/lists', async () => {
-    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ id: 1 });
+  it('createList POSTs /vocab/lists with name_kr and unwraps the envelope', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      list: {
+        id: 1,
+        name_kr: 'New',
+        name_en: null,
+        kind: 'vocab',
+        version: 1,
+        entry_count: 0,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+      appended: 0,
+    });
 
-    await createList({ name: 'New', kind: 'vocab' });
+    const res = await createList({ name_kr: 'New', kind: 'vocab' });
 
-    expect(spy).toHaveBeenCalledWith('/vocab/lists', { name: 'New', kind: 'vocab' });
+    expect(spy).toHaveBeenCalledWith('/vocab/lists', {
+      name_kr: 'New',
+      kind: 'vocab',
+    });
+    expect(res.list.id).toBe(1);
+    expect(res.appended).toBe(0);
   });
 
-  it('getList GETs /vocab/lists/:id', async () => {
-    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({});
+  it('createList strips undefined optionals (no name_en / seed)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      list: { id: 2 },
+      appended: 0,
+    });
 
-    await getList(7);
+    await createList({ name_kr: '단어장', kind: 'vocab', name_en: undefined });
+
+    expect(spy).toHaveBeenCalledWith('/vocab/lists', {
+      name_kr: '단어장',
+      kind: 'vocab',
+    });
+  });
+
+  it('getListDetail GETs /vocab/lists/:id (detail + entries envelope)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      list: { id: 7 },
+      entries: [],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+
+    const res = await getListDetail(7);
 
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7', undefined);
+    expect(res.entry_limit).toBe(100);
   });
 
-  it('patchList PATCHes /vocab/lists/:id', async () => {
-    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce({});
+  it('patchList PATCHes /vocab/lists/:id and unwraps the list', async () => {
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce({
+      list: { id: 7, name_kr: 'renamed' },
+    });
 
-    await patchList(7, { name: 'renamed' });
+    const res = await patchList(7, { name_kr: 'renamed' });
 
-    expect(spy).toHaveBeenCalledWith('/vocab/lists/7', { name: 'renamed' });
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7', { name_kr: 'renamed' });
+    expect(res.list.name_kr).toBe('renamed');
   });
 
   it('deleteList DELETEs /vocab/lists/:id', async () => {
@@ -302,14 +347,31 @@ describe('lists CRUD', () => {
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7');
   });
 
-  it('addListEntries posts entry_ids', async () => {
-    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ added: 3 });
+  it('addListEntries posts entry_ids and unwraps the appended rows', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
+      entries: [
+        { entry_id: 1, position: 0, added_at: 'x' },
+        { entry_id: 2, position: 1, added_at: 'x' },
+      ],
+    });
 
-    await addListEntries(7, [1, 2, 3]);
+    const res = await addListEntries(7, [1, 2, 3]);
 
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7/entries', {
       entry_ids: [1, 2, 3],
     });
+    expect(res.entries).toHaveLength(2);
+  });
+
+  it('addListEntries surfaces a 409 duplicate as an ApiError', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('entries already in list: 1', {
+        status: 409,
+        code: 'conflict',
+      }),
+    );
+
+    await expect(addListEntries(7, [1])).rejects.toMatchObject({ status: 409 });
   });
 
   it('removeListEntry DELETEs the nested route', async () => {
@@ -318,6 +380,27 @@ describe('lists CRUD', () => {
     await removeListEntry(7, 99);
 
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7/entries/99');
+  });
+});
+
+describe('searchEntriesPage', () => {
+  it('returns the full envelope including total', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [
+        { id: 1, corpus: 'x', korean: '학교', english: 'school', proficiency: 'L3', theme: null },
+      ],
+      total: 3131,
+      limit: 20,
+      offset: 0,
+    });
+
+    const page = await searchEntriesPage({ q: '학교', limit: 20, offset: 0 });
+
+    expect(spy).toHaveBeenCalledWith('/vocab/entries', {
+      params: { q: '학교', limit: 20, offset: 0 },
+    });
+    expect(page.total).toBe(3131);
+    expect(page.entries).toHaveLength(1);
   });
 });
 

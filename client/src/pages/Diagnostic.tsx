@@ -61,6 +61,7 @@ import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillRow, SkillReference } from '../components/SkillsCompare';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
+import { useToast } from '../components/useToast';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadDiagnosticSnapshotMock } from '../data/mocks/diagnostic';
 import {
@@ -111,6 +112,8 @@ function Diagnostic(): JSX.Element {
     loadDiagnosticSnapshotMock,
     { realFn: () => fetchLatestSnapshot() },
   );
+
+  const { toast } = useToast();
 
   // Default to `results` only when a prior snapshot exists. Otherwise intro.
   // `null` while loading so we don't pick a mode on partial data.
@@ -201,6 +204,25 @@ function Diagnostic(): JSX.Element {
           onComplete={(completed) => {
             setFreshSnapshot(completed);
             setMode('done');
+          }}
+          onAlreadyRecorded={() => {
+            // 409 auto-resync (E-DG-409): the server already recorded this
+            // answer (a double-submit or a lost-response retry). There is no
+            // GET-current-item endpoint to re-hydrate the in-flight run, so the
+            // honest recovery is to leave the now-desynced Taking flow, refetch
+            // the latest snapshot, and tell the user we're continuing — NOT to
+            // trap them on a "Try again" loop that will only 409 again. The
+            // toast carries the exact contract copy.
+            toast({
+              message: 'Answer already recorded — continuing.',
+              tone: 'info',
+            });
+            snap.refetch();
+            setMode(
+              snap.data && snap.data.dimensions.length > 0
+                ? 'results'
+                : 'intro',
+            );
           }}
         />
       ) : null}
@@ -295,12 +317,24 @@ interface TakingProps {
   onExit: () => void;
   /** Fires with the finished-run snapshot once the last item is graded. */
   onComplete: (snapshot: DiagnosticSnapshot) => void;
+  /**
+   * Fires when the server reports the current answer was ALREADY recorded
+   * (a 409 ConflictError from `/answer` or `/finish`). The parent resyncs:
+   * toast "answer already recorded — continuing", refetch the latest
+   * snapshot, and leave the Taking flow — there is no stale Try-again
+   * dead-end. See the E-DG-409 note where it's wired.
+   */
+  onAlreadyRecorded: () => void;
 }
 
 /** Phase of the in-flight network call driving the Taking block. */
 type Phase = 'starting' | 'answering' | 'finishing' | 'idle' | 'error';
 
-function TakingBlock({ onExit, onComplete }: TakingProps): JSX.Element {
+function TakingBlock({
+  onExit,
+  onComplete,
+  onAlreadyRecorded,
+}: TakingProps): JSX.Element {
   const [runId, setRunId] = useState<number | null>(null);
   const [item, setItem] = useState<DiagnosticLiveItem | null>(null);
   const [progress, setProgress] = useState<DiagnosticProgress | null>(null);
@@ -402,11 +436,21 @@ function TakingBlock({ onExit, onComplete }: TakingProps): JSX.Element {
         })
         .catch((err: unknown) => {
           if (ctrl.signal.aborted) return;
+          // 409 auto-resync (E-DG-409): the server already recorded this
+          // answer (a double-submit, or a retry after a lost success
+          // response). Re-grading the same `responseId` would only 409 again,
+          // so we must NOT land in the `error` phase that renders the stale
+          // "Try again" control. Instead hand off to the parent's resync —
+          // toast + refetch + leave the desynced run.
+          if (err instanceof ApiError && err.status === 409) {
+            onAlreadyRecorded();
+            return;
+          }
           setPhase('error');
           setErrorMsg(toMessage(err, 'Could not submit your answer.'));
         });
     },
-    [runId, item, inFlight, reveal, beginCall],
+    [runId, item, inFlight, reveal, beginCall, onAlreadyRecorded],
   );
 
   // Submit the currently-picked choice.
@@ -445,10 +489,17 @@ function TakingBlock({ onExit, onComplete }: TakingProps): JSX.Element {
       })
       .catch((err: unknown) => {
         if (ctrl.signal.aborted) return;
+        // 409 here means the run is no longer finishable from this client's
+        // view (already finished elsewhere, or a served item the UI doesn't
+        // know about is unanswered). Resync rather than dead-end (E-DG-409).
+        if (err instanceof ApiError && err.status === 409) {
+          onAlreadyRecorded();
+          return;
+        }
         setPhase('error');
         setErrorMsg(toMessage(err, 'Could not finish the diagnostic.'));
       });
-  }, [runId, reveal, inFlight, beginCall, onComplete]);
+  }, [runId, reveal, inFlight, beginCall, onComplete, onAlreadyRecorded]);
 
   // Retry the failed step. A failed start (no runId yet) re-runs `runStart`;
   // a mid-run failure replays the step its `reveal` implies — `advance`

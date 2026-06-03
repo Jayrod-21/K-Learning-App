@@ -174,6 +174,86 @@ describe('GET /grammar/bank', () => {
   });
 });
 
+describe('GET /grammar/suggestions/weekly', () => {
+  // kgiu_entries is shared reference data the per-test beforeEach does NOT
+  // truncate; isolate this block by clearing it (CASCADE drops the relation /
+  // cross-ref / topik-dependency rows that FK into it) so the LIMIT 15 window
+  // contains only the patterns each test seeds.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE kgiu_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/grammar/suggestions/weekly');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns KGIU patterns the user has not banked', async () => {
+    await seedKgiuEntry(pg.pool, { pattern: '-아/어 보이다' });
+    await seedKgiuEntry(pg.pool, { pattern: '-(으)면' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/suggestions/weekly');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.patterns)).toBe(true);
+    const patterns = (res.body.patterns as Array<{ pattern: string }>).map((s) => s.pattern);
+    expect(patterns).toEqual(expect.arrayContaining(['-아/어 보이다', '-(으)면']));
+    expect(typeof res.body.patterns[0].id).toBe('number');
+  });
+
+  it('is stable for the same user within the week (deterministic refetch)', async () => {
+    for (let i = 0; i < 18; i += 1) {
+      await seedKgiuEntry(pg.pool, { pattern: `-패턴${i}` });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const first = await agent.get('/grammar/suggestions/weekly').expect(200);
+    const second = await agent.get('/grammar/suggestions/weekly').expect(200);
+    const ids1 = (first.body.patterns as Array<{ id: number }>).map((s) => s.id);
+    const ids2 = (second.body.patterns as Array<{ id: number }>).map((s) => s.id);
+    expect(ids2).toEqual(ids1);
+    expect(ids1.length).toBe(15);
+  });
+
+  it('excludes a pattern the user has already banked (by display form)', async () => {
+    const bankedPattern = '-아/어 보이다';
+    const freshPattern = '-(으)ㄹ 수 있다';
+    await seedKgiuEntry(pg.pool, { pattern: bankedPattern });
+    await seedKgiuEntry(pg.pool, { pattern: freshPattern });
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Bank the matching pattern via the existing add-to-bank path.
+    const banked = await agent.post('/grammar/bank').send({
+      pattern_key: 'GR-a-eo-boida',
+      pattern_display: bankedPattern,
+      summary_en: 'appears / seems',
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    expect(banked.status).toBe(201);
+    const res = await agent.get('/grammar/suggestions/weekly').expect(200);
+    const patterns = (res.body.patterns as Array<{ pattern: string }>).map((s) => s.pattern);
+    expect(patterns).not.toContain(bankedPattern);
+    // …while a different, un-banked pattern is still suggested.
+    expect(patterns).toContain(freshPattern);
+  });
+
+  it('each user sees suggestions independent of another user’s bank', async () => {
+    const pattern = '-(으)니까';
+    await seedKgiuEntry(pg.pool, { pattern });
+    const a = await registerUser(t.app, pg.pool);
+    await a.agent.post('/grammar/bank').send({
+      pattern_key: 'GR-eunikka',
+      pattern_display: pattern,
+      summary_en: 'because',
+      proficiency: 'L3',
+      category: 'reason',
+    });
+    // User B has banked nothing → still sees the pattern.
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/grammar/suggestions/weekly').expect(200);
+    const patterns = (res.body.patterns as Array<{ pattern: string }>).map((s) => s.pattern);
+    expect(patterns).toContain(pattern);
+  });
+});
+
 describe('POST /grammar/identify — downstream (B4)', () => {
   it('stubbed proxy → 200 with pattern result', async () => {
     const { agent } = await registerUser(t.app, pg.pool);

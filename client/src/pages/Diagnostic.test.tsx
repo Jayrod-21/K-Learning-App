@@ -17,6 +17,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { ToastProvider } from '../components/ToastProvider';
+import { ApiError } from '../services/api';
 import type {
   DiagnosticAnswerResponse,
   DiagnosticLiveItem,
@@ -32,8 +34,16 @@ interface HookResult<T> {
   refetch?: () => void;
 }
 
+const refetchSpy = vi.fn();
+
 const hookState: { snapshot: HookResult<DiagnosticSnapshot> } = {
-  snapshot: { data: null, loading: true, error: null, isMock: false },
+  snapshot: {
+    data: null,
+    loading: true,
+    error: null,
+    isMock: false,
+    refetch: refetchSpy,
+  },
 };
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
@@ -116,7 +126,9 @@ const ITEM_2: DiagnosticLiveItem = {
 function renderWithRouter(): ReturnType<typeof render> {
   return render(
     <MemoryRouter>
-      <Diagnostic />
+      <ToastProvider>
+        <Diagnostic />
+      </ToastProvider>
     </MemoryRouter>,
   );
 }
@@ -128,7 +140,9 @@ describe('Diagnostic', () => {
       loading: true,
       error: null,
       isMock: false,
+      refetch: refetchSpy,
     };
+    refetchSpy.mockReset();
     startDiagnostic.mockReset();
     answerDiagnostic.mockReset();
     finishDiagnostic.mockReset();
@@ -328,6 +342,56 @@ describe('Diagnostic', () => {
       picked: 'a',
       timeMs: expect.any(Number),
     });
+  });
+
+  it('auto-resyncs on a 409 answer conflict instead of dead-ending on Try again (E-DG-409)', async () => {
+    hookState.snapshot = {
+      data: POPULATED_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+      refetch: refetchSpy,
+    };
+    startDiagnostic.mockResolvedValue({
+      runId: 21,
+      item: ITEM_1,
+      progress: { ordinal: 1, total: 2 },
+    });
+    // The server reports the answer was already recorded (double-submit / lost
+    // success). The client must NOT surface a re-gradeable "Try again".
+    answerDiagnostic.mockRejectedValue(
+      new ApiError('responseId does not match the current item', {
+        status: 409,
+        code: 'conflict',
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    // A prior snapshot exists, so the retake CTA on results enters the run.
+    await user.click(screen.getByRole('button', { name: /re-test diagnostic/i }));
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
+
+    await user.click(screen.getAllByRole('radio')[0]); // 'a'
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Resync: the latest-snapshot refetch fires, the Taking flow leaves for the
+    // results view (a prior snapshot existed), and the toast announces it. There
+    // is NO "Try again" dead-end and NO lingering submit error.
+    await waitFor(() => {
+      expect(refetchSpy).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      await screen.findByText(/answer already recorded — continuing/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /try again/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/could not submit your answer/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
   });
 
   it('surfaces an ErrorCard when starting the run fails', async () => {

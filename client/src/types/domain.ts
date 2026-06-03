@@ -721,11 +721,70 @@ export interface VocabEntryDetail extends VocabEntry {
   notes: unknown;
 }
 
-/** Envelope for `GET /vocab/entries`. */
+/**
+ * Envelope for `GET /vocab/entries`.
+ *
+ * `total` is the unfiltered-by-page row count the browse pagination needs (the
+ * server adds it alongside the existing `entries`/`limit`/`offset` — see the
+ * Resources browse contract). It is optional here so the client still
+ * type-checks against a pre-bump server that hasn't shipped the count yet; the
+ * Resources Vocabulary tab falls back to "page-length" semantics when it's
+ * absent rather than rendering a broken pager.
+ */
 export interface VocabEntriesPage {
   entries: VocabEntry[];
   limit: number;
   offset: number;
+  total?: number;
+}
+
+// ── KRDICT dictionary search (Resources Dictionary tab) ───────────────
+
+/**
+ * One KRDICT row returned by `GET /krdict/search`. Mirrors the `/define`
+ * entry columns (`krdict_entries` — ADR-015 §D5): first-sense definitions are
+ * denormalised onto the row; the multi-sense / example detail lives behind
+ * `/define` and is not carried by the paginated search surface.
+ */
+export interface KrdictSearchEntry {
+  id: number;
+  headword: string;
+  part_of_speech: string | null;
+  definition_korean: string | null;
+  definition_english: string | null;
+}
+
+/** Envelope for `GET /krdict/search`. */
+export interface KrdictSearchPage {
+  entries: KrdictSearchEntry[];
+  total: number;
+}
+
+// ── Weekly suggestions (Resources "This Week" — suggest-only) ─────────
+
+/**
+ * One weekly vocab suggestion. Shares the `VocabEntry` shape (the server's
+ * `/vocab/suggestions/weekly` selects the same `vocab_entries` columns), so a
+ * tapped suggestion can be banked through the existing per-entry bank path
+ * (`bankEntry(entry.id)`) without a second resolver.
+ */
+export type VocabSuggestion = VocabEntry;
+
+/** Envelope for `GET /vocab/suggestions/weekly` (≈15 rows, deterministic per ISO week). */
+export interface VocabSuggestionsResponse {
+  entries: VocabSuggestion[];
+}
+
+/**
+ * One weekly grammar suggestion. Shares the KGIU summary shape so a tapped
+ * suggestion can be banked through the existing `bankPattern` path; the
+ * `source_id` (or `pattern`) is the server dedup key.
+ */
+export type GrammarSuggestion = KgiuEntrySummary;
+
+/** Envelope for `GET /grammar/suggestions/weekly`. */
+export interface GrammarSuggestionsResponse {
+  patterns: GrammarSuggestion[];
 }
 
 /**
@@ -846,27 +905,37 @@ export interface InitCardsResult {
   inserted: number;
 }
 
-// ── Vocab lists (Pass 3A — server routes land alongside this client wiring) ──
+// ── Vocab lists (migration 012 — `vocab_lists` + `vocab_list_entries`) ──
+//
+// Wire shapes track the server's `/vocab/lists` routes verbatim. The list
+// carries a Korean/English NAME PAIR (`name_kr` required, `name_en` the
+// optional English caption) — NOT a free-form description; there is no
+// description column. `version` is the optimistic-concurrency counter the
+// server bumps on every mutation.
 
 /** Body for `POST /vocab/lists`. */
 export interface CreateListBody {
-  name: string;
-  kind: VocabListKind;
-  description?: string;
+  name_kr: string;
+  name_en?: string;
+  kind?: VocabListKind;
+  /** Optional seed: append these entry ids in one round-trip on create. */
+  seed_entry_ids?: number[];
 }
 
-/** Body for `PATCH /vocab/lists/:id`. */
+/** Body for `PATCH /vocab/lists/:id`. `name_en: null` clears the caption. */
 export interface PatchListBody {
-  name?: string;
-  description?: string;
+  name_kr?: string;
+  name_en?: string | null;
+  kind?: VocabListKind;
 }
 
-/** Server-side list row — Pass 3A wire shape. */
+/** Server-side list row. */
 export interface ServerVocabList {
   id: number;
-  name: string;
+  name_kr: string;
+  name_en: string | null;
   kind: VocabListKind;
-  description: string | null;
+  version: number;
   entry_count: number;
   created_at: string;
   updated_at: string;
@@ -875,11 +944,50 @@ export interface ServerVocabList {
 /** Envelope for `GET /vocab/lists`. */
 export interface ListListsResponse {
   lists: ServerVocabList[];
+  limit: number;
+  offset: number;
+}
+
+/** Envelope for `POST /vocab/lists`. */
+export interface CreateListResponse {
+  list: ServerVocabList;
+  /** How many seed entries were actually appended (idempotent — dups skipped). */
+  appended: number;
+}
+
+/** Envelope for `PATCH /vocab/lists/:id`. */
+export interface PatchListResponse {
+  list: ServerVocabList;
+}
+
+/** One joined entry row inside a list's detail (entry id + the vocab columns). */
+export interface VocabListEntryRow {
+  entry_id: number;
+  position: number;
+  added_at: string;
+  korean: string | null;
+  english: string | null;
+  proficiency: string | null;
+}
+
+/** Envelope for `GET /vocab/lists/:id`. */
+export interface VocabListDetailResponse {
+  list: ServerVocabList;
+  entries: VocabListEntryRow[];
+  entry_limit: number;
+  entry_offset: number;
+}
+
+/** One appended membership row returned by `POST /vocab/lists/:id/entries`. */
+export interface AddedListEntry {
+  entry_id: number;
+  position: number;
+  added_at: string;
 }
 
 /** Envelope for `POST /vocab/lists/:id/entries`. */
 export interface AddListEntriesResult {
-  added: number;
+  entries: AddedListEntry[];
 }
 
 // ── Grammar wire shapes ──────────────────────────────────────────────

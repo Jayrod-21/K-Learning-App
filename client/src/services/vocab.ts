@@ -22,6 +22,7 @@ import { api } from './api';
 import type {
   AddListEntriesResult,
   CreateListBody,
+  CreateListResponse,
   DueCard,
   InitCardsBody,
   InitCardsResult,
@@ -29,6 +30,7 @@ import type {
   MineWordInput,
   MineWordResult,
   PatchListBody,
+  PatchListResponse,
   ReviewResult,
   ReviewSubmission,
   ServerProficiency,
@@ -37,6 +39,7 @@ import type {
   VocabEntriesPage,
   VocabEntry,
   VocabEntryDetail,
+  VocabListDetailResponse,
 } from '../types/domain';
 
 /** Pagination + filter for `GET /vocab/entries`. */
@@ -48,7 +51,7 @@ export interface SearchEntriesOptions {
   offset?: number;
 }
 
-/** GET /vocab/entries?q=… */
+/** GET /vocab/entries?q=… — returns just the rows (existing callers). */
 export async function searchEntries(
   opts: SearchEntriesOptions = {},
   signal?: AbortSignal,
@@ -59,6 +62,24 @@ export async function searchEntries(
     ...(signal !== undefined ? { signal } : {}),
   });
   return res.entries;
+}
+
+/**
+ * GET /vocab/entries?q=… — returns the FULL page envelope (entries + total +
+ * limit + offset). The Resources Vocabulary tab needs the real `total` to
+ * paginate the curated corpus ("see all words whenever I want"), which the
+ * row-only `searchEntries` discards. Kept as a separate function so the
+ * existing row-only callers (Reference search, Review) stay unchanged.
+ */
+export async function searchEntriesPage(
+  opts: SearchEntriesOptions = {},
+  signal?: AbortSignal,
+): Promise<VocabEntriesPage> {
+  const params = stripUndef({ ...opts });
+  return api.get<VocabEntriesPage>('/vocab/entries', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 /** GET /vocab/entries/:entryId */
@@ -194,46 +215,57 @@ export async function mineWord(
   );
 }
 
-// ── Vocab lists (Pass 3A) ──────────────────────────────────────────────
+// ── Vocab lists (migration 012) ────────────────────────────────────────
 
-/** GET /vocab/lists */
+/** GET /vocab/lists — the user's lists (soft-deleted excluded server-side). */
 export async function listLists(): Promise<ServerVocabList[]> {
   const res = await api.get<ListListsResponse>('/vocab/lists');
   return res.lists;
 }
 
-/** POST /vocab/lists */
+/** POST /vocab/lists — create a list. Returns the row + seed-append count. */
 export async function createList(
   body: CreateListBody,
-): Promise<ServerVocabList> {
-  return api.post<ServerVocabList>('/vocab/lists', body);
+): Promise<CreateListResponse> {
+  return api.post<CreateListResponse>('/vocab/lists', stripUndef({ ...body }));
 }
 
-/** GET /vocab/lists/:id */
-export async function getList(
+/**
+ * GET /vocab/lists/:id — list detail + its first page of joined entry rows.
+ *
+ * Distinct from `listLists`' summary rows: this carries the membership the
+ * "open list → entries + remove" flow renders. The server paginates the
+ * entries (`entry_limit`/`entry_offset`); the default page (100) covers the
+ * sizes the Resources UI surfaces today.
+ */
+export async function getListDetail(
   id: number,
   signal?: AbortSignal,
-): Promise<ServerVocabList> {
-  return api.get<ServerVocabList>(
+): Promise<VocabListDetailResponse> {
+  return api.get<VocabListDetailResponse>(
     `/vocab/lists/${String(id)}`,
     signal !== undefined ? { signal } : undefined,
   );
 }
 
-/** PATCH /vocab/lists/:id */
+/** PATCH /vocab/lists/:id — rename / re-caption / re-kind. */
 export async function patchList(
   id: number,
   body: PatchListBody,
-): Promise<ServerVocabList> {
-  return api.patch<ServerVocabList>(`/vocab/lists/${String(id)}`, body);
+): Promise<PatchListResponse> {
+  return api.patch<PatchListResponse>(`/vocab/lists/${String(id)}`, body);
 }
 
-/** DELETE /vocab/lists/:id — returns void on 204. */
+/** DELETE /vocab/lists/:id — soft delete. Returns void on 204. */
 export async function deleteList(id: number): Promise<void> {
   await api.delete<void>(`/vocab/lists/${String(id)}`);
 }
 
-/** POST /vocab/lists/:id/entries — bulk add. */
+/**
+ * POST /vocab/lists/:id/entries — append entries. The server rejects a
+ * duplicate membership with 409 (NOT a silent skip), so callers should treat
+ * an `ApiError(status: 409)` as "already in this list".
+ */
 export async function addListEntries(
   id: number,
   entryIds: number[],

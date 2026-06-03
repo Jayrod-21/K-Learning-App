@@ -79,6 +79,7 @@ import * as progressService from '../services/progress';
 import { ApiError } from '../services/api';
 import type {
   CreateListBody,
+  CreateListResponse,
   CustomVocabList,
   DueCard,
   FsrsRating,
@@ -222,8 +223,8 @@ function vocabEntryToVocab(e: VocabEntry): Vocab {
 function serverListsToBundle(rows: ServerVocabList[]): VocabListBundle {
   const custom: CustomVocabList[] = rows.map((r) => ({
     id: encodeId('e', r.id),
-    name: r.name,
-    en: r.description ?? '',
+    name: r.name_kr,
+    en: r.name_en ?? '',
     kind: r.kind,
     count: r.entry_count,
     mature: 0,
@@ -1515,11 +1516,11 @@ function ListDetailSheet({
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
     vocabService
-      .getList(numericId)
-      .then((row) => {
+      .getListDetail(numericId)
+      .then((res) => {
         if (ctrl.signal.aborted) return;
-        setDetail(row);
-        setRenameValue(row.name);
+        setDetail(res.list);
+        setRenameValue(res.list.name_kr);
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -1548,17 +1549,17 @@ function ListDetailSheet({
   const handleRenameSubmit = useCallback((): void => {
     if (numericId === null) return;
     const next = renameValue.trim();
-    if (!next || next === detail?.name) {
+    if (!next || next === detail?.name_kr) {
       setRenaming(false);
       return;
     }
     setBusy('rename');
     setError(null);
     vocabService
-      .patchList(numericId, { name: next })
-      .then((row) => {
-        setDetail(row);
-        setRenameValue(row.name);
+      .patchList(numericId, { name_kr: next })
+      .then((res) => {
+        setDetail(res.list);
+        setRenameValue(res.list.name_kr);
         setBusy(null);
         setRenaming(false);
         onRenamed();
@@ -1598,9 +1599,9 @@ function ListDetailSheet({
   }, [numericId, onDeleted]);
 
   // Header preview — server detail wins, bundle row falls back.
-  const displayName = detail?.name ?? bundleList?.name ?? 'List';
+  const displayName = detail?.name_kr ?? bundleList?.name ?? 'List';
   const displayEn =
-    detail?.description ?? (bundleList && 'en' in bundleList ? bundleList.en : '');
+    detail?.name_en ?? (bundleList && 'en' in bundleList ? bundleList.en : '');
   const total = detail?.entry_count ?? bundleList?.count ?? 0;
   const preview =
     bundleList && 'preview' in bundleList ? bundleList.preview : [];
@@ -1628,7 +1629,7 @@ function ListDetailSheet({
                   if (e.key === 'Escape') {
                     e.preventDefault();
                     setRenaming(false);
-                    setRenameValue(detail?.name ?? '');
+                    setRenameValue(detail?.name_kr ?? '');
                   }
                 }}
                 aria-label="List name"
@@ -1697,7 +1698,7 @@ function ListDetailSheet({
                   size="md"
                   leadingIcon={<Icon name="pen" size={14} />}
                   onClick={() => {
-                    setRenameValue(detail?.name ?? bundleList?.name ?? '');
+                    setRenameValue(detail?.name_kr ?? bundleList?.name ?? '');
                     setRenaming(true);
                   }}
                   disabled={detail === null}
@@ -1747,7 +1748,7 @@ interface CreateListSheetProps {
   open: boolean;
   onClose: () => void;
   /** Fires after the server returns 201; parent refetches the lists collection. */
-  onCreated: (created: ServerVocabList) => void;
+  onCreated: (created: CreateListResponse) => void;
 }
 
 const KIND_OPTIONS: ReadonlyArray<VocabListKind> = [
@@ -1798,11 +1799,11 @@ function CreateListSheet({
     ctrlRef.current?.abort();
     ctrlRef.current = ctrl;
     const body: CreateListBody = {
-      name: trimmed,
+      name_kr: trimmed,
       kind,
     };
     const trimmedEn = en.trim();
-    if (trimmedEn) body.description = trimmedEn;
+    if (trimmedEn) body.name_en = trimmedEn;
     // NOTE: `seed` words are captured in the UI but not wired into the
     // create call — `CreateListBody` doesn't accept seed entry ids. Pass 4+
     // adds a "lookup-then-addListEntries" two-step here so the user's seed

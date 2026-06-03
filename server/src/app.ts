@@ -17,6 +17,7 @@ import authRoutes from './routes/auth.js';
 import healthRoutes from './routes/health.js';
 import lemmatizeRoutes from './routes/lemmatize.js';
 import defineRoutes from './routes/define.js';
+import krdictRoutes from './routes/krdict.js';
 import enrichRoutes from './routes/enrich.js';
 import gradeRoutes from './routes/gradeWriting.js';
 import progressRoutes from './routes/progress.js';
@@ -60,6 +61,7 @@ export function createApp(): Express {
   app.use('/auth', authRoutes);
   app.use('/lemmatize', lemmatizeRoutes);
   app.use('/define', defineRoutes);
+  app.use('/krdict', krdictRoutes);
   app.use('/enrich', enrichRoutes);
   app.use('/grade-writing', gradeRoutes);
 

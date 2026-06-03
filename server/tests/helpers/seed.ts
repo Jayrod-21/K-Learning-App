@@ -561,7 +561,7 @@ export async function seedImageCapture(
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,
-  opts: { headword?: string; definitionEn?: string } = {},
+  opts: { headword?: string; definitionEn?: string; definitionKo?: string } = {},
 ): Promise<number> {
   const headword = opts.headword ?? '먹다';
   // krdict requires a krdict_source — seed one if absent.
@@ -589,7 +589,7 @@ export async function seedKrdictEntry(
       sourceRowId,
       `kr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       headword,
-      '먹어서 배를 채우다',
+      opts.definitionKo ?? '먹어서 배를 채우다',
       opts.definitionEn ?? 'to eat',
     ],
   );

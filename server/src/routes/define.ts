@@ -57,7 +57,13 @@ const KRDICT_READY_TTL_MS = 5 * 60 * 1000;
 const PG_UNDEFINED_TABLE = '42P01';
 let _krdictReady: { ready: boolean; checkedAt: number } | null = null;
 
-async function krdictAvailable(): Promise<boolean> {
+/**
+ * Whether the KRDICT tables (migration 003) are present. Memoized with a TTL —
+ * see the block comment above. Exported so the sibling /krdict/search route
+ * reuses the SAME availability cache (one information_schema probe budget, one
+ * rollback-invalidation path) instead of duplicating it.
+ */
+export async function krdictAvailable(): Promise<boolean> {
   const now = Date.now();
   if (_krdictReady && now - _krdictReady.checkedAt < KRDICT_READY_TTL_MS) {
     return _krdictReady.ready;
@@ -86,12 +92,12 @@ export function resetKrdictReadyCache(): void {
  * 500. Marking ``ready=false`` lets the next request degrade cleanly to
  * 503 ``krdict_unavailable``.
  */
-function markKrdictUnavailable(): void {
+export function markKrdictUnavailable(): void {
   _krdictReady = { ready: false, checkedAt: Date.now() };
 }
 
 /** Best-effort detection of "undefined_table" from a pg query error. */
-function isUndefinedTableError(err: unknown): boolean {
+export function isUndefinedTableError(err: unknown): boolean {
   return (
     typeof err === 'object' &&
     err !== null &&

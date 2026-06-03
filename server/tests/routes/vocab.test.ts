@@ -71,6 +71,155 @@ describe('GET /vocab/entries — success + filters', () => {
   });
 });
 
+describe('GET /vocab/entries — search (q) + total', () => {
+  // vocab_entries is reference data that the file-level beforeEach does NOT
+  // truncate (it accumulates across tests). These tests assert exact `total`
+  // counts, so isolate them by clearing the corpus first. CASCADE drops the
+  // vocab_cards / vocab_list_entries that FK into it.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('ILIKE-matches korean by substring and returns a total count', async () => {
+    await seedVocabEntry(pg.pool, { korean: '사과하다', english: 'to apologize' });
+    await seedVocabEntry(pg.pool, { korean: '사과', english: 'apple' });
+    await seedVocabEntry(pg.pool, { korean: '바나나', english: 'banana' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/entries?q=사과');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    const koreans = (res.body.entries as Array<{ korean: string }>).map((e) => e.korean);
+    expect(koreans).toEqual(expect.arrayContaining(['사과', '사과하다']));
+    expect(koreans).not.toContain('바나나');
+  });
+
+  it('ILIKE-matches english (gloss search) case-insensitively', async () => {
+    await seedVocabEntry(pg.pool, { korean: '먹다', english: 'to EAT' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/entries?q=eat');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('먹다');
+  });
+
+  it('total reflects the full match set, not just the page', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await seedVocabEntry(pg.pool, { korean: `검색어${i}`, english: 'searchme' });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/entries?q=searchme&limit=2');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(2);
+    expect(res.body.total).toBe(5);
+  });
+
+  it('escapes LIKE metacharacters — a "%" term matches literally, not as a wildcard', async () => {
+    await seedVocabEntry(pg.pool, { korean: '백퍼센트', english: '100% sure' });
+    await seedVocabEntry(pg.pool, { korean: '다른말', english: 'unrelated' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/vocab/entries?q=${encodeURIComponent('100%')}`);
+    expect(res.status).toBe(200);
+    // A naive %term% would treat the '%' as a wildcard and match '다른말' too;
+    // the escape keeps it literal so only the '100%' gloss matches.
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('백퍼센트');
+  });
+
+  it('no match → 200 with empty entries and total 0', async () => {
+    await seedVocabEntry(pg.pool, { korean: '있음' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/entries?q=절대없는단어');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('allows limit up to the raised browse ceiling (200)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.get('/vocab/entries?limit=200')).status).toBe(200);
+    expect((await agent.get('/vocab/entries?limit=201')).status).toBe(400);
+  });
+});
+
+describe('GET /vocab/suggestions/weekly', () => {
+  // Isolate from accumulated reference rows so the "excludes carded" and
+  // capped-at-15 assertions are deterministic.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/vocab/suggestions/weekly');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns curated entries the user has not carded, capped at 15', async () => {
+    for (let i = 0; i < 20; i += 1) {
+      await seedVocabEntry(pg.pool, {
+        corpus: 'vocab_2000_intermediate',
+        korean: `주간단어${i}`,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/suggestions/weekly');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.entries)).toBe(true);
+    expect(res.body.entries.length).toBe(15);
+    expect(typeof res.body.entries[0].id).toBe('number');
+  });
+
+  it('is stable for the same user within the week (deterministic refetch)', async () => {
+    for (let i = 0; i < 18; i += 1) {
+      await seedVocabEntry(pg.pool, {
+        corpus: 'vocab_2000_intermediate',
+        korean: `안정단어${i}`,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const first = await agent.get('/vocab/suggestions/weekly').expect(200);
+    const second = await agent.get('/vocab/suggestions/weekly').expect(200);
+    const ids1 = (first.body.entries as Array<{ id: number }>).map((s) => s.id);
+    const ids2 = (second.body.entries as Array<{ id: number }>).map((s) => s.id);
+    expect(ids2).toEqual(ids1);
+  });
+
+  it('excludes entries the user has already carded (no re-suggest of banked words)', async () => {
+    const cardedId = await seedVocabEntry(pg.pool, {
+      corpus: 'vocab_2000_intermediate',
+      korean: '이미카드',
+    });
+    const freshId = await seedVocabEntry(pg.pool, {
+      corpus: 'vocab_2000_intermediate',
+      korean: '아직안함',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Bank one via the existing add-to-deck path (reused, not duplicated).
+    const banked = await agent.post(`/vocab/entries/${cardedId}/bank`);
+    expect(banked.status).toBe(201);
+    const res = await agent.get('/vocab/suggestions/weekly').expect(200);
+    const ids = (res.body.entries as Array<{ id: number }>).map((s) => s.id);
+    expect(ids).not.toContain(cardedId);
+    // …while the un-carded entry is still suggested.
+    expect(ids).toContain(freshId);
+  });
+
+  it('does not suggest mined / non-curated corpus entries', async () => {
+    const curatedId = await seedVocabEntry(pg.pool, {
+      corpus: 'vocab_2000_intermediate',
+      korean: '큐레이션단어',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    // A mined word enters via /vocab/mine under the user_mined corpus.
+    const mine = await agent.post('/vocab/mine').send({ lemma: `주간마이닝${Date.now()}` });
+    expect(mine.status).toBe(201);
+    const res = await agent.get('/vocab/suggestions/weekly').expect(200);
+    const ids = (res.body.entries as Array<{ id: number }>).map((s) => s.id);
+    // The curated entry is suggested; the mined entry is not.
+    expect(ids).toContain(curatedId);
+    expect(ids).not.toContain(mine.body.entryId);
+  });
+});
+
 describe('GET /vocab/entries — validation rejection', () => {
   const cases: Array<{ name: string; qs: string }> = [
     { name: 'bad corpus enum', qs: '?corpus=not_a_corpus' },

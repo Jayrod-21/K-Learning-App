@@ -13,6 +13,18 @@ import { getClaudeProxy } from '../services/claudeProxy.js';
 const router = Router();
 router.use(requireAuth);
 
+/**
+ * The ISO-week-rollover boundary expression for the weekly-suggestion hash.
+ * Identical to vocab.ts: pinned to 'Asia/Seoul' + ISO-week numbering so the
+ * same picks return all week and rotate at local Monday-00:00 regardless of the
+ * DB session timezone. The zone + format are server-side SQL literals, never
+ * client input.
+ */
+const ISO_WEEK_SQL = `to_char((now() AT TIME ZONE 'Asia/Seoul'), 'IYYY-IW')`;
+
+/** How many grammar picks the weekly-suggestion endpoint returns. */
+const WEEKLY_SUGGESTION_LIMIT = 15;
+
 /* ---------- KGIU corpus (read-only) ---------- */
 
 const KgiuSearchQuerySchema = z.object({
@@ -164,6 +176,82 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
       [userId],
     );
     res.status(200).json({ entries: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ---------- Weekly suggestions (suggest-only — no auto-add) ---------- */
+
+/**
+ * GET /grammar/suggestions/weekly — 15 KGIU patterns the user hasn't banked
+ * yet, stable for the whole ISO week and rotating the next.
+ *
+ * Suggest-only: this endpoint NEVER writes. The client renders each pick with
+ * an [Add] button that POSTs /grammar/bank (the existing add-to-bank path) —
+ * there is no parallel bank-create here.
+ *
+ * Selection model — "stable per (user, ISO week), excludes what's already
+ * banked" (mirrors /vocab/suggestions/weekly, plan.ts, hanja.ts):
+ *   - Source: `kgiu_entries` grammar rows (entry_type = 'grammar').
+ *   - Exclusion: a KGIU row is dropped when the user has already banked the
+ *     SAME pattern. The only column the two tables share at the value level is
+ *     the Hangul display form: `kgiu_entries.pattern` ≈
+ *     `grammar_entries.pattern_display`. There is intentionally NO key bridge
+ *     between source-canonical (`canonical_grammar.pattern_key`, a Korean
+ *     normalized form) and user-canonical (`grammar_entries.pattern_key`, the
+ *     `GR-…` app key) — that bridge is Phase D (see migration 006's module
+ *     comment). Until it lands, matching on the trimmed display form is the
+ *     soundest available exclusion. It can miss a pattern whose KGIU surface
+ *     form differs cosmetically from the banked display string; the worst case
+ *     is re-suggesting an already-banked pattern, whose [Add] is itself
+ *     idempotent (ON CONFLICT (user_id, pattern_key) in POST /grammar/bank), so
+ *     no duplicate is ever created. Documented as FU when 006's bridge ships.
+ *   - Ordering: md5(iso_week || user_id || entry.id) — same set all week,
+ *     rotates at the Asia/Seoul ISO-week boundary.
+ *   - LIMIT 15.
+ *
+ * Read-only, auth-required, cheap limiter. The only SQL input is the session
+ * user id (never client-supplied) and the server-side date.
+ */
+router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    // Same column set as GET /grammar/kgiu so a suggestion row is wire-identical
+    // to a browse row (the client's KgiuEntrySummary) and can flow straight into
+    // the existing bank-from-pattern UI.
+    const { rows } = await query<{
+      id: number;
+      corpus: string;
+      source_id: string | null;
+      pattern: string | null;
+      title_en: string | null;
+      category: string | null;
+      proficiency: string | null;
+      unit: string | null;
+      source_pages: unknown;
+    }>(
+      `SELECT k.id, k.corpus, k.source_id, k.pattern, k.title_en, k.category,
+              k.proficiency, k.unit, k.source_pages
+         FROM kgiu_entries k
+        WHERE k.entry_type = 'grammar'
+          AND k.pattern IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM grammar_entries g
+                 WHERE g.user_id = $1
+                   AND g.deleted_at IS NULL
+                   AND btrim(g.pattern_display) = btrim(k.pattern)
+              )
+        ORDER BY md5(${ISO_WEEK_SQL} || $1::text || k.id::text)
+        LIMIT $2`,
+      [userId, WEEKLY_SUGGESTION_LIMIT],
+    );
+    // pg returns BIGINT (id) as a string; the DTO documents id as a JSON number
+    // (kgiu_entries.id fits comfortably in Number.MAX_SAFE_INTEGER). The wire key
+    // is `patterns` (matches the client's GrammarSuggestionsResponse).
+    const patterns = rows.map((r) => ({ ...r, id: Number(r.id) }));
+    res.status(200).json({ patterns });
   } catch (err) {
     next(err);
   }

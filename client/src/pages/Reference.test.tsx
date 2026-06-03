@@ -1,10 +1,9 @@
 /**
- * Reference — Pass-3 search + filter + popover wiring tests.
+ * Resources (Reference) — tabbed browse + This Week suggest-only + lists.
  *
- * Services are mocked at module level; `useEndpointOrMock` runs for
- * real so the debounce + key-driven refetch + abort paths participate
- * in the assertion. The mock fixture loader is mocked too so the
- * ErrorCard branch (both real + mock fail) is reachable.
+ * Services are module-mocked; the component's own state/effects run for real
+ * so the debounce, pagination, optimistic add-flip, and 409-idempotency paths
+ * participate in the assertions.
  */
 import {
   afterEach,
@@ -15,26 +14,23 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { ToastProvider } from '../components/ToastProvider';
+import { ApiError } from '../services/api';
 import type {
-  DefineResult,
   KgiuEntrySummary,
-  ReferenceEntry,
+  KrdictSearchEntry,
+  ServerVocabList,
   VocabEntry,
 } from '../types/domain';
 
-// Hoisted service mocks — referenced inside vi.mock factories.
 const vocabSvc = vi.hoisted(() => ({
-  searchEntries: vi.fn(),
-  getEntry: vi.fn(),
-  getDueCards: vi.fn(),
-  submitReview: vi.fn(),
-  initCards: vi.fn(),
+  searchEntriesPage: vi.fn(),
+  bankEntry: vi.fn(),
   listLists: vi.fn(),
   createList: vi.fn(),
-  getList: vi.fn(),
-  patchList: vi.fn(),
+  getListDetail: vi.fn(),
   deleteList: vi.fn(),
   addListEntries: vi.fn(),
   removeListEntry: vi.fn(),
@@ -42,214 +38,274 @@ const vocabSvc = vi.hoisted(() => ({
 
 const grammarSvc = vi.hoisted(() => ({
   listPatterns: vi.fn(),
-  getPattern: vi.fn(),
   bankPattern: vi.fn(),
-  listBanked: vi.fn(),
-  identifyPattern: vi.fn(),
 }));
 
-const defineSvc = vi.hoisted(() => ({
-  defineEntry: vi.fn(),
-}));
+const krdictSvc = vi.hoisted(() => ({ searchKrdict: vi.fn() }));
 
-const refMock = vi.hoisted(() => ({
-  loadReferenceMock: vi.fn(),
+const suggestSvc = vi.hoisted(() => ({
+  fetchWeeklyVocabSuggestions: vi.fn(),
+  fetchWeeklyGrammarSuggestions: vi.fn(),
 }));
 
 vi.mock('../services/vocab', () => vocabSvc);
 vi.mock('../services/grammar', () => grammarSvc);
-vi.mock('../services/define', () => defineSvc);
-vi.mock('../data/mocks/reference', () => refMock);
+vi.mock('../services/krdict', () => krdictSvc);
+vi.mock('../services/suggestions', () => suggestSvc);
 
 import Reference from './Reference';
 
-const VOCAB_ROW: VocabEntry = {
-  id: 1,
-  corpus: 'vocab_2000_intermediate',
-  korean: '영향',
-  english: 'influence',
-  proficiency: 'L3',
-  theme: null,
-};
-
-const VOCAB_ROW_2: VocabEntry = {
-  id: 2,
-  corpus: 'vocab_2000_intermediate',
-  korean: '환경',
-  english: 'environment',
-  proficiency: 'L3',
-  theme: null,
-};
-
-const GRAMMAR_ROW: KgiuEntrySummary = {
-  id: 100,
-  corpus: 'kgiu_intermediate',
-  source_id: 'KGIU-INT-009',
-  pattern: '-는 반면에',
-  title_en: 'whereas',
-  category: 'contrast',
-  proficiency: 'L4',
-  unit: 'Unit 9',
-  source_pages: null,
-};
-
-const DEFINE_HIT: DefineResult = {
-  word: '영향',
-  entries: [
-    {
-      id: 1,
-      headword: '영향',
-      part_of_speech: 'n.',
-      senses: [],
-      examples: [],
-    },
-  ],
-};
-
-const REF_FIXTURE: ReferenceEntry[] = [
-  { kind: 'vocab', kr: '영향', en: 'influence', level: 'L3' },
-  { kind: 'grammar', kr: '-는 반면에', en: 'whereas', level: 'L4' },
+const VOCAB_ROWS: VocabEntry[] = [
+  { id: 1, corpus: 'vocab_2000_intermediate', korean: '영향', english: 'influence', proficiency: 'L3', theme: null },
+  { id: 2, corpus: 'vocab_2000_intermediate', korean: '환경', english: 'environment', proficiency: 'L3', theme: null },
 ];
 
-function resetAll(): void {
-  for (const fn of Object.values(vocabSvc)) (fn as Mock).mockReset();
-  for (const fn of Object.values(grammarSvc)) (fn as Mock).mockReset();
-  for (const fn of Object.values(defineSvc)) (fn as Mock).mockReset();
-  (refMock.loadReferenceMock as Mock).mockReset();
-  refMock.loadReferenceMock.mockResolvedValue(REF_FIXTURE);
+const SUGGEST_VOCAB: VocabEntry[] = [
+  { id: 11, corpus: 'vocab_2000_intermediate', korean: '결과', english: 'result', proficiency: 'L3', theme: null },
+];
+
+const SUGGEST_GRAMMAR: KgiuEntrySummary[] = [
+  {
+    id: 100,
+    corpus: 'kgiu_intermediate',
+    source_id: 'KGIU-INT-009',
+    pattern: '-는 반면에',
+    title_en: 'whereas',
+    category: 'contrast',
+    proficiency: 'L4',
+    unit: 'Unit 9',
+    source_pages: null,
+  },
+];
+
+const KRDICT_HIT: KrdictSearchEntry = {
+  id: 5,
+  headword: '학교',
+  part_of_speech: 'n.',
+  definition_korean: '학생을 가르치는 곳',
+  definition_english: 'a school',
+};
+
+const SERVER_LIST: ServerVocabList = {
+  id: 7,
+  name_kr: '병원 어휘',
+  name_en: 'Hospital words',
+  kind: 'vocab',
+  version: 1,
+  entry_count: 2,
+  created_at: 'x',
+  updated_at: 'y',
+};
+
+function renderResources(): ReturnType<typeof render> {
+  return render(
+    <ToastProvider>
+      <Reference />
+    </ToastProvider>,
+  );
 }
 
 beforeEach(() => {
-  resetAll();
-  vocabSvc.searchEntries.mockResolvedValue([VOCAB_ROW, VOCAB_ROW_2]);
-  grammarSvc.listPatterns.mockResolvedValue([GRAMMAR_ROW]);
-  defineSvc.defineEntry.mockResolvedValue(DEFINE_HIT);
+  for (const fn of Object.values(vocabSvc)) (fn as Mock).mockReset();
+  for (const fn of Object.values(grammarSvc)) (fn as Mock).mockReset();
+  (krdictSvc.searchKrdict as Mock).mockReset();
+  for (const fn of Object.values(suggestSvc)) (fn as Mock).mockReset();
+
+  vocabSvc.searchEntriesPage.mockResolvedValue({
+    entries: VOCAB_ROWS,
+    total: 3131,
+    limit: 30,
+    offset: 0,
+  });
+  vocabSvc.bankEntry.mockResolvedValue({ card: { id: 1, version: 1 } });
+  vocabSvc.listLists.mockResolvedValue([SERVER_LIST]);
+  vocabSvc.createList.mockResolvedValue({ list: SERVER_LIST, appended: 0 });
+  vocabSvc.getListDetail.mockResolvedValue({
+    list: SERVER_LIST,
+    entries: [
+      { entry_id: 1, position: 0, added_at: 'x', korean: '영향', english: 'influence', proficiency: 'L3' },
+    ],
+    entry_limit: 100,
+    entry_offset: 0,
+  });
+  vocabSvc.deleteList.mockResolvedValue(undefined);
+  vocabSvc.addListEntries.mockResolvedValue({ entries: [{ entry_id: 1, position: 0, added_at: 'x' }] });
+  vocabSvc.removeListEntry.mockResolvedValue(undefined);
+
+  grammarSvc.listPatterns.mockResolvedValue(SUGGEST_GRAMMAR);
+  grammarSvc.bankPattern.mockResolvedValue({ id: 1 });
+
+  krdictSvc.searchKrdict.mockResolvedValue({ entries: [KRDICT_HIT], total: 1 });
+
+  suggestSvc.fetchWeeklyVocabSuggestions.mockResolvedValue(SUGGEST_VOCAB);
+  suggestSvc.fetchWeeklyGrammarSuggestions.mockResolvedValue(SUGGEST_GRAMMAR);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Reference — happy path', () => {
-  it('renders the union of vocab + grammar under the All filter', async () => {
-    render(<Reference />);
+describe('Resources — default Vocabulary tab', () => {
+  it('renders the curated corpus rows with the real total in the pager', async () => {
+    renderResources();
     expect(await screen.findByText('영향')).toBeInTheDocument();
     expect(screen.getByText('환경')).toBeInTheDocument();
-    expect(screen.getByText('-는 반면에')).toBeInTheDocument();
-    // 3 rows: 2 vocab + 1 grammar (hanja mock fixture has zero hanja rows).
-    expect(screen.getByText(/3 results/)).toBeInTheDocument();
+    // Pager reflects the server's real total (3,131), not the page length.
+    expect(screen.getByText(/of 3131/)).toBeInTheDocument();
   });
-});
 
-describe('Reference — filter chips', () => {
-  it('switches source when the Grammar chip is selected', async () => {
+  it('searches the corpus after the debounce', async () => {
     const user = userEvent.setup();
-    render(<Reference />);
+    renderResources();
     await screen.findByText('영향');
+    vocabSvc.searchEntriesPage.mockClear();
 
-    await user.click(screen.getByRole('button', { name: 'Grammar' }));
-
-    expect(await screen.findByText(/1 result/)).toBeInTheDocument();
-    expect(screen.getByText('-는 반면에')).toBeInTheDocument();
-    expect(screen.queryByText('영향')).not.toBeInTheDocument();
-  });
-});
-
-describe('Reference — search debounce', () => {
-  it('calls the services after debounce and passes q through', async () => {
-    const user = userEvent.setup();
-    render(<Reference />);
-    await screen.findByText('영향');
-
-    vocabSvc.searchEntries.mockClear();
-    grammarSvc.listPatterns.mockClear();
-
-    const box = screen.getByRole('searchbox', { name: 'Search reference' });
-    await user.type(box, '영향');
-
-    // Past the 200 ms debounce, both services should have been called
-    // with the q payload.
-    await waitFor(() => {
-      expect(vocabSvc.searchEntries).toHaveBeenCalledWith({ q: '영향' });
-    });
-    expect(grammarSvc.listPatterns).toHaveBeenCalledWith({ q: '영향' });
-  });
-});
-
-describe('Reference — vocab row tap', () => {
-  it('opens WordPopover and calls defineEntry with the row lemma', async () => {
-    const user = userEvent.setup();
-    render(<Reference />);
-
-    const row = await screen.findByRole('button', { name: '영향 influence' });
-    await user.click(row);
+    await user.type(screen.getByRole('searchbox', { name: 'Search vocabulary' }), '환경');
 
     await waitFor(() => {
-      expect(defineSvc.defineEntry).toHaveBeenCalledWith('영향');
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
+        expect.objectContaining({ q: '환경', limit: 30, offset: 0 }),
+        expect.anything(),
+      );
     });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });
 
-describe('Reference — MockBadge gating (E-SF-3)', () => {
-  it('does NOT fire under the All filter when realFn-backed sources are real (hanja being mock-only is excluded)', async () => {
-    // Vocab returns real data + grammar returns real data → both realFn-
-    // backed states report `isMock: false`. Hanja is mock-only (no realFn
-    // in Reference.tsx) so its hook always reports `isMock: true`, but
-    // the new rule excludes mock-only sources from the AND. Pre-fix the
-    // badge fired permanently here because `.some(s => s.isMock)` keyed
-    // off hanja's permanent true.
-    render(<Reference />);
-
-    // Wait for the realFn-backed rows to land. Until then `isMock` may
-    // legitimately read true on the loading state.
-    await screen.findByText('영향');
-    await screen.findByText('-는 반면에');
-
-    // Under 'all' the badge must be absent.
-    expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
-  });
-
-  it('DOES fire when both realFn-backed sources fall back to mock', async () => {
-    // Vocab + grammar fail → both hooks fall back to the fixture mock
-    // loader. AND across realFn-backed sources is now true, so the
-    // badge fires (matching the cross-screen rule documented in
-    // MockBadge.tsx JSDoc).
-    vocabSvc.searchEntries.mockReset();
-    vocabSvc.searchEntries.mockRejectedValue(new Error('boom'));
-    grammarSvc.listPatterns.mockReset();
-    grammarSvc.listPatterns.mockRejectedValue(new Error('boom'));
-
-    render(<Reference />);
-
-    // The mock fixture has '영향' as a vocab row, which will surface
-    // when the hook falls back to mock data.
-    await screen.findByText('영향');
-
-    expect(screen.getByTestId('mock-badge')).toBeInTheDocument();
-  });
-});
-
-describe('Reference — error state', () => {
-  it('shows ErrorCard with Retry when every active source AND the mock fail', async () => {
-    // Both real services reject AND the mock loader rejects. Under the
-    // Vocab filter only one active source applies, so the page must
-    // surface the ErrorCard.
-    vocabSvc.searchEntries.mockReset();
-    vocabSvc.searchEntries.mockRejectedValue(new Error('boom'));
-    refMock.loadReferenceMock.mockReset();
-    refMock.loadReferenceMock.mockRejectedValue(new Error('mock boom'));
-
+describe('Resources — This Week (suggest-only)', () => {
+  it('adds a vocab pick and flips the button to ✓ Added', async () => {
     const user = userEvent.setup();
-    render(<Reference />);
+    renderResources();
+    // The suggestion strip renders the vocab pick with its own Add button.
+    const addBtn = await screen.findByRole('button', { name: 'Add 결과' });
+    await user.click(addBtn);
 
-    await user.click(screen.getByRole('button', { name: 'Vocab' }));
+    expect(vocabSvc.bankEntry).toHaveBeenCalledWith(11);
+    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+  });
 
+  it('treats a 409 (already banked) as success — idempotent flip, no error', async () => {
+    vocabSvc.bankEntry.mockRejectedValueOnce(
+      new ApiError('already banked', { status: 409, code: 'conflict' }),
+    );
+    const user = userEvent.setup();
+    renderResources();
+    await user.click(await screen.findByRole('button', { name: 'Add 결과' }));
+
+    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+  });
+
+  it('adds a grammar pick through the bank path', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await user.click(await screen.findByRole('button', { name: 'Add -는 반면에' }));
+
+    await waitFor(() => {
+      expect(grammarSvc.bankPattern).toHaveBeenCalledWith(
+        expect.objectContaining({ pattern_key: 'KGIU-INT-009', pattern_display: '-는 반면에' }),
+      );
+    });
+  });
+});
+
+describe('Resources — Dictionary tab (search-first)', () => {
+  it('prompts to type before any search, then shows paginated KRDICT hits', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향'); // wait for first paint
+
+    await user.click(screen.getByRole('tab', { name: 'Dictionary' }));
+    // Empty state — no network call yet.
     expect(
-      await screen.findByText(/The lookup couldn't be loaded/i),
+      screen.getByText(/Type a Korean or English word/i),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /^Retry$/i }),
-    ).toBeInTheDocument();
+    expect(krdictSvc.searchKrdict).not.toHaveBeenCalled();
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search dictionary' }), '학교');
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+    expect(screen.getByText('a school')).toBeInTheDocument();
+    expect(krdictSvc.searchKrdict).toHaveBeenCalled();
+  });
+});
+
+describe('Resources — Grammar tab', () => {
+  it('lists every pattern from the full (raised-limit) fetch', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    // The pattern-count line is unique to the Grammar tab (This Week has no
+    // such line), so it disambiguates from the suggestion strip's copy of the
+    // same pattern text.
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 400 }),
+        expect.anything(),
+      );
+    });
+  });
+});
+
+describe('Resources — My Lists tab', () => {
+  it('creates a list and opens it to show entries', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'My Lists' }));
+    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
+
+    // Create flow.
+    await user.type(screen.getByRole('textbox', { name: 'New list name' }), '새 단어장');
+    await user.click(screen.getByRole('button', { name: /^Create$/ }));
+    await waitFor(() => {
+      expect(vocabSvc.createList).toHaveBeenCalledWith({
+        name_kr: '새 단어장',
+        kind: 'vocab',
+      });
+    });
+
+    // Open detail → entries load via getListDetail.
+    await user.click(screen.getByRole('button', { name: /Open 병원 어휘/ }));
+    await waitFor(() => {
+      expect(vocabSvc.getListDetail).toHaveBeenCalledWith(7, expect.anything());
+    });
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('영향')).toBeInTheDocument();
+  });
+
+  it('removes an entry from an open list (optimistic)', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'My Lists' }));
+    await user.click(await screen.findByRole('button', { name: /Open 병원 어휘/ }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('영향');
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /Remove 영향 from the list/ }),
+    );
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1);
+  });
+});
+
+describe('Resources — add a corpus word to a list', () => {
+  it('opens the picker and posts the entry id', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    // The Vocabulary row's "List" affordance opens the picker sheet.
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog');
+    // Pick the only list.
+    await user.click(within(dialog).getByRole('button', { name: /병원 어휘/ }));
+
+    await waitFor(() => {
+      expect(vocabSvc.addListEntries).toHaveBeenCalledWith(7, [1]);
+    });
   });
 });

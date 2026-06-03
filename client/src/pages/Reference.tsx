@@ -1,438 +1,1260 @@
 /**
- * Reference screen — searchable cross-corpus index.
+ * Resources screen — browse-everything: curated vocab, the full KRDICT
+ * dictionary, all grammar patterns, and the user's custom lists, plus a
+ * suggest-only "This Week" strip.
  *
- * Pass-3 wiring:
- *   - Live search debounced 200 ms; previous in-flight aborts on every
- *     keystroke past the debounce window.
- *   - Filter chips: All / Vocab / Grammar / Hanja. Vocab + Grammar hit
- *     real endpoints; Hanja stays on the mock fixture until Pass 7.
- *   - Tap row → vocab opens `WordPopover` with `defineEntry(lemma)` data;
- *     grammar opens the same popover with the row's pattern + title.
+ * Tabs (Vocabulary is the default):
+ *   - Vocabulary — the curated `vocab_2000` corpus (≈3,131 rows). Searchable,
+ *     PAGINATED against the server's real `total` so "see all words whenever I
+ *     want" is honoured rather than capped at a page. Each row carries an
+ *     add-to-list affordance.
+ *   - Dictionary — the full KRDICT dictionary (≈54k headwords). Far too large
+ *     to scroll, so it is SEARCH-FIRST: an empty state prompts the user to
+ *     type; results are paginated.
+ *   - Grammar — every KGIU pattern (the full set, not the 20-row default).
+ *   - My Lists — create a named list, see the lists, open one to view its
+ *     entries and remove them.
  *
- * Data:
- *   useEndpointOrMock('ref:vocab:<q>',   mocks.vocab,
- *     { realFn: () => services.vocab.searchEntries({ q }) })
- *   useEndpointOrMock('ref:grammar:<q>', mocks.grammar,
- *     { realFn: () => services.grammar.listPatterns({ q }) })
- *   useEndpointOrMock('ref:hanja',       mocks.hanja)   // mock until Pass 7
- *   services.define.defineEntry(lemma) on vocab-row tap
+ * "This Week" (above the tabs) — ≈15 vocab + a handful of grammar picks,
+ * deterministic per ISO week server-side. SUGGEST-ONLY: the server never
+ * auto-banks; each card has an [Add] button that banks the pick through the
+ * EXISTING per-entry / per-pattern bank path and flips to "✓ Added". The flip
+ * is idempotent — a double-tap (or a server 409 "already banked") still lands
+ * on the added state rather than surfacing an error.
  *
  * Threat model:
- *   - The search input is fully user-controlled. We DO NOT sanitise on the
- *     client — React's text rendering escapes the value in the visible
- *     count + row strings, and the server validates the `q` parameter per
- *     Zod schema. The relevant defence here is **rate**, not content:
- *       - 200 ms debounce caps the request frequency below typing speed.
- *       - The keyed `useEndpointOrMock` aborts the previous in-flight
- *         call on every keystroke past the debounce window, so a slow
- *         response never paints over a newer one (race-free UI).
- *   - Row strings come from server JSON. They render via React text
- *     children — no innerHTML, no markdown parsing — so a hostile entry
- *     can't escape into the DOM. The Pass-3 wire layer must keep `kr` /
- *     `en` as text fields.
- *   - WordPopover's `defineEntry(lemma)` call sends the row's `kr` value
- *     verbatim. That value originated server-side; we trust the Zod
- *     boundary. We do NOT pass the live user input into `defineEntry` —
- *     the lemma is always a row the server returned.
+ *   - Every search box is user-controlled. We DO NOT sanitise on the client:
+ *     the server Zod-validates each `q` and parameterises the SQL, and every
+ *     Korean/English string renders through React text children (no
+ *     innerHTML / dangerouslySetInnerHTML anywhere), so a hostile corpus row
+ *     cannot escape into the DOM. The client's defence is RATE — each search
+ *     debounces keystrokes (200 ms) and the keyed `useEndpointOrMock` aborts
+ *     the previous in-flight call so a slow response never paints over a
+ *     newer one.
+ *   - The bank / list-mutation calls are POST/DELETE → CSRF surface, defended
+ *     by the session cookie's `SameSite=Strict` (see services/api.ts). We
+ *     never echo server message text into the optimistic UI; the flip state is
+ *     derived from our own row ids.
+ *   - List ownership (IDOR) is a server property: the routes 404 a list the
+ *     session user doesn't own. The client passes numeric ids only — no
+ *     free-form path concatenation.
  */
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Card } from '../components/Card';
+import { Button } from '../components/Button';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
-import { MockBadge } from '../components/MockBadge';
 import { Topbar } from '../components/Topbar';
+import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
-import {
-  WordPopover,
-  type WordPopoverData,
-} from '../components/WordPopover';
-import { loadReferenceMock } from '../data/mocks/reference';
-import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { useToast } from '../components/useToast';
 import * as vocabService from '../services/vocab';
 import * as grammarService from '../services/grammar';
-import { defineEntry } from '../services/define';
+import { searchKrdict } from '../services/krdict';
+import {
+  fetchWeeklyGrammarSuggestions,
+  fetchWeeklyVocabSuggestions,
+} from '../services/suggestions';
 import { ApiError } from '../services/api';
 import type {
   KgiuEntrySummary,
-  ReferenceEntry,
-  ReferenceKind,
+  KrdictSearchEntry,
+  ServerProficiency,
+  ServerVocabList,
   VocabEntry,
+  VocabListEntryRow,
 } from '../types/domain';
 
-type FilterKind = 'all' | ReferenceKind;
+type Tab = 'vocab' | 'dictionary' | 'grammar' | 'lists';
 
-const FILTERS: ReadonlyArray<{ id: FilterKind; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'vocab', label: 'Vocab' },
+const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
+  { id: 'vocab', label: 'Vocabulary' },
+  { id: 'dictionary', label: 'Dictionary' },
   { id: 'grammar', label: 'Grammar' },
-  { id: 'hanja', label: 'Hanja' },
+  { id: 'lists', label: 'My Lists' },
 ];
 
 const SEARCH_DEBOUNCE_MS = 200;
+const PAGE_SIZE = 30;
+/** Grammar corpus is small (≈370); one wide page covers it without a pager. */
+const GRAMMAR_PAGE_SIZE = 400;
 
-/**
- * Normalised row shape both vocab + grammar + hanja paths flatten into.
- * The discriminator drives the popover branch on tap.
- */
-interface RefRow {
-  kind: ReferenceKind;
-  kr: string;
-  en: string;
-  level: string;
-  /** Stable key for React + dedup. */
-  key: string;
-}
-
-/** Adapt a real vocab entry into the unified row shape. */
-function fromVocab(entry: VocabEntry): RefRow {
-  return {
-    kind: 'vocab',
-    kr: entry.korean ?? '',
-    en: entry.english ?? '',
-    level: entry.proficiency ?? '—',
-    key: `vocab:${String(entry.id)}`,
-  };
-}
-
-/** Adapt a real grammar summary into the unified row shape. */
-function fromGrammar(entry: KgiuEntrySummary): RefRow {
-  return {
-    kind: 'grammar',
-    kr: entry.pattern,
-    en: entry.title_en ?? entry.pattern,
-    level: entry.proficiency ?? '—',
-    key: `grammar:${String(entry.id)}`,
-  };
-}
-
-/** Adapt a mock fixture row into the unified row shape. */
-function fromMock(entry: ReferenceEntry, index: number): RefRow {
-  return {
-    kind: entry.kind,
-    kr: entry.kr,
-    en: entry.en,
-    level: entry.level,
-    key: `mock:${entry.kind}:${entry.kr}:${String(index)}`,
-  };
-}
-
-/** Loader factory — searches the mock fixture for the vocab kind. */
-async function loadMockVocab(): Promise<RefRow[]> {
-  const rows = await loadReferenceMock();
-  return rows
-    .filter((r) => r.kind === 'vocab')
-    .map((r, i) => fromMock(r, i));
-}
-
-/** Loader factory — searches the mock fixture for the grammar kind. */
-async function loadMockGrammar(): Promise<RefRow[]> {
-  const rows = await loadReferenceMock();
-  return rows
-    .filter((r) => r.kind === 'grammar')
-    .map((r, i) => fromMock(r, i));
-}
-
-/** Loader factory — searches the mock fixture for the hanja kind. */
-async function loadMockHanja(): Promise<RefRow[]> {
-  const rows = await loadReferenceMock();
-  return rows
-    .filter((r) => r.kind === 'hanja')
-    .map((r, i) => fromMock(r, i));
-}
+/** Outcome of an idempotent add — used to drive the ✓ flip honestly. */
+type AddState = 'idle' | 'adding' | 'added' | 'error';
 
 export default function Reference(): JSX.Element {
-  // Two state vars — `qInput` mirrors the live <input> so typing is
-  // instant; `q` is the debounced value that actually keys the fetches.
-  const [qInput, setQInput] = useState<string>('');
-  const [q, setQ] = useState<string>('');
-  const [filter, setFilter] = useState<FilterKind>('all');
-  const [popData, setPopData] = useState<WordPopoverData | null>(null);
-  const [defineError, setDefineError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setQ(qInput);
-    }, SEARCH_DEBOUNCE_MS);
-    return () => {
-      clearTimeout(handle);
-    };
-  }, [qInput]);
-
-  // Real loaders capture `q` at call time so each keyed effect run hits
-  // the server with the value the key encodes. Stable references would
-  // demand a ref ping-pong; an inline closure per key tick is simpler
-  // and avoids stale-closure bugs entirely.
-  const vocabState = useEndpointOrMock<RefRow[]>(
-    `ref:vocab:${q}`,
-    loadMockVocab,
-    {
-      realFn: async () => {
-        const rows = await vocabService.searchEntries(
-          q ? { q } : {},
-        );
-        return rows.map(fromVocab);
-      },
-    },
-  );
-
-  const grammarState = useEndpointOrMock<RefRow[]>(
-    `ref:grammar:${q}`,
-    loadMockGrammar,
-    {
-      realFn: async () => {
-        const rows = await grammarService.listPatterns(
-          q ? { q } : {},
-        );
-        return rows.map(fromGrammar);
-      },
-    },
-  );
-
-  // Hanja stays on the mock until Pass 7. No realFn → hook stays on
-  // the fixture loader; isMock = true keeps the badge honest.
-  const hanjaState = useEndpointOrMock<RefRow[]>('ref:hanja', loadMockHanja);
-
-  // Which fetches power the active filter — drives loading / error
-  // derivation below without re-running the union memo. The states have
-  // new identity every render but the array is cheap to recreate; we
-  // skip useMemo to avoid pretending it's stable when it isn't.
-  const activeStates =
-    filter === 'vocab'
-      ? [vocabState]
-      : filter === 'grammar'
-        ? [grammarState]
-        : filter === 'hanja'
-          ? [hanjaState]
-          : [vocabState, grammarState, hanjaState];
-
-  const loading = activeStates.some((s) => s.loading);
-  // Show an inline error only when EVERY active source failed AND none
-  // produced data. A single-source failure under the All filter still
-  // renders the other two — the user gets partial results, not a wipe.
-  const allErrored =
-    activeStates.length > 0 &&
-    activeStates.every((s) => s.error !== null && (s.data?.length ?? 0) === 0);
-  // MockBadge gating (Pass 3 tightening): badge fires only when every
-  // realFn-backed source has fallen back to mock. Hanja is mock-only
-  // (no realFn — see line ~193); its constant `isMock: true` is excluded
-  // from the AND so it doesn't pin the badge permanently on the 'all'
-  // filter. See MockBadge.tsx JSDoc for the cross-screen rule. The
-  // previous `.some()` formulation fired the badge unconditionally on
-  // 'all' because hanjaState.isMock is always true.
-  const isMock =
-    filter === 'hanja'
-      ? hanjaState.isMock
-      : filter === 'vocab'
-        ? vocabState.isMock
-        : filter === 'grammar'
-          ? grammarState.isMock
-          : vocabState.isMock && grammarState.isMock;
-
-  // Union the per-source rows according to the active filter.
-  const results = useMemo<readonly RefRow[]>(() => {
-    if (filter === 'vocab') return vocabState.data ?? [];
-    if (filter === 'grammar') return grammarState.data ?? [];
-    if (filter === 'hanja') return hanjaState.data ?? [];
-    return [
-      ...(vocabState.data ?? []),
-      ...(grammarState.data ?? []),
-      ...(hanjaState.data ?? []),
-    ];
-  }, [filter, vocabState.data, grammarState.data, hanjaState.data]);
-
-  const handleRow = async (r: RefRow): Promise<void> => {
-    setDefineError(null);
-    if (r.kind === 'grammar') {
-      setPopData({
-        kind: 'grammar',
-        kr: r.kr,
-        en: r.en,
-        title: r.en,
-        desc: `${r.level} grammar pattern`,
-        ex_kr: r.kr,
-        ex_en: r.en,
-      });
-      return;
-    }
-    if (r.kind === 'hanja') {
-      setPopData({
-        kr: r.kr,
-        en: r.en,
-        ex_kr: r.kr,
-        ex_en: r.en,
-        notes: `${r.level} hanja character.`,
-      });
-      return;
-    }
-    // Vocab — open the popover synchronously with the row's own data so
-    // the user sees something instantly, then enrich with KRDICT once it
-    // settles. A KRDICT failure leaves the basic popover up + surfaces a
-    // small inline error.
-    setPopData({
-      kr: r.kr,
-      en: r.en,
-      pos: 'n.',
-      ex_kr: r.kr,
-      ex_en: r.en,
-    });
-    try {
-      const def = await defineEntry(r.kr);
-      // Augment with the first KRDICT entry's part-of-speech if present;
-      // the deeper fields (senses/examples) are JSONB owned by B2 and
-      // need their own shape contract before the popover renders them.
-      const first = def.entries[0];
-      if (first?.part_of_speech) {
-        setPopData((cur) =>
-          cur
-            ? { ...cur, pos: first.part_of_speech ?? cur.pos }
-            : cur,
-        );
-      }
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        // No KRDICT entry — the row's gloss is the whole story. Not an
-        // error from the user's perspective; stay quiet.
-        return;
-      }
-      setDefineError(
-        err instanceof ApiError ? err.message : 'Dictionary unavailable',
-      );
-    }
-  };
+  const [tab, setTab] = useState<Tab>('vocab');
 
   return (
     <section
-      className="screen km-reference"
-      style={{ position: 'relative' }}
-      aria-labelledby="km-reference-title"
+      className="screen km-reference km-resources"
+      aria-labelledby="km-resources-title"
     >
-      {isMock ? <MockBadge /> : null}
       <Topbar
         krTitle={
           <>
-            참고 <span className="km-topbar__title-en">· Reference</span>
+            자료 <span className="km-topbar__title-en">· Resources</span>
           </>
         }
-        eyebrow="Lookup"
+        eyebrow="Browse"
       />
+      <span id="km-resources-title" className="km-sr-only">
+        Resources
+      </span>
 
-      <Card className="km-reference__search">
-        <Icon name="search" size={18} />
-        <input
-          type="search"
-          value={qInput}
-          onChange={(e) => {
-            setQInput(e.target.value);
-          }}
-          placeholder="Search Korean or English"
-          className="kr focusring km-reference__input"
-          aria-label="Search reference"
-        />
-        {qInput ? (
-          <button
-            type="button"
-            onClick={() => {
-              setQInput('');
-            }}
-            className="km-btn km-btn--ghost km-btn--sm focusring"
-            aria-label="Clear search"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        ) : null}
-      </Card>
+      <WeeklySuggestions />
 
-      <div className="km-reference__filters" role="toolbar" aria-label="Filter by kind">
-        {FILTERS.map((f) => {
-          const active = filter === f.id;
+      <div
+        className="km-review__tabs km-resources__tabs"
+        role="tablist"
+        aria-label="Resources section"
+      >
+        {TABS.map((t) => {
+          const selected = tab === t.id;
           return (
             <button
-              key={f.id}
+              key={t.id}
               type="button"
-              aria-pressed={active}
+              role="tab"
+              aria-selected={selected}
+              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
               onClick={() => {
-                if (!active) setFilter(f.id);
+                setTab(t.id);
               }}
-              className={
-                'km-pill focusring km-reference__filter' +
-                (active ? ' km-pill--gold' : ' km-pill--default')
-              }
             >
-              {f.label}
+              {t.label}
             </button>
           );
         })}
       </div>
 
-      {loading && results.length === 0 ? (
-        <Card className="km-reference__skeleton" aria-busy="true">
-          <Eyebrow>Loading reference</Eyebrow>
-          <div className="km-reference__skeleton-line" />
-          <div className="km-reference__skeleton-line" />
-        </Card>
-      ) : allErrored ? (
-        <ErrorCard
-          message="The lookup couldn't be loaded."
-          onRetry={() => {
-            for (const s of activeStates) s.refetch();
-          }}
-        />
+      {tab === 'vocab' ? <VocabularyTab /> : null}
+      {tab === 'dictionary' ? <DictionaryTab /> : null}
+      {tab === 'grammar' ? <GrammarTab /> : null}
+      {tab === 'lists' ? <ListsTab /> : null}
+    </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// This Week — suggest-only picks
+// ─────────────────────────────────────────────────────────────
+
+/** Stable bank key for a grammar suggestion (server dedup key fallback chain). */
+function grammarKey(p: KgiuEntrySummary): string {
+  return p.source_id ?? p.pattern;
+}
+
+function toBankProficiency(raw: string | null): ServerProficiency {
+  switch (raw) {
+    case 'basic':
+    case 'L3':
+    case 'L4':
+    case 'L5+':
+      return raw;
+    default:
+      return 'L3';
+  }
+}
+
+function WeeklySuggestions(): JSX.Element | null {
+  const [vocab, setVocab] = useState<VocabEntry[] | null>(null);
+  const [grammar, setGrammar] = useState<KgiuEntrySummary[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  // Per-pick add state, keyed by a namespaced id so vocab + grammar never
+  // collide. The flip is local + idempotent — see `bankVocab` / `bankGrammar`.
+  const [adds, setAdds] = useState<Record<string, AddState>>({});
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
+    // Fetch both picks in parallel; a failure on one leaves the other usable.
+    // `allSettled` so one empty/erroring suggestion source doesn't blank the
+    // whole strip (suggest-only is a nice-to-have, never a blocker).
+    void Promise.allSettled([
+      fetchWeeklyVocabSuggestions(ctrl.signal),
+      fetchWeeklyGrammarSuggestions(ctrl.signal),
+    ]).then(([v, g]) => {
+      if (!alive || ctrl.signal.aborted) return;
+      setVocab(v.status === 'fulfilled' ? v.value : []);
+      setGrammar(g.status === 'fulfilled' ? g.value : []);
+      setLoading(false);
+    });
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, []);
+
+  const setAdd = useCallback((key: string, next: AddState): void => {
+    setAdds((prev) => ({ ...prev, [key]: next }));
+  }, []);
+
+  const bankVocab = useCallback(
+    async (entry: VocabEntry): Promise<void> => {
+      const key = `v:${String(entry.id)}`;
+      setAdd(key, 'adding');
+      try {
+        await vocabService.bankEntry(entry.id);
+        setAdd(key, 'added');
+      } catch (err) {
+        // The bank path is idempotent server-side; a 409 means "already
+        // banked", which satisfies the post-condition — flip to ✓, not error.
+        if (err instanceof ApiError && err.status === 409) {
+          setAdd(key, 'added');
+          return;
+        }
+        setAdd(key, 'error');
+      }
+    },
+    [setAdd],
+  );
+
+  const bankGrammar = useCallback(
+    async (pattern: KgiuEntrySummary): Promise<void> => {
+      const key = `g:${grammarKey(pattern)}`;
+      setAdd(key, 'adding');
+      try {
+        await grammarService.bankPattern({
+          pattern_key: grammarKey(pattern),
+          pattern_display: pattern.pattern,
+          summary_en: pattern.title_en ?? pattern.pattern,
+          proficiency: toBankProficiency(pattern.proficiency),
+          category: pattern.category ?? 'pattern',
+          discovered_via: 'manual',
+        });
+        setAdd(key, 'added');
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          setAdd(key, 'added');
+          return;
+        }
+        setAdd(key, 'error');
+      }
+    },
+    [setAdd],
+  );
+
+  // Nothing to suggest (both empty) and not loading → render nothing rather
+  // than an empty card.
+  const hasAny = (vocab?.length ?? 0) > 0 || (grammar?.length ?? 0) > 0;
+  if (!loading && !hasAny) return null;
+
+  return (
+    <Card className="km-resources__week" variant="flat">
+      <Eyebrow>이번 주 · This Week</Eyebrow>
+      <p className="km-resources__week-hint">
+        A fresh set every week. Tap Add to bank a card — nothing is added
+        automatically.
+      </p>
+      {loading ? (
+        <div className="km-grammar__state" role="status">
+          Loading this week’s picks…
+        </div>
+      ) : (
+        <div className="km-resources__week-cols">
+          {(vocab?.length ?? 0) > 0 ? (
+            <div className="km-resources__week-col">
+              <Eyebrow className="km-resources__week-coltitle">Vocabulary</Eyebrow>
+              <ul className="km-resources__suggest-list">
+                {vocab?.map((entry) => {
+                  const key = `v:${String(entry.id)}`;
+                  return (
+                    <SuggestRow
+                      key={key}
+                      kr={entry.korean ?? ''}
+                      en={entry.english ?? ''}
+                      level={entry.proficiency ?? '—'}
+                      state={adds[key] ?? 'idle'}
+                      onAdd={() => {
+                        void bankVocab(entry);
+                      }}
+                    />
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+          {(grammar?.length ?? 0) > 0 ? (
+            <div className="km-resources__week-col">
+              <Eyebrow className="km-resources__week-coltitle">Grammar</Eyebrow>
+              <ul className="km-resources__suggest-list">
+                {grammar?.map((pattern) => {
+                  const key = `g:${grammarKey(pattern)}`;
+                  return (
+                    <SuggestRow
+                      key={key}
+                      kr={pattern.pattern}
+                      en={pattern.title_en ?? pattern.pattern}
+                      level={pattern.proficiency ?? '—'}
+                      state={adds[key] ?? 'idle'}
+                      onAdd={() => {
+                        void bankGrammar(pattern);
+                      }}
+                    />
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+interface SuggestRowProps {
+  kr: string;
+  en: string;
+  level: string;
+  state: AddState;
+  onAdd: () => void;
+}
+
+function SuggestRow({ kr, en, level, state, onAdd }: SuggestRowProps): JSX.Element {
+  const added = state === 'added';
+  const adding = state === 'adding';
+  const label = added
+    ? '✓ Added'
+    : adding
+      ? 'Adding…'
+      : state === 'error'
+        ? 'Retry'
+        : 'Add';
+  return (
+    <li className="km-resources__suggest-row">
+      <span className="kr km-resources__suggest-kr">{kr}</span>
+      <span className="km-resources__suggest-en">{en}</span>
+      <span className="km-pill km-pill--default km-resources__suggest-level">
+        {level}
+      </span>
+      <Button
+        variant={added ? 'ghost' : 'gold'}
+        size="sm"
+        onClick={onAdd}
+        disabled={added || adding}
+        aria-pressed={added}
+        aria-label={added ? `${kr} added` : `Add ${kr}`}
+      >
+        {label}
+      </Button>
+    </li>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Vocabulary tab — curated corpus, searchable + paginated
+// ─────────────────────────────────────────────────────────────
+
+/** Shared debounced search-input hook for the browse tabs. */
+function useDebouncedSearch(): {
+  input: string;
+  q: string;
+  setInput: (v: string) => void;
+  clear: () => void;
+} {
+  const [input, setInput] = useState('');
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setQ(input);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(handle);
+    };
+  }, [input]);
+  const clear = useCallback(() => {
+    setInput('');
+  }, []);
+  return { input, q, setInput, clear };
+}
+
+interface SearchBoxProps {
+  value: string;
+  onChange: (v: string) => void;
+  onClear: () => void;
+  placeholder: string;
+  ariaLabel: string;
+}
+
+function SearchBox({
+  value,
+  onChange,
+  onClear,
+  placeholder,
+  ariaLabel,
+}: SearchBoxProps): JSX.Element {
+  return (
+    <Card className="km-reference__search">
+      <Icon name="search" size={18} />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+        }}
+        placeholder={placeholder}
+        className="kr focusring km-reference__input"
+        aria-label={ariaLabel}
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={onClear}
+          className="km-btn km-btn--ghost km-btn--sm focusring"
+          aria-label="Clear search"
+        >
+          <Icon name="close" size={14} />
+        </button>
+      ) : null}
+    </Card>
+  );
+}
+
+/** A minimal pager — Prev / Next over a known `total`. */
+function Pager({
+  offset,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  offset: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}): JSX.Element {
+  const from = total === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + pageSize, total);
+  const hasPrev = offset > 0;
+  const hasNext = offset + pageSize < total;
+  return (
+    <div className="km-resources__pager">
+      <Button variant="ghost" size="sm" onClick={onPrev} disabled={!hasPrev}>
+        Prev
+      </Button>
+      <span className="km-resources__pager-count">
+        {String(from)}–{String(to)} of {String(total)}
+      </span>
+      <Button variant="ghost" size="sm" onClick={onNext} disabled={!hasNext}>
+        Next
+      </Button>
+    </div>
+  );
+}
+
+function VocabularyTab(): JSX.Element {
+  const { input, q, setInput, clear } = useDebouncedSearch();
+  const [offset, setOffset] = useState(0);
+  const [rows, setRows] = useState<VocabEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Monotonic reload trigger so the Retry button re-runs the fetch effect
+  // without changing `q`/`offset`.
+  const [reloadTick, setReloadTick] = useState(0);
+  // Add-to-list target row — opens the picker Sheet.
+  const [addTarget, setAddTarget] = useState<VocabEntry | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  // Reset to the first page whenever the query changes so the pager never
+  // points past the new result set. Sync-to-derived-state on a key change —
+  // same documented exception the hooks use.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOffset(0);
+  }, [q]);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (a network fetch) — the same exception
+    // useEndpointOrMock documents for its kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    vocabService
+      .searchEntriesPage(
+        { ...(q ? { q } : {}), limit: PAGE_SIZE, offset },
+        ctrl.signal,
+      )
+      .then((page) => {
+        if (ctrl.signal.aborted) return;
+        setRows(page.entries);
+        // `total` is optional (pre-bump server). Fall back to "page length"
+        // so the pager degrades to a single page rather than rendering NaN.
+        setTotal(page.total ?? offset + page.entries.length);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load vocabulary.',
+        );
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [q, offset, reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  return (
+    <div className="km-resources__panel">
+      <SearchBox
+        value={input}
+        onChange={setInput}
+        onClear={clear}
+        placeholder="Search the 2,000 corpus"
+        ariaLabel="Search vocabulary"
+      />
+      {loading && rows.length === 0 ? (
+        <div className="km-grammar__state" role="status">
+          Loading vocabulary…
+        </div>
+      ) : error && rows.length === 0 ? (
+        <ErrorCard message={error} onRetry={refetch} />
+      ) : rows.length === 0 ? (
+        <p className="km-reference__empty">
+          No words match. Try a dictionary form.
+        </p>
       ) : (
         <>
-          <div className="km-reference__count">
-            {results.length} result{results.length === 1 ? '' : 's'}
-          </div>
-          {defineError ? <ErrorCard message={defineError} /> : null}
           <Card className="km-reference__list" variant="flat">
-            {results.length === 0 ? (
-              <p className="km-reference__empty">
-                No results. Try a dictionary form.
-              </p>
-            ) : (
-              <ul>
-                {results.map((r) => (
-                  <li key={r.key} className="km-reference__row">
-                    <button
-                      type="button"
+            <ul>
+              {rows.map((entry) => (
+                <li key={`vocab:${String(entry.id)}`} className="km-reference__row">
+                  <div className="km-resources__entry-row">
+                    <span className="kr km-reference__row-kr">
+                      {entry.korean ?? ''}
+                    </span>
+                    <span className="km-reference__row-en">
+                      {entry.english ?? ''}
+                    </span>
+                    <span className="km-pill km-pill--default km-reference__row-level">
+                      {entry.proficiency ?? '—'}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leadingIcon={<Icon name="plus" size={12} />}
                       onClick={() => {
-                        void handleRow(r);
+                        setAddTarget(entry);
                       }}
-                      className="km-reference__row-btn focusring"
-                      aria-label={`${r.kr} ${r.en}`}
+                      aria-label={`Add ${entry.korean ?? 'word'} to a list`}
                     >
-                      <span className="kr km-reference__row-kr">{r.kr}</span>
-                      <span className="km-reference__row-en">{r.en}</span>
-                      <span className="km-pill km-pill--default km-reference__row-kind">
-                        {r.kind}
-                      </span>
-                      <span
-                        className={
-                          'km-pill km-reference__row-level ' +
-                          (r.level === 'L4'
-                            ? 'km-pill--gold'
-                            : 'km-pill--default')
-                        }
-                      >
-                        {r.level}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+                      List
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </Card>
+          <Pager
+            offset={offset}
+            pageSize={PAGE_SIZE}
+            total={total}
+            onPrev={() => {
+              setOffset((o) => Math.max(0, o - PAGE_SIZE));
+            }}
+            onNext={() => {
+              setOffset((o) => o + PAGE_SIZE);
+            }}
+          />
         </>
       )}
 
-      {popData ? (
-        <WordPopover
-          data={popData}
-          onClose={() => {
-            setPopData(null);
-            setDefineError(null);
-          }}
-        />
-      ) : null}
-    </section>
+      <AddToListSheet
+        entry={addTarget}
+        onClose={() => {
+          setAddTarget(null);
+        }}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Dictionary tab — full KRDICT, search-first
+// ─────────────────────────────────────────────────────────────
+
+function DictionaryTab(): JSX.Element {
+  const { input, q, setInput, clear } = useDebouncedSearch();
+  const [offset, setOffset] = useState(0);
+  const [rows, setRows] = useState<KrdictSearchEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOffset(0);
+  }, [q]);
+
+  useEffect(() => {
+    // Search-first: an empty query never hits the network — the empty state
+    // below prompts the user to type instead. Sync-to-external-system case.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (q.trim().length === 0) {
+      setRows([]);
+      setTotal(0);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    searchKrdict({ q, limit: PAGE_SIZE, offset }, ctrl.signal)
+      .then((page) => {
+        if (ctrl.signal.aborted) return;
+        setRows(page.entries);
+        setTotal(page.total);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          err instanceof ApiError && err.status === 503
+            ? 'The dictionary isn’t available yet.'
+            : err instanceof ApiError
+              ? err.message
+              : 'Could not search the dictionary.',
+        );
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [q, offset]);
+
+  const showEmptyPrompt = q.trim().length === 0;
+
+  return (
+    <div className="km-resources__panel">
+      <SearchBox
+        value={input}
+        onChange={setInput}
+        onClear={clear}
+        placeholder="Search 54,000 dictionary entries"
+        ariaLabel="Search dictionary"
+      />
+      {showEmptyPrompt ? (
+        <Card variant="flat" role="status">
+          <Eyebrow>Dictionary</Eyebrow>
+          <p className="km-reference__empty">
+            Type a Korean or English word to search the full KRDICT dictionary.
+          </p>
+        </Card>
+      ) : loading && rows.length === 0 ? (
+        <div className="km-grammar__state" role="status">
+          Searching…
+        </div>
+      ) : error ? (
+        <ErrorCard message={error} />
+      ) : rows.length === 0 ? (
+        <p className="km-reference__empty">No dictionary entries found.</p>
+      ) : (
+        <>
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {rows.map((entry) => (
+                <li key={`krdict:${String(entry.id)}`} className="km-reference__row">
+                  <div className="km-resources__dict-row">
+                    <span className="kr km-reference__row-kr">{entry.headword}</span>
+                    {entry.part_of_speech ? (
+                      <span className="km-pill km-pill--default km-resources__pos">
+                        {entry.part_of_speech}
+                      </span>
+                    ) : null}
+                    <span className="km-reference__row-en">
+                      {entry.definition_english ??
+                        entry.definition_korean ??
+                        ''}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <Pager
+            offset={offset}
+            pageSize={PAGE_SIZE}
+            total={total}
+            onPrev={() => {
+              setOffset((o) => Math.max(0, o - PAGE_SIZE));
+            }}
+            onNext={() => {
+              setOffset((o) => o + PAGE_SIZE);
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Grammar tab — every KGIU pattern
+// ─────────────────────────────────────────────────────────────
+
+function GrammarTab(): JSX.Element {
+  const { input, q, setInput, clear } = useDebouncedSearch();
+  const [rows, setRows] = useState<KgiuEntrySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  const load = useCallback(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    setLoading(true);
+    setError(null);
+    grammarService
+      .listPatterns(
+        { ...(q ? { q } : {}), limit: GRAMMAR_PAGE_SIZE },
+        ctrl.signal,
+      )
+      .then((entries) => {
+        if (ctrl.signal.aborted) return;
+        setRows(entries);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load grammar.',
+        );
+        setLoading(false);
+      });
+  }, [q]);
+
+  useEffect(() => {
+    // Sync-to-external-system on mount / query change (same documented
+    // exception the diagnostic mount effect uses for `runStart()`).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+    return () => {
+      ctrlRef.current?.abort();
+    };
+  }, [load]);
+
+  return (
+    <div className="km-resources__panel">
+      <SearchBox
+        value={input}
+        onChange={setInput}
+        onClear={clear}
+        placeholder="Search all grammar patterns"
+        ariaLabel="Search grammar"
+      />
+      <div className="km-reference__count">
+        {rows.length} pattern{rows.length === 1 ? '' : 's'}
+      </div>
+      {loading && rows.length === 0 ? (
+        <div className="km-grammar__state" role="status">
+          Loading patterns…
+        </div>
+      ) : error && rows.length === 0 ? (
+        <ErrorCard message={error} onRetry={load} />
+      ) : rows.length === 0 ? (
+        <p className="km-reference__empty">No patterns match.</p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ul>
+            {rows.map((p) => (
+              <li key={`grammar:${String(p.id)}`} className="km-reference__row">
+                <div className="km-resources__entry-row">
+                  <span className="kr km-reference__row-kr">{p.pattern}</span>
+                  <span className="km-reference__row-en">
+                    {p.title_en ?? p.pattern}
+                  </span>
+                  <span className="km-pill km-pill--default km-reference__row-level">
+                    {p.proficiency ?? '—'}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// My Lists tab — create / browse / open / remove
+// ─────────────────────────────────────────────────────────────
+
+function ListsTab(): JSX.Element {
+  const [lists, setLists] = useState<ServerVocabList[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [openList, setOpenList] = useState<ServerVocabList | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    vocabService
+      .listLists()
+      .then((rows) => {
+        setLists(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load lists.',
+        );
+        setLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+     
+    load();
+  }, [load]);
+
+  const create = useCallback(async (): Promise<void> => {
+    const name = newName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await vocabService.createList({ name_kr: name, kind: 'vocab' });
+      setNewName('');
+      load();
+    } catch (err) {
+      setCreateError(
+        err instanceof ApiError ? err.message : 'Could not create the list.',
+      );
+    } finally {
+      setCreating(false);
+    }
+  }, [newName, creating, load]);
+
+  const remove = useCallback(
+    async (list: ServerVocabList): Promise<void> => {
+      const ok =
+        typeof window !== 'undefined'
+          ? window.confirm(`Delete "${list.name_kr}"? This cannot be undone.`)
+          : true;
+      if (!ok) return;
+      try {
+        await vocabService.deleteList(list.id);
+        load();
+      } catch (err) {
+        setError(
+          err instanceof ApiError ? err.message : 'Could not delete the list.',
+        );
+      }
+    },
+    [load],
+  );
+
+  return (
+    <div className="km-resources__panel">
+      <Card className="km-resources__create" variant="flat">
+        <Eyebrow>New list</Eyebrow>
+        <div className="km-resources__create-row">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => {
+              setNewName(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void create();
+              }
+            }}
+            placeholder="List name (Korean)"
+            className="kr focusring km-resources__create-input"
+            aria-label="New list name"
+            maxLength={120}
+          />
+          <Button
+            variant="gold"
+            size="sm"
+            onClick={() => {
+              void create();
+            }}
+            disabled={newName.trim().length === 0 || creating}
+          >
+            {creating ? 'Creating…' : 'Create'}
+          </Button>
+        </div>
+        {createError ? <ErrorCard message={createError} /> : null}
+      </Card>
+
+      {loading ? (
+        <div className="km-grammar__state" role="status">
+          Loading your lists…
+        </div>
+      ) : error && lists.length === 0 ? (
+        <ErrorCard message={error} onRetry={load} />
+      ) : lists.length === 0 ? (
+        <p className="km-reference__empty">
+          No lists yet. Create one above, then add words from the Vocabulary
+          tab.
+        </p>
+      ) : (
+        <Card className="km-reference__list" variant="flat">
+          <ul>
+            {lists.map((list) => (
+              <li key={`list:${String(list.id)}`} className="km-reference__row">
+                <div className="km-resources__list-row">
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      setOpenList(list);
+                    }}
+                    aria-label={`Open ${list.name_kr}`}
+                  >
+                    <span className="kr km-reference__row-kr">
+                      {list.name_kr}
+                    </span>
+                    {list.name_en ? (
+                      <span className="km-reference__row-en">
+                        {list.name_en}
+                      </span>
+                    ) : null}
+                    <span className="km-pill km-pill--default">
+                      {list.entry_count} {list.entry_count === 1 ? 'word' : 'words'}
+                    </span>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      void remove(list);
+                    }}
+                    aria-label={`Delete ${list.name_kr}`}
+                  >
+                    <Icon name="close" size={14} />
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <ListDetailSheet
+        list={openList}
+        onClose={() => {
+          setOpenList(null);
+        }}
+        onChanged={load}
+      />
+    </div>
+  );
+}
+
+interface ListDetailSheetProps {
+  list: ServerVocabList | null;
+  onClose: () => void;
+  /** Fired after a membership mutation so the parent refreshes entry_count. */
+  onChanged: () => void;
+}
+
+function ListDetailSheet({
+  list,
+  onClose,
+  onChanged,
+}: ListDetailSheetProps): JSX.Element {
+  const [entries, setEntries] = useState<VocabListEntryRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  const listId = list?.id ?? null;
+
+  const load = useCallback(() => {
+    if (listId === null) return;
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    setLoading(true);
+    setError(null);
+    vocabService
+      .getListDetail(listId, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setEntries(res.entries);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load the list.',
+        );
+        setLoading(false);
+      });
+  }, [listId]);
+
+  useEffect(() => {
+     
+    if (listId === null) {
+      setEntries([]);
+      setError(null);
+      return;
+    }
+    load();
+     
+    return () => {
+      ctrlRef.current?.abort();
+    };
+  }, [listId, load]);
+
+  const removeEntry = useCallback(
+    async (entryId: number): Promise<void> => {
+      if (listId === null) return;
+      setRemovingId(entryId);
+      // Optimistic removal — drop the row immediately; restore on failure.
+      const prev = entries;
+      setEntries((cur) => cur.filter((e) => e.entry_id !== entryId));
+      try {
+        await vocabService.removeListEntry(listId, entryId);
+        onChanged();
+      } catch (err) {
+        setEntries(prev);
+        setError(
+          err instanceof ApiError ? err.message : 'Could not remove the word.',
+        );
+      } finally {
+        setRemovingId(null);
+      }
+    },
+    [listId, entries, onChanged],
+  );
+
+  return (
+    <Sheet open={list !== null} onClose={onClose} ariaLabel="List detail">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>List</Eyebrow>
+            <div className="kr-display km-review__sheetTitle">
+              {list?.name_kr ?? ''}
+            </div>
+            <div className="km-review__sheetMeta">
+              {list?.name_en ? `${list.name_en} · ` : ''}
+              {list?.entry_count ?? 0}{' '}
+              {(list?.entry_count ?? 0) === 1 ? 'word' : 'words'}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close list detail"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+
+        <hr className="hr-double km-review__sheetRule" />
+
+        {loading ? (
+          <div className="km-grammar__state" role="status">
+            Loading words…
+          </div>
+        ) : null}
+        {error ? <ErrorCard message={error} onRetry={load} /> : null}
+        {!loading && entries.length === 0 && !error ? (
+          <p className="km-reference__empty">
+            No words in this list yet. Add some from the Vocabulary tab.
+          </p>
+        ) : null}
+        {entries.length > 0 ? (
+          <ul className="km-resources__list-entries">
+            {entries.map((e) => (
+              <li
+                key={`entry:${String(e.entry_id)}`}
+                className="km-resources__list-entry"
+              >
+                <span className="kr km-reference__row-kr">{e.korean ?? ''}</span>
+                <span className="km-reference__row-en">{e.english ?? ''}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    void removeEntry(e.entry_id);
+                  }}
+                  disabled={removingId === e.entry_id}
+                  aria-label={`Remove ${e.korean ?? 'word'} from the list`}
+                >
+                  <Icon name="close" size={12} />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </Sheet>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Add-to-list Sheet — pick a list to add a vocab row into
+// ─────────────────────────────────────────────────────────────
+
+interface AddToListSheetProps {
+  entry: VocabEntry | null;
+  onClose: () => void;
+}
+
+function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
+  const { toast } = useToast();
+  const [lists, setLists] = useState<ServerVocabList[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingId, setPendingId] = useState<number | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+     
+    if (entry === null) {
+      setLists([]);
+      setError(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    setLoading(true);
+    setError(null);
+     
+    vocabService
+      .listLists()
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setLists(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load your lists.',
+        );
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [entry]);
+
+  const add = useCallback(
+    async (list: ServerVocabList): Promise<void> => {
+      if (entry === null) return;
+      setPendingId(list.id);
+      setError(null);
+      try {
+        await vocabService.addListEntries(list.id, [entry.id]);
+        toast({
+          message: `Added to ${list.name_kr}.`,
+          tone: 'success',
+        });
+        onClose();
+      } catch (err) {
+        // 409 → already in this list. The user's intent is satisfied; treat it
+        // as a (gentle) success rather than a hard error.
+        if (err instanceof ApiError && err.status === 409) {
+          toast({
+            message: `Already in ${list.name_kr}.`,
+            tone: 'info',
+          });
+          onClose();
+          return;
+        }
+        setError(
+          err instanceof ApiError ? err.message : 'Could not add the word.',
+        );
+      } finally {
+        setPendingId(null);
+      }
+    },
+    [entry, onClose, toast],
+  );
+
+  const krLabel = useMemo(() => entry?.korean ?? '', [entry]);
+
+  return (
+    <Sheet open={entry !== null} onClose={onClose} ariaLabel="Add to a list">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>Add to list</Eyebrow>
+            <div className="kr-display km-review__sheetTitle">{krLabel}</div>
+            <div className="km-review__sheetMeta">{entry?.english ?? ''}</div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close add to list"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+
+        <hr className="hr-double km-review__sheetRule" />
+
+        {loading ? (
+          <div className="km-grammar__state" role="status">
+            Loading your lists…
+          </div>
+        ) : null}
+        {error ? <ErrorCard message={error} /> : null}
+        {!loading && lists.length === 0 && !error ? (
+          <p className="km-reference__empty">
+            No lists yet — create one in the My Lists tab first.
+          </p>
+        ) : null}
+        {lists.length > 0 ? (
+          <ul className="km-resources__pick-list">
+            {lists.map((list) => (
+              <li key={`pick:${String(list.id)}`}>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  fullWidth
+                  onClick={() => {
+                    void add(list);
+                  }}
+                  disabled={pendingId === list.id}
+                  leadingIcon={<Icon name="plus" size={14} />}
+                >
+                  {pendingId === list.id ? 'Adding…' : list.name_kr}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    </Sheet>
   );
 }
