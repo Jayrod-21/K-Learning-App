@@ -1,11 +1,14 @@
 /**
- * GET /krdict/search?q=&limit=&offset= — paginated KRDICT dictionary search.
+ * GET /krdict/search?q=&limit=&offset= — paginated KRDICT dictionary search,
+ * OR (when `q` is absent/empty) a browse-all listing of the full 53,978-row
+ * KRDICT corpus (migration 003).
  *
- * The Resources "Dictionary" tab is search-first over the full 53,978-row
- * KRDICT corpus (migration 003) — too large to scroll, so the client always
- * supplies a query and pages the results with `offset` + the `total` count.
+ * The Resources "Dictionary" tab opens on the browse-all list (page 1, no query
+ * needed) so the user can scroll the dictionary immediately; typing a query
+ * switches to search results, and clearing it returns to browse. Both modes
+ * page with `offset` + the `total` count.
  *
- * Match model — "headword first, definitions as fallback":
+ * Search match model — "headword first, definitions as fallback":
  *   - A row matches when its `headword` starts with the term (prefix), OR the
  *     term appears as a substring of the Korean or English definition. Prefix
  *     on headword is the primary intent ("type 먹 → 먹다, 먹이, …"); the
@@ -37,7 +40,11 @@ const router = Router();
 router.use(requireAuth);
 
 const SearchQuerySchema = z.object({
-  q: z.string().trim().min(1).max(64),
+  // OPTIONAL — absent or empty `q` means "browse the whole dictionary" (see the
+  // route doc). When present it's a 1..64 char term; the leading/trailing trim
+  // means an all-whitespace query collapses to the browse path, not a search
+  // for spaces.
+  q: z.string().trim().max(64).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().nonnegative().default(0),
 });
@@ -74,31 +81,56 @@ router.get(
         return;
       }
 
-      // Two operands from one term: a prefix pattern (`term%`) for the headword
-      // and a substring pattern (`%term%`) for the definition fallback. Both are
-      // escaped then bound as parameters — no interpolation of user input.
-      const escaped = escapeLikePattern(q.q);
-      const prefixPattern = `${escaped}%`;
-      const substringPattern = `%${escaped}%`;
+      // `q` is optional. A non-empty term runs the headword/definition search;
+      // an absent/empty term browses the whole dictionary (headword order).
+      const term = q.q ?? '';
+      const browse = term.length === 0;
 
       let rows: KrdictSearchRow[];
       try {
-        const result = await query<KrdictSearchRow>(
+        if (browse) {
+          // Browse-all: the same projection as search, ordered by headword so
+          // the page is deterministic and alphabetical. The corpus is ~53,978
+          // rows; COUNT(*) OVER () over the unfiltered scan returns the exact
+          // total (no estimated-count idiom exists in this codebase, and an
+          // exact count of a single mid-size table is well within budget). The
+          // `"C"` collation gives a stable byte-order sort that matches the
+          // pager's "N of M" without locale-dependent reordering.
+          const result = await query<KrdictSearchRow>(
+            `SELECT id, headword, part_of_speech,
+                    definition_korean, definition_english,
+                    COUNT(*) OVER ()::text AS total
+               FROM krdict_entries
+              ORDER BY headword COLLATE "C", id ASC
+              LIMIT $1 OFFSET $2`,
+            [q.limit, q.offset],
+          );
+          rows = result.rows;
+        } else {
+          // Two operands from one term: a prefix pattern (`term%`) for the
+          // headword and a substring pattern (`%term%`) for the definition
+          // fallback. Both are escaped then bound as parameters — no
+          // interpolation of user input.
+          const escaped = escapeLikePattern(term);
+          const prefixPattern = `${escaped}%`;
+          const substringPattern = `%${escaped}%`;
           // ORDER BY puts headword-prefix matches ahead of definition-only
           // matches, then by id for a stable page. COUNT(*) OVER () carries the
           // total matching count so the client paginates in one round-trip.
-          `SELECT id, headword, part_of_speech,
-                  definition_korean, definition_english,
-                  COUNT(*) OVER ()::text AS total
-             FROM krdict_entries
-            WHERE headword           ILIKE $1 ESCAPE '\\'
-               OR definition_korean  ILIKE $2 ESCAPE '\\'
-               OR definition_english ILIKE $2 ESCAPE '\\'
-            ORDER BY (headword ILIKE $1 ESCAPE '\\') DESC, id ASC
-            LIMIT $3 OFFSET $4`,
-          [prefixPattern, substringPattern, q.limit, q.offset],
-        );
-        rows = result.rows;
+          const result = await query<KrdictSearchRow>(
+            `SELECT id, headword, part_of_speech,
+                    definition_korean, definition_english,
+                    COUNT(*) OVER ()::text AS total
+               FROM krdict_entries
+              WHERE headword           ILIKE $1 ESCAPE '\\'
+                 OR definition_korean  ILIKE $2 ESCAPE '\\'
+                 OR definition_english ILIKE $2 ESCAPE '\\'
+              ORDER BY (headword ILIKE $1 ESCAPE '\\') DESC, id ASC
+              LIMIT $3 OFFSET $4`,
+            [prefixPattern, substringPattern, q.limit, q.offset],
+          );
+          rows = result.rows;
+        }
       } catch (err) {
         // Cache symmetry on rollback (FU-NF-5): if the krdict tables were
         // dropped underneath the availability cache, mark it not-ready so the
@@ -121,7 +153,9 @@ router.get(
         id: Number(rest.id),
       }));
 
-      res.status(200).json({ q: q.q, entries, total, limit: q.limit, offset: q.offset });
+      // Echo the normalized term ('' in browse mode) so the client can confirm
+      // which mode the page reflects.
+      res.status(200).json({ q: term, entries, total, limit: q.limit, offset: q.offset });
     } catch (err) {
       next(err);
     }

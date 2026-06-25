@@ -151,6 +151,43 @@ interface TopikRow {
   options: unknown;
   answer: unknown;
   extra: Record<string, unknown> | null;
+  /** This item's number within its test — used to resolve a shared passage. */
+  item_number: number;
+  /**
+   * The parent test's `passages` JSONB (migration 005): an object keyed by
+   * item-number range ("19-20", "21-22", …) carrying the reading passage shared
+   * by those items. Reading items whose own `stem` is empty depend on this; the
+   * diagnostic resolves the covering range so the question text isn't blank.
+   */
+  test_passages: Record<string, unknown> | null;
+}
+
+/**
+ * Resolve the shared passage covering `itemNumber` from a test's `passages`
+ * JSONB. Keys are item-number RANGES ("19-20") or a single number ("21"); the
+ * first key whose range includes `itemNumber` and whose value is a non-empty
+ * string wins. Returns null when no key covers the item (e.g. listening/writing
+ * tests leave `passages` as `{}`, or the item carries its own stem). Malformed
+ * keys/values are skipped, never thrown on — a hostile corpus row degrades to
+ * "no shared passage", not a 500.
+ */
+function sharedPassageFor(
+  passages: Record<string, unknown> | null,
+  itemNumber: number,
+): string | null {
+  if (passages === null) return null;
+  for (const [key, value] of Object.entries(passages)) {
+    if (typeof value !== 'string' || value.trim().length === 0) continue;
+    // "19-20" → [19, 20]; "21" → [21, 21]. Non-numeric keys are skipped.
+    const parts = key.split('-');
+    const lo = Number(parts[0]);
+    const hi = parts.length > 1 ? Number(parts[parts.length - 1]) : lo;
+    if (!Number.isInteger(lo) || !Number.isInteger(hi)) continue;
+    if (itemNumber >= Math.min(lo, hi) && itemNumber <= Math.max(lo, hi)) {
+      return value;
+    }
+  }
+  return null;
 }
 
 /**
@@ -175,20 +212,27 @@ async function pickTopikRow(
   ];
   for (const attempt of attempts) {
     const params: unknown[] = [section];
-    let sql = `SELECT id::text AS id, section::text AS section, proficiency::text AS proficiency,
-                      stem, prompt, underline, options, answer, extra
-                 FROM topik_items
-                WHERE section = $1::topik_section
-                  AND options IS NOT NULL
-                  AND jsonb_array_length(options) >= 2
-                  AND answer IS NOT NULL`;
+    // JOIN topik_tests to carry the test's `passages` JSONB (shared reading
+    // passages keyed by item-number range, migration 005) so buildTopikItem can
+    // resolve the passage covering this item's `item_number`. Columns are
+    // qualified with the `i` alias because the join introduces a second `id`.
+    let sql = `SELECT i.id::text AS id, i.section::text AS section,
+                      i.proficiency::text AS proficiency,
+                      i.stem, i.prompt, i.underline, i.options, i.answer, i.extra,
+                      i.item_number, t.passages AS test_passages
+                 FROM topik_items i
+                 JOIN topik_tests t ON t.id = i.topik_test_id
+                WHERE i.section = $1::topik_section
+                  AND i.options IS NOT NULL
+                  AND jsonb_array_length(i.options) >= 2
+                  AND i.answer IS NOT NULL`;
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
-      sql += ` AND proficiency = $${params.length}::proficiency_level`;
+      sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
     }
     if (excludeIds.length > 0) {
       params.push(excludeIds);
-      sql += ` AND id::text <> ALL($${params.length}::text[])`;
+      sql += ` AND i.id::text <> ALL($${params.length}::text[])`;
     }
     sql += ` ORDER BY random() LIMIT 1`;
     const { rows } = await query<TopikRow>(sql, params);
@@ -242,6 +286,14 @@ function buildTopikItem(
   const level: DiagnosticTargetLevel = band === 'basic' ? 'L3' : band;
   const prompt = (row.prompt ?? row.stem ?? '').trim() || '다음 질문에 답하세요.';
 
+  // The passage text the item depends on: its OWN `stem` first, else the shared
+  // passage from the parent test keyed by this item's number range (migration
+  // 005 `topik_tests.passages`). Without this, items that share a passage —
+  // whose own `stem` is empty because the body lives in the test's `passages` —
+  // rendered with only the instruction + options and NO question text. (B1 fix.)
+  const ownStem = row.stem !== null && row.stem.trim().length > 0 ? row.stem : null;
+  const passageText = ownStem ?? sharedPassageFor(row.test_passages, row.item_number);
+
   const base: ServerItem = {
     section,
     sourceKind: 'topik',
@@ -250,7 +302,7 @@ function buildTopikItem(
     kind:
       section === 'listening'
         ? 'audio-mc'
-        : row.stem
+        : passageText !== null
           ? 'passage-mc'
           : 'inference',
     level,
@@ -260,16 +312,21 @@ function buildTopikItem(
     explain: '', // topik items ship no explanation; reveal shows the correct choice only
   };
 
-  if (section === 'reading' && row.stem) {
-    return { ...base, passage: row.stem, ...(row.underline ? { underline: row.underline } : {}) };
+  if (section === 'reading' && passageText !== null) {
+    return { ...base, passage: passageText, ...(row.underline ? { underline: row.underline } : {}) };
   }
   if (section === 'listening') {
     const extra = row.extra ?? {};
     const durationRaw = extra['duration'];
     const duration =
       typeof durationRaw === 'number' && durationRaw > 0 ? durationRaw : DEFAULT_AUDIO_DURATION_S;
+    // Transcript fallback chain: explicit extra.transcript, then the item's own
+    // stem, then the shared passage (a dialogue body shared across listening
+    // items lives in the test's passages too).
     const transcript =
-      (typeof extra['transcript'] === 'string' ? extra['transcript'] : '') || row.stem || '';
+      (typeof extra['transcript'] === 'string' ? extra['transcript'] : '') ||
+      passageText ||
+      '';
     return { ...base, audio: { duration, transcript } };
   }
   return base;

@@ -136,14 +136,56 @@ describe('GET /krdict/search — matching', () => {
   });
 });
 
-describe('GET /krdict/search — validation rejection', () => {
-  it('missing q → 400', async () => {
+describe('GET /krdict/search — browse-all (q absent / empty)', () => {
+  it('absent q → 200 browse list with rows and the full table total', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '가다', definitionKo: '움직이다' });
+    await seedKrdictEntry(pg.pool, { headword: '나다', definitionKo: '생기다' });
+    await seedKrdictEntry(pg.pool, { headword: '다니다', definitionKo: '오가다' });
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/krdict/search');
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('validation_error');
+    expect(res.status).toBe(200);
+    // No query → browse the whole corpus (count is the whole table).
+    expect(res.body.total).toBe(3);
+    expect(res.body.entries.length).toBe(3);
+    expect(res.body.q).toBe('');
   });
 
+  it('empty q → 200 browse list (same as absent q)', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '가다' });
+    await seedKrdictEntry(pg.pool, { headword: '나다' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search?q=');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.entries.length).toBe(2);
+  });
+
+  it('browse paginates with offset and reports the full total', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await seedKrdictEntry(pg.pool, { headword: `목록${i}` });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search?limit=2&offset=2');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(5);
+    expect(res.body.entries.length).toBe(2);
+    expect(res.body.offset).toBe(2);
+  });
+
+  it('browse returns headword order (deterministic page)', async () => {
+    await seedKrdictEntry(pg.pool, { headword: 'cherry' });
+    await seedKrdictEntry(pg.pool, { headword: 'apple' });
+    await seedKrdictEntry(pg.pool, { headword: 'banana' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search');
+    expect(res.status).toBe(200);
+    const heads = (res.body.entries as Array<{ headword: string }>).map((e) => e.headword);
+    // COLLATE "C" byte-order sort: lowercase ASCII sorts alphabetically.
+    expect(heads).toEqual(['apple', 'banana', 'cherry']);
+  });
+});
+
+describe('GET /krdict/search — validation rejection', () => {
   it('oversized q → 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(`/krdict/search?q=${'x'.repeat(100)}`);

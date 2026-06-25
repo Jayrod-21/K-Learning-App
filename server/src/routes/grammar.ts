@@ -33,7 +33,10 @@ const KgiuSearchQuerySchema = z.object({
     .enum(['kgiu_beginner', 'kgiu_intermediate', 'kgiu_advanced'])
     .optional(),
   proficiency: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  // The client's Reference "Grammar" tab requests one wide page (GRAMMAR_PAGE_SIZE
+  // = 400) to list the whole corpus without a pager; the reference data is ~370
+  // pattern rows, so 400 covers it. Ceiling raised from 100 → 400 to admit that.
+  limit: z.coerce.number().int().min(1).max(400).default(20),
   offset: z.coerce.number().int().nonnegative().default(0),
 });
 
@@ -47,10 +50,16 @@ router.get(
         validatedQuery: z.infer<typeof KgiuSearchQuerySchema>;
       }).validatedQuery;
       const { rows } = await query(
+        // Structural non-pattern rows (unit_intro / reference / introduction
+        // categories carry an empty `pattern`) are excluded: they render as a
+        // blank row in the Reference list and would pollute the weekly picks.
+        // The same `btrim(coalesce(pattern,'')) <> ''` guard fences them out of
+        // /grammar/suggestions/weekly below.
         `SELECT id, corpus, source_id, pattern, title_en, category, proficiency,
                 unit, source_pages
            FROM kgiu_entries
           WHERE entry_type = 'grammar'
+            AND btrim(coalesce(pattern, '')) <> ''
             AND ($1::corpus IS NULL OR corpus = $1::corpus)
             AND ($2::proficiency_level IS NULL OR proficiency = $2::proficiency_level)
             AND ($3::text IS NULL OR pattern = $3)
@@ -235,7 +244,7 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
               k.proficiency, k.unit, k.source_pages
          FROM kgiu_entries k
         WHERE k.entry_type = 'grammar'
-          AND k.pattern IS NOT NULL
+          AND btrim(coalesce(k.pattern, '')) <> ''
           AND NOT EXISTS (
                 SELECT 1
                   FROM grammar_entries g

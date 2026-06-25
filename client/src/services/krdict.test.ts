@@ -30,6 +30,27 @@ describe('searchKrdict', () => {
     expect(spy).toHaveBeenCalledWith('/krdict/search', { params: { q: '밥' } });
   });
 
+  it('omits q entirely in browse mode (no q given)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ entries: [], total: 0 });
+
+    await searchKrdict({ limit: 30, offset: 0 });
+
+    // No `q` key at all → the server's browse-all path.
+    expect(spy).toHaveBeenCalledWith('/krdict/search', {
+      params: { limit: 30, offset: 0 },
+    });
+  });
+
+  it('omits an empty-string q (treated as browse)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ entries: [], total: 0 });
+
+    await searchKrdict({ q: '', limit: 30 });
+
+    expect(spy).toHaveBeenCalledWith('/krdict/search', {
+      params: { limit: 30 },
+    });
+  });
+
   it('forwards an abort signal', async () => {
     const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ entries: [], total: 0 });
     const ctrl = new AbortController();

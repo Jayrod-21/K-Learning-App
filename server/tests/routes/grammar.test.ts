@@ -65,10 +65,37 @@ describe('GET /grammar/kgiu — success + validation', () => {
     expect(res.status).toBe(400);
   });
 
-  it('limit > 100 → 400', async () => {
+  it('limit 400 → 200 (Reference Grammar tab requests one wide page)', async () => {
+    await seedKgiuEntry(pg.pool);
     const { agent } = await registerUser(t.app, pg.pool);
-    const res = await agent.get('/grammar/kgiu?limit=500');
+    const res = await agent.get('/grammar/kgiu?limit=400');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.entries)).toBe(true);
+  });
+
+  it('limit 401 → 400 (just past the raised ceiling)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/kgiu?limit=401');
     expect(res.status).toBe(400);
+  });
+
+  it('excludes structural empty-pattern rows from the list', async () => {
+    // kgiu_entries is shared reference data the top-level beforeEach does NOT
+    // truncate, so clear it to make the result set deterministic.
+    await pg.pool.query('TRUNCATE TABLE kgiu_entries RESTART IDENTITY CASCADE');
+    await seedKgiuEntry(pg.pool, { pattern: '-아/어 보이다' });
+    // A non-pattern structural row: entry_type='grammar', blank pattern,
+    // unit_intro category — must NOT surface in the Reference list.
+    await seedKgiuEntry(pg.pool, { pattern: '', category: 'unit_intro' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/kgiu?limit=400');
+    expect(res.status).toBe(200);
+    const patterns = (res.body.entries as Array<{ pattern: string | null }>).map(
+      (e) => e.pattern,
+    );
+    expect(patterns).toContain('-아/어 보이다');
+    // No blank/empty pattern leaks into the list.
+    expect(patterns.every((p) => p !== null && p.trim().length > 0)).toBe(true);
   });
 });
 
@@ -233,6 +260,19 @@ describe('GET /grammar/suggestions/weekly', () => {
     expect(patterns).not.toContain(bankedPattern);
     // …while a different, un-banked pattern is still suggested.
     expect(patterns).toContain(freshPattern);
+  });
+
+  it('excludes structural empty-pattern rows from the weekly picks', async () => {
+    await seedKgiuEntry(pg.pool, { pattern: '-(으)ㄹ 텐데' });
+    // A blank-pattern structural row (reference category) must never be picked.
+    await seedKgiuEntry(pg.pool, { pattern: '', category: 'reference' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/suggestions/weekly').expect(200);
+    const patterns = (res.body.patterns as Array<{ pattern: string | null }>).map(
+      (s) => s.pattern,
+    );
+    expect(patterns).toContain('-(으)ㄹ 텐데');
+    expect(patterns.every((p) => p !== null && p.trim().length > 0)).toBe(true);
   });
 
   it('each user sees suggestions independent of another user’s bank', async () => {

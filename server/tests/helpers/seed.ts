@@ -102,20 +102,36 @@ export async function seedVocabEntry(
   return Number(rows[0]!.id);
 }
 
-/** Seed a single kgiu_entries grammar row. Returns its id. */
+/**
+ * Seed a single kgiu_entries grammar row. Returns its id.
+ *
+ * `pattern` defaults to a real grammar form. Pass `pattern: ''` together with a
+ * structural `category` (e.g. 'unit_intro' / 'reference' / 'introduction') to
+ * seed the empty-pattern, non-pattern rows the Reference list + weekly picks
+ * must exclude — these are `entry_type='grammar'` rows whose `pattern` is blank
+ * (an empty string passes the migration-027 CHECK, which only forbids NULL).
+ * `sourceId` can be pinned to assert a deterministic key downstream.
+ */
 export async function seedKgiuEntry(
   pool: Pool,
-  opts: { corpus?: string; pattern?: string; proficiency?: 'basic' | 'L3' | 'L4' | 'L5+' } = {},
+  opts: {
+    corpus?: string;
+    pattern?: string;
+    proficiency?: 'basic' | 'L3' | 'L4' | 'L5+';
+    category?: string;
+    sourceId?: string;
+  } = {},
 ): Promise<number> {
   const corpus = opts.corpus ?? 'kgiu_intermediate';
   const corpusSourceId = await ensureCorpusSource(pool, corpus);
-  const sourceId = `kgiu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sourceId =
+    opts.sourceId ?? `kgiu-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO kgiu_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
         source_book, pattern, title_en, category, proficiency)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'grammar'::kgiu_entry_type,
-             'test-book', $4, 'mock title', 'mock category', $5::proficiency_level)
+             'test-book', $4, 'mock title', $6, $5::proficiency_level)
      RETURNING id`,
     [
       corpusSourceId,
@@ -123,6 +139,7 @@ export async function seedKgiuEntry(
       sourceId,
       opts.pattern ?? '-아/어 보이다',
       opts.proficiency ?? 'L3',
+      opts.category ?? 'mock category',
     ],
   );
   return Number(rows[0]!.id);

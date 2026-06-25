@@ -24,24 +24,34 @@
 import { api } from './api';
 import type { KrdictSearchPage } from '../types/domain';
 
-/** Pagination + query for `GET /krdict/search`. */
+/**
+ * Pagination + query for `GET /krdict/search`.
+ *
+ * `q` is OPTIONAL: omitting it (or passing an empty string) browses the whole
+ * dictionary in headword order; a non-empty `q` searches. The Dictionary tab
+ * opens on browse and switches to search as the user types.
+ */
 export interface SearchKrdictOptions {
-  q: string;
+  q?: string;
   limit?: number;
   offset?: number;
 }
 
 /**
- * GET /krdict/search?q=&limit=&offset= → paginated KRDICT headwords.
+ * GET /krdict/search?q=&limit=&offset= → paginated KRDICT headwords (search when
+ * `q` is set, browse-all when it isn't).
  *
- * `signal` forwards to axios so a caller can abort a stale search (e.g. the
+ * `signal` forwards to axios so a caller can abort a stale request (e.g. the
  * user types another character past the debounce window).
  */
 export async function searchKrdict(
-  opts: SearchKrdictOptions,
+  opts: SearchKrdictOptions = {},
   signal?: AbortSignal,
 ): Promise<KrdictSearchPage> {
-  const params: Record<string, string | number> = { q: opts.q };
+  const params: Record<string, string | number> = {};
+  // Only send `q` when it's a non-empty term; an absent/empty `q` is the
+  // browse-all path on the server.
+  if (opts.q !== undefined && opts.q.length > 0) params.q = opts.q;
   if (opts.limit !== undefined) params.limit = opts.limit;
   if (opts.offset !== undefined) params.offset = opts.offset;
   return api.get<KrdictSearchPage>('/krdict/search', {

@@ -53,7 +53,7 @@ vi.mock('../services/grammar', () => grammarSvc);
 vi.mock('../services/krdict', () => krdictSvc);
 vi.mock('../services/suggestions', () => suggestSvc);
 
-import Reference from './Reference';
+import Reference, { grammarKey } from './Reference';
 
 const VOCAB_ROWS: VocabEntry[] = [
   { id: 1, corpus: 'vocab_2000_intermediate', korean: '영향', english: 'influence', proficiency: 'L3', theme: null },
@@ -145,6 +145,68 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('grammarKey — always emits a server-valid GR- key (F2)', () => {
+  const GR_KEY = /^GR-[a-z0-9_-]{1,64}$/;
+  const base: Omit<KgiuEntrySummary, 'id' | 'source_id' | 'pattern'> = {
+    corpus: 'kgiu_intermediate',
+    title_en: null,
+    category: null,
+    proficiency: null,
+    unit: null,
+    source_pages: null,
+  };
+  const make = (
+    over: Partial<KgiuEntrySummary> & Pick<KgiuEntrySummary, 'id'>,
+  ): KgiuEntrySummary => ({
+    source_id: null,
+    pattern: '-는 반면에',
+    ...base,
+    ...over,
+  });
+
+  it('slugifies an ASCII source_id to the allowed alphabet', () => {
+    const key = grammarKey(make({ id: 100, source_id: 'KGIU-INT-009' }));
+    expect(key).toBe('GR-kgiu-int-009');
+    expect(key).toMatch(GR_KEY);
+  });
+
+  it('falls back to kgiu-${id} when source_id is null', () => {
+    const key = grammarKey(make({ id: 42, source_id: null }));
+    expect(key).toBe('GR-kgiu-42');
+    expect(key).toMatch(GR_KEY);
+  });
+
+  it('falls back to kgiu-${id} when source_id slugs to empty (all-Korean)', () => {
+    // A Korean source_id has no [a-z0-9_-] chars → slug collapses to '' →
+    // kgiu-${id} fallback rather than an invalid `GR-` key.
+    const key = grammarKey(make({ id: 7, source_id: '한국어' }));
+    expect(key).toBe('GR-kgiu-7');
+    expect(key).toMatch(GR_KEY);
+  });
+
+  it('a Korean pattern never leaks into the key', () => {
+    const key = grammarKey(make({ id: 3, source_id: null, pattern: '-(으)면' }));
+    expect(key).toMatch(GR_KEY);
+    expect(key).not.toContain('(');
+    expect(key).not.toContain('으');
+  });
+
+  it('truncates an over-long slug to 64 chars (after the GR- prefix)', () => {
+    const longId = 'a'.repeat(200);
+    const key = grammarKey(make({ id: 9, source_id: longId }));
+    expect(key.startsWith('GR-')).toBe(true);
+    expect(key.slice(3).length).toBe(64);
+    expect(key).toMatch(GR_KEY);
+  });
+
+  it('collapses runs of disallowed chars and trims edges', () => {
+    const key = grammarKey(make({ id: 1, source_id: '--A  B__C!!--' }));
+    // lowercase, collapse non-alnum runs to single '-', trim edges; '_' kept.
+    expect(key).toBe('GR-a-b__c');
+    expect(key).toMatch(GR_KEY);
+  });
+});
+
 describe('Resources — default Vocabulary tab', () => {
   it('renders the curated corpus rows with the real total in the pager', async () => {
     renderResources();
@@ -194,36 +256,83 @@ describe('Resources — This Week (suggest-only)', () => {
     expect(await screen.findByText('✓ Added')).toBeInTheDocument();
   });
 
-  it('adds a grammar pick through the bank path', async () => {
+  it('adds a grammar pick through the bank path with a GR-shaped key', async () => {
     const user = userEvent.setup();
     renderResources();
     await user.click(await screen.findByRole('button', { name: 'Add -는 반면에' }));
 
     await waitFor(() => {
+      // The key is derived to satisfy the server's /^GR-[a-z0-9_-]{1,64}$/ —
+      // 'KGIU-INT-009' slugifies to 'GR-kgiu-int-009' (the raw source_id would
+      // have been rejected with a 400).
       expect(grammarSvc.bankPattern).toHaveBeenCalledWith(
-        expect.objectContaining({ pattern_key: 'KGIU-INT-009', pattern_display: '-는 반면에' }),
+        expect.objectContaining({
+          pattern_key: 'GR-kgiu-int-009',
+          pattern_display: '-는 반면에',
+        }),
       );
     });
   });
 });
 
-describe('Resources — Dictionary tab (search-first)', () => {
-  it('prompts to type before any search, then shows paginated KRDICT hits', async () => {
+describe('Resources — Dictionary tab (browse + search)', () => {
+  it('browses the dictionary on open (no query needed), then searches on type', async () => {
     const user = userEvent.setup();
     renderResources();
     await screen.findByText('영향'); // wait for first paint
 
     await user.click(screen.getByRole('tab', { name: 'Dictionary' }));
-    // Empty state — no network call yet.
-    expect(
-      screen.getByText(/Type a Korean or English word/i),
-    ).toBeInTheDocument();
-    expect(krdictSvc.searchKrdict).not.toHaveBeenCalled();
 
-    await user.type(screen.getByRole('searchbox', { name: 'Search dictionary' }), '학교');
+    // Browse-all on mount: the tab loads page 1 WITHOUT a query (the service is
+    // called with no `q`), so the user sees the dictionary immediately.
     expect(await screen.findByText('학교')).toBeInTheDocument();
-    expect(screen.getByText('a school')).toBeInTheDocument();
-    expect(krdictSvc.searchKrdict).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.not.objectContaining({ q: expect.anything() }),
+        expect.anything(),
+      );
+    });
+
+    // Typing a query switches to search results (now `q` is sent).
+    krdictSvc.searchKrdict.mockClear();
+    await user.type(
+      screen.getByRole('searchbox', { name: 'Search dictionary' }),
+      '학교',
+    );
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ q: '학교' }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('returns to browse when the query is cleared', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Dictionary' }));
+    await screen.findByText('학교');
+
+    const box = screen.getByRole('searchbox', { name: 'Search dictionary' });
+    await user.type(box, '학교');
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ q: '학교' }),
+        expect.anything(),
+      );
+    });
+
+    // Clearing the box returns to the browse-all path (no `q`).
+    krdictSvc.searchKrdict.mockClear();
+    await user.clear(box);
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.not.objectContaining({ q: expect.anything() }),
+        expect.anything(),
+      );
+    });
   });
 });
 

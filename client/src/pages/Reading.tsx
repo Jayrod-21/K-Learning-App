@@ -100,9 +100,16 @@ import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
+import { Button } from '../components/Button';
+import { Icon } from '../components/Icon';
+import { ReadingPicker } from '../components/ReadingPicker';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadReadingMock } from '../data/mocks/reading';
 import { fetchSentences, fetchUnits } from '../services/reading';
+import {
+  loadReadingSelection,
+  saveReadingSelection,
+} from '../lib/readingSelection';
 import { lemmatize } from '../services/lemmatize';
 import { defineEntry } from '../services/define';
 import { enrich } from '../services/enrich';
@@ -119,15 +126,16 @@ import type {
   PatternMatch,
   ReadingCorpus,
   ReadingPassage,
+  ReadingSelection,
   ReadingSentences,
 } from '../types/domain';
 
 /**
- * Default corpus + level used when the real `/reading/units` chain is on.
- *
- * Hard-coded for Pass 3 — Pass 4 will lift corpus + unit selection into
- * Today's plan envelope (`/plan/today.reading`). Pinned at module scope so
- * the realFn closure doesn't capture per-render state.
+ * Default corpus used when the learner hasn't picked a passage yet (no
+ * persisted selection). The screen loads this corpus's FIRST unit on a fresh
+ * visit — the historical behaviour — but the picker now lets the learner
+ * choose any unit in either corpus, and that pick is persisted. Pinned at
+ * module scope so the default-load closure doesn't capture per-render state.
  */
 const DEFAULT_CORPUS: ReadingCorpus = 'ttmik';
 
@@ -223,25 +231,45 @@ function tokeniseSentence(korean: string): PassageToken[] {
 }
 
 /**
- * Real loader — the chain the `realFn` slot needs. Resolves a passage
- * the screen can hand to KoreanPassage; rejects with `ApiError` so the
- * hook surfaces the error to the mock fallback.
+ * Real loader — the chain the `realFn` slot needs. Resolves a passage the
+ * screen can hand to KoreanPassage; rejects with `ApiError` so the hook
+ * surfaces the error to the mock fallback.
  *
- * Edge case: `fetchUnits` returns []. We surface that as an `ApiError`
- * so the screen falls back to the mock instead of rendering an empty
- * Card — an empty passage isn't a learning experience.
+ * Two modes, keyed on whether the learner has a persisted pick:
+ *   - `selection === null` (fresh visit): load the DEFAULT corpus's FIRST
+ *     unit — the historical behaviour, now just the default rather than the
+ *     only option. We fetch the unit row to recover its title for the header.
+ *   - a concrete `selection`: load exactly that `{corpus, unitId}` passage.
+ *     The title travels with the selection (captured when the learner picked
+ *     it), so no extra units lookup is needed; we fall back to a corpus tag
+ *     only if the persisted title is blank.
+ *
+ * Edge case: an empty corpus / unknown unit surfaces as an `ApiError` so the
+ * screen falls back to the mock instead of rendering an empty Card — an empty
+ * passage isn't a learning experience.
  */
-async function loadReadingReal(): Promise<ReadingPassage> {
-  const units = await fetchUnits({ corpus: DEFAULT_CORPUS, limit: 1 });
-  if (units.length === 0) {
-    throw new ApiError('no reading units available', {
-      status: 404,
-      code: 'no_units',
-    });
+async function loadReadingReal(
+  selection: ReadingSelection | null,
+): Promise<ReadingPassage> {
+  if (selection === null) {
+    const units = await fetchUnits({ corpus: DEFAULT_CORPUS, limit: 1 });
+    if (units.length === 0) {
+      throw new ApiError('no reading units available', {
+        status: 404,
+        code: 'no_units',
+      });
+    }
+    const unit = units[0];
+    const wire = await fetchSentences(DEFAULT_CORPUS, unit.id);
+    return adaptWirePassage(unit.title, wire);
   }
-  const unit = units[0];
-  const wire = await fetchSentences(DEFAULT_CORPUS, unit.id);
-  return adaptWirePassage(unit.title, wire);
+
+  const { corpus, unitId, title } = selection;
+  const wire = await fetchSentences(corpus, unitId);
+  // Title rides the selection; fall back to a corpus tag only if it's blank
+  // (a tampered/garbled persisted value coerced to '' by the loader).
+  const heading = title.trim() || `${corpus.toUpperCase()} · ${String(unitId)}`;
+  return adaptWirePassage(heading, wire);
 }
 
 /** True when the gloss is the placeholder synthesised by the adapter. */
@@ -324,12 +352,44 @@ function patternDescription(pattern: PatternMatch): {
 }
 
 export function Reading(): JSX.Element {
+  // Persisted passage pick. `null` = no pick yet → load the default first
+  // unit. Seeded once from localStorage; updated when the learner picks in
+  // the ReadingPicker. The `realFn` and the hook `key` both derive from it,
+  // so a new pick triggers a fresh fetch of that passage.
+  const [selection, setSelection] = useState<ReadingSelection | null>(() =>
+    loadReadingSelection(),
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  // The hook re-runs only on `key` change (realFn identity is ignored by
+  // design — see useEndpointOrMock's JSDoc), so the key encodes the active
+  // selection. `realFn` is memoised on the same selection so the freshest
+  // closure is the one the hook reads via its ref when the key flips.
+  const selectionKey = selection
+    ? `reading:${selection.corpus}:${String(selection.unitId)}`
+    : 'reading:default';
+  const realFn = useCallback(
+    () => loadReadingReal(selection),
+    [selection],
+  );
+
   const { data, loading, isMock, refetch } = useEndpointOrMock<ReadingPassage>(
-    'reading',
+    selectionKey,
     loadReadingMock,
-    { realFn: loadReadingReal },
+    { realFn },
   );
   const { toast } = useToast();
+
+  /**
+   * Commit a passage pick: persist it, swap the selection (which flips the
+   * hook key → refetch), and close the picker. Persisting first means a
+   * reload mid-fetch still reopens the chosen passage.
+   */
+  const handleSelect = useCallback((next: ReadingSelection): void => {
+    saveReadingSelection(next);
+    setSelection(next);
+    setPickerOpen(false);
+  }, []);
 
   // popData null = closed. The same component renders for vocab and grammar
   // (kind discriminator on `WordPopoverData`).
@@ -685,6 +745,19 @@ export function Reading(): JSX.Element {
             ? `${data.level} · ${data.meta}`
             : 'Passage'
         }
+        right={
+          <Button
+            variant="ghost"
+            size="sm"
+            leadingIcon={<Icon name="book" size={14} />}
+            onClick={() => {
+              setPickerOpen(true);
+            }}
+            aria-label="Choose a different passage"
+          >
+            Passages
+          </Button>
+        }
       />
 
       {loading ? (
@@ -726,6 +799,15 @@ export function Reading(): JSX.Element {
           isLoading={popLoading}
         />
       ) : null}
+
+      <ReadingPicker
+        open={pickerOpen}
+        onClose={() => {
+          setPickerOpen(false);
+        }}
+        current={selection}
+        onSelect={handleSelect}
+      />
     </section>
   );
 }

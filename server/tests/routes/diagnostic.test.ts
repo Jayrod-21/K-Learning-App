@@ -125,6 +125,66 @@ describe('POST /diagnostic — start', () => {
   });
 });
 
+describe('POST /diagnostic — shared reading passage (F4)', () => {
+  it('serves the test-shared passage on an item whose own stem is empty', async () => {
+    // A reading item whose body lives in the parent test's `passages` JSONB
+    // (migration 005), keyed by item-number range. Its own `stem` is empty, so
+    // before the fix the item rendered with NO question text. The diagnostic
+    // must surface the shared passage covering item_number 20 ("19-20").
+    const passageText = '다음은 어느 회사의 안내문입니다. 잘 읽고 물음에 답하십시오. 본문 내용…';
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      proficiency: 'L4',
+      answer: 1,
+      stem: '', // empty own stem → depends on the shared passage
+      testNumber: 909_001,
+      itemNumber: 20,
+    });
+    // Attach the shared passage to the item's parent test, keyed by the range
+    // that covers item_number 20.
+    await pg.pool.query(
+      `UPDATE topik_tests t
+          SET passages = $1::jsonb
+         FROM topik_items i
+        WHERE i.id = $2 AND t.id = i.topik_test_id`,
+      [JSON.stringify({ '19-20': passageText }), itemId],
+    );
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/diagnostic').send({});
+    expect(res.status).toBe(201);
+    const item = res.body.item;
+    expect(item.section).toBe('reading');
+    // The shared passage is surfaced on the live item so the question renders.
+    expect(item.passage).toBe(passageText);
+  });
+
+  it('does not invent a passage when no range covers the item', async () => {
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      proficiency: 'L4',
+      answer: 1,
+      stem: '',
+      testNumber: 909_002,
+      itemNumber: 5,
+    });
+    // Passage range "19-20" does NOT cover item_number 5.
+    await pg.pool.query(
+      `UPDATE topik_tests t
+          SET passages = $1::jsonb
+         FROM topik_items i
+        WHERE i.id = $2 AND t.id = i.topik_test_id`,
+      [JSON.stringify({ '19-20': '관계없는 본문' }), itemId],
+    );
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/diagnostic').send({});
+    expect(res.status).toBe(201);
+    // No covering range → no passage field (the item falls back to inference).
+    expect(res.body.item).not.toHaveProperty('passage');
+  });
+});
+
 describe('POST /diagnostic/:runId/answer — grading + advance', () => {
   it('grades server-side, reveals correctAnswer + explain, serves next', async () => {
     await seedFullPool();

@@ -15,6 +15,7 @@ import type {
   ReadingCorpus,
   ReadingSentences,
   ReadingUnit,
+  ReadingUnitsPage,
 } from '../types/domain';
 
 /** Pagination + corpus filter for `GET /reading/units`. */
@@ -24,26 +25,38 @@ export interface FetchUnitsOptions {
   offset?: number;
 }
 
-/** Envelope returned by `GET /reading/units`. */
-interface UnitsEnvelope {
-  units: ReadingUnit[];
+/**
+ * GET /reading/units?corpus=… — one page of units PLUS the corpus `total`.
+ *
+ * Backs the passage picker, which needs the total to paginate the full
+ * corpus (2,742 ttmik + 11,162 iyagi sentences across hundreds of units)
+ * in one round-trip rather than capping the user at the first page.
+ *
+ * `corpus` is required by the server schema (Zod enum) — passing it
+ * explicitly avoids a no-op default at the server.
+ */
+export async function fetchUnitsPage(
+  opts: FetchUnitsOptions,
+): Promise<ReadingUnitsPage> {
+  const params: Record<string, string | number> = { corpus: opts.corpus };
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<ReadingUnitsPage>('/reading/units', { params });
 }
 
 /**
- * GET /reading/units?corpus=…
+ * GET /reading/units?corpus=… — just the unit rows.
  *
- * `corpus` is required by the server schema (Zod enum) — the helper rejects
- * an omitted corpus with `ApiError(400)` so callers don't accidentally hit
- * a no-op default at the server.
+ * Thin wrapper over {@link fetchUnitsPage} for callers that only need the
+ * list (e.g. the default first-unit load on the Reading screen). `corpus`
+ * is required by the server schema; the helper rejects a network/validation
+ * failure with `ApiError` so the caller's fallback path lights up.
  */
 export async function fetchUnits(
   opts: FetchUnitsOptions,
 ): Promise<ReadingUnit[]> {
-  const params: Record<string, string | number> = { corpus: opts.corpus };
-  if (opts.limit !== undefined) params.limit = opts.limit;
-  if (opts.offset !== undefined) params.offset = opts.offset;
-  const res = await api.get<UnitsEnvelope>('/reading/units', { params });
-  return res.units;
+  const page = await fetchUnitsPage(opts);
+  return page.units;
 }
 
 /** GET /reading/units/:corpus/:unitId/sentences */

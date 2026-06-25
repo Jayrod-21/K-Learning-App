@@ -77,6 +77,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
 
 vi.mock('../services/reading', () => ({
   fetchUnits: vi.fn(),
+  fetchUnitsPage: vi.fn(),
   fetchSentences: vi.fn(),
 }));
 
@@ -101,7 +102,8 @@ vi.mock('../services/vocab', () => ({
 }));
 
 import { Reading } from './Reading';
-import { fetchSentences, fetchUnits } from '../services/reading';
+import { fetchSentences, fetchUnits, fetchUnitsPage } from '../services/reading';
+import { READING_SELECTION_STORAGE_KEY } from '../lib/readingSelection';
 import { lemmatize } from '../services/lemmatize';
 import { defineEntry } from '../services/define';
 import { enrich } from '../services/enrich';
@@ -207,7 +209,11 @@ const PASSAGE_GRAMMAR: ReadingPassage = {
 
 describe('Reading', () => {
   beforeEach(() => {
+    // Each test starts from a clean persisted-selection slate so the picker
+    // tests don't leak a stored pick into one another.
+    window.localStorage.clear();
     vi.mocked(fetchUnits).mockReset();
+    vi.mocked(fetchUnitsPage).mockReset();
     vi.mocked(fetchSentences).mockReset();
     vi.mocked(lemmatize).mockReset();
     vi.mocked(defineEntry).mockReset();
@@ -517,6 +523,119 @@ describe('Reading', () => {
     // Popover opens in grammar mode — shows the returned pattern.
     await waitFor(() => {
       expect(screen.getByText('-는 반면')).toBeInTheDocument();
+    });
+  });
+
+  it('opens the passage picker and lists the corpus units', async () => {
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_WITH_GLOSS,
+      isMock: true,
+    };
+    vi.mocked(fetchUnitsPage).mockResolvedValue({
+      corpus: 'ttmik',
+      total: 2,
+      units: [
+        { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
+        { id: 12, title: '감사합니다', lesson_level: 1, lesson_number: 2 },
+      ],
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+
+    await user.click(
+      screen.getByRole('button', { name: /Choose a different passage/i }),
+    );
+
+    // The picker sheet opens and renders the units list.
+    expect(
+      await screen.findByRole('dialog', { name: /Choose a reading passage/i }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('감사합니다')).toBeInTheDocument();
+    expect(vi.mocked(fetchUnitsPage)).toHaveBeenCalledWith({
+      corpus: 'ttmik',
+      limit: 20,
+      offset: 0,
+    });
+  });
+
+  it('selecting a unit persists the pick to localStorage', async () => {
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_WITH_GLOSS,
+      isMock: true,
+    };
+    vi.mocked(fetchUnitsPage).mockResolvedValue({
+      corpus: 'ttmik',
+      total: 2,
+      units: [
+        { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
+        { id: 12, title: '감사합니다', lesson_level: 1, lesson_number: 2 },
+      ],
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+
+    await user.click(
+      screen.getByRole('button', { name: /Choose a different passage/i }),
+    );
+    const row = await screen.findByRole('button', {
+      name: /감사합니다 — Lesson 2 · Level 1/i,
+    });
+    await user.click(row);
+
+    // The pick is persisted so a return visit reopens this passage.
+    await waitFor(() => {
+      const raw = window.localStorage.getItem(READING_SELECTION_STORAGE_KEY);
+      expect(raw).not.toBeNull();
+      expect(JSON.parse(raw as string)).toEqual({
+        corpus: 'ttmik',
+        unitId: 12,
+        title: '감사합니다',
+      });
+    });
+  });
+
+  it('switches the corpus tab to load iyagi episodes', async () => {
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_WITH_GLOSS,
+      isMock: true,
+    };
+    vi.mocked(fetchUnitsPage).mockImplementation((opts) =>
+      Promise.resolve(
+        opts.corpus === 'iyagi'
+          ? {
+              corpus: 'iyagi',
+              total: 1,
+              units: [{ id: 30, title: '이야기 에피소드', episode_number: 5 }],
+            }
+          : {
+              corpus: 'ttmik',
+              total: 1,
+              units: [
+                { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
+              ],
+            },
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+
+    await user.click(
+      screen.getByRole('button', { name: /Choose a different passage/i }),
+    );
+    await screen.findByText('안녕하세요');
+    await user.click(screen.getByRole('radio', { name: 'Iyagi' }));
+
+    expect(await screen.findByText('이야기 에피소드')).toBeInTheDocument();
+    expect(vi.mocked(fetchUnitsPage)).toHaveBeenCalledWith({
+      corpus: 'iyagi',
+      limit: 20,
+      offset: 0,
     });
   });
 });

@@ -43,21 +43,52 @@ describe('reading — auth required', () => {
 });
 
 describe('GET /reading/units — success + validation', () => {
-  it('lists ttmik lessons', async () => {
+  it('lists ttmik lessons with corpus tag + total', async () => {
     await seedTtmikLesson(pg.pool, { level: 1, number: 1 });
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/reading/units?corpus=ttmik');
     expect(res.status).toBe(200);
+    expect(res.body.corpus).toBe('ttmik');
     expect(Array.isArray(res.body.units)).toBe(true);
     expect(res.body.units.length).toBeGreaterThan(0);
+    // `total` is the full corpus size (a number, not a stringified BIGINT)
+    // and rides the envelope, not each unit row.
+    expect(typeof res.body.total).toBe('number');
+    expect(res.body.total).toBeGreaterThanOrEqual(res.body.units.length);
+    expect(res.body.units[0]).not.toHaveProperty('total');
   });
 
-  it('lists iyagi episodes', async () => {
+  it('lists iyagi episodes with corpus tag + total', async () => {
     await seedIyagiEpisode(pg.pool, { number: 1 });
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/reading/units?corpus=iyagi');
     expect(res.status).toBe(200);
+    expect(res.body.corpus).toBe('iyagi');
     expect(res.body.units.length).toBeGreaterThan(0);
+    expect(typeof res.body.total).toBe('number');
+    expect(res.body.units[0]).not.toHaveProperty('total');
+  });
+
+  it('reports the full corpus total across pages with limit=1', async () => {
+    // Seed two lessons, then ask for one. The page carries one unit but the
+    // total reflects both — that is what the picker pager needs.
+    await seedTtmikLesson(pg.pool, { level: 9, number: 1 });
+    await seedTtmikLesson(pg.pool, { level: 9, number: 2 });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/reading/units?corpus=ttmik&limit=1');
+    expect(res.status).toBe(200);
+    expect(res.body.units.length).toBe(1);
+    expect(res.body.total).toBeGreaterThanOrEqual(2);
+  });
+
+  it('returns total 0 on an empty page past the end', async () => {
+    await seedTtmikLesson(pg.pool, { level: 1, number: 1 });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/reading/units?corpus=ttmik&offset=100000');
+    expect(res.status).toBe(200);
+    expect(res.body.units).toHaveLength(0);
+    // Empty page → COUNT(*) OVER () yields no rows → total falls back to 0.
+    expect(res.body.total).toBe(0);
   });
 
   it('missing corpus → 400', async () => {

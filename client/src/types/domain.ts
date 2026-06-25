@@ -628,6 +628,31 @@ export interface ReadingUnit {
   title: string;
 }
 
+/**
+ * A persisted passage pick for the Reading screen — the corpus, the unit id
+ * within it, and the unit's display title. Lives in `localStorage` so a
+ * return visit reopens the same passage with its title already in hand (no
+ * extra units lookup on load); `null` means "no pick yet" (default to the
+ * first unit). The title is display-only — a stale value (corpus re-ordered
+ * between visits) is harmless text, never a routing input.
+ */
+export interface ReadingSelection {
+  corpus: ReadingCorpus;
+  unitId: number;
+  title: string;
+}
+
+/**
+ * A page of reading units — the envelope for `GET /reading/units`. `total`
+ * is the full corpus size (across all pages) so the picker's pager can show
+ * "N–M of T" in one round-trip.
+ */
+export interface ReadingUnitsPage {
+  corpus: ReadingCorpus;
+  total: number;
+  units: ReadingUnit[];
+}
+
 /** One sentence in a reading unit as the server emits it. */
 export interface ReadingSentenceRow {
   id: number;

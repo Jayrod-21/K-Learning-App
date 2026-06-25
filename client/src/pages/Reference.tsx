@@ -140,9 +140,41 @@ export default function Reference(): JSX.Element {
 // This Week — suggest-only picks
 // ─────────────────────────────────────────────────────────────
 
-/** Stable bank key for a grammar suggestion (server dedup key fallback chain). */
-function grammarKey(p: KgiuEntrySummary): string {
-  return p.source_id ?? p.pattern;
+/**
+ * Stable bank key for a grammar suggestion.
+ *
+ * The server's `POST /grammar/bank` requires `pattern_key` to match
+ * `/^GR-[a-z0-9_-]{1,64}$/`. The raw fallback chain (`source_id ?? pattern`)
+ * does NOT satisfy that: KGIU `source_id`s are not GR-shaped, and a Korean
+ * `pattern` string never matches the ASCII pattern at all — so banking a weekly
+ * grammar pick 400'd. We therefore ALWAYS derive a valid key here: slugify the
+ * source_id (or an `kgiu-${id}` fallback when there's no source_id) to the
+ * allowed alphabet, then prefix `GR-`.
+ *
+ * Slugify: lowercase, replace every char outside `[a-z0-9_-]` with `-`, collapse
+ * runs of `-`, trim leading/trailing `-`, cap at 64 chars (the regex's upper
+ * bound). If the slug collapses to empty (e.g. an all-Korean source_id), fall
+ * back to `kgiu-${id}` so the key is still unique + valid.
+ */
+export function grammarKey(p: KgiuEntrySummary): string {
+  const raw = p.source_id ?? `kgiu-${String(p.id)}`;
+  const slug = slugifyKey(raw) || `kgiu-${String(p.id)}`;
+  return `GR-${slug}`;
+}
+
+/** A pattern is renderable/bankable only if its display string is non-blank. */
+function hasPattern(p: KgiuEntrySummary): boolean {
+  return p.pattern.trim().length > 0;
+}
+
+/** Lowercase → allowed-alphabet → collapse → trim → truncate(64). */
+function slugifyKey(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
 }
 
 function toBankProficiency(raw: string | null): ServerProficiency {
@@ -179,7 +211,11 @@ function WeeklySuggestions(): JSX.Element | null {
     ]).then(([v, g]) => {
       if (!alive || ctrl.signal.aborted) return;
       setVocab(v.status === 'fulfilled' ? v.value : []);
-      setGrammar(g.status === 'fulfilled' ? g.value : []);
+      // Defensive: drop any pattern with an empty display string. Post-F1 the
+      // server already fences these out (kgiu rows whose `pattern` is blank),
+      // so this should never fire — but a blank row has no banking key and
+      // would render an empty card, so we skip it here too.
+      setGrammar(g.status === 'fulfilled' ? g.value.filter(hasPattern) : []);
       setLoading(false);
     });
     return () => {
@@ -592,9 +628,13 @@ function DictionaryTab(): JSX.Element {
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<KrdictSearchEntry[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+
+  // `q` empty → browse the whole dictionary (page 1 on mount, no search needed);
+  // typing switches to search; clearing returns to browse.
+  const browsing = q.trim().length === 0;
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -602,23 +642,21 @@ function DictionaryTab(): JSX.Element {
   }, [q]);
 
   useEffect(() => {
-    // Search-first: an empty query never hits the network — the empty state
-    // below prompts the user to type instead. Sync-to-external-system case.
-    /* eslint-disable react-hooks/set-state-in-effect */
-    if (q.trim().length === 0) {
-      setRows([]);
-      setTotal(0);
-      setLoading(false);
-      setError(null);
-      return;
-    }
+    // Browse on an empty query, search on a non-empty one. Both hit the
+    // network (the server's browse-all path returns a real page + total).
+    // Sync-to-external-system case.
     const ctrl = new AbortController();
     ctrlRef.current?.abort();
     ctrlRef.current = ctrl;
+    /* eslint-disable react-hooks/set-state-in-effect */
     setLoading(true);
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
-    searchKrdict({ q, limit: PAGE_SIZE, offset }, ctrl.signal)
+    // Omit `q` entirely when browsing so the service hits the browse-all path.
+    searchKrdict(
+      { ...(browsing ? {} : { q }), limit: PAGE_SIZE, offset },
+      ctrl.signal,
+    )
       .then((page) => {
         if (ctrl.signal.aborted) return;
         setRows(page.entries);
@@ -633,16 +671,16 @@ function DictionaryTab(): JSX.Element {
             ? 'The dictionary isn’t available yet.'
             : err instanceof ApiError
               ? err.message
-              : 'Could not search the dictionary.',
+              : browsing
+                ? 'Could not load the dictionary.'
+                : 'Could not search the dictionary.',
         );
         setLoading(false);
       });
     return () => {
       ctrl.abort();
     };
-  }, [q, offset]);
-
-  const showEmptyPrompt = q.trim().length === 0;
+  }, [q, offset, browsing]);
 
   return (
     <div className="km-resources__panel">
@@ -653,16 +691,9 @@ function DictionaryTab(): JSX.Element {
         placeholder="Search 54,000 dictionary entries"
         ariaLabel="Search dictionary"
       />
-      {showEmptyPrompt ? (
-        <Card variant="flat" role="status">
-          <Eyebrow>Dictionary</Eyebrow>
-          <p className="km-reference__empty">
-            Type a Korean or English word to search the full KRDICT dictionary.
-          </p>
-        </Card>
-      ) : loading && rows.length === 0 ? (
+      {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">
-          Searching…
+          {browsing ? 'Loading dictionary…' : 'Searching…'}
         </div>
       ) : error ? (
         <ErrorCard message={error} />
@@ -732,7 +763,9 @@ function GrammarTab(): JSX.Element {
       )
       .then((entries) => {
         if (ctrl.signal.aborted) return;
-        setRows(entries);
+        // Defensive: skip blank-pattern rows (post-F1 the server already
+        // excludes them; a blank row would render an empty Korean cell).
+        setRows(entries.filter(hasPattern));
         setLoading(false);
       })
       .catch((err: unknown) => {
