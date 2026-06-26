@@ -81,7 +81,7 @@ describe('loadReadingSelection — untrusted value validation', () => {
 describe('saveReadingSelection — failure safety', () => {
   it('swallows a storage write failure without throwing', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new DOMException('quota', 'QuotaExceededError');
     });
 

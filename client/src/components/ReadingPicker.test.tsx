@@ -68,8 +68,8 @@ describe('ReadingPicker', () => {
 
     expect(await screen.findByText('안녕하세요')).toBeInTheDocument();
     expect(screen.getByText('감사합니다')).toBeInTheDocument();
-    // Pager reflects the real total, not the page length.
-    expect(screen.getByText(/1–2 of 45/)).toBeInTheDocument();
+    // Pager reflects the real total, not the page length (appears in header + pager).
+    expect(screen.getAllByText(/1–2 of 45/).length).toBeGreaterThan(0);
   });
 
   it('fires onSelect with the chosen corpus + unit id', async () => {

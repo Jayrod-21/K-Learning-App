@@ -151,7 +151,7 @@ export function ReadingPicker({
   }, []);
 
   const from = total === 0 ? 0 : offset + 1;
-  const to = Math.min(offset + PAGE_SIZE, total);
+  const to = offset + units.length;
   const hasPrev = offset > 0;
   const hasNext = offset + PAGE_SIZE < total;
 
