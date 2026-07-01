@@ -140,7 +140,127 @@ Newest sittings first is fine (102 → 96 → 91 → …). Any order is OK — j
 
 ---
 
-## Start
+## Start (TOPIK)
 Confirm the corpus path exists, create `tools/ingest/output/` if needed, then begin with
 `102 - 102nd TOPIK / TOPIK-I / Reading`. Produce `topik_102_I_reading.json` first, validate it,
 and continue. Report progress as `"<file> written — N items"` after each file.
+
+---
+
+# PART 2 — Darakwon (grammar + vocab)
+
+Same idea, same tools: read the scanned pages with the Read tool (these PDFs are image-only or
+have a **garbled** text layer — ignore any extracted text, read the page image yourself), write
+JSON to `tools/ingest/output/`, load is handled separately. These are full textbooks (300+ pages
+each), so use the **in-book resume** pattern below — don't try to hold a whole book in memory.
+
+## 2A — Grammar: "Korean Grammar in Use" (KGIU) → `load_kgiu`
+
+**Inputs** (`.../corpus/Darakwon/1. 한국 문법/<level>/`):
+- `1. Beginner/1. Beginner - KGIU.pdf`      → `beginner`
+- `2. Intermediate/2. Intermediate - KGIU.pdf` → `intermediate`
+- `3. Advanced/3. Advanced - KGIU.pdf`       → `advanced`
+
+**Output:** `tools/ingest/output/grammar_kgiu_<level>.json` (`grammar_kgiu_beginner.json`, …).
+
+**Schema:**
+```json
+{
+  "source": {
+    "book": "Korean Grammar in Use: Beginning",
+    "publisher": "Darakwon",
+    "level": "beginner",                 // beginner | intermediate | advanced
+    "default_proficiency": "basic",
+    "extracted_by": "claude",
+    "extracted_at": "2026-07-01",
+    "total_pdf_pages": 380,              // the PDF's page count
+    "last_pdf_page_done": 60             // RESUME MARKER — highest PDF page you've fully extracted
+  },
+  "items": [
+    {
+      "id": "kgiu-beginner-001",         // kgiu-<level>-<3-digit sequence>
+      "type": "grammar",                 // "grammar" | "intro" (chapter/unit intro) | "reference"
+      "unit": "01",                      // chapter/unit label if shown
+      "pattern": "-아/어/여요",            // the grammar form (verbatim); the heart of the item
+      "title_en": "Polite present-tense ending",
+      "category": "ending",
+      "proficiency": "basic",
+      "explanation": "설명 그대로…",       // the explanation text, verbatim Korean/English as printed
+      "formation_rules": ["동사 어간 + 아요/어요/여요"],
+      "examples": [ {"korean": "가다 → 가요", "english": "go → goes"} ],
+      "tips": ["모음조화가 적용됩니다."],
+      "source_book": "Korean Grammar in Use: Beginning",   // REQUIRED on every item
+      "source_pages": [20, 21]           // the BOOK page numbers this point spans
+    }
+  ]
+}
+```
+Rules:
+- **One item per grammar point.** Chapter/section intros → `type: "intro"`; back-matter/appendix
+  reference pages → `type: "reference"`.
+- `pattern`, `explanation`, `examples`, `formation_rules`, `tips` — **verbatim** (Korean and English
+  as printed). Every item needs `id` + `source_book`. Everything else is optional (the loader tolerates gaps).
+- `examples`/`formation_rules`/`tips` are lists; example entries are `{"korean","english"}` objects.
+
+## 2B — Vocab: "2000 Essential Korean Words" → `load_vocab_2000`
+
+**Inputs** (`.../corpus/Darakwon/2. 단어/<level>/`):
+- `1. Beginner/2000 Essential Korean Words.pdf`               → `beginner`
+- `2. Intermediate/2000 Essential Korean Words - Intermediate.pdf` → `intermediate`
+- (there is **no Advanced vocab** book — only these two levels.)
+
+**Output:** `tools/ingest/output/vocab_2000_<level>.json`.
+
+**Schema:**
+```json
+{
+  "source": {
+    "book": "2000 Essential Korean Words for Beginners",
+    "publisher": "Darakwon",
+    "level": "beginner",                 // beginner | intermediate  (NO advanced)
+    "default_proficiency": "basic",
+    "extracted_by": "claude",
+    "extracted_at": "2026-07-01",
+    "total_pdf_pages": 320,
+    "highest_book_page": 60,             // RESUME MARKER — highest BOOK page fully extracted
+    "extraction_complete": false
+  },
+  "items": [
+    { "id": "vocab-beginner-0001", "type": "theme_intro",
+      "theme": "01 사람 / People", "korean": "사람", "english": "People",
+      "source_book": "2000 Essential Korean Words for Beginners", "source_pages": [15] },
+    { "id": "vocab-beginner-0002", "type": "word",
+      "korean": "가족", "english": "a family", "pronunciation": "[가족]", "hanja": "家族",
+      "part_of_speech": "noun", "proficiency": "basic",
+      "theme": "01 사람 / People", "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "가족이 모두 몇 명이에요?", "example_english": "How many are in your family?",
+      "source_book": "2000 Essential Korean Words for Beginners", "source_pages": [18] }
+  ]
+}
+```
+Rules:
+- **One item per word** (`type: "word"`), each with `korean` + `english` at minimum, plus
+  `pronunciation`, `hanja`, `part_of_speech`, and example sentence(s) when printed — **verbatim**.
+- Theme headers (e.g. "01 사람 / People") → `type: "theme_intro"`; subsection headers →
+  `type: "subsection_intro"`. Carry the current `theme`/`subsection` onto each word under it.
+- Review/"Let's Check" pages → `type: "lets_check"`; hanja supplements → `type: "hanja_extension"`.
+- Every item needs `id`, `type`, `source_book`. Other fields optional.
+
+## In-book resume pattern (grammar + vocab)
+Because a book is huge:
+1. If `grammar_kgiu_<level>.json` / `vocab_2000_<level>.json` already exists, **read it**, note
+   `source.last_pdf_page_done` (grammar) / `source.highest_book_page` (vocab), and continue from
+   the next page — **append** new items to the existing `items`, don't restart.
+2. Work in page-range chunks (Read ~10-20 pages), extract items, then **rewrite the whole file**
+   with the extended `items` and an updated resume marker. Keep `id` sequence monotonic.
+3. Set `extraction_complete: true` (vocab) only when you reach the last content page.
+4. It's fine to stop after any chunk — the next run resumes from the marker.
+
+## Do NOT (Darakwon)
+- ❌ Trust the PDF's embedded text layer (grammar's is garbled) — read the page image.
+- ❌ Translate/summarize — copy Korean + the book's own English verbatim.
+- ❌ Worry about audio (`Audio.zip`) — text content only; audio wiring is a separate step.
+
+## Order
+TOPIK first (Part 1). Then grammar: `beginner → intermediate → advanced`. Then vocab:
+`beginner → intermediate`. Resume markers make any order safe.
