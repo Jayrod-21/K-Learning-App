@@ -149,7 +149,7 @@ async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) 
                         corpus_source_id, corpus, test_number, topik_level,
                         section, form, origin, total_questions, passages)
                     VALUES (%s, %s::corpus, %s, %s, %s::topik_section, %s, %s, %s, %s::jsonb)
-                    ON CONFLICT (test_number, section) DO UPDATE
+                    ON CONFLICT (test_number, topik_level, section) DO UPDATE
                       SET form            = EXCLUDED.form,
                           origin          = EXCLUDED.origin,
                           total_questions = EXCLUDED.total_questions,
