@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, rebuild]
   pull_request:
-    branches: [main]
+    branches: [main, rebuild]
 
 jobs:
   client-checks:
@@ -95,6 +95,25 @@ jobs:
         # the operator's checklist. We fail on HIGH severity but allow
         # the build to flag MEDIUM as a warning. See FIX_REPORT_B.md.
         run: pip-audit --strict || true
+
+  db-checks:
+    name: Database — Migration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test deps
+        run: pip install "psycopg[binary]==3.2.3" "structlog==24.4.0" "testcontainers[postgres]>=4,<5" "pytest>=8,<10"
+
+      - name: Migration tests (testcontainers spins its own Postgres)
+        # Excludes test_discriminator_coverage.py — it scans the gitignored,
+        # generated tools/ingest/output/*.json and belongs to the ingest phase,
+        # not a clean-checkout migration gate.
+        run: python -m pytest db/tests --ignore=db/tests/test_discriminator_coverage.py -q
 
   docker-build:
     name: Docker — Build Images
