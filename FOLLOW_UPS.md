@@ -19,9 +19,21 @@ PDF text layer. Still to do, each requiring work beyond a re-run:
 ## Dependency advisories (soft gates — bar §3.11 wants these addressed)
 The `local-test.sh` soft gates report advisories (non-blocking, mirrors CI's
 `|| true`): `npm audit --audit-level=high` (client + server) and `pip-audit`
-(ingest loader deps + kiwi). Triage the HIGH/CRITICAL findings and bump the
-affected deps. Consider promoting these to HARD once clean (the bar wants SCA to
-fail on HIGH/CRITICAL).
+(ingest loader deps + kiwi).
+
+**DONE (2026-07-01, non-breaking):** `npm audit fix` in client + server.
+- **client → 0 vulnerabilities** (react-router, vite, postcss patched in-range).
+- **server 12 → 7** (protobufjs etc. patched).
+- `pip-audit`: only `pip` the installer is flagged (not a shipped dep) — noise.
+
+**REMAINING (7, server) — all need a BREAKING major bump; do each as its own tested change:**
+- `vitest` / `esbuild` / `vite` / `vite-node` (moderate) — **dev+test tooling only**, not in
+  the prod image. Fix = `vitest@4` (major); verify the whole suite still passes after.
+- `@anthropic-ai/sdk` 0.79→**0.109** (moderate) — the advisory is the SDK *Memory Tool*
+  path/permissions issue; this app doesn't use that feature, so low real exposure. The SDK
+  API changed a lot across that range — bump carefully and re-run the claude-service tests.
+- `uuid`→**14** (moderate) — flaw is `v3/v5/v6` with a provided buffer (not our usage).
+Consider promoting the audits to HARD gates once these are clean (bar wants SCA to fail on HIGH/CRITICAL).
 
 ## Loader cosmetics
 - `count_assertion_mismatch` warnings during multi-file loads: the per-file count
