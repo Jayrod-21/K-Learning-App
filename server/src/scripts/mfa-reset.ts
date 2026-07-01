@@ -59,14 +59,19 @@ async function main(): Promise<void> {
   });
 }
 
-main()
-  .then(async () => {
-    await closePool();
-    process.exit(0);
-  })
-  .catch(async (err: unknown) => {
-    // eslint-disable-next-line no-console
-    console.error(`mfa-reset: FAILED — ${(err as Error).message}`);
-    await closePool().catch(() => undefined);
-    process.exit(1);
-  });
+// Run only when invoked directly as a CLI (node ... mfa-reset.ts), NOT when the
+// module is imported — importing this file must not execute DB I/O. Mirrors the
+// entrypoint guard in src/index.ts.
+if (require.main === module) {
+  main()
+    .then(async () => {
+      await closePool();
+      process.exit(0);
+    })
+    .catch(async (err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error(`mfa-reset: FAILED — ${(err as Error).message}`);
+      await closePool().catch(() => undefined);
+      process.exit(1);
+    });
+}

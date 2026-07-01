@@ -29,6 +29,11 @@ beforeEach(async () => {
   await pg.pool.query(
     'TRUNCATE TABLE sessions, users RESTART IDENTITY CASCADE',
   );
+  // Reset the corpus tables too: several tests seed fixed source_ids
+  // (e.g. ttmik-L1-1) and the per-file container is shared across tests, so
+  // without this a re-seed collides on uq_ttmik_lessons_corpus_source_id.
+  // (Mirrors the isolation in plan.test.ts.)
+  await pg.pool.query('TRUNCATE TABLE ttmik_lessons, iyagi_episodes CASCADE');
   resetLimiters();
 });
 

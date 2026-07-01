@@ -53,7 +53,8 @@ vi.mock('../services/grammar', () => grammarSvc);
 vi.mock('../services/krdict', () => krdictSvc);
 vi.mock('../services/suggestions', () => suggestSvc);
 
-import Reference, { grammarKey } from './Reference';
+import Reference from './Reference';
+import { grammarKey } from '../lib/grammarKey';
 
 const VOCAB_ROWS: VocabEntry[] = [
   { id: 1, corpus: 'vocab_2000_intermediate', korean: '영향', english: 'influence', proficiency: 'L3', theme: null },
