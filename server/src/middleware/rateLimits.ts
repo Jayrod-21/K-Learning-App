@@ -80,13 +80,15 @@ function buildAuth(): RateLimitRequestHandler {
  * specific limiter instance — otherwise `resetLimiters()` (which swaps the
  * instance to get a fresh hit store) could never take effect on mounted routes.
  *
- * The instance is built on the accessor's FIRST call (route-import / app-init
- * time — NOT inside a request handler, which express-rate-limit forbids:
- * ERR_ERL_CREATED_IN_REQUEST_HANDLER). resetLimiters() drops the instances; the
- * next request through the wrapper rebuilds via `ensure*` below, which runs in
- * the handler — so those rebuild paths set `creationStack:false` to suppress the
- * (here-intentional) in-handler-creation validation. In prod the accessor builds
- * once at import and the rebuild path is never hit.
+ * The instance is built lazily on the FIRST REQUEST through the wrapper (via the
+ * `ensure*` accessors below) — NOT at route-import/app-init time. Building at
+ * import would call loadConfig() before the process env is configured (which
+ * breaks tests that set env in buildTestApp, after the static route imports).
+ * Because construction now always happens inside a request handler — which
+ * express-rate-limit otherwise forbids (ERR_ERL_CREATED_IN_REQUEST_HANDLER) —
+ * buildCheap/Expensive/Auth set `creationStack:false` to suppress that
+ * (here-intentional) validation. resetLimiters() drops the instances; the next
+ * request rebuilds them with the current config.
  */
 function ensureCheap(): RateLimitRequestHandler {
   return (_cheap ??= buildCheap());
@@ -99,17 +101,19 @@ function ensureAuth(): RateLimitRequestHandler {
 }
 
 export function cheapLimiter(): RequestHandler {
-  ensureCheap(); // build now (app-init), not in the handler
+  // Lazy: the limiter (and its loadConfig() call) is resolved on the FIRST
+  // REQUEST, not at import. Route files call this at module scope, so an eager
+  // build here would run loadConfig() before the process env is configured
+  // (e.g. in tests, before buildTestApp sets it). buildCheap sets
+  // validate.creationStack:false, so in-handler construction is safe.
   return (req: Request, res: Response, next: NextFunction) => ensureCheap()(req, res, next);
 }
 
 export function expensiveLimiter(): RequestHandler {
-  ensureExpensive();
   return (req: Request, res: Response, next: NextFunction) => ensureExpensive()(req, res, next);
 }
 
 export function authLimiter(): RequestHandler {
-  ensureAuth();
   return (req: Request, res: Response, next: NextFunction) => ensureAuth()(req, res, next);
 }
 
