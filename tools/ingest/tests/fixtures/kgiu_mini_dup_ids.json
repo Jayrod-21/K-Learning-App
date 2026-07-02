@@ -1,0 +1,44 @@
+{
+  "source": {
+    "book": "Korean Grammar in Use: Advanced Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "advanced",
+    "default_proficiency": "basic",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02",
+    "note": "Regression fixture: two items share source_id 'kgiu-adv-dup-01'. The ON CONFLICT (corpus, source_id) upsert collapses them, so 3 source items yield only 2 rows -> the loader's count assertion must FAIL the load rather than mark it complete."
+  },
+  "items": [
+    {
+      "id": "kgiu-adv-dup-01",
+      "type": "grammar",
+      "pattern": "-(으)ㄹ 뿐만 아니라",
+      "title_en": "not only ... but also",
+      "proficiency": "L4",
+      "explanation": "First of two items that (buggily) share an id.",
+      "source_book": "KGIU Advanced Fixture",
+      "source_pages": [30]
+    },
+    {
+      "id": "kgiu-adv-dup-01",
+      "type": "grammar",
+      "pattern": "-기 마련이다",
+      "title_en": "bound to happen",
+      "proficiency": "L4",
+      "explanation": "Second item with the SAME id — collapses onto the first under the upsert.",
+      "source_book": "KGIU Advanced Fixture",
+      "source_pages": [31]
+    },
+    {
+      "id": "kgiu-adv-002",
+      "type": "grammar",
+      "pattern": "-든지 -든지",
+      "title_en": "whether ... or",
+      "proficiency": "L4",
+      "explanation": "A distinct third item.",
+      "source_book": "KGIU Advanced Fixture",
+      "source_pages": [32]
+    }
+  ]
+}
