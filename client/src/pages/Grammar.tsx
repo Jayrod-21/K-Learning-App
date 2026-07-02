@@ -8,7 +8,14 @@
  *                the endpoint's `corpus` query param. Tap row to open detail
  *                Sheet; Bank button per row → `POST /grammar/bank` (idempotent
  *                server side). 🅂 badge OFF (real `listPatterns` + `listBanked`).
- *   - `banked` — the subset the user has already banked. Same row shape.
+ *   - `banked` — the subset the user has already banked, split into an
+ *                Active | Known segmented view. Active rows carry a
+ *                **Graduate** action (`POST /grammar/bank/:id/graduate`) that
+ *                marks the pattern as known — it leaves the drill pool and its
+ *                production card stops surfacing in `/vocab/cards/due`. The
+ *                Known view lists graduated patterns with a **Re-admit** action
+ *                (`POST /grammar/bank/:id/readmit`) that returns the pattern to
+ *                active learning (FSRS state untouched server-side).
  *   - `drill`  — the Pass-9 LIVE production drill. Per pattern, the panel
  *                generates a drill via `POST /grammar-drill` (Claude picks the
  *                type by history rotation), renders the per-type DrillCard, and
@@ -33,7 +40,11 @@
  *   services.grammar.bankPattern(body)                      → optimistic add
  *
  * Threat model:
- *   - **bankPattern** is the only state-mutating call. Server is idempotent
+ *   - **graduatePattern / readmitPattern** mutate only a boolean-ish flag on
+ *     a row the server verifies the user owns (404 otherwise); both are
+ *     idempotent, id comes from the server's own bank list (never user text),
+ *     and failures rewind the optimistic move with an inline error.
+ *   - **bankPattern** is the other state-mutating call. Server is idempotent
  *     on `(user_id, pattern_key)` (see grammar.ts:51 + grammar.test.ts:67)
  *     — a double-tap or a stale optimistic add re-issuing the same body
  *     returns 200 not 409 (well, the test in services-land does surface
@@ -361,15 +372,32 @@ const REAL_LIST_LOADERS: Record<LevelFilter, () => Promise<PatternListItem[]>> =
     advanced: () => loadRealListItems('advanced'),
   };
 
-/** Loader: mock banked set (empty until the user banks something). */
-async function loadMockBankedKeys(): Promise<ReadonlySet<string>> {
-  return new Set<string>();
+/**
+ * Server-side bank metadata a banked row's actions need: the bank row id
+ * (the graduate/readmit endpoints key on grammar_entries.id, NOT the KGIU
+ * id) and the graduation state. Keyed by pattern_key in the loaders below.
+ */
+interface BankedMeta {
+  /** grammar_entries row id — the :id for graduate/readmit. */
+  id: number;
+  /** Non-null ⇒ the user marked this pattern as known/graduated. */
+  graduatedAt: string | null;
 }
 
-/** Loader: real /grammar/bank → Set<pattern_key>. */
-async function loadRealBankedKeys(): Promise<ReadonlySet<string>> {
+/** Loader: mock banked map (empty until the user banks something). */
+async function loadMockBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
+  return new Map<string, BankedMeta>();
+}
+
+/** Loader: real /grammar/bank → pattern_key → BankedMeta. */
+async function loadRealBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
   const res = await grammarService.listBanked();
-  return new Set(res.entries.map((e) => e.pattern_key));
+  return new Map(
+    res.entries.map((e) => [
+      e.pattern_key,
+      { id: e.id, graduatedAt: e.graduated_at },
+    ]),
+  );
 }
 
 function Grammar(): JSX.Element {
@@ -425,13 +453,14 @@ function Grammar(): JSX.Element {
     { realFn: REAL_LIST_LOADERS[level] },
   );
 
-  // Banked set — separate fetch so a failure on one doesn't black out
-  // the other. Set<patternKey> lets the row-level "Banked" pill check
-  // run in O(1) without scanning an array per render.
-  const bankedState = useEndpointOrMock<ReadonlySet<string>>(
+  // Banked map — separate fetch so a failure on one doesn't black out
+  // the other. Map<patternKey, BankedMeta> lets the row-level "Banked"
+  // check run in O(1) AND carries the bank-row id + graduation state the
+  // Banked tab's Graduate / Re-admit actions need.
+  const bankedState = useEndpointOrMock<ReadonlyMap<string, BankedMeta>>(
     'grammar:bank',
-    loadMockBankedKeys,
-    { realFn: loadRealBankedKeys },
+    loadMockBankedMeta,
+    { realFn: loadRealBankedMeta },
   );
 
   // Optimistic overlay — keyed by patternKey so it survives a refetch
@@ -486,12 +515,49 @@ function Grammar(): JSX.Element {
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const bankedKeys = useMemo<ReadonlySet<string>>(() => {
-    const base = bankedState.data ?? new Set<string>();
-    if (optimisticBanked.size === 0) return base;
-    const merged = new Set<string>(base);
+    const merged = new Set<string>(bankedState.data?.keys() ?? []);
     for (const k of optimisticBanked) merged.add(k);
     return merged;
   }, [bankedState.data, optimisticBanked]);
+
+  // Optimistic graduation overlay — patternKey → desired graduated state
+  // (true = graduate in flight/settling, false = re-admit). Mirrors the
+  // `optimisticBanked` overlay: applied on top of the server map so the row
+  // moves between the Active and Known views immediately, pruned once the
+  // server settle agrees so the map never grows across a session.
+  const [graduationOverrides, setGraduationOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map<string, boolean>());
+
+  useEffect(() => {
+    if (!bankedState.data) return;
+    const settled = bankedState.data;
+    setGraduationOverrides((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Map<string, boolean>();
+      for (const [k, wanted] of prev) {
+        const meta = settled.get(k);
+        // Keep the override until the server view agrees with it; a key the
+        // server doesn't know yet (optimistic bank still settling) keeps its
+        // override too.
+        if (meta === undefined || (meta.graduatedAt !== null) !== wanted) {
+          next.set(k, wanted);
+        }
+      }
+      // Preserve identity on a no-op settle so downstream memos don't re-run.
+      return next.size === prev.size ? prev : next;
+    });
+  }, [bankedState.data]);
+
+  /** Effective graduation state for a pattern: overlay first, then server. */
+  const isGraduated = useCallback(
+    (patternKey: string): boolean => {
+      const override = graduationOverrides.get(patternKey);
+      if (override !== undefined) return override;
+      return (bankedState.data?.get(patternKey)?.graduatedAt ?? null) !== null;
+    },
+    [graduationOverrides, bankedState.data],
+  );
 
   const openDetail = useCallback(
     async (row: PatternListItem): Promise<void> => {
@@ -563,6 +629,59 @@ function Grammar(): JSX.Element {
     [bankedKeys, bankedState],
   );
 
+  // Per-row graduation submit-in-flight + last-error, separate from the
+  // bank action's so a Graduate failure never disables a Bank button.
+  const [graduationPendingKey, setGraduationPendingKey] = useState<
+    string | null
+  >(null);
+  const [graduationError, setGraduationError] = useState<string | null>(null);
+
+  /**
+   * Flip a banked pattern's graduation state (true = Graduate, false =
+   * Re-admit). Optimistic: the row hops between the Active and Known views
+   * immediately; a real failure rewinds the overlay and surfaces an inline
+   * error. Requires the SERVER's bank-row id — a row that's only optimistically
+   * banked (settle in flight) is a no-op here, and its action button is
+   * disabled via `actionableKeys` below.
+   */
+  const setKnown = useCallback(
+    async (row: PatternListItem, graduated: boolean): Promise<void> => {
+      const meta = bankedState.data?.get(row.patternKey);
+      if (!meta) return;
+      setGraduationPendingKey(row.patternKey);
+      setGraduationError(null);
+      setGraduationOverrides((prev) =>
+        new Map(prev).set(row.patternKey, graduated),
+      );
+      try {
+        if (graduated) {
+          await grammarService.graduatePattern(meta.id);
+        } else {
+          await grammarService.readmitPattern(meta.id);
+        }
+        // Refetch so the server view becomes the source of truth (and the
+        // prune effect can retire the overlay entry).
+        bankedState.refetch();
+      } catch {
+        // Rewind the optimistic flip and surface the error. Don't echo
+        // server text.
+        setGraduationOverrides((prev) => {
+          const next = new Map(prev);
+          next.delete(row.patternKey);
+          return next;
+        });
+        setGraduationError(
+          graduated
+            ? "Couldn't mark that pattern as known. Try again."
+            : "Couldn't re-admit that pattern. Try again.",
+        );
+      } finally {
+        setGraduationPendingKey(null);
+      }
+    },
+    [bankedState],
+  );
+
   // Stable array identity so the `bankedItems` memo doesn't re-run on
   // every render — `listState.data ?? []` would otherwise mint a fresh
   // [] each time and bust the memo.
@@ -573,6 +692,29 @@ function Grammar(): JSX.Element {
   const bankedItems = useMemo<readonly PatternListItem[]>(
     () => items.filter((it) => bankedKeys.has(it.patternKey)),
     [items, bankedKeys],
+  );
+
+  // Graduation split. Active = still learning (drill pool + reviews);
+  // known = graduated out of active learning until re-admitted.
+  const activeBankedItems = useMemo<readonly PatternListItem[]>(
+    () => bankedItems.filter((it) => !isGraduated(it.patternKey)),
+    [bankedItems, isGraduated],
+  );
+  const knownItems = useMemo<readonly PatternListItem[]>(
+    () => bankedItems.filter((it) => isGraduated(it.patternKey)),
+    [bankedItems, isGraduated],
+  );
+  // The drill must never serve a graduated pattern — not even via the
+  // nothing-banked fallback pool (the full list contains graduated rows too).
+  const drillableItems = useMemo<readonly PatternListItem[]>(
+    () => items.filter((it) => !isGraduated(it.patternKey)),
+    [items, isGraduated],
+  );
+  // Rows whose bank-row id the server has confirmed — Graduate/Re-admit need
+  // that id, so rows still settling optimistically keep their action disabled.
+  const actionableKeys = useMemo<ReadonlySet<string>>(
+    () => new Set<string>(bankedState.data?.keys() ?? []),
+    [bankedState.data],
   );
 
   // 🅂 badge for the list/banked tabs when BOTH wired fetches fell back to
@@ -663,9 +805,19 @@ function Grammar(): JSX.Element {
             (!listState.data && listState.error !== null) ||
             (!bankedState.data && bankedState.error !== null)
           }
-          items={bankedItems}
+          activeItems={activeBankedItems}
+          knownItems={knownItems}
+          actionableKeys={actionableKeys}
+          pendingKey={graduationPendingKey}
+          actionError={graduationError}
           onOpen={(row) => {
             void openDetail(row);
+          }}
+          onGraduate={(row) => {
+            void setKnown(row, true);
+          }}
+          onReadmit={(row) => {
+            void setKnown(row, false);
           }}
           onRetry={() => {
             listState.refetch();
@@ -677,8 +829,8 @@ function Grammar(): JSX.Element {
       {tab === 'drill' ? (
         <DrillPanel
           loading={listState.loading}
-          items={items}
-          bankedItems={bankedItems}
+          items={drillableItems}
+          bankedItems={activeBankedItems}
           target={drillTarget}
           onClearTarget={clearDrillTarget}
         />
@@ -818,21 +970,54 @@ function PatternRow({
 // Banked panel
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Sub-views of the Banked tab. `active` = banked patterns still in the
+ * learning loop; `known` = graduated patterns (out of the drill pool and the
+ * due-review queue) with a Re-admit path back.
+ */
+type BankedView = 'active' | 'known';
+
+const BANKED_VIEWS: ReadonlyArray<{ id: BankedView; label: string }> = [
+  { id: 'active', label: 'Active' },
+  { id: 'known', label: 'Known' },
+];
+
 interface BankedPanelProps {
   loading: boolean;
   fetchErrored: boolean;
-  items: readonly PatternListItem[];
+  /** Banked patterns still in active learning (Graduate available). */
+  activeItems: readonly PatternListItem[];
+  /** Graduated patterns (Re-admit available). */
+  knownItems: readonly PatternListItem[];
+  /** Keys whose server bank-row id is known — action buttons enabled. */
+  actionableKeys: ReadonlySet<string>;
+  /** patternKey of the graduation action currently in flight, if any. */
+  pendingKey: string | null;
+  /** Inline error from the last failed graduate/re-admit, if any. */
+  actionError: string | null;
   onOpen: (row: PatternListItem) => void;
+  onGraduate: (row: PatternListItem) => void;
+  onReadmit: (row: PatternListItem) => void;
   onRetry: () => void;
 }
 
 function BankedPanel({
   loading,
   fetchErrored,
-  items,
+  activeItems,
+  knownItems,
+  actionableKeys,
+  pendingKey,
+  actionError,
   onOpen,
+  onGraduate,
+  onReadmit,
   onRetry,
 }: BankedPanelProps): JSX.Element {
+  // Local view toggle — pure presentation, feeds no fetch key, so it lives
+  // here rather than in the page component (unlike the List level filter).
+  const [view, setView] = useState<BankedView>('active');
+
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
@@ -848,38 +1033,110 @@ function BankedPanel({
       />
     );
   }
-  if (items.length === 0) {
-    return (
-      <Card variant="flat" role="status">
-        <Eyebrow>Nothing banked yet</Eyebrow>
-        <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-          Tap Bank on any pattern in the List tab to add it here.
-        </p>
-      </Card>
-    );
-  }
+
+  const items = view === 'active' ? activeItems : knownItems;
+
   return (
-    <ul className="km-grammar__list">
-      {items.map((row) => (
-        <li key={row.patternKey} className="km-grammar__row">
-          <button
-            type="button"
-            onClick={() => {
-              onOpen(row);
-            }}
-            className="km-grammar__row-btn focusring"
-            aria-label={`${row.pattern} ${row.title}`}
-          >
-            <span className="kr km-grammar__row-kr">{row.pattern}</span>
-            <span className="km-grammar__row-title">{row.title}</span>
-            <span className="km-pill km-pill--default km-grammar__row-level">
-              {row.proficiency}
-            </span>
-          </button>
-          <Pill tone="gold">Banked</Pill>
-        </li>
-      ))}
-    </ul>
+    <>
+      <div className="km-review__tabs" role="group" aria-label="Banked view">
+        {BANKED_VIEWS.map((v) => {
+          const selected = view === v.id;
+          const count = v.id === 'active' ? activeItems.length : knownItems.length;
+          return (
+            <button
+              key={v.id}
+              type="button"
+              aria-pressed={selected}
+              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+              onClick={() => {
+                setView(v.id);
+              }}
+            >
+              {v.label} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      {actionError ? <ErrorCard message={actionError} /> : null}
+
+      {items.length === 0 ? (
+        <Card variant="flat" role="status">
+          {view === 'active' ? (
+            <>
+              <Eyebrow>Nothing in active learning</Eyebrow>
+              <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                {knownItems.length > 0
+                  ? 'Everything you banked is marked as known. Re-admit a pattern from the Known view to study it again.'
+                  : 'Tap Bank on any pattern in the List tab to add it here.'}
+              </p>
+            </>
+          ) : (
+            <>
+              <Eyebrow>Nothing graduated yet</Eyebrow>
+              <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                When you&apos;re comfortable with a banked pattern, tap
+                Graduate to retire it from drills and reviews. It moves here,
+                and you can re-admit it any time.
+              </p>
+            </>
+          )}
+        </Card>
+      ) : (
+        <ul className="km-grammar__list">
+          {items.map((row) => {
+            const pending = pendingKey === row.patternKey;
+            const actionable = actionableKeys.has(row.patternKey);
+            return (
+              <li key={row.patternKey} className="km-grammar__row">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpen(row);
+                  }}
+                  className="km-grammar__row-btn focusring"
+                  aria-label={`${row.pattern} ${row.title}`}
+                >
+                  <span className="kr km-grammar__row-kr">{row.pattern}</span>
+                  <span className="km-grammar__row-title">{row.title}</span>
+                  <span className="km-pill km-pill--default km-grammar__row-level">
+                    {row.proficiency}
+                  </span>
+                </button>
+                {view === 'active' ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      onGraduate(row);
+                    }}
+                    disabled={pending || !actionable}
+                    aria-label={`Graduate ${row.pattern}`}
+                  >
+                    {pending ? 'Saving…' : 'Graduate'}
+                  </Button>
+                ) : (
+                  <>
+                    <Pill tone="green">Known</Pill>
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={() => {
+                        onReadmit(row);
+                      }}
+                      disabled={pending || !actionable}
+                      aria-label={`Re-admit ${row.pattern}`}
+                    >
+                      {pending ? 'Saving…' : 'Re-admit'}
+                    </Button>
+                  </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -889,11 +1146,17 @@ function BankedPanel({
 
 interface DrillPanelProps {
   loading: boolean;
+  /**
+   * Drillable patterns — the fetched list MINUS graduated ones. The parent
+   * filters graduation out before this panel sees anything, so the fallback
+   * pool below can never serve a pattern the user has marked as known.
+   */
   items: readonly PatternListItem[];
   /**
-   * The user's banked subset of `items`. When non-empty this is the PREFERRED
-   * drill pool — the learner drills the patterns they chose to bank; the full
-   * fetched list is the fallback for a fresh account with nothing banked yet.
+   * The user's ACTIVE banked subset of `items` (banked and not graduated).
+   * When non-empty this is the PREFERRED drill pool — the learner drills the
+   * patterns they chose to bank; the full drillable list is the fallback for
+   * a fresh account with nothing banked yet.
    */
   bankedItems: readonly PatternListItem[];
   /**

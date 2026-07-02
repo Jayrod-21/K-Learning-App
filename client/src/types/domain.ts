@@ -1100,6 +1100,12 @@ export interface BankedGrammarRow {
   register: string | null;
   discovered_via: string;
   created_at: string;
+  /**
+   * When the user marked this pattern as known/graduated (migration 033).
+   * `null` = active learning (drill pool + review queue); a timestamp =
+   * retired from active learning until re-admitted.
+   */
+  graduated_at: string | null;
 }
 
 /** Envelope for `GET /grammar/bank`. */

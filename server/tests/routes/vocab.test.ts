@@ -325,6 +325,92 @@ describe('GET /vocab/cards/due', () => {
     expect(card!.grammar_pattern_display).toBeNull();
     expect(card!.grammar_summary_en).toBeNull();
   });
+
+  // Migration 033: a grammar production card whose entry the user GRADUATED
+  // (grammar_entries.graduated_at IS NOT NULL) must not surface as due;
+  // re-admission (graduated_at back to NULL) restores it with FSRS state
+  // intact (the card row itself is never touched).
+  it('excludes a graduated grammar production card from the due queue, and re-admission restores it', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const entry = await pg.pool.query<{ id: string }>(
+      `INSERT INTO grammar_entries
+         (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+       VALUES ($1, 'GR-deoraedo', '-더라도', 'even if', 'L4', 'concession', 'manual')
+       RETURNING id::text AS id`,
+      [userId],
+    );
+    const entryId = entry.rows[0]!.id;
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+       VALUES ($1, 'production'::card_face, $2, 'L4'::proficiency_level, now())`,
+      [userId, entryId],
+    );
+
+    // Active entry → the card is due.
+    const before = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    expect(
+      (before.body.cards as Array<{ grammar_entry_id: number | null }>).some(
+        (c) => c.grammar_entry_id === Number(entryId),
+      ),
+    ).toBe(true);
+
+    // Graduate via the real route → the card drops out of the due queue.
+    await agent.post(`/grammar/bank/${entryId}/graduate`).expect(200);
+    const during = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    expect(
+      (during.body.cards as Array<{ grammar_entry_id: number | null }>).some(
+        (c) => c.grammar_entry_id === Number(entryId),
+      ),
+    ).toBe(false);
+
+    // Re-admit → the card resurfaces (same row, FSRS state untouched).
+    await agent.post(`/grammar/bank/${entryId}/readmit`).expect(200);
+    const after = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    expect(
+      (after.body.cards as Array<{ grammar_entry_id: number | null }>).some(
+        (c) => c.grammar_entry_id === Number(entryId),
+      ),
+    ).toBe(true);
+  });
+
+  it('graduating one grammar entry leaves other due cards (vocab + other grammar) untouched', async () => {
+    const vocabEntryId = await seedVocabEntry(pg.pool, { corpus: 'vocab_2000_intermediate' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const mk = async (key: string, display: string): Promise<string> => {
+      const r = await pg.pool.query<{ id: string }>(
+        `INSERT INTO grammar_entries
+           (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+         VALUES ($1, $2, $3, 's', 'L3', 'ending', 'manual')
+         RETURNING id::text AS id`,
+        [userId, key, display],
+      );
+      return r.rows[0]!.id;
+    };
+    const graduatedId = await mk('GR-known', '-는걸');
+    const activeId = await mk('GR-active', '-거든요');
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+       VALUES ($1, 'production'::card_face, $2, 'L3'::proficiency_level, now()),
+              ($1, 'production'::card_face, $3, 'L3'::proficiency_level, now())`,
+      [userId, graduatedId, activeId],
+    );
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [userId, vocabEntryId],
+    );
+
+    await agent.post(`/grammar/bank/${graduatedId}/graduate`).expect(200);
+
+    const res = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    const cards = res.body.cards as Array<{
+      grammar_entry_id: number | null;
+      vocab_entry_id: number | null;
+    }>;
+    expect(cards.some((c) => c.grammar_entry_id === Number(graduatedId))).toBe(false);
+    expect(cards.some((c) => c.grammar_entry_id === Number(activeId))).toBe(true);
+    expect(cards.some((c) => c.vocab_entry_id === vocabEntryId)).toBe(true);
+  });
 });
 
 describe('POST /vocab/cards/init', () => {

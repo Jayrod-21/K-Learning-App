@@ -37,6 +37,8 @@ const services = vi.hoisted(() => ({
   bankPattern: vi.fn(),
   getPattern: vi.fn(),
   identifyPattern: vi.fn(),
+  graduatePattern: vi.fn(),
+  readmitPattern: vi.fn(),
 }));
 
 const drillServices = vi.hoisted(() => ({
@@ -101,6 +103,33 @@ const ROW_2: KgiuEntrySummary = {
 };
 
 const EMPTY_BANK: BankedGrammarList = { entries: [] };
+
+/** Server bank rows matching ROW / ROW_2 (grammarKey-derived pattern keys). */
+const BANKED_ROW = {
+  id: 501,
+  pattern_key: 'GR-kgiu-int-007',
+  pattern_display: '-더라도',
+  summary_en: 'even if / even though',
+  proficiency: 'L4',
+  category: 'concessive',
+  register: null,
+  discovered_via: 'manual',
+  created_at: '2026-06-01T00:00:00Z',
+  graduated_at: null,
+};
+
+const BANKED_ROW_2 = {
+  id: 502,
+  pattern_key: 'GR-kgiu-int-008',
+  pattern_display: '-느라고',
+  summary_en: 'because of doing X',
+  proficiency: 'L4',
+  category: 'causal',
+  register: null,
+  discovered_via: 'manual',
+  created_at: '2026-06-01T00:00:00Z',
+  graduated_at: null,
+};
 
 const DETAIL: KgiuEntryDetail = {
   ...ROW,
@@ -369,6 +398,7 @@ describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
             register: null,
             discovered_via: 'manual',
             created_at: '2026-05-29T12:00:00Z',
+            graduated_at: null,
           },
         ],
       } satisfies BankedGrammarList);
@@ -740,6 +770,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
           register: null,
           discovered_via: 'manual',
           created_at: '2026-06-01T00:00:00Z',
+          graduated_at: null,
         },
       ],
     } satisfies BankedGrammarList);
@@ -840,5 +871,170 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     expect(
       screen.queryByText(/No grammar patterns to drill yet/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── Graduation: Banked tab Active | Known views + drill-pool exclusion ──────
+//
+// Graduating a pattern retires it from ACTIVE learning: it moves from the
+// Banked tab's Active view to the Known view, and the drill rotation must
+// never serve it. Re-admit is the inverse — the pattern returns to Active
+// (server-side its production card resurfaces in /vocab/cards/due with FSRS
+// state intact; that half is pinned by the server route tests).
+
+describe('Grammar — graduate / re-admit (Banked tab)', () => {
+  it('Graduate moves the pattern to the Known view and out of the drill pool', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // Initial bank: both patterns active. After the graduate refetch the
+    // server confirms ROW as graduated.
+    services.listBanked
+      .mockResolvedValueOnce({
+        entries: [BANKED_ROW, BANKED_ROW_2],
+      } satisfies BankedGrammarList)
+      .mockResolvedValue({
+        entries: [
+          { ...BANKED_ROW, graduated_at: '2026-07-02T10:00:00Z' },
+          BANKED_ROW_2,
+        ],
+      } satisfies BankedGrammarList);
+    services.graduatePattern.mockResolvedValue({
+      entry: { ...BANKED_ROW, graduated_at: '2026-07-02T10:00:00Z' },
+    });
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 900,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+
+    // Both banked patterns sit in the Active view with a Graduate action.
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Graduate -느라고' }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Graduate -더라도' }));
+
+    // The service was called with the BANK row id (grammar_entries.id), not
+    // the KGIU id.
+    await waitFor(() => {
+      expect(services.graduatePattern).toHaveBeenCalledWith(501);
+    });
+
+    // The pattern leaves the Active view (optimistic + server settle agree)…
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Graduate -더라도' }),
+      ).not.toBeInTheDocument();
+    });
+
+    // …and shows up in the Known view with a Re-admit action.
+    await user.click(screen.getByRole('button', { name: /^Known/ }));
+    expect(
+      await screen.findByRole('button', { name: 'Re-admit -더라도' }),
+    ).toBeInTheDocument();
+
+    // Drill pool: the rotation starts from the remaining ACTIVE banked
+    // pattern — the graduated one is never drilled.
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('Re-admit returns a Known pattern to the Active view (and the drill pool)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // Initial bank: ROW is graduated, ROW_2 active. After the re-admit
+    // refetch both are active.
+    services.listBanked
+      .mockResolvedValueOnce({
+        entries: [
+          { ...BANKED_ROW, graduated_at: '2026-07-01T09:00:00Z' },
+          BANKED_ROW_2,
+        ],
+      } satisfies BankedGrammarList)
+      .mockResolvedValue({
+        entries: [BANKED_ROW, BANKED_ROW_2],
+      } satisfies BankedGrammarList);
+    services.readmitPattern.mockResolvedValue({ entry: BANKED_ROW });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+
+    // The graduated pattern is NOT in the Active view…
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -느라고' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Graduate -더라도' }),
+    ).not.toBeInTheDocument();
+
+    // …it lives in the Known view.
+    await user.click(screen.getByRole('button', { name: /^Known/ }));
+    const readmitBtn = await screen.findByRole('button', {
+      name: 'Re-admit -더라도',
+    });
+    await user.click(readmitBtn);
+
+    await waitFor(() => {
+      expect(services.readmitPattern).toHaveBeenCalledWith(501);
+    });
+
+    // The Known view empties; the pattern is back in Active learning.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Re-admit -더라도' }),
+      ).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /^Active/ }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces an inline error and rewinds the optimistic move when Graduate fails', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+    services.graduatePattern.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    );
+
+    // Failure: inline error + the row stays in the Active view.
+    expect(
+      await screen.findByText(/Couldn't mark that pattern as known/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
   });
 });
