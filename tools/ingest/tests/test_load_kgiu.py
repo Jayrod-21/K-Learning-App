@@ -23,7 +23,9 @@ from loaders import load_kgiu  # type: ignore  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
-FIXTURE = Path(__file__).parent / "fixtures" / "kgiu_mini_beginner.json"
+FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE = FIXTURES / "kgiu_mini_beginner.json"
+FIXTURE_DUP_IDS = FIXTURES / "kgiu_mini_dup_ids.json"
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +69,15 @@ async def _count(url: str, sql: str) -> int:
     return int(row[0]) if row else 0
 
 
+async def _scalar(url: str, sql: str, params: tuple = ()):
+    """First column of the first row (or None)."""
+    async with await psycopg.AsyncConnection.connect(url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
 def test_kgiu_loader_writes_expected_counts(schema):
     url = schema
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -82,4 +93,46 @@ def test_kgiu_loader_writes_expected_counts(schema):
     result = asyncio.run(run())
     assert result["status"] == "complete"
     assert result["actual"] == expected
-    assert asyncio.run(_count(url, "SELECT COUNT(*) FROM kgiu_entries")) == expected
+    # Scoped to this fixture's corpus so the assertion is order-independent in a
+    # module-scoped shared container (other tests load into other kgiu corpora).
+    assert (
+        asyncio.run(_count(url, "SELECT COUNT(*) FROM kgiu_entries WHERE corpus = 'kgiu_beginner'"))
+        == expected
+    )
+
+
+def test_kgiu_count_mismatch_marks_failed_not_complete(schema):
+    """Regression guard (ADR-019 D8): a post-load row-count mismatch must FAIL
+    the load — raise + record ``failed`` — not warn-and-``complete``.
+
+    The fixture ships two items sharing a ``source_id``; the
+    ``ON CONFLICT (corpus, source_id)`` upsert collapses them, so 3 source items
+    yield only 2 rows. Under the old code that was a ``log.warning`` followed by
+    ``mark_complete`` (which the sha skip-guard then made permanently invisible);
+    now it must raise ``CountAssertionError`` and leave ``load_state`` ``failed``.
+    """
+    url = schema
+    cfg = LoaderConfig(database_url=url, batch_size=50, force=True)
+
+    async def run() -> None:
+        async with AsyncConnectionPool(url, min_size=1, max_size=2, open=False) as pool:
+            await pool.open(wait=True, timeout=15)
+            await load_kgiu.load(pool, FIXTURE_DUP_IDS, cfg)
+
+    with pytest.raises(load_kgiu.CountAssertionError):
+        asyncio.run(run())
+
+    # The source is recorded failed (not complete) so it is retried, not skipped.
+    status = asyncio.run(
+        _scalar(
+            url,
+            "SELECT status FROM load_state WHERE corpus = 'kgiu_advanced' AND source_path = %s",
+            (str(FIXTURE_DUP_IDS),),
+        )
+    )
+    assert status == "failed"
+    # The two distinct ids that did load are present (the collapse left 2, not 3).
+    assert (
+        asyncio.run(_count(url, "SELECT COUNT(*) FROM kgiu_entries WHERE corpus = 'kgiu_advanced'"))
+        == 2
+    )
