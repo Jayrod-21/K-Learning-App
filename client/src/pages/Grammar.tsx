@@ -2,16 +2,24 @@
  * Grammar screen — Pass-3 list/bank wiring on top of the Pass-2 drill UI.
  *
  * Three tabs:
- *   - `list`   — every KGIU pattern. Tap row to open detail Sheet; Bank
- *                button per row → `POST /grammar/bank` (idempotent server
- *                side). 🅂 badge OFF (real `listPatterns` + `listBanked`).
+ *   - `list`   — every KGIU pattern (the full corpus — `limit` is pinned to the
+ *                endpoint's 400 ceiling, which covers all 285 listable rows),
+ *                with a beginner/intermediate/advanced level filter that maps to
+ *                the endpoint's `corpus` query param. Tap row to open detail
+ *                Sheet; Bank button per row → `POST /grammar/bank` (idempotent
+ *                server side). 🅂 badge OFF (real `listPatterns` + `listBanked`).
  *   - `banked` — the subset the user has already banked. Same row shape.
  *   - `drill`  — the Pass-9 LIVE production drill. Per pattern, the panel
  *                generates a drill via `POST /grammar-drill` (Claude picks the
  *                type by history rotation), renders the per-type DrillCard, and
  *                scores the learner's answer via `POST /grammar-drill/:id/submit`
- *                (reveal: score + verdict + corrections + reference model). A
- *                failed generate/submit NEVER blanks the screen — it surfaces an
+ *                (reveal: score + verdict + corrections + reference model). The
+ *                drilled pattern comes from the user's BANKED patterns when any
+ *                exist, else the full fetched KGIU pool; the rotation cursor is
+ *                persisted (localStorage) so Skip/Next progress through patterns
+ *                durably — a tab switch or reload no longer resets the drill to
+ *                the first corpus row (the live "always N이다" bug). A failed
+ *                generate/submit NEVER blanks the screen — it surfaces an
  *                inline `role="alert"` + Retry. When the generate endpoint is
  *                unreachable the panel falls back to a local mock drill and
  *                shows the 🅂 MockBadge so the dev signal stays honest.
@@ -93,7 +101,7 @@ type Tab = 'list' | 'banked' | 'drill';
  * When a grammar production card is activated in Review, it navigates to
  * `/grammar` with this object in `location.state.drillTarget`. The Drill tab
  * then opens focused on this pattern (generating a drill for it) instead of
- * cycling its default `items[idx]` rotation. `patternKey` is the server dedup
+ * cycling its default `pool[idx]` rotation. `patternKey` is the server dedup
  * key; `display` + `meaning` seed the generate body so the drill renders even
  * when the pattern isn't in the (possibly mock) list fetch.
  */
@@ -128,6 +136,40 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'banked', label: 'Banked' },
   { id: 'drill', label: 'Drill' },
 ];
+
+/**
+ * List-tab level filter. Maps 1:1 onto the `corpus` query param the server's
+ * `GET /grammar/kgiu` already validates (`kgiu_beginner | kgiu_intermediate |
+ * kgiu_advanced` — see KgiuSearchQuerySchema in server/src/routes/grammar.ts);
+ * 'all' omits the param so the endpoint returns every corpus.
+ */
+type LevelFilter = 'all' | 'beginner' | 'intermediate' | 'advanced';
+
+const LEVEL_FILTERS: ReadonlyArray<{ id: LevelFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'beginner', label: 'Beginner' },
+  { id: 'intermediate', label: 'Intermediate' },
+  { id: 'advanced', label: 'Advanced' },
+];
+
+/** LevelFilter → the server's `corpus` enum value ('all' → no filter). */
+const LEVEL_TO_CORPUS: Record<
+  Exclude<LevelFilter, 'all'>,
+  NonNullable<grammarService.ListPatternsOptions['corpus']>
+> = {
+  beginner: 'kgiu_beginner',
+  intermediate: 'kgiu_intermediate',
+  advanced: 'kgiu_advanced',
+};
+
+/**
+ * One wide page for the whole (level-filtered) corpus — the endpoint's `limit`
+ * ceiling. The default server `limit` is 20, which is why the List previously
+ * showed only the first 20 of the 285 listable patterns; 400 covers the full
+ * set (285 total: 108 beginner / 93 intermediate / 84 advanced) with headroom.
+ * Mirrors GRAMMAR_PAGE_SIZE in Reference.tsx.
+ */
+const KGIU_LIST_LIMIT = 400;
 
 /**
  * Normalised row shape the list + banked tabs render. Both the real KGIU
@@ -292,11 +334,32 @@ async function loadMockListItems(): Promise<PatternListItem[]> {
   return rows.map(fromMockPattern);
 }
 
-/** Loader: real /grammar/kgiu → PatternListItem[]. */
-async function loadRealListItems(): Promise<PatternListItem[]> {
-  const rows = await grammarService.listPatterns();
+/** Loader: real /grammar/kgiu → PatternListItem[] for one level filter.
+ *  Always requests the full-corpus page size — the bare `listPatterns()`
+ *  call this replaces inherited the server's default `limit` of 20. */
+async function loadRealListItems(
+  level: LevelFilter,
+): Promise<PatternListItem[]> {
+  const rows = await grammarService.listPatterns({
+    limit: KGIU_LIST_LIMIT,
+    ...(level === 'all' ? {} : { corpus: LEVEL_TO_CORPUS[level] }),
+  });
   return rows.map(fromKgiu);
 }
+
+/**
+ * Per-level real loaders, memoised at module scope so the stable-fn convention
+ * `useEndpointOrMock` documents holds (the hook reads loaders through refs, but
+ * module scope keeps identities stable and intent obvious). The hook's `key`
+ * carries the level, so switching the filter triggers a genuine refetch.
+ */
+const REAL_LIST_LOADERS: Record<LevelFilter, () => Promise<PatternListItem[]>> =
+  {
+    all: () => loadRealListItems('all'),
+    beginner: () => loadRealListItems('beginner'),
+    intermediate: () => loadRealListItems('intermediate'),
+    advanced: () => loadRealListItems('advanced'),
+  };
 
 /** Loader: mock banked set (empty until the user banks something). */
 async function loadMockBankedKeys(): Promise<ReadonlySet<string>> {
@@ -346,12 +409,20 @@ function Grammar(): JSX.Element {
     setDrillTarget(null);
   }, []);
 
+  // List-tab level filter. Lives here (not in ListPanel) because it feeds the
+  // fetch key below — switching level refetches the corpus with the matching
+  // `corpus` query param and the whole screen (list, banked subset, drill
+  // pool) sees the level-scoped rows.
+  const [level, setLevel] = useState<LevelFilter>('all');
+
   // Pattern list — real first, mock fallback. The hook's `isMock` flips
-  // false on a real resolve; that's how the 🅂 badge stays off here.
+  // false on a real resolve; that's how the 🅂 badge stays off here. The
+  // level is part of the key, so a filter change aborts any in-flight fetch
+  // and re-runs the loader for the newly selected corpus.
   const listState = useEndpointOrMock<PatternListItem[]>(
-    'grammar:list',
+    `grammar:list:${level}`,
     loadMockListItems,
-    { realFn: loadRealListItems },
+    { realFn: REAL_LIST_LOADERS[level] },
   );
 
   // Banked set — separate fetch so a failure on one doesn't black out
@@ -546,19 +617,43 @@ function Grammar(): JSX.Element {
       </div>
 
       {tab === 'list' ? (
-        <ListPanel
-          state={listState}
-          items={items}
-          bankedKeys={bankedKeys}
-          pendingKey={pendingKey}
-          bankError={bankError}
-          onOpen={(row) => {
-            void openDetail(row);
-          }}
-          onBank={(row) => {
-            void bank(row);
-          }}
-        />
+        <>
+          <div
+            className="km-review__tabs"
+            role="group"
+            aria-label="Level filter"
+          >
+            {LEVEL_FILTERS.map((f) => {
+              const selected = level === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  aria-pressed={selected}
+                  className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+                  onClick={() => {
+                    setLevel(f.id);
+                  }}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+          <ListPanel
+            state={listState}
+            items={items}
+            bankedKeys={bankedKeys}
+            pendingKey={pendingKey}
+            bankError={bankError}
+            onOpen={(row) => {
+              void openDetail(row);
+            }}
+            onBank={(row) => {
+              void bank(row);
+            }}
+          />
+        </>
       ) : null}
 
       {tab === 'banked' ? (
@@ -583,6 +678,7 @@ function Grammar(): JSX.Element {
         <DrillPanel
           loading={listState.loading}
           items={items}
+          bankedItems={bankedItems}
           target={drillTarget}
           onClearTarget={clearDrillTarget}
         />
@@ -795,9 +891,15 @@ interface DrillPanelProps {
   loading: boolean;
   items: readonly PatternListItem[];
   /**
+   * The user's banked subset of `items`. When non-empty this is the PREFERRED
+   * drill pool — the learner drills the patterns they chose to bank; the full
+   * fetched list is the fallback for a fresh account with nothing banked yet.
+   */
+  bankedItems: readonly PatternListItem[];
+  /**
    * FU-NF-42 B3: an externally-supplied pattern to drill (a Review deep-link).
    * When set, the panel generates a drill for THIS pattern instead of its
-   * default `items[idx]` rotation. `null` → the existing rotation behaviour.
+   * default pool rotation. `null` → the existing rotation behaviour.
    */
   target?: DrillTarget | null;
   /**
@@ -918,14 +1020,68 @@ function mockReferenceKr(item: DrillItemPublic): string {
   }
 }
 
+/**
+ * Persisted drill-rotation cursor (localStorage).
+ *
+ * ROOT CAUSE of the live "Drill always produces N이다" bug: the rotation index
+ * was `useState(0)` inside DrillPanel, which unmounts on EVERY tab switch
+ * (`{tab === 'drill' ? <DrillPanel/> : null}`) and on reload — so each visit to
+ * the Drill tab restarted the rotation at `items[0]`, the first id-ordered
+ * corpus row (N이다). Live evidence: all five `grammar_drill_attempts` rows
+ * from the 2026-07-02 session carry `pattern_key = 'kgiu-beginner-002'` and
+ * the LB log shows each generate was a fresh mount, never a rotation step.
+ *
+ * The cursor therefore lives in localStorage: it survives remounts, tab
+ * switches, and reloads, so the learner deterministically progresses through
+ * the pool (`pool[cursor % pool.length]`) instead of looping on pattern #1.
+ *
+ * Threat model: localStorage is same-origin, user-local UI state — no secret,
+ * no server trust. Reads are validated (finite non-negative integer, else 0)
+ * so a corrupted/foreign value can't produce a negative index or NaN; both
+ * accessors swallow storage failures (private mode, quota) and degrade to
+ * in-memory-only rotation.
+ */
+const DRILL_CURSOR_STORAGE_KEY = 'km.grammar.drillCursor';
+
+/** Read the persisted cursor; 0 on absence, corruption, or storage failure. */
+function readDrillCursor(): number {
+  try {
+    const raw = window.localStorage.getItem(DRILL_CURSOR_STORAGE_KEY);
+    if (raw === null) return 0;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Best-effort persist — a storage failure must never break the drill. */
+function writeDrillCursor(cursor: number): void {
+  try {
+    window.localStorage.setItem(DRILL_CURSOR_STORAGE_KEY, String(cursor));
+  } catch {
+    // Private mode / quota — rotation continues in-memory for this mount.
+  }
+}
+
 function DrillPanel({
   loading,
   items,
+  bankedItems,
   target = null,
   onClearTarget,
 }: DrillPanelProps): JSX.Element {
-  // Which pattern (by index into `items`) we're drilling. Wraps with `%`.
-  const [idx, setIdx] = useState(0);
+  // Which pattern (by index into the pool) we're drilling. Wraps with `%`.
+  // Initialised from the PERSISTED cursor so a remount (tab switch, reload)
+  // resumes the rotation where the learner left off instead of resetting to
+  // pool[0] — see DRILL_CURSOR_STORAGE_KEY for the live bug this fixes.
+  const [idx, setIdx] = useState<number>(readDrillCursor);
+
+  // Drill pool: the learner's banked patterns when any exist (drilling what
+  // they chose to study), else the full fetched KGIU list. `bankedItems` is a
+  // subset of `items`, so an empty `items` implies an empty pool and the
+  // existing empty-state gates below still hold.
+  const pool = bankedItems.length > 0 ? bankedItems : items;
   const [phase, setPhase] = useState<DrillPhase>('generating');
   const [attemptId, setAttemptId] = useState<number | null>(null);
   const [item, setItem] = useState<DrillItemPublic | null>(null);
@@ -940,13 +1096,13 @@ function DrillPanel({
   const [retryTick, setRetryTick] = useState(0);
 
   // FU-NF-42 B3: a deep-link target wins over the rotation. When present we
-  // drill exactly that pattern; otherwise we cycle `items[idx]` as before. The
-  // targeted pattern can be drilled even when `items` is empty (the list fetch
-  // is mock/empty) — the target carries its own display + meaning.
+  // drill exactly that pattern; otherwise we cycle `pool[idx]`. The targeted
+  // pattern can be drilled even when the pool is empty (the list fetch is
+  // mock/empty) — the target carries its own display + meaning.
   const source: DrillSource | null = target
     ? targetToSource(target)
-    : items.length > 0
-      ? rowToSource(items[idx % items.length]!)
+    : pool.length > 0
+      ? rowToSource(pool[idx % pool.length]!)
       : null;
   const patternKey = source?.patternKey ?? null;
 
@@ -1019,8 +1175,10 @@ function DrillPanel({
 
   // Move past the current pattern. With a deep-link target active there is no
   // `idx` rotation to advance into, so we drop the target (→ parent clears it)
-  // and the panel falls back to its `items[idx]` rotation. Without a target we
-  // bump `idx` as before.
+  // and the panel falls back to its `pool[idx]` rotation. Without a target we
+  // bump `idx` AND persist the new cursor, so the step survives a remount —
+  // Skip / Next pattern now deterministically moves to a different pattern
+  // instead of regenerating the same one after any tab switch.
   const advance = useCallback((): void => {
     submitCtrlRef.current?.abort();
     if (target) {
@@ -1029,6 +1187,13 @@ function DrillPanel({
     }
     setIdx((i) => i + 1);
   }, [target, onClearTarget]);
+
+  // Persist the cursor on every step (and on mount, an idempotent re-write of
+  // the value just read). An effect rather than a write inside the setIdx
+  // updater keeps the updater pure (StrictMode double-invokes updaters).
+  useEffect(() => {
+    writeDrillCursor(idx);
+  }, [idx]);
 
   const retryGenerate = useCallback((): void => {
     setRetryTick((t) => t + 1);

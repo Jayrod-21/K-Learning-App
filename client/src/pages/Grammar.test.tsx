@@ -140,6 +140,10 @@ function resetMocks(): void {
   // Default mock fallback resolves with the fixture — happy-path tests
   // don't need to set this per-case. The ErrorCard test overrides it.
   mocks.loadGrammarMock.mockResolvedValue(FIXTURE);
+  // The drill rotation persists its cursor to localStorage so it survives
+  // remounts (the live always-N이다 fix). Clear it so tests don't bleed a
+  // cursor into each other.
+  window.localStorage.clear();
 }
 
 beforeEach(() => {
@@ -273,6 +277,74 @@ describe('Grammar — list tab', () => {
     expect(
       screen.getByRole('button', { name: /^Retry$/i }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Grammar — list level filter', () => {
+  it('fetches the FULL corpus page by default (limit 400, no corpus filter)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    renderGrammar();
+
+    expect(await screen.findByText('-더라도')).toBeInTheDocument();
+    // The bare listPatterns() call this replaces inherited the server default
+    // limit of 20 — only the first 20 of 285 patterns ever showed. The List
+    // must request one full-corpus page.
+    expect(services.listPatterns).toHaveBeenCalledTimes(1);
+    const opts = services.listPatterns.mock.calls[0][0] as {
+      limit?: number;
+      corpus?: string;
+    };
+    expect(opts.limit).toBe(400);
+    expect(opts.corpus).toBeUndefined();
+  });
+
+  it('passes the corpus param for a level and refetches when the level changes', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-더라도');
+
+    await user.click(screen.getByRole('button', { name: 'Intermediate' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(2);
+    });
+    expect(services.listPatterns.mock.calls[1][0]).toMatchObject({
+      corpus: 'kgiu_intermediate',
+      limit: 400,
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(3);
+    });
+    expect(services.listPatterns.mock.calls[2][0]).toMatchObject({
+      corpus: 'kgiu_beginner',
+      limit: 400,
+    });
+
+    // Back to All → the corpus filter is OMITTED, not sent as a bogus value.
+    await user.click(screen.getByRole('button', { name: 'All' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(4);
+    });
+    const allOpts = services.listPatterns.mock.calls[3][0] as {
+      limit?: number;
+      corpus?: string;
+    };
+    expect(allOpts.limit).toBe(400);
+    expect(allOpts.corpus).toBeUndefined();
+
+    // The selected level is reflected as a pressed state for AT users.
+    expect(
+      screen.getByRole('button', { name: 'All' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      screen.getByRole('button', { name: 'Intermediate' }),
+    ).toHaveAttribute('aria-pressed', 'false');
   });
 });
 
@@ -595,6 +667,127 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     // The reveal lands (score visible) but no schedule line is shown.
     expect(await screen.findByText('82')).toBeInTheDocument();
     expect(screen.queryByText(/Added to your review/)).not.toBeInTheDocument();
+  });
+
+  // ── Drill rotation: Skip/Next must move to a DIFFERENT pattern ──────────
+  //
+  // Live bug (2026-07-02): the Drill tab regenerated N이다 (the first corpus
+  // row) forever — the rotation index reset to 0 on every DrillPanel remount
+  // (any tab switch / reload), so the learner never progressed. These tests
+  // pin the fixed contract: Skip advances the pattern, banked patterns are
+  // the preferred pool, and the cursor survives a remount.
+
+  /** generateDrill stub that echoes the request so assertions can read which
+   *  pattern each generate was for. */
+  function echoGenerate(): void {
+    let nextAttempt = 100;
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: (nextAttempt += 1),
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+  }
+
+  it('Skip advances the rotation to a DIFFERENT pattern', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+
+    await user.click(await screen.findByRole('button', { name: /^Skip$/ }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // The second generate is for the NEXT pattern — not a same-pattern reroll.
+    expect(drillServices.generateDrill.mock.calls[1][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('prefers the banked pool over the full list when the user has banked patterns', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // ROW_2 (-느라고) is banked; ROW is not. The drill must start from the
+    // banked pool, not from items[0].
+    services.listBanked.mockResolvedValue({
+      entries: [
+        {
+          id: 7,
+          pattern_key: 'GR-kgiu-int-008',
+          pattern_display: '-느라고',
+          summary_en: 'because of doing X',
+          proficiency: 'L4',
+          category: 'causal',
+          register: null,
+          discovered_via: 'manual',
+          created_at: '2026-06-01T00:00:00Z',
+        },
+      ],
+    } satisfies BankedGrammarList);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('resumes the rotation across a remount instead of resetting to the first pattern (live always-N이다 regression)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    // Advance to the second pattern…
+    await user.click(await screen.findByRole('button', { name: /^Skip$/ }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+
+    // …then leave the Drill tab (unmounts DrillPanel) and come back.
+    await user.click(screen.getByRole('tab', { name: 'List' }));
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(3);
+    });
+    // The remount resumed at the persisted cursor (pattern #2) — NOT items[0],
+    // which is what produced the endless-N이다 live behaviour.
+    expect(drillServices.generateDrill.mock.calls[2][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+    });
   });
 
   // ── FU-NF-42 B3: Drill tab opens focused on a deep-link target ──────────
