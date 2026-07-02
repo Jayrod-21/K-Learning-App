@@ -60,7 +60,7 @@ If it does, **skip it** and move on. This lets the job be re-run safely.
   },
   "items": [
     {
-      "id": "topik102-read-031",           // topik<test>-<read|listen|write>-<3-digit number>
+      "id": "topik102-I-read-031",         // topik<test>-<I|II>-<read|listen|write>-<3-digit number>
       "number": 31,
       "instruction_group": "31-33",         // the "[31~33]" grouping printed above the questions
       "instruction": "무엇에 대한 내용입니까? 알맞은 것을 고르십시오.",  // verbatim
@@ -77,6 +77,12 @@ If it does, **skip it** and move on. This lets the job be re-run safely.
 Field rules:
 - **Required & must be right:** `source.test`, `source.level`, `source.section`; each item's
   `id`, `number`, `stem`, `options`, `answer`.
+- **`id` MUST include the level token (`I` or `II`)** right after the sitting number:
+  `topik<test>-<I|II>-<read|listen|write>-<NNN>`. A sitting has *both* a TOPIK-I and a
+  TOPIK-II paper, and both number their questions from 1 — so without the level the ids
+  collide across levels (e.g. `topik102-listen-001` would exist in both files) and the
+  loader's `UNIQUE (corpus, source_id)` makes the second silently overwrite the first.
+  The level token is what keeps every id globally unique.
 - `answer` is the integer **1–4** matching the circled ①②③④ in the official answer key —
   **never guess it; read it from the `-Answers.pdf`.**
 - `has_image: true` when the question can't be answered from text alone (weather widgets,
@@ -88,6 +94,13 @@ Field rules:
   or "improve" it. Preserve blanks `(   )`, punctuation, and spacing as printed.
 - Optional (include if easy, else omit): `skill_tag`, `proficiency`, `instruction_group`,
   `form`. The loader tolerates missing optional fields.
+- **Provenance (add to `source` when a sitting is imperfectly sourced):**
+  - `note` — free text explaining any gap, e.g. `"passages 23-24 withheld under copyright"`
+    or `"no reading test paper exists for this sitting; answers-only"`.
+  - `transcript_available` (bool) + `transcript_source` (string) — set when you reconstructed
+    a listening script instead of reading an official `-Listening-Transcript.pdf` (e.g. a
+    Whisper transcription of the audio, hand-corrected against the paper). These are persisted
+    to `topik_tests.provenance`; anything you don't set is simply omitted.
 
 ---
 
@@ -104,10 +117,18 @@ For each `(sitting, level, section)`:
    shared `passages`.
 4. **Listening only:** also read the `-Listening-Transcript.pdf` and put each group's script
    text into `passages` (keyed by `instruction_group`).
-5. **Writing (TOPIK-II) only:** items 51–52 are short-answer (`"answer"` is the model text or
-   an object; set `has_image` as needed); 53–54 are essays — set the item's `stem` to the
-   prompt and put the official model/anchor answer (from the Answers PDF) in `model_answer`.
-   Don't force 1–4 answers for writing.
+5. **Writing (TOPIK-II) only:** these four items are **not** multiple choice — leave `options`
+   empty, set `answer` to `null`, and give each a `type`:
+   - **51–52** — `"type": "short_answer"`. A short passage with two blanks (㉠/㉡) to complete.
+     Put the passage in `stem` (preserve the `(   )` blanks), and the official model sentences
+     in `model_answer` (an object keyed by blank, e.g. `{"㉠": "...", "㉡": "..."}`).
+   - **53** — `"type": "chart_description"`. Put the prompt in `stem` (or `prompt`), set
+     `has_image: true` for the chart, and add `"char_range": "200~300"` (the required length,
+     verbatim from the paper). Official anchor answer → `model_answer`.
+   - **54** — `"type": "essay"`. Prompt in `stem`, `"char_range": "600~700"`, anchor answer →
+     `model_answer`.
+   `char_range` is the printed answer-length requirement (a tilde range string); include it for
+   53–54. Don't force 1–4 answers for writing.
 6. **Merge** the official `answer`+`points` from step 2 into each item.
 7. **Set `total_questions`** = item count; **write** the JSON file (pretty-printed, UTF-8).
 8. **Validate before moving on** (see checklist). Then go to the next unit.
@@ -128,7 +149,8 @@ Newest sittings first is fine (102 → 96 → 91 → …). Any order is OK — j
 - [ ] Every item has an `answer` that came from the **Answers PDF** (not inferred), 1–4 for MCQ.
 - [ ] `options` has the right count (usually 4) in printed order.
 - [ ] Korean is verbatim; blanks preserved; no translations/paraphrase.
-- [ ] `id`s are unique and follow `topik<test>-<sec>-<NNN>`.
+- [ ] `id`s follow `topik<test>-<I|II>-<sec>-<NNN>` and **include the level token** — they must
+      be unique across BOTH levels of the sitting (see the `id` field rule above).
 - [ ] JSON is valid (parse it mentally / keep it simple).
 
 ## Do NOT

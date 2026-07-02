@@ -42,6 +42,19 @@ logger = structlog.get_logger(__name__)
 CORPUS = "topik"
 
 
+class CountAssertionError(RuntimeError):
+    """Raised when the post-load row count for a TOPIK file does not equal the
+    source item count.
+
+    Per ADR-019 §D8 the loader must fail loud on a counts mismatch and exit
+    non-zero, so CI/the orchestrator sees drift. The alternative (log a warning
+    and mark the source ``complete``) records a partial or silently-deduped load
+    as success — which the sha-based skip guard then makes permanently invisible
+    on every future non-``--force`` run. Raising here routes through the loader's
+    ``except`` so the source is recorded ``failed`` with ``last_error``.
+    """
+
+
 # Map every accepted writing-section discriminator (after the model's
 # hyphen→underscore normalization) onto a canonical Postgres
 # ``topik_item_type`` enum value. The DB enum has only four members:
@@ -55,6 +68,7 @@ CORPUS = "topik"
 # keeps the DB cast safe by collapsing each variant onto an enum member.
 _TYPE_TO_DB_ENUM: dict[str, str] = {
     # Fill-in-the-blank writing items (#51-52)
+    "short_answer": "short_answer_blanks",
     "short_answer_blanks": "short_answer_blanks",
     "short_answer_cloze": "short_answer_blanks",
     "blank_fill": "short_answer_blanks",
@@ -102,157 +116,211 @@ def _resolve_item_type(raw_type: str | None, options: list[str]) -> str:
 async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) -> dict:
     log = logger.bind(corpus=CORPUS, source_path=str(source_path))
 
-    raw = source_path.read_bytes()
-    doc = TopikDocumentModel.model_validate_json(raw)
-    sha = sha256_of_file(source_path)
-    total_items = len(doc.items)
+    # The try spans validation + the first (catalog + topik_tests) transaction
+    # as well as the item batches, so ANY failure — a bad JSON payload, the
+    # topik_tests upsert, or a batch INSERT — is recorded as ``failed`` in
+    # load_state for operator triage (ADR-019 D4). The first transaction still
+    # owns its own atomic boundary below (mark_in_progress + catalog + tests row
+    # commit or roll back together); the except only records the failure, in a
+    # fresh transaction, after that rollback.
+    try:
+        raw = source_path.read_bytes()
+        doc = TopikDocumentModel.model_validate_json(raw)
+        sha = sha256_of_file(source_path)
+        total_items = len(doc.items)
 
-    test_number = int(doc.source.test)
-    section = doc.source.section  # validated via app-layer enum below
+        test_number = int(doc.source.test)
+        section = doc.source.section  # validated via app-layer enum below
 
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            cp = await get_or_create_checkpoint(
-                conn, corpus=CORPUS, source_path=str(source_path)
-            )
-            if cp.status == "complete" and cp.source_sha256 == sha and not cfg.force:
-                log.info("skip_complete", sha256=sha)
-                return {"loaded": 0, "skipped": total_items, "status": "skipped"}
-            await mark_in_progress(
-                conn,
-                corpus=CORPUS,
-                source_path=str(source_path),
-                source_sha256=sha,
-                items_in_source=total_items,
-            )
-            corpus_source_id = await upsert_corpus_source(
-                conn,
-                corpus=CORPUS,
-                title=f"TOPIK item pool ({doc.source.level})",
-                publisher=doc.source.origin,
-                authors=None,
-                level=None,
-                default_proficiency=None,
-                extracted_by=doc.source.extracted_by,
-                extracted_at=doc.source.extracted_at,
-                source_path=str(source_path),
-                source_sha256=sha,
-                item_count=None,  # cross-file count is tracked in load_state
-                notes=None,
-            )
-
-            # Upsert topik_tests row (one per test+section).
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    INSERT INTO topik_tests (
-                        corpus_source_id, corpus, test_number, topik_level,
-                        section, form, origin, total_questions, passages)
-                    VALUES (%s, %s::corpus, %s, %s, %s::topik_section, %s, %s, %s, %s::jsonb)
-                    ON CONFLICT (test_number, topik_level, section) DO UPDATE
-                      SET form            = EXCLUDED.form,
-                          origin          = EXCLUDED.origin,
-                          total_questions = EXCLUDED.total_questions,
-                          passages        = EXCLUDED.passages,
-                          version         = topik_tests.version + 1
-                    RETURNING id
-                    """,
-                    (
-                        corpus_source_id,
-                        CORPUS,
-                        test_number,
-                        doc.source.level,
-                        section,
-                        doc.source.form,
-                        doc.source.origin,
-                        doc.source.total_questions,
-                        json.dumps(doc.passages),
-                    ),
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                cp = await get_or_create_checkpoint(
+                    conn, corpus=CORPUS, source_path=str(source_path)
                 )
-                row = await cur.fetchone()
-                assert row is not None
-                topik_test_id = int(row[0])
+                if cp.status == "complete" and cp.source_sha256 == sha and not cfg.force:
+                    log.info("skip_complete", sha256=sha)
+                    return {"loaded": 0, "skipped": total_items, "status": "skipped"}
+                await mark_in_progress(
+                    conn,
+                    corpus=CORPUS,
+                    source_path=str(source_path),
+                    source_sha256=sha,
+                    items_in_source=total_items,
+                )
+                corpus_source_id = await upsert_corpus_source(
+                    conn,
+                    corpus=CORPUS,
+                    title=f"TOPIK item pool ({doc.source.level})",
+                    publisher=doc.source.origin,
+                    authors=None,
+                    level=None,
+                    default_proficiency=None,
+                    extracted_by=doc.source.extracted_by,
+                    extracted_at=doc.source.extracted_at,
+                    source_path=str(source_path),
+                    source_sha256=sha,
+                    item_count=None,  # cross-file count is tracked in load_state
+                    notes=None,
+                )
+
+                # Source provenance recorded when a sitting is imperfectly
+                # sourced (withheld passages, reconstructed listening script,
+                # or which answer key the answers were verified against).
+                # Kept as a jsonb value object on topik_tests (migration 030) so
+                # the audit trail isn't silently dropped by the model's
+                # extra="ignore". Only non-null keys are stored.
+                provenance = {
+                    k: v
+                    for k, v in {
+                        "note": doc.source.note,
+                        "transcript_available": doc.source.transcript_available,
+                        "transcript_source": doc.source.transcript_source,
+                        "answers_verified_against": doc.source.answers_verified_against,
+                    }.items()
+                    if v is not None
+                }
+
+                # Upsert topik_tests row (one per test+section).
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        INSERT INTO topik_tests (
+                            corpus_source_id, corpus, test_number, topik_level,
+                            section, form, origin, total_questions, passages,
+                            provenance)
+                        VALUES (%s, %s::corpus, %s, %s, %s::topik_section, %s, %s, %s,
+                                %s::jsonb, %s::jsonb)
+                        ON CONFLICT (test_number, topik_level, section) DO UPDATE
+                          SET form            = EXCLUDED.form,
+                              origin          = EXCLUDED.origin,
+                              total_questions = EXCLUDED.total_questions,
+                              passages        = EXCLUDED.passages,
+                              provenance      = EXCLUDED.provenance,
+                              version         = topik_tests.version + 1
+                        RETURNING id
+                        """,
+                        (
+                            corpus_source_id,
+                            CORPUS,
+                            test_number,
+                            doc.source.level,
+                            section,
+                            doc.source.form,
+                            doc.source.origin,
+                            doc.source.total_questions,
+                            json.dumps(doc.passages),
+                            json.dumps(provenance),
+                        ),
+                    )
+                    row = await cur.fetchone()
+                    if row is None:
+                        # RETURNING id must yield a row; a None here means the
+                        # upsert silently affected nothing. Fail loud rather than
+                        # relying on an `assert` (stripped under `python -O`).
+                        raise RuntimeError(
+                            "topik_tests upsert returned no row from RETURNING id "
+                            f"for {source_path}"
+                        )
+                    topik_test_id = int(row[0])
 
         loaded_running = 0
         skipped_running = 0
-        try:
-            # Process items in source-id order so resume-via-last_item_id is
-            # well-defined.
-            items_sorted = sorted(doc.items, key=lambda x: x.id)
-            for batch in batched(items_sorted, cfg.batch_size):
-                # Skip already-loaded items on resume.
-                if cp.status == "in_progress" and cp.last_item_id:
-                    # Capture pre-filter size — the final batch is often
-                    # short, so adding ``cfg.batch_size`` would overcount.
-                    # See FU-NF-3 (FOLLOW_UPS.md, 2026-05-29) — mirrors the
-                    # kgiu loader's fix for the same pattern.
-                    original_size = len(batch)
-                    batch = [b for b in batch if b.id > cp.last_item_id]
-                    if not batch:
-                        skipped_running += original_size
-                        continue
+        # Process items in source-id order so resume-via-last_item_id is
+        # well-defined.
+        items_sorted = sorted(doc.items, key=lambda x: x.id)
+        for batch in batched(items_sorted, cfg.batch_size):
+            # Skip already-loaded items on resume.
+            if cp.status == "in_progress" and cp.last_item_id:
+                # Capture pre-filter size — the final batch is often
+                # short, so adding ``cfg.batch_size`` would overcount.
+                # See FU-NF-3 (FOLLOW_UPS.md, 2026-05-29) — mirrors the
+                # kgiu loader's fix for the same pattern.
+                original_size = len(batch)
+                batch = [b for b in batch if b.id > cp.last_item_id]
+                if not batch:
+                    skipped_running += original_size
+                    continue
 
-                async with pool.connection() as conn:
-                    async with conn.transaction():
-                        await _insert_item_batch(
-                            conn,
-                            topik_test_id=topik_test_id,
-                            corpus_source_id=corpus_source_id,
-                            section=section,
-                            batch=batch,
-                        )
-                        last_id = batch[-1].id
-                        await checkpoint_progress(
-                            conn,
-                            corpus=CORPUS,
-                            source_path=str(source_path),
-                            last_item_id=last_id,
-                            items_loaded_delta=len(batch),
-                        )
-                loaded_running += len(batch)
-                log.info(
-                    "items_batch_loaded",
-                    batch_size=len(batch),
-                    total_loaded=loaded_running,
-                )
-
-            # Counts assertion.
             async with pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT COUNT(*)::int FROM topik_items WHERE topik_test_id = %s",
-                        (topik_test_id,),
+                async with conn.transaction():
+                    await _insert_item_batch(
+                        conn,
+                        topik_test_id=topik_test_id,
+                        corpus_source_id=corpus_source_id,
+                        section=section,
+                        batch=batch,
                     )
-                    row = await cur.fetchone()
-                    actual = int(row[0]) if row else 0
-            if actual != total_items:
-                log.warning(
-                    "count_assertion_mismatch",
-                    expected=total_items,
-                    actual=actual,
-                )
-
-            async with pool.connection() as conn:
-                async with conn.transaction():
-                    await mark_complete(conn, corpus=CORPUS, source_path=str(source_path))
-            return {
-                "loaded": loaded_running,
-                "skipped": skipped_running,
-                "expected": total_items,
-                "actual": actual,
-                "status": "complete",
-            }
-        except Exception as err:
-            log.error("loader_failed", error=str(err))
-            async with pool.connection() as conn:
-                async with conn.transaction():
-                    await mark_failed(
+                    last_id = batch[-1].id
+                    await checkpoint_progress(
                         conn,
                         corpus=CORPUS,
                         source_path=str(source_path),
-                        error=repr(err),
+                        last_item_id=last_id,
+                        items_loaded_delta=len(batch),
                     )
-            raise
+            loaded_running += len(batch)
+            log.info(
+                "items_batch_loaded",
+                batch_size=len(batch),
+                total_loaded=loaded_running,
+            )
+
+        # Counts assertion.
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(*)::int FROM topik_items WHERE topik_test_id = %s",
+                    (topik_test_id,),
+                )
+                row = await cur.fetchone()
+                actual = int(row[0]) if row else 0
+        if actual != total_items:
+            # ADR-019 D8: a counts mismatch is a hard failure, not a warning.
+            # One TOPIK file == one (test_number, topik_level, section) == one
+            # topik_test_id, so the row count must equal total_items exactly.
+            # A shortfall means items collapsed under the (corpus, source_id)
+            # upsert — the exact cross-level collision the level-qualified id
+            # scheme exists to prevent. Raise so the source is marked ``failed``
+            # (not ``complete``) and the process exits non-zero.
+            log.error(
+                "count_assertion_mismatch",
+                expected=total_items,
+                actual=actual,
+            )
+            raise CountAssertionError(
+                f"row count mismatch for {source_path}: expected {total_items} "
+                f"topik_items, found {actual} — source item ids likely collide "
+                f"under the (corpus, source_id) upsert. Refusing to mark complete."
+            )
+
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                await mark_complete(conn, corpus=CORPUS, source_path=str(source_path))
+        return {
+            "loaded": loaded_running,
+            "skipped": skipped_running,
+            "expected": total_items,
+            "actual": actual,
+            "status": "complete",
+        }
+    except Exception as err:
+        log.error("loader_failed", error=str(err))
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                # Ensure a load_state row exists even when the failure happened
+                # before the first transaction committed (e.g. a validation
+                # error, or a topik_tests upsert that rolled back its own
+                # mark_in_progress) so the failure is always recorded.
+                await get_or_create_checkpoint(
+                    conn, corpus=CORPUS, source_path=str(source_path)
+                )
+                await mark_failed(
+                    conn,
+                    corpus=CORPUS,
+                    source_path=str(source_path),
+                    error=repr(err),
+                )
+        raise
 
 
 async def _insert_item_batch(
@@ -270,9 +338,19 @@ async def _insert_item_batch(
         item_type = _resolve_item_type(it.type, it.options)
         prof = normalize_proficiency(it.proficiency)
         # Pack anything the model carries without a column into `extra`.
+        # `char_range` is the writing-item answer-length range (#53/#54) — real
+        # source data with no dedicated column, so the `extra` jsonb is exactly
+        # the "no data lost on shape drift" catch-all (see the
+        # `topik_items.extra` COMMENT in migration 005).
+        # `skill_tag_raw` is deliberately NOT packed here: it has its own column
+        # (written below). Storing it in both places is redundant and invites a
+        # silent divergence between `skill_tag_raw` and `extra->>'skill_tag_raw'`
+        # if the two write paths ever drift.
         extra = {
             k: v
-            for k, v in {"skill_tag_raw": it.skill_tag_raw}.items()
+            for k, v in {
+                "char_range": it.char_range,
+            }.items()
             if v is not None
         }
         values.append(

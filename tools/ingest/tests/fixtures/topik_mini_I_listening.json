@@ -1,0 +1,39 @@
+{
+  "source": {
+    "test": "98",
+    "level": "TOPIK I",
+    "section": "listening",
+    "form": "A (짝수형)",
+    "total_questions": 2,
+    "origin": "Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02"
+  },
+  "passages": {
+    "1-2": "TOPIK-I 듣기 샘플 대본입니다."
+  },
+  "items": [
+    {
+      "id": "topik98-I-listen-001",
+      "number": 1,
+      "instruction_group": "1-2",
+      "instruction": "다음을 듣고 알맞은 것을 고르십시오.",
+      "points": 4,
+      "has_image": false,
+      "stem": "여자: 안녕하세요. 남자: ( )",
+      "options": ["네, 안녕하세요.", "아니요, 없어요.", "잘 먹겠습니다.", "죄송합니다."],
+      "answer": 1
+    },
+    {
+      "id": "topik98-I-listen-002",
+      "number": 2,
+      "instruction_group": "1-2",
+      "instruction": "다음을 듣고 알맞은 것을 고르십시오.",
+      "points": 4,
+      "has_image": false,
+      "stem": "남자: 이거 얼마예요? 여자: ( )",
+      "options": ["삼천 원이에요.", "학교예요.", "내일이에요.", "친구예요."],
+      "answer": 1
+    }
+  ]
+}

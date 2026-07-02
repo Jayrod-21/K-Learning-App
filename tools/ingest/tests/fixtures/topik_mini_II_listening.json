@@ -1,0 +1,43 @@
+{
+  "source": {
+    "test": "98",
+    "level": "TOPIK II",
+    "section": "listening",
+    "form": "A (짝수형)",
+    "total_questions": 2,
+    "origin": "Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02",
+    "note": "Fixture: same sitting (98) and section (listening) as the TOPIK-I file; item numbers 1-2 collide across levels unless the level token qualifies the id.",
+    "transcript_available": true,
+    "transcript_source": "Fixture: Whisper large-v3 transcription of the official audio, hand-corrected.",
+    "answers_verified_against": "Fixture: official NIIED answer key"
+  },
+  "passages": {
+    "1-2": "TOPIK-II 듣기 샘플 대본입니다."
+  },
+  "items": [
+    {
+      "id": "topik98-II-listen-001",
+      "number": 1,
+      "instruction_group": "1-2",
+      "instruction": "다음을 듣고 물음에 답하십시오.",
+      "points": 2,
+      "has_image": false,
+      "stem": "여자: 회의가 언제예요? 남자: ( )",
+      "options": ["다음 주 월요일이에요.", "회의실이에요.", "부장님이에요.", "노트북이에요."],
+      "answer": 1
+    },
+    {
+      "id": "topik98-II-listen-002",
+      "number": 2,
+      "instruction_group": "1-2",
+      "instruction": "다음을 듣고 물음에 답하십시오.",
+      "points": 2,
+      "has_image": false,
+      "stem": "남자: 주말에 뭐 했어요? 여자: ( )",
+      "options": ["등산을 했어요.", "책상이에요.", "지금이에요.", "선생님이에요."],
+      "answer": 1
+    }
+  ]
+}

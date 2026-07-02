@@ -17,8 +17,14 @@ TOPIK Tests/
 Lessons/
 How To Sound Like A Native Korean Speaker/
 
-# Parser intermediates are derived data of copyrighted sources — keep local-only
-tools/ingest/output/*.json
+# Parser intermediates are derived data of copyrighted sources — keep local-only.
+# Ignore the whole output tree and any sibling backup dirs (output.pre-idfix.bak,
+# output.rootbak, …) so a re-id/backup pass can never leak corpus data into git.
+tools/ingest/output/
+tools/ingest/output.*/
+# Also ignore FILE-form backups (output.tar.gz, output.bak.json, …); the
+# trailing-slash pattern above only matches directories.
+tools/ingest/output.*
 
 # Python
 __pycache__/
