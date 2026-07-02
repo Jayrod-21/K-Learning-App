@@ -1,0 +1,52 @@
+{
+  "source": {
+    "test": "98",
+    "level": "TOPIK II",
+    "section": "writing",
+    "total_questions": 3,
+    "origin": "Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02"
+  },
+  "passages": {},
+  "items": [
+    {
+      "id": "topik98-II-write-051",
+      "number": 51,
+      "type": "short_answer",
+      "instruction": "다음 글을 읽고 ㉠과 ㉡에 알맞은 말을 쓰십시오.",
+      "points": 10,
+      "has_image": false,
+      "stem": "안녕하세요. 지난주에 산 가방을 ( ㉠ ). 그런데 색이 달라서 ( ㉡ ).",
+      "options": [],
+      "answer": null,
+      "model_answer": {"㉠": "받았습니다", "㉡": "교환하고 싶습니다"}
+    },
+    {
+      "id": "topik98-II-write-053",
+      "number": 53,
+      "type": "chart_description",
+      "instruction": "다음을 참고하여 200~300자로 글을 쓰십시오.",
+      "points": 30,
+      "has_image": true,
+      "stem": "[그래프: 연도별 1인 가구 비율 증가]",
+      "options": [],
+      "answer": null,
+      "char_range": "200~300",
+      "model_answer": "1인 가구 비율은 조사 기간 동안 꾸준히 증가하였다."
+    },
+    {
+      "id": "topik98-II-write-054",
+      "number": 54,
+      "type": "essay",
+      "instruction": "다음을 주제로 하여 600~700자로 글을 쓰십시오.",
+      "points": 50,
+      "has_image": false,
+      "stem": "현대 사회에서 성공의 의미에 대해 자신의 생각을 쓰십시오.",
+      "options": [],
+      "answer": null,
+      "char_range": "600~700",
+      "model_answer": "성공의 의미는 사람마다 다르게 정의될 수 있다."
+    }
+  ]
+}

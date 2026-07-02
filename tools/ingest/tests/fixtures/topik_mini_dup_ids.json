@@ -1,0 +1,27 @@
+{
+  "source": {
+    "test": "97",
+    "level": "TOPIK I",
+    "section": "reading",
+    "total_questions": 2,
+    "origin": "Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02",
+    "note": "Fixture for the B1 count-assertion regression: two items share ONE source_id, so they collapse under the (corpus, source_id) upsert and the loaded row count (1) is less than total_items (2)."
+  },
+  "passages": {},
+  "items": [
+    {
+      "id": "topik97-I-read-001",
+      "number": 1,
+      "options": ["a", "b", "c", "d"],
+      "answer": 1
+    },
+    {
+      "id": "topik97-I-read-001",
+      "number": 2,
+      "options": ["a", "b", "c", "d"],
+      "answer": 2
+    }
+  ]
+}

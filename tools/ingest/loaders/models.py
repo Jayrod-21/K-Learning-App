@@ -129,8 +129,20 @@ class TopikItemModel(StrictBase):
     underline: str | None = None
     prompt: str | None = None
     options: list[str] = Field(default_factory=list)
-    answer: Any | None = None         # int or object (writing)
-    model_answer: Any | None = None
+    # Observed shapes across all 60 output/topik_*.json files: `answer` is a
+    # 1-based option index (int) or null (writing items have no keyed answer);
+    # `model_answer` is a sample answer as either an object (per-blank map for
+    # #51-52) or a string (composition for #53-54), or null. Narrowed from the
+    # previous bare `Any` so the Pydantic boundary actually validates the shape
+    # (bar §1.2) — a stray string where an option index is expected now fails
+    # loud at parse time instead of flowing into `topik_items.answer` jsonb.
+    answer: int | None = None
+    model_answer: dict[str, Any] | str | None = None
+    # Required answer-length range for the writing composition items (#53
+    # chart description "200~300", #54 essay "600~700"). Free-form string —
+    # the source writes a tilde range. Persisted into ``topik_items.extra``
+    # by the loader (no dedicated column; see ``_insert_item_batch``).
+    char_range: str | None = None
     # Discriminator for the polymorphic stem shape. None ⇒ inferred as
     # ``multiple_choice`` by the loader's ``_resolve_item_type``.
     #
@@ -141,10 +153,15 @@ class TopikItemModel(StrictBase):
     # HYPHENATED forms). Verified across ``output/topik_{36,37,41,47,52,
     # 60,64,91,96}_writing.json``:
     #
-    #   short_answer_blanks, short-answer-cloze, blank-fill,
+    #   short_answer, short_answer_blanks, short-answer-cloze, blank-fill,
     #   sentence-completion, complete-the-sentence,
     #   chart_description, chart-description, data-description,
     #   essay
+    #
+    # ``short_answer`` is the bare discriminator the TOPIK OCR playbook's
+    # writing pass emits for #51-52 fill-in items; it collapses onto the
+    # DB enum ``short_answer_blanks`` (same semantics as the ``_blanks``/
+    # ``_cloze`` variants) in ``_resolve_item_type``.
     #
     # We accept all of these at the model boundary (after hyphen→underscore
     # normalization), then ``_resolve_item_type`` in ``load_topik.py``
@@ -158,6 +175,7 @@ class TopikItemModel(StrictBase):
     # of 5 sampled writing JSONs (see ``REVIEW_FIXES_FU_NF.md`` B1). This
     # version preserves the fail-loud goal while accepting real data.
     type: Literal[
+        "short_answer",
         "short_answer_blanks",
         "short_answer_cloze",
         "blank_fill",
@@ -198,6 +216,16 @@ class TopikSourceModel(StrictBase):
     extracted_by: str | None = None
     extracted_at: str | None = None
     answers_verified_against: str | None = None
+    # Provenance the OCR pass records when a sitting is imperfectly sourced:
+    #   * note — free text (e.g. "passages 23-24 withheld under copyright",
+    #     "no reading test paper exists for this sitting").
+    #   * transcript_available / transcript_source — set when a listening
+    #     script was reconstructed (e.g. Whisper large-v3 transcription of
+    #     the official audio) rather than taken from an official transcript
+    #     PDF. Persisted into ``topik_tests.provenance`` (migration 030).
+    note: str | None = None
+    transcript_available: bool | None = None
+    transcript_source: str | None = None
 
 
 class TopikDocumentModel(StrictBase):
