@@ -66,6 +66,7 @@ import {
   type UseEndpointOrMockResult,
 } from '../hooks/useEndpointOrMock';
 import { loadGrammarMock } from '../data/mocks/grammar';
+import { grammarKey } from '../lib/grammarKey';
 import * as grammarService from '../services/grammar';
 import {
   generateDrill,
@@ -80,6 +81,7 @@ import type {
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
+  RegisterLevel,
   ServerProficiency,
 } from '../types/domain';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -147,6 +149,10 @@ interface PatternListItem {
   proficiency: ServerProficiency;
   /** Category sent in the bank body. */
   category: string;
+  /** RAW corpus register string ("해요체", but often composite like
+   *  "해요체 / 하십시오체"). Kept raw here; `buildBankBody` sanitizes it
+   *  against the server's closed RegisterLevel set before any POST. */
+  register: string | null;
   /** True iff this row came from the real `listPatterns` endpoint. Drives
    *  the bank-body discriminator AND lets the detail Sheet know whether
    *  it can call `getPattern(id)` (real) or must render the mock detail. */
@@ -178,13 +184,18 @@ function toServerProficiency(raw: string | null | undefined): ServerProficiency 
 function fromKgiu(row: KgiuEntrySummary): PatternListItem {
   return {
     id: row.id,
-    // The KGIU loader populates `source_id` per row; fall back to the
-    // display string so the body always has a stable dedup key.
-    patternKey: row.source_id ?? row.pattern,
+    // `grammarKey` derives the GR-shaped dedup key the server's
+    // BankBodySchema regex (`^GR-[a-z0-9_-]{1,64}$`) requires. The previous
+    // raw fallback (`source_id ?? pattern`) produced keys like
+    // "kgiu-beginner-002" — no GR- prefix — so EVERY bank from this screen
+    // 400'd. It also matches the key Reference.tsx banks with, so the
+    // "Banked" pill reconciles across both screens.
+    patternKey: grammarKey(row),
     pattern: row.pattern,
     title: row.title_en ?? row.pattern,
     proficiency: toServerProficiency(row.proficiency),
     category: row.category ?? 'pattern',
+    register: row.register ?? null,
     isReal: true,
   };
 }
@@ -203,7 +214,74 @@ function fromMockPattern(row: GrammarPattern, index: number): PatternListItem {
     // chip the Reference screen already paints for these rows.
     proficiency: 'L4',
     category: 'pattern',
+    register: null,
     isReal: false,
+  };
+}
+
+/**
+ * The server's closed register vocabulary — mirrors `BankBodySchema` in
+ * server/src/routes/grammar.ts. The KGIU corpus stores register as FREE TEXT,
+ * frequently composite ("해요체 / 하십시오체", "formal/written", "literary"),
+ * and the server hard-400s any value outside this set.
+ */
+const SERVER_REGISTER_LEVELS: ReadonlySet<string> = new Set<RegisterLevel>([
+  '반말',
+  '해요체',
+  '합쇼체',
+  '문어체',
+  '하오체',
+  '하게체',
+]);
+
+/** Sanitize a raw corpus register: exact member of the server set (after a
+ *  trim) or nothing. Composite values are dropped, never guessed at —
+ *  `register` is optional metadata and must not fail the whole bank. */
+function toServerRegister(
+  raw: string | null | undefined,
+): RegisterLevel | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  return SERVER_REGISTER_LEVELS.has(trimmed)
+    ? (trimmed as RegisterLevel)
+    : undefined;
+}
+
+/**
+ * Build a schema-valid `POST /grammar/bank` body from a list row.
+ *
+ * The server's `BankBodySchema` is strict (min/max lengths, closed register
+ * enum) and corpus data is messy — this is the single choke point where the
+ * row is coerced into something the server will accept, so a data quirk can
+ * never turn the user's Bank tap into a 400:
+ *   - `register`  — included only when it exactly matches the server enum;
+ *                   composite corpus values are OMITTED (field is optional).
+ *   - `category`  — never empty (min 1): falls back to 'uncategorized';
+ *                   clamped to the 40-char ceiling.
+ *   - `summary_en`— never empty (min 1): falls back to the Korean pattern,
+ *                   then the key; clamped to the 240-char ceiling.
+ *   - `pattern_display` — clamped to 120; falls back to the key if blank.
+ *   - `pattern_key` — NOT rewritten here; `grammarKey()` already derives a
+ *                   regex-valid key in the adapters above.
+ *
+ * Covered by Grammar.test.tsx through the UI: Bank tap → mocked
+ * `services.grammar.bankPattern` → assert the outgoing body. (Not exported —
+ * react-refresh/only-export-components keeps page files component-only.)
+ */
+function buildBankBody(row: PatternListItem): BankGrammarBody {
+  const display = row.pattern.trim().slice(0, 120) || row.patternKey;
+  const summary =
+    (row.title.trim() || row.pattern.trim() || row.patternKey).slice(0, 240);
+  const category = (row.category.trim() || 'uncategorized').slice(0, 40);
+  const register = toServerRegister(row.register);
+  return {
+    pattern_key: row.patternKey,
+    pattern_display: display,
+    summary_en: summary,
+    proficiency: row.proficiency,
+    category,
+    ...(register !== undefined ? { register } : {}),
+    discovered_via: 'manual',
   };
 }
 
@@ -385,14 +463,7 @@ function Grammar(): JSX.Element {
         next.add(row.patternKey);
         return next;
       });
-      const body: BankGrammarBody = {
-        pattern_key: row.patternKey,
-        pattern_display: row.pattern,
-        summary_en: row.title,
-        proficiency: row.proficiency,
-        category: row.category,
-        discovered_via: 'manual',
-      };
+      const body: BankGrammarBody = buildBankBody(row);
       try {
         await grammarService.bankPattern(body);
         // Re-fetch the banked set so the server view becomes the source

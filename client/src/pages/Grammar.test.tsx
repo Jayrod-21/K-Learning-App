@@ -24,6 +24,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
+  BankGrammarBody,
   BankedGrammarList,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -175,20 +176,84 @@ describe('Grammar — list tab', () => {
     await waitFor(() => {
       expect(services.bankPattern).toHaveBeenCalledTimes(1);
     });
-    const body = services.bankPattern.mock.calls[0][0] as {
-      pattern_key: string;
-      pattern_display: string;
-      summary_en: string;
-    };
-    expect(body.pattern_key).toBe('KGIU-INT-007');
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    // grammarKey() derives the GR-shaped dedup key the server's
+    // `^GR-[a-z0-9_-]{1,64}$` regex requires (raw source_id would 400).
+    expect(body.pattern_key).toBe('GR-kgiu-int-007');
     expect(body.pattern_display).toBe('-더라도');
     expect(body.summary_en).toBe('even if / even though');
+    // No register on the row → the optional field is omitted, not nulled.
+    expect('register' in body).toBe(false);
     // Optimistic chip flip — the button label moves to "Banked".
     await waitFor(() => {
       expect(
         screen.getByRole('button', { name: /Already banked/i }),
       ).toBeInTheDocument();
     });
+  });
+
+  it('sanitizes the bank body: composite register dropped, empty category and summary defaulted', async () => {
+    // Live-corpus shaped row that used to 400 the bank POST: source_id is not
+    // GR-shaped, register is a composite value outside the server enum, and
+    // category/title_en are empty strings (min-1 fields server-side).
+    const messyRow: KgiuEntrySummary = {
+      id: 77,
+      corpus: 'kgiu_beginner',
+      source_id: 'kgiu-beginner-002',
+      pattern: 'N이다',
+      title_en: '',
+      category: '',
+      proficiency: 'beginner',
+      unit: 'Unit 1',
+      source_pages: null,
+      register: '해요체/합쇼체',
+    };
+    services.listPatterns.mockResolvedValue([messyRow]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.bankPattern.mockResolvedValue({ id: 2 });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    const bankBtn = await screen.findByRole('button', { name: /^Bank N이다$/ });
+    await user.click(bankBtn);
+
+    await waitFor(() => {
+      expect(services.bankPattern).toHaveBeenCalledTimes(1);
+    });
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    // Schema-valid key (BankBodySchema regex in server/src/routes/grammar.ts).
+    expect(body.pattern_key).toMatch(/^GR-[a-z0-9_-]{1,64}$/);
+    expect(body.pattern_key).toBe('GR-kgiu-beginner-002');
+    // Composite register is OMITTED entirely — not sent as an invalid value.
+    expect('register' in body).toBe(false);
+    // min(1) fields never go out empty.
+    expect(body.category).toBe('uncategorized');
+    expect(body.summary_en).toBe('N이다'); // falls back to the pattern
+    expect(body.pattern_display).toBe('N이다');
+    expect(body.proficiency).toBe('basic');
+  });
+
+  it('passes an exact-match register through to the bank body', async () => {
+    const rowWithRegister: KgiuEntrySummary = {
+      ...ROW,
+      register: '해요체',
+    };
+    services.listPatterns.mockResolvedValue([rowWithRegister]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.bankPattern.mockResolvedValue({ id: 3 });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    const bankBtn = await screen.findByRole('button', { name: /^Bank -더라도$/ });
+    await user.click(bankBtn);
+
+    await waitFor(() => {
+      expect(services.bankPattern).toHaveBeenCalledTimes(1);
+    });
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    expect(body.register).toBe('해요체');
   });
 
   it('shows an ErrorCard with Retry when BOTH real and mock fail', async () => {
@@ -224,7 +289,7 @@ describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
         entries: [
           {
             id: 99,
-            pattern_key: 'KGIU-INT-007',
+            pattern_key: 'GR-kgiu-int-007',
             pattern_display: '-더라도',
             summary_en: 'even if',
             proficiency: 'L4',
@@ -330,7 +395,9 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
     expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
-      patternKey: 'KGIU-INT-007',
+      // Rows carry the same GR-shaped key the bank path uses, so drill
+      // history and the grammar bank dedup on one key namespace.
+      patternKey: 'GR-kgiu-int-007',
       patternDisplay: '-더라도',
     });
 
