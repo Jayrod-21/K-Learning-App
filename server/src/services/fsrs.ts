@@ -35,12 +35,13 @@
  *   - Schedule tampering — client cannot choose `due_at` / `scheduled_days`.
  *   - Snapshot forgery — `card_reviews.*_before` comes from the DB row, never
  *     from the request, so the re-tuning log stays trustworthy (ADR-003 D2).
- *   - Garbage state — `schedule` clamps difficulty to [1,10] and floors
- *     stability/scheduledDays at 0 regardless of input, so even a corrupted
+ *   - Garbage state — `schedule` clamps difficulty to [1,10] and stability to
+ *     [0, STABILITY_MAX] regardless of input, so even a corrupted or near-max
  *     row can never produce a value that fails the vocab_cards/card_reviews
- *     CHECK constraints. All transitions are monotonic and bounded: stability
- *     only grows on success and resets (never negative) on a lapse. No
- *     unbounded growth, no NaN.
+ *     CHECK constraints OR overflows the `NUMERIC(10,4)` stability column
+ *     (Postgres 22003). All transitions are monotonic and bounded: stability
+ *     grows on success but is capped at ~100 years, and resets (never negative)
+ *     on a lapse. No unbounded growth, and the NaN-safe clamp means no NaN.
  *
  * This is still deliberately NOT a full ts-fsrs port — it is the small,
  * documented, MONOTONIC, BOUNDED interim scheduler from FU-NF-42. Upgrading
@@ -91,6 +92,20 @@ const DIFFICULTY_MIN = 1;
 const DIFFICULTY_MAX = 10;
 
 /**
+ * Upper bound on stability (days). `stability` persists to `NUMERIC(10, 4)`
+ * (migration 001), whose ceiling is 999,999.9999; without a cap, a near-max or
+ * corrupted row × the `easy` multiplier (up to ×3.0) overflows the column →
+ * Postgres 22003 `numeric_field_overflow` → 500. We cap at 36,500 days (~100
+ * years): an interval past a human lifetime carries no scheduling value, and
+ * the cap keeps `stability × MULTIPLIER` (≤ 36,500 × 3 = 109,500) an order of
+ * magnitude under the NUMERIC precision ceiling, so no reachable transition can
+ * ever fail the constraint. This is what makes the module header's "even a
+ * corrupted row can never produce a value that fails the … CHECK constraints"
+ * true for precision overflow, not just the `>= 0` floor.
+ */
+export const STABILITY_MAX = 36_500;
+
+/**
  * Per-rating difficulty delta. A miss makes the card harder; an easy answer
  * makes it easier; `good` is neutral. Applied then clamped to [1,10].
  */
@@ -124,8 +139,16 @@ const STABILITY_MULTIPLIER: Readonly<Record<Exclude<FsrsRating, 'again'>, number
   easy: 3.0,
 };
 
-/** Clamp a number into [lo, hi]. Total — NaN-in would propagate, but inputs are bounded numerics. */
+/**
+ * Clamp a number into [lo, hi]. Total AND NaN-safe: a non-finite input (NaN /
+ * ±Infinity from a corrupted row or a bad cast) resolves to the lower bound —
+ * the fail-to-safe choice, since every caller's `lo` (0 for stability, 1 for
+ * difficulty) is a valid, constraint-satisfying value. This makes the module
+ * header's "no NaN" guarantee hold by construction rather than by assuming the
+ * inputs are already clean.
+ */
 function clamp(value: number, lo: number, hi: number): number {
+  if (!Number.isFinite(value)) return lo;
   return Math.min(hi, Math.max(lo, value));
 }
 
@@ -182,9 +205,11 @@ export function schedule(current: CardFsrs, rating: FsrsRating): NextFsrs {
     state = 'review';
   }
 
-  // Floor at 0 defensively (never negative) and round up to a whole-day interval.
-  // again → 0 by construction (route maps 0 → ~10 min).
-  const safeStability = Math.max(0, stability);
+  // Clamp into [0, STABILITY_MAX]: floor at 0 (never negative), cap at the
+  // ~100-year ceiling so the value always fits NUMERIC(10,4) (no 22003 overflow
+  // on write), and — via the NaN-safe clamp — collapse any non-finite input to
+  // 0. again → 0 by construction (route maps 0 → ~10 min).
+  const safeStability = clamp(stability, 0, STABILITY_MAX);
   const scheduledDays = rating === 'again' ? 0 : Math.max(0, Math.ceil(safeStability));
 
   return {
