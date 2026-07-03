@@ -450,6 +450,245 @@ describe('POST /vocab/cards/init', () => {
   });
 });
 
+/** Mint a fresh recognition card for the agent's user via the real per-entry
+ *  bank route. Returns the card id + its version-1 snapshot, ready to review.
+ *  A unique korean headword keeps the shared vocab_entries reference table
+ *  (not truncated per-test) from colliding across tests. */
+async function bankFreshCard(
+  agent: Awaited<ReturnType<typeof registerUser>>['agent'],
+): Promise<{ cardId: number; version: number }> {
+  const entryId = await seedVocabEntry(pg.pool, {
+    corpus: 'vocab_2000_intermediate',
+    korean: `복습단어${Date.now()}${Math.floor(Math.random() * 1e6)}`,
+  });
+  const banked = await agent.post(`/vocab/entries/${entryId}/bank`).expect(201);
+  return { cardId: banked.body.card.id as number, version: banked.body.card.version as number };
+}
+
+describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS scheduling', () => {
+  // The regression this whole feature exists for: the pre-cutover stub let the
+  // client dictate scheduled_days_after (it sent 0), so every rated card came
+  // back due IMMEDIATELY. The server now computes the transition itself.
+  it('rating a fresh card "good" schedules a real FUTURE due_at (strictly > now, not now+0)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+
+    const before = Date.now();
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({ rating: 'good', expected_version: version });
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe(version + 1);
+    // good on a new card seeds stability 3 → 3 whole days out.
+    expect(res.body.scheduled_days).toBe(3);
+    const dueAt = new Date(res.body.due_at as string).getTime();
+    expect(dueAt).toBeGreaterThan(before); // the headline assertion: in the future
+    expect(dueAt).toBeGreaterThan(before + 2 * 86_400_000); // ≈3 days, not minutes
+    expect(dueAt).toBeLessThan(before + 4 * 86_400_000);
+
+    // The card row itself advanced (server-computed, not client-claimed).
+    const row = await pg.pool.query<{
+      fsrs_state: string;
+      stability: string;
+      scheduled_days: number;
+      reps: number;
+      lapses: number;
+      due_at: Date;
+      version: number;
+    }>(
+      `SELECT fsrs_state, stability, scheduled_days, reps, lapses, due_at, version
+         FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    const card = row.rows[0]!;
+    expect(card.fsrs_state).toBe('learning');
+    expect(Number(card.stability)).toBe(3);
+    expect(card.scheduled_days).toBe(3);
+    expect(card.reps).toBe(1);
+    expect(card.lapses).toBe(0);
+    expect(card.version).toBe(version + 1);
+    expect(card.due_at.getTime()).toBeGreaterThan(before);
+    // …and the card is no longer in the due queue.
+    const due = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect((due.body.cards as Array<{ id: number }>).map((c) => c.id)).not.toContain(cardId);
+  });
+
+  it('Again/Hard/Good/Easy yield different, ordered intervals (~10min / 1d / 3d / 6d on a fresh card)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const ratings = ['again', 'hard', 'good', 'easy'] as const;
+    const expectedDays: Record<(typeof ratings)[number], number> = {
+      again: 0,
+      hard: 1,
+      good: 3,
+      easy: 6,
+    };
+    const dueTimes: number[] = [];
+    const before = Date.now();
+    for (const rating of ratings) {
+      const { cardId, version } = await bankFreshCard(agent);
+      const res = await agent
+        .post(`/vocab/cards/${cardId}/reviews`)
+        .send({ rating, expected_version: version })
+        .expect(200);
+      expect(res.body.scheduled_days).toBe(expectedDays[rating]);
+      const dueAt = new Date(res.body.due_at as string).getTime();
+      expect(dueAt).toBeGreaterThan(before); // every rating lands in the future
+      dueTimes.push(dueAt);
+    }
+    // Strictly increasing: again (~10 min) < hard (1d) < good (3d) < easy (6d).
+    for (let i = 1; i < dueTimes.length; i += 1) {
+      expect(dueTimes[i]!).toBeGreaterThan(dueTimes[i - 1]!);
+    }
+  });
+
+  it('"again" re-queues ~10 minutes out (relearning + lapse), never due-now', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+
+    const before = Date.now();
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({ rating: 'again', expected_version: version })
+      .expect(200);
+    expect(res.body.scheduled_days).toBe(0);
+    const dueAt = new Date(res.body.due_at as string).getTime();
+    expect(dueAt).toBeGreaterThan(before); // strictly in the future…
+    expect(dueAt).toBeLessThanOrEqual(before + 60 * 60 * 1000); // …but within the hour (10-min relearn)
+
+    const row = await pg.pool.query<{ fsrs_state: string; lapses: number }>(
+      `SELECT fsrs_state, lapses FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(row.rows[0]!.fsrs_state).toBe('relearning');
+    expect(row.rows[0]!.lapses).toBe(1);
+  });
+
+  it('the card_reviews row snapshots the DB *_before and the computed *_after (ADR-003 D2)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+
+    await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({ rating: 'good', expected_version: version, duration_ms: 4200 })
+      .expect(200);
+
+    const log = await pg.pool.query<{
+      user_id: string;
+      rating: string;
+      state_before: string;
+      stability_before: string;
+      difficulty_before: string;
+      elapsed_days_before: number;
+      state_after: string;
+      stability_after: string;
+      difficulty_after: string;
+      scheduled_days_after: number;
+      duration_ms: number;
+    }>(
+      `SELECT user_id, rating, state_before, stability_before, difficulty_before,
+              elapsed_days_before, state_after, stability_after, difficulty_after,
+              scheduled_days_after, duration_ms
+         FROM card_reviews WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(log.rowCount).toBe(1);
+    const r = log.rows[0]!;
+    expect(Number(r.user_id)).toBe(Number(userId));
+    expect(r.rating).toBe('good');
+    // BEFORE = the freshly banked card's DB defaults, read server-side.
+    expect(r.state_before).toBe('new');
+    expect(Number(r.stability_before)).toBe(0);
+    expect(Number(r.difficulty_before)).toBe(5);
+    expect(r.elapsed_days_before).toBe(-1); // never-reviewed sentinel
+    // AFTER = the engine's transition for good-on-new.
+    expect(r.state_after).toBe('learning');
+    expect(Number(r.stability_after)).toBe(3);
+    expect(Number(r.difficulty_after)).toBe(5);
+    expect(r.scheduled_days_after).toBe(3);
+    expect(r.duration_ms).toBe(4200);
+  });
+
+  it('a second review compounds from the first (good → good: 3d → 6d), and the log chains', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+
+    const first = await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({ rating: 'good', expected_version: version })
+      .expect(200);
+    const second = await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({ rating: 'good', expected_version: first.body.version })
+      .expect(200);
+    // 3-day stability × 2.0 (good) = 6 days, and the card graduates to review.
+    expect(second.body.scheduled_days).toBe(6);
+    expect(second.body.version).toBe(version + 2);
+
+    const row = await pg.pool.query<{ fsrs_state: string; stability: string; reps: number }>(
+      `SELECT fsrs_state, stability, reps FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(row.rows[0]!.fsrs_state).toBe('review');
+    expect(Number(row.rows[0]!.stability)).toBe(6);
+    expect(row.rows[0]!.reps).toBe(2);
+
+    // Append-only chain: the 2nd row's *_before equals the 1st row's *_after.
+    const log = await pg.pool.query<{
+      state_before: string;
+      stability_before: string;
+      state_after: string;
+      stability_after: string;
+    }>(
+      `SELECT state_before, stability_before, state_after, stability_after
+         FROM card_reviews WHERE card_id = $1 ORDER BY id`,
+      [cardId],
+    );
+    expect(log.rowCount).toBe(2);
+    expect(log.rows[1]!.state_before).toBe(log.rows[0]!.state_after);
+    expect(Number(log.rows[1]!.stability_before)).toBe(Number(log.rows[0]!.stability_after));
+  });
+
+  it('ignores client-supplied scheduling fields — a tampered scheduled_days_after: 0 cannot pin the card due-now', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+
+    const before = Date.now();
+    // The exact pre-cutover stub payload (plus hostile *_after values): the
+    // schema strips every unknown key, so none of it reaches the scheduler.
+    const res = await agent
+      .post(`/vocab/cards/${cardId}/reviews`)
+      .send({
+        rating: 'good',
+        expected_version: version,
+        state_before: 'new',
+        stability_before: 0,
+        difficulty_before: 5,
+        elapsed_days_before: 0,
+        state_after: 'new',
+        stability_after: 0,
+        difficulty_after: 1,
+        scheduled_days_after: 0, // the stub/tamper value — must be ignored
+      })
+      .expect(200);
+    expect(res.body.scheduled_days).toBe(3); // server-computed, not the client's 0
+    expect(new Date(res.body.due_at as string).getTime()).toBeGreaterThan(
+      before + 2 * 86_400_000,
+    );
+  });
+
+  it('a reviewed card carries its version on the due queue (expected_version threading)', async () => {
+    // The client can only echo expected_version if the due queue serves it.
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await bankFreshCard(agent);
+    const due = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    const card = (due.body.cards as Array<{ id: number; version: number }>).find(
+      (c) => c.id === cardId,
+    );
+    expect(card).toBeDefined();
+    expect(card!.version).toBe(version);
+  });
+});
+
 describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
   // FU-NF-8 (FOLLOW_UPS.md, 2026-05-29): unknown-card and stale-version
   // are now distinct API conditions — 404 vs 409 — so clients can branch
@@ -458,14 +697,6 @@ describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/vocab/cards/999999/reviews').send({
       rating: 'good',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 5,
-      elapsed_days_before: -1,
-      state_after: 'learning',
-      stability_after: 0.5,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 1,
     });
     expect(res.status).toBe(404);
@@ -475,64 +706,22 @@ describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
   it('cross-user card → 404 (no existence leak)', async () => {
     // User A owns a card; User B should see 404, not 403, so we don't
     // leak the existence of A's card across the auth boundary.
-    await seedVocabEntry(pg.pool);
     const { agent: a } = await registerUser(t.app, pg.pool);
-    const initA = await a
-      .post('/vocab/cards/init')
-      .send({ corpus: 'vocab_2000_intermediate', limit: 1 });
-    expect(initA.status).toBe(201);
-    if (initA.body.inserted < 1) {
-      return; // Nothing seeded — skip rather than false-fail.
-    }
-    const aDue = await a.get('/vocab/cards/due?limit=1');
-    expect(aDue.status).toBe(200);
-    const aCard = aDue.body.cards?.[0] as { id: number } | undefined;
-    expect(aCard).toBeDefined();
+    const { cardId } = await bankFreshCard(a);
     const { agent: b } = await registerUser(t.app, pg.pool);
-    const res = await b.post(`/vocab/cards/${aCard!.id}/reviews`).send({
+    const res = await b.post(`/vocab/cards/${cardId}/reviews`).send({
       rating: 'good',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 5,
-      elapsed_days_before: -1,
-      state_after: 'learning',
-      stability_after: 0.5,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 1,
     });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('not_found');
   });
 
-  it('stale expected_version → 409 (FU-NF-8: split from not-found)', async () => {
-    // Seed a vocab entry and use init to mint a card for the user, then
-    // post a review with the WRONG expected_version. The card exists
-    // (so 404 is wrong); only the version is stale (so 409 is right).
-    await seedVocabEntry(pg.pool);
+  it('stale expected_version → 409 (FU-NF-8: split from not-found), and nothing is written', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const init = await agent
-      .post('/vocab/cards/init')
-      .send({ corpus: 'vocab_2000_intermediate', limit: 5 });
-    expect(init.status).toBe(201);
-    const due = await agent.get('/vocab/cards/due?limit=1');
-    expect(due.status).toBe(200);
-    if (!Array.isArray(due.body.cards) || due.body.cards.length === 0) {
-      // Nothing seeded — skip (the seed helper may have produced an
-      // existing entry that init already covered).
-      return;
-    }
-    const card = due.body.cards[0] as { id: number };
-    const res = await agent.post(`/vocab/cards/${card.id}/reviews`).send({
+    const { cardId } = await bankFreshCard(agent);
+    const res = await agent.post(`/vocab/cards/${cardId}/reviews`).send({
       rating: 'good',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 5,
-      elapsed_days_before: -1,
-      state_after: 'learning',
-      stability_after: 0.5,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 999, // deliberately wrong — card was just minted at v1.
     });
     expect(res.status).toBe(409);
@@ -540,38 +729,32 @@ describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
     // The error message must not conflate not-found with stale-version.
     expect(res.body.error.message).toMatch(/stale/i);
     expect(res.body.error.message).not.toMatch(/not found/i);
+    // The whole tx rolled back: no card advance, no review log row.
+    const log = await pg.pool.query(`SELECT 1 FROM card_reviews WHERE card_id = $1`, [cardId]);
+    expect(log.rowCount).toBe(0);
   });
 
   it('invalid rating enum → 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/vocab/cards/1/reviews').send({
       rating: 'super-easy',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 5,
-      elapsed_days_before: -1,
-      state_after: 'learning',
-      stability_after: 0.5,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 1,
     });
     expect(res.status).toBe(400);
   });
 
-  it('difficulty out of range → 400', async () => {
+  it('missing expected_version → 400 (concurrency snapshot is mandatory)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/vocab/cards/1/reviews').send({ rating: 'good' });
+    expect(res.status).toBe(400);
+  });
+
+  it('negative duration_ms → 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.post('/vocab/cards/1/reviews').send({
       rating: 'good',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 11,
-      elapsed_days_before: -1,
-      state_after: 'learning',
-      stability_after: 0.5,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 1,
+      duration_ms: -5,
     });
     expect(res.status).toBe(400);
   });

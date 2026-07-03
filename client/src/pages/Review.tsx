@@ -30,7 +30,9 @@
  *     second 409s on stale version. Client retries on 409 by re-fetching the
  *     card and replaying the rating. For Pass 3 we surface the failure to
  *     the user and bounce the card back into the queue rather than auto-replay
- *     (auto-replay = Pass 7+ when FSRS scheduler ships client-side).
+ *     (auto-replay = Pass 7+). Scheduling itself is SERVER-owned: the client
+ *     sends only the rating; the server derives the FSRS transition + due_at
+ *     (see buildReviewSubmission).
  *   - **Optimistic UI.** `onRate` advances the index immediately so the next
  *     card paints without a network round-trip. On submitReview failure we
  *     rewind (`setIdx(prev)`) and surface a status line so the user can retry.
@@ -77,14 +79,13 @@ import {
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
 import { ApiError } from '../services/api';
+import { buildReviewSubmission } from '../lib/reviewSubmission';
 import type {
   CreateListBody,
   CreateListResponse,
   CustomVocabList,
   DueCard,
   FsrsRating,
-  FsrsState,
-  ReviewSubmission,
   ServerVocabList,
   SourceVocabGroup,
   SourceVocabListItem,
@@ -236,56 +237,6 @@ function serverListsToBundle(rows: ServerVocabList[]): VocabListBundle {
     active: custom[0]?.id ?? '',
     custom,
     sources: [],
-  };
-}
-
-/**
- * Build a wire-shape ReviewSubmission from the UI's "rating only" gesture.
- *
- * The FSRS scheduler that produces real `*_after` values ships in Pass 7+.
- * For Pass 3 we send a pass-through payload that satisfies the server's Zod
- * schema while the scheduler integration lands — `*_before` mirrors the
- * DueCard snapshot, `*_after` mirrors `*_before` so the server doesn't see
- * NaN. Server stores the rating either way; the scheduler will re-derive the
- * `*_after` columns server-side once Pass 7 wires it in.
- */
-const FSRS_STATES: ReadonlySet<FsrsState> = new Set<FsrsState>([
-  'new',
-  'learning',
-  'review',
-  'relearning',
-]);
-
-function buildReviewSubmission(card: DueCard, rating: FsrsRating): ReviewSubmission {
-  // Defensive cast — the server's `fsrs_state` column is constrained to the
-  // closed set in the migration, but we still guard at the boundary so a
-  // schema drift doesn't crash the rating gesture.
-  const state: FsrsState = FSRS_STATES.has(card.fsrs_state as FsrsState)
-    ? (card.fsrs_state as FsrsState)
-    : 'new';
-  // Defensive midpoint floor (1.0 is the DB CHECK floor on `difficulty`) so
-  // a malformed wire value doesn't trip the server's Zod `min(1)` and 400 us
-  // before optimistic-concurrency even runs.
-  const stabilityParsed = Number.parseFloat(card.stability);
-  const stability = Number.isFinite(stabilityParsed) ? stabilityParsed : 0;
-  const difficultyParsed = Number.parseFloat(card.difficulty);
-  const difficulty = Number.isFinite(difficultyParsed) && difficultyParsed >= 1
-    ? difficultyParsed
-    : 5;
-  return {
-    rating,
-    state_before: state,
-    stability_before: stability,
-    difficulty_before: difficulty,
-    elapsed_days_before: 0,
-    state_after: state,
-    stability_after: stability,
-    difficulty_after: difficulty,
-    scheduled_days_after: 0,
-    // D-B1 fix: thread the per-card version snapshot rather than hardcoding
-    // `1`. Without this, every second rating of any card 409s on stale
-    // version and breaks the FSRS learning loop.
-    expected_version: card.version,
   };
 }
 

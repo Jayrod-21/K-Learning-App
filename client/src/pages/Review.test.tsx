@@ -309,6 +309,7 @@ describe('Review', () => {
     vi.mocked(vocabService.submitReview).mockResolvedValue({
       version: 2,
       due_at: new Date().toISOString(),
+      scheduled_days: 0,
     });
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
@@ -326,10 +327,12 @@ describe('Review', () => {
 
     await user.click(screen.getByRole('button', { name: /Again/ }));
 
-    expect(vocabService.submitReview).toHaveBeenCalledWith(
-      101,
-      expect.objectContaining({ rating: 'again' }),
-    );
+    // EXACT payload: rating + version snapshot only. The server owns the FSRS
+    // transition — no client-computed state or interval fields on the wire.
+    expect(vocabService.submitReview).toHaveBeenCalledWith(101, {
+      rating: 'again',
+      expected_version: 1,
+    });
   });
 
   it('switches to Lists tab and opens ListDetailSheet via getListDetail', async () => {
@@ -476,6 +479,7 @@ describe('Review', () => {
     vi.mocked(vocabService.submitReview).mockResolvedValue({
       version: 2,
       due_at: new Date().toISOString(),
+      scheduled_days: 3,
     });
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
@@ -558,6 +562,7 @@ describe('Review', () => {
     vi.mocked(vocabService.submitReview).mockResolvedValue({
       version: 2,
       due_at: new Date().toISOString(),
+      scheduled_days: 0,
     });
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };

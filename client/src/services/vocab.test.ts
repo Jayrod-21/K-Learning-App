@@ -144,27 +144,22 @@ describe('getDueCards', () => {
 });
 
 describe('submitReview', () => {
-  it('POSTs the review and returns the envelope', async () => {
+  it('POSTs the rating-only body and returns the server-scheduled envelope', async () => {
+    // Server-authoritative scheduling: the body carries the rating + version
+    // snapshot ONLY — no client-computed FSRS state or interval fields.
     const body: ReviewSubmission = {
       rating: 'good',
-      state_before: 'new',
-      stability_before: 0,
-      difficulty_before: 5,
-      elapsed_days_before: 0,
-      state_after: 'learning',
-      stability_after: 1.4,
-      difficulty_after: 5,
-      scheduled_days_after: 1,
       expected_version: 1,
     };
     const spy = vi
       .spyOn(api, 'post')
-      .mockResolvedValueOnce({ version: 2, due_at: '2026-05-30T00:00:00Z' });
+      .mockResolvedValueOnce({ version: 2, due_at: '2026-07-05T00:00:00Z', scheduled_days: 3 });
 
     const got = await submitReview(99, body);
 
     expect(spy).toHaveBeenCalledWith('/vocab/cards/99/reviews', body);
     expect(got.version).toBe(2);
+    expect(got.scheduled_days).toBe(3);
   });
 
   it('surfaces 409 stale version', async () => {
@@ -175,14 +170,6 @@ describe('submitReview', () => {
     await expect(
       submitReview(1, {
         rating: 'again',
-        state_before: 'new',
-        stability_before: 0,
-        difficulty_before: 5,
-        elapsed_days_before: 0,
-        state_after: 'learning',
-        stability_after: 1,
-        difficulty_after: 5,
-        scheduled_days_after: 0,
         expected_version: 99,
       }),
     ).rejects.toMatchObject({ status: 409 });
