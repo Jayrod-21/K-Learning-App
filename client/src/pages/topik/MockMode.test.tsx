@@ -145,16 +145,68 @@ describe('MockMode (Mock test)', () => {
     expect(test.items[0]?.options[0]).not.toHaveProperty('correct');
   });
 
-  it('countdown timer starts at the section budget in HH:MM', async () => {
+  it('countdown timer starts at the section budget in h:mm:ss', async () => {
     const user = userEvent.setup();
     render(<MockMode />);
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
     );
     await waitFor(() => {
-      // Reading = 70 minutes → 01:10.
-      expect(screen.getByRole('timer')).toHaveTextContent('01:10');
+      // Reading = 70 minutes → 1:10:00 (NOT the old HH:MM "01:10", which read
+      // as 1 min 10 s and only changed once a minute — the "frozen timer" FU).
+      expect(screen.getByRole('timer')).toHaveTextContent('1:10:00');
     });
+  });
+
+  it('countdown timer starts at 1:00:00 for the Listening section', async () => {
+    svc.fetchMockTest.mockResolvedValueOnce({ ...TEST, section: 'listening' });
+    const user = userEvent.setup();
+    render(<MockMode />);
+    await user.click(
+      screen.getByRole('button', { name: /Start Listening mock test/i }),
+    );
+    await waitFor(() => {
+      // Listening = 60 minutes.
+      expect(screen.getByRole('timer')).toHaveTextContent('1:00:00');
+    });
+  });
+
+  it('countdown decrements every second and drops to mm:ss below the hour', async () => {
+    // Fake timers BEFORE mount so the exam interval is on the fake clock (see
+    // the auto-submit test below for the fireEvent/act pattern rationale).
+    vi.useFakeTimers();
+    try {
+      render(<MockMode />);
+      fireEvent.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const timer = screen.getByRole('timer');
+      expect(timer).toHaveTextContent('1:10:00');
+
+      // Every tick is visible — 1 s later the clock reads 1:09:59 (the old
+      // HH:MM format froze at "01:09" for a full minute here).
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(timer).toHaveTextContent('1:09:59');
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(timer).toHaveTextContent('1:09:57');
+
+      // Cross below the hour (total elapsed 10:01) → mm:ss with no hour part.
+      await act(async () => {
+        vi.advanceTimersByTime((10 * 60 - 2) * 1000);
+      });
+      expect(timer).toHaveTextContent('59:59');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers items, submits with confirm, and shows results with reveals', async () => {
@@ -256,6 +308,51 @@ describe('MockMode (Mock test)', () => {
       answers: unknown[];
     };
     expect(body.answers).toEqual([]);
+  });
+
+  it('features the image description for a hasImage exam item', async () => {
+    // An image-dependent item (has_image, no stored asset): the exam must
+    // surface the bracketed description in the labelled TopikImageNote block.
+    svc.fetchMockTest.mockResolvedValueOnce({
+      ...TEST,
+      items: [
+        {
+          id: '1001',
+          section: '듣기',
+          number: 1,
+          level: 3,
+          prompt:
+            '남자: 이 책을 소포로 보내고 싶은데요.\n[알맞은 그림 고르기: ①우체국 ②서점 ③도서관 ④문구점]',
+          hasImage: true,
+          options: [
+            { id: 'a', kr: '①', en: '' },
+            { id: 'b', kr: '②', en: '' },
+            { id: 'c', kr: '③', en: '' },
+            { id: 'd', kr: '④', en: '' },
+          ],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    render(<MockMode />);
+
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+
+    const note = await screen.findByRole('complementary', {
+      name: /image described in text/i,
+    });
+    expect(note).toHaveTextContent(
+      '알맞은 그림 고르기: ①우체국 ②서점 ③도서관 ④문구점',
+    );
+    // The prompt body keeps the transcript, without the bracketed segment.
+    expect(
+      screen.getByText('남자: 이 책을 소포로 보내고 싶은데요.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/\[알맞은 그림 고르기/),
+    ).not.toBeInTheDocument();
   });
 
   it('falls back to an error card (not a blank screen) when fetch + fixture both fail', async () => {

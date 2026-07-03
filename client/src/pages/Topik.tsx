@@ -43,11 +43,13 @@ import { Pill } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { TopikImageNote } from '../components/TopikImageNote';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTopikStudyMock } from '../data/mocks/topik';
 import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
 import { cn } from '../lib/cn';
-import type { TopikItem } from '../types/domain';
+import { splitImageItem } from '../lib/topikImage';
+import type { TopikAnswerResult, TopikItem } from '../types/domain';
 import { MockMode } from './topik/MockMode';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
@@ -206,6 +208,14 @@ function StudyMode(): JSX.Element {
   const [answered, setAnswered] = useState(0);
   // Bumped on "New set" to drive a fresh draw + keep reveal-block ids unique.
   const [drawKey, setDrawKey] = useState(0);
+  // The server's grade for the CURRENT item's submit, keyed by item id so a
+  // late-resolving response for a previous item can never populate the next
+  // item's reveal. Used only to backfill a missing inline explanation — the
+  // reveal itself never waits on it (see handleSubmit).
+  const [serverReveal, setServerReveal] = useState<{
+    itemId: string;
+    result: TopikAnswerResult;
+  } | null>(null);
 
   const { data, loading, error, isMock, refetch } = useEndpointOrMock<
     TopikItem[]
@@ -222,6 +232,7 @@ function StudyMode(): JSX.Element {
   const advance = useCallback(() => {
     setPicked(null);
     setRevealed(false);
+    setServerReveal(null);
     setIdx((i) => i + 1);
   }, []);
 
@@ -231,6 +242,7 @@ function StudyMode(): JSX.Element {
     setIdx(0);
     setPicked(null);
     setRevealed(false);
+    setServerReveal(null);
     setAnswered(0);
     setDrawKey((k) => k + 1);
     refetch();
@@ -240,18 +252,22 @@ function StudyMode(): JSX.Element {
     if (picked === null || current === undefined) return;
     setRevealed(true);
     setAnswered((n) => n + 1);
-    // Fire-and-forget analytics: never block the reveal, never break the UI.
-    // The reveal is driven off the inline `correct` flag, not this response,
-    // so a failure here is genuinely ignorable. We deliberately do NOT surface
-    // it through the Toast system: a transient analytics miss is not worth a
-    // notification mid-quiz (it would nag the user during a test for an outcome
-    // that has zero effect on what they see), and the component's threat model
-    // already commits to never surfacing a server error from this write into
-    // the UI. The empty `.catch` exists only to keep the rejection handled so
-    // it never becomes an unhandled promise rejection.
-    void recordTopikAnswer(current.id, { picked, mode: 'study' }).catch(
-      () => {},
-    );
+    // Record the answer WITHOUT blocking the reveal: correctness is driven off
+    // the inline `correct` flag, so the reveal renders instantly and a failure
+    // here can never break the study flow. The server's grade IS consumed when
+    // it resolves, though — its `explanation` backfills items whose inline
+    // explanation is empty (the live pool currently has none inline), keyed by
+    // item id so a stale response can't leak onto the next item. Failures stay
+    // silent by design: a transient miss on this write changes nothing the
+    // user needs mid-quiz, and the threat model commits to never surfacing a
+    // server error from it. The `.catch` keeps the rejection handled so it
+    // never becomes an unhandled promise rejection.
+    const itemId = current.id;
+    void recordTopikAnswer(itemId, { picked, mode: 'study' })
+      .then((result) => {
+        setServerReveal({ itemId, result });
+      })
+      .catch(() => {});
   }, [picked, current]);
 
   return (
@@ -334,6 +350,11 @@ function StudyMode(): JSX.Element {
           answered={answered}
           picked={picked}
           revealed={revealed}
+          serverReveal={
+            serverReveal !== null && serverReveal.itemId === current.id
+              ? serverReveal.result
+              : null
+          }
           onPick={(id) => {
             if (!revealed) setPicked(id);
           }}
@@ -353,6 +374,8 @@ interface TopikBodyProps {
   answered: number;
   picked: string | null;
   revealed: boolean;
+  /** The server's grade for THIS item's submit (null until it resolves). */
+  serverReveal: TopikAnswerResult | null;
   onPick: (id: string) => void;
   onSubmit: () => void;
   onSkip: () => void;
@@ -366,20 +389,37 @@ function TopikBody({
   answered,
   picked,
   revealed,
+  serverReveal,
   onPick,
   onSubmit,
   onSkip,
   onNext,
 }: TopikBodyProps): JSX.Element {
-  const correctChoice = item.options.find((o) => o.correct);
+  const correctIndex = item.options.findIndex((o) => o.correct);
+  const correctChoice =
+    correctIndex >= 0 ? item.options[correctIndex] : undefined;
   const isCorrect =
     revealed && picked !== null && picked === correctChoice?.id;
   // Unique per draw + position so two draws never collide on the same id.
   const revealBlockId = `topik-reveal-${String(drawKey)}-${String(idx)}`;
-  const hasExplanation = item.explanation.trim().length > 0;
-  // Only point choices at the reveal block when it actually renders, so the
-  // aria-describedby never dangles to a missing node.
-  const describedBy = revealed && hasExplanation ? revealBlockId : undefined;
+  // The explanation to show: the inline one when present, else the server
+  // grade's (backfills the live pool, whose items carry no inline explanation
+  // yet — POST /topik/:itemId/answer returns the same field). Both empty →
+  // the paragraph is omitted; the reveal still names the correct answer.
+  const inlineExplanation = item.explanation.trim();
+  const serverExplanation = serverReveal?.explanation.trim() ?? '';
+  const explanation =
+    inlineExplanation !== '' ? inlineExplanation : serverExplanation;
+  // The reveal block always has content once revealed (verdict + the correct
+  // answer), so the choices can always point at it — never a dangling ref.
+  const describedBy = revealed ? revealBlockId : undefined;
+  // Image-dependent item (no stored asset): feature the bracketed text
+  // description in a labelled block instead of leaving it buried in the
+  // prompt. Non-image items render their prompt untouched.
+  const imageSplit =
+    item.hasImage === true
+      ? splitImageItem(item.prompt, item.imageText)
+      : null;
 
   return (
     <>
@@ -390,7 +430,16 @@ function TopikBody({
         <span className="km-topik__num">No. {String(item.number)}</span>
       </div>
 
-      <p className="kr km-topik__prompt">{item.prompt}</p>
+      {imageSplit === null ? (
+        <p className="kr km-topik__prompt">{item.prompt}</p>
+      ) : (
+        <>
+          {imageSplit.body !== '' ? (
+            <p className="kr km-topik__prompt">{imageSplit.body}</p>
+          ) : null}
+          <TopikImageNote description={imageSplit.description} />
+        </>
+      )}
 
       <div
         className="km-topik__choices"
@@ -438,8 +487,19 @@ function TopikBody({
       {revealed ? (
         <Card variant="flat" className="km-topik__reveal" id={revealBlockId}>
           <Eyebrow>{isCorrect ? 'Correct' : 'Not quite'}</Eyebrow>
-          {hasExplanation ? (
-            <p className="km-topik__explain">{item.explanation}</p>
+          {correctChoice !== undefined ? (
+            // Name the correct answer in text (not just the green highlight
+            // above) so a wrong answer is never a dead-end "Not quite" — the
+            // reveal always says what the right answer was.
+            <p className="km-topik__answer">
+              Correct answer:{' '}
+              <span className="kr">
+                {CHOICE_MARKERS[correctIndex] ?? ''} {correctChoice.kr}
+              </span>
+            </p>
+          ) : null}
+          {explanation !== '' ? (
+            <p className="km-topik__explain">{explanation}</p>
           ) : null}
         </Card>
       ) : null}

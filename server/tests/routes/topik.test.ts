@@ -102,6 +102,40 @@ describe('GET /topik/items — filters + pagination', () => {
     for (const o of item.options) expect(o.en).toBe('');
   });
 
+  it('carries hasImage (+ imageText only when captured) on the study DTO', async () => {
+    // An image-dependent item (has_image, no curated image_text — the live
+    // corpus's common case) and a plain item, in one browsable test.
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 860,
+      itemNumber: 1,
+      hasImage: true,
+      stem: '남자: 어서 오세요.\n[알맞은 그림 고르기: ①가게 ②병원 ③학교 ④공원]',
+      prompt: null,
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 860,
+      itemNumber: 2,
+      hasImage: true,
+      imageText: '두 사람이 카페에서 이야기하는 그림',
+    });
+    await seedTopikItem(pg.pool, { section: 'listening', testNumber: 860, itemNumber: 3 });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/topik/items').query({ source_test: 860 });
+    expect(res.status).toBe(200);
+    const [img, imgText, plain] = res.body.items;
+    expect(img.hasImage).toBe(true);
+    expect(img).not.toHaveProperty('imageText'); // NULL image_text stays off the wire
+    // With prompt NULL the bracketed description in stem still reaches the client.
+    expect(img.prompt).toContain('[알맞은 그림 고르기');
+    expect(imgText.hasImage).toBe(true);
+    expect(imgText.imageText).toBe('두 사람이 카페에서 이야기하는 그림');
+    expect(plain.hasImage).toBe(false);
+    expect(plain).not.toHaveProperty('imageText');
+  });
+
   it('filters by section (Korean label) and by level', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L3' });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4' });
@@ -198,9 +232,11 @@ describe('POST /topik/mock — answer-stripped section assembly (FU-NF-39)', () 
     expect(res.body.items.map((i: { number: number }) => i.number)).toEqual([1, 2, 3]);
 
     // The strip: NO item carries `explanation`, NO choice carries `correct`.
-    for (const item of res.body.items as Array<{ explanation?: unknown; options: Array<Record<string, unknown>> }>) {
+    // `hasImage` (question metadata, not answer data) DOES survive the strip.
+    for (const item of res.body.items as Array<{ explanation?: unknown; hasImage?: unknown; options: Array<Record<string, unknown>> }>) {
       expect(item).not.toHaveProperty('explanation');
       expect(JSON.stringify(item)).not.toContain('correct');
+      expect(typeof item.hasImage).toBe('boolean');
       for (const opt of item.options) {
         expect(opt).not.toHaveProperty('correct');
         // The choice keeps exactly the public fields.

@@ -1,10 +1,12 @@
 /**
  * Topik screen (Study mode) — covers loading → draw, stepping through the draw,
- * submit→reveal→next, the fire-and-forget `recordTopikAnswer` analytics call,
- * empty-explanation handling, and the draw-complete / New-set path.
+ * submit→reveal→next (correct answer + explanation on BOTH verdicts), the
+ * non-blocking `recordTopikAnswer` call whose response backfills a missing
+ * inline explanation, image-item description rendering, and the
+ * draw-complete / New-set path.
  *
  * `useEndpointOrMock` is module-mocked so the test owns the resolved draw and
- * `refetch` directly; `services/topik` is mocked so the analytics write is
+ * `refetch` directly; `services/topik` is mocked so the answer write is
  * observable and its failure mode is exercised without a server.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -81,8 +83,8 @@ const ITEM_A: TopikItem = {
   explanation: 'Choice B summarises the passage faithfully.',
 };
 
-// Second item ships an empty explanation — the reveal block must omit the
-// explanation paragraph but still show the correctness eyebrow.
+// Second item ships an empty explanation — the reveal must fall back to the
+// answer response's explanation (the live pool has no inline explanations).
 const ITEM_B: TopikItem = {
   id: '202',
   section: '듣기',
@@ -94,6 +96,23 @@ const ITEM_B: TopikItem = {
     { id: 'b', kr: '둘', en: 'Two', correct: false },
   ],
   explanation: '',
+};
+
+// Image-dependent item (has_image, no asset): the bracketed description in the
+// prompt must surface in the TopikImageNote block, out of the prompt body.
+const ITEM_IMG: TopikItem = {
+  id: '203',
+  section: '듣기',
+  number: 1,
+  level: 3,
+  prompt:
+    '여자: 어디가 아파서 오셨어요?\n[알맞은 그림 고르기: ①진료실 ②접수처 ③병실 ④대기실]',
+  options: [
+    { id: 'a', kr: '①', en: '', correct: false },
+    { id: 'b', kr: '②', en: '', correct: true },
+  ],
+  explanation: '',
+  hasImage: true,
 };
 
 function setDraw(draw: TopikItem[], isMock = true): void {
@@ -145,7 +164,7 @@ describe('Topik (Study mode)', () => {
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
-  it('submit reveals correctness chrome + explanation and fires recordTopikAnswer', async () => {
+  it('a WRONG submit reveals the verdict, the correct answer, and the explanation', async () => {
     setDraw([ITEM_A, ITEM_B]);
     const user = userEvent.setup();
     render(<Topik />);
@@ -158,6 +177,10 @@ describe('Topik (Study mode)', () => {
     await user.click(screen.getByRole('button', { name: /submit/i }));
 
     expect(screen.getByText('Not quite')).toBeInTheDocument();
+    // The reveal names the correct answer in text — a wrong answer is never a
+    // bare "Not quite" (the FU where wrong answers gave no information).
+    expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
+    expect(screen.getByText(/② 나/)).toBeInTheDocument();
     expect(
       screen.getByText(/Choice B summarises the passage faithfully/),
     ).toBeInTheDocument();
@@ -167,11 +190,26 @@ describe('Topik (Study mode)', () => {
       screen.queryByRole('button', { name: /^submit$/i }),
     ).not.toBeInTheDocument();
 
-    // Fire-and-forget analytics fired with the item id + picked + mode.
+    // The answer write fired with the item id + picked + mode.
     expect(recordTopikAnswer).toHaveBeenCalledWith('201', {
       picked: 'a',
       mode: 'study',
     });
+  });
+
+  it('a CORRECT submit also reveals the correct answer + explanation', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — the correct pick
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    expect(screen.getByText('Correct')).toBeInTheDocument();
+    expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Choice B summarises the passage faithfully/),
+    ).toBeInTheDocument();
   });
 
   it('keeps the reveal even when recordTopikAnswer rejects (fire-and-forget)', async () => {
@@ -207,7 +245,15 @@ describe('Topik (Study mode)', () => {
     }
   });
 
-  it('omits the explanation paragraph for an empty-explanation item but still reveals', async () => {
+  it('backfills the explanation from the answer response when the item has none inline', async () => {
+    // The live pool serves items with an empty inline `explanation`; the
+    // reveal must instead render the one `POST /topik/:itemId/answer` returns
+    // (resolved async — the reveal itself never waits on it).
+    recordTopikAnswer.mockResolvedValueOnce({
+      correct: true,
+      correctChoiceId: 'a',
+      explanation: '서버가 채점 응답에 담아 준 해설입니다.',
+    });
     setDraw([ITEM_B]);
     const user = userEvent.setup();
     render(<Topik />);
@@ -215,13 +261,97 @@ describe('Topik (Study mode)', () => {
     await user.click(screen.getAllByRole('radio')[0]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
 
-    // Correctness eyebrow shows; the explanation block has no paragraph text.
+    // The reveal is instant (verdict + correct answer)…
     expect(screen.getByText('Correct')).toBeInTheDocument();
-    // No reveal paragraph rendered (empty explanation → block omitted). The
-    // choices therefore carry no aria-describedby pointing at the reveal.
+    expect(screen.getByText(/① 하나/)).toBeInTheDocument();
+    // …and the server explanation fills in once the answer call resolves.
+    expect(
+      await screen.findByText('서버가 채점 응답에 담아 준 해설입니다.'),
+    ).toBeInTheDocument();
+    // The reveal block now always has content, so choices point at it.
     expect(
       screen.getByRole('radio', { name: /하나/ }),
-    ).not.toHaveAttribute('aria-describedby');
+    ).toHaveAttribute('aria-describedby');
+  });
+
+  it('omits the explanation paragraph when BOTH inline and server explanations are empty', async () => {
+    recordTopikAnswer.mockResolvedValueOnce({
+      correct: true,
+      correctChoiceId: 'a',
+      explanation: '',
+    });
+    setDraw([ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getAllByRole('radio')[0]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    // Let the answer response land before asserting on the final reveal.
+    await waitFor(() => {
+      expect(recordTopikAnswer).toHaveBeenCalledTimes(1);
+    });
+    // Verdict + correct answer still render; no explanation paragraph.
+    expect(screen.getByText('Correct')).toBeInTheDocument();
+    expect(screen.getByText(/① 하나/)).toBeInTheDocument();
+    expect(document.querySelector('.km-topik__explain')).toBeNull();
+  });
+
+  it('never leaks a late answer response onto the NEXT item (stale guard)', async () => {
+    // Two empty-inline items so a leaked explanation would be visible. The
+    // first item's answer response is withheld until after stepping to the
+    // second item, then resolved — its explanation must NOT render there.
+    let resolveFirst: (r: TopikAnswerResult) => void = () => {};
+    recordTopikAnswer.mockImplementationOnce(
+      () =>
+        new Promise<TopikAnswerResult>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    const itemB2: TopikItem = { ...ITEM_B, id: '204', number: 45 };
+    setDraw([ITEM_B, itemB2]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getAllByRole('radio')[0]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+
+    // Second item showing; submit it too (default mock resolves immediately),
+    // then let the FIRST item's stale response land.
+    await user.click(screen.getAllByRole('radio')[0]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    resolveFirst({
+      correct: true,
+      correctChoiceId: 'a',
+      explanation: 'STALE — belongs to the previous item.',
+    });
+    await waitFor(() => {
+      expect(recordTopikAnswer).toHaveBeenCalledTimes(2);
+    });
+
+    expect(
+      screen.queryByText(/STALE — belongs to the previous item/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('features the bracketed image description for a hasImage item', async () => {
+    setDraw([ITEM_IMG]);
+    render(<Topik />);
+
+    // The affordance block renders, carrying the description pulled from the
+    // prompt's bracketed segment…
+    const note = await screen.findByRole('complementary', {
+      name: /image described in text/i,
+    });
+    expect(note).toHaveTextContent(
+      '알맞은 그림 고르기: ①진료실 ②접수처 ③병실 ④대기실',
+    );
+    // …while the prompt body keeps the transcript, without the brackets.
+    expect(screen.getByText('여자: 어디가 아파서 오셨어요?')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/\[알맞은 그림 고르기/),
+    ).not.toBeInTheDocument();
   });
 
   it('lands on the draw-complete state after the last item and refetches on New set', async () => {

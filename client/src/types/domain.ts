@@ -186,6 +186,16 @@ export interface TopikItem {
   passageRef?: string;
   options: TopikChoice[];
   explanation: string;
+  /**
+   * True when the original exam item shows image(s) the corpus stores only as
+   * a bracketed TEXT description (in the prompt and/or `imageText`) — no image
+   * asset exists. The screens render that description prominently with an
+   * "image described in text" affordance. Optional so pre-existing fixtures
+   * (all non-image) stay valid; the server always sends it.
+   */
+  hasImage?: boolean;
+  /** Curated text description of the image(s), when the corpus captured one. */
+  imageText?: string;
 }
 
 /**
@@ -246,6 +256,11 @@ export interface TopikMockItem {
   prompt: string;
   passageRef?: string;
   options: TopikMockChoice[];
+  /** See `TopikItem.hasImage` — question metadata, never answer data, so it
+   *  survives the answer strip. */
+  hasImage?: boolean;
+  /** See `TopikItem.imageText`. */
+  imageText?: string;
 }
 
 /** Envelope returned by `POST /topik/mock` — the answer-stripped exam payload. */

@@ -48,7 +48,9 @@ import { Eyebrow } from '../../components/Eyebrow';
 import { Icon } from '../../components/Icon';
 import { ErrorCard } from '../../components/ErrorCard';
 import { MockBadge } from '../../components/MockBadge';
+import { TopikImageNote } from '../../components/TopikImageNote';
 import { cn } from '../../lib/cn';
+import { splitImageItem } from '../../lib/topikImage';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { ApiError } from '../../services/api';
 import { fetchMockTest, submitMockTest } from '../../services/topik';
@@ -353,13 +355,20 @@ interface ExamRunnerProps {
   onSubmit: (body: MockSubmitBody) => void;
 }
 
-/** Format whole seconds as HH:MM (the design shows a coarse minutes clock). */
+/**
+ * Format whole seconds as a live countdown — `h:mm:ss` at an hour or more,
+ * `mm:ss` below — so every one-second tick is visible. (The original HH:MM
+ * format rendered the 70-minute Reading budget as "01:10", which read as
+ * 1 min 10 s and only changed once per minute — the timer looked frozen even
+ * though the interval was ticking correctly.)
+ */
 function formatClock(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
-  const hh = Math.floor(safe / 3600);
-  const mm = Math.floor((safe % 3600) / 60);
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
   const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${pad(hh)}:${pad(mm)}`;
+  return h > 0 ? `${String(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
 function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
@@ -519,6 +528,12 @@ function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
   const pickedHere = picks.get(currentId) ?? null;
   const answeredCount = picks.size;
   const sectionLabel = test.section === 'reading' ? 'Reading' : 'Listening';
+  // Image-dependent item (no stored asset — see lib/topikImage.ts): feature
+  // the bracketed text description in a labelled block, same as Study mode.
+  const imageSplit =
+    current.hasImage === true
+      ? splitImageItem(current.prompt, current.imageText)
+      : null;
 
   return (
     <div className="km-mock__exam">
@@ -555,7 +570,16 @@ function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
         <span className="km-topik__num">No. {String(current.number)}</span>
       </div>
 
-      <p className="kr km-topik__prompt">{current.prompt}</p>
+      {imageSplit === null ? (
+        <p className="kr km-topik__prompt">{current.prompt}</p>
+      ) : (
+        <>
+          {imageSplit.body !== '' ? (
+            <p className="kr km-topik__prompt">{imageSplit.body}</p>
+          ) : null}
+          <TopikImageNote description={imageSplit.description} />
+        </>
+      )}
 
       <ChoiceGroup
         item={current}
