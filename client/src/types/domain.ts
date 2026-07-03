@@ -416,13 +416,30 @@ export interface DiagnosticStartResponse {
 }
 
 /**
- * `POST /diagnostic/:runId/answer` — grades the current item.
+ * `POST /diagnostic/:runId/answer` — grades the current item and returns the
+ * reveal IMMEDIATELY (B-006: grading never blocks on item generation).
  *
- * `next` is the following live item, or `null` when the graded item was the
- * last one (the client then calls `/finish`).
+ * `done` is true when the graded item filled the run's last scheduled slot —
+ * the client then calls `/finish` without asking for a next item. When `done`
+ * is false the client fetches the next item via `POST /:runId/next` during
+ * the reveal dwell (see `DiagnosticNextResponse`).
  */
 export interface DiagnosticAnswerResponse {
   result: DiagnosticAnswerResult;
+  done: boolean;
+  progress: DiagnosticProgress;
+}
+
+/**
+ * `POST /diagnostic/:runId/next` — serves the run's next live item.
+ *
+ * `next` is `null` when the run is over early (every remaining section pool
+ * is empty) or already fully served — the client then calls `/finish`.
+ * Idempotent server-side: re-calling while an item is pending re-serves that
+ * same item, so a lost response or a double-fired prefetch never burns an
+ * extra generation.
+ */
+export interface DiagnosticNextResponse {
   next: DiagnosticLiveItem | null;
   progress: DiagnosticProgress;
 }
