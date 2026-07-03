@@ -1374,8 +1374,12 @@ body {
 
 /* KoreanPassage ─────────────────────────────────────────────────────── */
 .km-passage {
-  font-size: 21px;
-  line-height: 2.0;
+  /* ~12pt normal reading size (was 21px / line-height 2.0, which rendered each
+     clickable word huge + so widely spaced the passage read as a word list
+     rather than prose). 16px + 1.8 keeps tap targets comfortable while reading
+     as a paragraph. */
+  font-size: 16px;
+  line-height: 1.8;
   color: var(--paper);
   user-select: text;
 }
