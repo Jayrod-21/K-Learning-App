@@ -97,10 +97,17 @@ export async function getEntry(
  * Raw wire row for a due card. The server speaks snake_case; for grammar
  * production cards it LEFT JOINs `grammar_entries` and carries
  * `grammar_pattern_display` / `grammar_summary_en` (NULL for vocab cards,
- * FU-NF-42 A4). `getDueCards` normalises those two onto the camelCase
- * `DueCard` fields so the screens never reach across the wire boundary.
+ * FU-NF-42 A4), and for vocab cards it LEFT JOINs `vocab_entries` and carries
+ * the entry's korean/english/example/source fields (NULL for non-vocab cards,
+ * B-009). `getDueCards` normalises all of these onto the camelCase `DueCard`
+ * fields so the screens never reach across the wire boundary.
  */
 interface DueCardWire extends DueCard {
+  vocab_korean?: string | null;
+  vocab_english?: string | null;
+  vocab_example_korean?: string | null;
+  vocab_example_english?: string | null;
+  vocab_source_book?: string | null;
   grammar_pattern_display?: string | null;
   grammar_summary_en?: string | null;
   grammar_pattern_key?: string | null;
@@ -120,14 +127,20 @@ export async function getDueCards(
 }
 
 /**
- * Map the server's snake-case grammar JOIN columns onto the camelCase
- * `DueCard` fields. NULLs collapse to `undefined` so a vocab card's
- * `grammarPatternDisplay` stays absent (the Review branch keys on it being
- * present + the card face). Spreads the row first so any field the server
- * adds later survives untouched.
+ * Map the server's snake-case JOIN columns (grammar_* per FU-NF-42, vocab_*
+ * per B-009) onto the camelCase `DueCard` fields. NULLs collapse to
+ * `undefined` so a vocab card's `grammarPatternDisplay` stays absent (the
+ * Review branch keys on it being present + the card face) and a grammar
+ * card's `vocabKorean` stays absent likewise. Spreads the row first so any
+ * field the server adds later survives untouched.
  */
 function normalizeDueCard(row: DueCardWire): DueCard {
   const {
+    vocab_korean: korean,
+    vocab_english: english,
+    vocab_example_korean: exampleKorean,
+    vocab_example_english: exampleEnglish,
+    vocab_source_book: sourceBook,
     grammar_pattern_display: display,
     grammar_summary_en: summary,
     grammar_pattern_key: patternKey,
@@ -135,6 +148,11 @@ function normalizeDueCard(row: DueCardWire): DueCard {
   } = row;
   return {
     ...rest,
+    ...(korean != null ? { vocabKorean: korean } : {}),
+    ...(english != null ? { vocabEnglish: english } : {}),
+    ...(exampleKorean != null ? { vocabExampleKorean: exampleKorean } : {}),
+    ...(exampleEnglish != null ? { vocabExampleEnglish: exampleEnglish } : {}),
+    ...(sourceBook != null ? { vocabSourceBook: sourceBook } : {}),
     ...(display != null ? { grammarPatternDisplay: display } : {}),
     ...(summary != null ? { grammarSummaryEn: summary } : {}),
     ...(patternKey != null ? { grammarPatternKey: patternKey } : {}),

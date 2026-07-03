@@ -306,6 +306,67 @@ describe('GET /vocab/cards/due', () => {
     expect(card).toBeDefined();
     expect(card!.grammar_pattern_display).toBe('-은/는');
     expect(card!.grammar_summary_en).toBe('topic-marking particle');
+    // B-009: a grammar card has no vocab entry — its vocab_* JOIN columns are NULL.
+    expect(card!.vocab_korean).toBeNull();
+    expect(card!.vocab_english).toBeNull();
+    expect(card!.vocab_source_book).toBeNull();
+  });
+
+  // B-009 regression: the due query must JOIN vocab_entries so a vocab card
+  // carries its real korean/english/example/source fields. Before the fix the
+  // client only got `face` (the card_face ENUM — 'recognition', not the word)
+  // and rendered it on both sides of the flashcard with empty examples/source.
+  it('surfaces vocab_korean / vocab_english / examples / source_book for a vocab card (B-009)', async () => {
+    const entryId = await seedVocabEntry(pg.pool, {
+      korean: '영향',
+      english: 'influence',
+      exampleKorean: '음악은 우리 생활에 큰 영향을 미친다.',
+      exampleEnglish: 'Music has a big influence on our lives.',
+      sourceBook: 'vocab-2000-int',
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [userId, entryId],
+    );
+
+    const res = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.vocab_entry_id === entryId,
+    );
+    expect(card).toBeDefined();
+    expect(card!.vocab_korean).toBe('영향');
+    expect(card!.vocab_english).toBe('influence');
+    expect(card!.vocab_example_korean).toBe('음악은 우리 생활에 큰 영향을 미친다.');
+    expect(card!.vocab_example_english).toBe('Music has a big influence on our lives.');
+    expect(card!.vocab_source_book).toBe('vocab-2000-int');
+    // The FSRS wire contract must survive the JOIN untouched: `version` is the
+    // optimistic-concurrency snapshot the client echoes back on submitReview.
+    expect(card!.version).toBe(1);
+    expect(card!.face).toBe('recognition');
+    expect(typeof card!.stability).toBe('string');
+    expect(typeof card!.difficulty).toBe('string');
+    expect(card!.fsrs_state).toBe('new');
+  });
+
+  it('leaves vocab example columns NULL when the entry has no example (B-009)', async () => {
+    const entryId = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [userId, entryId],
+    );
+
+    const res = await agent.get('/vocab/cards/due?limit=10').expect(200);
+    const card = (res.body.cards as Array<Record<string, unknown>>).find(
+      (c) => c.vocab_entry_id === entryId,
+    );
+    expect(card).toBeDefined();
+    expect(card!.vocab_korean).toBe('학교');
+    expect(card!.vocab_example_korean).toBeNull();
+    expect(card!.vocab_example_english).toBeNull();
   });
 
   it('leaves grammar_pattern_display / grammar_summary_en NULL for a non-grammar (vocab) card', async () => {
