@@ -26,6 +26,11 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE = FIXTURES / "vocab_mini_beginner.json"
 FIXTURE_DUP_IDS = FIXTURES / "vocab_mini_dup_ids.json"
+# Same beginner corpus + same source_ids as FIXTURE (so the beginner-corpus row
+# count stays 4 and the count-scoped tests above are unaffected), but the source
+# header's default_proficiency is BLANK -> the word-row proficiency fallback is
+# the LEVEL-AWARE terminal branch, not the source default. See SF-1 test below.
+FIXTURE_FALLBACK = FIXTURES / "vocab_mini_beginner_fallback.json"
 
 
 @pytest.fixture(scope="module")
@@ -145,6 +150,46 @@ def test_vocab_word_missing_proficiency_gets_source_default(schema):
         )
     )
     assert prof == "basic", f"expected source-default proficiency 'basic', got {prof!r}"
+
+
+def test_vocab_word_missing_proficiency_uses_level_fallback_when_source_default_blank(
+    schema,
+):
+    """SF-1 regression: exercises the LEVEL-AWARE *terminal* proficiency fallback
+    (``_LEVEL_TO_FALLBACK_PROFICIENCY``), the branch the source-default test
+    (``test_vocab_word_missing_proficiency_gets_source_default``) can never reach
+    because a present ``default_proficiency`` short-circuits the ``or``.
+
+    Here BOTH operands that precede the fallback are None: the WORD row
+    (``vocab-fix-0004``) ships no ``proficiency`` AND the source header's
+    ``default_proficiency`` is blank, so ``normalize_proficiency`` returns None
+    for each. The loader must then apply the level-aware fallback — beginner
+    corpus -> ``basic`` (a flat ``L3`` fallback would mis-tag a Beginner word
+    into the intermediate SRS queue) — and NOT insert NULL (which would violate
+    ``ck_vocab_entries_proficiency_required``).
+    """
+    url = schema
+    # force=True so the load actually runs even if the beginner corpus was
+    # already populated by a sibling fixture (same source_ids); the last write
+    # is therefore THIS blank-default file, so vocab-fix-0004's proficiency
+    # provably comes from the fallback branch, not a leftover source-default row.
+    result = _load(url, FIXTURE_FALLBACK, force=True)
+    assert result["status"] == "complete"
+    # Count stays 4 (same source_ids as the sibling beginner fixture), so the
+    # loader's own count assertion passes and no other beginner test is disturbed.
+    assert result["actual"] == 4
+
+    prof = asyncio.run(
+        _scalar(
+            url,
+            "SELECT proficiency::text FROM vocab_entries "
+            "WHERE corpus = 'vocab_2000_beginner' AND source_id = %s",
+            ("vocab-fix-0004",),
+        )
+    )
+    assert prof == "basic", (
+        f"expected level-aware fallback 'basic' for a beginner word, got {prof!r}"
+    )
 
 
 def test_vocab_count_mismatch_marks_failed_not_complete(schema):

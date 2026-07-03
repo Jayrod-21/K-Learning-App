@@ -1,0 +1,66 @@
+{
+  "source": {
+    "book": "2000 Essential Korean Words Beginner Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "beginner",
+    "default_proficiency": "",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02",
+    "note": "Fallback-coverage fixture (SF-1). Same beginner corpus + same source_ids as vocab_mini_beginner.json (so the beginner-corpus row count stays 4), but the source header's default_proficiency is BLANK -> normalize_proficiency returns None -> a word row missing proficiency (vocab-fix-0004) must take the LEVEL-AWARE terminal fallback (_LEVEL_TO_FALLBACK_PROFICIENCY: beginner -> 'basic'), NOT the source-default path. Exercises the second operand of the `default_proficiency or ...` that the source-default fixture short-circuits past.",
+    "extraction_complete": true
+  },
+  "items": [
+    {
+      "id": "vocab-fix-0001",
+      "type": "theme_intro",
+      "theme": "01 사람 / People",
+      "korean": "사람",
+      "english": "People",
+      "notes": ["1 가족/친척 Family/Relatives"],
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [15]
+    },
+    {
+      "id": "vocab-fix-0002",
+      "type": "word",
+      "korean": "가족",
+      "english": "a family",
+      "pronunciation": "[가족]",
+      "part_of_speech": "noun",
+      "hanja": "家族",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "1 가족/친척 / Family/Relatives",
+      "example_korean": "가족이 모두 몇 명이에요?",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [18]
+    },
+    {
+      "id": "vocab-fix-0003",
+      "type": "word",
+      "korean": "친구",
+      "english": "a friend",
+      "pronunciation": "[친구]",
+      "part_of_speech": "noun",
+      "proficiency": "basic",
+      "theme": "01 사람 / People",
+      "subsection": "7 친구 / Friends",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [42]
+    },
+    {
+      "id": "vocab-fix-0004",
+      "type": "word",
+      "korean": "학교",
+      "english": "a school",
+      "pronunciation": "[학꾜]",
+      "part_of_speech": "noun",
+      "theme": "01 사람 / People",
+      "subsection": "7 친구 / Friends",
+      "notes": "Ships WITHOUT proficiency AND the source header default is blank: exercises the loader's LEVEL-AWARE terminal proficiency fallback (beginner -> 'basic').",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [43]
+    }
+  ]
+}

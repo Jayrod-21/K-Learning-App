@@ -14,6 +14,7 @@ import {
   MS_PER_DAY,
   RELEARN_DELAY_MS,
   schedule,
+  STABILITY_MAX,
   type CardFsrs,
   type FsrsRating,
 } from '../../src/services/fsrs';
@@ -95,6 +96,64 @@ describe('schedule — multiplicative progression on subsequent reps', () => {
     const next = schedule(recovering, 'good');
     expect(next.stability).toBe(3);
     expect(next.state).toBe('review');
+  });
+});
+
+describe('schedule — stability is clamped to STABILITY_MAX (NUMERIC(10,4) overflow guard)', () => {
+  it('clamps a near-max stability × easy to STABILITY_MAX instead of overflowing NUMERIC(10,4)', () => {
+    // The stability column is NUMERIC(10,4) — ceiling 999,999.9999. A corrupted
+    // or extreme row near that ceiling × the easy multiplier (×3.0) is 2,999,970
+    // on the PRE-FIX code, which Postgres rejects on write with 22003
+    // numeric_field_overflow → 500. The clamp keeps it representable.
+    const nearMax: CardFsrs = {
+      state: 'review',
+      stability: 999_990,
+      difficulty: 5,
+      reps: 50,
+      lapses: 0,
+    };
+    const next = schedule(nearMax, 'easy');
+    expect(next.stability).toBe(STABILITY_MAX);
+    // Comfortably inside NUMERIC(10,4) precision (< 1,000,000) — no overflow.
+    expect(next.stability).toBeLessThan(1_000_000);
+    expect(next.scheduledDays).toBe(Math.ceil(STABILITY_MAX));
+  });
+
+  it('holds at the cap under repeated easy presses (monotone, never overflowing)', () => {
+    let card: CardFsrs = {
+      state: 'review',
+      stability: STABILITY_MAX,
+      difficulty: 3,
+      reps: 20,
+      lapses: 0,
+    };
+    for (let i = 0; i < 5; i += 1) {
+      const next = schedule(card, 'easy');
+      expect(next.stability).toBe(STABILITY_MAX);
+      expect(next.stability).toBeLessThan(1_000_000);
+      card = {
+        ...card,
+        stability: next.stability,
+        difficulty: next.difficulty,
+        reps: card.reps + 1,
+      };
+    }
+  });
+});
+
+describe('schedule — clamp is NaN-safe (no non-finite value can escape)', () => {
+  it('resolves a NaN difficulty to the floor (1) rather than propagating NaN', () => {
+    const bad: CardFsrs = {
+      state: 'review',
+      stability: 5,
+      difficulty: Number.NaN,
+      reps: 3,
+      lapses: 0,
+    };
+    const next = schedule(bad, 'good');
+    expect(Number.isNaN(next.difficulty)).toBe(false);
+    expect(next.difficulty).toBe(1);
+    expect(Number.isFinite(next.stability)).toBe(true);
   });
 });
 

@@ -232,6 +232,13 @@ const ReviewParamsSchema = z.object({
  * default zod object strips unknown keys, so a stale pre-cutover client still
  * sending the old snapshot fields degrades gracefully instead of 400ing.
  */
+// DELIBERATELY NOT .strict(): the default zod object STRIPS unknown keys rather
+// than 400ing on them — this is the tamper defense (see docstring above). A
+// stale pre-cutover client still sending the old client-computed snapshot
+// fields (`scheduled_days_after`, `*_after`, …) degrades gracefully instead of
+// erroring, and those fields are dropped before they can influence scheduling.
+// Do NOT "harden" this into .strict() — it would 400 every legacy client and
+// defeat the strip. (Contrast MineBodySchema below, which IS .strict().)
 const ReviewBodySchema = z.object({
   rating: z.enum(['again', 'hard', 'good', 'easy']),
   duration_ms: z.number().int().nonnegative().optional(),
