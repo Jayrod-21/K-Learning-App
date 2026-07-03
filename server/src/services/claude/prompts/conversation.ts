@@ -79,7 +79,12 @@ export function buildConversationRequest(
     {
       type: 'text',
       text: systemText,
-      cache_control: { type: 'ephemeral' },
+      // 1h TTL to MATCH the scenario block below. Anthropic processes cache_control
+      // blocks in the order tools → system → messages and rejects a `ttl:'1h'` block
+      // that appears AFTER a `ttl:'5m'` block; the default here is 5m, so pairing it
+      // with the 1h scenario block previously 400'd every chat request. The system
+      // prompt is stable across a whole conversation, so 1h caching is correct anyway.
+      cache_control: { type: 'ephemeral', ttl: '1h' },
     },
   ];
 
