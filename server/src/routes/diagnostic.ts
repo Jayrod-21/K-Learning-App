@@ -399,16 +399,27 @@ async function buildGeneratedItem(
   if (seed === null) return null;
 
   const proxy = getClaudeProxy();
-  const { result } = await proxy.generateDiagnosticItem(
-    {
-      section,
-      targetLevel: target,
-      seedKorean: seed.seedKorean,
-      ...(seed.seedEnglish !== undefined ? { seedEnglish: seed.seedEnglish } : {}),
-      ...(seed.seedGloss !== undefined ? { seedGloss: seed.seedGloss } : {}),
-    },
-    { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
-  );
+  // The route's posture is "any Claude generation failure is a bad gateway (502),
+  // not a 500" (see mapClaudeError). A raw thrown error (network outage / "claude
+  // is down") carries no `httpStatus`, so mapClaudeError would pass it through to a
+  // generic 500 — wrap it as UpstreamError here so every generation failure maps to
+  // 502 (the `.catch` returns `never`, so `result`'s type is unchanged).
+  const { result } = await proxy
+    .generateDiagnosticItem(
+      {
+        section,
+        targetLevel: target,
+        seedKorean: seed.seedKorean,
+        ...(seed.seedEnglish !== undefined ? { seedEnglish: seed.seedEnglish } : {}),
+        ...(seed.seedGloss !== undefined ? { seedGloss: seed.seedGloss } : {}),
+      },
+      { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
+    )
+    .catch((err: unknown) => {
+      throw new UpstreamError(
+        `diagnostic ${section} item generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
   // The model's `kind` is schema-valid against the full generable union
   // (synonym|cloze|pattern) regardless of section, so we enforce the
