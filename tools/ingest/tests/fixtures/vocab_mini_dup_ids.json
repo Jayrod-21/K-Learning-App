@@ -1,0 +1,55 @@
+{
+  "source": {
+    "book": "2000 Essential Korean Words Intermediate Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "intermediate",
+    "default_proficiency": "L3",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-02",
+    "note": "Regression fixture: two items share source_id 'vocab-int-dup-01'. The ON CONFLICT (corpus, source_id) upsert collapses them, so 3 source items yield only 2 rows -> the loader's count assertion must FAIL the load rather than mark it complete.",
+    "extraction_complete": true
+  },
+  "items": [
+    {
+      "id": "vocab-int-dup-01",
+      "type": "word",
+      "korean": "감정",
+      "english": "emotion, feeling",
+      "pronunciation": "[감정]",
+      "part_of_speech": "noun",
+      "proficiency": "L3",
+      "theme": "01 인간 / People",
+      "subsection": "1 감정 / Emotions",
+      "source_book": "2000 Essential Korean Words Intermediate Fixture",
+      "source_pages": [16]
+    },
+    {
+      "id": "vocab-int-dup-01",
+      "type": "word",
+      "korean": "걱정",
+      "english": "worry, concern",
+      "pronunciation": "[걱쩡]",
+      "part_of_speech": "noun",
+      "proficiency": "L3",
+      "theme": "01 인간 / People",
+      "subsection": "1 감정 / Emotions",
+      "notes": "Second item with the SAME id — collapses onto the first under the upsert.",
+      "source_book": "2000 Essential Korean Words Intermediate Fixture",
+      "source_pages": [17]
+    },
+    {
+      "id": "vocab-int-dup-02",
+      "type": "word",
+      "korean": "고민",
+      "english": "worry, anguish",
+      "pronunciation": "[고민]",
+      "part_of_speech": "noun",
+      "proficiency": "L4",
+      "theme": "01 인간 / People",
+      "subsection": "1 감정 / Emotions",
+      "source_book": "2000 Essential Korean Words Intermediate Fixture",
+      "source_pages": [18]
+    }
+  ]
+}
