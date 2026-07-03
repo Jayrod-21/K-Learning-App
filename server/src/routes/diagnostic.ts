@@ -3,10 +3,20 @@
  *
  * Flow:
  *   POST /diagnostic                  → start a run, serve item #1
- *   POST /diagnostic/:runId/answer    → grade the current item, serve the next
+ *   POST /diagnostic/:runId/answer    → grade the current item (reveal only)
+ *   POST /diagnostic/:runId/next      → serve the next item (may hit Claude)
  *   POST /diagnostic/:runId/finish    → score the run, write a snapshot
  *   GET  /diagnostic/latest           → the user's latest snapshot (or empty)
  *   GET  /diagnostic/trajectory       → snapshot history as score points
+ *
+ * Grading and item generation are DELIBERATELY split (B-006). Grading is a
+ * cheap, local DB operation; generation for vocab/grammar is a multi-second
+ * Claude call. When both lived in /answer, the reveal was withheld behind
+ * Claude latency and the UI froze after every pick. /answer now returns the
+ * graded reveal immediately; the client fetches the next item via /next
+ * during the reveal dwell. /next is idempotent: if an unanswered item is
+ * already pending it re-serves that item (answer-stripped) instead of
+ * generating a new one, which also gives lost-response recovery for free.
  *
  * SECURITY (see SECURITY.md §13):
  *   - Every query is user-scoped via getUserId(req). A runId or responseId is
@@ -17,8 +27,12 @@
  *     the /answer response, after the user has committed a pick. This is the
  *     answer-tampering defense and THE security property of this pass.
  *   - Out-of-order / double answers are rejected 409 (replay defense).
- *   - Item generation (vocab/grammar via Claude) is behind expensiveLimiter and
- *     bounded to ≤4 calls per run by the fixed 8-item, 2-each schedule.
+ *   - Item generation (vocab/grammar via Claude) is behind expensiveLimiter on
+ *     the routes that can generate (/diagnostic, /:runId/next) and bounded to
+ *     ≤4 calls per run by the fixed 8-item, 2-each schedule plus /next's
+ *     re-serve-pending idempotency. Grading (/answer) never calls Claude, so
+ *     it sits behind cheapLimiter — a limiter 429 can no longer withhold a
+ *     reveal the user already earned.
  *
  * Reading/listening items come from the real topik_items pool (no Claude);
  * vocab/grammar items are authored by the Claude proxy from a corpus seed.
@@ -49,6 +63,7 @@ import {
   type DiagnosticDimensionKey,
   type ScoredResponse,
 } from '../services/diagnostic/scoring.js';
+import { sharedPassageFor } from '../services/topik/passages.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -160,34 +175,6 @@ interface TopikRow {
    * diagnostic resolves the covering range so the question text isn't blank.
    */
   test_passages: Record<string, unknown> | null;
-}
-
-/**
- * Resolve the shared passage covering `itemNumber` from a test's `passages`
- * JSONB. Keys are item-number RANGES ("19-20") or a single number ("21"); the
- * first key whose range includes `itemNumber` and whose value is a non-empty
- * string wins. Returns null when no key covers the item (e.g. listening/writing
- * tests leave `passages` as `{}`, or the item carries its own stem). Malformed
- * keys/values are skipped, never thrown on — a hostile corpus row degrades to
- * "no shared passage", not a 500.
- */
-function sharedPassageFor(
-  passages: Record<string, unknown> | null,
-  itemNumber: number,
-): string | null {
-  if (passages === null) return null;
-  for (const [key, value] of Object.entries(passages)) {
-    if (typeof value !== 'string' || value.trim().length === 0) continue;
-    // "19-20" → [19, 20]; "21" → [21, 21]. Non-numeric keys are skipped.
-    const parts = key.split('-');
-    const lo = Number(parts[0]);
-    const hi = parts.length > 1 ? Number(parts[parts.length - 1]) : lo;
-    if (!Number.isInteger(lo) || !Number.isInteger(hi)) continue;
-    if (itemNumber >= Math.min(lo, hi) && itemNumber <= Math.max(lo, hi)) {
-      return value;
-    }
-  }
-  return null;
 }
 
 /**
@@ -412,16 +399,27 @@ async function buildGeneratedItem(
   if (seed === null) return null;
 
   const proxy = getClaudeProxy();
-  const { result } = await proxy.generateDiagnosticItem(
-    {
-      section,
-      targetLevel: target,
-      seedKorean: seed.seedKorean,
-      ...(seed.seedEnglish !== undefined ? { seedEnglish: seed.seedEnglish } : {}),
-      ...(seed.seedGloss !== undefined ? { seedGloss: seed.seedGloss } : {}),
-    },
-    { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
-  );
+  // The route's posture is "any Claude generation failure is a bad gateway (502),
+  // not a 500" (see mapClaudeError). A raw thrown error (network outage / "claude
+  // is down") carries no `httpStatus`, so mapClaudeError would pass it through to a
+  // generic 500 — wrap it as UpstreamError here so every generation failure maps to
+  // 502 (the `.catch` returns `never`, so `result`'s type is unchanged).
+  const { result } = await proxy
+    .generateDiagnosticItem(
+      {
+        section,
+        targetLevel: target,
+        seedKorean: seed.seedKorean,
+        ...(seed.seedEnglish !== undefined ? { seedEnglish: seed.seedEnglish } : {}),
+        ...(seed.seedGloss !== undefined ? { seedGloss: seed.seedGloss } : {}),
+      },
+      { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
+    )
+    .catch((err: unknown) => {
+      throw new UpstreamError(
+        `diagnostic ${section} item generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
   // The model's `kind` is schema-valid against the full generable union
   // (synonym|cloze|pattern) regardless of section, so we enforce the
@@ -734,11 +732,16 @@ router.post('/', expensiveLimiter(), validateBody(EmptyBodySchema), async (req, 
 });
 
 /**
- * POST /diagnostic/:runId/answer — grade the current item, serve the next.
+ * POST /diagnostic/:runId/answer — grade the current item and return the
+ * reveal. Does NOT serve the next item: grading is cheap local DB work and
+ * must never block on Claude (B-006) — the client calls /:runId/next for the
+ * following item during the reveal dwell. cheapLimiter for the same reason:
+ * nothing here is expensive, and an expensive-bucket 429 must not be able to
+ * withhold the reveal for an answer the user already committed.
  */
 router.post(
   '/:runId/answer',
-  expensiveLimiter(),
+  cheapLimiter(),
   validateParams(RunParamsSchema),
   validateBody(AnswerBodySchema),
   async (req, res, next) => {
@@ -841,7 +844,6 @@ router.post(
           isCorrect,
           correctAnswer: current.correct_answer,
           ordinal: current.ordinal,
-          updatedTheta,
         };
       });
 
@@ -850,43 +852,190 @@ router.post(
         correctAnswer: graded.correctAnswer,
         explain: await explainFor(params.runId, body.responseId),
       };
-      const current = { ordinal: graded.ordinal };
-      const updatedTheta = graded.updatedTheta;
 
-      // Serve the next item starting AFTER the current item's ordinal. We base
-      // this on the just-answered item's ordinal (the highest served, since
-      // exactly one item is in flight at a time) — NOT on the answered count,
-      // because `serveNextItem` may have skipped empty-pool ordinals, so served
-      // ordinals are not necessarily contiguous.
-      const nextOrdinal = current.ordinal + 1;
-      if (nextOrdinal > run.target_item_count) {
+      // `done` = the graded item's ordinal was the last SCHEDULED slot, so no
+      // /next call is needed. Based on the just-answered item's ordinal (the
+      // highest served, since exactly one item is in flight at a time) — NOT
+      // on the answered count, because serving may skip empty-pool ordinals,
+      // so served ordinals are not necessarily contiguous. Note the run can
+      // also end EARLY (remaining pools empty): the client discovers that when
+      // /next returns `next: null`.
+      const done = graded.ordinal + 1 > run.target_item_count;
+      res.status(200).json({
+        result,
+        done,
+        progress: { ordinal: graded.ordinal, total: run.target_item_count },
+      });
+    } catch (err) {
+      next(mapClaudeError(err));
+    }
+  },
+);
+
+/** Server-authored item payload as persisted by `insertResponse` — the source
+ *  of truth /next re-serves a pending item from. `explain` is stored in the
+ *  payload but NEVER copied onto the ClientItem (answer-stripping); the
+ *  correct answer lives in a separate column and is never here at all. */
+interface StoredItemPayload {
+  readonly section: DiagnosticDimensionKey;
+  readonly kind: string;
+  readonly level: DiagnosticTargetLevel;
+  readonly prompt: string;
+  readonly hint?: string;
+  readonly passage?: string;
+  readonly underline?: string;
+  readonly audio?: { readonly duration: number; readonly transcript: string };
+  readonly choices: readonly ChoiceDTO[];
+}
+
+/**
+ * The lowest-ordinal unanswered response of a run, rebuilt as an
+ * answer-stripped ClientItem — or null when nothing is pending. Used by /next
+ * for idempotent re-serves (double /next calls, or a client that lost the
+ * /next response and retries).
+ */
+async function pendingClientItem(runId: number): Promise<ClientItem | null> {
+  const { rows } = await query<{ id: string; ordinal: number; item_payload: StoredItemPayload }>(
+    `SELECT id::text AS id, ordinal, item_payload
+       FROM diagnostic_responses
+      WHERE run_id = $1 AND answered_at IS NULL
+      ORDER BY ordinal ASC
+      LIMIT 1`,
+    [runId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  // item_payload is server-authored by insertResponse (never client input), so
+  // a typed read is safe; optional fields are re-spread exactly like
+  // toClientItem so both serve paths produce the same wire shape.
+  const p = row.item_payload;
+  return {
+    responseId: Number(row.id),
+    ordinal: row.ordinal,
+    section: p.section,
+    level: p.level,
+    kind: p.kind,
+    prompt: p.prompt,
+    ...(p.hint !== undefined ? { hint: p.hint } : {}),
+    ...(p.passage !== undefined ? { passage: p.passage } : {}),
+    ...(p.underline !== undefined ? { underline: p.underline } : {}),
+    ...(p.audio !== undefined ? { audio: { ...p.audio } } : {}),
+    choices: p.choices.map((c) => ({ id: c.id, kr: c.kr, en: c.en })),
+  };
+}
+
+/** True for a Postgres unique-constraint violation (SQLSTATE 23505). */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' && err !== null && (err as { code?: unknown }).code === '23505'
+  );
+}
+
+/**
+ * POST /diagnostic/:runId/next — serve the run's next item.
+ *
+ * This is the (possibly) EXPENSIVE half of the answer→next split (B-006):
+ * vocab/grammar ordinals generate via Claude, so this route sits behind
+ * expensiveLimiter, and the client calls it during the reveal dwell so the
+ * latency overlaps reading the explanation instead of blocking the reveal.
+ *
+ * Contract:
+ *   - An unanswered item is already pending → re-serve it (idempotent; no new
+ *     row, no Claude call). Covers double-clicks and lost-response retries.
+ *   - All served items answered and slots remain → serve the next scheduled
+ *     item at the run's current θ.
+ *   - Schedule exhausted, or every remaining pool empty → `next: null` (the
+ *     client then calls /finish).
+ *
+ * Concurrency: two racing /next calls can both pass the pending-check and try
+ * to insert the same (run_id, ordinal). `uq_diagnostic_responses_run_ordinal`
+ * makes the loser's INSERT fail with 23505; we catch that and re-serve the
+ * winner's row, so a race can never leave two items in flight (the CAT state
+ * machine's one-item invariant holds).
+ */
+router.post(
+  '/:runId/next',
+  expensiveLimiter(),
+  validateParams(RunParamsSchema),
+  validateBody(EmptyBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const params = (req as typeof req & {
+        validatedParams: z.infer<typeof RunParamsSchema>;
+      }).validatedParams;
+
+      // Ownership first (IDOR → 404), then state: a finished/abandoned run
+      // serves nothing more.
+      const run = await loadUserRun(params.runId, userId);
+      if (run.status !== 'in_progress') {
+        throw new ConflictError('diagnostic run is not in progress');
+      }
+      const total = run.target_item_count;
+
+      // Idempotent re-serve: the current unanswered item, if one exists.
+      const pending = await pendingClientItem(params.runId);
+      if (pending !== null) {
         res.status(200).json({
-          result,
-          next: null,
-          progress: { ordinal: run.target_item_count, total: run.target_item_count },
+          next: pending,
+          progress: { ordinal: pending.ordinal, total },
         });
         return;
       }
-      const served = await serveNextItem(
-        params.runId,
-        nextOrdinal,
-        updatedTheta,
-        req.correlationId,
-        userId,
+
+      // Everything served is answered — advance past the highest served
+      // ordinal (ordinals may be non-contiguous when empty pools were skipped).
+      const { rows: maxRows } = await query<{ max_ordinal: number | null }>(
+        `SELECT max(ordinal) AS max_ordinal FROM diagnostic_responses WHERE run_id = $1`,
+        [params.runId],
       );
+      const maxServed = maxRows[0]?.max_ordinal ?? 0;
+      const nextOrdinal = maxServed + 1;
+      if (nextOrdinal > total) {
+        res.status(200).json({ next: null, progress: { ordinal: total, total } });
+        return;
+      }
+
+      // θ as persisted by the last /answer (2-dp NUMERIC, same rounding the
+      // /finish trajectory reconstruction assumes). The CAT update itself
+      // happened in /answer; this route only READS the estimate to pick the
+      // next item's band — scoring/θ logic is untouched by the B-006 split.
+      const theta =
+        run.ability_estimate !== null ? Number(run.ability_estimate) : SEED_THETA;
+
+      let served: Awaited<ReturnType<typeof serveNextItem>>;
+      try {
+        served = await serveNextItem(
+          params.runId,
+          nextOrdinal,
+          theta,
+          req.correlationId,
+          userId,
+        );
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          // A concurrent /next won the insert race — serve its row instead.
+          const raced = await pendingClientItem(params.runId);
+          if (raced !== null) {
+            res.status(200).json({
+              next: raced,
+              progress: { ordinal: raced.ordinal, total },
+            });
+            return;
+          }
+        }
+        throw err;
+      }
+
       if (served === null) {
-        // Remaining pools all empty — end the run early (finish scores answered).
-        res.status(200).json({
-          result,
-          next: null,
-          progress: { ordinal: nextOrdinal - 1, total: run.target_item_count },
-        });
+        // Remaining pools all empty — the run ends early; /finish scores the
+        // answered dimensions only.
+        res.status(200).json({ next: null, progress: { ordinal: maxServed, total } });
         return;
       }
       res.status(200).json({
-        result,
         next: toClientItem(served.responseId, served.ordinal, served.item),
-        progress: { ordinal: served.ordinal, total: run.target_item_count },
+        progress: { ordinal: served.ordinal, total },
       });
     } catch (err) {
       next(mapClaudeError(err));

@@ -1782,6 +1782,19 @@ body {
   line-height: 1.6;
   color: var(--paper);
 }
+/* Shared reading passage block (B-008) — mirrors .km-diagnostic__passage.
+   pre-line keeps corpus line breaks (dialogue/notice passages) readable. */
+.km-topik__passage {
+  padding: 16px 18px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin-bottom: 18px;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--paper-dim);
+  white-space: pre-line;
+}
 .km-topik__choices {
   display: flex;
   flex-direction: column;

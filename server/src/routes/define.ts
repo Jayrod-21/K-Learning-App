@@ -35,6 +35,73 @@ interface KrdictRow {
   definition_english: string | null;
 }
 
+/** One example sentence as the wire DTO carries it. */
+interface DefineExample {
+  korean: string;
+  english: string | null;
+}
+
+/** Example row as the batched lookup projects it (entry_id is a BIGINT →
+ *  pg returns TEXT). */
+interface KrdictExampleRow {
+  entry_id: string;
+  korean: string;
+  english: string | null;
+}
+
+/**
+ * Max example sentences returned per entry. The popover shows one primary
+ * example plus a short drawer; KRDICT can carry dozens per headword and the
+ * client has no way to page them, so cap at the source.
+ */
+const EXAMPLES_PER_ENTRY = 5;
+
+/**
+ * Batched example lookup for a set of entry ids: krdict_examples hangs off
+ * krdict_senses, so join through and keep sense/example order. One query for
+ * the whole entry page (no per-entry N+1); ROW_NUMBER caps each entry at
+ * EXAMPLES_PER_ENTRY.
+ *
+ * Degrades gracefully: a half-rolled-back migration 003 (entries present but
+ * senses/examples dropped) yields entries WITHOUT examples rather than
+ * failing the whole lookup — examples are additive enrichment on the
+ * definition. Any other DB error still propagates (fail loud).
+ */
+async function fetchExamplesByEntry(
+  entryIds: number[],
+): Promise<Map<number, DefineExample[]>> {
+  const byEntry = new Map<number, DefineExample[]>();
+  if (entryIds.length === 0) return byEntry;
+  try {
+    const { rows } = await query<KrdictExampleRow>(
+      `SELECT entry_id, korean, english
+         FROM (
+           SELECT s.krdict_entry_id AS entry_id, e.korean, e.english,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY s.krdict_entry_id
+                    ORDER BY s.sense_index, e.example_index
+                  ) AS rn
+             FROM krdict_examples e
+             JOIN krdict_senses s ON s.id = e.krdict_sense_id
+            WHERE s.krdict_entry_id = ANY($1::bigint[])
+         ) ranked
+        WHERE rn <= $2
+        ORDER BY entry_id, rn`,
+      [entryIds, EXAMPLES_PER_ENTRY],
+    );
+    for (const row of rows) {
+      const id = Number(row.entry_id);
+      const list = byEntry.get(id);
+      const example: DefineExample = { korean: row.korean, english: row.english };
+      if (list) list.push(example);
+      else byEntry.set(id, [example]);
+    }
+  } catch (err) {
+    if (!isUndefinedTableError(err)) throw err;
+  }
+  return byEntry;
+}
+
 /**
  * Cache the existence check with a TTL so we don't probe `information_schema`
  * on every request, BUT also so a freshly-deployed B2 (migration 003 just
@@ -161,7 +228,18 @@ router.get(
       // pg returns BIGINT columns as strings to avoid silent precision loss.
       // The /define DTO documents `id` as a JSON number, so coerce here. KRDICT
       // entry ids are well within Number.MAX_SAFE_INTEGER (a few hundred k rows).
-      const entries = rows.map((r) => ({ ...r, id: Number(r.id) }));
+      //
+      // Examples ride each entry (B-002): the popover's primary example +
+      // "More examples" drawer come from krdict_examples, which the previous
+      // version never queried — so the client structurally could not show one.
+      // An entry with no loaded examples carries an empty array (B-011: the
+      // KRDICT example tables may be present but unloaded).
+      const ids = rows.map((r) => Number(r.id));
+      const examplesByEntry = await fetchExamplesByEntry(ids);
+      const entries = rows.map((r) => {
+        const id = Number(r.id);
+        return { ...r, id, examples: examplesByEntry.get(id) ?? [] };
+      });
       res.status(200).json({ word, entries });
     } catch (err) {
       next(err);

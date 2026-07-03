@@ -27,6 +27,16 @@ import type { ReadingCorpus, ReadingSelection } from '../types/domain';
 /** localStorage key; mirrors the `km.<name>` convention used elsewhere. */
 export const READING_SELECTION_STORAGE_KEY = 'km.reading.selection';
 
+/**
+ * Corpus a fresh visit loads when no pick is persisted (and the corpus tab
+ * the picker opens on). Iyagi — the podcast transcripts are real multi-
+ * speaker prose, so the default Read experience is an actual passage. TTMIK
+ * lessons stay fully reachable through the picker, but many of them are
+ * hanja word-family lessons whose sentence rows are single vocabulary words;
+ * defaulting to TTMIK rendered a one-word-per-line "passage" (B-001).
+ */
+export const DEFAULT_READING_CORPUS: ReadingCorpus = 'iyagi';
+
 const KNOWN_CORPORA: readonly ReadingCorpus[] = ['ttmik', 'iyagi'];
 
 /**

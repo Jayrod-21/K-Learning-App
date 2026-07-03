@@ -4,8 +4,11 @@
  *   - intro → taking start (startDiagnostic)
  *   - server-graded answer reveal (no client-held answer; reveal comes from
  *     the /answer response's `correctAnswer`)
- *   - advance to the next item, then finish → done → results with the
- *     server-returned snapshot
+ *   - B-006 decoupling: the reveal renders as soon as `/answer` resolves,
+ *     even while the `/next` prefetch is still in flight — grading is never
+ *     blocked on item generation
+ *   - advance to the prefetched next item, then finish → done → results with
+ *     the server-returned snapshot
  *   - a11y: progressbar ARIA, reveal block ids
  *   - error path: a failed start surfaces an ErrorCard
  *
@@ -14,7 +17,7 @@
  * are controlled — this is where we assert the screen never self-grades.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
@@ -22,6 +25,7 @@ import { ApiError } from '../services/api';
 import type {
   DiagnosticAnswerResponse,
   DiagnosticLiveItem,
+  DiagnosticNextResponse,
   DiagnosticSnapshot,
   DiagnosticStartResponse,
 } from '../types/domain';
@@ -60,6 +64,7 @@ const svc = vi.hoisted(() => ({
   startDiagnostic: vi.fn<() => Promise<DiagnosticStartResponse>>(),
   answerDiagnostic:
     vi.fn<(runId: number, body: unknown) => Promise<DiagnosticAnswerResponse>>(),
+  nextDiagnostic: vi.fn<(runId: number) => Promise<DiagnosticNextResponse>>(),
   finishDiagnostic: vi.fn<() => Promise<{ snapshot: DiagnosticSnapshot }>>(),
 }));
 
@@ -67,13 +72,14 @@ vi.mock('../services/diagnostic', () => ({
   startDiagnostic: () => svc.startDiagnostic(),
   answerDiagnostic: (runId: number, body: unknown) =>
     svc.answerDiagnostic(runId, body),
+  nextDiagnostic: (runId: number) => svc.nextDiagnostic(runId),
   finishDiagnostic: () => svc.finishDiagnostic(),
   // Never actually invoked — useEndpointOrMock is mocked and ignores realFn —
   // but stubbed so the module's named export exists for the screen's import.
   fetchLatestSnapshot: () => Promise.reject(new Error('not used in tests')),
 }));
 
-const { startDiagnostic, answerDiagnostic, finishDiagnostic } = svc;
+const { startDiagnostic, answerDiagnostic, nextDiagnostic, finishDiagnostic } = svc;
 
 import Diagnostic from './Diagnostic';
 
@@ -145,6 +151,7 @@ describe('Diagnostic', () => {
     refetchSpy.mockReset();
     startDiagnostic.mockReset();
     answerDiagnostic.mockReset();
+    nextDiagnostic.mockReset();
     finishDiagnostic.mockReset();
   });
 
@@ -196,16 +203,21 @@ describe('Diagnostic', () => {
       item: ITEM_1,
       progress: { ordinal: 1, total: 2 },
     });
-    // Item 1 graded correct, next is item 2.
+    // Item 1 graded correct; the run continues, so the screen prefetches
+    // item 2 via /next during the reveal dwell.
     answerDiagnostic.mockResolvedValueOnce({
       result: { correct: true, correctAnswer: 'a', explain: '발표하다 = announce.' },
+      done: false,
+      progress: { ordinal: 1, total: 2 },
+    });
+    nextDiagnostic.mockResolvedValueOnce({
       next: ITEM_2,
       progress: { ordinal: 2, total: 2 },
     });
-    // Item 2 graded wrong, no next → finish.
+    // Item 2 graded wrong; done → finish (no /next call).
     answerDiagnostic.mockResolvedValueOnce({
       result: { correct: false, correctAnswer: 'b', explain: '-(으)ㄹ 텐데 = conjecture.' },
-      next: null,
+      done: true,
       progress: { ordinal: 2, total: 2 },
     });
     finishDiagnostic.mockResolvedValue({ snapshot: POPULATED_SNAPSHOT });
@@ -240,6 +252,8 @@ describe('Diagnostic', () => {
       picked: 'a',
       timeMs: expect.any(Number),
     });
+    // The next item was prefetched during the reveal dwell (B-006).
+    expect(nextDiagnostic).toHaveBeenCalledWith(7);
 
     // ── advance → item 2 ──
     await user.click(screen.getByRole('button', { name: /^next$/i }));
@@ -253,7 +267,10 @@ describe('Diagnostic', () => {
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
     expect(await screen.findByText('Not quite')).toBeInTheDocument();
 
-    // ── finish (next was null) → done ──
+    // done:true → no second /next prefetch was issued.
+    expect(nextDiagnostic).toHaveBeenCalledTimes(1);
+
+    // ── finish (run done) → done ──
     await user.click(screen.getByRole('button', { name: /see results/i }));
     expect(finishDiagnostic).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Diagnostic complete')).toBeInTheDocument();
@@ -279,6 +296,11 @@ describe('Diagnostic', () => {
     });
     answerDiagnostic.mockResolvedValueOnce({
       result: { correct: false, correctAnswer: 'a', explain: 'x' },
+      done: false,
+      progress: { ordinal: 1, total: 2 },
+    });
+    // The reveal triggers a background /next prefetch — give it a resolution.
+    nextDiagnostic.mockResolvedValueOnce({
       next: ITEM_2,
       progress: { ordinal: 2, total: 2 },
     });
@@ -318,9 +340,14 @@ describe('Diagnostic', () => {
       .mockRejectedValueOnce(new Error('answer network down'))
       .mockResolvedValueOnce({
         result: { correct: true, correctAnswer: 'a', explain: '발표하다 = announce.' },
-        next: ITEM_2,
-        progress: { ordinal: 2, total: 2 },
+        done: false,
+        progress: { ordinal: 1, total: 2 },
       });
+    // The successful retry starts the /next prefetch — give it a resolution.
+    nextDiagnostic.mockResolvedValueOnce({
+      next: ITEM_2,
+      progress: { ordinal: 2, total: 2 },
+    });
 
     const user = userEvent.setup();
     renderWithRouter();
@@ -342,6 +369,105 @@ describe('Diagnostic', () => {
       picked: 'a',
       timeMs: expect.any(Number),
     });
+  });
+
+  it('renders the reveal immediately while the /next prefetch is still in flight (B-006)', async () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    startDiagnostic.mockResolvedValue({
+      runId: 13,
+      item: ITEM_1,
+      progress: { ordinal: 1, total: 2 },
+    });
+    answerDiagnostic.mockResolvedValueOnce({
+      result: { correct: true, correctAnswer: 'a', explain: '발표하다 = announce.' },
+      done: false,
+      progress: { ordinal: 1, total: 2 },
+    });
+    // A /next that NEVER resolves until we say so — stands in for the
+    // multi-second Claude generation. Pre-fix, this latency sat inside the
+    // /answer request and withheld the reveal; now the reveal must render
+    // while this promise is still pending.
+    let resolveNext!: (value: DiagnosticNextResponse) => void;
+    nextDiagnostic.mockImplementationOnce(
+      () =>
+        new Promise<DiagnosticNextResponse>((resolve) => {
+          resolveNext = resolve;
+        }),
+    );
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
+
+    await user.click(screen.getAllByRole('radio')[0]); // 'a'
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // The reveal is on screen although the next item hasn't been generated.
+    expect(await screen.findByText('Correct')).toBeInTheDocument();
+    expect(screen.getByText('발표하다 = announce.')).toBeInTheDocument();
+    expect(nextDiagnostic).toHaveBeenCalledTimes(1);
+
+    // Advancing before the prefetch lands shows a busy Next button, not a
+    // freeze of the reveal.
+    await user.click(screen.getByRole('button', { name: /loading|next/i }));
+    expect(
+      screen.getByRole('button', { name: /loading/i }),
+    ).toHaveAttribute('aria-busy', 'true');
+
+    // The generation completes → the awaited advance renders item 2.
+    await act(async () => {
+      resolveNext({ next: ITEM_2, progress: { ordinal: 2, total: 2 } });
+    });
+    expect(
+      await screen.findByText('비가 ( ) 우산을 가지고 가세요.'),
+    ).toBeInTheDocument();
+  });
+
+  it('finishes the run when the /next prefetch reports it over early (next:null)', async () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    startDiagnostic.mockResolvedValue({
+      runId: 15,
+      item: ITEM_1,
+      progress: { ordinal: 1, total: 8 },
+    });
+    // Not the last scheduled slot (done:false), but every remaining pool is
+    // empty server-side — the prefetch answers `next: null`.
+    answerDiagnostic.mockResolvedValueOnce({
+      result: { correct: true, correctAnswer: 'a', explain: 'x' },
+      done: false,
+      progress: { ordinal: 1, total: 8 },
+    });
+    nextDiagnostic.mockResolvedValueOnce({
+      next: null,
+      progress: { ordinal: 1, total: 8 },
+    });
+    finishDiagnostic.mockResolvedValue({ snapshot: POPULATED_SNAPSHOT });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
+
+    await user.click(screen.getAllByRole('radio')[0]); // 'a'
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    expect(await screen.findByText('Correct')).toBeInTheDocument();
+
+    // The resolved null prefetch flips the footer to the last-item state.
+    expect(await screen.findByText('Last item')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /see results/i }));
+    expect(finishDiagnostic).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Diagnostic complete')).toBeInTheDocument();
   });
 
   it('auto-resyncs on a 409 answer conflict instead of dead-ending on Try again (E-DG-409)', async () => {

@@ -17,11 +17,19 @@
  *     progress }. The live item carries NO correct answer.
  *   - Pick a choice → `answerDiagnostic(runId, { responseId, picked, timeMs })`
  *     → the server grades and returns the reveal (`result.correct`,
- *     `result.correctAnswer`, `result.explain`). The client renders the reveal
- *     from the server's response — it never self-grades.
- *   - Advance → if `next` is non-null, render it; if `next` is null, the graded
- *     item was the last, so `finishDiagnostic(runId)` writes the snapshot and we
- *     move to `done` → `results` carrying the fresh snapshot.
+ *     `result.correctAnswer`, `result.explain`) IMMEDIATELY — grading is a
+ *     cheap local operation server-side and never waits on item generation
+ *     (B-006). The client renders the reveal from the server's response — it
+ *     never self-grades.
+ *   - While the reveal is showing, the next item is PREFETCHED via
+ *     `nextDiagnostic(runId)` (the expensive half — vocab/grammar items are
+ *     Claude-generated). The multi-second generation overlaps the user's
+ *     reveal dwell instead of blocking the reveal itself.
+ *   - Advance → if the run is `done` (answer response) the graded item was the
+ *     last, so `finishDiagnostic(runId)` writes the snapshot and we move to
+ *     `done` → `results` carrying the fresh snapshot. Otherwise render the
+ *     prefetched item (awaiting the in-flight prefetch if it hasn't landed);
+ *     a prefetch of `next: null` (pools exhausted early) also finishes.
  *   - Skip = `picked: null`. Exit mid-run just leaves; no abandon call is
  *     needed (the server marks unfinished runs as stale on its own schedule).
  *
@@ -68,12 +76,14 @@ import {
   answerDiagnostic,
   fetchLatestSnapshot,
   finishDiagnostic,
+  nextDiagnostic,
   startDiagnostic,
 } from '../services/diagnostic';
 import { ApiError } from '../services/api';
 import type {
   DiagnosticAnswerResult,
   DiagnosticLiveItem,
+  DiagnosticNextResponse,
   DiagnosticProgress,
   DiagnosticSnapshot,
 } from '../types/domain';
@@ -327,8 +337,10 @@ interface TakingProps {
   onAlreadyRecorded: () => void;
 }
 
-/** Phase of the in-flight network call driving the Taking block. */
-type Phase = 'starting' | 'answering' | 'finishing' | 'idle' | 'error';
+/** Phase of the in-flight network call driving the Taking block.
+ *  `advancing` = the user clicked Next but the next-item prefetch hasn't
+ *  landed yet (we're awaiting it, showing a busy Next button). */
+type Phase = 'starting' | 'answering' | 'advancing' | 'finishing' | 'idle' | 'error';
 
 function TakingBlock({
   onExit,
@@ -340,10 +352,11 @@ function TakingBlock({
   const [progress, setProgress] = useState<DiagnosticProgress | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   const [reveal, setReveal] = useState<DiagnosticAnswerResult | null>(null);
-  // Whether the just-graded item was the LAST one (server returned next:null).
-  // Kept as render state — not derived from `pendingNextRef` — because the
-  // reveal footer reads it during render and `react-hooks/refs` forbids ref
-  // reads in render. Set when an answer settles, reset on advance.
+  // Whether the just-graded item was the LAST one — true when the answer
+  // response says `done`, or when the next-item prefetch comes back
+  // `next: null` (remaining pools exhausted early). Kept as render state —
+  // not derived from a ref — because the reveal footer reads it during render
+  // and `react-hooks/refs` forbids ref reads in render.
   const [lastReveal, setLastReveal] = useState<boolean>(false);
   const [phase, setPhase] = useState<Phase>('starting');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -356,10 +369,17 @@ function TakingBlock({
   // value — `Date.now()` at init trips react-hooks/purity) and stamped with the
   // real serve time in `runStart` and `advance` before any answer reads it.
   const servedAtRef = useRef<number>(0);
-  // The next item handed back by the last `/answer`, consumed by `advance`.
-  // A ref (not state) because it's a hand-off between two user gestures, not
-  // a render input — the reveal block is what renders between submit+advance.
-  const pendingNextRef = useRef<DiagnosticLiveItem | null>(null);
+  // The in-flight (or settled) next-item prefetch, started as soon as an
+  // answer's reveal lands (B-006: the Claude generation overlaps the reveal
+  // dwell). `advance` consumes it — awaiting a settled promise resolves in a
+  // microtask, so the common case advances instantly. Cleared on failure so a
+  // retry issues a fresh call. A ref (not state) because it's a hand-off
+  // between two user gestures, not a render input.
+  const nextPromiseRef = useRef<Promise<DiagnosticNextResponse> | null>(null);
+  // Controller for the prefetch — separate from `ctrlRef` so submitting the
+  // NEXT answer (which aborts the previous foreground call) can never cancel
+  // a prefetch, and so unmount/exit still aborts it.
+  const nextCtrlRef = useRef<AbortController | null>(null);
 
   // Fresh AbortController for a new network step; aborts any prior in-flight.
   const beginCall = useCallback((): AbortController => {
@@ -402,11 +422,45 @@ function TakingBlock({
     runStart();
     return () => {
       ctrlRef.current?.abort();
+      nextCtrlRef.current?.abort();
     };
   }, [runStart]);
 
   const inFlight =
-    phase === 'starting' || phase === 'answering' || phase === 'finishing';
+    phase === 'starting' ||
+    phase === 'answering' ||
+    phase === 'advancing' ||
+    phase === 'finishing';
+
+  // Kick off (or replace) the next-item prefetch. Fired right after a reveal
+  // lands so the server's Claude generation runs while the user reads the
+  // explanation. The background handlers only (a) flip `lastReveal` when the
+  // run turns out to be over early, and (b) clear the ref on failure so
+  // `advance` retries with a fresh call — real error UI is `advance`'s job,
+  // not the dwell's.
+  const prefetchNext = useCallback(
+    (rid: number): Promise<DiagnosticNextResponse> => {
+      nextCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      nextCtrlRef.current = ctrl;
+      const promise = nextDiagnostic(rid, ctrl.signal);
+      nextPromiseRef.current = promise;
+      promise
+        .then((res) => {
+          if (ctrl.signal.aborted) return;
+          if (res.next === null) setLastReveal(true);
+        })
+        .catch(() => {
+          // Swallowed here deliberately (no unhandled rejection); `advance`
+          // surfaces the failure when the user tries to move on.
+          if (nextPromiseRef.current === promise) {
+            nextPromiseRef.current = null;
+          }
+        });
+      return promise;
+    },
+    [],
+  );
 
   // Grade one answer (`picked: null` = skip). Shared by Submit + Skip so the
   // request/reveal/error handling lives in one place; the only difference is
@@ -429,10 +483,14 @@ function TakingBlock({
           if (ctrl.signal.aborted) return;
           setReveal(res.result);
           setProgress(res.progress);
-          // `null` next means "graded the last item" — `advance` then finishes.
-          pendingNextRef.current = res.next;
-          setLastReveal(res.next === null);
+          // `done` means "graded the last scheduled item" — `advance` then
+          // finishes. Otherwise start the next-item prefetch NOW so the
+          // generation latency overlaps the reveal dwell (B-006).
+          setLastReveal(res.done);
           setPhase('idle');
+          if (!res.done) {
+            void prefetchNext(runId);
+          }
         })
         .catch((err: unknown) => {
           if (ctrl.signal.aborted) return;
@@ -450,7 +508,7 @@ function TakingBlock({
           setErrorMsg(toMessage(err, 'Could not submit your answer.'));
         });
     },
-    [runId, item, inFlight, reveal, beginCall, onAlreadyRecorded],
+    [runId, item, inFlight, reveal, beginCall, prefetchNext, onAlreadyRecorded],
   );
 
   // Submit the currently-picked choice.
@@ -464,21 +522,11 @@ function TakingBlock({
     gradeAnswer(null);
   }, [gradeAnswer]);
 
-  // Advance past the revealed item: render the next, or finish the run.
-  const advance = useCallback((): void => {
-    if (runId === null || reveal === null || inFlight) return;
-    const next = pendingNextRef.current;
-    if (next) {
-      setItem(next);
-      setPicked(null);
-      setReveal(null);
-      setLastReveal(false);
-      pendingNextRef.current = null;
-      servedAtRef.current = Date.now();
-      setPhase('idle');
-      return;
-    }
-    // No next item — that was the last. Finish the run for the snapshot.
+  // Finish the run for the snapshot. Reached from `advance` when the graded
+  // item was the last scheduled one, or when the next-item fetch reports the
+  // run over early (`next: null`).
+  const finishRun = useCallback((): void => {
+    if (runId === null) return;
     const ctrl = beginCall();
     setPhase('finishing');
     setErrorMsg(null);
@@ -499,7 +547,60 @@ function TakingBlock({
         setPhase('error');
         setErrorMsg(toMessage(err, 'Could not finish the diagnostic.'));
       });
-  }, [runId, reveal, inFlight, beginCall, onComplete, onAlreadyRecorded]);
+  }, [runId, beginCall, onComplete, onAlreadyRecorded]);
+
+  // Advance past the revealed item: render the prefetched next item (awaiting
+  // the prefetch if it is still in flight), or finish the run.
+  const advance = useCallback((): void => {
+    if (runId === null || reveal === null || inFlight) return;
+    if (lastReveal) {
+      finishRun();
+      return;
+    }
+    // Consume the dwell prefetch; issue a fresh call only when there is none
+    // (it failed, or its response was lost — the server re-serves the same
+    // pending item, so a re-request never burns an extra generation).
+    const promise = nextPromiseRef.current ?? prefetchNext(runId);
+    setPhase('advancing');
+    setErrorMsg(null);
+    promise
+      .then((res) => {
+        if (nextCtrlRef.current?.signal.aborted) return;
+        nextPromiseRef.current = null;
+        if (res.next === null) {
+          // Remaining pools were empty — the run ended early.
+          finishRun();
+          return;
+        }
+        setItem(res.next);
+        setPicked(null);
+        setReveal(null);
+        setLastReveal(false);
+        setProgress(res.progress);
+        servedAtRef.current = Date.now();
+        setPhase('idle');
+      })
+      .catch((err: unknown) => {
+        if (nextCtrlRef.current?.signal.aborted) return;
+        nextPromiseRef.current = null;
+        // A 409 means the run state moved on without us (finished elsewhere).
+        // Resync rather than dead-end (E-DG-409).
+        if (err instanceof ApiError && err.status === 409) {
+          onAlreadyRecorded();
+          return;
+        }
+        setPhase('error');
+        setErrorMsg(toMessage(err, 'Could not load the next question.'));
+      });
+  }, [
+    runId,
+    reveal,
+    inFlight,
+    lastReveal,
+    finishRun,
+    prefetchNext,
+    onAlreadyRecorded,
+  ]);
 
   // Retry the failed step. A failed start (no runId yet) re-runs `runStart`;
   // a mid-run failure replays the step its `reveal` implies — `advance`
@@ -577,10 +678,9 @@ function TakingBlock({
   const revealed = reveal !== null;
   const isLast = revealed && lastReveal;
   const revealBlockId = `dg-reveal-${String(item.responseId)}`;
-  // Progress is derived from the CURRENT item's 1-based ordinal, not the
-  // server's post-answer `progress.ordinal` (which points at the *next* item
-  // and would make the bar jump forward on reveal then back on advance). The
-  // total comes from the server. Before the reveal, `ordinal-1` items are done;
+  // Progress is derived from the CURRENT item's 1-based ordinal (served
+  // ordinals may skip empty-pool slots, so the item is the truth). The total
+  // comes from the server. Before the reveal, `ordinal-1` items are done;
   // once the current item is graded (revealed), it counts too.
   const total = progress.total;
   const completed = item.ordinal - (revealed ? 0 : 1);
@@ -700,14 +800,16 @@ function TakingBlock({
             variant="gold"
             onClick={advance}
             disabled={inFlight}
-            aria-busy={phase === 'finishing'}
+            aria-busy={phase === 'finishing' || phase === 'advancing'}
             trailingIcon={<Icon name="arrow-right" size={14} />}
           >
-            {isLast
-              ? phase === 'finishing'
-                ? 'Scoring…'
-                : 'See results'
-              : 'Next'}
+            {phase === 'finishing'
+              ? 'Scoring…'
+              : phase === 'advancing'
+                ? 'Loading…'
+                : isLast
+                  ? 'See results'
+                  : 'Next'}
           </Button>
         )}
       </div>

@@ -354,6 +354,31 @@ describe('Topik (Study mode)', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('renders the shared reading passage between the prompt and the choices (B-008)', () => {
+    // A shared-passage item (fill-blank ㉠ etc.) carries the reading text in
+    // `passage` — the screen must render it or the item is unanswerable.
+    const passageText =
+      '최근 재택근무를 도입하는 회사가 늘고 있다. 재택근무는 출퇴근 시간을 줄여 주지만 동료와의 소통이 어려워질 수 있다.';
+    setDraw([{ ...ITEM_A, passage: passageText }]);
+    render(<Topik />);
+
+    const passage = screen.getByText(passageText);
+    expect(passage).toHaveClass('km-topik__passage');
+    // The passage sits BEFORE the answer choices in document order — the
+    // learner reads the text the question is about, then picks.
+    const choices = screen.getByRole('radiogroup', { name: 'Answer choices' });
+    expect(
+      passage.compareDocumentPosition(choices) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('omits the passage block for a self-contained item', () => {
+    setDraw([ITEM_A]); // no `passage` on the item
+    const { container } = render(<Topik />);
+    expect(container.querySelector('.km-topik__passage')).toBeNull();
+  });
+
   it('lands on the draw-complete state after the last item and refetches on New set', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();

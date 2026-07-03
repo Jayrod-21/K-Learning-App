@@ -183,6 +183,14 @@ export interface TopikItem {
   number: number;
   level: number;
   prompt: string;
+  /**
+   * The shared reading passage this item is asked about (B-008). TOPIK reading
+   * tests pose several questions about one text; the server resolves the
+   * passage covering this item's number from `topik_tests.passages` and the
+   * screens render it before the choices — without it a fill-blank ㉠ or
+   * "윗글의 주제…" item is unanswerable. Absent for self-contained items.
+   */
+  passage?: string;
   passageRef?: string;
   options: TopikChoice[];
   explanation: string;
@@ -254,6 +262,10 @@ export interface TopikMockItem {
   number: number;
   level: number;
   prompt: string;
+  /** See `TopikItem.passage` — the reading text the QUESTION is about. It is
+   *  question content (like the prompt itself), never answer data, so it
+   *  survives the answer strip; the exam needs it to be answerable (B-008). */
+  passage?: string;
   passageRef?: string;
   options: TopikMockChoice[];
   /** See `TopikItem.hasImage` — question metadata, never answer data, so it
@@ -416,13 +428,30 @@ export interface DiagnosticStartResponse {
 }
 
 /**
- * `POST /diagnostic/:runId/answer` — grades the current item.
+ * `POST /diagnostic/:runId/answer` — grades the current item and returns the
+ * reveal IMMEDIATELY (B-006: grading never blocks on item generation).
  *
- * `next` is the following live item, or `null` when the graded item was the
- * last one (the client then calls `/finish`).
+ * `done` is true when the graded item filled the run's last scheduled slot —
+ * the client then calls `/finish` without asking for a next item. When `done`
+ * is false the client fetches the next item via `POST /:runId/next` during
+ * the reveal dwell (see `DiagnosticNextResponse`).
  */
 export interface DiagnosticAnswerResponse {
   result: DiagnosticAnswerResult;
+  done: boolean;
+  progress: DiagnosticProgress;
+}
+
+/**
+ * `POST /diagnostic/:runId/next` — serves the run's next live item.
+ *
+ * `next` is `null` when the run is over early (every remaining section pool
+ * is empty) or already fully served — the client then calls `/finish`.
+ * Idempotent server-side: re-calling while an item is pending re-serves that
+ * same item, so a lost response or a double-fired prefetch never burns an
+ * extra generation.
+ */
+export interface DiagnosticNextResponse {
   next: DiagnosticLiveItem | null;
   progress: DiagnosticProgress;
 }
@@ -700,15 +729,26 @@ export interface LemmatizeResponse {
   tokens: LemmaToken[];
 }
 
+/** One KRDICT example sentence returned by `GET /define` (joined in from
+ *  `krdict_examples` via the entry's senses, capped server-side). */
+export interface DefineExample {
+  korean: string;
+  /** English translation — KRDICT often omits it on low-frequency senses. */
+  english: string | null;
+}
+
 /** One KRDICT entry returned by `GET /define`. */
 export interface DefineEntry {
   id: number;
   headword: string;
   part_of_speech: string | null;
-  /** JSONB — sense list. Shape owned by B2 (KRDICT loader). */
-  senses: unknown;
-  /** JSONB — example list. Shape owned by B2. */
-  examples: unknown;
+  /** First-sense Korean definition (denormalized on krdict_entries). */
+  definition_korean: string | null;
+  /** First-sense English definition. */
+  definition_english: string | null;
+  /** Example sentences in sense/example order. Empty when KRDICT has none
+   *  loaded for this entry (B-011: tables may be present but unloaded). */
+  examples: DefineExample[];
 }
 
 /** Envelope returned by `GET /define`. */
@@ -876,6 +916,25 @@ export interface DueCard {
   grammar_entry_id: number | null;
   source_sentence_id: number | null;
   topik_item_id: number | null;
+  /**
+   * Korean headword of the joined vocab entry (B-009). Present only when
+   * `vocab_entry_id` is set — the due query LEFT JOINs `vocab_entries` and
+   * carries the entry fields so the Review flashcard can render the real word
+   * without a second round-trip. Absent for grammar/sentence/topik cards.
+   * NOTE: `face` is the card_face ENUM ('recognition' | 'production' |
+   * 'cloze'), NOT the word — never render it as card content. The service
+   * maps the server's snake-case `vocab_korean` onto this camelCase field at
+   * the wire boundary (same convention as the grammar_* columns).
+   */
+  vocabKorean?: string;
+  /** English gloss of the joined vocab entry (B-009). Same JOIN/origin as `vocabKorean`. */
+  vocabEnglish?: string;
+  /** Korean example sentence of the joined vocab entry (B-009); absent when the entry has none. */
+  vocabExampleKorean?: string;
+  /** English translation of the example sentence (B-009); absent when the entry has none. */
+  vocabExampleEnglish?: string;
+  /** Provenance — the source book the entry was ingested/mined from (B-009). */
+  vocabSourceBook?: string;
   /**
    * Grammar-pattern display for a production card (FU-NF-42). Present only when
    * `grammar_entry_id` is set — the due query LEFT JOINs `grammar_entries` and

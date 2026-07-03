@@ -141,6 +141,84 @@ describe('getDueCards', () => {
     expect(card?.grammarSummaryEn).toBeUndefined();
     expect(card?.grammarPatternKey).toBeUndefined();
   });
+
+  // B-009: the due query JOINs vocab_entries; the service must map the
+  // snake-case vocab_* columns onto the camelCase DueCard fields so the
+  // Review flashcard renders the real word, not the card_face enum.
+  it('maps the snake-case vocab JOIN columns onto camelCase fields (B-009)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      cards: [
+        {
+          id: 1,
+          face: 'recognition',
+          due_at: '2026-05-30T00:00:00Z',
+          stability: '0',
+          difficulty: '5',
+          fsrs_state: 'new',
+          version: 1,
+          vocab_entry_id: 9,
+          grammar_entry_id: null,
+          source_sentence_id: null,
+          topik_item_id: null,
+          vocab_korean: '영향',
+          vocab_english: 'influence',
+          vocab_example_korean: '음악은 우리 생활에 큰 영향을 미친다.',
+          vocab_example_english: 'Music has a big influence on our lives.',
+          vocab_source_book: 'vocab-2000-int',
+          grammar_pattern_display: null,
+          grammar_summary_en: null,
+          grammar_pattern_key: null,
+        },
+      ],
+    });
+
+    const [card] = await getDueCards();
+
+    expect(card?.vocabKorean).toBe('영향');
+    expect(card?.vocabEnglish).toBe('influence');
+    expect(card?.vocabExampleKorean).toBe('음악은 우리 생활에 큰 영향을 미친다.');
+    expect(card?.vocabExampleEnglish).toBe('Music has a big influence on our lives.');
+    expect(card?.vocabSourceBook).toBe('vocab-2000-int');
+    // The snake-case wire keys must not leak through onto the domain shape.
+    expect(card).not.toHaveProperty('vocab_korean');
+    expect(card).not.toHaveProperty('vocab_source_book');
+  });
+
+  it('leaves vocab fields absent for a grammar card (NULL vocab JOIN columns)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      cards: [
+        {
+          id: 7,
+          face: 'production',
+          due_at: '2026-05-30T00:00:00Z',
+          stability: '3',
+          difficulty: '5',
+          fsrs_state: 'review',
+          version: 2,
+          vocab_entry_id: null,
+          grammar_entry_id: 11,
+          source_sentence_id: null,
+          topik_item_id: null,
+          vocab_korean: null,
+          vocab_english: null,
+          vocab_example_korean: null,
+          vocab_example_english: null,
+          vocab_source_book: null,
+          grammar_pattern_display: '-더라도',
+          grammar_summary_en: 'even if',
+          grammar_pattern_key: 'KGIU-INT-007',
+        },
+      ],
+    });
+
+    const [card] = await getDueCards();
+
+    expect(card?.vocabKorean).toBeUndefined();
+    expect(card?.vocabEnglish).toBeUndefined();
+    expect(card?.vocabExampleKorean).toBeUndefined();
+    expect(card?.vocabExampleEnglish).toBeUndefined();
+    expect(card?.vocabSourceBook).toBeUndefined();
+  });
 });
 
 describe('submitReview', () => {

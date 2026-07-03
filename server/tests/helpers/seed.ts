@@ -77,6 +77,9 @@ export async function seedVocabEntry(
     corpus?: string;
     korean?: string;
     english?: string;
+    exampleKorean?: string;
+    exampleEnglish?: string;
+    sourceBook?: string;
     proficiency?: 'basic' | 'L3' | 'L4' | 'L5+';
   } = {},
 ): Promise<number> {
@@ -86,16 +89,19 @@ export async function seedVocabEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO vocab_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
-        source_book, korean, english, proficiency)
+        source_book, korean, english, example_korean, example_english, proficiency)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'word'::vocab_entry_type,
-             'test-book', $4, $5, $6::proficiency_level)
+             $4, $5, $6, $7, $8, $9::proficiency_level)
      RETURNING id`,
     [
       corpusSourceId,
       corpus,
       sourceId,
+      opts.sourceBook ?? 'test-book',
       opts.korean ?? '먹다',
       opts.english ?? 'to eat',
+      opts.exampleKorean ?? null,
+      opts.exampleEnglish ?? null,
       opts.proficiency ?? 'L3',
     ],
   );
@@ -617,4 +623,46 @@ export async function seedKrdictEntry(
     ],
   );
   return Number(rows[0]!.id);
+}
+
+/**
+ * Attach a krdict sense (plus its example sentences) to an existing entry.
+ * Returns the new sense id. `senseIndex` defaults to 1 (the sense whose
+ * definitions are denormalized onto the entry); pass higher indices to model
+ * multi-sense entries. Examples are inserted in array order as
+ * example_index 1..n — the order `/define` must echo back.
+ */
+export async function seedKrdictSense(
+  pool: Pool,
+  entryId: number,
+  opts: {
+    senseIndex?: number;
+    definitionKo?: string;
+    definitionEn?: string | null;
+    examples?: Array<{ korean: string; english?: string | null }>;
+  } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO krdict_senses (
+        krdict_entry_id, sense_index, definition_korean, definition_english)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [
+      entryId,
+      opts.senseIndex ?? 1,
+      opts.definitionKo ?? '먹어서 배를 채우다',
+      opts.definitionEn === undefined ? 'to eat' : opts.definitionEn,
+    ],
+  );
+  const senseId = Number(rows[0]!.id);
+  const examples = opts.examples ?? [];
+  for (let i = 0; i < examples.length; i += 1) {
+    const ex = examples[i]!;
+    await pool.query(
+      `INSERT INTO krdict_examples (krdict_sense_id, example_index, korean, english)
+       VALUES ($1, $2, $3, $4)`,
+      [senseId, i + 1, ex.korean, ex.english ?? null],
+    );
+  }
+  return senseId;
 }
