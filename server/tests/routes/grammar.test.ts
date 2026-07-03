@@ -15,6 +15,7 @@ import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedKgiuEntry } from '../helpers/seed.js';
+import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -34,6 +35,12 @@ beforeEach(async () => {
     'TRUNCATE TABLE grammar_entries, sessions, users RESTART IDENTITY CASCADE',
   );
   t = buildTestApp({ connectionString: pg.connectionString });
+  // Rate limiters are module singletons — rebuilding the app above does NOT
+  // reset them. Without this the /grammar/identify expensive-limiter tests are
+  // order-coupled: the RESTART IDENTITY reuses user_id = 1 every test and the
+  // 429-burst block would leave the u:1 bucket saturated for any test that runs
+  // after it in a shuffled order. Mirrors vocab.test.ts. (C-SF-1, bar §5.3 P0)
+  resetLimiters();
 });
 
 describe('grammar — auth required', () => {

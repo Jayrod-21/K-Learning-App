@@ -102,6 +102,21 @@ const ROW_2: KgiuEntrySummary = {
   source_pages: null,
 };
 
+/** A BEGINNER-corpus row, a different level than ROW/ROW_2 (intermediate).
+ *  Used to prove the List level filter never hides banked patterns of other
+ *  levels (B-SF-1): filtering to Beginner narrows the List to this row only. */
+const BEGINNER_ROW: KgiuEntrySummary = {
+  id: 10,
+  corpus: 'kgiu_beginner',
+  source_id: 'KGIU-BEG-001',
+  pattern: '-이다',
+  title_en: 'to be (copula)',
+  category: 'copula',
+  proficiency: 'beginner',
+  unit: 'Unit 1',
+  source_pages: null,
+};
+
 const EMPTY_BANK: BankedGrammarList = { entries: [] };
 
 /** Server bank rows matching ROW / ROW_2 (grammarKey-derived pattern keys). */
@@ -377,59 +392,168 @@ describe('Grammar — list level filter', () => {
   });
 });
 
+describe('Grammar — banked tab + drill pool independent of level filter (B-SF-1)', () => {
+  /** listPatterns stub that answers per requested corpus, like the real KGIU
+   *  endpoint: 'all' (no corpus) returns every level; a corpus filter narrows
+   *  the List to that level only. */
+  function corpusScopedList(): void {
+    services.listPatterns.mockImplementation(
+      async (opts?: { corpus?: string }) => {
+        if (opts?.corpus === 'kgiu_beginner') return [BEGINNER_ROW];
+        if (opts?.corpus === 'kgiu_intermediate') return [ROW];
+        return [ROW, BEGINNER_ROW]; // 'all'
+      },
+    );
+  }
+
+  /** generateDrill stub that echoes the request pattern (scoped to this block —
+   *  the drill describe has its own copy). */
+  function echoGenerate(): void {
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 900,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+  }
+
+  it('keeps a banked intermediate pattern visible in the Banked tab when the List is filtered to Beginner', async () => {
+    corpusScopedList();
+    // The user has banked an INTERMEDIATE pattern (ROW → GR-kgiu-int-007).
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-이다'); // list loaded (level 'all')
+
+    // Banked tab shows the intermediate pattern.
+    await user.click(screen.getByRole('tab', { name: 'Banked' }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+
+    // Now filter the List to BEGINNER — the banked intermediate pattern is not
+    // in that corpus fetch. Pre-fix, the Banked tab derived from the filtered
+    // list and would LOSE the pattern.
+    await user.click(screen.getByRole('tab', { name: 'List' }));
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      // The List now shows only the beginner row…
+      expect(screen.getByText('-이다')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
+
+    // …but the Banked tab STILL shows the intermediate banked pattern, sourced
+    // from the user's bank list rather than the level-filtered corpus.
+    await user.click(screen.getByRole('tab', { name: 'Banked' }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+    // Active count reflects the banked pattern, not the filtered-out list.
+    expect(
+      screen.getByRole('button', { name: /^Active \(1\)/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('drills the banked pattern even when the List is filtered to a level that excludes it', async () => {
+    corpusScopedList();
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-이다');
+
+    // Filter the List to Beginner (excludes the banked intermediate pattern).
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
+    });
+
+    // The drill pool is the banked patterns, independent of the List filter:
+    // it drills the banked intermediate pattern, NOT the filtered beginner row.
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+      patternDisplay: '-더라도',
+    });
+  });
+});
+
 describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
-  it('drops optimistic entries that have been reconciled with the server bank settle', async () => {
-    // Setup: three patterns; initially zero are banked on the server.
+  it('drops a reconciled overlay entry so a pattern the server later drops reverts to bankable', async () => {
+    // TEETH: this test must FAIL if the prune effect (Grammar.tsx `useEffect`
+    // pruning `optimisticBanked` against `bankedState.data`) is removed. The
+    // toothless prior version asserted only "Already banked", which holds
+    // whether or not the overlay is pruned (the server settle alone renders it).
+    //
+    // The observable state that ONLY the prune produces: after row A is
+    // optimistically banked and reconciled (its key enters the server bank
+    // list), the overlay entry for A is dropped. So when a LATER server settle
+    // no longer reports A as banked (A removed elsewhere / never truly
+    // persisted), the merged `bankedKeys` view no longer contains A and row A's
+    // button reverts to "Bank". WITHOUT the prune, the stale overlay entry for A
+    // survives forever, so A would still read "Already banked" — the exact
+    // unbounded-overlay bug the prune exists to prevent.
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    // First call: empty bank. Second call (after a refetch triggered by
-    // bankPattern's then-handler): includes the just-banked row, which
-    // is the reconciliation signal the prune effect keys on.
     services.listBanked
+      // Initial mount: nothing banked.
       .mockResolvedValueOnce(EMPTY_BANK)
-      .mockResolvedValue({
-        entries: [
-          {
-            id: 99,
-            pattern_key: 'GR-kgiu-int-007',
-            pattern_display: '-더라도',
-            summary_en: 'even if',
-            proficiency: 'L4',
-            category: 'concessive',
-            register: null,
-            discovered_via: 'manual',
-            created_at: '2026-05-29T12:00:00Z',
-            graduated_at: null,
-          },
-        ],
-      } satisfies BankedGrammarList);
+      // After banking A: the server confirms A (the reconciliation signal the
+      // prune keys on — A leaves the overlay here).
+      .mockResolvedValueOnce({ entries: [BANKED_ROW] } satisfies BankedGrammarList)
+      // After banking B: the server reports ONLY B. A is no longer banked
+      // server-side, so with a pruned overlay row A must revert to bankable.
+      .mockResolvedValue({ entries: [BANKED_ROW_2] } satisfies BankedGrammarList);
     services.bankPattern.mockResolvedValue({ id: 1 });
 
     const user = userEvent.setup();
     renderGrammar();
 
-    // Bank the row.
-    const bankBtn = await screen.findByRole('button', {
-      name: /^Bank -더라도$/,
-    });
-    await user.click(bankBtn);
-
-    // After the bank settles + the refetch returns the reconciled row,
-    // the chip shows "Already banked". The overlay prune effect has run:
-    // any optimistic entry now present in `bankedState.data` has been
-    // dropped from the set. The user-visible test for this is "the
-    // button still reads Already banked" (the optimistic overlay
-    // shrinking + the server settle including the row both render the
-    // same chip state). The contract this asserts is: after settle, the
-    // overlay isn't growing unbounded — the row is sourced from server
-    // truth, not from the overlay.
+    // Bank A → wait for the server settle to confirm it ("Already banked").
+    await user.click(
+      await screen.findByRole('button', { name: /^Bank -더라도$/ }),
+    );
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: /Already banked/i }),
+        screen.getByRole('button', { name: 'Already banked' }),
       ).toBeInTheDocument();
     });
-    // listBanked was called at least twice: initial + post-bank refetch.
-    // The second call (the refetch) is what the prune effect keys on.
-    expect(services.listBanked.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // Bank B → its refetch (call 3) returns a server list WITHOUT A.
+    await user.click(
+      await screen.findByRole('button', { name: /^Bank -느라고$/ }),
+    );
+    await waitFor(() => {
+      expect(services.listBanked.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // Row A reverts to bankable — only possible because the prune dropped A
+    // from the overlay at its reconciliation, so the B-settle's server list
+    // (which omits A) governs. A surviving overlay entry would keep A banked.
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Bank -더라도' }),
+      ).toBeInTheDocument();
+    });
+    // Sanity: B is banked from server truth.
+    expect(
+      screen.getByRole('button', { name: 'Already banked' }),
+    ).toBeInTheDocument();
   });
 });
 

@@ -125,6 +125,44 @@ export type RouteName =
   | 'generate_grammar_drill'
   | 'score_grammar_drill';
 
+/**
+ * Every `RouteName`, as a runtime array — the canonical source of truth for the
+ * routes the proxy writes to `claude_cache.route` / `claude_usage.route`.
+ *
+ * This array is pinned to the `RouteName` union at COMPILE time from both sides:
+ *   - `satisfies readonly RouteName[]` rejects any entry that is NOT a RouteName
+ *     (no bogus/extra routes may be listed here);
+ *   - the `_routeNamesExhaustive` assertion below fails to compile if any
+ *     RouteName is MISSING from this array.
+ * Together they guarantee `ROUTE_NAMES` == `RouteName` exactly.
+ *
+ * The `claude_route` Postgres enum must in turn mirror this array; that DB-side
+ * invariant is verified at runtime against a freshly-migrated database by
+ * `server/tests/db/claude_route_enum.test.ts`. (Migrations 031/032 exist because
+ * this enum silently drifted from `RouteName`; `'anon'` is deliberately absent —
+ * it is a rate-limit bucket key, never a route written to the DB.)
+ */
+export const ROUTE_NAMES = [
+  'enrich',
+  'recognize_grammar',
+  'grade_writing',
+  'diagnostic_item',
+  'generate_conversation',
+  'image_ocr',
+  'generate_grammar_drill',
+  'score_grammar_drill',
+] as const satisfies readonly RouteName[];
+
+// Compile-time exhaustiveness: if a RouteName is added to the union above but
+// not to ROUTE_NAMES, `Exclude<...>` is non-`never`, the conditional type
+// resolves to `false`, and assigning `true` to it fails to compile.
+const _routeNamesExhaustive: [
+  Exclude<RouteName, (typeof ROUTE_NAMES)[number]>,
+] extends [never]
+  ? true
+  : false = true;
+void _routeNamesExhaustive;
+
 export interface PublicClaudeConfig {
   readonly baseUrl: string | undefined;
   readonly timeoutMs: number;

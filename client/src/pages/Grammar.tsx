@@ -373,15 +373,55 @@ const REAL_LIST_LOADERS: Record<LevelFilter, () => Promise<PatternListItem[]>> =
   };
 
 /**
- * Server-side bank metadata a banked row's actions need: the bank row id
- * (the graduate/readmit endpoints key on grammar_entries.id, NOT the KGIU
- * id) and the graduation state. Keyed by pattern_key in the loaders below.
+ * Server-side bank metadata a banked row needs. Carries BOTH the action id
+ * (the graduate/readmit endpoints key on grammar_entries.id, NOT the KGIU id)
+ * and enough display fields to render the pattern as a row WITHOUT the KGIU
+ * list — so the Banked tab + drill pool stay independent of the List tab's
+ * level filter (SHOULD-FIX B-SF-1). Keyed by pattern_key in the loaders below.
  */
 interface BankedMeta {
   /** grammar_entries row id — the :id for graduate/readmit. */
   id: number;
+  /** Server-side dedup key (also this entry's map key). */
+  patternKey: string;
   /** Non-null ⇒ the user marked this pattern as known/graduated. */
   graduatedAt: string | null;
+  /** Korean pattern display, from the bank row (level-independent). */
+  patternDisplay: string;
+  /** English summary / title, from the bank row. */
+  summaryEn: string;
+  /** Proficiency tag bucketed into the server's closed set. */
+  proficiency: ServerProficiency;
+  /** Category, from the bank row. */
+  category: string;
+  /** Raw register string from the bank row (may be composite / null). */
+  register: string | null;
+}
+
+/**
+ * Render a banked pattern as a list row from its OWN bank-row fields, with no
+ * dependency on the (level-filtered) KGIU list — this is what keeps a List-tab
+ * level filter from hiding banked patterns of other levels (B-SF-1). `isReal`
+ * is false because the bank row carries no KGIU id: the detail Sheet renders
+ * from these stored fields instead of fetching `getPattern` (which needs a
+ * KGIU id, not the grammar_entries id). When the pattern's level IS the one
+ * currently loaded, the caller prefers the richer KGIU list row for full
+ * detail-fetch fidelity; this is the cross-level fallback.
+ */
+function bankedMetaToItem(meta: BankedMeta): PatternListItem {
+  return {
+    // Negative synthetic id keeps this out of the real-KGIU id namespace; it is
+    // inert because `isReal: false` gates the getPattern(id) detail fetch, and
+    // React keys are keyed on patternKey (never id).
+    id: -meta.id,
+    patternKey: meta.patternKey,
+    pattern: meta.patternDisplay,
+    title: meta.summaryEn,
+    proficiency: meta.proficiency,
+    category: meta.category,
+    register: meta.register,
+    isReal: false,
+  };
 }
 
 /** Loader: mock banked map (empty until the user banks something). */
@@ -395,7 +435,16 @@ async function loadRealBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
   return new Map(
     res.entries.map((e) => [
       e.pattern_key,
-      { id: e.id, graduatedAt: e.graduated_at },
+      {
+        id: e.id,
+        patternKey: e.pattern_key,
+        graduatedAt: e.graduated_at,
+        patternDisplay: e.pattern_display,
+        summaryEn: e.summary_en,
+        proficiency: toServerProficiency(e.proficiency),
+        category: e.category,
+        register: e.register,
+      },
     ]),
   );
 }
@@ -439,8 +488,9 @@ function Grammar(): JSX.Element {
 
   // List-tab level filter. Lives here (not in ListPanel) because it feeds the
   // fetch key below — switching level refetches the corpus with the matching
-  // `corpus` query param and the whole screen (list, banked subset, drill
-  // pool) sees the level-scoped rows.
+  // `corpus` query param. It scopes ONLY the List browse view: the Banked tab
+  // and the drill pool source their patterns from the user's bank list
+  // (`bankedItems`, below), which is independent of this filter (B-SF-1).
   const [level, setLevel] = useState<LevelFilter>('all');
 
   // Pattern list — real first, mock fallback. The hook's `isMock` flips
@@ -689,10 +739,32 @@ function Grammar(): JSX.Element {
     () => listState.data ?? [],
     [listState.data],
   );
-  const bankedItems = useMemo<readonly PatternListItem[]>(
-    () => items.filter((it) => bankedKeys.has(it.patternKey)),
-    [items, bankedKeys],
-  );
+
+  // patternKey → KGIU list row, so a banked pattern that IS in the currently
+  // loaded level can be rendered from its richer KGIU row (enabling the full
+  // detail fetch) rather than the bank-row fallback.
+  const itemsByKey = useMemo<ReadonlyMap<string, PatternListItem>>(() => {
+    const m = new Map<string, PatternListItem>();
+    for (const it of items) m.set(it.patternKey, it);
+    return m;
+  }, [items]);
+
+  // Banked patterns sourced from the user's ACTUAL bank list (GET /grammar/bank
+  // via `bankedState`), INDEPENDENT of the level-filtered KGIU list. A List-tab
+  // level filter must only reshape the List browse view — never hide banked
+  // patterns of other levels, skew the Active/Known counts, or repoint the drill
+  // pool (SHOULD-FIX B-SF-1). We prefer the KGIU list row when the pattern's
+  // level is loaded (full detail-fetch fidelity), else fall back to the bank
+  // row's own stored fields via `bankedMetaToItem`. Insertion order follows the
+  // server's `created_at DESC`, so the Banked tab ordering is stable.
+  const bankedItems = useMemo<readonly PatternListItem[]>(() => {
+    const map = bankedState.data;
+    if (!map) return [];
+    return Array.from(
+      map.values(),
+      (meta) => itemsByKey.get(meta.patternKey) ?? bankedMetaToItem(meta),
+    );
+  }, [bankedState.data, itemsByKey]);
 
   // Graduation split. Active = still learning (drill pool + reviews);
   // known = graduated out of active learning until re-admitted.
@@ -704,8 +776,13 @@ function Grammar(): JSX.Element {
     () => bankedItems.filter((it) => isGraduated(it.patternKey)),
     [bankedItems, isGraduated],
   );
-  // The drill must never serve a graduated pattern — not even via the
-  // nothing-banked fallback pool (the full list contains graduated rows too).
+  // The drill's PRIMARY pool is the user's active banked patterns
+  // (`activeBankedItems`, level-independent — see B-SF-1). `drillableItems` is
+  // only the fallback for an account with NOTHING banked, where there are no
+  // banked patterns to protect, so drilling the currently-browsed corpus is
+  // acceptable. The filter still excludes graduated rows — the drill must never
+  // serve a graduated pattern even via this fallback (the corpus list contains
+  // graduated rows too).
   const drillableItems = useMemo<readonly PatternListItem[]>(
     () => items.filter((it) => !isGraduated(it.patternKey)),
     [items, isGraduated],
