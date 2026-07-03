@@ -148,6 +148,20 @@ describe('POST /grammar/bank — success + validation + upsert', () => {
     expect(typeof res.body.id).toBe('number');
   });
 
+  // Regression (migration 034): the KGIU corpus uses free-text categories
+  // (copula, conjecture, contrast, …) that the original 001 whitelist CHECK
+  // (ck_grammar_entries_category_known) rejected — so every real Bank click on a
+  // corpus pattern 500'd at the DB even though Zod accepted the body. The prior
+  // tests only ever used a whitelisted category ('aspect'), so they missed it.
+  it('accepts a real KGIU corpus category not in the old whitelist → 201', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/grammar/bank')
+      .send({ ...validBody, pattern_key: 'GR-copula-example', category: 'copula' });
+    expect(res.status).toBe(201);
+    expect(typeof res.body.id).toBe('number');
+  });
+
   it('repeat with same key → 201 (upsert behaviour)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     await agent.post('/grammar/bank').send(validBody);
