@@ -100,4 +100,43 @@ describe('WordPopover', () => {
     expect(screen.getByText('재택근무 중')).toBeInTheDocument();
     expect(screen.getByText('Common in HR contexts.')).toBeInTheDocument();
   });
+
+  it('hides the "More examples" affordance when there are no extras or usage notes (B-002)', () => {
+    const bare: WordPopoverData = {
+      kr: '먹다',
+      pos: 'v.',
+      en: 'to eat',
+      ex_kr: '밥을 먹다',
+      ex_en: 'to eat a meal',
+    };
+    render(<WordPopover data={bare} onClose={() => undefined} />);
+    // No drawer content → no info toggle. An empty "More examples" panel is
+    // worse than none.
+    expect(
+      screen.queryByRole('button', { name: 'More examples' }),
+    ).not.toBeInTheDocument();
+    // The primary body still renders in full.
+    expect(screen.getByText('to eat')).toBeInTheDocument();
+    expect(screen.getByText('밥을 먹다')).toBeInTheDocument();
+  });
+
+  it('shows the drawer with only usage notes (no extra examples) without an empty examples heading', async () => {
+    const user = userEvent.setup();
+    const usageOnly: WordPopoverData = {
+      kr: '먹다',
+      pos: 'v.',
+      en: 'to eat',
+      ex_kr: '밥을 먹다',
+      ex_en: 'to eat a meal',
+      notes: 'Everyday register; 드시다 is the honorific.',
+    };
+    render(<WordPopover data={usageOnly} onClose={() => undefined} />);
+    await user.click(screen.getByRole('button', { name: 'More examples' }));
+    expect(screen.getByText('Usage')).toBeInTheDocument();
+    expect(
+      screen.getByText('Everyday register; 드시다 is the honorific.'),
+    ).toBeInTheDocument();
+    // No extras → the "More examples" heading is suppressed inside the drawer.
+    expect(screen.queryByText('More examples')).not.toBeInTheDocument();
+  });
 });

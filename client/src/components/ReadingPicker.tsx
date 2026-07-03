@@ -42,6 +42,7 @@ import { Icon } from './Icon';
 import { ErrorCard } from './ErrorCard';
 import { fetchUnitsPage } from '../services/reading';
 import { ApiError } from '../services/api';
+import { DEFAULT_READING_CORPUS } from '../lib/readingSelection';
 import type {
   ReadingCorpus,
   ReadingSelection,
@@ -51,9 +52,10 @@ import type {
 /** Page size for the unit list. One screenful of rows without a tall sheet. */
 const PAGE_SIZE = 20;
 
+// Iyagi first — it is the default corpus (B-001), so the default tab leads.
 const CORPORA: ReadonlyArray<{ id: ReadingCorpus; label: string }> = [
-  { id: 'ttmik', label: 'TTMIK' },
   { id: 'iyagi', label: 'Iyagi' },
+  { id: 'ttmik', label: 'TTMIK' },
 ];
 
 export interface ReadingPickerProps {
@@ -91,9 +93,10 @@ export function ReadingPicker({
   onSelect,
 }: ReadingPickerProps): JSX.Element {
   // The active corpus tab. Seeds from the current selection so reopening the
-  // picker lands on the corpus the user is reading, defaulting to TTMIK.
+  // picker lands on the corpus the user is reading, defaulting to the same
+  // prose corpus the screen itself defaults to (B-001).
   const [corpus, setCorpus] = useState<ReadingCorpus>(
-    current?.corpus ?? 'ttmik',
+    current?.corpus ?? DEFAULT_READING_CORPUS,
   );
   const [offset, setOffset] = useState(0);
   const [units, setUnits] = useState<ReadingUnit[]>([]);

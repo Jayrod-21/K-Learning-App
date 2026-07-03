@@ -146,6 +146,9 @@ export function WordPopover({
 
   const extras = data.extra ?? [];
   const hasUsage = Boolean(data.notes ?? data.contrast);
+  // The drawer (and its info toggle) only renders when it has content —
+  // an empty "More examples" panel is worse than none (B-002).
+  const hasDrawer = extras.length > 0 || hasUsage;
 
   return (
     <>
@@ -252,33 +255,41 @@ export function WordPopover({
                   </>
                 )}
               </button>
-              <button
-                type="button"
-                className="km-btn km-btn--ghost km-btn--md focusring km-popover__info"
-                aria-label="More examples"
-                aria-expanded={drawer}
-                onClick={() => {
-                  setDrawer((d) => !d);
-                }}
-              >
-                <Icon name="info" size={18} />
-              </button>
+              {hasDrawer ? (
+                <button
+                  type="button"
+                  className="km-btn km-btn--ghost km-btn--md focusring km-popover__info"
+                  aria-label="More examples"
+                  aria-expanded={drawer}
+                  onClick={() => {
+                    setDrawer((d) => !d);
+                  }}
+                >
+                  <Icon name="info" size={18} />
+                </button>
+              ) : null}
             </div>
 
-            {drawer ? (
+            {drawer && hasDrawer ? (
               <div className="km-popover__drawer">
-                <div className="km-eyebrow km-popover__eyebrow">More examples</div>
-                <div className="km-popover__extras">
-                  {extras.map((ex, i) => (
-                    <div key={i} className="km-popover__extra">
-                      <div className="kr km-popover__extra-kr">{ex.kr}</div>
-                      <div className="km-popover__extra-en">{ex.en}</div>
+                {extras.length > 0 ? (
+                  <>
+                    <div className="km-eyebrow km-popover__eyebrow">More examples</div>
+                    <div className="km-popover__extras">
+                      {extras.map((ex, i) => (
+                        <div key={i} className="km-popover__extra">
+                          <div className="kr km-popover__extra-kr">{ex.kr}</div>
+                          <div className="km-popover__extra-en">{ex.en}</div>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                ) : null}
                 {hasUsage ? (
                   <>
-                    <hr className="hr km-popover__usage-rule" />
+                    {extras.length > 0 ? (
+                      <hr className="hr km-popover__usage-rule" />
+                    ) : null}
                     <div className="km-eyebrow km-popover__eyebrow">Usage</div>
                     {data.notes ? (
                       <div className="km-popover__note">{data.notes}</div>
