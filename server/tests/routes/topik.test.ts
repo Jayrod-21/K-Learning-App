@@ -27,6 +27,9 @@
  *     topik_responses row; 404 on a missing item
  *   - section Korean ↔ enum normalization (읽기 ⇄ reading)
  *   - the inline-answer design: study DTOs carry options[].correct + explanation
+ *   - shared reading passages (B-008): topik_tests.passages resolved onto the
+ *     browse/study/mock DTOs by item_number range; the mock wire keeps the
+ *     passage (question content) while staying answer-stripped
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -205,6 +208,146 @@ describe('GET /topik/items — filters + pagination', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/topik/items').query({ section: 'bogus' });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('shared reading passages on the item DTO (B-008)', () => {
+  const PASSAGE =
+    '도시의 도로는 대부분 아스팔트로 뒤덮여 있다. 그래서 비가 오면 빗물이 지하로 잘 흘러 들어가지 ( ㉠ ) 도로가 물에 잠기는 일도 자주 발생한다.';
+
+  /** Attach a `passages` JSONB to the seeded test (topik_tests, migration 005). */
+  async function setTestPassages(
+    testNumber: number,
+    passages: Record<string, unknown>,
+  ): Promise<void> {
+    await pg.pool.query(
+      `UPDATE topik_tests SET passages = $1::jsonb WHERE test_number = $2`,
+      [JSON.stringify(passages), testNumber],
+    );
+  }
+
+  it('resolves the passage covering the item_number onto study + browse DTOs', async () => {
+    // Item 19's own stem is only the question — the reading text lives in the
+    // parent test's passages under the "19-20" range key. Item 21 is outside
+    // every range and must NOT pick up a passage.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1100,
+      itemNumber: 19,
+      stem: '( ㉠ )에 들어갈 말로 가장 알맞은 것을 고르십시오.',
+      prompt: null,
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1100,
+      itemNumber: 21,
+      // Self-contained item: its own stem IS the text (no prompt, no shared
+      // passage) — the DTO must carry no `passage` for it.
+      stem: '북극여우는 계절에 따라 털 색깔을 바꾸는 동물이다.',
+      prompt: null,
+    });
+    await setTestPassages(1100, { '19-20': PASSAGE });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // GET /items (browse) — passage resolved, question text intact.
+    const browse = await agent.get('/topik/items').query({ source_test: 1100 });
+    expect(browse.status).toBe(200);
+    const [covered, uncovered] = browse.body.items;
+    expect(covered.number).toBe(19);
+    expect(covered.passage).toBe(PASSAGE);
+    expect(covered.prompt).toBe('( ㉠ )에 들어갈 말로 가장 알맞은 것을 고르십시오.');
+    expect(uncovered.number).toBe(21);
+    expect(uncovered).not.toHaveProperty('passage'); // no covering range key
+
+    // POST /study — the same mapping serves the draw.
+    const study = await agent.post('/topik/study').send({ section: 'reading', limit: 10 });
+    expect(study.status).toBe(200);
+    const studyCovered = study.body.items.find((i: { number: number }) => i.number === 19);
+    expect(studyCovered.passage).toBe(PASSAGE);
+  });
+
+  it('mock items carry the passage but STILL no answer fields (answer-strip holds)', async () => {
+    // Two items sharing one passage — both must render it in the timed exam
+    // (the passage is question content), while the wire stays answer-stripped.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1101,
+      itemNumber: 19,
+      stem: '( ㉠ )에 들어갈 말로 가장 알맞은 것을 고르십시오.',
+      answer: 2,
+      extra: { explanation: 'must NOT reach the mock wire' },
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1101,
+      itemNumber: 20,
+      stem: '윗글의 주제로 가장 알맞은 것을 고르십시오.',
+      answer: 3,
+    });
+    await setTestPassages(1101, { '19-20': PASSAGE });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ sourceTest: 1101, section: 'reading' });
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBe(2);
+    for (const item of res.body.items as Array<{
+      passage?: unknown;
+      explanation?: unknown;
+      options: Array<Record<string, unknown>>;
+    }>) {
+      // The passage reaches the exam — the item is answerable…
+      expect(item.passage).toBe(PASSAGE);
+      // …but the strip holds: no explanation, no correct flag anywhere.
+      expect(item).not.toHaveProperty('explanation');
+      expect(JSON.stringify(item)).not.toContain('correct');
+      for (const opt of item.options) {
+        expect(opt).not.toHaveProperty('correct');
+        expect(Object.keys(opt).sort()).toEqual(['en', 'id', 'kr']);
+      }
+    }
+  });
+
+  it('surfaces the stem as the passage when a prompt would otherwise mask it', async () => {
+    // B-008 defect (1): `prompt ?? stem` used to DROP the stem whenever a
+    // prompt existed. With both present and no shared passage, the stem must
+    // now ride in `passage` and the prompt stays the question.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1102,
+      itemNumber: 1,
+      stem: '한복은 한국의 전통 의상이다. 요즘은 명절에 주로 입는다.',
+      prompt: '윗글의 내용과 같은 것을 고르십시오.',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/topik/items').query({ source_test: 1102 });
+    expect(res.status).toBe(200);
+    const item = res.body.items[0];
+    expect(item.prompt).toBe('윗글의 내용과 같은 것을 고르십시오.');
+    expect(item.passage).toBe('한복은 한국의 전통 의상이다. 요즘은 명절에 주로 입는다.');
+  });
+
+  it('skips malformed passages entries instead of failing the request', async () => {
+    // Hostile/malformed corpus data must degrade to "no shared passage":
+    // non-string values, empty strings, and non-numeric range keys are skipped.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1103,
+      itemNumber: 19,
+      stem: '( ㉠ )에 들어갈 말로 가장 알맞은 것을 고르십시오.',
+      prompt: null,
+    });
+    await setTestPassages(1103, {
+      '19-20': 42, // non-string → skipped
+      'intro-note': PASSAGE, // non-numeric key → skipped
+      '18': '   ', // blank string → skipped
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/topik/items').query({ source_test: 1103 });
+    expect(res.status).toBe(200);
+    expect(res.body.items[0]).not.toHaveProperty('passage');
+    expect(res.body.items[0].prompt).toContain('㉠'); // the item still renders its stem
   });
 });
 

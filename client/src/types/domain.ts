@@ -183,6 +183,14 @@ export interface TopikItem {
   number: number;
   level: number;
   prompt: string;
+  /**
+   * The shared reading passage this item is asked about (B-008). TOPIK reading
+   * tests pose several questions about one text; the server resolves the
+   * passage covering this item's number from `topik_tests.passages` and the
+   * screens render it before the choices — without it a fill-blank ㉠ or
+   * "윗글의 주제…" item is unanswerable. Absent for self-contained items.
+   */
+  passage?: string;
   passageRef?: string;
   options: TopikChoice[];
   explanation: string;
@@ -254,6 +262,10 @@ export interface TopikMockItem {
   number: number;
   level: number;
   prompt: string;
+  /** See `TopikItem.passage` — the reading text the QUESTION is about. It is
+   *  question content (like the prompt itself), never answer data, so it
+   *  survives the answer strip; the exam needs it to be answerable (B-008). */
+  passage?: string;
   passageRef?: string;
   options: TopikMockChoice[];
   /** See `TopikItem.hasImage` — question metadata, never answer data, so it

@@ -22,6 +22,14 @@ import type {
 } from '../../types/domain';
 import { mockDelay } from './_delay';
 
+/**
+ * The shared reading passage the "remote-work" items are asked about (B-008)
+ * — mirrors the live `TopikItem.passage` the server resolves from
+ * `topik_tests.passages`, so the offline path exercises the passage block.
+ */
+const REMOTE_WORK_PASSAGE =
+  '최근 재택근무를 도입하는 회사가 늘고 있다. 재택근무는 출퇴근 시간을 줄여 주지만 동료와의 소통이 어려워질 수 있다. 그래서 많은 회사가 사무실 근무와 재택근무를 함께 활용하고 있다.';
+
 /** The canonical single-item fixture (kept as the basis for the draw). */
 export const TOPIK_ITEM_FIXTURE: TopikItem = {
   id: 'mock-topik-28',
@@ -29,6 +37,7 @@ export const TOPIK_ITEM_FIXTURE: TopikItem = {
   number: 28,
   level: 4,
   prompt: '이 글의 내용과 같은 것은?',
+  passage: REMOTE_WORK_PASSAGE,
   passageRef: 'remote-work',
   options: [
     {
@@ -209,6 +218,8 @@ const TOPIK_MOCK_ITEMS_FIXTURE: TopikMockItem[] = [
     number: 1,
     level: 4,
     prompt: '이 글의 내용과 같은 것은?',
+    // Question content, not answer data — survives the answer strip (B-008).
+    passage: REMOTE_WORK_PASSAGE,
     passageRef: 'remote-work',
     options: [
       { id: 'a', kr: '재택근무는 출퇴근 시간을 늘린다.', en: 'Remote work increases commute time.' },

@@ -44,6 +44,7 @@ import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { TopikImageNote } from '../components/TopikImageNote';
+import { TopikPassage } from '../components/TopikPassage';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTopikStudyMock } from '../data/mocks/topik';
 import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
@@ -440,6 +441,10 @@ function TopikBody({
           <TopikImageNote description={imageSplit.description} />
         </>
       )}
+
+      {/* Shared reading passage (B-008) — the text the question is about,
+          rendered before the choices so the item is answerable. */}
+      {item.passage ? <TopikPassage text={item.passage} /> : null}
 
       <div
         className="km-topik__choices"

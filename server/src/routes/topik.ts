@@ -35,6 +35,7 @@ import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
+import { sharedPassageFor } from '../services/topik/passages.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -124,6 +125,15 @@ interface TopikItemDTO {
   readonly level: number;
   readonly prompt: string;
   readonly passageRef?: string;
+  /**
+   * The shared reading passage this item is asked about (B-008). Reading tests
+   * store one passage per item-number range in `topik_tests.passages`
+   * (migration 005) and the covered items carry only the question in `stem` —
+   * without this text a fill-blank ㉠ or "윗글의 주제…" item is unanswerable.
+   * QUESTION content, not answer data — it is deliberately kept on the mock
+   * wire (see `toMockItemDTO`). Omitted when no passage covers the item.
+   */
+  readonly passage?: string;
   readonly options: readonly TopikChoiceDTO[];
   readonly explanation: string;
   /**
@@ -150,6 +160,13 @@ interface TopikItemRow {
   has_image: boolean;
   image_text: string | null;
   extra: Record<string, unknown> | null;
+  /**
+   * The parent test's `passages` JSONB (migration 005): an object keyed by
+   * item-number range ("19-20", "21-22", …) carrying the reading passage shared
+   * by those items. Selected via the topik_tests JOIN in every item query so
+   * mapRowToDTO can resolve the passage covering `item_number` (B-008).
+   */
+  test_passages: Record<string, unknown> | null;
 }
 
 /**
@@ -172,7 +189,14 @@ function answerToChoiceIndex(answer: unknown, choiceCount: number): number | nul
  *   - section   = enum → Korean label
  *   - number    = item_number
  *   - level     = proficiency → number (basic 2 / L3 3 / L4 4 / L5+ 5; null → 4)
- *   - prompt    = prompt ?? stem ?? ''
+ *   - prompt    = prompt when non-empty, else stem. (B-008: prompt and stem are
+ *                 no longer collapsed with `??` — when a row carries BOTH, the
+ *                 stem text is surfaced as the `passage` below instead of being
+ *                 silently masked behind the prompt.)
+ *   - passage   = the shared reading passage covering `item_number` from the
+ *                 parent test's `passages` JSONB (B-008); falls back to the
+ *                 stem when a non-empty prompt already occupies the prompt
+ *                 slot. Omitted when neither exists.
  *   - options   = options JSONB array → a..d choices (en:''), `correct` flag set
  *                 on the (answer − 1) index
  *   - explanation = extra->>'explanation' ?? ''   (no `explanation` column exists)
@@ -204,12 +228,24 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
 
   const imageText = (row.image_text ?? '').trim();
 
+  // B-008: resolve the item's question text WITHOUT masking data. The prompt
+  // slot takes `prompt` when present, else `stem`. The shared reading passage
+  // covering this item_number (topik_tests.passages) rides in `passage`; when
+  // a row carries BOTH a prompt and a stem and no shared passage covers it,
+  // the stem is surfaced as the passage rather than dropped.
+  const promptText = (row.prompt ?? '').trim();
+  const stemText = (row.stem ?? '').trim();
+  const shared = (sharedPassageFor(row.test_passages, row.item_number) ?? '').trim();
+  const passage =
+    shared !== '' ? shared : promptText !== '' && stemText !== '' ? stemText : '';
+
   return {
     id: row.id,
     section: SECTION_ENUM_TO_KR[row.section],
     number: row.item_number,
     level: proficiencyToLevel(row.proficiency),
-    prompt: (row.prompt ?? row.stem ?? '').trim(),
+    prompt: promptText !== '' ? promptText : stemText,
+    ...(passage !== '' ? { passage } : {}),
     options,
     explanation,
     hasImage: row.has_image,
@@ -235,8 +271,11 @@ function mapRows(rows: readonly TopikItemRow[]): TopikItemDTO[] {
 // field at all. A regression that tried to copy `correct`/`explanation` onto a
 // mock item would fail to compile, so the answer cannot leak by accident — the
 // only field on a mock choice is `{ id, kr, en }`, and the only fields on a mock
-// item are id/section/number/level/prompt/passageRef/options. The `correct` flag
-// + `explanation` are revealed only by `POST /topik/mock/submit`, post-exam.
+// item are id/section/number/level/prompt/passage/passageRef/options plus the
+// image metadata (`hasImage`/`imageText`). `passage` is the shared reading text
+// the QUESTION is about (B-008) — question content, not answer data, exactly
+// like the prompt itself. The `correct` flag + `explanation` are revealed only
+// by `POST /topik/mock/submit`, post-exam.
 // ---------------------------------------------------------------------------
 
 /** A mock choice — the study choice with `correct` removed (type-level). */
@@ -254,7 +293,9 @@ type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation'> & {
  * answer is dropped at the boundary. `explanation` is simply not read here.
  * `hasImage`/`imageText` survive the strip: they describe the QUESTION (an
  * image the exam PDF showed), carry no answer information, and the exam needs
- * them to render image-dependent items answerably.
+ * them to render image-dependent items answerably. `passage` survives for the
+ * same reason (B-008): it is the reading text the question is asked about —
+ * without it a shared-passage item is unanswerable in the timed exam.
  */
 function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
   return {
@@ -263,6 +304,7 @@ function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
     number: item.number,
     level: item.level,
     prompt: item.prompt,
+    ...(item.passage !== undefined ? { passage: item.passage } : {}),
     ...(item.passageRef !== undefined ? { passageRef: item.passageRef } : {}),
     options: item.options.map((o) => ({ id: o.id, kr: o.kr, en: o.en })),
     hasImage: item.hasImage,
@@ -290,16 +332,19 @@ function bandForPercentage(percentage: number): string {
 }
 
 /** The SELECT column list shared by every item-fetching query. */
-// Columns are qualified with the `i` alias because several queries below JOIN
-// topik_tests (which also has an `id` column) — an unqualified `id` is ambiguous
-// (Postgres error 42702). Every query that uses ITEM_COLUMNS aliases topik_items
-// as `i` (the single-table queries alias it too, so this list works everywhere).
+// Columns are qualified with the `i` alias because every query below JOINs
+// topik_tests as `t` (which also has an `id` column) — an unqualified `id` is
+// ambiguous (Postgres error 42702). The join is required everywhere since
+// B-008: `t.passages` carries the shared reading passages the DTO resolves the
+// item's passage from, so every query that uses ITEM_COLUMNS must alias
+// topik_items as `i` AND join topik_tests as `t`.
 const ITEM_COLUMNS = `i.id::text AS id,
                       i.section::text AS section,
                       i.item_number,
                       i.proficiency::text AS proficiency,
                       i.stem, i.prompt, i.options, i.answer,
-                      i.has_image, i.image_text, i.extra`;
+                      i.has_image, i.image_text, i.extra,
+                      t.passages AS test_passages`;
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -653,18 +698,20 @@ router.post('/study', cheapLimiter(), validateBody(StudyBodySchema), async (req,
     const filters: string[] = [];
     if (body.section !== undefined) {
       params.push(body.section);
-      filters.push(`section = $${params.length}::topik_section`);
+      filters.push(`i.section = $${params.length}::topik_section`);
     }
     if (body.level !== undefined) {
       params.push(body.level);
-      filters.push(`proficiency = $${params.length}::proficiency_level`);
+      filters.push(`i.proficiency = $${params.length}::proficiency_level`);
     }
     const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
     params.push(body.limit);
+    // JOIN topik_tests to carry t.passages (ITEM_COLUMNS) — B-008.
     const { rows } = await query<TopikItemRow>(
       `SELECT ${ITEM_COLUMNS}
          FROM topik_items i
+         JOIN topik_tests t ON t.id = i.topik_test_id
         ${whereClause}
         ORDER BY random()
         LIMIT $${params.length}`,
@@ -718,6 +765,7 @@ router.post(
       const { rows } = await query<TopikItemRow>(
         `SELECT ${ITEM_COLUMNS}
            FROM topik_items i
+           JOIN topik_tests t ON t.id = i.topik_test_id
           WHERE i.id = $1`,
         [params.itemId],
       );

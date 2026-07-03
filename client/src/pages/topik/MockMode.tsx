@@ -49,6 +49,7 @@ import { Icon } from '../../components/Icon';
 import { ErrorCard } from '../../components/ErrorCard';
 import { MockBadge } from '../../components/MockBadge';
 import { TopikImageNote } from '../../components/TopikImageNote';
+import { TopikPassage } from '../../components/TopikPassage';
 import { cn } from '../../lib/cn';
 import { splitImageItem } from '../../lib/topikImage';
 import { useModalA11y } from '../../hooks/useModalA11y';
@@ -581,6 +582,10 @@ function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
         </>
       )}
 
+      {/* Shared reading passage (B-008): question content the server keeps on
+          the answer-stripped wire — without it the item is unanswerable. */}
+      {current.passage ? <TopikPassage text={current.passage} /> : null}
+
       <ChoiceGroup
         item={current}
         picked={pickedHere}
@@ -932,6 +937,9 @@ function MockResults({
                 {item ? (
                   <p className="kr km-mock__review-prompt">{item.prompt}</p>
                 ) : null}
+                {/* The passage the item was asked about (B-008) — the review
+                    is unreadable without the text the question refers to. */}
+                {item?.passage ? <TopikPassage text={item.passage} /> : null}
                 <div className="km-mock__review-picks">
                   <span className="km-mock__review-pick">
                     Your answer:{' '}
