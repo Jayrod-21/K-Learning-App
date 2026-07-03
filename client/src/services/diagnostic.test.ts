@@ -8,6 +8,7 @@ import {
   fetchLatestSnapshot,
   fetchTrajectory,
   finishDiagnostic,
+  nextDiagnostic,
   startDiagnostic,
   type FinishDiagnosticResponse,
 } from './diagnostic';
@@ -15,6 +16,7 @@ import { api, ApiError } from './api';
 import type {
   DiagnosticAnswerResponse,
   DiagnosticLiveItem,
+  DiagnosticNextResponse,
   DiagnosticSnapshot,
   DiagnosticStartResponse,
 } from '../types/domain';
@@ -44,6 +46,11 @@ const START: DiagnosticStartResponse = {
 
 const ANSWER: DiagnosticAnswerResponse = {
   result: { correct: true, correctAnswer: 'a', explain: '발표하다 = to announce.' },
+  done: false,
+  progress: { ordinal: 1, total: 8 },
+};
+
+const NEXT: DiagnosticNextResponse = {
   next: { ...ITEM, responseId: 12, ordinal: 2 },
   progress: { ordinal: 2, total: 8 },
 };
@@ -89,7 +96,7 @@ describe('startDiagnostic', () => {
 });
 
 describe('answerDiagnostic', () => {
-  it('POSTs /diagnostic/:runId/answer with the body and returns the reveal + next', async () => {
+  it('POSTs /diagnostic/:runId/answer with the body and returns the reveal + done flag', async () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(ANSWER);
 
     const res = await answerDiagnostic(7, {
@@ -105,13 +112,13 @@ describe('answerDiagnostic', () => {
     );
     expect(res.result.correct).toBe(true);
     expect(res.result.correctAnswer).toBe('a');
-    expect(res.next?.ordinal).toBe(2);
+    expect(res.done).toBe(false);
   });
 
   it('sends picked:null for a skip', async () => {
     const skipResponse: DiagnosticAnswerResponse = {
       result: { correct: false, correctAnswer: 'a', explain: 'x' },
-      next: null,
+      done: true,
       progress: { ordinal: 8, total: 8 },
     };
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(skipResponse);
@@ -123,7 +130,7 @@ describe('answerDiagnostic', () => {
       { responseId: 18, picked: null },
       undefined,
     );
-    expect(res.next).toBeNull();
+    expect(res.done).toBe(true);
   });
 
   it('threads an AbortSignal into the request config', async () => {
@@ -147,6 +154,50 @@ describe('answerDiagnostic', () => {
     await expect(
       answerDiagnostic(7, { responseId: 11, picked: 'a' }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe('nextDiagnostic', () => {
+  it('POSTs /diagnostic/:runId/next with an empty body and returns the next item', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(NEXT);
+
+    const res = await nextDiagnostic(7);
+
+    expect(spy).toHaveBeenCalledWith('/diagnostic/7/next', {}, undefined);
+    expect(res.next?.responseId).toBe(12);
+    expect(res.next?.ordinal).toBe(2);
+    expect(res.progress).toEqual({ ordinal: 2, total: 8 });
+  });
+
+  it('passes through next:null (run over early / fully served)', async () => {
+    const over: DiagnosticNextResponse = {
+      next: null,
+      progress: { ordinal: 8, total: 8 },
+    };
+    vi.spyOn(api, 'post').mockResolvedValueOnce(over);
+
+    const res = await nextDiagnostic(7);
+
+    expect(res.next).toBeNull();
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(NEXT);
+    const ctrl = new AbortController();
+
+    await nextDiagnostic(7, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/diagnostic/7/next', {}, {
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('boom', { status: 502, code: 'upstream_error' }),
+    );
+
+    await expect(nextDiagnostic(7)).rejects.toMatchObject({ status: 502 });
   });
 });
 

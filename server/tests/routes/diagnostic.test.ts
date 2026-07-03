@@ -3,7 +3,8 @@
  *
  * Routes:
  *   POST /diagnostic
- *   POST /diagnostic/:runId/answer
+ *   POST /diagnostic/:runId/answer   (grades only — never generates; B-006)
+ *   POST /diagnostic/:runId/next     (serves/generates the next item)
  *   POST /diagnostic/:runId/finish
  *   GET  /diagnostic/latest
  *   GET  /diagnostic/trajectory
@@ -78,6 +79,7 @@ describe('diagnostic — auth required', () => {
   it.each([
     ['POST', '/diagnostic'],
     ['POST', '/diagnostic/1/answer'],
+    ['POST', '/diagnostic/1/next'],
     ['POST', '/diagnostic/1/finish'],
     ['GET', '/diagnostic/latest'],
     ['GET', '/diagnostic/trajectory'],
@@ -185,8 +187,8 @@ describe('POST /diagnostic — shared reading passage (F4)', () => {
   });
 });
 
-describe('POST /diagnostic/:runId/answer — grading + advance', () => {
-  it('grades server-side, reveals correctAnswer + explain, serves next', async () => {
+describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () => {
+  it('grades server-side, reveals correctAnswer + explain; /next serves the following item', async () => {
     await seedFullPool();
     const { agent } = await registerUser(t.app, pg.pool);
     const start = await agent.post('/diagnostic').send({});
@@ -201,12 +203,21 @@ describe('POST /diagnostic/:runId/answer — grading + advance', () => {
     expect(res.body.result.correct).toBe(true);
     expect(res.body.result.correctAnswer).toBe('a');
     expect(typeof res.body.result.explain).toBe('string');
-    expect(res.body.next).not.toBeNull();
-    expect(res.body.next.section).toBe('listening'); // schedule[1]
-    expect(res.body.progress).toEqual({ ordinal: 2, total: 8 });
+    // The answer response carries the reveal + run-progress only — the next
+    // item is served by the separate /next call.
+    expect(res.body).not.toHaveProperty('next');
+    expect(res.body.done).toBe(false);
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 8 });
+
+    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(nxt.status).toBe(200);
+    expect(nxt.body.next).not.toBeNull();
+    expect(nxt.body.next.section).toBe('listening'); // schedule[1]
+    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 8 });
     // The next item is still answer-stripped.
-    expect(res.body.next).not.toHaveProperty('correctAnswer');
-    expect(res.body.next).not.toHaveProperty('explain');
+    expect(nxt.body.next).not.toHaveProperty('correctAnswer');
+    expect(nxt.body.next).not.toHaveProperty('correct_answer');
+    expect(nxt.body.next).not.toHaveProperty('explain');
   });
 
   it('a wrong pick grades incorrect', async () => {
@@ -222,7 +233,7 @@ describe('POST /diagnostic/:runId/answer — grading + advance', () => {
     expect(res.body.result.correctAnswer).toBe('a');
   });
 
-  it('a skip (picked:null) is graded incorrect but advances', async () => {
+  it('a skip (picked:null) is graded incorrect but the run advances', async () => {
     await seedFullPool();
     const { agent } = await registerUser(t.app, pg.pool);
     const start = await agent.post('/diagnostic').send({});
@@ -232,7 +243,10 @@ describe('POST /diagnostic/:runId/answer — grading + advance', () => {
       .send({ responseId: item.responseId, picked: null });
     expect(res.status).toBe(200);
     expect(res.body.result.correct).toBe(false);
-    expect(res.body.next).not.toBeNull();
+    expect(res.body.done).toBe(false);
+    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(nxt.status).toBe(200);
+    expect(nxt.body.next).not.toBeNull();
   });
 
   it('rejects an out-of-order / stale responseId with 409', async () => {
@@ -313,12 +327,15 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
     const start = await agent.post('/diagnostic').send({});
     const { runId, item } = start.body;
 
-    // First answer succeeds and serves item #2.
+    // First answer succeeds; /next then serves item #2.
     const first = await agent
       .post(`/diagnostic/${runId}/answer`)
       .send({ responseId: item.responseId, picked: 'a' });
     expect(first.status).toBe(200);
-    expect(first.body.next).not.toBeNull();
+    expect(first.body.done).toBe(false);
+    const served = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(served.status).toBe(200);
+    expect(served.body.next).not.toBeNull();
 
     // θ after one correct answer at SEED_THETA (4.0), step n=1 (1.0) → 5.0.
     const thetaAfterFirst = await pg.pool.query<{ ability_estimate: string }>(
@@ -363,6 +380,199 @@ describe('POST /diagnostic/:runId/answer — concurrent double-answer (B1)', () 
   });
 });
 
+describe('answer/next decoupling (B-006)', () => {
+  afterEach(() => {
+    // Restore the default deterministic stub for the rest of the suite.
+    setClaudeProxy(makeStubProxy());
+    resetLimiters();
+  });
+
+  it('/answer never calls the Claude proxy — the reveal returns even when generation is down', async () => {
+    // A proxy whose generation is hard-down AND counts invocations. Pre-fix,
+    // /answer generated the next item inline, so answering the item BEFORE a
+    // vocab/grammar ordinal called Claude in the request path and a Claude
+    // outage turned the reveal into a 502. Post-fix, /answer must succeed
+    // without ever touching the proxy; only /next pays the generation cost.
+    let genCalls = 0;
+    setClaudeProxy(
+      makeStubProxy({
+        generateDiagnosticItem: async () => {
+          genCalls += 1;
+          throw new Error('claude is down — generation must not run inline');
+        },
+      }),
+    );
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Schedule: 1 reading, 2 listening, 3 vocab. Start serves reading (topik).
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+
+    // Grade item 1 — reveal arrives, no Claude call in the request path.
+    const ans1 = await agent
+      .post(`/diagnostic/${start.body.runId}/answer`)
+      .send({ responseId: start.body.item.responseId, picked: 'a' });
+    expect(ans1.status).toBe(200);
+    expect(ans1.body.result.correctAnswer).toBe('a');
+    expect(genCalls).toBe(0);
+
+    // Serve + grade item 2 (listening — also topik, still no Claude).
+    const next2 = await agent.post(`/diagnostic/${start.body.runId}/next`).send({});
+    expect(next2.status).toBe(200);
+    expect(next2.body.next.section).toBe('listening');
+    expect(genCalls).toBe(0);
+    const ans2 = await agent
+      .post(`/diagnostic/${start.body.runId}/answer`)
+      .send({ responseId: next2.body.next.responseId, picked: 'a' });
+    // Ordinal 3 is vocab (Claude-generated). Pre-fix THIS call generated it
+    // inline and 502'd under the outage; now it grades cleanly.
+    expect(ans2.status).toBe(200);
+    expect(ans2.body.result.correct).toBe(true);
+    expect(genCalls).toBe(0);
+
+    // The generation cost (and its failure) lives on /next alone.
+    const next3 = await agent.post(`/diagnostic/${start.body.runId}/next`).send({});
+    expect(next3.status).toBe(502);
+    expect(genCalls).toBe(1);
+  });
+
+  it('/next is idempotent: re-serving the pending item burns no extra generation', async () => {
+    let genCalls = 0;
+    setClaudeProxy(
+      makeStubProxy({
+        generateDiagnosticItem: async (input) => {
+          genCalls += 1;
+          return {
+            result: {
+              kind: input.section === 'grammar' ? ('pattern' as const) : ('synonym' as const),
+              prompt: `mock ${input.section} question`,
+              choices: [
+                { kr: '정답', en: '' },
+                { kr: '오답 1', en: '' },
+                { kr: '오답 2', en: '' },
+                { kr: '오답 3', en: '' },
+              ],
+              answerIndex: 0,
+              explain: 'mock explain',
+            },
+            metadata: {
+              model: 'claude-sonnet-4-6' as const,
+              cacheHit: false,
+              latencyMs: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              cachedInputTokens: 0,
+              cacheCreationInputTokens: 0,
+              costEstimateUsd: 0,
+              requestId: 'test-idempotent-next',
+            },
+          };
+        },
+      }),
+    );
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/diagnostic').send({});
+    const runId = start.body.runId;
+
+    // Before anything is answered, /next re-serves the CURRENT pending item
+    // (lost-response recovery), answer-stripped, without a new row.
+    const reServe = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(reServe.status).toBe(200);
+    expect(reServe.body.next.responseId).toBe(start.body.item.responseId);
+    expect(reServe.body.next).not.toHaveProperty('correctAnswer');
+    expect(reServe.body.next).not.toHaveProperty('explain');
+
+    // Walk to ordinal 3 (vocab — generated).
+    await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: start.body.item.responseId, picked: 'a' });
+    const n2 = await agent.post(`/diagnostic/${runId}/next`).send({});
+    await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: n2.body.next.responseId, picked: 'a' });
+
+    const n3a = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(n3a.status).toBe(200);
+    expect(n3a.body.next.section).toBe('vocab');
+    expect(genCalls).toBe(1);
+
+    // A duplicate /next (double-fired prefetch / retry) re-serves the SAME
+    // pending item and does NOT generate again.
+    const n3b = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(n3b.status).toBe(200);
+    expect(n3b.body.next.responseId).toBe(n3a.body.next.responseId);
+    expect(genCalls).toBe(1);
+
+    // Exactly one unanswered item in flight — the invariant held.
+    const inflight = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM diagnostic_responses
+        WHERE run_id = $1 AND answered_at IS NULL`,
+      [runId],
+    );
+    expect(inflight.rows[0]?.n).toBe('1');
+  });
+
+  it("/next 404s on another user's run and 409s on a finished run", async () => {
+    await seedFullPool();
+    const a = await registerUser(t.app, pg.pool);
+    const start = await a.agent.post('/diagnostic').send({});
+    const runId = start.body.runId;
+
+    // IDOR: B cannot pull items from A's run.
+    const b = await registerUser(t.app, pg.pool);
+    const idor = await b.agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(idor.status).toBe(404);
+
+    // Drive A's run to finished, then /next must 409 (not serve or generate).
+    let current: { responseId: number } | null = start.body.item;
+    while (current !== null) {
+      const ans = await a.agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await a.agent.post(`/diagnostic/${runId}/next`).send({});
+      current = nxt.body.next;
+    }
+    const fin = await a.agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+    const afterFinish = await a.agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(afterFinish.status).toBe(409);
+  });
+
+  it('answering the last scheduled item reports done:true (client finishes without /next)', async () => {
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/diagnostic').send({});
+    const runId = start.body.runId;
+
+    let current: { responseId: number } | null = start.body.item;
+    let lastAnswer: Record<string, unknown> | null = null;
+    while (current !== null) {
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      expect(ans.status).toBe(200);
+      lastAnswer = ans.body;
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      current = nxt.body.next;
+    }
+    // The full 8-slot schedule was servable, so the final grade says done and
+    // points progress at the last ordinal.
+    expect(lastAnswer?.done).toBe(true);
+    expect(lastAnswer?.progress).toEqual({ ordinal: 8, total: 8 });
+  });
+});
+
 describe('full run → finish → latest', () => {
   /** Drive a run start→finish, picking `pick` each time. Returns the snapshot. */
   async function runToFinish(
@@ -371,13 +581,21 @@ describe('full run → finish → latest', () => {
   ): Promise<{ runId: number; snapshot: Record<string, unknown> }> {
     const start = await agent.post('/diagnostic').send({});
     const runId: number = start.body.runId;
-    // Answer every served item, following the `next` chain until it is null.
+    // Answer every served item; between answers fetch the next item via /next
+    // (the B-006 split) until `done` or `next: null`.
     let current: { responseId: number } | null = start.body.item;
     while (current !== null) {
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
         .send({ responseId: current.responseId, picked: pick });
-      current = ans.body.next;
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
     }
     const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
     expect(fin.status).toBe(200);
@@ -547,14 +765,23 @@ describe('empty pool handling', () => {
     // First served item must be a generated one (reading/listening empty).
     expect(['vocab', 'grammar']).toContain(start.body.item.section);
 
-    // Answer through to finish, following the `next` chain.
+    // Answer through to finish, fetching each following item via /next. The
+    // empty reading/listening pools end the run early: /next returns null
+    // before the full 8-slot schedule is used.
     let current: { responseId: number } | null = start.body.item;
     const runId = start.body.runId;
     while (current !== null) {
       const ans = await agent
         .post(`/diagnostic/${runId}/answer`)
         .send({ responseId: current.responseId, picked: 'a' });
-      current = ans.body.next;
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
     }
     const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
     expect(fin.status).toBe(200);
