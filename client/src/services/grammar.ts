@@ -13,6 +13,7 @@ import { api } from './api';
 import type {
   BankGrammarBody,
   BankedGrammarList,
+  BankedGrammarRow,
   IdentifyPatternBody,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -76,6 +77,38 @@ export async function listBanked(
 ): Promise<BankedGrammarList> {
   return api.get<BankedGrammarList>(
     '/grammar/bank',
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /grammar/bank/:id/graduate — mark a banked pattern as known.
+ * Removes it from active learning (drill pool, due reviews, weekly picks);
+ * idempotent server-side (the original graduated_at is kept on a repeat).
+ * `id` is the grammar bank row id from `BankedGrammarRow.id`, NOT a KGIU id.
+ */
+export async function graduatePattern(
+  id: number,
+  signal?: AbortSignal,
+): Promise<{ entry: BankedGrammarRow }> {
+  return api.post<{ entry: BankedGrammarRow }>(
+    `/grammar/bank/${String(id)}/graduate`,
+    {},
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /grammar/bank/:id/readmit — return a graduated pattern to active
+ * learning. Its production card resurfaces with FSRS state intact.
+ */
+export async function readmitPattern(
+  id: number,
+  signal?: AbortSignal,
+): Promise<{ entry: BankedGrammarRow }> {
+  return api.post<{ entry: BankedGrammarRow }>(
+    `/grammar/bank/${String(id)}/readmit`,
+    {},
     signal !== undefined ? { signal } : undefined,
   );
 }

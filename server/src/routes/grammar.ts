@@ -2,6 +2,7 @@
  * /grammar routes — user grammar bank + KGIU corpus search.
  */
 import { Router } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
@@ -176,9 +177,13 @@ router.post('/bank', cheapLimiter(), validateBody(BankBodySchema), async (req, r
 router.get('/bank', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+    // graduated_at (migration 033) rides along so the client can split the
+    // bank into active vs known/graduated without a second endpoint: NULL =
+    // active learning, non-NULL = graduated. Graduated rows are still
+    // returned — they are banked, just retired from the drill/review loop.
     const { rows } = await query(
       `SELECT id, pattern_key, pattern_display, summary_en, proficiency,
-              category, register, discovered_via, created_at
+              category, register, discovered_via, created_at, graduated_at
          FROM grammar_entries
         WHERE user_id = $1 AND deleted_at IS NULL
         ORDER BY created_at DESC`,
@@ -189,6 +194,67 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
+
+/* ---------- Graduate / re-admit a banked pattern (migration 033) ---------- */
+
+const BankIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive(),
+});
+
+/**
+ * Shared handler for the two graduation state flips. Ownership is enforced in
+ * the UPDATE itself (`user_id = $2`): a row that exists but belongs to another
+ * user updates nothing and falls to the same 404 as a nonexistent id — no
+ * cross-user existence leak (mirrors the vocab-cards reviews route posture).
+ * Soft-deleted rows are likewise untouchable (`deleted_at IS NULL`).
+ *
+ * GRADUATE is idempotent on the timestamp: COALESCE keeps the original
+ * graduated_at on a double-tap instead of silently sliding it forward.
+ * RE-ADMIT nulls it. Both bump `version` (manual optimistic-concurrency bump
+ * per ADR-001 §D6, matching the POST /bank upsert) and return the updated row
+ * in the same wire shape as a GET /grammar/bank entry.
+ */
+function setGraduation(graduate: boolean) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const userId = getUserId(req);
+      const id = (req as typeof req & {
+        validatedParams: z.infer<typeof BankIdParamsSchema>;
+      }).validatedParams.id;
+      const { rows } = await query<{ id: string }>(
+        `UPDATE grammar_entries
+            SET graduated_at = ${graduate ? 'COALESCE(graduated_at, now())' : 'NULL'},
+                version      = version + 1
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+          RETURNING id, pattern_key, pattern_display, summary_en, proficiency,
+                    category, register, discovered_via, created_at, graduated_at`,
+        [id, userId],
+      );
+      if (rows.length === 0) throw new NotFoundError('grammar entry not found');
+      // pg returns BIGINT as a string; the API contract documents id as a
+      // JSON number (fits comfortably in Number.MAX_SAFE_INTEGER).
+      res.status(200).json({ entry: { ...rows[0]!, id: Number(rows[0]!.id) } });
+    } catch (err) {
+      next(err);
+    }
+  };
+}
+
+/** POST /grammar/bank/:id/graduate — mark a banked pattern as known. */
+router.post(
+  '/bank/:id/graduate',
+  cheapLimiter(),
+  validateParams(BankIdParamsSchema),
+  setGraduation(true),
+);
+
+/** POST /grammar/bank/:id/readmit — return a graduated pattern to active learning. */
+router.post(
+  '/bank/:id/readmit',
+  cheapLimiter(),
+  validateParams(BankIdParamsSchema),
+  setGraduation(false),
+);
 
 /* ---------- Weekly suggestions (suggest-only — no auto-add) ---------- */
 
@@ -219,6 +285,10 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
  *   - Ordering: md5(iso_week || user_id || entry.id) — same set all week,
  *     rotates at the Asia/Seoul ISO-week boundary.
  *   - LIMIT 15.
+ *   - GRADUATED patterns (migration 033) stay excluded BY DESIGN: the
+ *     NOT-EXISTS below matches any non-deleted banked row and deliberately
+ *     ignores graduated_at — a pattern the user has marked as known must not
+ *     be re-suggested for study. Pinned by a route test.
  *
  * Read-only, auth-required, cheap limiter. The only SQL input is the session
  * user id (never client-supplied) and the server-side date.

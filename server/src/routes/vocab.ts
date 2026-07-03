@@ -141,6 +141,17 @@ router.get(
       // the read user-isolated even if a card's FK were ever cross-user (it cannot
       // be — FK + per-user writes — but defense-in-depth). Vocab semantics are
       // unchanged: same WHERE/ORDER/LIMIT, same existing columns.
+      //
+      // GRADUATION (migration 033): a grammar production card whose entry the
+      // user marked as known (grammar_entries.graduated_at IS NOT NULL) is NOT
+      // due — that's the whole point of graduating a pattern. The predicate is
+      // in the WHERE (not the JOIN condition): moving it into the LEFT JOIN's
+      // ON would merely null the joined columns and still return the card.
+      // Guarded on `c.grammar_entry_id IS NULL OR …` so non-grammar cards
+      // (vocab / sentence / topik — where ge.* is NULL) are untouched, and a
+      // soft-deleted entry's card keeps its existing pass-through behavior.
+      // Re-admission nulls graduated_at and the card resurfaces with its FSRS
+      // state intact (nothing on vocab_cards is modified either way).
       const { rows } = await query<{
         id: number;
         face: string;
@@ -174,6 +185,7 @@ router.get(
             AND c.deleted_at IS NULL
             AND c.suspended_at IS NULL
             AND c.due_at <= now()
+            AND (c.grammar_entry_id IS NULL OR ge.graduated_at IS NULL)
           ORDER BY c.due_at
           LIMIT $2`,
         [userId, q.limit],

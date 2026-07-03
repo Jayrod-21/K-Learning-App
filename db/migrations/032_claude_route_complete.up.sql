@@ -1,0 +1,31 @@
+-- 032 (up): finish aligning claude_route with the code's RouteName union.
+--
+-- 031 added the two grammar-drill routes. Auditing the full RouteName union
+-- (server/src/services/claude/config.ts) against the enum surfaced two MORE
+-- routes the proxy assigns that were never added to claude_route:
+--   * image_ocr       — LIVE: POST image OCR (server/src/routes/images.ts) sets
+--                       route 'image_ocr' (index.ts:402). Every call currently
+--                       fails the claude_cache + claude_usage write with
+--                       `invalid input value for enum claude_route` — i.e. image
+--                       OCR is uncached (full paid call each time) and untracked,
+--                       the same defect 031 fixed for the grammar drill.
+--   * diagnostic_item — the diagnostic proxy route (index.ts:361).
+-- Adding both makes the enum mirror RouteName exactly, so no code-declared
+-- route can hit the cache/usage-write failure again.
+--
+-- NOTE: 'anon' is deliberately NOT added. It is the rate-limit bucket-key
+-- fallback (rate_limit.ts; index.ts uses String(userId) ?? 'anon'), never a
+-- RouteName written to claude_cache.route / claude_usage.route. Adding it would
+-- break the enum == RouteName invariant this migration exists to establish and
+-- is irreversible (ALTER TYPE ... ADD VALUE cannot be undone).
+--
+-- Same safety as 031/028: ADD VALUE runs inside migrate.py's per-migration
+-- transaction on PG12+ because the values are only added here, not used (the
+-- server writes them from separate runtime transactions).
+--
+-- DRIFT GUARD: server/tests/db/claude_route_enum.test.ts asserts, against a
+-- freshly-migrated database, that this enum equals the RouteName union exactly
+-- (both directions), so this drift can't silently recur.
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'image_ocr';
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'diagnostic_item';

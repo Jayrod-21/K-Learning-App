@@ -6,6 +6,8 @@
  *   GET  /grammar/kgiu/:id
  *   POST /grammar/bank
  *   GET  /grammar/bank
+ *   POST /grammar/bank/:id/graduate   (migration 033)
+ *   POST /grammar/bank/:id/readmit    (migration 033)
  *   POST /grammar/identify   (B4 downstream)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -13,6 +15,7 @@ import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedKgiuEntry } from '../helpers/seed.js';
+import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -32,6 +35,12 @@ beforeEach(async () => {
     'TRUNCATE TABLE grammar_entries, sessions, users RESTART IDENTITY CASCADE',
   );
   t = buildTestApp({ connectionString: pg.connectionString });
+  // Rate limiters are module singletons — rebuilding the app above does NOT
+  // reset them. Without this the /grammar/identify expensive-limiter tests are
+  // order-coupled: the RESTART IDENTITY reuses user_id = 1 every test and the
+  // 429-burst block would leave the u:1 bucket saturated for any test that runs
+  // after it in a shuffled order. Mirrors vocab.test.ts. (C-SF-1, bar §5.3 P0)
+  resetLimiters();
 });
 
 describe('grammar — auth required', () => {
@@ -40,6 +49,8 @@ describe('grammar — auth required', () => {
     ['GET', '/grammar/kgiu/1'],
     ['POST', '/grammar/bank'],
     ['GET', '/grammar/bank'],
+    ['POST', '/grammar/bank/1/graduate'],
+    ['POST', '/grammar/bank/1/readmit'],
     ['POST', '/grammar/identify'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
     const res =
@@ -201,6 +212,111 @@ describe('GET /grammar/bank', () => {
   });
 });
 
+describe('POST /grammar/bank/:id/graduate + /readmit (migration 033)', () => {
+  const bankBody = {
+    pattern_key: 'GR-a-eo-boida',
+    pattern_display: '-아/어 보이다',
+    summary_en: 'appears / seems',
+    proficiency: 'L3' as const,
+    category: 'aspect',
+  };
+
+  it('migration 033: grammar_entries.graduated_at exists, TIMESTAMPTZ, nullable', async () => {
+    const { rows } = await pg.pool.query<{
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT data_type, is_nullable
+         FROM information_schema.columns
+        WHERE table_name = 'grammar_entries' AND column_name = 'graduated_at'`,
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.data_type).toBe('timestamp with time zone');
+    expect(rows[0]!.is_nullable).toBe('YES');
+  });
+
+  it('graduate sets graduated_at and returns the updated row', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const banked = await agent.post('/grammar/bank').send(bankBody);
+    expect(banked.status).toBe(201);
+    const id = banked.body.id as number;
+
+    const res = await agent.post(`/grammar/bank/${String(id)}/graduate`);
+    expect(res.status).toBe(200);
+    expect(res.body.entry.id).toBe(id);
+    expect(res.body.entry.pattern_key).toBe('GR-a-eo-boida');
+    expect(res.body.entry.graduated_at).not.toBeNull();
+
+    // A fresh row starts active (graduated_at null on the bank list) and the
+    // graduated row still appears in GET /grammar/bank — carrying the flag
+    // the client splits Active vs Known on.
+    const bank = await agent.get('/grammar/bank').expect(200);
+    expect(bank.body.entries.length).toBe(1);
+    expect(bank.body.entries[0].graduated_at).not.toBeNull();
+  });
+
+  it('graduate is idempotent — a repeat keeps the original timestamp', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const banked = await agent.post('/grammar/bank').send(bankBody);
+    const id = banked.body.id as number;
+
+    const first = await agent
+      .post(`/grammar/bank/${String(id)}/graduate`)
+      .expect(200);
+    const second = await agent
+      .post(`/grammar/bank/${String(id)}/graduate`)
+      .expect(200);
+    expect(second.body.entry.graduated_at).toBe(first.body.entry.graduated_at);
+  });
+
+  it('readmit restores the pattern to active (graduated_at back to null)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const banked = await agent.post('/grammar/bank').send(bankBody);
+    const id = banked.body.id as number;
+    await agent.post(`/grammar/bank/${String(id)}/graduate`).expect(200);
+
+    const res = await agent.post(`/grammar/bank/${String(id)}/readmit`);
+    expect(res.status).toBe(200);
+    expect(res.body.entry.graduated_at).toBeNull();
+
+    const bank = await agent.get('/grammar/bank').expect(200);
+    expect(bank.body.entries[0].graduated_at).toBeNull();
+  });
+
+  it("cannot graduate another user's row → 404 (no existence leak)", async () => {
+    const userA = await registerUser(t.app, pg.pool);
+    const banked = await userA.agent.post('/grammar/bank').send(bankBody);
+    const id = banked.body.id as number;
+
+    const userB = await registerUser(t.app, pg.pool);
+    const res = await userB.agent.post(`/grammar/bank/${String(id)}/graduate`);
+    expect(res.status).toBe(404);
+
+    // A's row is untouched.
+    const bank = await userA.agent.get('/grammar/bank').expect(200);
+    expect(bank.body.entries[0].graduated_at).toBeNull();
+  });
+
+  it("cannot readmit another user's row → 404", async () => {
+    const userA = await registerUser(t.app, pg.pool);
+    const banked = await userA.agent.post('/grammar/bank').send(bankBody);
+    const id = banked.body.id as number;
+    await userA.agent.post(`/grammar/bank/${String(id)}/graduate`).expect(200);
+
+    const userB = await registerUser(t.app, pg.pool);
+    const res = await userB.agent.post(`/grammar/bank/${String(id)}/readmit`);
+    expect(res.status).toBe(404);
+  });
+
+  it('unknown id → 404; non-numeric id → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.post('/grammar/bank/99999999/graduate')).status).toBe(404);
+    expect((await agent.post('/grammar/bank/99999999/readmit')).status).toBe(404);
+    expect((await agent.post('/grammar/bank/abc/graduate')).status).toBe(400);
+    expect((await agent.post('/grammar/bank/abc/readmit')).status).toBe(400);
+  });
+});
+
 describe('GET /grammar/suggestions/weekly', () => {
   // kgiu_entries is shared reference data the per-test beforeEach does NOT
   // truncate; isolate this block by clearing it (CASCADE drops the relation /
@@ -260,6 +376,28 @@ describe('GET /grammar/suggestions/weekly', () => {
     expect(patterns).not.toContain(bankedPattern);
     // …while a different, un-banked pattern is still suggested.
     expect(patterns).toContain(freshPattern);
+  });
+
+  it('keeps a GRADUATED banked pattern excluded (not re-suggested as study material)', async () => {
+    const knownPattern = '-아/어 보이다';
+    await seedKgiuEntry(pg.pool, { pattern: knownPattern });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const banked = await agent.post('/grammar/bank').send({
+      pattern_key: 'GR-a-eo-boida',
+      pattern_display: knownPattern,
+      summary_en: 'appears / seems',
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    expect(banked.status).toBe(201);
+    await agent
+      .post(`/grammar/bank/${String(banked.body.id)}/graduate`)
+      .expect(200);
+    // Graduated ≠ unbanked: the pattern the user marked as known must not
+    // come back around in the weekly picks.
+    const res = await agent.get('/grammar/suggestions/weekly').expect(200);
+    const patterns = (res.body.patterns as Array<{ pattern: string }>).map((s) => s.pattern);
+    expect(patterns).not.toContain(knownPattern);
   });
 
   it('excludes structural empty-pattern rows from the weekly picks', async () => {

@@ -24,6 +24,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
+  BankGrammarBody,
   BankedGrammarList,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -36,6 +37,8 @@ const services = vi.hoisted(() => ({
   bankPattern: vi.fn(),
   getPattern: vi.fn(),
   identifyPattern: vi.fn(),
+  graduatePattern: vi.fn(),
+  readmitPattern: vi.fn(),
 }));
 
 const drillServices = vi.hoisted(() => ({
@@ -99,7 +102,49 @@ const ROW_2: KgiuEntrySummary = {
   source_pages: null,
 };
 
+/** A BEGINNER-corpus row, a different level than ROW/ROW_2 (intermediate).
+ *  Used to prove the List level filter never hides banked patterns of other
+ *  levels (B-SF-1): filtering to Beginner narrows the List to this row only. */
+const BEGINNER_ROW: KgiuEntrySummary = {
+  id: 10,
+  corpus: 'kgiu_beginner',
+  source_id: 'KGIU-BEG-001',
+  pattern: '-이다',
+  title_en: 'to be (copula)',
+  category: 'copula',
+  proficiency: 'beginner',
+  unit: 'Unit 1',
+  source_pages: null,
+};
+
 const EMPTY_BANK: BankedGrammarList = { entries: [] };
+
+/** Server bank rows matching ROW / ROW_2 (grammarKey-derived pattern keys). */
+const BANKED_ROW = {
+  id: 501,
+  pattern_key: 'GR-kgiu-int-007',
+  pattern_display: '-더라도',
+  summary_en: 'even if / even though',
+  proficiency: 'L4',
+  category: 'concessive',
+  register: null,
+  discovered_via: 'manual',
+  created_at: '2026-06-01T00:00:00Z',
+  graduated_at: null,
+};
+
+const BANKED_ROW_2 = {
+  id: 502,
+  pattern_key: 'GR-kgiu-int-008',
+  pattern_display: '-느라고',
+  summary_en: 'because of doing X',
+  proficiency: 'L4',
+  category: 'causal',
+  register: null,
+  discovered_via: 'manual',
+  created_at: '2026-06-01T00:00:00Z',
+  graduated_at: null,
+};
 
 const DETAIL: KgiuEntryDetail = {
   ...ROW,
@@ -139,6 +184,10 @@ function resetMocks(): void {
   // Default mock fallback resolves with the fixture — happy-path tests
   // don't need to set this per-case. The ErrorCard test overrides it.
   mocks.loadGrammarMock.mockResolvedValue(FIXTURE);
+  // The drill rotation persists its cursor to localStorage so it survives
+  // remounts (the live always-N이다 fix). Clear it so tests don't bleed a
+  // cursor into each other.
+  window.localStorage.clear();
 }
 
 beforeEach(() => {
@@ -175,20 +224,84 @@ describe('Grammar — list tab', () => {
     await waitFor(() => {
       expect(services.bankPattern).toHaveBeenCalledTimes(1);
     });
-    const body = services.bankPattern.mock.calls[0][0] as {
-      pattern_key: string;
-      pattern_display: string;
-      summary_en: string;
-    };
-    expect(body.pattern_key).toBe('KGIU-INT-007');
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    // grammarKey() derives the GR-shaped dedup key the server's
+    // `^GR-[a-z0-9_-]{1,64}$` regex requires (raw source_id would 400).
+    expect(body.pattern_key).toBe('GR-kgiu-int-007');
     expect(body.pattern_display).toBe('-더라도');
     expect(body.summary_en).toBe('even if / even though');
+    // No register on the row → the optional field is omitted, not nulled.
+    expect('register' in body).toBe(false);
     // Optimistic chip flip — the button label moves to "Banked".
     await waitFor(() => {
       expect(
         screen.getByRole('button', { name: /Already banked/i }),
       ).toBeInTheDocument();
     });
+  });
+
+  it('sanitizes the bank body: composite register dropped, empty category and summary defaulted', async () => {
+    // Live-corpus shaped row that used to 400 the bank POST: source_id is not
+    // GR-shaped, register is a composite value outside the server enum, and
+    // category/title_en are empty strings (min-1 fields server-side).
+    const messyRow: KgiuEntrySummary = {
+      id: 77,
+      corpus: 'kgiu_beginner',
+      source_id: 'kgiu-beginner-002',
+      pattern: 'N이다',
+      title_en: '',
+      category: '',
+      proficiency: 'beginner',
+      unit: 'Unit 1',
+      source_pages: null,
+      register: '해요체/합쇼체',
+    };
+    services.listPatterns.mockResolvedValue([messyRow]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.bankPattern.mockResolvedValue({ id: 2 });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    const bankBtn = await screen.findByRole('button', { name: /^Bank N이다$/ });
+    await user.click(bankBtn);
+
+    await waitFor(() => {
+      expect(services.bankPattern).toHaveBeenCalledTimes(1);
+    });
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    // Schema-valid key (BankBodySchema regex in server/src/routes/grammar.ts).
+    expect(body.pattern_key).toMatch(/^GR-[a-z0-9_-]{1,64}$/);
+    expect(body.pattern_key).toBe('GR-kgiu-beginner-002');
+    // Composite register is OMITTED entirely — not sent as an invalid value.
+    expect('register' in body).toBe(false);
+    // min(1) fields never go out empty.
+    expect(body.category).toBe('uncategorized');
+    expect(body.summary_en).toBe('N이다'); // falls back to the pattern
+    expect(body.pattern_display).toBe('N이다');
+    expect(body.proficiency).toBe('basic');
+  });
+
+  it('passes an exact-match register through to the bank body', async () => {
+    const rowWithRegister: KgiuEntrySummary = {
+      ...ROW,
+      register: '해요체',
+    };
+    services.listPatterns.mockResolvedValue([rowWithRegister]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.bankPattern.mockResolvedValue({ id: 3 });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    const bankBtn = await screen.findByRole('button', { name: /^Bank -더라도$/ });
+    await user.click(bankBtn);
+
+    await waitFor(() => {
+      expect(services.bankPattern).toHaveBeenCalledTimes(1);
+    });
+    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
+    expect(body.register).toBe('해요체');
   });
 
   it('shows an ErrorCard with Retry when BOTH real and mock fail', async () => {
@@ -211,58 +324,236 @@ describe('Grammar — list tab', () => {
   });
 });
 
-describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
-  it('drops optimistic entries that have been reconciled with the server bank settle', async () => {
-    // Setup: three patterns; initially zero are banked on the server.
+describe('Grammar — list level filter', () => {
+  it('fetches the FULL corpus page by default (limit 400, no corpus filter)', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    // First call: empty bank. Second call (after a refetch triggered by
-    // bankPattern's then-handler): includes the just-banked row, which
-    // is the reconciliation signal the prune effect keys on.
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    renderGrammar();
+
+    expect(await screen.findByText('-더라도')).toBeInTheDocument();
+    // The bare listPatterns() call this replaces inherited the server default
+    // limit of 20 — only the first 20 of 285 patterns ever showed. The List
+    // must request one full-corpus page.
+    expect(services.listPatterns).toHaveBeenCalledTimes(1);
+    const opts = services.listPatterns.mock.calls[0][0] as {
+      limit?: number;
+      corpus?: string;
+    };
+    expect(opts.limit).toBe(400);
+    expect(opts.corpus).toBeUndefined();
+  });
+
+  it('passes the corpus param for a level and refetches when the level changes', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-더라도');
+
+    await user.click(screen.getByRole('button', { name: 'Intermediate' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(2);
+    });
+    expect(services.listPatterns.mock.calls[1][0]).toMatchObject({
+      corpus: 'kgiu_intermediate',
+      limit: 400,
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(3);
+    });
+    expect(services.listPatterns.mock.calls[2][0]).toMatchObject({
+      corpus: 'kgiu_beginner',
+      limit: 400,
+    });
+
+    // Back to All → the corpus filter is OMITTED, not sent as a bogus value.
+    await user.click(screen.getByRole('button', { name: 'All' }));
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(4);
+    });
+    const allOpts = services.listPatterns.mock.calls[3][0] as {
+      limit?: number;
+      corpus?: string;
+    };
+    expect(allOpts.limit).toBe(400);
+    expect(allOpts.corpus).toBeUndefined();
+
+    // The selected level is reflected as a pressed state for AT users.
+    expect(
+      screen.getByRole('button', { name: 'All' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      screen.getByRole('button', { name: 'Intermediate' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
+describe('Grammar — banked tab + drill pool independent of level filter (B-SF-1)', () => {
+  /** listPatterns stub that answers per requested corpus, like the real KGIU
+   *  endpoint: 'all' (no corpus) returns every level; a corpus filter narrows
+   *  the List to that level only. */
+  function corpusScopedList(): void {
+    services.listPatterns.mockImplementation(
+      async (opts?: { corpus?: string }) => {
+        if (opts?.corpus === 'kgiu_beginner') return [BEGINNER_ROW];
+        if (opts?.corpus === 'kgiu_intermediate') return [ROW];
+        return [ROW, BEGINNER_ROW]; // 'all'
+      },
+    );
+  }
+
+  /** generateDrill stub that echoes the request pattern (scoped to this block —
+   *  the drill describe has its own copy). */
+  function echoGenerate(): void {
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 900,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+  }
+
+  it('keeps a banked intermediate pattern visible in the Banked tab when the List is filtered to Beginner', async () => {
+    corpusScopedList();
+    // The user has banked an INTERMEDIATE pattern (ROW → GR-kgiu-int-007).
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-이다'); // list loaded (level 'all')
+
+    // Banked tab shows the intermediate pattern.
+    await user.click(screen.getByRole('tab', { name: 'Banked' }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+
+    // Now filter the List to BEGINNER — the banked intermediate pattern is not
+    // in that corpus fetch. Pre-fix, the Banked tab derived from the filtered
+    // list and would LOSE the pattern.
+    await user.click(screen.getByRole('tab', { name: 'List' }));
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      // The List now shows only the beginner row…
+      expect(screen.getByText('-이다')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
+
+    // …but the Banked tab STILL shows the intermediate banked pattern, sourced
+    // from the user's bank list rather than the level-filtered corpus.
+    await user.click(screen.getByRole('tab', { name: 'Banked' }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+    // Active count reflects the banked pattern, not the filtered-out list.
+    expect(
+      screen.getByRole('button', { name: /^Active \(1\)/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('drills the banked pattern even when the List is filtered to a level that excludes it', async () => {
+    corpusScopedList();
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByText('-이다');
+
+    // Filter the List to Beginner (excludes the banked intermediate pattern).
+    await user.click(screen.getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
+    });
+
+    // The drill pool is the banked patterns, independent of the List filter:
+    // it drills the banked intermediate pattern, NOT the filtered beginner row.
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+      patternDisplay: '-더라도',
+    });
+  });
+});
+
+describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
+  it('drops a reconciled overlay entry so a pattern the server later drops reverts to bankable', async () => {
+    // TEETH: this test must FAIL if the prune effect (Grammar.tsx `useEffect`
+    // pruning `optimisticBanked` against `bankedState.data`) is removed. The
+    // toothless prior version asserted only "Already banked", which holds
+    // whether or not the overlay is pruned (the server settle alone renders it).
+    //
+    // The observable state that ONLY the prune produces: after row A is
+    // optimistically banked and reconciled (its key enters the server bank
+    // list), the overlay entry for A is dropped. So when a LATER server settle
+    // no longer reports A as banked (A removed elsewhere / never truly
+    // persisted), the merged `bankedKeys` view no longer contains A and row A's
+    // button reverts to "Bank". WITHOUT the prune, the stale overlay entry for A
+    // survives forever, so A would still read "Already banked" — the exact
+    // unbounded-overlay bug the prune exists to prevent.
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
     services.listBanked
+      // Initial mount: nothing banked.
       .mockResolvedValueOnce(EMPTY_BANK)
-      .mockResolvedValue({
-        entries: [
-          {
-            id: 99,
-            pattern_key: 'KGIU-INT-007',
-            pattern_display: '-더라도',
-            summary_en: 'even if',
-            proficiency: 'L4',
-            category: 'concessive',
-            register: null,
-            discovered_via: 'manual',
-            created_at: '2026-05-29T12:00:00Z',
-          },
-        ],
-      } satisfies BankedGrammarList);
+      // After banking A: the server confirms A (the reconciliation signal the
+      // prune keys on — A leaves the overlay here).
+      .mockResolvedValueOnce({ entries: [BANKED_ROW] } satisfies BankedGrammarList)
+      // After banking B: the server reports ONLY B. A is no longer banked
+      // server-side, so with a pruned overlay row A must revert to bankable.
+      .mockResolvedValue({ entries: [BANKED_ROW_2] } satisfies BankedGrammarList);
     services.bankPattern.mockResolvedValue({ id: 1 });
 
     const user = userEvent.setup();
     renderGrammar();
 
-    // Bank the row.
-    const bankBtn = await screen.findByRole('button', {
-      name: /^Bank -더라도$/,
-    });
-    await user.click(bankBtn);
-
-    // After the bank settles + the refetch returns the reconciled row,
-    // the chip shows "Already banked". The overlay prune effect has run:
-    // any optimistic entry now present in `bankedState.data` has been
-    // dropped from the set. The user-visible test for this is "the
-    // button still reads Already banked" (the optimistic overlay
-    // shrinking + the server settle including the row both render the
-    // same chip state). The contract this asserts is: after settle, the
-    // overlay isn't growing unbounded — the row is sourced from server
-    // truth, not from the overlay.
+    // Bank A → wait for the server settle to confirm it ("Already banked").
+    await user.click(
+      await screen.findByRole('button', { name: /^Bank -더라도$/ }),
+    );
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: /Already banked/i }),
+        screen.getByRole('button', { name: 'Already banked' }),
       ).toBeInTheDocument();
     });
-    // listBanked was called at least twice: initial + post-bank refetch.
-    // The second call (the refetch) is what the prune effect keys on.
-    expect(services.listBanked.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    // Bank B → its refetch (call 3) returns a server list WITHOUT A.
+    await user.click(
+      await screen.findByRole('button', { name: /^Bank -느라고$/ }),
+    );
+    await waitFor(() => {
+      expect(services.listBanked.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // Row A reverts to bankable — only possible because the prune dropped A
+    // from the overlay at its reconciliation, so the B-settle's server list
+    // (which omits A) governs. A surviving overlay entry would keep A banked.
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Bank -더라도' }),
+      ).toBeInTheDocument();
+    });
+    // Sanity: B is banked from server truth.
+    expect(
+      screen.getByRole('button', { name: 'Already banked' }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -330,7 +621,9 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
     expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
-      patternKey: 'KGIU-INT-007',
+      // Rows carry the same GR-shaped key the bank path uses, so drill
+      // history and the grammar bank dedup on one key namespace.
+      patternKey: 'GR-kgiu-int-007',
       patternDisplay: '-더라도',
     });
 
@@ -530,6 +823,128 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     expect(screen.queryByText(/Added to your review/)).not.toBeInTheDocument();
   });
 
+  // ── Drill rotation: Skip/Next must move to a DIFFERENT pattern ──────────
+  //
+  // Live bug (2026-07-02): the Drill tab regenerated N이다 (the first corpus
+  // row) forever — the rotation index reset to 0 on every DrillPanel remount
+  // (any tab switch / reload), so the learner never progressed. These tests
+  // pin the fixed contract: Skip advances the pattern, banked patterns are
+  // the preferred pool, and the cursor survives a remount.
+
+  /** generateDrill stub that echoes the request so assertions can read which
+   *  pattern each generate was for. */
+  function echoGenerate(): void {
+    let nextAttempt = 100;
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: (nextAttempt += 1),
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+  }
+
+  it('Skip advances the rotation to a DIFFERENT pattern', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+
+    await user.click(await screen.findByRole('button', { name: /^Skip$/ }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // The second generate is for the NEXT pattern — not a same-pattern reroll.
+    expect(drillServices.generateDrill.mock.calls[1][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('prefers the banked pool over the full list when the user has banked patterns', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // ROW_2 (-느라고) is banked; ROW is not. The drill must start from the
+    // banked pool, not from items[0].
+    services.listBanked.mockResolvedValue({
+      entries: [
+        {
+          id: 7,
+          pattern_key: 'GR-kgiu-int-008',
+          pattern_display: '-느라고',
+          summary_en: 'because of doing X',
+          proficiency: 'L4',
+          category: 'causal',
+          register: null,
+          discovered_via: 'manual',
+          created_at: '2026-06-01T00:00:00Z',
+          graduated_at: null,
+        },
+      ],
+    } satisfies BankedGrammarList);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('resumes the rotation across a remount instead of resetting to the first pattern (live always-N이다 regression)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    // Advance to the second pattern…
+    await user.click(await screen.findByRole('button', { name: /^Skip$/ }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+
+    // …then leave the Drill tab (unmounts DrillPanel) and come back.
+    await user.click(screen.getByRole('tab', { name: 'List' }));
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(3);
+    });
+    // The remount resumed at the persisted cursor (pattern #2) — NOT items[0],
+    // which is what produced the endless-N이다 live behaviour.
+    expect(drillServices.generateDrill.mock.calls[2][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+    });
+  });
+
   // ── FU-NF-42 B3: Drill tab opens focused on a deep-link target ──────────
 
   it('drills the deep-linked pattern from router state instead of the rotation', async () => {
@@ -580,5 +995,170 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     expect(
       screen.queryByText(/No grammar patterns to drill yet/i),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── Graduation: Banked tab Active | Known views + drill-pool exclusion ──────
+//
+// Graduating a pattern retires it from ACTIVE learning: it moves from the
+// Banked tab's Active view to the Known view, and the drill rotation must
+// never serve it. Re-admit is the inverse — the pattern returns to Active
+// (server-side its production card resurfaces in /vocab/cards/due with FSRS
+// state intact; that half is pinned by the server route tests).
+
+describe('Grammar — graduate / re-admit (Banked tab)', () => {
+  it('Graduate moves the pattern to the Known view and out of the drill pool', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // Initial bank: both patterns active. After the graduate refetch the
+    // server confirms ROW as graduated.
+    services.listBanked
+      .mockResolvedValueOnce({
+        entries: [BANKED_ROW, BANKED_ROW_2],
+      } satisfies BankedGrammarList)
+      .mockResolvedValue({
+        entries: [
+          { ...BANKED_ROW, graduated_at: '2026-07-02T10:00:00Z' },
+          BANKED_ROW_2,
+        ],
+      } satisfies BankedGrammarList);
+    services.graduatePattern.mockResolvedValue({
+      entry: { ...BANKED_ROW, graduated_at: '2026-07-02T10:00:00Z' },
+    });
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 900,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+
+    // Both banked patterns sit in the Active view with a Graduate action.
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Graduate -느라고' }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Graduate -더라도' }));
+
+    // The service was called with the BANK row id (grammar_entries.id), not
+    // the KGIU id.
+    await waitFor(() => {
+      expect(services.graduatePattern).toHaveBeenCalledWith(501);
+    });
+
+    // The pattern leaves the Active view (optimistic + server settle agree)…
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Graduate -더라도' }),
+      ).not.toBeInTheDocument();
+    });
+
+    // …and shows up in the Known view with a Re-admit action.
+    await user.click(screen.getByRole('button', { name: /^Known/ }));
+    expect(
+      await screen.findByRole('button', { name: 'Re-admit -더라도' }),
+    ).toBeInTheDocument();
+
+    // Drill pool: the rotation starts from the remaining ACTIVE banked
+    // pattern — the graduated one is never drilled.
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('Re-admit returns a Known pattern to the Active view (and the drill pool)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // Initial bank: ROW is graduated, ROW_2 active. After the re-admit
+    // refetch both are active.
+    services.listBanked
+      .mockResolvedValueOnce({
+        entries: [
+          { ...BANKED_ROW, graduated_at: '2026-07-01T09:00:00Z' },
+          BANKED_ROW_2,
+        ],
+      } satisfies BankedGrammarList)
+      .mockResolvedValue({
+        entries: [BANKED_ROW, BANKED_ROW_2],
+      } satisfies BankedGrammarList);
+    services.readmitPattern.mockResolvedValue({ entry: BANKED_ROW });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+
+    // The graduated pattern is NOT in the Active view…
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -느라고' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Graduate -더라도' }),
+    ).not.toBeInTheDocument();
+
+    // …it lives in the Known view.
+    await user.click(screen.getByRole('button', { name: /^Known/ }));
+    const readmitBtn = await screen.findByRole('button', {
+      name: 'Re-admit -더라도',
+    });
+    await user.click(readmitBtn);
+
+    await waitFor(() => {
+      expect(services.readmitPattern).toHaveBeenCalledWith(501);
+    });
+
+    // The Known view empties; the pattern is back in Active learning.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Re-admit -더라도' }),
+      ).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /^Active/ }));
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces an inline error and rewinds the optimistic move when Graduate fails', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+    services.graduatePattern.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    );
+
+    // Failure: inline error + the row stays in the Active view.
+    expect(
+      await screen.findByText(/Couldn't mark that pattern as known/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
   });
 });

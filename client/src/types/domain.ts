@@ -1028,6 +1028,16 @@ export interface KgiuEntrySummary {
   proficiency: string | null;
   unit: string | null;
   source_pages: unknown;
+  /**
+   * Raw corpus register string. The KGIU corpus stores free text here — often
+   * COMPOSITE values such as "해요체 / 하십시오체" or "formal/written" that
+   * are NOT members of the server's closed {@link RegisterLevel} set. The list
+   * endpoint doesn't return this column today; it is typed optional so a
+   * future server include is non-breaking. NEVER forward it raw into
+   * `BankGrammarBody.register` — sanitize against the RegisterLevel set first
+   * (see `buildBankBody` in pages/Grammar.tsx) or `POST /grammar/bank` 400s.
+   */
+  register?: string | null;
 }
 
 /** Server-side KGIU entry detail. */
@@ -1090,6 +1100,12 @@ export interface BankedGrammarRow {
   register: string | null;
   discovered_via: string;
   created_at: string;
+  /**
+   * When the user marked this pattern as known/graduated (migration 033).
+   * `null` = active learning (drill pool + review queue); a timestamp =
+   * retired from active learning until re-admitted.
+   */
+  graduated_at: string | null;
 }
 
 /** Envelope for `GET /grammar/bank`. */
