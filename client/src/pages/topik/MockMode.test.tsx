@@ -355,6 +355,39 @@ describe('MockMode (Mock test)', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('renders the shared reading passage before the choices in the exam (B-008)', async () => {
+    // A shared-passage item: the answer-stripped wire carries the reading text
+    // in `passage` (question content, never answer data) and the exam renders
+    // it before the choices — without it the item is unanswerable.
+    const passageText =
+      '도시의 도로는 대부분 아스팔트로 뒤덮여 있다. 그래서 비가 오면 빗물이 지하로 잘 흘러 들어가지 ( ㉠ ) 도로가 물에 잠기는 일도 자주 발생한다.';
+    svc.fetchMockTest.mockResolvedValueOnce({
+      ...TEST,
+      items: [{ ...TEST.items[0]!, passage: passageText }, TEST.items[1]!],
+    });
+    const user = userEvent.setup();
+    render(<MockMode />);
+
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('timer')).toBeInTheDocument();
+    });
+
+    const passage = screen.getByText(passageText);
+    expect(passage).toHaveClass('km-topik__passage');
+    const choices = screen.getByRole('radiogroup', { name: 'Answer choices' });
+    expect(
+      passage.compareDocumentPosition(choices) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // The second item is self-contained — stepping to it drops the block.
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.queryByText(passageText)).not.toBeInTheDocument();
+  });
+
   it('falls back to an error card (not a blank screen) when fetch + fixture both fail', async () => {
     svc.fetchMockTest.mockRejectedValueOnce(new Error('down'));
     const user = userEvent.setup();
