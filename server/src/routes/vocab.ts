@@ -1,9 +1,13 @@
 /**
  * /vocab routes — corpus lookup + FSRS card queue + reviews.
  *
- * The SRS-engine math (FSRS state transitions) lives in the client; the
- * server stores the BEFORE/AFTER snapshots the client computed (per
- * ADR-003). This keeps the server stateless of FSRS-version drift.
+ * The SRS-engine math (FSRS state transitions) is SERVER-authoritative
+ * (ADR-003 amendment, 2026-07-02): the client submits only its self-rating
+ * (Again/Hard/Good/Easy); the server reads the card's CURRENT state from
+ * vocab_cards, derives the next state via the shared engine
+ * (services/fsrs.ts — the same math grammar production drills use), and
+ * writes both the card advance and the append-only card_reviews snapshot.
+ * A stubbed or tampered client can no longer dictate `due_at`.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -13,6 +17,7 @@ import { validateBody, validateQuery, validateParams } from '../middleware/valid
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError } from '../middleware/errors.js';
 import { escapeLikePattern } from '../db/like.js';
+import { dueDelayMs, schedule, type CardFsrs, type FsrsStateName } from '../services/fsrs.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -159,6 +164,7 @@ router.get(
         stability: string;
         difficulty: string;
         fsrs_state: string;
+        version: number;
         vocab_entry_id: number | null;
         grammar_entry_id: number | null;
         source_sentence_id: number | null;
@@ -171,7 +177,10 @@ router.get(
         // the drill resolves the SAME grammar_entries row (the server keys on
         // (user, pattern_key), not the numeric id). Without it the re-drill mints
         // a parallel entry and the due card never clears. See FU-NF-42 B3.
-        `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state,
+        // c.version is REQUIRED on the wire: the client echoes it back as
+        // submitReview's `expected_version` (optimistic concurrency). Without
+        // it every rating would post `expected_version: undefined` and 400.
+        `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state, c.version,
                 c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
                 ge.pattern_display AS grammar_pattern_display,
                 ge.summary_en      AS grammar_summary_en,
@@ -213,16 +222,18 @@ const ReviewParamsSchema = z.object({
   cardId: z.coerce.number().int().positive(),
 });
 
+/**
+ * Server-authoritative review body (ADR-003 amendment, 2026-07-02): the client
+ * sends ONLY its self-rating + the optimistic-concurrency version snapshot.
+ * Every `*_before` / `*_after` FSRS value is computed server-side from the
+ * card's DB row — client-supplied state/interval fields are deliberately NOT
+ * accepted (defends against schedule tampering: a client sending
+ * `scheduled_days_after: 0` — or 3650 — must not control `due_at`). The
+ * default zod object strips unknown keys, so a stale pre-cutover client still
+ * sending the old snapshot fields degrades gracefully instead of 400ing.
+ */
 const ReviewBodySchema = z.object({
   rating: z.enum(['again', 'hard', 'good', 'easy']),
-  state_before: z.enum(['new', 'learning', 'review', 'relearning']),
-  stability_before: z.number().nonnegative(),
-  difficulty_before: z.number().min(1).max(10),
-  elapsed_days_before: z.number().int().min(-1),
-  state_after: z.enum(['new', 'learning', 'review', 'relearning']),
-  stability_after: z.number().nonnegative(),
-  difficulty_after: z.number().min(1).max(10),
-  scheduled_days_after: z.number().int().nonnegative(),
   duration_ms: z.number().int().nonnegative().optional(),
   expected_version: z.number().int().positive(),
 });
@@ -240,8 +251,6 @@ router.post(
       }).validatedParams.cardId;
       const body = req.body as z.infer<typeof ReviewBodySchema>;
 
-      const dueAt = new Date(Date.now() + body.scheduled_days_after * 86_400_000);
-
       const out = await withTransaction(async (client) => {
         // FU-NF-8 (FOLLOW_UPS.md, 2026-05-29): the prior single-UPDATE
         // implementation conflated "card doesn't exist / not yours / soft-
@@ -257,9 +266,19 @@ router.post(
         // We also take ``FOR UPDATE`` on the SELECT to serialize concurrent
         // reviewers of the same card — the row lock is brief (we UPDATE
         // immediately after) and prevents two reviewers from both passing
-        // the existence check.
-        const existing = await client.query<{ version: number }>(
-          `SELECT version
+        // the existence check. The SELECT is also the AUTHORITATIVE source
+        // of the `*_before` snapshot: the FSRS input state comes from the
+        // locked DB row, never from the request (ADR-003 D2 stays
+        // trustworthy for re-tuning even against a hostile client).
+        const existing = await client.query<{
+          fsrs_state: FsrsStateName;
+          stability: string;
+          difficulty: string;
+          reps: number;
+          lapses: number;
+          version: number;
+        }>(
+          `SELECT fsrs_state, stability, difficulty, reps, lapses, version
              FROM vocab_cards
             WHERE id = $1
               AND user_id = $2
@@ -270,6 +289,24 @@ router.post(
         if (existing.rowCount === 0) {
           throw new NotFoundError('vocab card not found');
         }
+        const card = existing.rows[0]!;
+
+        // Derive the next FSRS state from the card's CURRENT state + the
+        // user's rating — the same shared engine grammar production drills
+        // use, so both card families follow one schedule policy.
+        const current: CardFsrs = {
+          state: card.fsrs_state,
+          stability: Number(card.stability),
+          difficulty: Number(card.difficulty),
+          reps: card.reps,
+          lapses: card.lapses,
+        };
+        const next = schedule(current, body.rating);
+
+        // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
+        // re-queues ~10 min from now (relearning) rather than immediately —
+        // never "due now" again (the pre-cutover stub bug).
+        const dueAt = new Date(Date.now() + dueDelayMs(next));
 
         // Optimistic concurrency: bump only if version matches.
         const upd = await client.query<{ version: number }>(
@@ -292,10 +329,10 @@ router.post(
           [
             cardId,
             userId,
-            body.state_after,
-            body.stability_after,
-            body.difficulty_after,
-            body.scheduled_days_after,
+            next.state,
+            next.stability,
+            next.difficulty,
+            next.scheduledDays,
             body.rating,
             dueAt,
             body.expected_version,
@@ -306,6 +343,10 @@ router.post(
           // the only remaining reason for rowCount=0 is a version mismatch.
           throw new ConflictError('vocab card version is stale');
         }
+        // Append-only review log: BEFORE from the locked row, AFTER from the
+        // engine (mirrors the grammar drill write). elapsed_days_before uses
+        // -1 as the never-reviewed sentinel (ck_card_reviews_elapsed_before_min
+        // allows >= -1), matching the grammar path.
         await client.query(
           `INSERT INTO card_reviews (
                 card_id, user_id, rating,
@@ -320,20 +361,26 @@ router.post(
             cardId,
             userId,
             body.rating,
-            body.state_before,
-            body.stability_before,
-            body.difficulty_before,
-            body.elapsed_days_before,
-            body.state_after,
-            body.stability_after,
-            body.difficulty_after,
-            body.scheduled_days_after,
+            current.state,
+            current.stability,
+            current.difficulty,
+            current.reps === 0 ? -1 : 0,
+            next.state,
+            next.stability,
+            next.difficulty,
+            next.scheduledDays,
             body.duration_ms ?? null,
           ],
         );
-        return upd.rows[0]!;
+        return { version: upd.rows[0]!.version, dueAt, scheduledDays: next.scheduledDays };
       });
-      res.status(200).json({ version: out.version, due_at: dueAt });
+      // `scheduled_days` lets the client render "next review in N days"
+      // (0 ⇒ the ~10-minute relearn re-queue) without re-deriving anything.
+      res.status(200).json({
+        version: out.version,
+        due_at: out.dueAt,
+        scheduled_days: out.scheduledDays,
+      });
     } catch (err) {
       next(err);
     }

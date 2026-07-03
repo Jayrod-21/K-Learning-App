@@ -84,6 +84,27 @@ suspension (`suspended_at`) because the user's review queue scope is small;
   AND deleted_at IS NULL`) is supported by `ix_vocab_cards_due_queue`, a
   partial composite index on `(user_id, due_at)`.
 
+## Amendment (2026-07-02) — ALL scheduling is now server-derived (shared engine)
+
+The FU-NF-42 divergence below is no longer a divergence — it is the rule.
+The vocab self-rated review path (`POST /vocab/cards/:cardId/reviews`) now also
+computes the FSRS transition on the **server**: the client submits only its
+rating (Again/Hard/Good/Easy) + the optimistic-concurrency `expected_version`;
+the server reads the card's current state from `vocab_cards`, derives the next
+state, and writes both the card advance and the `card_reviews` snapshot.
+Rationale: the client-computed model let any client dictate `due_at` — the
+Pass-3 stub sent `scheduled_days_after: 0` (every rated card came back due
+immediately), and a tampered client could park cards years out or corrupt the
+re-tuning log (D2). `*_before` now always comes from the DB row, never the
+request.
+
+Both paths call ONE shared pure engine, `server/src/services/fsrs.ts`
+(extracted verbatim from the grammar scheduler);
+`server/src/services/grammarScheduler.ts` retains only the drill-specific
+verdict→rating mapping. The storage shape this ADR defines is unchanged.
+**FU-NF-45** now reduces to upgrading that single module to a full `ts-fsrs`
+engine.
+
 ## Amendment (FU-NF-42, 2026-05-31) — server-derived scheduling for grammar drills
 
 The "client computes the transition, server stores snapshots" rule assumes a

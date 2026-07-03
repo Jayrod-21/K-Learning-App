@@ -44,12 +44,13 @@ import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { DrillType, GrammarDrillItem } from '../services/claudeProxy.js';
+import { ratingFromVerdict } from '../services/grammarScheduler.js';
 import {
-  ratingFromVerdict,
+  dueDelayMs,
   schedule,
   type CardFsrs,
   type FsrsStateName,
-} from '../services/grammarScheduler.js';
+} from '../services/fsrs.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -160,10 +161,6 @@ interface AttemptRow {
   item: GrammarDrillItem;
   scored_at: Date | null;
 }
-
-/** Milliseconds added to now() when a lapse (rating 'again') re-queues a card.
- *  scheduledDays 0 + relearning ⇒ "see it again very soon" rather than now+0d. */
-const RELEARN_DELAY_MS = 10 * 60 * 1000;
 
 /** The production card's FSRS columns we read before advancing it. NUMERIC
  *  columns (stability/difficulty) arrive as strings from `pg`; we Number() them
@@ -305,10 +302,11 @@ router.post(
       //    and the card_reviews snapshot either ALL commit or ALL roll back. A
       //    scheduling bug therefore 500s the submit LOUDLY (mapped below) and
       //    never half-persists a score with no schedule — a deliberate decision
-      //    (contract A3.6): correctness over best-effort. This is a DELIBERATE,
-      //    documented divergence from ADR-003's client-computes-FSRS model —
-      //    justified because a server-scored production attempt has no client
-      //    self-rating step (see services/grammarScheduler.ts; FU-NF-45 unifies).
+      //    (contract A3.6): correctness over best-effort. Scheduling is
+      //    server-derived through the shared engine (services/fsrs.ts) — the
+      //    same one the vocab review route uses (ADR-003 amendment 2026-07-02);
+      //    this path additionally maps the Claude verdict → rating because a
+      //    drill has no client self-rating step (services/grammarScheduler.ts).
       const feedback = {
         summary: scored.summary,
         usesPattern: scored.usesPattern,
@@ -417,10 +415,8 @@ router.post(
 
         // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
         // re-queues ~10 min from now (relearning) rather than immediately.
-        const dueAt =
-          rating === 'again'
-            ? new Date(Date.now() + RELEARN_DELAY_MS)
-            : new Date(Date.now() + next.scheduledDays * 86_400_000);
+        // The policy lives in the shared engine so vocab reviews match exactly.
+        const dueAt = new Date(Date.now() + dueDelayMs(next));
 
         // 4e. Advance the card (mirror vocab.ts review write). Optimistic version
         //     gate: low contention here (same tx, same user, FOR UPDATE row lock

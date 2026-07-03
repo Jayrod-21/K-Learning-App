@@ -897,17 +897,18 @@ export type FsrsRating = 'again' | 'hard' | 'good' | 'easy';
 /** FSRS card state — wire shape. */
 export type FsrsState = 'new' | 'learning' | 'review' | 'relearning';
 
-/** Body accepted by `POST /vocab/cards/:id/reviews`. */
+/**
+ * Body accepted by `POST /vocab/cards/:id/reviews`.
+ *
+ * Server-authoritative scheduling (ADR-003 amendment, 2026-07-02): the client
+ * sends ONLY its self-rating + the optimistic-concurrency `expected_version`
+ * snapshot (from `DueCard.version`). The server reads the card's current FSRS
+ * state from the DB and computes the transition itself — the old
+ * `*_before` / `*_after` / `scheduled_days_after` fields are gone from the
+ * contract (a client-sent interval must never control `due_at`).
+ */
 export interface ReviewSubmission {
   rating: FsrsRating;
-  state_before: FsrsState;
-  stability_before: number;
-  difficulty_before: number;
-  elapsed_days_before: number;
-  state_after: FsrsState;
-  stability_after: number;
-  difficulty_after: number;
-  scheduled_days_after: number;
   duration_ms?: number;
   expected_version: number;
 }
@@ -916,6 +917,11 @@ export interface ReviewSubmission {
 export interface ReviewResult {
   version: number;
   due_at: string;
+  /**
+   * Server-computed whole-day interval to the next review. 0 means the card
+   * lapsed (`again`) and was re-queued ~10 minutes out, not "due now".
+   */
+  scheduled_days: number;
 }
 
 /** Body for `POST /vocab/cards/init` — seeds a slice of recognition cards. */
