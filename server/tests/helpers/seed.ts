@@ -336,6 +336,10 @@ export async function seedTopikItem(
     underline?: string | null;
     itemType?: string;
     extra?: Record<string, unknown>;
+    /** Mark the item image-dependent (topik_items.has_image). Default false. */
+    hasImage?: boolean;
+    /** Curated image description (topik_items.image_text). Default NULL. */
+    imageText?: string | null;
     /**
      * Pin the parent test's `test_number` (the `source_test` / `sourceTest`
      * filter key). Defaults to a random unique value. Pass the SAME number across
@@ -383,11 +387,11 @@ export async function seedTopikItem(
     `INSERT INTO topik_items (
         topik_test_id, corpus_source_id, corpus, source_id, item_number,
         section, item_type, proficiency, stem, prompt, underline,
-        options, answer, extra)
+        options, answer, extra, has_image, image_text)
      VALUES ($1, $2, 'topik'::corpus, $3, $13,
              $4::topik_section, $5::topik_item_type,
              $6::proficiency_level, $7, $8, $9,
-             $10::jsonb, $11::jsonb, $12::jsonb)
+             $10::jsonb, $11::jsonb, $12::jsonb, $14, $15)
      RETURNING id`,
     [
       testId,
@@ -403,6 +407,8 @@ export async function seedTopikItem(
       JSON.stringify(answerJson),
       JSON.stringify(opts.extra ?? {}),
       itemNumber,
+      opts.hasImage ?? false,
+      opts.imageText ?? null,
     ],
   );
   return Number(rows[0]!.id);

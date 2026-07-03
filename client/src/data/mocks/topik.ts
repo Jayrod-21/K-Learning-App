@@ -105,11 +105,17 @@ export const TOPIK_STUDY_DRAW_FIXTURE: TopikItem[] = [
       'The underlined phrase signals completing something ahead of schedule, which choice B restates directly.',
   },
   {
+    // Image-dependent item (has_image in the corpus): no image asset exists —
+    // only a text description — so the screen must render the description
+    // prominently via TopikImageNote. This fixture keeps that path exercised
+    // on the offline draw.
     id: 'mock-topik-44',
     section: '듣기',
     number: 44,
     level: 3,
     prompt: '여자가 다음에 할 행동으로 알맞은 것은?',
+    hasImage: true,
+    imageText: '사무실에서 여자가 달력을 보며 통화하는 그림',
     options: [
       {
         id: 'a',

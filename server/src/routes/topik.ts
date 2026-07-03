@@ -126,6 +126,15 @@ interface TopikItemDTO {
   readonly passageRef?: string;
   readonly options: readonly TopikChoiceDTO[];
   readonly explanation: string;
+  /**
+   * True when the source PDF item shows one or more images the corpus does not
+   * store as assets (145 rows in the live pool). The client uses this to render
+   * the item's bracketed text description of the image prominently instead of
+   * leaving the item looking broken. NOT answer data — safe on the mock wire.
+   */
+  readonly hasImage: boolean;
+  /** Curated text description of the image(s), when the corpus captured one. */
+  readonly imageText?: string;
 }
 
 /** A topik_items row as selected for the DTO mapping. */
@@ -138,6 +147,8 @@ interface TopikItemRow {
   prompt: string | null;
   options: unknown;
   answer: unknown;
+  has_image: boolean;
+  image_text: string | null;
   extra: Record<string, unknown> | null;
 }
 
@@ -165,6 +176,7 @@ function answerToChoiceIndex(answer: unknown, choiceCount: number): number | nul
  *   - options   = options JSONB array → a..d choices (en:''), `correct` flag set
  *                 on the (answer − 1) index
  *   - explanation = extra->>'explanation' ?? ''   (no `explanation` column exists)
+ *   - hasImage    = has_image; imageText = image_text (only when non-empty)
  *   - passageRef = omitted (optional; reading-passage range key is a future
  *                  enrichment — see contract §B)
  */
@@ -190,6 +202,8 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
   const explanationRaw = row.extra?.['explanation'];
   const explanation = typeof explanationRaw === 'string' ? explanationRaw : '';
 
+  const imageText = (row.image_text ?? '').trim();
+
   return {
     id: row.id,
     section: SECTION_ENUM_TO_KR[row.section],
@@ -198,6 +212,8 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
     prompt: (row.prompt ?? row.stem ?? '').trim(),
     options,
     explanation,
+    hasImage: row.has_image,
+    ...(imageText !== '' ? { imageText } : {}),
   };
 }
 
@@ -236,6 +252,9 @@ type TopikMockItemDTO = Omit<TopikItemDTO, 'options' | 'explanation'> & {
  * Strip a study DTO down to the mock wire DTO. Because the return type Omits
  * `correct`/`explanation`, this function physically cannot emit them — the
  * answer is dropped at the boundary. `explanation` is simply not read here.
+ * `hasImage`/`imageText` survive the strip: they describe the QUESTION (an
+ * image the exam PDF showed), carry no answer information, and the exam needs
+ * them to render image-dependent items answerably.
  */
 function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
   return {
@@ -246,6 +265,8 @@ function toMockItemDTO(item: TopikItemDTO): TopikMockItemDTO {
     prompt: item.prompt,
     ...(item.passageRef !== undefined ? { passageRef: item.passageRef } : {}),
     options: item.options.map((o) => ({ id: o.id, kr: o.kr, en: o.en })),
+    hasImage: item.hasImage,
+    ...(item.imageText !== undefined ? { imageText: item.imageText } : {}),
   };
 }
 
@@ -277,7 +298,8 @@ const ITEM_COLUMNS = `i.id::text AS id,
                       i.section::text AS section,
                       i.item_number,
                       i.proficiency::text AS proficiency,
-                      i.stem, i.prompt, i.options, i.answer, i.extra`;
+                      i.stem, i.prompt, i.options, i.answer,
+                      i.has_image, i.image_text, i.extra`;
 
 // ---------------------------------------------------------------------------
 // Routes

@@ -1839,6 +1839,35 @@ body {
   line-height: 1.55;
   color: var(--paper-dim);
 }
+.km-topik__answer {
+  margin: 6px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--paper);
+}
+/* Image-dependent items (has_image): the bracketed text description of the
+   original exam's image, featured as a labelled block so the item stays
+   answerable — no image asset exists in the corpus. */
+.km-topik__image-note {
+  padding: 12px 16px;
+  margin: 0 0 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-2);
+}
+.km-topik__image-desc {
+  margin: 6px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--paper);
+  white-space: pre-line; /* multi-segment descriptions join with newlines */
+}
+.km-topik__image-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--paper-mute);
+}
 .km-topik__footer {
   display: flex;
   justify-content: space-between;
