@@ -185,10 +185,14 @@ const DUE_VOCAB: Vocab[] = [
   },
 ];
 
+// B-009: `face` is the card_face ENUM ('recognition'), NOT the word — the
+// real word/gloss/example/source arrive on the vocab* fields the service
+// normalised from the vocab_entries JOIN. The old fixture put the word in
+// `face`, which masked the bug where the flashcard rendered the enum label.
 const DUE_RAW: DueCard[] = [
   {
     id: 101,
-    face: '영향',
+    face: 'recognition',
     due_at: new Date().toISOString(),
     stability: '0',
     difficulty: '0',
@@ -198,6 +202,11 @@ const DUE_RAW: DueCard[] = [
     source_sentence_id: null,
     topik_item_id: null,
     version: 1,
+    vocabKorean: '영향',
+    vocabEnglish: 'influence',
+    vocabExampleKorean: '음악은 우리 생활에 큰 영향을 미친다.',
+    vocabExampleEnglish: 'Music has a big influence on our lives.',
+    vocabSourceBook: 'vocab-2000-int',
   },
 ];
 
@@ -333,6 +342,64 @@ describe('Review', () => {
       rating: 'again',
       expected_version: 1,
     });
+  });
+
+  // B-009 regression: dueCardToVocab (exercised through the real dueRealFn)
+  // must map the JOINed vocab-entry fields onto the UI card — front = Korean
+  // headword, back = English gloss + example pair + source — instead of
+  // rendering `face` (the card_face enum) with hardcoded empties.
+  it('maps a due vocab card onto the UI shape from the vocab-entry fields (B-009)', async () => {
+    vi.mocked(vocabService.getDueCards).mockResolvedValue(DUE_RAW);
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    renderReview();
+
+    let ui: Vocab[] = [];
+    await act(async () => {
+      ui = (await hoisted.capturedRealFns.due?.()) ?? [];
+    });
+
+    expect(ui).toHaveLength(1);
+    expect(ui[0]).toMatchObject({
+      id: 'd:101',
+      kr: '영향', // the Korean headword — NOT the 'recognition' face enum
+      en: 'influence',
+      ex_kr: '음악은 우리 생활에 큰 영향을 미친다.',
+      ex_en: 'Music has a big influence on our lives.',
+      mined_in: 'vocab-2000-int',
+    });
+  });
+
+  it('falls back to the face label only when a card carries no vocab fields (B-009)', async () => {
+    // A sentence/topik card (no vocab_entry_id, nothing better on the wire
+    // yet) keeps the pre-fix degraded rendering rather than a blank card.
+    vi.mocked(vocabService.getDueCards).mockResolvedValue([
+      {
+        id: 300,
+        face: 'cloze',
+        due_at: new Date().toISOString(),
+        stability: '0',
+        difficulty: '0',
+        fsrs_state: 'new',
+        vocab_entry_id: null,
+        grammar_entry_id: null,
+        source_sentence_id: 12,
+        topik_item_id: null,
+        version: 1,
+      },
+    ]);
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    renderReview();
+
+    let ui: Vocab[] = [];
+    await act(async () => {
+      ui = (await hoisted.capturedRealFns.due?.()) ?? [];
+    });
+
+    expect(ui[0]).toMatchObject({ id: 'd:300', kr: 'cloze', en: '', ex_kr: '', ex_en: '' });
   });
 
   it('switches to Lists tab and opens ListDetailSheet via getListDetail', async () => {

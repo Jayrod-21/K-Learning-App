@@ -191,16 +191,27 @@ function sameGrammarCards(
   return true;
 }
 
-/** DueCard → Vocab (UI). Wire fields not present in DueCard get sensible blanks. */
+/**
+ * DueCard → Vocab (UI).
+ *
+ * B-009: the card front/back must come from the JOINed vocab-entry fields —
+ * `d.face` is the card_face ENUM ('recognition' | 'production' | 'cloze'),
+ * NOT the word, so rendering it put English-ish text on both sides of the
+ * flashcard with an empty gloss/example/source. Front = the entry's Korean
+ * headword; back = English gloss + example pair + source book. The `face`
+ * fallback only fires for a non-vocab card that slipped past the grammar
+ * branch (sentence/topik — nothing better is on the wire yet), preserving the
+ * old degraded rendering rather than a blank card.
+ */
 function dueCardToVocab(d: DueCard): Vocab {
   return {
     id: encodeId('d', d.id),
-    kr: d.face,
+    kr: d.vocabKorean ?? d.face,
     pos: 'n.',
-    en: '',
-    ex_kr: '',
-    ex_en: '',
-    mined_in: undefined,
+    en: d.vocabEnglish ?? '',
+    ex_kr: d.vocabExampleKorean ?? '',
+    ex_en: d.vocabExampleEnglish ?? '',
+    mined_in: d.vocabSourceBook,
     extra: [],
   };
 }

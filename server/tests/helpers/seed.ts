@@ -77,6 +77,9 @@ export async function seedVocabEntry(
     corpus?: string;
     korean?: string;
     english?: string;
+    exampleKorean?: string;
+    exampleEnglish?: string;
+    sourceBook?: string;
     proficiency?: 'basic' | 'L3' | 'L4' | 'L5+';
   } = {},
 ): Promise<number> {
@@ -86,16 +89,19 @@ export async function seedVocabEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO vocab_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
-        source_book, korean, english, proficiency)
+        source_book, korean, english, example_korean, example_english, proficiency)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'word'::vocab_entry_type,
-             'test-book', $4, $5, $6::proficiency_level)
+             $4, $5, $6, $7, $8, $9::proficiency_level)
      RETURNING id`,
     [
       corpusSourceId,
       corpus,
       sourceId,
+      opts.sourceBook ?? 'test-book',
       opts.korean ?? '먹다',
       opts.english ?? 'to eat',
+      opts.exampleKorean ?? null,
+      opts.exampleEnglish ?? null,
       opts.proficiency ?? 'L3',
     ],
   );

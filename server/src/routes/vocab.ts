@@ -157,6 +157,18 @@ router.get(
       // soft-deleted entry's card keeps its existing pass-through behavior.
       // Re-admission nulls graduated_at and the card resurfaces with its FSRS
       // state intact (nothing on vocab_cards is modified either way).
+      //
+      // B-009: LEFT JOIN vocab_entries so a vocab card carries its real
+      // korean / english / example / source fields inline. Without this the
+      // client only ever saw `face` — which is the card_face ENUM
+      // ('recognition' | 'production' | 'cloze'), NOT the word — so the Review
+      // flashcard rendered the enum label on both sides with empty
+      // gloss/examples/source. Aliased with a vocab_ prefix (same convention
+      // as the grammar_* columns) so the wire contract is explicit and
+      // collision-free. vocab_entries is SHARED reference data (no user_id,
+      // no deleted_at — see 001_core_schema), so the join is on the FK alone;
+      // per-user isolation stays enforced by `c.user_id = $1` on the card row.
+      // Non-vocab cards (grammar / sentence / topik) get NULL vocab_* columns.
       const { rows } = await query<{
         id: number;
         face: string;
@@ -169,6 +181,11 @@ router.get(
         grammar_entry_id: number | null;
         source_sentence_id: number | null;
         topik_item_id: number | null;
+        vocab_korean: string | null;
+        vocab_english: string | null;
+        vocab_example_korean: string | null;
+        vocab_example_english: string | null;
+        vocab_source_book: string | null;
         grammar_pattern_display: string | null;
         grammar_summary_en: string | null;
         grammar_pattern_key: string | null;
@@ -182,10 +199,17 @@ router.get(
         // it every rating would post `expected_version: undefined` and 400.
         `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state, c.version,
                 c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
+                ve.korean          AS vocab_korean,
+                ve.english         AS vocab_english,
+                ve.example_korean  AS vocab_example_korean,
+                ve.example_english AS vocab_example_english,
+                ve.source_book     AS vocab_source_book,
                 ge.pattern_display AS grammar_pattern_display,
                 ge.summary_en      AS grammar_summary_en,
                 ge.pattern_key     AS grammar_pattern_key
            FROM vocab_cards c
+           LEFT JOIN vocab_entries ve
+                  ON ve.id = c.vocab_entry_id
            LEFT JOIN grammar_entries ge
                   ON ge.id = c.grammar_entry_id
                  AND ge.user_id = c.user_id

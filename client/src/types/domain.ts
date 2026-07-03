@@ -877,6 +877,25 @@ export interface DueCard {
   source_sentence_id: number | null;
   topik_item_id: number | null;
   /**
+   * Korean headword of the joined vocab entry (B-009). Present only when
+   * `vocab_entry_id` is set — the due query LEFT JOINs `vocab_entries` and
+   * carries the entry fields so the Review flashcard can render the real word
+   * without a second round-trip. Absent for grammar/sentence/topik cards.
+   * NOTE: `face` is the card_face ENUM ('recognition' | 'production' |
+   * 'cloze'), NOT the word — never render it as card content. The service
+   * maps the server's snake-case `vocab_korean` onto this camelCase field at
+   * the wire boundary (same convention as the grammar_* columns).
+   */
+  vocabKorean?: string;
+  /** English gloss of the joined vocab entry (B-009). Same JOIN/origin as `vocabKorean`. */
+  vocabEnglish?: string;
+  /** Korean example sentence of the joined vocab entry (B-009); absent when the entry has none. */
+  vocabExampleKorean?: string;
+  /** English translation of the example sentence (B-009); absent when the entry has none. */
+  vocabExampleEnglish?: string;
+  /** Provenance — the source book the entry was ingested/mined from (B-009). */
+  vocabSourceBook?: string;
+  /**
    * Grammar-pattern display for a production card (FU-NF-42). Present only when
    * `grammar_entry_id` is set — the due query LEFT JOINs `grammar_entries` and
    * carries the pattern display so the Review screen can render a grammar
