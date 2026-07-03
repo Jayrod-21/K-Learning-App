@@ -132,6 +132,13 @@ describe('GET /reading/units/:corpus/:unitId/sentences', () => {
     expect(res.status).toBe(200);
     expect(res.body.corpus).toBe('iyagi');
     expect(res.body.sentences.length).toBe(2);
+    // Iyagi is the client's DEFAULT prose corpus (B-001) — each row must
+    // carry the dialog fields the Read tab renders alongside the text.
+    const row = res.body.sentences[0];
+    expect(typeof row.korean).toBe('string');
+    expect(row).toHaveProperty('speaker');
+    expect(row).toHaveProperty('is_dialog');
+    expect(row).toHaveProperty('english');
   });
 
   it('unknown ttmik unit → 404', async () => {

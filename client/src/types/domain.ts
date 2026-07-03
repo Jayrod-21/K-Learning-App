@@ -700,15 +700,26 @@ export interface LemmatizeResponse {
   tokens: LemmaToken[];
 }
 
+/** One KRDICT example sentence returned by `GET /define` (joined in from
+ *  `krdict_examples` via the entry's senses, capped server-side). */
+export interface DefineExample {
+  korean: string;
+  /** English translation — KRDICT often omits it on low-frequency senses. */
+  english: string | null;
+}
+
 /** One KRDICT entry returned by `GET /define`. */
 export interface DefineEntry {
   id: number;
   headword: string;
   part_of_speech: string | null;
-  /** JSONB — sense list. Shape owned by B2 (KRDICT loader). */
-  senses: unknown;
-  /** JSONB — example list. Shape owned by B2. */
-  examples: unknown;
+  /** First-sense Korean definition (denormalized on krdict_entries). */
+  definition_korean: string | null;
+  /** First-sense English definition. */
+  definition_english: string | null;
+  /** Example sentences in sense/example order. Empty when KRDICT has none
+   *  loaded for this entry (B-011: tables may be present but unloaded). */
+  examples: DefineExample[];
 }
 
 /** Envelope returned by `GET /define`. */

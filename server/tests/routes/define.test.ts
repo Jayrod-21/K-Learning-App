@@ -10,7 +10,7 @@ import request from 'supertest';
 import { z } from 'zod';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedKrdictEntry } from '../helpers/seed.js';
+import { registerUser, seedKrdictEntry, seedKrdictSense } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { resetKrdictReadyCache } from '../../src/routes/define.js';
 
@@ -44,6 +44,14 @@ const DefineResponseSchema = z.object({
       id: z.number().int().positive(),
       headword: z.string(),
       part_of_speech: z.string().nullable(),
+      definition_korean: z.string().nullable(),
+      definition_english: z.string().nullable(),
+      examples: z.array(
+        z.object({
+          korean: z.string().min(1),
+          english: z.string().nullable(),
+        }),
+      ),
     }),
   ),
 });
@@ -56,7 +64,7 @@ describe('GET /define — auth required', () => {
 });
 
 describe('GET /define — success', () => {
-  it('returns 200 with matching krdict entries', async () => {
+  it('returns 200 with matching krdict entries incl. definitions + empty examples', async () => {
     await seedKrdictEntry(pg.pool, { headword: '먹다', definitionEn: 'to eat' });
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/define?word=먹다');
@@ -65,6 +73,68 @@ describe('GET /define — success', () => {
     expect(parsed.success).toBe(true);
     expect(res.body.word).toBe('먹다');
     expect(res.body.entries.length).toBeGreaterThan(0);
+    // The denormalized definitions ride the entry — they are what the client
+    // popover renders as the gloss line (B-002).
+    expect(res.body.entries[0].definition_english).toBe('to eat');
+    // No senses/examples loaded (B-011 shape) → examples degrade to [].
+    expect(res.body.entries[0].examples).toEqual([]);
+  });
+
+  it('joins krdict_examples through the senses in sense/example order (B-002)', async () => {
+    const entryId = await seedKrdictEntry(pg.pool, {
+      headword: '먹다',
+      definitionEn: 'to eat',
+    });
+    // Two senses, examples on both — the response must keep sense order
+    // first, example order within a sense second.
+    await seedKrdictSense(pg.pool, entryId, {
+      senseIndex: 1,
+      examples: [
+        { korean: '밥을 먹다', english: 'to eat a meal' },
+        { korean: '약을 먹다', english: 'to take medicine' },
+      ],
+    });
+    await seedKrdictSense(pg.pool, entryId, {
+      senseIndex: 2,
+      definitionEn: 'to bear (a feeling)',
+      examples: [{ korean: '마음을 먹다', english: null }],
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/define?word=먹다');
+    expect(res.status).toBe(200);
+    expect(DefineResponseSchema.safeParse(res.body).success).toBe(true);
+    const entry = res.body.entries.find(
+      (e: { id: number }) => e.id === entryId,
+    );
+    expect(entry.examples).toEqual([
+      { korean: '밥을 먹다', english: 'to eat a meal' },
+      { korean: '약을 먹다', english: 'to take medicine' },
+      { korean: '마음을 먹다', english: null },
+    ]);
+  });
+
+  it('caps examples per entry and never bleeds examples across entries', async () => {
+    // Homograph pair: same headword, two entries. Entry A gets 7 examples
+    // (over the cap of 5); entry B gets none.
+    const entryA = await seedKrdictEntry(pg.pool, { headword: '배' });
+    const entryB = await seedKrdictEntry(pg.pool, { headword: '배' });
+    await seedKrdictSense(pg.pool, entryA, {
+      examples: Array.from({ length: 7 }, (_, i) => ({
+        korean: `배 예문 ${String(i + 1)}`,
+        english: `pear example ${String(i + 1)}`,
+      })),
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/define?word=배');
+    expect(res.status).toBe(200);
+    const a = res.body.entries.find((e: { id: number }) => e.id === entryA);
+    const b = res.body.entries.find((e: { id: number }) => e.id === entryB);
+    expect(a.examples).toHaveLength(5);
+    expect(a.examples[0]).toEqual({
+      korean: '배 예문 1',
+      english: 'pear example 1',
+    });
+    expect(b.examples).toEqual([]);
   });
 });
 

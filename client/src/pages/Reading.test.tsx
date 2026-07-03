@@ -36,10 +36,19 @@ type HookState =
 const hoisted = vi.hoisted(() => ({
   hookState: { current: { kind: 'loading' } as HookState },
   refetchSpy: vi.fn(),
+  // The realFn Reading hands the hook — captured so tests can drive the
+  // real loader chain (default-corpus behaviour, B-001) without unmocking
+  // the hook's state machine.
+  lastRealFn: { current: null as (() => Promise<unknown>) | null },
 }));
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
-  useEndpointOrMock: () => {
+  useEndpointOrMock: (
+    _key: string,
+    _mockFn: unknown,
+    opts?: { realFn?: () => Promise<unknown> },
+  ) => {
+    hoisted.lastRealFn.current = opts?.realFn ?? null;
     const s = hoisted.hookState.current;
     if (s.kind === 'loading') {
       return {
@@ -295,13 +304,24 @@ describe('Reading', () => {
           id: 1,
           headword: '재택근무',
           part_of_speech: 'n.',
-          senses: null,
-          examples: null,
+          definition_korean: null,
+          definition_english: null,
+          examples: [],
         },
       ],
     });
+    // Real EnrichmentResult shape (server services/claude/models.ts) — the
+    // fields the popover mapping reads (B-002).
     vi.mocked(enrich).mockResolvedValue({
-      result: { summary: 'working from home' },
+      result: {
+        nuance: 'working from home',
+        usageNote: 'Common in HR contexts.',
+        examples: [
+          { korean: '재택근무를 해요.', english: 'I work from home.' },
+        ],
+        dontConfuseWith: [],
+        proficiency: 'L4',
+      },
     });
 
     const user = userEvent.setup();
@@ -322,7 +342,8 @@ describe('Reading', () => {
         sourceSentence: '재택근무 합니다.',
       });
     });
-    // Popover surfaces the enrichment summary as the gloss line.
+    // Popover surfaces the enrichment nuance as the gloss line (the entry
+    // carried no English definition).
     await waitFor(() => {
       expect(screen.getByText('working from home')).toBeInTheDocument();
     });
@@ -344,8 +365,9 @@ describe('Reading', () => {
           id: 1,
           headword: '재택근무',
           part_of_speech: 'n.',
-          senses: null,
-          examples: null,
+          definition_korean: '집에서 일함',
+          definition_english: 'remote work',
+          examples: [],
         },
       ],
     });
@@ -357,12 +379,188 @@ describe('Reading', () => {
     const tap = screen.getByRole('button', { name: '재택근무' });
     await user.click(tap);
 
-    // Define succeeded → popover opens with the dictionary entry's
-    // fallback line. Headword renders inside the popover.
+    // Define succeeded → popover opens on the dictionary entry alone, with
+    // the KRDICT English definition as the gloss line (B-002: previously the
+    // gloss ignored `definition_english` entirely).
     await waitFor(() => {
       const popover = screen.getByRole('dialog');
       expect(popover).toBeInTheDocument();
     });
+    expect(screen.getByText('remote work')).toBeInTheDocument();
+  });
+
+  it('default load (no persisted pick) reads the iyagi prose corpus, not ttmik (B-001)', async () => {
+    // The realFn is captured from the hook boundary and driven directly:
+    // this is the exact loader a fresh visit runs.
+    hoisted.hookState.current = { kind: 'loading' };
+    vi.mocked(fetchUnits).mockResolvedValue([
+      { id: 45, title: '이야기 #1', episode_number: 1 },
+    ]);
+    vi.mocked(fetchSentences).mockResolvedValue({
+      corpus: 'iyagi',
+      unit_id: 45,
+      sentences: [
+        {
+          id: 1,
+          ordinal: 1,
+          korean: '오늘은 노약자석에 대해서 이야기해 봐요.',
+          english: "Let's talk about priority seats today.",
+          romanization: null,
+          speaker: '진석진',
+          is_dialog: true,
+        },
+      ],
+    });
+    renderReading();
+
+    expect(hoisted.lastRealFn.current).not.toBeNull();
+    const passage = (await hoisted.lastRealFn.current?.()) as ReadingPassage;
+
+    // The default is the Iyagi transcripts — real multi-word prose — not the
+    // TTMIK word-family lessons that rendered as one-word-per-line lists.
+    expect(vi.mocked(fetchUnits)).toHaveBeenCalledWith({
+      corpus: 'iyagi',
+      limit: 1,
+    });
+    expect(vi.mocked(fetchSentences)).toHaveBeenCalledWith('iyagi', 45);
+    expect(passage.title).toBe('이야기 #1');
+    // The prose sentence tokenises into multiple tapwords (B-003: no more
+    // single-token "sentences").
+    const words = passage.sentences[0].tokens.filter((t) => t.gloss);
+    expect(words.length).toBeGreaterThan(1);
+  });
+
+  it('popover maps KRDICT definition + examples and enrichment drawer fields (B-002)', async () => {
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_PLACEHOLDER,
+      isMock: false,
+    };
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '재택근무', lemma: '재택근무', tag: 'NNG', start: 0, length: 4 },
+    ]);
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '재택근무',
+      entries: [
+        {
+          id: 7,
+          headword: '재택근무',
+          part_of_speech: 'n.',
+          definition_korean: '집에서 일함',
+          definition_english: 'remote work',
+          examples: [
+            { korean: '재택근무를 시작했다.', english: 'I started working from home.' },
+            { korean: '재택근무 제도', english: null },
+          ],
+        },
+      ],
+    });
+    vi.mocked(enrich).mockResolvedValue({
+      result: {
+        nuance: 'working from home as an arrangement',
+        usageNote: 'Common in HR contexts.',
+        examples: [
+          { korean: '재택근무 중이에요.', english: 'I am working from home.' },
+        ],
+        dontConfuseWith: [
+          { lemma: '원격근무', distinction: 'broader: any remote location' },
+        ],
+        proficiency: 'L4',
+      },
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await user.click(screen.getByRole('button', { name: '재택근무' }));
+
+    // Gloss line = the KRDICT English definition.
+    expect(await screen.findByText('remote work')).toBeInTheDocument();
+    // Primary example = the FIRST krdict example (no longer hardcoded '').
+    expect(
+      screen.getByText('재택근무를 시작했다.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('I started working from home.')).toBeInTheDocument();
+
+    // Drawer: remaining krdict example + enrichment example + usage + contrast.
+    await user.click(screen.getByRole('button', { name: 'More examples' }));
+    expect(screen.getByText('재택근무 제도')).toBeInTheDocument();
+    expect(screen.getByText('재택근무 중이에요.')).toBeInTheDocument();
+    expect(screen.getByText('Common in HR contexts.')).toBeInTheDocument();
+    expect(
+      screen.getByText(/원격근무 — broader: any remote location/),
+    ).toBeInTheDocument();
+  });
+
+  it('define failure still yields an enrichment-backed popover, not "Definition unavailable" (B-002/B-011)', async () => {
+    // KRDICT tables unloaded → /define 503s. The enrichment alone must
+    // still produce a real popover (this is the state on a box where the
+    // KRDICT corpus hasn't been ingested).
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_PLACEHOLDER,
+      isMock: false,
+    };
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '재택근무', lemma: '재택근무', tag: 'NNG', start: 0, length: 4 },
+    ]);
+    vi.mocked(defineEntry).mockRejectedValue(
+      new ApiError('krdict unavailable', {
+        status: 503,
+        code: 'krdict_unavailable',
+      }),
+    );
+    vi.mocked(enrich).mockResolvedValue({
+      result: {
+        nuance: 'working from home',
+        usageNote: 'Common in HR contexts.',
+        examples: [
+          { korean: '재택근무를 해요.', english: 'I work from home.' },
+        ],
+        dontConfuseWith: [],
+        proficiency: 'L4',
+      },
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await user.click(screen.getByRole('button', { name: '재택근무' }));
+
+    // Nuance is the gloss; the enrichment example is the primary example.
+    expect(await screen.findByText('working from home')).toBeInTheDocument();
+    expect(screen.getByText('재택근무를 해요.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Definition unavailable'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to "Definition unavailable" only when define AND enrich both fail', async () => {
+    hoisted.hookState.current = {
+      kind: 'data',
+      data: PASSAGE_PLACEHOLDER,
+      isMock: false,
+    };
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '재택근무', lemma: '재택근무', tag: 'NNG', start: 0, length: 4 },
+    ]);
+    vi.mocked(defineEntry).mockRejectedValue(
+      new ApiError('krdict unavailable', {
+        status: 503,
+        code: 'krdict_unavailable',
+      }),
+    );
+    vi.mocked(enrich).mockRejectedValue(new Error('claude timeout'));
+
+    const user = userEvent.setup();
+    renderReading();
+    await user.click(screen.getByRole('button', { name: '재택근무' }));
+
+    expect(
+      await screen.findByText('Definition unavailable'),
+    ).toBeInTheDocument();
+    // No drawer affordance for an empty popover.
+    expect(
+      screen.queryByRole('button', { name: 'More examples' }),
+    ).not.toBeInTheDocument();
   });
 
   /**
@@ -386,13 +584,22 @@ describe('Reading', () => {
           id: 4242,
           headword: '재택근무',
           part_of_speech: 'n.',
-          senses: null,
-          examples: null,
+          definition_korean: null,
+          definition_english: 'working from home',
+          examples: [],
         },
       ],
     });
     vi.mocked(enrich).mockResolvedValue({
-      result: { summary: 'working from home' },
+      result: {
+        nuance: 'doing one’s job from home rather than the office',
+        usageNote: 'Common in HR contexts.',
+        examples: [
+          { korean: '재택근무를 해요.', english: 'I work from home.' },
+        ],
+        dontConfuseWith: [],
+        proficiency: 'L4',
+      },
     });
 
     const user = userEvent.setup();
@@ -526,18 +733,18 @@ describe('Reading', () => {
     });
   });
 
-  it('opens the passage picker and lists the corpus units', async () => {
+  it('opens the passage picker and lists the default (iyagi) corpus units', async () => {
     hoisted.hookState.current = {
       kind: 'data',
       data: PASSAGE_WITH_GLOSS,
       isMock: true,
     };
     vi.mocked(fetchUnitsPage).mockResolvedValue({
-      corpus: 'ttmik',
+      corpus: 'iyagi',
       total: 2,
       units: [
-        { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
-        { id: 12, title: '감사합니다', lesson_level: 1, lesson_number: 2 },
+        { id: 45, title: '이야기 #1', episode_number: 1 },
+        { id: 46, title: '이야기 #2', episode_number: 2 },
       ],
     });
 
@@ -548,13 +755,13 @@ describe('Reading', () => {
       screen.getByRole('button', { name: /Choose a different passage/i }),
     );
 
-    // The picker sheet opens and renders the units list.
+    // The picker sheet opens on the default corpus tab (B-001: iyagi).
     expect(
       await screen.findByRole('dialog', { name: /Choose a reading passage/i }),
     ).toBeInTheDocument();
-    expect(await screen.findByText('감사합니다')).toBeInTheDocument();
+    expect(await screen.findByText('이야기 #2')).toBeInTheDocument();
     expect(vi.mocked(fetchUnitsPage)).toHaveBeenCalledWith({
-      corpus: 'ttmik',
+      corpus: 'iyagi',
       limit: 20,
       offset: 0,
     });
@@ -567,11 +774,11 @@ describe('Reading', () => {
       isMock: true,
     };
     vi.mocked(fetchUnitsPage).mockResolvedValue({
-      corpus: 'ttmik',
+      corpus: 'iyagi',
       total: 2,
       units: [
-        { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
-        { id: 12, title: '감사합니다', lesson_level: 1, lesson_number: 2 },
+        { id: 45, title: '이야기 #1', episode_number: 1 },
+        { id: 46, title: '이야기 #2', episode_number: 2 },
       ],
     });
 
@@ -582,7 +789,7 @@ describe('Reading', () => {
       screen.getByRole('button', { name: /Choose a different passage/i }),
     );
     const row = await screen.findByRole('button', {
-      name: /감사합니다 — Lesson 2 · Level 1/i,
+      name: /이야기 #2 — Episode 2/i,
     });
     await user.click(row);
 
@@ -591,14 +798,14 @@ describe('Reading', () => {
       const raw = window.localStorage.getItem(READING_SELECTION_STORAGE_KEY);
       expect(raw).not.toBeNull();
       expect(JSON.parse(raw as string)).toEqual({
-        corpus: 'ttmik',
-        unitId: 12,
-        title: '감사합니다',
+        corpus: 'iyagi',
+        unitId: 46,
+        title: '이야기 #2',
       });
     });
   });
 
-  it('switches the corpus tab to load iyagi episodes', async () => {
+  it('switches the corpus tab to load ttmik lessons', async () => {
     hoisted.hookState.current = {
       kind: 'data',
       data: PASSAGE_WITH_GLOSS,
@@ -606,18 +813,18 @@ describe('Reading', () => {
     };
     vi.mocked(fetchUnitsPage).mockImplementation((opts) =>
       Promise.resolve(
-        opts.corpus === 'iyagi'
+        opts.corpus === 'ttmik'
           ? {
-              corpus: 'iyagi',
-              total: 1,
-              units: [{ id: 30, title: '이야기 에피소드', episode_number: 5 }],
-            }
-          : {
               corpus: 'ttmik',
               total: 1,
               units: [
                 { id: 11, title: '안녕하세요', lesson_level: 1, lesson_number: 1 },
               ],
+            }
+          : {
+              corpus: 'iyagi',
+              total: 1,
+              units: [{ id: 30, title: '이야기 에피소드', episode_number: 5 }],
             },
       ),
     );
@@ -628,12 +835,12 @@ describe('Reading', () => {
     await user.click(
       screen.getByRole('button', { name: /Choose a different passage/i }),
     );
-    await screen.findByText('안녕하세요');
-    await user.click(screen.getByRole('radio', { name: 'Iyagi' }));
+    await screen.findByText('이야기 에피소드');
+    await user.click(screen.getByRole('radio', { name: 'TTMIK' }));
 
-    expect(await screen.findByText('이야기 에피소드')).toBeInTheDocument();
+    expect(await screen.findByText('안녕하세요')).toBeInTheDocument();
     expect(vi.mocked(fetchUnitsPage)).toHaveBeenCalledWith({
-      corpus: 'iyagi',
+      corpus: 'ttmik',
       limit: 20,
       offset: 0,
     });
