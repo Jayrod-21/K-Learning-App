@@ -48,6 +48,19 @@
       "subsection": "7 친구 / Friends",
       "source_book": "2000 Essential Korean Words Beginner Fixture",
       "source_pages": [42]
+    },
+    {
+      "id": "vocab-fix-0004",
+      "type": "word",
+      "korean": "학교",
+      "english": "a school",
+      "pronunciation": "[학꾜]",
+      "part_of_speech": "noun",
+      "theme": "01 사람 / People",
+      "subsection": "7 친구 / Friends",
+      "notes": "Deliberately ships WITHOUT proficiency: exercises the loader's word-row proficiency defaulting (ck_vocab_entries_proficiency_required).",
+      "source_book": "2000 Essential Korean Words Beginner Fixture",
+      "source_pages": [43]
     }
   ]
 }
