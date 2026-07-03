@@ -358,6 +358,15 @@ function summariseEnrichment(enrichment: EnrichResult | null): EnrichmentSummary
  * yields a real popover; the 'Definition unavailable' literal is the last
  * resort when BOTH sources came back empty.
  */
+/**
+ * Sentinel gloss strings the popover falls back to when there's no real
+ * definition. Shared consts so the mine-filter (which must NOT persist a
+ * sentinel as a word's English) can never drift from what buildWordPopover
+ * produces (B-002 review SF-1).
+ */
+const GLOSS_DICTIONARY_ENTRY = 'Dictionary entry';
+const GLOSS_UNAVAILABLE = 'Definition unavailable';
+
 function buildWordPopover(
   lemma: string,
   defineResult: DefineResult | null,
@@ -383,7 +392,7 @@ function buildWordPopover(
   const gloss =
     textOrNull(first?.definition_english) ??
     enriched.nuance ??
-    (first ? 'Dictionary entry' : 'Definition unavailable');
+    (first ? GLOSS_DICTIONARY_ENTRY : GLOSS_UNAVAILABLE);
 
   return {
     kr: first?.headword ?? lemma,
@@ -703,7 +712,7 @@ export function Reading(): JSX.Element {
       return mineWord(
         {
           lemma,
-          ...(d.en && d.en !== 'Dictionary entry' && d.en !== 'Definition unavailable'
+          ...(d.en && d.en !== GLOSS_DICTIONARY_ENTRY && d.en !== GLOSS_UNAVAILABLE
             ? { english: d.en }
             : {}),
           ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),

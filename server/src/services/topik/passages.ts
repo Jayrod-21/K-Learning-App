@@ -22,10 +22,13 @@
  * "no shared passage", not a 500.
  */
 export function sharedPassageFor(
-  passages: Record<string, unknown> | null,
+  passages: Record<string, unknown> | null | undefined,
   itemNumber: number,
 ): string | null {
-  if (passages === null) return null;
+  // `== null` (not `===`) so a caller that ever passes `undefined` (e.g. a query
+  // that omits the nullable `passages` join) degrades to "no shared passage"
+  // instead of throwing in Object.entries (review NIT).
+  if (passages == null) return null;
   for (const [key, value] of Object.entries(passages)) {
     if (typeof value !== 'string' || value.trim().length === 0) continue;
     // "19-20" → [19, 20]; "21" → [21, 21]. Non-numeric keys are skipped.
