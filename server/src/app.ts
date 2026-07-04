@@ -29,6 +29,7 @@ import readingRoutes from './routes/reading.js';
 import planRoutes from './routes/plan.js';
 import diagnosticRoutes from './routes/diagnostic.js';
 import topikRoutes from './routes/topik.js';
+import ttmikRoutes, { iyagiRouter } from './routes/ttmik.js';
 import hanjaRoutes from './routes/hanja.js';
 import imagesRoutes from './routes/images.js';
 import settingsRoutes from './routes/settings.js';
@@ -82,6 +83,10 @@ export function createApp(): Express {
   app.use('/plan', planRoutes);
   app.use('/diagnostic', diagnosticRoutes);
   app.use('/topik', topikRoutes);
+  // F-012: TTMIK/Iyagi catalogs + Range-capable mp3 streaming. One module
+  // exports both routers — the two surfaces share the streaming core.
+  app.use('/ttmik', ttmikRoutes);
+  app.use('/iyagi', iyagiRouter);
   app.use('/hanja', hanjaRoutes);
   app.use('/images', imagesRoutes);
   app.use('/settings', settingsRoutes);
