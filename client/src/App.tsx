@@ -11,8 +11,8 @@
  * Routing model:
  *   - `/login` is the only public route. `<RequireAuth/>` gates everything
  *     else and pushes guests to `/login`.
- *   - The 11 in-app screens render as `<ScreenStub/>` placeholders during
- *     Pass 1; the next pass replaces each with the real body.
+ *   - Each in-app screen renders its real body; routes are registered here
+ *     and the nav model lives in `lib/nav.ts` (kept in sync with these paths).
  *   - Unknown paths redirect to `/`. We could 404 instead, but a soft
  *     redirect is friendlier for a single-user app where typos are typos.
  */

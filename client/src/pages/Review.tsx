@@ -1762,10 +1762,16 @@ function ListDetailSheet({
         ) : null}
 
         <div className="km-review__sheetActions">
+          {/* Per-list seeding isn't wired yet: `/vocab/cards/init` seeds by
+              corpus, and list types carry no corpus field (B-013 review). Disable
+              rather than ship a live-looking no-op; use the corpus-level "Add to
+              review" on the Lists tab to seed cards for now. */}
           <Button
             variant="gold"
             size="md"
             leadingIcon={<Icon name="play" size={14} />}
+            disabled
+            title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
           >
             Study this list
           </Button>
@@ -1774,6 +1780,8 @@ function ListDetailSheet({
               variant="ghost"
               size="md"
               leadingIcon={<Icon name="plus" size={14} />}
+              disabled
+              title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
             >
               Add all to my bank
             </Button>

@@ -192,7 +192,7 @@ function Progress(): JSX.Element {
       aria-labelledby="progress-title"
       style={{ position: 'relative' }}
     >
-      {hist.isMock ? <MockBadge /> : null}
+      {hist.isMock && fatalError === null ? <MockBadge /> : null}
 
       <Eyebrow>Diagnostic history · 진단 기록</Eyebrow>
       <h1 id="progress-title" className="kr-display km-progress__title">
