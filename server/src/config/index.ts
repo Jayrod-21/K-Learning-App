@@ -37,6 +37,15 @@ const EnvSchema = z.object({
   // it returns 429 before any upstream call. See SECURITY.md §16.
   IMAGE_OCR_DAILY_CAP: z.coerce.number().int().positive().default(20),
 
+  // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
+  // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
+  // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this
+  // is a `:ro` bind mount at /corpus; the default matches that mount so prod
+  // needs no extra env. A missing dir is not a startup error — audio requests
+  // simply 404 until the mount exists (routes/ttmik.ts owns the containment
+  // check that keeps every resolved path inside this root).
+  CORPUS_AUDIO_DIR: z.string().min(1).default('/corpus'),
+
   // Session / cookie
   SESSION_COOKIE_NAME: z.string().default('km_sid'),
   SESSION_LIFETIME_DAYS: z.coerce.number().int().positive().default(30),
