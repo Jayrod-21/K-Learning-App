@@ -39,6 +39,7 @@ const vocabSvc = vi.hoisted(() => ({
 const grammarSvc = vi.hoisted(() => ({
   listPatterns: vi.fn(),
   bankPattern: vi.fn(),
+  getPattern: vi.fn(),
 }));
 
 const krdictSvc = vi.hoisted(() => ({ searchKrdict: vi.fn() }));
@@ -78,6 +79,19 @@ const SUGGEST_GRAMMAR: KgiuEntrySummary[] = [
     source_pages: null,
   },
 ];
+
+const KGIU_DETAIL = {
+  ...SUGGEST_GRAMMAR[0]!,
+  explanation: 'Contrasts two clauses — "whereas / while on the other hand".',
+  formation_rules: null,
+  examples: null,
+  dialogues: null,
+  vocabulary: null,
+  tips: null,
+  compare_with: null,
+  exercises: null,
+  cultural_notes: null,
+};
 
 const KRDICT_HIT: KrdictSearchEntry = {
   id: 5,
@@ -135,6 +149,7 @@ beforeEach(() => {
 
   grammarSvc.listPatterns.mockResolvedValue(SUGGEST_GRAMMAR);
   grammarSvc.bankPattern.mockResolvedValue({ id: 1 });
+  grammarSvc.getPattern.mockResolvedValue(KGIU_DETAIL);
 
   krdictSvc.searchKrdict.mockResolvedValue({ entries: [KRDICT_HIT], total: 1 });
 
@@ -351,6 +366,132 @@ describe('Resources — Grammar tab', () => {
     await waitFor(() => {
       expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
         expect.objectContaining({ limit: 400 }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('opens the detail Sheet on row tap — fetches getPattern(id) and renders the explanation (F-004)', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    await screen.findByText(/1 pattern/);
+
+    // The row is a real button (a11y: keyboard-operable), labelled with the
+    // pattern + its English title.
+    await user.click(
+      screen.getByRole('button', { name: '-는 반면에 whereas' }),
+    );
+    expect(grammarSvc.getPattern).toHaveBeenCalledWith(100);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText(
+        'Contrasts two clauses — "whereas / while on the other hand".',
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/Unit 9/)).toBeInTheDocument();
+  });
+
+  it('a failed detail fetch surfaces an inline error in the Sheet (row list keeps working)', async () => {
+    grammarSvc.getPattern.mockRejectedValueOnce(
+      new ApiError('kgiu entry not found', { status: 404, code: 'not_found' }),
+    );
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    await screen.findByText(/1 pattern/);
+    await user.click(
+      screen.getByRole('button', { name: '-는 반면에 whereas' }),
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText('kgiu entry not found'),
+    ).toBeInTheDocument();
+  });
+
+  it('domain + level filters refetch with the matching query params (F-005)', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    await screen.findByText(/1 pattern/);
+
+    grammarSvc.listPatterns.mockClear();
+    const topicGroup = screen.getByRole('group', { name: 'Filter grammar by topic' });
+    await user.click(within(topicGroup).getByRole('button', { name: 'Research' }));
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.objectContaining({ domain: 'research' }),
+        expect.anything(),
+      );
+    });
+
+    grammarSvc.listPatterns.mockClear();
+    const levelGroup = screen.getByRole('group', { name: 'Filter grammar by level' });
+    await user.click(within(levelGroup).getByRole('button', { name: 'Advanced' }));
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.objectContaining({ domain: 'research', book_level: 'advanced' }),
+        expect.anything(),
+      );
+    });
+
+    // Back to All → the param is omitted again (never sent as 'all').
+    grammarSvc.listPatterns.mockClear();
+    await user.click(within(topicGroup).getByRole('button', { name: 'All' }));
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.not.objectContaining({ domain: expect.anything() }),
+        expect.anything(),
+      );
+    });
+  });
+});
+
+describe('Resources — Vocabulary tab filters (F-003)', () => {
+  it('domain + level filters refetch with the matching query params and reset paging', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    vocabSvc.searchEntriesPage.mockClear();
+    const topicGroup = screen.getByRole('group', { name: 'Filter vocabulary by topic' });
+    await user.click(within(topicGroup).getByRole('button', { name: 'Business' }));
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
+        expect.objectContaining({ domain: 'business', offset: 0 }),
+        expect.anything(),
+      );
+    });
+
+    vocabSvc.searchEntriesPage.mockClear();
+    const levelGroup = screen.getByRole('group', { name: 'Filter vocabulary by level' });
+    await user.click(within(levelGroup).getByRole('button', { name: 'Beginner' }));
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          domain: 'business',
+          book_level: 'beginner',
+          offset: 0,
+        }),
+        expect.anything(),
+      );
+    });
+
+    // Back to All → the params are omitted again (never sent as 'all').
+    vocabSvc.searchEntriesPage.mockClear();
+    await user.click(within(topicGroup).getByRole('button', { name: 'All' }));
+    await user.click(within(levelGroup).getByRole('button', { name: 'All' }));
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
+        expect.not.objectContaining({ domain: expect.anything() }),
         expect.anything(),
       );
     });

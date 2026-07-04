@@ -141,6 +141,78 @@ describe('GET /vocab/entries — search (q) + total', () => {
   });
 });
 
+describe('GET /vocab/entries — domain + book_level filters (F-003)', () => {
+  // vocab_entries is reference data the file-level beforeEach does NOT
+  // truncate; these tests assert exact totals, so isolate the corpus.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('domain filter narrows to matching rows only', async () => {
+    await seedVocabEntry(pg.pool, { korean: '사과', english: 'apple' });
+    const researchId = await seedVocabEntry(pg.pool, {
+      korean: '가설',
+      english: 'hypothesis',
+    });
+    // The seed helper leaves the column at its 'general' default; retag one
+    // row so the filter has something to select.
+    await pg.pool.query(
+      `UPDATE vocab_entries SET domain = 'research'::content_domain WHERE id = $1`,
+      [researchId],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/vocab/entries?domain=research');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('가설');
+
+    // Unfiltered still returns both — the param narrows, never re-shapes.
+    const all = await agent.get('/vocab/entries').expect(200);
+    expect(all.body.total).toBe(2);
+  });
+
+  it('book_level filter narrows to the matching band', async () => {
+    await seedVocabEntry(pg.pool, { korean: '중급단어' });
+    const beginnerId = await seedVocabEntry(pg.pool, { korean: '초급단어' });
+    // Flip one row to the beginner band. corpus + book_level move together to
+    // satisfy ck_vocab_entries_level_matches_corpus.
+    await pg.pool.query(
+      `UPDATE vocab_entries
+          SET corpus = 'vocab_2000_beginner'::corpus,
+              book_level = 'beginner'::book_level
+        WHERE id = $1`,
+      [beginnerId],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/vocab/entries?book_level=beginner');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('초급단어');
+  });
+
+  it('domain + book_level + q compose (AND semantics)', async () => {
+    // Three rows: only one is research AND intermediate AND matches the term.
+    const hit = await seedVocabEntry(pg.pool, { korean: '연구결과', english: 'research result' });
+    // Matches the term but stays 'general' — the domain filter must drop it.
+    await seedVocabEntry(pg.pool, { korean: '연구실패', english: 'general row' });
+    await seedVocabEntry(pg.pool, { korean: '무관단어', english: 'unrelated' });
+    await pg.pool.query(
+      `UPDATE vocab_entries SET domain = 'research'::content_domain WHERE id = $1`,
+      [hit],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get(
+      `/vocab/entries?q=${encodeURIComponent('연구')}&domain=research&book_level=intermediate`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('연구결과');
+  });
+});
+
 describe('GET /vocab/suggestions/weekly', () => {
   // Isolate from accumulated reference rows so the "excludes carded" and
   // capped-at-15 assertions are deterministic.
@@ -224,6 +296,8 @@ describe('GET /vocab/entries — validation rejection', () => {
   const cases: Array<{ name: string; qs: string }> = [
     { name: 'bad corpus enum', qs: '?corpus=not_a_corpus' },
     { name: 'bad proficiency enum', qs: '?proficiency=Z9' },
+    { name: 'bad domain enum', qs: '?domain=sports' },
+    { name: 'bad book_level enum', qs: '?book_level=expert' },
     { name: 'limit too high', qs: '?limit=999' },
     { name: 'limit zero', qs: '?limit=0' },
     { name: 'negative offset', qs: '?offset=-1' },
