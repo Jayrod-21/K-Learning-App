@@ -196,7 +196,7 @@ async def _seed_rows(url: str) -> None:
                     (corpus, title, level, source_path, default_proficiency)
                 VALUES
                     ('ttmik'::corpus, 't', 'beginner'::book_level, 'x.json',
-                     'L1'::proficiency_level),
+                     'basic'::proficiency_level),
                     ('iyagi'::corpus, 'i', 'intermediate'::book_level, 'y.json',
                      'L3'::proficiency_level)
                 RETURNING id
