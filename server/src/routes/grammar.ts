@@ -34,6 +34,12 @@ const KgiuSearchQuerySchema = z.object({
     .enum(['kgiu_beginner', 'kgiu_intermediate', 'kgiu_advanced'])
     .optional(),
   proficiency: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
+  // F-005: Reference Grammar-tab filters. `domain` is the content-tagging
+  // genre (content_domain enum, migration 002) and `book_level` the difficulty
+  // band. Closed enums mirroring the DB types, so an out-of-vocabulary value
+  // 400s at the boundary instead of reaching the cast in SQL.
+  domain: z.enum(['general', 'research', 'business']).optional(),
+  book_level: z.enum(['beginner', 'intermediate', 'advanced']).optional(),
   // The client's Reference "Grammar" tab requests one wide page (GRAMMAR_PAGE_SIZE
   // = 400) to list the whole corpus without a pager; the reference data is ~370
   // pattern rows, so 400 covers it. Ceiling raised from 100 → 400 to admit that.
@@ -64,9 +70,19 @@ router.get(
             AND ($1::corpus IS NULL OR corpus = $1::corpus)
             AND ($2::proficiency_level IS NULL OR proficiency = $2::proficiency_level)
             AND ($3::text IS NULL OR pattern = $3)
+            AND ($4::content_domain IS NULL OR domain = $4::content_domain)
+            AND ($5::book_level IS NULL OR book_level = $5::book_level)
           ORDER BY id
-          LIMIT $4 OFFSET $5`,
-        [q.corpus ?? null, q.proficiency ?? null, q.q ?? null, q.limit, q.offset],
+          LIMIT $6 OFFSET $7`,
+        [
+          q.corpus ?? null,
+          q.proficiency ?? null,
+          q.q ?? null,
+          q.domain ?? null,
+          q.book_level ?? null,
+          q.limit,
+          q.offset,
+        ],
       );
       res.status(200).json({ entries: rows });
     } catch (err) {

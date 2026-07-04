@@ -110,6 +110,90 @@ describe('GET /grammar/kgiu — success + validation', () => {
   });
 });
 
+describe('GET /grammar/kgiu — domain + book_level filters (F-005)', () => {
+  // kgiu_entries is shared reference data the file-level beforeEach does NOT
+  // truncate; these tests assert exact result sets, so isolate the corpus.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE kgiu_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('domain filter narrows to matching patterns only', async () => {
+    await seedKgiuEntry(pg.pool, { pattern: '-는 반면에' });
+    const researchId = await seedKgiuEntry(pg.pool, { pattern: '-에 의하면' });
+    // The seed leaves domain at its 'general' default; retag one row so the
+    // filter has something to select.
+    await pg.pool.query(
+      `UPDATE kgiu_entries SET domain = 'research'::content_domain WHERE id = $1`,
+      [researchId],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/grammar/kgiu?domain=research');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(1);
+    expect(res.body.entries[0].pattern).toBe('-에 의하면');
+
+    // Unfiltered still returns both — the param narrows, never re-shapes.
+    const all = await agent.get('/grammar/kgiu').expect(200);
+    expect(all.body.entries.length).toBe(2);
+  });
+
+  it('book_level filter narrows to the matching band', async () => {
+    await seedKgiuEntry(pg.pool, { pattern: '-는 중이다' });
+    const beginnerId = await seedKgiuEntry(pg.pool, { pattern: '-(으)ㄹ 거예요' });
+    // Flip one row to the beginner band. corpus + book_level move together to
+    // satisfy the kgiu level-matches-corpus CHECK.
+    await pg.pool.query(
+      `UPDATE kgiu_entries
+          SET corpus = 'kgiu_beginner'::corpus,
+              book_level = 'beginner'::book_level
+        WHERE id = $1`,
+      [beginnerId],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/grammar/kgiu?book_level=beginner');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(1);
+    expect(res.body.entries[0].pattern).toBe('-(으)ㄹ 거예요');
+  });
+
+  it('domain + book_level compose (AND semantics)', async () => {
+    // Only one row is research AND beginner.
+    const hitId = await seedKgiuEntry(pg.pool, { pattern: '-에 따르면' });
+    const researchOnlyId = await seedKgiuEntry(pg.pool, { pattern: '-으로 인해' });
+    await seedKgiuEntry(pg.pool, { pattern: '-기는 하지만' });
+    await pg.pool.query(
+      `UPDATE kgiu_entries
+          SET corpus = 'kgiu_beginner'::corpus,
+              book_level = 'beginner'::book_level,
+              domain = 'research'::content_domain
+        WHERE id = $1`,
+      [hitId],
+    );
+    await pg.pool.query(
+      `UPDATE kgiu_entries SET domain = 'research'::content_domain WHERE id = $1`,
+      [researchOnlyId],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/grammar/kgiu?domain=research&book_level=beginner');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(1);
+    expect(res.body.entries[0].pattern).toBe('-에 따르면');
+  });
+
+  it.each([
+    ['bad domain enum', '?domain=sports'],
+    ['bad book_level enum', '?book_level=expert'],
+  ])('%s → 400', async (_name, qs) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/grammar/kgiu${qs}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+});
+
 describe('GET /grammar/kgiu/:id', () => {
   it('valid id → 200', async () => {
     const id = await seedKgiuEntry(pg.pool);

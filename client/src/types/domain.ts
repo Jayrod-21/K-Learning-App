@@ -774,6 +774,20 @@ export interface EnrichResult {
 /** Vocab corpus identifiers the server accepts. */
 export type VocabCorpus = 'vocab_2000_beginner' | 'vocab_2000_intermediate';
 
+/**
+ * Content-tagging genre — mirrors the server's `content_domain` enum
+ * (migration 002). Drives the Reference-tab "topic" filters (F-003/F-005).
+ */
+export type ContentDomain = 'general' | 'research' | 'business';
+
+/**
+ * Source-book difficulty band — mirrors the server's `book_level` enum.
+ * Drives the Reference-tab "level" filters (F-003/F-005). Distinct from
+ * {@link ServerProficiency}: this is the band of the book a row was ingested
+ * from, not the learner-facing proficiency tag.
+ */
+export type BookLevel = 'beginner' | 'intermediate' | 'advanced';
+
 /** Server proficiency band names — distinct from the design's `LevelLabel`. */
 export type ServerProficiency = 'basic' | 'L3' | 'L4' | 'L5+';
 
