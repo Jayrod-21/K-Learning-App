@@ -1730,3 +1730,80 @@ export interface GradeWritingResponse {
   result: WritingGradeResult;
   metadata: WritingCallMetadata;
 }
+
+// ── TTMIK / Iyagi audio (F-012) ───────────────────────────────────────────
+//
+// Wire shapes for the audio-lesson browse + read-along surface. All routes
+// are GET + requireAuth (the cookie session rides via `withCredentials` on
+// the axios instance, and on the `<audio>` element because the media request
+// is same-origin / same-site with the API). `audioUrl` is an APP-RELATIVE
+// path (e.g. `/ttmik/lessons/2/21/audio`) that streams `audio/mpeg` with
+// HTTP Range support, or `null` when no audio file is mapped for the unit —
+// the UI renders transcript-only in that case.
+
+/**
+ * One transcript sentence for a TTMIK lesson or Iyagi episode — the same row
+ * shape for both corpora (`GET /ttmik/lessons/:level/:number` and
+ * `GET /iyagi/episodes/:number` emit identical sentence rows). `korean` is
+ * the primary read-along line; `english`/`romanization` are secondary and
+ * nullable. `speaker` labels dialog turns when `is_dialog` is set.
+ */
+export interface TtmikSentence {
+  id: number;
+  /** 1-based position within the unit — the transcript render order. */
+  ordinal: number;
+  korean: string;
+  english: string | null;
+  romanization: string | null;
+  speaker: string | null;
+  is_dialog: boolean;
+}
+
+/** One TTMIK lesson row from `GET /ttmik/lessons` (ordered by level, number). */
+export interface TtmikLesson {
+  level: number;
+  number: number;
+  title: string;
+  /** False when no mp3 is mapped — the browse row flags "no audio". */
+  hasAudio: boolean;
+}
+
+/** Envelope for `GET /ttmik/lessons`. */
+export interface TtmikLessonsResponse {
+  lessons: TtmikLesson[];
+}
+
+/** Detail envelope for `GET /ttmik/lessons/:level/:number`. */
+export interface TtmikLessonDetail {
+  meta: TtmikLesson;
+  sentences: TtmikSentence[];
+  /** App-relative audio stream path, or null when no audio is mapped. */
+  audioUrl: string | null;
+}
+
+/** One Iyagi episode row from `GET /iyagi/episodes` (ordered by number). */
+export interface IyagiEpisode {
+  number: number;
+  title: string;
+  /** False when no mp3 is mapped — the browse row flags "no audio". */
+  hasAudio: boolean;
+}
+
+/** Envelope for `GET /iyagi/episodes`. */
+export interface IyagiEpisodesResponse {
+  episodes: IyagiEpisode[];
+}
+
+/** `meta` block of `GET /iyagi/episodes/:number` — the row plus hosts. */
+export interface IyagiEpisodeMeta extends IyagiEpisode {
+  /** Episode hosts (display-only text). */
+  hosts: string[];
+}
+
+/** Detail envelope for `GET /iyagi/episodes/:number`. */
+export interface IyagiEpisodeDetail {
+  meta: IyagiEpisodeMeta;
+  sentences: TtmikSentence[];
+  /** App-relative audio stream path, or null when no audio is mapped. */
+  audioUrl: string | null;
+}

@@ -1,0 +1,169 @@
+/**
+ * ttmik service — URL construction, envelope unwrap, and audio-src build.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  buildAudioSrc,
+  getIyagiEpisode,
+  getIyagiEpisodes,
+  getTtmikLesson,
+  getTtmikLessons,
+} from './ttmik';
+import { api, ApiError } from './api';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('getTtmikLessons', () => {
+  it('GETs /ttmik/lessons and unwraps the lessons array', async () => {
+    const lessons = [
+      { level: 1, number: 1, title: 'Hello / Thank you', hasAudio: true },
+      { level: 2, number: 21, title: 'More / -(으)ㄴ 것 같다', hasAudio: false },
+    ];
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ lessons });
+
+    const got = await getTtmikLessons();
+
+    expect(spy).toHaveBeenCalledWith('/ttmik/lessons', undefined);
+    expect(got).toBe(lessons);
+    expect(got).toHaveLength(2);
+    expect(got[1]?.hasAudio).toBe(false);
+  });
+
+  it('forwards an AbortSignal to the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ lessons: [] });
+    const ctrl = new AbortController();
+
+    await getTtmikLessons(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/ttmik/lessons', {
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on a failed request', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    await expect(getTtmikLessons()).rejects.toMatchObject({ code: 'network' });
+  });
+});
+
+describe('getTtmikLesson', () => {
+  it('constructs /ttmik/lessons/:level/:number and returns the detail', async () => {
+    const detail = {
+      meta: { level: 2, number: 21, title: 'More', hasAudio: true },
+      sentences: [
+        {
+          id: 7,
+          ordinal: 1,
+          korean: '안녕하세요.',
+          english: 'Hello.',
+          romanization: 'annyeonghaseyo',
+          speaker: null,
+          is_dialog: false,
+        },
+      ],
+      audioUrl: '/ttmik/lessons/2/21/audio',
+    };
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(detail);
+
+    const got = await getTtmikLesson(2, 21);
+
+    expect(spy).toHaveBeenCalledWith('/ttmik/lessons/2/21', undefined);
+    expect(got).toBe(detail);
+    expect(got.audioUrl).toBe('/ttmik/lessons/2/21/audio');
+  });
+
+  it('surfaces ApiError(404) for an unknown lesson', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    await expect(getTtmikLesson(9, 999)).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+});
+
+describe('getIyagiEpisodes', () => {
+  it('GETs /iyagi/episodes and unwraps the episodes array', async () => {
+    const episodes = [
+      { number: 1, title: '서울의 겨울', hasAudio: true },
+      { number: 143, title: '한국의 카페 문화', hasAudio: true },
+    ];
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ episodes });
+
+    const got = await getIyagiEpisodes();
+
+    expect(spy).toHaveBeenCalledWith('/iyagi/episodes', undefined);
+    expect(got).toBe(episodes);
+  });
+
+  it('rethrows ApiError on a failed request', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('server error', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(getIyagiEpisodes()).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('getIyagiEpisode', () => {
+  it('constructs /iyagi/episodes/:number and returns the detail', async () => {
+    const detail = {
+      meta: {
+        number: 143,
+        title: '한국의 카페 문화',
+        hosts: ['경화', '석진'],
+        hasAudio: true,
+      },
+      sentences: [],
+      audioUrl: '/iyagi/episodes/143/audio',
+    };
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(detail);
+
+    const got = await getIyagiEpisode(143);
+
+    expect(spy).toHaveBeenCalledWith('/iyagi/episodes/143', undefined);
+    expect(got).toBe(detail);
+    expect(got.meta.hosts).toEqual(['경화', '석진']);
+  });
+
+  it('surfaces ApiError on network failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    await expect(getIyagiEpisode(1)).rejects.toMatchObject({
+      code: 'network',
+    });
+  });
+});
+
+describe('buildAudioSrc', () => {
+  it('returns null for a null audioUrl (no audio mapped)', () => {
+    expect(buildAudioSrc(null, '')).toBeNull();
+    expect(buildAudioSrc(null, 'http://localhost:4000')).toBeNull();
+  });
+
+  it('returns the app-relative path verbatim on an empty base (prod same-origin)', () => {
+    expect(buildAudioSrc('/ttmik/lessons/2/21/audio', '')).toBe(
+      '/ttmik/lessons/2/21/audio',
+    );
+  });
+
+  it('prefixes the API base when one is configured (dev split-origin)', () => {
+    expect(
+      buildAudioSrc('/iyagi/episodes/143/audio', 'http://localhost:4000'),
+    ).toBe('http://localhost:4000/iyagi/episodes/143/audio');
+  });
+
+  it('rejects a non-app-relative audioUrl (absolute or protocol-relative)', () => {
+    expect(buildAudioSrc('https://evil.example/a.mp3', '')).toBeNull();
+    expect(buildAudioSrc('//evil.example/a.mp3', '')).toBeNull();
+    expect(buildAudioSrc('evil.example/a.mp3', '')).toBeNull();
+  });
+});
