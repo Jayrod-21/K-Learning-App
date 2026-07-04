@@ -12,14 +12,14 @@ import { shuffleGeneratedChoices } from '../../src/routes/diagnostic.js';
  */
 describe('shuffleGeneratedChoices — diagnostic answer-position bias fix', () => {
   const src = [{ kr: '가' }, { kr: '나' }, { kr: '다' }, { kr: '라' }] as const;
-  const letterToIdx: Record<string, number> = { a: 0, b: 1, c: 2, d: 3 };
 
   it('keeps correctAnswer on the originally-correct choice, for every source position', () => {
     for (const correctIdx of [0, 1, 2, 3]) {
       for (let trial = 0; trial < 50; trial += 1) {
         const { choices, correctAnswer } = shuffleGeneratedChoices(src, correctIdx);
         expect(choices.map((c) => c.id)).toEqual(['a', 'b', 'c', 'd']);
-        expect(choices[letterToIdx[correctAnswer]]!.kr).toBe(src[correctIdx]!.kr);
+        const correctChoice = choices.find((c) => c.id === correctAnswer);
+        expect(correctChoice?.kr).toBe(src[correctIdx]!.kr);
         // no choice text dropped or duplicated
         expect(new Set(choices.map((c) => c.kr))).toEqual(
           new Set(['가', '나', '다', '라']),
