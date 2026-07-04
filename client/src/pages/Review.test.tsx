@@ -420,6 +420,83 @@ describe('Review', () => {
     });
   });
 
+  it('Add to review seeds both corpora and refetches the due queue (B-013)', async () => {
+    vi.mocked(vocabService.initCards)
+      .mockResolvedValueOnce({ inserted: 12 })
+      .mockResolvedValueOnce({ inserted: 3 });
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    const seedBefore = hoisted.refetchCalls.due;
+    await user.click(screen.getByRole('button', { name: 'Add to review' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Added 15 cards to review.')).toBeInTheDocument();
+    });
+    expect(vocabService.initCards).toHaveBeenNthCalledWith(1, {
+      corpus: 'vocab_2000_beginner',
+      limit: 100,
+    });
+    expect(vocabService.initCards).toHaveBeenNthCalledWith(2, {
+      corpus: 'vocab_2000_intermediate',
+      limit: 100,
+    });
+    // The Session tab's due queue is re-pulled so the freshly-seeded cards
+    // appear without a manual "Start new session" tap.
+    expect(hoisted.refetchCalls.due).toBeGreaterThan(seedBefore);
+  });
+
+  it('Add to review reports the idempotent zero-inserted case without refetching (B-013)', async () => {
+    vi.mocked(vocabService.initCards).mockResolvedValue({ inserted: 0 });
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    const seedBefore = hoisted.refetchCalls.due;
+    await user.click(screen.getByRole('button', { name: 'Add to review' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "You're all caught up — every loaded word already has a review card.",
+        ),
+      ).toBeInTheDocument();
+    });
+    // Nothing changed server-side, so there's nothing new for the Session
+    // tab to pick up — a refetch here would just be a wasted round trip.
+    expect(hoisted.refetchCalls.due).toBe(seedBefore);
+  });
+
+  it('Add to review surfaces an ApiError message and re-enables the button on failure (B-013)', async () => {
+    vi.mocked(vocabService.initCards).mockRejectedValueOnce(
+      new ApiError('rate limited', { status: 429, code: 'rate_limited' }),
+    );
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    const seedButton = screen.getByRole('button', { name: 'Add to review' });
+    await user.click(seedButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('rate limited');
+    });
+    expect(seedButton).not.toBeDisabled();
+    // The second corpus call never fires — the loop bails on the first
+    // rejection rather than silently swallowing it and moving on.
+    expect(vocabService.initCards).toHaveBeenCalledTimes(1);
+  });
+
   it('All tab debounces query input and calls searchEntries', async () => {
     vi.mocked(vocabService.searchEntries).mockResolvedValue(SERVER_ENTRIES);
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };

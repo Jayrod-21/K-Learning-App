@@ -12,6 +12,11 @@
  *     to scroll, so it is SEARCH-FIRST: an empty state prompts the user to
  *     type; results are paginated.
  *   - Grammar — every KGIU pattern (the full set, not the 20-row default).
+ *     Each row opens a detail Sheet (`GET /grammar/kgiu/:id` — explanation +
+ *     unit, the same detail surface pages/Grammar.tsx renders; F-004), and the
+ *     list narrows by topic (`domain`) and level (`book_level`) filters that
+ *     map 1:1 onto the endpoint's query params (F-005). The Vocabulary tab
+ *     carries the same two filters against `GET /vocab/entries` (F-003).
  *   - My Lists — create a named list, see the lists, open one to view its
  *     entries and remove them.
  *
@@ -58,6 +63,9 @@ import {
 import { ApiError } from '../services/api';
 import { grammarKey } from '../lib/grammarKey';
 import type {
+  BookLevel,
+  ContentDomain,
+  KgiuEntryDetail,
   KgiuEntrySummary,
   KrdictSearchEntry,
   ServerProficiency,
@@ -451,6 +459,73 @@ function Pager({
   );
 }
 
+/**
+ * Browse-tab filter vocabularies (F-003/F-005). `'all'` omits the query param
+ * so the endpoint returns every row — mirrors the Grammar screen's level
+ * filter convention (pages/Grammar.tsx LEVEL_FILTERS).
+ */
+type DomainFilter = ContentDomain | 'all';
+type LevelFilter = BookLevel | 'all';
+
+const DOMAIN_FILTERS: ReadonlyArray<{ id: DomainFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'general', label: 'General' },
+  { id: 'research', label: 'Research' },
+  { id: 'business', label: 'Business' },
+];
+
+/** The curated vocab corpora carry only beginner/intermediate bands. */
+const VOCAB_LEVEL_FILTERS: ReadonlyArray<{ id: LevelFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'beginner', label: 'Beginner' },
+  { id: 'intermediate', label: 'Intermediate' },
+];
+
+/** KGIU spans all three bands. */
+const GRAMMAR_LEVEL_FILTERS: ReadonlyArray<{ id: LevelFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'beginner', label: 'Beginner' },
+  { id: 'intermediate', label: 'Intermediate' },
+  { id: 'advanced', label: 'Advanced' },
+];
+
+interface FilterGroupProps<T extends string> {
+  ariaLabel: string;
+  options: ReadonlyArray<{ id: T; label: string }>;
+  value: T;
+  onChange: (next: T) => void;
+}
+
+/** One row of mutually-exclusive filter chips — same visual + a11y shape as
+ *  the Grammar screen's level filter (`role="group"` + `aria-pressed`). */
+function FilterGroup<T extends string>({
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: FilterGroupProps<T>): JSX.Element {
+  return (
+    <div className="km-review__tabs" role="group" aria-label={ariaLabel}>
+      {options.map((opt) => {
+        const selected = value === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            aria-pressed={selected}
+            className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+            onClick={() => {
+              onChange(opt.id);
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function VocabularyTab(): JSX.Element {
   const { input, q, setInput, clear } = useDebouncedSearch();
   const [offset, setOffset] = useState(0);
@@ -463,15 +538,19 @@ function VocabularyTab(): JSX.Element {
   const [reloadTick, setReloadTick] = useState(0);
   // Add-to-list target row — opens the picker Sheet.
   const [addTarget, setAddTarget] = useState<VocabEntry | null>(null);
+  // F-003 filters: genre (content_domain) + difficulty (book_level). 'all'
+  // omits the param so the endpoint returns every row.
+  const [domain, setDomain] = useState<DomainFilter>('all');
+  const [level, setLevel] = useState<LevelFilter>('all');
   const ctrlRef = useRef<AbortController | null>(null);
 
-  // Reset to the first page whenever the query changes so the pager never
-  // points past the new result set. Sync-to-derived-state on a key change —
-  // same documented exception the hooks use.
+  // Reset to the first page whenever the query or a filter changes so the
+  // pager never points past the new result set. Sync-to-derived-state on a
+  // key change — same documented exception the hooks use.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOffset(0);
-  }, [q]);
+  }, [q, domain, level]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -485,7 +564,13 @@ function VocabularyTab(): JSX.Element {
     /* eslint-enable react-hooks/set-state-in-effect */
     vocabService
       .searchEntriesPage(
-        { ...(q ? { q } : {}), limit: PAGE_SIZE, offset },
+        {
+          ...(q ? { q } : {}),
+          ...(domain !== 'all' ? { domain } : {}),
+          ...(level !== 'all' ? { book_level: level } : {}),
+          limit: PAGE_SIZE,
+          offset,
+        },
         ctrl.signal,
       )
       .then((page) => {
@@ -507,7 +592,7 @@ function VocabularyTab(): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, reloadTick]);
+  }, [q, offset, domain, level, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -521,6 +606,18 @@ function VocabularyTab(): JSX.Element {
         onClear={clear}
         placeholder="Search the 2,000 corpus"
         ariaLabel="Search vocabulary"
+      />
+      <FilterGroup
+        ariaLabel="Filter vocabulary by topic"
+        options={DOMAIN_FILTERS}
+        value={domain}
+        onChange={setDomain}
+      />
+      <FilterGroup
+        ariaLabel="Filter vocabulary by level"
+        options={VOCAB_LEVEL_FILTERS}
+        value={level}
+        onChange={setLevel}
       />
       {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">
@@ -717,7 +814,20 @@ function GrammarTab(): JSX.Element {
   const [rows, setRows] = useState<KgiuEntrySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // F-005 filters: genre (content_domain) + difficulty (book_level).
+  const [domain, setDomain] = useState<DomainFilter>('all');
+  const [level, setLevel] = useState<LevelFilter>('all');
+  // F-004 detail Sheet: the tapped row paints the header immediately while the
+  // full `GET /grammar/kgiu/:id` detail resolves underneath (same shape as the
+  // Grammar screen's DetailSheet — see pages/Grammar.tsx `openDetail`).
+  const [openRow, setOpenRow] = useState<KgiuEntrySummary | null>(null);
+  const [detail, setDetail] = useState<KgiuEntryDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+  // Id of the row whose detail fetch is authoritative — a slow settle for a
+  // previously tapped row must not paint over the currently open one.
+  const detailIdRef = useRef<number | null>(null);
 
   const load = useCallback(() => {
     const ctrl = new AbortController();
@@ -727,7 +837,12 @@ function GrammarTab(): JSX.Element {
     setError(null);
     grammarService
       .listPatterns(
-        { ...(q ? { q } : {}), limit: GRAMMAR_PAGE_SIZE },
+        {
+          ...(q ? { q } : {}),
+          ...(domain !== 'all' ? { domain } : {}),
+          ...(level !== 'all' ? { book_level: level } : {}),
+          limit: GRAMMAR_PAGE_SIZE,
+        },
         ctrl.signal,
       )
       .then((entries) => {
@@ -745,7 +860,7 @@ function GrammarTab(): JSX.Element {
         );
         setLoading(false);
       });
-  }, [q]);
+  }, [q, domain, level]);
 
   useEffect(() => {
     // Sync-to-external-system on mount / query change (same documented
@@ -757,6 +872,38 @@ function GrammarTab(): JSX.Element {
     };
   }, [load]);
 
+  // F-004: open the detail Sheet for a tapped pattern. Mirrors the Grammar
+  // screen's `openDetail` (real KGIU id → `getPattern`); the header renders
+  // from the row while the detail loads, and a failure surfaces an inline
+  // ErrorCard with Retry rather than closing the Sheet.
+  const openDetail = useCallback(async (row: KgiuEntrySummary): Promise<void> => {
+    detailIdRef.current = row.id;
+    setOpenRow(row);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const d = await grammarService.getPattern(row.id);
+      if (detailIdRef.current !== row.id) return; // superseded by a newer tap
+      setDetail(d);
+    } catch (err) {
+      if (detailIdRef.current !== row.id) return;
+      setDetailError(
+        err instanceof ApiError ? err.message : 'Detail unavailable',
+      );
+    } finally {
+      if (detailIdRef.current === row.id) setDetailLoading(false);
+    }
+  }, []);
+
+  const closeDetail = useCallback((): void => {
+    detailIdRef.current = null;
+    setOpenRow(null);
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(false);
+  }, []);
+
   return (
     <div className="km-resources__panel">
       <SearchBox
@@ -765,6 +912,18 @@ function GrammarTab(): JSX.Element {
         onClear={clear}
         placeholder="Search all grammar patterns"
         ariaLabel="Search grammar"
+      />
+      <FilterGroup
+        ariaLabel="Filter grammar by topic"
+        options={DOMAIN_FILTERS}
+        value={domain}
+        onChange={setDomain}
+      />
+      <FilterGroup
+        ariaLabel="Filter grammar by level"
+        options={GRAMMAR_LEVEL_FILTERS}
+        value={level}
+        onChange={setLevel}
       />
       <div className="km-reference__count">
         {rows.length} pattern{rows.length === 1 ? '' : 's'}
@@ -782,7 +941,14 @@ function GrammarTab(): JSX.Element {
           <ul>
             {rows.map((p) => (
               <li key={`grammar:${String(p.id)}`} className="km-reference__row">
-                <div className="km-resources__entry-row">
+                <button
+                  type="button"
+                  className="km-resources__list-open focusring"
+                  onClick={() => {
+                    void openDetail(p);
+                  }}
+                  aria-label={`${p.pattern} ${p.title_en ?? p.pattern}`}
+                >
                   <span className="kr km-reference__row-kr">{p.pattern}</span>
                   <span className="km-reference__row-en">
                     {p.title_en ?? p.pattern}
@@ -790,13 +956,101 @@ function GrammarTab(): JSX.Element {
                   <span className="km-pill km-pill--default km-reference__row-level">
                     {p.proficiency ?? '—'}
                   </span>
-                </div>
+                </button>
               </li>
             ))}
           </ul>
         </Card>
       )}
+
+      <GrammarDetailSheet
+        row={openRow}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        onRetry={() => {
+          if (openRow) void openDetail(openRow);
+        }}
+        onClose={closeDetail}
+      />
     </div>
+  );
+}
+
+interface GrammarDetailSheetProps {
+  /** The tapped list row (paints the header instantly); null = closed. */
+  row: KgiuEntrySummary | null;
+  detail: KgiuEntryDetail | null;
+  loading: boolean;
+  error: string | null;
+  onRetry: () => void;
+  onClose: () => void;
+}
+
+/**
+ * Pattern-detail Sheet for the Grammar tab (F-004) — the same detail surface
+ * the Grammar screen's DetailSheet renders (explanation + unit from
+ * `GET /grammar/kgiu/:id`), minus the bank action that screen owns. All
+ * strings render through React text children — a hostile corpus row cannot
+ * escape into the DOM.
+ */
+function GrammarDetailSheet({
+  row,
+  detail,
+  loading,
+  error,
+  onRetry,
+  onClose,
+}: GrammarDetailSheetProps): JSX.Element {
+  return (
+    <Sheet open={row !== null} onClose={onClose} ariaLabel="Grammar pattern detail">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>Pattern</Eyebrow>
+            <div className="kr-display km-review__sheetTitle">
+              {row?.pattern ?? ''}
+            </div>
+            <div className="km-review__sheetMeta">
+              {row?.title_en ?? row?.pattern ?? ''}
+              {row?.proficiency ? ` · ${row.proficiency}` : ''}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close pattern detail"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+
+        <hr className="hr-double km-review__sheetRule" />
+
+        {loading ? (
+          <div className="km-grammar__state" role="status">
+            Loading detail…
+          </div>
+        ) : null}
+        {error ? <ErrorCard message={error} onRetry={onRetry} /> : null}
+        {detail && !loading ? (
+          <>
+            {detail.explanation ? (
+              <>
+                <Eyebrow>Explanation</Eyebrow>
+                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                  {detail.explanation}
+                </p>
+              </>
+            ) : null}
+            <div className="km-eyebrow" style={{ marginTop: 16 }}>
+              Unit · {detail.unit ?? '—'}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </Sheet>
   );
 }
 

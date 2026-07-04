@@ -8,6 +8,7 @@
  *   POST /diagnostic/:runId/finish    → score the run, write a snapshot
  *   GET  /diagnostic/latest           → the user's latest snapshot (or empty)
  *   GET  /diagnostic/trajectory       → snapshot history as score points
+ *   GET  /diagnostic/history          → full snapshot history (DTO per attempt)
  *
  * Grading and item generation are DELIBERATELY split (B-006). Grading is a
  * cheap, local DB operation; generation for vocab/grammar is a multi-second
@@ -1282,6 +1283,58 @@ router.get('/trajectory', cheapLimiter(), async (req, res, next) => {
       return point;
     });
     res.status(200).json({ points });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** One history entry: the /latest SnapshotDTO shape plus its capture time. */
+interface HistorySnapshotDTO extends SnapshotDTO {
+  readonly capturedAt: string;
+}
+
+/**
+ * GET /diagnostic/history — ALL of the user's snapshots, oldest→newest.
+ *
+ * Returns `{ snapshots: HistorySnapshotDTO[] }` where each entry is the exact
+ * SnapshotDTO shape `/latest` returns (dimensions / references / defaultRef /
+ * goals) plus `capturedAt` (ISO-8601). Drives the Progress screen's trend
+ * chart + attempt-vs-attempt comparison. A user with no finished runs gets a
+ * 200 with `snapshots: []` — the same "empty, not 404" posture as `/latest`.
+ *
+ * SECURITY: user-scoped via getUserId. Defends against: BOLA/IDOR — the query
+ * is parameterized and filtered `WHERE user_id = $1`, so one user can never
+ * read another user's snapshot history. Soft-deleted rows are excluded.
+ * `ORDER BY captured_at ASC, id ASC` — the id tiebreak keeps the order
+ * deterministic when two snapshots share a capture timestamp.
+ */
+router.get('/history', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{
+      captured_at: Date;
+      reading_estimate: string | null;
+      listening_estimate: string | null;
+      grammar_estimate: string | null;
+      vocab_estimate: string | null;
+    }>(
+      `SELECT captured_at, reading_estimate, listening_estimate,
+              grammar_estimate, vocab_estimate
+         FROM diagnostic_snapshots
+        WHERE user_id = $1 AND deleted_at IS NULL
+        ORDER BY captured_at ASC, id ASC`,
+      [userId],
+    );
+    const snapshots: HistorySnapshotDTO[] = rows.map((r) => ({
+      capturedAt: r.captured_at.toISOString(),
+      ...buildSnapshotDTO({
+        reading: r.reading_estimate !== null ? Number(r.reading_estimate) : null,
+        listening: r.listening_estimate !== null ? Number(r.listening_estimate) : null,
+        grammar: r.grammar_estimate !== null ? Number(r.grammar_estimate) : null,
+        vocab: r.vocab_estimate !== null ? Number(r.vocab_estimate) : null,
+      }),
+    }));
+    res.status(200).json({ snapshots });
   } catch (err) {
     next(err);
   }

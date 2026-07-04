@@ -90,6 +90,7 @@ import type {
   SourceVocabGroup,
   SourceVocabListItem,
   Vocab,
+  VocabCorpus,
   VocabEntry,
   VocabListBundle,
   VocabListKind,
@@ -105,6 +106,38 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
 ];
 
 const SEARCH_DEBOUNCE_MS = 200;
+
+/**
+ * B-013: the two vocab corpora `/vocab/cards/init` accepts. There is no
+ * server-side notion of "seed from THIS list" — `cards/init` seeds
+ * recognition cards from a raw `vocab_entries` slice keyed on `corpus`
+ * (+ optional `proficiency`), independent of `vocab_lists` membership. A
+ * per-list "Study this list" button would therefore have to lie about which
+ * words it adds (custom + source lists carry no `corpus` field — see
+ * `VocabListBundle`), so the seed action lives at the Lists-tab level and
+ * seeds across every known corpus in one gesture rather than pretending to
+ * scope to whichever list sheet happens to be open.
+ */
+const SEED_CORPORA: readonly VocabCorpus[] = [
+  'vocab_2000_beginner',
+  'vocab_2000_intermediate',
+];
+
+/**
+ * Cards inserted per corpus per click. Comfortably under the server's
+ * `InitBodySchema` max (500) — big enough that a fresh user clears most of
+ * their backlog in one or two clicks, small enough that a single click can't
+ * flood the FSRS due queue with the entire corpus at once (the due-cards
+ * fetch itself pages at 20, so accumulation is fine; this just bounds how
+ * much one click commits to the `vocab_cards` table).
+ */
+const SEED_LIMIT = 100;
+
+/** Result of the last "Add to review" click — success tally or error text. */
+interface SeedStatus {
+  kind: 'success' | 'error';
+  text: string;
+}
 
 // ─────────────────────────────────────────────────────────────
 // Wire ↔ UI adapters
@@ -423,6 +456,14 @@ export function Review(): JSX.Element {
   // Cleared on the next successful rating.
   const [rateError, setRateError] = useState<string | null>(null);
 
+  // B-013 "Add to review": in-flight guard + last-result banner for the
+  // Lists-tab seed action. `seeding` disables the button so a second click
+  // mid-request can't double-fire (cards/init is idempotent server-side, so
+  // a double-fire wouldn't corrupt data, but it would burn a redundant round
+  // trip and briefly show a stale count).
+  const [seeding, setSeeding] = useState<boolean>(false);
+  const [seedStatus, setSeedStatus] = useState<SeedStatus | null>(null);
+
   // Debounce the All-panel query — matches Reference/Settings pattern.
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -580,6 +621,52 @@ export function Review(): JSX.Element {
   }, [vocab, lists]);
 
   const refetchLists = lists.refetch;
+  const refetchDue = vocab.refetch;
+
+  // B-013 "Add to review": seed recognition cards from every known vocab
+  // corpus, then refetch the due queue so the Session tab picks the new
+  // cards up without a manual "Start new session" tap. Sequential (not
+  // Promise.all) — each call opens its own server-side transaction, and
+  // running them one at a time keeps the summed `inserted` count trivially
+  // correct without worrying about concurrent-request ordering.
+  const seedReview = useCallback((): void => {
+    if (seeding) return;
+    setSeeding(true);
+    setSeedStatus(null);
+    void (async (): Promise<void> => {
+      try {
+        let insertedTotal = 0;
+        for (const corpus of SEED_CORPORA) {
+          const res = await vocabService.initCards({
+            corpus,
+            limit: SEED_LIMIT,
+          });
+          insertedTotal += res.inserted;
+        }
+        // `cards/init` is idempotent (NOT EXISTS on user+entry+face) — a
+        // fully-seeded user gets `inserted: 0` back, not an error. Word the
+        // banner accordingly rather than reporting a false "Added 0 cards".
+        setSeedStatus({
+          kind: 'success',
+          text:
+            insertedTotal > 0
+              ? `Added ${String(insertedTotal)} card${insertedTotal === 1 ? '' : 's'} to review.`
+              : "You're all caught up — every loaded word already has a review card.",
+        });
+        if (insertedTotal > 0) refetchDue();
+      } catch (err) {
+        setSeedStatus({
+          kind: 'error',
+          text:
+            err instanceof ApiError
+              ? err.message
+              : 'Could not add cards to review. Try again.',
+        });
+      } finally {
+        setSeeding(false);
+      }
+    })();
+  }, [seeding, refetchDue]);
 
   const isMock = vocab.isMock || lists.isMock;
   const lastRating: RatingId | null = card ? ratings.get(card.id) ?? null : null;
@@ -684,6 +771,9 @@ export function Review(): JSX.Element {
             setCreating(true);
           }}
           onRetry={retry}
+          onSeedReview={seedReview}
+          seeding={seeding}
+          seedStatus={seedStatus}
         />
       ) : null}
 
@@ -1032,6 +1122,12 @@ interface ListsPanelProps {
   onOpenList: (id: string) => void;
   onCreate: () => void;
   onRetry: () => void;
+  /** B-013: seed recognition cards from the loaded vocab corpus. */
+  onSeedReview: () => void;
+  /** True while a seed request is in flight — disables the button. */
+  seeding: boolean;
+  /** Result banner from the last seed click; null before the first click. */
+  seedStatus: SeedStatus | null;
 }
 
 function ListsPanel({
@@ -1040,6 +1136,9 @@ function ListsPanel({
   onOpenList,
   onCreate,
   onRetry,
+  onSeedReview,
+  seeding,
+  seedStatus,
 }: ListsPanelProps): JSX.Element {
   if (loading) return <SkeletonCard height={300} />;
   if (!bundle) {
@@ -1058,6 +1157,41 @@ function ListsPanel({
 
   return (
     <div className="km-review__lists">
+      {/* Add to review — seeds recognition cards from the loaded vocab
+          corpus (B-013). Lives above the list rows rather than inside a
+          specific list's detail sheet: `/vocab/cards/init` seeds by corpus,
+          not by list membership, so a per-list button here would either lie
+          about scope or require an endpoint that doesn't exist yet. */}
+      <section aria-labelledby="review-seed-head">
+        <Card variant="flat">
+          <div className="km-eyebrow" id="review-seed-head" style={{ marginBottom: 4 }}>
+            내 단어장에 추가 · Add to review
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
+            Seed FSRS review cards from the loaded vocab corpus so they show
+            up in your Session queue.
+          </div>
+          <Button
+            variant="gold"
+            size="md"
+            leadingIcon={<Icon name="plus" size={14} />}
+            onClick={onSeedReview}
+            disabled={seeding}
+          >
+            {seeding ? 'Adding…' : 'Add to review'}
+          </Button>
+          {seedStatus ? (
+            <div
+              role={seedStatus.kind === 'error' ? 'alert' : 'status'}
+              className={seedStatus.kind === 'error' ? 'km-review__rateError' : undefined}
+              style={{ marginTop: 8, fontSize: 13 }}
+            >
+              {seedStatus.text}
+            </div>
+          ) : null}
+        </Card>
+      </section>
+
       {/* My lists */}
       <section>
         <header className="km-review__listsHead">
@@ -1628,10 +1762,16 @@ function ListDetailSheet({
         ) : null}
 
         <div className="km-review__sheetActions">
+          {/* Per-list seeding isn't wired yet: `/vocab/cards/init` seeds by
+              corpus, and list types carry no corpus field (B-013 review). Disable
+              rather than ship a live-looking no-op; use the corpus-level "Add to
+              review" on the Lists tab to seed cards for now. */}
           <Button
             variant="gold"
             size="md"
             leadingIcon={<Icon name="play" size={14} />}
+            disabled
+            title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
           >
             Study this list
           </Button>
@@ -1640,6 +1780,8 @@ function ListDetailSheet({
               variant="ghost"
               size="md"
               leadingIcon={<Icon name="plus" size={14} />}
+              disabled
+              title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
             >
               Add all to my bank
             </Button>

@@ -54,6 +54,12 @@ const VocabSearchQuerySchema = z.object({
     .enum(['vocab_2000_beginner', 'vocab_2000_intermediate'])
     .optional(),
   proficiency: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
+  // F-003: Reference Vocabulary-tab filters. `domain` is the content-tagging
+  // genre (content_domain enum, migration 002) and `book_level` the difficulty
+  // band. Both are closed enums mirroring the DB types, so an out-of-vocabulary
+  // value 400s at the boundary instead of reaching the cast in SQL.
+  domain: z.enum(['general', 'research', 'business']).optional(),
+  book_level: z.enum(['beginner', 'intermediate', 'advanced']).optional(),
   // Browse needs a higher ceiling than the original tap-lookup default — the
   // Resources tab pages the full 3,131-row curated corpus. 200 mirrors
   // /vocab/cards/due; the client paginates with offset + the `total` count.
@@ -97,12 +103,16 @@ router.get(
                  OR english ILIKE $1 ESCAPE '\\')
             AND ($2::corpus IS NULL OR corpus = $2::corpus)
             AND ($3::proficiency_level IS NULL OR proficiency = $3::proficiency_level)
+            AND ($4::content_domain IS NULL OR domain = $4::content_domain)
+            AND ($5::book_level IS NULL OR book_level = $5::book_level)
           ORDER BY id
-          LIMIT $4 OFFSET $5`,
+          LIMIT $6 OFFSET $7`,
         [
           likePattern,
           q.corpus ?? null,
           q.proficiency ?? null,
+          q.domain ?? null,
+          q.book_level ?? null,
           q.limit,
           q.offset,
         ],

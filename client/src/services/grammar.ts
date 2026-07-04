@@ -14,6 +14,8 @@ import type {
   BankGrammarBody,
   BankedGrammarList,
   BankedGrammarRow,
+  BookLevel,
+  ContentDomain,
   IdentifyPatternBody,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -27,6 +29,10 @@ export interface ListPatternsOptions {
   q?: string;
   corpus?: 'kgiu_beginner' | 'kgiu_intermediate' | 'kgiu_advanced';
   proficiency?: ServerProficiency;
+  /** Genre filter — the server's `content_domain` tag (F-005). */
+  domain?: ContentDomain;
+  /** Difficulty filter — the source book's `book_level` band (F-005). */
+  book_level?: BookLevel;
   limit?: number;
   offset?: number;
 }

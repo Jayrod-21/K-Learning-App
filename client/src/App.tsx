@@ -11,8 +11,8 @@
  * Routing model:
  *   - `/login` is the only public route. `<RequireAuth/>` gates everything
  *     else and pushes guests to `/login`.
- *   - The 11 in-app screens render as `<ScreenStub/>` placeholders during
- *     Pass 1; the next pass replaces each with the real body.
+ *   - Each in-app screen renders its real body; routes are registered here
+ *     and the nav model lives in `lib/nav.ts` (kept in sync with these paths).
  *   - Unknown paths redirect to `/`. We could 404 instead, but a soft
  *     redirect is friendlier for a single-user app where typos are typos.
  */
@@ -40,11 +40,13 @@ import Reading from './pages/Reading';
 import Review from './pages/Review';
 import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
+import Writing from './pages/Writing';
 import Hanja from './pages/Hanja';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
 import Reference from './pages/Reference';
 import Settings from './pages/Settings';
+import Progress from './pages/Progress';
 
 export default function App(): JSX.Element {
   return (
@@ -82,11 +84,13 @@ export default function App(): JSX.Element {
                     <Route path="review" element={<Review />} />
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="grammar" element={<Grammar />} />
+                    <Route path="writing" element={<Writing />} />
                     <Route path="hanja" element={<Hanja />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
                     <Route path="reference" element={<Reference />} />
                     <Route path="settings" element={<Settings />} />
+                    <Route path="progress" element={<Progress />} />
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

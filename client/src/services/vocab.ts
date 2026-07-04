@@ -21,6 +21,8 @@
 import { api } from './api';
 import type {
   AddListEntriesResult,
+  BookLevel,
+  ContentDomain,
   CreateListBody,
   CreateListResponse,
   DueCard,
@@ -47,6 +49,10 @@ export interface SearchEntriesOptions {
   q?: string;
   corpus?: VocabCorpus;
   proficiency?: ServerProficiency;
+  /** Genre filter — the server's `content_domain` tag (F-003). */
+  domain?: ContentDomain;
+  /** Difficulty filter — the source book's `book_level` band (F-003). */
+  book_level?: BookLevel;
   limit?: number;
   offset?: number;
 }

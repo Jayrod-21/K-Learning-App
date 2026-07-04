@@ -1,0 +1,267 @@
+/*
+ * Progress (F-010) — page-scoped styles.
+ *
+ * Colocated with Progress.tsx (imported from it) instead of appended to
+ * styles/index.css: the global sheet is shared mutable state across parallel
+ * feature branches, and this keeps the F-010 diff isolated. Same design
+ * tokens (--ink/--paper/--line families) as the rest of the app, so the page
+ * inherits both themes automatically.
+ *
+ * Chart series colors are chart-specific tokens, NOT the raw brand accents:
+ * the brand values (--vermilion/--indigo/--moss/--ochre) fail the dataviz
+ * palette checks as a categorical set (indigo/moss chroma reads gray; the
+ * red↔green pair collapses to ΔE 4–10 under deuteranopia). Each slot below
+ * keeps its brand hue family but is snapped to a validated step.
+ *
+ * Validated with the dataviz palette validator (all six checks PASS,
+ * all-pairs CVD mode):
+ *   light, surface #F3ECD5 (card paper):
+ *     #B83A2E #2E5F94 #147E5A #B07A1F  → worst pair ΔE 15.4 (protan)
+ *   dark, surface #1E1812 (card paper):
+ *     #D9594A #4E8BC9 #35A582 #B98A2B  → worst pair ΔE 15.8 (deutan)
+ * The Overall line is deliberately the neutral text ink — it is a derived
+ * aggregate, not a fifth identity, so it stays out of the hue budget.
+ */
+.km-progress {
+  --kmp-reading: #b83a2e;
+  --kmp-listening: #2e5f94;
+  --kmp-vocab: #147e5a;
+  --kmp-grammar: #b07a1f;
+  --kmp-overall: var(--paper);
+}
+[data-theme='dark'] .km-progress {
+  --kmp-reading: #d9594a;
+  --kmp-listening: #4e8bc9;
+  --kmp-vocab: #35a582;
+  --kmp-grammar: #b98a2b;
+}
+
+.km-progress__title {
+  margin: 4px 0 14px;
+}
+
+.km-progress__card {
+  margin-top: 14px;
+}
+
+.km-progress__card-title {
+  font-weight: 600;
+  margin: 2px 0 10px;
+}
+
+.km-progress__state {
+  padding: 28px 0;
+  color: var(--paper-dim);
+  font-size: 14px;
+}
+
+/* Chart ─────────────────────────────────────────────────── */
+.km-progress__chartwrap {
+  position: relative;
+}
+
+.km-progress__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.km-progress__grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.km-progress__axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.km-progress__tick {
+  fill: var(--paper-faint);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.km-progress__refline {
+  stroke: var(--paper-faint);
+  stroke-width: 1;
+  /* Dashed is reserved for thresholds — this IS one (the TOPIK target). */
+  stroke-dasharray: 4 3;
+}
+
+.km-progress__reflabel {
+  fill: var(--paper-faint);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.km-progress__line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Markers carry a 2px surface ring so they stay legible where lines cross. */
+.km-progress__dot {
+  stroke: var(--ink-1);
+  stroke-width: 2;
+}
+
+.km-progress__endlabel {
+  /* Direct label text wears the text token, never the series color. */
+  fill: var(--paper-dim);
+  font-size: 11px;
+  font-family: inherit;
+}
+
+.km-progress__crosshair {
+  stroke: var(--paper-faint);
+  stroke-width: 1;
+}
+
+.km-progress__series--reading { stroke: var(--kmp-reading); }
+.km-progress__series--listening { stroke: var(--kmp-listening); }
+.km-progress__series--vocab { stroke: var(--kmp-vocab); }
+.km-progress__series--grammar { stroke: var(--kmp-grammar); }
+.km-progress__series--overall { stroke: var(--kmp-overall); }
+
+.km-progress__fill--reading { fill: var(--kmp-reading); }
+.km-progress__fill--listening { fill: var(--kmp-listening); }
+.km-progress__fill--vocab { fill: var(--kmp-vocab); }
+.km-progress__fill--grammar { fill: var(--kmp-grammar); }
+.km-progress__fill--overall { fill: var(--kmp-overall); }
+
+/* Invisible per-attempt hit columns — real <button>s over the SVG so the
+ * hover readout is keyboard-reachable (same details on focus as on hover). */
+.km-progress__hitcol {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: default;
+}
+
+/* Readout + legend ──────────────────────────────────────── */
+.km-progress__readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-height: 20px; /* reserve the line so hover doesn't shift layout */
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+
+.km-progress__readout-value {
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.km-progress__key {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 5px;
+  background: currentColor;
+}
+
+.km-progress__key--reading { background: var(--kmp-reading); }
+.km-progress__key--listening { background: var(--kmp-listening); }
+.km-progress__key--vocab { background: var(--kmp-vocab); }
+.km-progress__key--grammar { background: var(--kmp-grammar); }
+.km-progress__key--overall { background: var(--kmp-overall); }
+
+.km-progress__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+
+.km-progress__note {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+
+/* Comparison + history tables ───────────────────────────── */
+.km-progress__selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.km-progress__select-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+
+.km-progress__select {
+  background: var(--ink-2);
+  color: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.km-progress__tablewrap {
+  overflow-x: auto;
+}
+
+.km-progress__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.km-progress__table caption {
+  text-align: left;
+  /* Visually the card title carries the heading; keep the caption for AT. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.km-progress__table th,
+.km-progress__table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.km-progress__table th[scope='col'] {
+  color: var(--paper-mute);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Two-class selector outranks the `.km-progress__table td` alignment rule
+ * without resorting to !important. */
+.km-progress__table .km-progress__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.km-progress__delta--up { color: var(--moss); }
+.km-progress__delta--down { color: var(--vermilion); }
