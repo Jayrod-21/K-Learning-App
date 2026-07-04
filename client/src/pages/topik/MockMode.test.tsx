@@ -235,13 +235,18 @@ describe('MockMode (Mock test)', () => {
     await user.click(screen.getByRole('button', { name: /^Submit$/i }));
 
     // Results render: score, band, per-item reveal with the now-shown
-    // explanation + the correct answer for the missed item.
+    // correct answer for the missed item.
     await waitFor(() => {
       expect(screen.getByText('L3 range')).toBeInTheDocument();
     });
     expect(screen.getByText('50')).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 2 correct/)).toBeInTheDocument();
-    expect(screen.getByText('B is the consistent summary.')).toBeInTheDocument();
+    // F-009: explanation is gated on !isCorrect — item 1001 was answered
+    // correctly, so its explanation is withheld; item 1002 was missed, so
+    // its explanation shows.
+    expect(
+      screen.queryByText('B is the consistent summary.'),
+    ).not.toBeInTheDocument();
     expect(screen.getByText('C restates the phrase.')).toBeInTheDocument();
 
     // The submit body carried the user's picks for both items.
@@ -264,6 +269,57 @@ describe('MockMode (Mock test)', () => {
     expect(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
     ).toBeInTheDocument();
+  });
+
+  it('F-009: gates the review explanation on !isCorrect (hidden on a correct pick, shown on a miss)', async () => {
+    // A single-item mock so the row-level gating is unambiguous: the ONE
+    // reveal is correct, so its explanation must be entirely absent from the
+    // results screen — this fails on the pre-fix behavior, which rendered
+    // every item's explanation regardless of correctness.
+    svc.fetchMockTest.mockResolvedValueOnce({
+      ...TEST,
+      items: [TEST.items[0]!],
+    });
+    svc.submitMockTest.mockResolvedValueOnce({
+      sourceTest: 7,
+      section: 'reading',
+      totalItems: 1,
+      answered: 1,
+      correct: 1,
+      percentage: 100,
+      band: 'On track for L5+',
+      items: [
+        {
+          itemId: 1001,
+          picked: 'b',
+          correctChoiceId: 'b',
+          isCorrect: true,
+          explanation: 'This explanation must stay hidden — the pick was correct.',
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<MockMode />);
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('timer')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('radio', { name: /나/ }));
+    await user.click(screen.getByRole('button', { name: /Submit test/i }));
+    await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('On track for L5+')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/1 \/ 1 correct/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'This explanation must stay hidden — the pick was correct.',
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it('auto-submits when the countdown reaches 0', async () => {
