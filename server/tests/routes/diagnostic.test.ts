@@ -8,6 +8,7 @@
  *   POST /diagnostic/:runId/finish
  *   GET  /diagnostic/latest
  *   GET  /diagnostic/trajectory
+ *   GET  /diagnostic/history
  *
  * Real Postgres via testcontainers per Bar §"Testing". The Claude proxy is the
  * default deterministic stub (generateDiagnosticItem returns a 4-choice item,
@@ -83,6 +84,7 @@ describe('diagnostic — auth required', () => {
     ['POST', '/diagnostic/1/finish'],
     ['GET', '/diagnostic/latest'],
     ['GET', '/diagnostic/trajectory'],
+    ['GET', '/diagnostic/history'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const m = method as 'GET' | 'POST';
     const res = m === 'GET' ? await request(t.app).get(p) : await request(t.app).post(p).send({});
@@ -805,5 +807,72 @@ describe('GET /diagnostic/trajectory', () => {
     expect(res.body.points[0].reading).toBe(55);
     expect(res.body.points[1].reading).toBe(70);
     expect(res.body.points[1].grammar).toBe(85);
+  });
+});
+
+describe('GET /diagnostic/history (F-010)', () => {
+  it('returns 200 with snapshots:[] when the user has no runs', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/diagnostic/history');
+    expect(res.status).toBe(200);
+    expect(res.body.snapshots).toEqual([]);
+  });
+
+  it('returns every snapshot oldest→newest in the /latest DTO shape + capturedAt', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Seeded sequentially, so captured_at (default now()) orders them; the
+    // scores make the order observable (reading 4 → 55, reading 5 → 70).
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 4, listening: 5 });
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 5, grammar: 6 });
+
+    const res = await agent.get('/diagnostic/history');
+    expect(res.status).toBe(200);
+    const snapshots = res.body.snapshots as Array<{
+      capturedAt: string;
+      dimensions: Array<{ key: string; label: string; kr: string; score: number; note: string }>;
+      references: unknown[];
+      defaultRef: string;
+      goals: unknown[];
+    }>;
+    expect(snapshots.length).toBe(2);
+
+    // Oldest first: attempt #1 carries reading 55, attempt #2 reading 70.
+    const first = snapshots[0]!;
+    const second = snapshots[1]!;
+    expect(first.dimensions.find((d) => d.key === 'reading')?.score).toBe(55);
+    expect(second.dimensions.find((d) => d.key === 'reading')?.score).toBe(70);
+    expect(second.dimensions.find((d) => d.key === 'grammar')?.score).toBe(85);
+    expect(new Date(first.capturedAt).getTime()).toBeLessThanOrEqual(
+      new Date(second.capturedAt).getTime(),
+    );
+
+    // Each entry is the exact /latest SnapshotDTO shape plus capturedAt.
+    expect(typeof first.capturedAt).toBe('string');
+    expect(Number.isNaN(new Date(first.capturedAt).getTime())).toBe(false);
+    const reading = first.dimensions.find((d) => d.key === 'reading')!;
+    expect(reading.label).toBe('Reading');
+    expect(reading.kr).toBe('읽기');
+    expect(typeof reading.note).toBe('string');
+    expect(Array.isArray(first.references)).toBe(true);
+    expect(first.references.length).toBeGreaterThan(0);
+    expect(first.defaultRef).toBe('L4');
+    expect(Array.isArray(first.goals)).toBe(true);
+  });
+
+  it("is user-scoped — one user never sees another user's snapshots", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    await seedDiagnosticSnapshot(pg.pool, a.userId, { reading: 5, vocab: 4 });
+
+    // B has no history of their own: empty, NOT A's rows (IDOR/BOLA check).
+    const b = await registerUser(t.app, pg.pool);
+    const bRes = await b.agent.get('/diagnostic/history');
+    expect(bRes.status).toBe(200);
+    expect(bRes.body.snapshots).toEqual([]);
+
+    // A still sees exactly their own — proves the isolation isn't blanket-empty.
+    const aRes = await a.agent.get('/diagnostic/history');
+    expect(aRes.status).toBe(200);
+    expect(aRes.body.snapshots.length).toBe(1);
+    expect(aRes.body.snapshots[0].dimensions.length).toBe(2);
   });
 });

@@ -360,6 +360,21 @@ export interface DiagnosticSnapshot {
   goals: string[];
 }
 
+/**
+ * One attempt in the diagnostic history — the `/latest` snapshot shape plus
+ * when it was captured. `GET /diagnostic/history` returns these oldest→newest;
+ * the Progress screen charts them as the per-dimension trend.
+ */
+export interface DiagnosticHistorySnapshot extends DiagnosticSnapshot {
+  /** ISO-8601 capture timestamp of the finished run. */
+  capturedAt: string;
+}
+
+/** Envelope returned by `GET /diagnostic/history`. Empty list = no runs yet. */
+export interface DiagnosticHistoryResponse {
+  snapshots: DiagnosticHistorySnapshot[];
+}
+
 /** One audio payload attached to a listening item. */
 export interface DiagnosticAudio {
   duration: number;
