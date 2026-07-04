@@ -166,7 +166,7 @@ export function Today(): JSX.Element {
     const candidates: Array<{ task: TodayTask | null } & Omit<TaskTile, 'task'>> = [
       { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/reading' },
       { task: today.data.listening, krTag: '듣기', skill: 'Listening', nav: '/reading' },
-      { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/grammar' },
+      { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/writing' },
     ];
     for (const c of candidates) {
       if (c.task) taskTiles.push({ task: c.task, krTag: c.krTag, skill: c.skill, nav: c.nav });

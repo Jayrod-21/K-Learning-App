@@ -1,5 +1,5 @@
 /**
- * Navigation manifest — the single source of truth for the 11 screens and
+ * Navigation manifest — the single source of truth for the app's screens and
  * how they appear in the bottom nav and More sheet.
  *
  * `path` is the React Router route. `kr` is the Korean label that appears as
@@ -29,6 +29,7 @@ export type NavItemId =
   | 'review'
   | 'diagnostic'
   | 'grammar'
+  | 'writing'
   | 'hanja'
   | 'images'
   | 'chat'
@@ -89,6 +90,15 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     eyebrow: 'Production drill',
     headerTitle: '문법 · Grammar',
     icon: 'grammar',
+  },
+  {
+    id: 'writing',
+    path: '/writing',
+    label: 'Writing',
+    kr: '쓰기',
+    eyebrow: 'TOPIK writing grader',
+    headerTitle: '쓰기 · Writing',
+    icon: 'pen',
   },
   {
     id: 'hanja',
@@ -153,6 +163,7 @@ export const MORE_TAB_IDS = [
   'images',
   'diagnostic',
   'grammar',
+  'writing',
   'chat',
   'reference',
   'settings',
