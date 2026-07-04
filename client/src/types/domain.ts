@@ -1622,3 +1622,96 @@ export interface ImageCapture {
   /** ISO timestamp — drives the "today / yesterday / ..." label. */
   capturedAt: string;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Writing — TOPIK rubric grader (`POST /grade-writing`)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * TOPIK II writing rubrics the grader accepts — mirrors the server's
+ * `TopikRubricSchema` (server/src/services/claude/models.ts):
+ *   - `topik_ii_53` — Q53, 200–300자 explanatory/description writing.
+ *   - `topik_ii_54` — Q54, 600–700자 argumentative essay.
+ */
+export type TopikWritingRubric = 'topik_ii_53' | 'topik_ii_54';
+
+/**
+ * Estimated TOPIK II level the sample would earn — the server's closed
+ * `estimatedLevel` enum, verbatim.
+ */
+export type WritingEstimatedLevel = 'below_L3' | 'L3' | 'L4' | 'L5' | 'L6';
+
+/**
+ * One rubric dimension's grade — mirrors the server's `DimensionScoreSchema`.
+ * `maxScore` is the denominator for this dimension so the UI never hardcodes
+ * per-rubric point splits.
+ */
+export interface WritingDimensionScore {
+  score: number;
+  maxScore: number;
+  /** Verbatim Korean fragments cited from the sample as evidence (0..5). */
+  evidence: string[];
+  /** Concrete, actionable improvement notes (0..5). */
+  improvements: string[];
+}
+
+/**
+ * The grader's verdict — mirrors the server's `GradeResultSchema` field for
+ * field. The three dimensions are the official TOPIK writing rubric axes.
+ */
+export interface WritingGradeResult {
+  rubric: TopikWritingRubric;
+  /** 내용 및 과제수행 — content and task completion. */
+  content: WritingDimensionScore;
+  /** 전개구조 — organization and development. */
+  organization: WritingDimensionScore;
+  /** 언어사용 — language use (grammar, vocab, register). */
+  languageUse: WritingDimensionScore;
+  /** Total score (sum of dimensions). */
+  totalScore: number;
+  /** Max total. */
+  maxTotal: number;
+  estimatedLevel: WritingEstimatedLevel;
+  /** One-paragraph overall comment. */
+  overallComment: string;
+}
+
+/**
+ * Per-call metadata the proxy returns alongside every non-streaming result —
+ * mirrors the server's `CallMetadataSchema`. The Writing screen consumes only
+ * `result`, but the envelope is typed in full so the client contract matches
+ * the wire shape exactly (no silent partial cast at the boundary).
+ */
+export interface WritingCallMetadata {
+  requestId: string;
+  model: 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claude-opus-4-7';
+  cacheHit: boolean;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  costEstimateUsd: number;
+}
+
+/**
+ * Body for `POST /grade-writing`. The route's Zod schema is `.strict()` —
+ * NEVER add fields here without matching the server's `GradeSchema`
+ * (server/src/routes/gradeWriting.ts), or every grade will 400:
+ *   - `prompt` — REQUIRED, 1..2000. The task the learner answered.
+ *   - `sample` — REQUIRED, 1..5000. The learner's Korean writing.
+ *   - `rubric` — optional; server defaults to `topik_ii_54`.
+ * (The edge also tolerates an optional `targetLevel` hint but does not
+ * forward it, so the client intentionally omits it.)
+ */
+export interface GradeWritingBody {
+  prompt: string;
+  sample: string;
+  rubric?: TopikWritingRubric;
+}
+
+/** Envelope from `POST /grade-writing` — the proxy's `ProxyResult<GradeResult>`. */
+export interface GradeWritingResponse {
+  result: WritingGradeResult;
+  metadata: WritingCallMetadata;
+}

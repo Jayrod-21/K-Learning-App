@@ -40,6 +40,7 @@ import Reading from './pages/Reading';
 import Review from './pages/Review';
 import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
+import Writing from './pages/Writing';
 import Hanja from './pages/Hanja';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
@@ -82,6 +83,7 @@ export default function App(): JSX.Element {
                     <Route path="review" element={<Review />} />
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="grammar" element={<Grammar />} />
+                    <Route path="writing" element={<Writing />} />
                     <Route path="hanja" element={<Hanja />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />

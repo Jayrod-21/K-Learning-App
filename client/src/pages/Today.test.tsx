@@ -91,6 +91,7 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
       <Routes>
         <Route path="/" element={<Today />} />
         <Route path="/review" element={<div>REVIEW PAGE</div>} />
+        <Route path="/writing" element={<div>WRITING PAGE</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -137,6 +138,22 @@ describe('Today', () => {
     await user.click(cta);
 
     expect(screen.getByText('REVIEW PAGE')).toBeInTheDocument();
+  });
+
+  it('navigates to /writing when the Writing task tile is clicked (F-001)', async () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // The tile is one big <button>; its accessible name includes the task
+    // title. Previously this tile pointed at /grammar (no Writing screen
+    // existed) — it must now land on the real /writing grader.
+    const tile = screen.getByRole('button', { name: /Paragraph in/ });
+    await user.click(tile);
+
+    expect(screen.getByText('WRITING PAGE')).toBeInTheDocument();
   });
 
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {
