@@ -58,6 +58,7 @@
 import { api } from './api';
 import type {
   DiagnosticAnswerResponse,
+  DiagnosticHistoryResponse,
   DiagnosticNextResponse,
   DiagnosticSnapshot,
   DiagnosticStartResponse,
@@ -177,6 +178,25 @@ export async function fetchLatestSnapshot(
 ): Promise<DiagnosticSnapshot> {
   return api.get<DiagnosticSnapshot>(
     '/diagnostic/latest',
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * GET /diagnostic/history — every snapshot the user has, oldest→newest.
+ *
+ * Each entry is the `/latest` `DiagnosticSnapshot` shape plus `capturedAt`,
+ * so the Progress screen can chart per-dimension trends and diff any two
+ * attempts. No runs yet → 200 with `snapshots: []` (never a 404), mirroring
+ * the `/latest` empty posture. Read-only + user-scoped server-side; the only
+ * client-supplied input is the session cookie, so there is no IDOR surface
+ * to defend here beyond the shared axios threat model above.
+ */
+export async function getHistory(
+  signal?: AbortSignal,
+): Promise<DiagnosticHistoryResponse> {
+  return api.get<DiagnosticHistoryResponse>(
+    '/diagnostic/history',
     signal !== undefined ? { signal } : undefined,
   );
 }

@@ -33,7 +33,8 @@ export type NavItemId =
   | 'images'
   | 'chat'
   | 'reference'
-  | 'settings';
+  | 'settings'
+  | 'progress';
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
@@ -135,6 +136,17 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     headerTitle: '설정 · Settings',
     icon: 'settings',
   },
+  // F-010: appended at the end (not slotted next to Diagnostic) so the
+  // change stays a pure append — parallel work also touches this manifest.
+  {
+    id: 'progress',
+    path: '/progress',
+    label: 'Progress',
+    kr: '성장',
+    eyebrow: 'Diagnostic history',
+    headerTitle: '성장 · Progress',
+    icon: 'history',
+  },
 ];
 
 // Note: the `as const` is load-bearing — it narrows `typeof X[number]` to a
@@ -156,6 +168,7 @@ export const MORE_TAB_IDS = [
   'chat',
   'reference',
   'settings',
+  'progress',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 /**

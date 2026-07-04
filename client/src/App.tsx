@@ -45,6 +45,7 @@ import Images from './pages/Images';
 import Chat from './pages/Chat';
 import Reference from './pages/Reference';
 import Settings from './pages/Settings';
+import Progress from './pages/Progress';
 
 export default function App(): JSX.Element {
   return (
@@ -87,6 +88,7 @@ export default function App(): JSX.Element {
                     <Route path="chat" element={<Chat />} />
                     <Route path="reference" element={<Reference />} />
                     <Route path="settings" element={<Settings />} />
+                    <Route path="progress" element={<Progress />} />
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

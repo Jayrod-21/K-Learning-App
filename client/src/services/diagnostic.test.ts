@@ -8,6 +8,7 @@ import {
   fetchLatestSnapshot,
   fetchTrajectory,
   finishDiagnostic,
+  getHistory,
   nextDiagnostic,
   startDiagnostic,
   type FinishDiagnosticResponse,
@@ -15,6 +16,7 @@ import {
 import { api, ApiError } from './api';
 import type {
   DiagnosticAnswerResponse,
+  DiagnosticHistoryResponse,
   DiagnosticLiveItem,
   DiagnosticNextResponse,
   DiagnosticSnapshot,
@@ -269,6 +271,53 @@ describe('fetchLatestSnapshot', () => {
     );
 
     await expect(fetchLatestSnapshot()).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('getHistory', () => {
+  const HISTORY: DiagnosticHistoryResponse = {
+    snapshots: [
+      { ...SNAPSHOT, capturedAt: '2026-05-01T09:00:00.000Z' },
+      { ...SNAPSHOT, capturedAt: '2026-06-01T09:00:00.000Z' },
+    ],
+  };
+
+  it('GETs /diagnostic/history and returns the snapshots oldest→newest', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(HISTORY);
+
+    const res = await getHistory();
+
+    expect(spy).toHaveBeenCalledWith('/diagnostic/history', undefined);
+    expect(res.snapshots).toHaveLength(2);
+    expect(res.snapshots[0].capturedAt).toBe('2026-05-01T09:00:00.000Z');
+    // Each entry is the /latest snapshot shape + capturedAt.
+    expect(res.snapshots[0].dimensions[1].key).toBe('grammar');
+    expect(res.snapshots[0].defaultRef).toBe('L4');
+  });
+
+  it('passes through an empty history (no runs yet)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ snapshots: [] });
+
+    const res = await getHistory();
+
+    expect(res.snapshots).toHaveLength(0);
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(HISTORY);
+    const ctrl = new AbortController();
+
+    await getHistory(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/diagnostic/history', { signal: ctrl.signal });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(getHistory()).rejects.toMatchObject({ status: 500 });
   });
 });
 
