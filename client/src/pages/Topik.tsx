@@ -1,14 +1,20 @@
 /**
  * Topik — TOPIK Prep. Two modes behind a segmented toggle (FU-NF-39):
  *
- *   - **Study** (default, unchanged): the Pass-6 live shuffled draw from
- *     `POST /topik/study`, one item at a time with the pick→submit→reveal→next
+ *   - **Study** (default): the Pass-6 live shuffled draw from `POST
+ *     /topik/study`, one item at a time with the pick→submit→reveal→next
  *     interaction. Study items carry the inline `correct` flag (public
- *     reference data); the screen reveals correctness client-side.
+ *     reference data); the screen reveals correctness client-side. On
+ *     finishing the draw, a results/grade screen (F-008) tallies the reveals
+ *     the learner already saw into the SAME shared `TopikResults` component
+ *     Mock mode uses — see `buildStudySummary` below.
  *   - **Mock**: the answer-stripped, server-graded Mock-Test taking flow. A
  *     section-select → timed exam → server-graded results state machine. The
  *     exam NEVER receives a `correct` flag — grading happens on submit
  *     (`POST /topik/mock/submit`); explanations are revealed only post-exam.
+ *
+ * F-009: both modes' results screens show a review row's explanation ONLY
+ * when the pick was wrong — see `TopikResults` in MockMode.tsx.
  *
  * The mode toggle is a roving-tabindex radiogroup (WAI-ARIA APG) mirroring the
  * Settings ThemeModeControl / SwatchPicker pattern. Study mode and the Mock
@@ -51,7 +57,12 @@ import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
-import { MockMode } from './topik/MockMode';
+import {
+  MockMode,
+  TopikResults,
+  type ResultsReviewRow,
+  type ResultsSummary,
+} from './topik/MockMode';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
@@ -198,9 +209,51 @@ function ModeToggle({
 }
 
 /**
- * Study mode — the Pass-6 live flow, untouched. Owns its own draw, stepping
- * state, and reveal interaction. Extracted from the page root verbatim so the
- * Mock toggle can render it as a sibling without entangling the two modes.
+ * Percentage → readiness band headline. Mirrors the server's Mock-mode
+ * `bandForPercentage` (server/src/routes/topik.ts) so Study's client-tallied
+ * results screen (F-008) reads consistently with Mock's server-computed one.
+ * Duplicated rather than imported: Study's tally is a client-side summary of
+ * reveals the learner already saw (no server round trip), and the two
+ * scoring paths are already independent (inline vs DB-graded) — this is
+ * presentation parity, not a shared grading contract.
+ */
+function bandForPercentage(percentage: number): string {
+  if (percentage >= 80) return 'On track for L5+';
+  if (percentage >= 60) return 'L4 range';
+  if (percentage >= 40) return 'L3 range';
+  return 'Below L3';
+}
+
+/**
+ * Tally Study mode's client-side review log into the shared `ResultsSummary`
+ * (F-008) — mirrors MockMode.tsx's `buildMockResultsSummary`, but the rows
+ * are already-normalized reveals from the draw rather than a server grade.
+ */
+function buildStudySummary(
+  rows: ResultsReviewRow[],
+  answered: number,
+): ResultsSummary {
+  const totalItems = rows.length;
+  const correct = rows.filter((r) => r.isCorrect).length;
+  const percentage =
+    totalItems > 0 ? Math.round((correct / totalItems) * 1000) / 10 : 0;
+  return {
+    percentage,
+    band: bandForPercentage(percentage),
+    correct,
+    totalItems,
+    answered,
+    rows,
+  };
+}
+
+/**
+ * Study mode — the Pass-6 live flow. Owns its own draw, stepping state, and
+ * reveal interaction. On completing the draw it renders the shared
+ * `TopikResults` grade screen (F-008), fed by a client-side tally of the
+ * reveals shown along the way (`reviewLog` below) rather than a second
+ * grading pass — Study items already carry the inline answer, so there is
+ * nothing left to ask the server.
  */
 function StudyMode(): JSX.Element {
   const [idx, setIdx] = useState(0);
@@ -217,6 +270,11 @@ function StudyMode(): JSX.Element {
     itemId: string;
     result: TopikAnswerResult;
   } | null>(null);
+  // Client-side tally of every item's outcome (F-008), appended once per item
+  // as the learner leaves it (Next after reveal, or Skip) — never mutated
+  // after append, so a stale re-render can't rewrite history. Feeds the
+  // shared `TopikResults` screen once the draw completes.
+  const [reviewLog, setReviewLog] = useState<ResultsReviewRow[]>([]);
 
   const { data, loading, error, isMock, refetch } = useEndpointOrMock<
     TopikItem[]
@@ -245,9 +303,74 @@ function StudyMode(): JSX.Element {
     setRevealed(false);
     setServerReveal(null);
     setAnswered(0);
+    setReviewLog([]);
     setDrawKey((k) => k + 1);
     refetch();
   }, [refetch]);
+
+  // The explanation text to tally for THIS item's review row: the inline one
+  // when present, else the server grade's — same fallback TopikBody applies
+  // to its live reveal (backfills the live pool, which currently ships no
+  // inline explanations), keyed by item id so a stale response for a
+  // different item can never leak into this row.
+  const effectiveExplanation = useCallback(
+    (item: TopikItem): string => {
+      const inline = item.explanation.trim();
+      if (inline !== '') return inline;
+      if (serverReveal !== null && serverReveal.itemId === item.id) {
+        return serverReveal.result.explanation.trim();
+      }
+      return '';
+    },
+    [serverReveal],
+  );
+
+  // Normalize one item's outcome into the shared review-row shape (F-008) —
+  // `pick === null` records a skip (graded as a miss, matching Mock mode's
+  // treatment of an unanswered item).
+  const buildReviewRow = useCallback(
+    (item: TopikItem, pick: string | null, explanation: string): ResultsReviewRow => {
+      const correctIdx = item.options.findIndex((o) => o.correct);
+      const correctOpt = correctIdx >= 0 ? item.options[correctIdx] : undefined;
+      const pickedOpt =
+        pick !== null ? item.options.find((o) => o.id === pick) : undefined;
+      const isCorrect =
+        pick !== null && correctOpt !== undefined && pick === correctOpt.id;
+      return {
+        key: item.id,
+        number: item.number,
+        prompt: item.prompt,
+        ...(item.passage !== undefined ? { passage: item.passage } : {}),
+        isCorrect,
+        pickedText: pickedOpt ? pickedOpt.kr : 'skipped',
+        correctText: correctOpt ? correctOpt.kr : '—',
+        explanation,
+      };
+    },
+    [],
+  );
+
+  const commitReview = useCallback(
+    (item: TopikItem, pick: string | null): void => {
+      const explanation = effectiveExplanation(item);
+      setReviewLog((log) => [...log, buildReviewRow(item, pick, explanation)]);
+    },
+    [buildReviewRow, effectiveExplanation],
+  );
+
+  // Skip: leave the item unanswered — tallied as a miss (F-008) — then
+  // advance. Reads `current` BEFORE `advance()` clears per-item state.
+  const handleSkip = useCallback(() => {
+    if (current !== undefined) commitReview(current, null);
+    advance();
+  }, [current, commitReview, advance]);
+
+  // Next (after reveal): tally the item's outcome with the learner's actual
+  // pick, then advance. Reads `picked`/`current` BEFORE `advance()` clears them.
+  const handleNext = useCallback(() => {
+    if (current !== undefined && picked !== null) commitReview(current, picked);
+    advance();
+  }, [current, picked, commitReview, advance]);
 
   const handleSubmit = useCallback(() => {
     if (picked === null || current === undefined) return;
@@ -303,22 +426,13 @@ function StudyMode(): JSX.Element {
       ) : null}
 
       {!loading && isComplete ? (
-        <Card variant="flat" className="km-topik__state" role="status">
-          <Eyebrow>Set complete</Eyebrow>
-          <p className="km-topik__explain">
-            You worked through {String(draw.length)} item
-            {draw.length === 1 ? '' : 's'}. Pull a fresh set to keep going.
-          </p>
-          <div className="km-topik__footer">
-            <Button
-              variant="gold"
-              onClick={startNewSet}
-              trailingIcon={<Icon name="arrow-right" size={14} />}
-            >
-              New set
-            </Button>
-          </div>
-        </Card>
+        // F-008: the same shared results/grade screen Mock mode uses,
+        // fed by the client-side tally of reveals shown along the way.
+        <TopikResults
+          summary={buildStudySummary(reviewLog, answered)}
+          onRestart={startNewSet}
+          restartLabel="New set"
+        />
       ) : null}
 
       {!loading && !error && draw.length === 0 ? (
@@ -360,8 +474,8 @@ function StudyMode(): JSX.Element {
             if (!revealed) setPicked(id);
           }}
           onSubmit={handleSubmit}
-          onSkip={advance}
-          onNext={advance}
+          onSkip={handleSkip}
+          onNext={handleNext}
         />
       ) : null}
     </div>

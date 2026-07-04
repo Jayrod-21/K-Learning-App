@@ -1,9 +1,11 @@
 /**
  * Topik screen (Study mode) — covers loading → draw, stepping through the draw,
- * submit→reveal→next (correct answer + explanation on BOTH verdicts), the
- * non-blocking `recordTopikAnswer` call whose response backfills a missing
- * inline explanation, image-item description rendering, and the
- * draw-complete / New-set path.
+ * submit→reveal→next (correct answer + explanation on BOTH verdicts in the
+ * live per-item reveal — unchanged), the non-blocking `recordTopikAnswer` call
+ * whose response backfills a missing inline explanation, image-item
+ * description rendering, and the results/grade summary the draw lands on
+ * (F-008: shares `TopikResults` with Mock mode; F-009: the SUMMARY's
+ * per-item explanation is gated to misses only, unlike the live reveal above).
  *
  * `useEndpointOrMock` is module-mocked so the test owns the resolved draw and
  * `refetch` directly; `services/topik` is mocked so the answer write is
@@ -379,25 +381,79 @@ describe('Topik (Study mode)', () => {
     expect(container.querySelector('.km-topik__passage')).toBeNull();
   });
 
-  it('lands on the draw-complete state after the last item and refetches on New set', async () => {
+  it('F-008: lands on the shared results/grade summary after the last item and refetches on New set', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
     render(<Topik />);
 
+    // ITEM_A's correct choice is 'b' (index 1) — answer it correctly.
     await user.click(screen.getAllByRole('radio')[1]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
     await user.click(screen.getByRole('button', { name: /next/i }));
 
-    // Past the last item → draw-complete terminal state.
+    // Past the last item → the SHARED results/grade screen (F-008) — score,
+    // band, and correct/total, not the old bare "Set complete" count.
     await waitFor(() => {
-      expect(screen.getByText('Set complete')).toBeInTheDocument();
+      expect(screen.getByText('On track for L5+')).toBeInTheDocument();
     });
+    expect(screen.getByText('100')).toBeInTheDocument();
+    expect(screen.getByText(/1 \/ 1 correct/)).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /new set/i }),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /new set/i }));
     expect(hookState.current.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('F-008: tallies a skipped Study item as a miss in the results summary', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getByRole('button', { name: /skip/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/0 \/ 1 correct/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/skipped/i)).toBeInTheDocument();
+  });
+
+  it('F-009: shows the review explanation for a Study item the learner missed', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    // Pick the WRONG choice (a) — ITEM_A's correct choice is 'b'.
+    await user.click(screen.getAllByRole('radio')[0]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/0 \/ 1 correct/)).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('Choice B summarises the passage faithfully.'),
+    ).toBeInTheDocument();
+  });
+
+  it('F-009: withholds the review explanation for a Study item answered correctly (fails on pre-fix behavior)', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />);
+
+    await user.click(screen.getAllByRole('radio')[1]); // correct pick 'b'
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/1 \/ 1 correct/)).toBeInTheDocument();
+    });
+    // Pre-fix, the review always rendered the explanation regardless of
+    // correctness — this must now be absent for a correct pick.
+    expect(
+      screen.queryByText('Choice B summarises the passage faithfully.'),
+    ).not.toBeInTheDocument();
   });
 
   it('renders an empty-draw state with a New set button on a successful empty draw', async () => {

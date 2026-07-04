@@ -11,8 +11,16 @@
  *             palette, Prev/Next, hidden-answer choices, picks held in a Map.
  *             "Submit test" (confirm) grades server-side and enters `results`.
  *   results → percentage + band headline, correct/total, a per-item review
- *             list with each pick vs the now-revealed correct answer +
- *             explanation, and "New mock" back to `select`.
+ *             list with each pick vs the now-revealed correct answer, and
+ *             "New mock" back to `select`. Rendered by the exported
+ *             `TopikResults` (F-008) — Study mode (Topik.tsx) reuses the SAME
+ *             component for its own end-of-set summary rather than
+ *             duplicating the score/review markup; both modes normalize their
+ *             outcome into the shared `ResultsSummary` shape defined here.
+ *
+ * F-009: a review row's explanation renders ONLY when the pick was wrong
+ * (`!row.isCorrect`) — a correct pick needs no "here's why" callout. See
+ * `TopikResults` below.
  *
  * SECURITY (answer-tampering defense — mirrors the Diagnostic taking flow):
  * the exam receives `TopikMockItem`s that carry NO `correct` flag and NO
@@ -275,10 +283,10 @@ export function MockMode(): JSX.Element {
           ) : null}
 
           {phase === 'results' && result !== null ? (
-            <MockResults
-              result={result}
-              items={test?.items ?? []}
-              onNewMock={newMock}
+            <TopikResults
+              summary={buildMockResultsSummary(result, test?.items ?? [])}
+              onRestart={newMock}
+              restartLabel="New mock"
             />
           ) : null}
         </>
@@ -847,21 +855,175 @@ function ChoiceGroup({ item, picked, onPick }: ChoiceGroupProps): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Phase: results
+// Phase: results — SHARED between Mock (server-graded) and Study
+// (client-tallied) via `TopikResults` (F-008). Neither mode duplicates the
+// score/review markup: each normalizes its own outcome data into the
+// mode-agnostic `ResultsSummary` shape below and hands it to one renderer.
 // ─────────────────────────────────────────────────────────────
 
-interface MockResultsProps {
-  result: MockResult;
-  /** The exam items, for the per-item review (prompt + choice text). */
-  items: TopikMockItem[];
-  onNewMock: () => void;
+/**
+ * One row in the shared results review list (F-008). Mock mode derives this
+ * from the server's per-item `MockReveal` (`buildMockResultsSummary` below);
+ * Study mode (Topik.tsx `StudyMode`) tallies the same shape client-side from
+ * the inline-`correct` reveals the learner already saw while working through
+ * the draw — no second grading pass, just a normalized record of what was
+ * already shown.
+ */
+export interface ResultsReviewRow {
+  /** Unique React key — the item id (string or number depending on source). */
+  key: string | number;
+  number: number;
+  prompt: string;
+  /** The shared reading passage the item was asked about (B-008), if any. */
+  passage?: string;
+  isCorrect: boolean;
+  /** Display text for the learner's pick, or 'skipped' if they left it blank. */
+  pickedText: string;
+  /** Display text for the correct choice — always computed, only ever shown
+   *  when `!isCorrect` (F-009: wrong-answer detail is for misses only). */
+  correctText: string;
+  /** Only rendered when `!isCorrect` (F-009 — see `TopikResults` below). */
+  explanation: string;
 }
 
-function MockResults({
-  result,
-  items,
-  onNewMock,
-}: MockResultsProps): JSX.Element {
+/** The score + review summary `TopikResults` renders — the shape BOTH modes'
+ *  results screens tally into (F-008), so one component serves both. */
+export interface ResultsSummary {
+  percentage: number;
+  band: string;
+  correct: number;
+  totalItems: number;
+  answered: number;
+  rows: ResultsReviewRow[];
+}
+
+interface TopikResultsProps {
+  summary: ResultsSummary;
+  onRestart: () => void;
+  /** "New mock" (Mock mode) or "New set" (Study mode). */
+  restartLabel: string;
+}
+
+/**
+ * Shared results/grade screen (F-008): score card + per-item review list.
+ * Used by Mock mode (server-graded `MockResult`) and Study mode (client-
+ * tallied reveals) alike — see `ResultsSummary` above for the shared shape.
+ *
+ * F-009: the explanation paragraph is gated on `!row.isCorrect` — explanation
+ * detail is for the items the learner actually missed, not every item. The
+ * correct-choice line is gated the same way (unchanged from the prior Mock-
+ * only behavior): a correct pick needs no "here's what you should have
+ * picked" callout.
+ */
+export function TopikResults({
+  summary,
+  onRestart,
+  restartLabel,
+}: TopikResultsProps): JSX.Element {
+  const wrongCount = summary.totalItems - summary.correct;
+
+  return (
+    <div className="km-mock__results">
+      <Card variant="flat" className="km-mock__score">
+        <Eyebrow>{summary.band}</Eyebrow>
+        <div className="km-mock__score-pct">
+          {String(summary.percentage)}
+          <span className="km-mock__score-unit">%</span>
+        </div>
+        <p className="km-topik__explain">
+          {String(summary.correct)} / {String(summary.totalItems)} correct ·{' '}
+          {String(summary.answered)} answered ·{' '}
+          {wrongCount > 0
+            ? `${String(wrongCount)} to review`
+            : 'no misses'}
+        </p>
+      </Card>
+
+      <Eyebrow className="km-mock__review-head">Review</Eyebrow>
+      <ol className="km-mock__review">
+        {summary.rows.map((row, i) => {
+          const markerId = `km-mock-reveal-${String(row.key)}`;
+          return (
+            <li key={row.key}>
+              <Card
+                variant="flat"
+                className={cn(
+                  'km-mock__review-item',
+                  row.isCorrect
+                    ? 'km-mock__review-item--correct'
+                    : 'km-mock__review-item--wrong',
+                )}
+                id={markerId}
+              >
+                <div className="km-mock__review-top">
+                  <span className="km-topik__num">
+                    No. {String(row.number || i + 1)}
+                  </span>
+                  <span
+                    className={cn(
+                      'km-mock__verdict',
+                      row.isCorrect
+                        ? 'km-mock__verdict--correct'
+                        : 'km-mock__verdict--wrong',
+                    )}
+                  >
+                    {row.isCorrect ? (
+                      <>
+                        <Icon name="check" size={14} /> Correct
+                      </>
+                    ) : (
+                      '✗ Incorrect'
+                    )}
+                  </span>
+                </div>
+                <p className="kr km-mock__review-prompt">{row.prompt}</p>
+                {/* The passage the item was asked about (B-008) — the review
+                    is unreadable without the text the question refers to. */}
+                {row.passage ? <TopikPassage text={row.passage} /> : null}
+                <div className="km-mock__review-picks">
+                  <span className="km-mock__review-pick">
+                    Your answer: <span className="kr">{row.pickedText}</span>
+                  </span>
+                  {!row.isCorrect ? (
+                    <span className="km-mock__review-pick km-mock__review-pick--correct">
+                      Correct: <span className="kr">{row.correctText}</span>
+                    </span>
+                  ) : null}
+                </div>
+                {/* F-009: gated on !isCorrect — explanations surface only for
+                    the items the learner actually missed. */}
+                {!row.isCorrect && row.explanation.trim().length > 0 ? (
+                  <p className="km-topik__explain">{row.explanation}</p>
+                ) : null}
+              </Card>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className="km-topik__footer">
+        <Button
+          variant="gold"
+          onClick={onRestart}
+          trailingIcon={<Icon name="arrow-right" size={14} />}
+        >
+          {restartLabel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Normalize a graded `MockResult` + the exam's answer-stripped items into the
+ * shared `ResultsSummary` (F-008). The server already computed percentage/
+ * band/correct — this only maps the per-item reveal + the item's prompt/
+ * passage/choice text into `ResultsReviewRow`.
+ */
+function buildMockResultsSummary(
+  result: MockResult,
+  items: TopikMockItem[],
+): ResultsSummary {
   // Index the items by their numeric id so each reveal can show its prompt +
   // the picked/correct choice text.
   const byId = new Map<number, TopikMockItem>(
@@ -877,105 +1039,26 @@ function MockResults({
     return opt ? opt.kr : id.toUpperCase();
   };
 
-  const wrongCount = result.totalItems - result.correct;
+  const rows: ResultsReviewRow[] = result.items.map((rev) => {
+    const item = byId.get(rev.itemId);
+    return {
+      key: rev.itemId,
+      number: item?.number ?? 0,
+      prompt: item?.prompt ?? '',
+      ...(item?.passage !== undefined ? { passage: item.passage } : {}),
+      isCorrect: rev.isCorrect,
+      pickedText: rev.picked === null ? 'skipped' : choiceText(item, rev.picked),
+      correctText: choiceText(item, rev.correctChoiceId),
+      explanation: rev.explanation,
+    };
+  });
 
-  return (
-    <div className="km-mock__results">
-      <Card variant="flat" className="km-mock__score">
-        <Eyebrow>{result.band}</Eyebrow>
-        <div className="km-mock__score-pct">
-          {String(result.percentage)}
-          <span className="km-mock__score-unit">%</span>
-        </div>
-        <p className="km-topik__explain">
-          {String(result.correct)} / {String(result.totalItems)} correct ·{' '}
-          {String(result.answered)} answered ·{' '}
-          {wrongCount > 0
-            ? `${String(wrongCount)} to review`
-            : 'no misses'}
-        </p>
-      </Card>
-
-      <Eyebrow className="km-mock__review-head">Review</Eyebrow>
-      <ol className="km-mock__review">
-        {result.items.map((rev, i) => {
-          const item = byId.get(rev.itemId);
-          const markerId = `km-mock-reveal-${String(rev.itemId)}`;
-          return (
-            <li key={rev.itemId}>
-              <Card
-                variant="flat"
-                className={cn(
-                  'km-mock__review-item',
-                  rev.isCorrect
-                    ? 'km-mock__review-item--correct'
-                    : 'km-mock__review-item--wrong',
-                )}
-                id={markerId}
-              >
-                <div className="km-mock__review-top">
-                  <span className="km-topik__num">
-                    No. {item ? String(item.number) : String(i + 1)}
-                  </span>
-                  <span
-                    className={cn(
-                      'km-mock__verdict',
-                      rev.isCorrect
-                        ? 'km-mock__verdict--correct'
-                        : 'km-mock__verdict--wrong',
-                    )}
-                  >
-                    {rev.isCorrect ? (
-                      <>
-                        <Icon name="check" size={14} /> Correct
-                      </>
-                    ) : (
-                      '✗ Incorrect'
-                    )}
-                  </span>
-                </div>
-                {item ? (
-                  <p className="kr km-mock__review-prompt">{item.prompt}</p>
-                ) : null}
-                {/* The passage the item was asked about (B-008) — the review
-                    is unreadable without the text the question refers to. */}
-                {item?.passage ? <TopikPassage text={item.passage} /> : null}
-                <div className="km-mock__review-picks">
-                  <span className="km-mock__review-pick">
-                    Your answer:{' '}
-                    <span className="kr">
-                      {rev.picked === null
-                        ? 'skipped'
-                        : choiceText(item, rev.picked)}
-                    </span>
-                  </span>
-                  {!rev.isCorrect ? (
-                    <span className="km-mock__review-pick km-mock__review-pick--correct">
-                      Correct:{' '}
-                      <span className="kr">
-                        {choiceText(item, rev.correctChoiceId)}
-                      </span>
-                    </span>
-                  ) : null}
-                </div>
-                {rev.explanation.trim().length > 0 ? (
-                  <p className="km-topik__explain">{rev.explanation}</p>
-                ) : null}
-              </Card>
-            </li>
-          );
-        })}
-      </ol>
-
-      <div className="km-topik__footer">
-        <Button
-          variant="gold"
-          onClick={onNewMock}
-          trailingIcon={<Icon name="arrow-right" size={14} />}
-        >
-          New mock
-        </Button>
-      </div>
-    </div>
-  );
+  return {
+    percentage: result.percentage,
+    band: result.band,
+    correct: result.correct,
+    totalItems: result.totalItems,
+    answered: result.answered,
+    rows,
+  };
 }
