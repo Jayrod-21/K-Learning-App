@@ -384,6 +384,40 @@ async function pickGrammarSeed(target: DiagnosticTargetLevel): Promise<GenSeed |
 }
 
 /**
+ * Fisher–Yates shuffle of a generated item's choices, remapping the correct
+ * index to wherever the correct choice lands.
+ *
+ * The Claude proxy biases the correct choice toward index 0 (LLM position bias)
+ * and the generation prompt does not force randomization, so without this,
+ * generated vocab/grammar items came back correct='a' almost every time — a
+ * diagnostic you could game by always picking the first choice. We permute
+ * server-side rather than trust the model to randomize. Topik-sourced items are
+ * NOT shuffled: they carry real corpus answer positions, already varied.
+ *
+ * `rng` is injectable so tests can assert the remap deterministically.
+ */
+export function shuffleGeneratedChoices(
+  choices: readonly { readonly kr: string }[],
+  correctIndex: number,
+  rng: () => number = Math.random,
+): { choices: ChoiceDTO[]; correctAnswer: ChoiceId } {
+  const order = choices.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = order[i]!;
+    order[i] = order[j]!;
+    order[j] = tmp;
+  }
+  const shuffled: ChoiceDTO[] = order.map((origIdx, newIdx) => ({
+    id: CHOICE_IDS[newIdx]!,
+    kr: choices[origIdx]!.kr,
+    en: '',
+  }));
+  const correctAnswer = CHOICE_IDS[order.indexOf(correctIndex)]!;
+  return { choices: shuffled, correctAnswer };
+}
+
+/**
  * Build a generated (vocab/grammar) ServerItem via the Claude proxy. Returns
  * null when no seed exists for the section (empty corpus) — the caller then
  * skips this ordinal. Claude errors surface as UpstreamError to the route.
@@ -445,18 +479,22 @@ async function buildGeneratedItem(
   // consistent. The dropped gloss is not load-bearing anywhere server-side:
   // grading uses correct_answer and scoring uses difficulty, neither of which
   // touches `en`.
-  const choices: ChoiceDTO[] = result.choices.map((c, i) => ({
-    id: CHOICE_IDS[i]!,
-    kr: c.kr,
-    en: '',
-  }));
-  const correct = CHOICE_IDS[result.answerIndex];
-  if (correct === undefined) {
-    // answerIndex is schema-bounded 0..3 with exactly 4 choices; this is a
-    // belt-and-suspenders guard so a future schema relaxation can't ship an
-    // out-of-range index silently.
+  if (
+    !Number.isInteger(result.answerIndex) ||
+    result.answerIndex < 0 ||
+    result.answerIndex >= result.choices.length
+  ) {
+    // answerIndex is schema-bounded 0..3 with exactly 4 choices; belt-and-suspenders
+    // so a future schema relaxation can't ship an out-of-range index silently.
     throw new UpstreamError('generated item answerIndex out of range');
   }
+  // Shuffle server-side so the correct choice isn't parked at 'a' (see
+  // shuffleGeneratedChoices) — the model's position bias otherwise made generated
+  // items gameable. Topik items keep their real, already-varied corpus positions.
+  const { choices, correctAnswer: correct } = shuffleGeneratedChoices(
+    result.choices,
+    result.answerIndex,
+  );
 
   return {
     section,
