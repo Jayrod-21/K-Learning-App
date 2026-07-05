@@ -39,12 +39,39 @@ import {
 const router = Router();
 router.use(requireAuth);
 
+// Browse-by-initial-consonant (초성) index. Each base consonant maps to the
+// Unicode Hangul-syllable range that begins with it, folding its tense pair in
+// (ㄱ covers ㄱ+ㄲ, ㄷ covers ㄷ+ㄸ, ㅂ covers ㅂ+ㅃ, ㅅ covers ㅅ+ㅆ, ㅈ covers ㅈ+ㅉ).
+// Ranges are [start, end) under COLLATE "C" (codepoint order == initial-consonant
+// order for Hangul syllables), matching the browse ORDER BY. '힤' is one past
+// 힣, the last Hangul syllable.
+const INITIAL_RANGES: Record<string, { start: string; end: string }> = {
+  ㄱ: { start: '가', end: '나' },
+  ㄴ: { start: '나', end: '다' },
+  ㄷ: { start: '다', end: '라' },
+  ㄹ: { start: '라', end: '마' },
+  ㅁ: { start: '마', end: '바' },
+  ㅂ: { start: '바', end: '사' },
+  ㅅ: { start: '사', end: '아' },
+  ㅇ: { start: '아', end: '자' },
+  ㅈ: { start: '자', end: '차' },
+  ㅊ: { start: '차', end: '카' },
+  ㅋ: { start: '카', end: '타' },
+  ㅌ: { start: '타', end: '파' },
+  ㅍ: { start: '파', end: '하' },
+  ㅎ: { start: '하', end: '힤' },
+};
+const INITIALS = Object.keys(INITIAL_RANGES) as [string, ...string[]];
+
 const SearchQuerySchema = z.object({
   // OPTIONAL — absent or empty `q` means "browse the whole dictionary" (see the
   // route doc). When present it's a 1..64 char term; the leading/trailing trim
   // means an all-whitespace query collapses to the browse path, not a search
   // for spaces.
   q: z.string().trim().max(64).optional(),
+  // Browse-only 초성 section filter (one of the 14 base consonants). Ignored when
+  // `q` is present (search spans the whole dictionary).
+  initial: z.enum(INITIALS).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().nonnegative().default(0),
 });
@@ -96,14 +123,20 @@ router.get(
           // exact count of a single mid-size table is well within budget). The
           // `"C"` collation gives a stable byte-order sort that matches the
           // pager's "N of M" without locale-dependent reordering.
+          // An optional 초성 filter narrows the browse to one consonant's
+          // Unicode syllable range; without it, browse the whole dictionary.
+          const range = q.initial ? INITIAL_RANGES[q.initial] : null;
           const result = await query<KrdictSearchRow>(
             `SELECT id, headword, part_of_speech,
                     definition_korean, definition_english,
                     COUNT(*) OVER ()::text AS total
                FROM krdict_entries
+              ${range ? 'WHERE headword COLLATE "C" >= $3 AND headword COLLATE "C" < $4' : ''}
               ORDER BY headword COLLATE "C", id ASC
               LIMIT $1 OFFSET $2`,
-            [q.limit, q.offset],
+            range
+              ? [q.limit, q.offset, range.start, range.end]
+              : [q.limit, q.offset],
           );
           rows = result.rows;
         } else {

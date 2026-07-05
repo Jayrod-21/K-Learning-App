@@ -350,6 +350,28 @@ describe('Resources — Dictionary tab (browse + search)', () => {
       );
     });
   });
+
+  it('browses one 초성 section when a consonant is tapped', async () => {
+    const user = userEvent.setup();
+    renderResources();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('tab', { name: 'Dictionary' }));
+    await screen.findByText('학교'); // browse-all loaded
+
+    krdictSvc.searchKrdict.mockClear();
+    await user.click(screen.getByRole('button', { name: 'ㅁ' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ initial: 'ㅁ' }),
+        expect.anything(),
+      );
+    });
+    expect(screen.getByRole('button', { name: 'ㅁ' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
 });
 
 describe('Resources — Grammar tab', () => {

@@ -33,6 +33,8 @@ import type { KrdictSearchPage } from '../types/domain';
  */
 export interface SearchKrdictOptions {
   q?: string;
+  /** Browse-only 초성 section filter (one base consonant, e.g. 'ㄱ'). */
+  initial?: string;
   limit?: number;
   offset?: number;
 }
@@ -52,6 +54,11 @@ export async function searchKrdict(
   // Only send `q` when it's a non-empty term; an absent/empty `q` is the
   // browse-all path on the server.
   if (opts.q !== undefined && opts.q.length > 0) params.q = opts.q;
+  // `initial` only applies to the browse path (no `q`); harmless if both set —
+  // the server ignores it when searching.
+  if (opts.initial !== undefined && opts.initial.length > 0) {
+    params.initial = opts.initial;
+  }
   if (opts.limit !== undefined) params.limit = opts.limit;
   if (opts.offset !== undefined) params.offset = opts.offset;
   return api.get<KrdictSearchPage>('/krdict/search', {

@@ -689,9 +689,60 @@ function VocabularyTab(): JSX.Element {
 // Dictionary tab — full KRDICT, search-first
 // ─────────────────────────────────────────────────────────────
 
+const INITIAL_CONSONANTS = [
+  'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ',
+  'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
+] as const;
+
+/**
+ * 초성 (initial-consonant) index for the Dictionary browse — a tappable row of
+ * the 14 base consonants plus "전체" (all). Selecting one narrows the browse to
+ * that consonant's section; "전체" returns to the whole dictionary.
+ */
+function InitialIndexBar({
+  selected,
+  onSelect,
+}: {
+  selected: string | null;
+  onSelect: (initial: string | null) => void;
+}): JSX.Element {
+  return (
+    <div
+      className="km-resources__initials"
+      role="group"
+      aria-label="Browse by initial consonant"
+    >
+      <button
+        type="button"
+        className={`km-resources__initial${selected === null ? ' is-active' : ''}`}
+        aria-pressed={selected === null}
+        onClick={() => {
+          onSelect(null);
+        }}
+      >
+        전체
+      </button>
+      {INITIAL_CONSONANTS.map((c) => (
+        <button
+          key={c}
+          type="button"
+          className={`km-resources__initial kr${selected === c ? ' is-active' : ''}`}
+          aria-pressed={selected === c}
+          onClick={() => {
+            onSelect(c);
+          }}
+        >
+          {c}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function DictionaryTab(): JSX.Element {
   const { input, q, setInput, clear } = useDebouncedSearch();
   const [offset, setOffset] = useState(0);
+  const [initial, setInitial] = useState<string | null>(null);
   const [rows, setRows] = useState<KrdictSearchEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -705,7 +756,15 @@ function DictionaryTab(): JSX.Element {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOffset(0);
-  }, [q]);
+  }, [q, initial]);
+
+  // A whole-dictionary search supersedes any 초성 section selection.
+  useEffect(() => {
+    if (q.trim().length > 0 && initial !== null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setInitial(null);
+    }
+  }, [q, initial]);
 
   useEffect(() => {
     // Browse on an empty query, search on a non-empty one. Both hit the
@@ -720,7 +779,11 @@ function DictionaryTab(): JSX.Element {
     /* eslint-enable react-hooks/set-state-in-effect */
     // Omit `q` entirely when browsing so the service hits the browse-all path.
     searchKrdict(
-      { ...(browsing ? {} : { q }), limit: PAGE_SIZE, offset },
+      {
+        ...(browsing ? (initial !== null ? { initial } : {}) : { q }),
+        limit: PAGE_SIZE,
+        offset,
+      },
       ctrl.signal,
     )
       .then((page) => {
@@ -746,7 +809,7 @@ function DictionaryTab(): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, browsing]);
+  }, [q, offset, browsing, initial]);
 
   return (
     <div className="km-resources__panel">
@@ -757,6 +820,15 @@ function DictionaryTab(): JSX.Element {
         placeholder="Search 54,000 dictionary entries"
         ariaLabel="Search dictionary"
       />
+      {browsing ? (
+        <InitialIndexBar
+          selected={initial}
+          onSelect={(c) => {
+            clear();
+            setInitial(c);
+          }}
+        />
+      ) : null}
       {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">
           {browsing ? 'Loading dictionary…' : 'Searching…'}
