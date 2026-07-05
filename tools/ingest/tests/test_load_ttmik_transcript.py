@@ -127,22 +127,19 @@ def test_pair_splits_on_first_separator_korean_left_english_right(parsed) -> Non
     ) in lines
 
 
-def test_standalone_bracket_line_is_romanization(parsed) -> None:
+def test_romanization_lines_are_dropped(parsed) -> None:
+    # No romanization anywhere (user directive): standalone bracket lines are
+    # dropped from the parsed output entirely.
     roman = [ln for ln in parsed.lessons[(1, 1)] if ln.kind == "romanization"]
-    assert roman == [
-        TranscriptLine(kind="romanization", korean=None, english="[an-nyeong] [ha-se-yo]")
-    ]
+    assert roman == []
 
 
-def test_dialog_lines_keep_speaker_and_inline_romanization_verbatim(parsed) -> None:
+def test_dialog_lines_strip_inline_romanization(parsed) -> None:
+    # Inline "[annyeong-haseyo]" romanization is stripped from the Korean side.
     dialog = [ln for ln in parsed.lessons[(1, 1)] if ln.kind == "dialog"]
     assert dialog == [
-        TranscriptLine(
-            kind="dialog", korean="A: 안녕하세요. [annyeong-haseyo]", english="Hello."
-        ),
-        TranscriptLine(
-            kind="dialog", korean="B: 안녕하세요. [annyeong-haseyo]", english="Hi."
-        ),
+        TranscriptLine(kind="dialog", korean="A: 안녕하세요.", english="Hello."),
+        TranscriptLine(kind="dialog", korean="B: 안녕하세요.", english="Hi."),
     ]
 
 

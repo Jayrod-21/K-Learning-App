@@ -95,6 +95,21 @@ HANGUL_RE = re.compile(r"[가-힣㄰-㆏ᄀ-ᇿ]")
 # "[an-nyeong]         [ha-se-yo]"
 ROMANIZATION_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]]+\]\s*)+$")
 
+# Inline romanization: a bracketed group whose first char is a Latin letter,
+# e.g. "안녕하세요. [annyeong-haseyo]" -> "안녕하세요.". Per user directive there is
+# NO romanization anywhere, so these are stripped from every line.
+# Close on ']' OR OCR-mangled ')' / '\' variants seen in the source PDFs.
+_INLINE_ROM_RE = re.compile(r"\s*\[[A-Za-z][^\]\)\\]*[\]\)\\]")
+
+# Control characters that only appear in mojibake / binary-garbage lines from a
+# bad PDF text-extraction (e.g. "\x01*sN\x01TP…"). Such lines are dropped.
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _strip_inline_rom(s: str) -> str:
+    """Remove inline [latin…] romanization groups + collapse the leftover spaces."""
+    return re.sub(r"\s{2,}", " ", _INLINE_ROM_RE.sub("", s)).strip()
+
 # "A: ..." / "B : ..." dialog speaker prefix.
 DIALOG_PREFIX_RE = re.compile(r"^[A-Z]\s*:\s*\S")
 
@@ -181,10 +196,14 @@ def classify_line(line: str) -> TranscriptLine:
     falls back to a single 'prose' line.
     """
     if ROMANIZATION_LINE_RE.match(line):
-        # Normalize interior column-alignment runs of spaces.
-        return TranscriptLine(
-            kind="romanization", korean=None, english=re.sub(r"\s{2,}", " ", line)
-        )
+        # Pure-romanization line — kind kept so the caller drops it entirely.
+        return TranscriptLine(kind="romanization", korean=None, english=None)
+
+    # Strip any INLINE romanization before classifying: a dialog like
+    # "A: 안녕하세요. [annyeong-haseyo]" becomes "A: 안녕하세요.".
+    line = _strip_inline_rom(line)
+    if not line:
+        return TranscriptLine(kind="romanization", korean=None, english=None)
 
     parts = PAIR_SPLIT_RE.split(line, maxsplit=1)
     is_dialog = bool(DIALOG_PREFIX_RE.match(line)) and HANGUL_RE.search(line) is not None
@@ -268,6 +287,9 @@ def parse_script_text(text: str) -> ParsedScript:
             continue
 
         classified = classify_line(line)
+        if classified.kind == "romanization":
+            # No romanization anywhere (user directive) — drop the line entirely.
+            continue
 
         if classified.kind == "prose":
             block = parsed.lessons[current]
@@ -304,6 +326,21 @@ def parse_script_text(text: str) -> ParsedScript:
         emit(classified)
 
     flush()
+    # Final pass: strip inline romanization that only became a complete "[…]"
+    # AFTER wrap-joining across lines (each half alone had no closing bracket),
+    # and drop any line emptied by the removal. Guarantees zero romanization.
+    for key, lines in parsed.lessons.items():
+        cleaned: list[TranscriptLine] = []
+        for ln in lines:
+            if _CTRL_RE.search(ln.korean or "") or _CTRL_RE.search(ln.english or ""):
+                continue  # mojibake / binary garbage from a bad PDF extraction
+            kr = _strip_inline_rom(ln.korean) if ln.korean else ln.korean
+            en = _strip_inline_rom(ln.english) if ln.english else ln.english
+            if kr or en:
+                cleaned.append(
+                    TranscriptLine(kind=ln.kind, korean=kr or None, english=en or None)
+                )
+        parsed.lessons[key] = cleaned
     return parsed
 
 

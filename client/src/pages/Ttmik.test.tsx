@@ -242,7 +242,8 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     expect(rows).toHaveLength(2);
     expect(within(rows[0]!).getByText('안녕하세요.')).toBeInTheDocument();
     expect(within(rows[0]!).getByText('Hello.')).toBeInTheDocument();
-    expect(within(rows[0]!).getByText('annyeonghaseyo')).toBeInTheDocument();
+    // No romanization anywhere — the sentence's romanization field is never rendered.
+    expect(within(rows[0]!).queryByText('annyeonghaseyo')).not.toBeInTheDocument();
     expect(within(rows[0]!).queryByText('현우')).not.toBeInTheDocument();
     expect(within(rows[1]!).getByText('감사합니다.')).toBeInTheDocument();
     expect(within(rows[1]!).getByText('현우')).toBeInTheDocument();
@@ -297,11 +298,8 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
       within(transcript).getByRole('button', { name: '안녕하세요.' }),
     ).toBeInTheDocument();
     expect(within(transcript).getByText('Hello.')).toBeInTheDocument();
-    // romanization → subtle plain line (NOT a tap target — it isn't Korean).
-    expect(within(transcript).getByText('annyeonghaseyo')).toBeInTheDocument();
-    expect(
-      within(transcript).queryByRole('button', { name: 'annyeonghaseyo' }),
-    ).not.toBeInTheDocument();
+    // romanization → dropped entirely (no romanization anywhere), never rendered.
+    expect(within(transcript).queryByText('annyeonghaseyo')).not.toBeInTheDocument();
     // prose → explanation note.
     expect(within(transcript).getByRole('note')).toHaveTextContent(
       'This greeting works at any time of day.',

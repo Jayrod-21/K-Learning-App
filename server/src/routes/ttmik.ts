@@ -93,7 +93,6 @@ interface SentenceRow {
   ordinal: number;
   korean: string;
   english: string | null;
-  romanization: string | null;
   speaker: string | null;
   is_dialog: boolean | null;
 }
@@ -130,8 +129,8 @@ export function splitHosts(hosts: string | null | undefined): string[] {
     .filter((h) => h.length > 0);
 }
 
-const SENTENCE_COLUMNS =
-  'id, ordinal, korean, english, romanization, speaker, is_dialog';
+// No romanization anywhere (user directive) — not selected, so never on the wire.
+const SENTENCE_COLUMNS = 'id, ordinal, korean, english, speaker, is_dialog';
 
 // ---------------------------------------------------------------------------
 // Param schemas — positive ints only; these are the ONLY client inputs on this

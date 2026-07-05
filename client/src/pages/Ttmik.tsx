@@ -915,7 +915,6 @@ function SentenceRow({
   onTapWord,
 }: PanelProps & { sentence: ListenSentence }): JSX.Element {
   const speaker = sentence.speaker ?? null;
-  const romanization = sentence.romanization ?? null;
   return (
     <li className="km-reference__row" style={{ padding: '10px 0' }}>
       {sentence.is_dialog && speaker !== null && speaker !== '' ? (
@@ -933,14 +932,6 @@ function SentenceRow({
       {sentence.english !== null && sentence.english !== '' ? (
         <p className="km-reference__row-en" style={{ margin: '2px 0 0' }}>
           {sentence.english}
-        </p>
-      ) : null}
-      {romanization !== null && romanization !== '' ? (
-        <p
-          className="km-reference__row-en"
-          style={{ margin: '2px 0 0', fontStyle: 'italic' }}
-        >
-          {romanization}
         </p>
       ) : null}
     </li>
@@ -1028,16 +1019,9 @@ function TranscriptLineItem({
         </li>
       );
     case 'romanization':
-      return (
-        <li style={{ padding: '0 0 6px' }}>
-          <p
-            className="km-reference__row-en"
-            style={{ margin: 0, fontStyle: 'italic' }}
-          >
-            {line.korean !== '' ? line.korean : line.english ?? ''}
-          </p>
-        </li>
-      );
+      // No romanization anywhere (user directive). The loader drops these lines,
+      // so this is defensive — render nothing if one ever slips through.
+      return <></>;
     case 'prose':
       return (
         <li className="km-reference__row" style={{ padding: '8px 0' }}>
