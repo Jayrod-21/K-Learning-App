@@ -12,7 +12,7 @@
  * can reference them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
@@ -87,6 +87,37 @@ const { HISTORY_3 } = vi.hoisted(() => {
 
 const refetchSpy = vi.hoisted(() => vi.fn());
 
+// The Word Mastery section fetches directly (not via useEndpointOrMock).
+const masterySvc = vi.hoisted(() => ({ fetchMastery: vi.fn() }));
+const { MASTERY_DEFAULT } = vi.hoisted(() => ({
+  MASTERY_DEFAULT: {
+    summary: { new: 10, learning: 5, reviewing: 2, mastered: 3, total: 20 },
+    words: [
+      {
+        id: 1,
+        korean: '사랑',
+        english: 'love',
+        bucket: 'mastered',
+        stability: 30,
+        reps: 4,
+        lapses: 0,
+        dueAt: null,
+      },
+      {
+        id: 2,
+        korean: '먹다',
+        english: 'to eat',
+        bucket: 'learning',
+        stability: 6,
+        reps: 1,
+        lapses: 0,
+        dueAt: null,
+      },
+    ],
+    total: 20,
+  },
+}));
+
 // Per-test override for the single hook key — `{}` means "use the default".
 type HookResult = UseEndpointOrMockResult<unknown>;
 const hookOverride = vi.hoisted(() => ({ current: {} as Partial<HookResult> }));
@@ -105,6 +136,7 @@ function hookResult(): HookResult {
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: vi.fn(() => hookResult()),
 }));
+vi.mock('../services/vocab', () => masterySvc);
 
 // Import after the mock so it is in place.
 import Progress from './Progress';
@@ -124,6 +156,8 @@ function renderPage(): void {
 beforeEach(() => {
   refetchSpy.mockClear();
   hookOverride.current = {};
+  masterySvc.fetchMastery.mockReset();
+  masterySvc.fetchMastery.mockResolvedValue(MASTERY_DEFAULT);
 });
 
 describe('Progress page — trend', () => {
@@ -280,5 +314,124 @@ describe('Progress page — empty / sparse / loading / error states', () => {
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Progress page — word mastery (F-013)', () => {
+  it('renders the bucket summary + word list and filters on a chip tap', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('Word mastery')).toBeInTheDocument();
+    expect(await screen.findByText('사랑')).toBeInTheDocument();
+    expect(screen.getByText('먹다')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Mastered/ }));
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalledWith(
+        expect.objectContaining({ bucket: 'mastered' }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('invites the user to add cards when there are none', async () => {
+    masterySvc.fetchMastery.mockResolvedValue({
+      summary: { new: 0, learning: 0, reviewing: 0, mastered: 0, total: 0 },
+      words: [],
+      total: 0,
+    });
+    renderPage();
+    expect(
+      await screen.findByText(/No vocab cards yet/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows an error card on failure and recovers on retry', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue(MASTERY_DEFAULT);
+    renderPage();
+
+    expect(
+      await screen.findByText('Could not load word mastery.'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('사랑')).toBeInTheDocument();
+  });
+
+  it('toggles a bucket filter off on a second tap (back to all)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('사랑');
+
+    await user.click(screen.getByRole('button', { name: /Mastered/ }));
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalledWith(
+        expect.objectContaining({ bucket: 'mastered' }),
+        expect.anything(),
+      );
+    });
+
+    masterySvc.fetchMastery.mockClear();
+    await user.click(screen.getByRole('button', { name: /Mastered/ }));
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalledWith(
+        expect.not.objectContaining({ bucket: expect.anything() }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('pages forward when there are more words than one page', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery.mockResolvedValue({
+      summary: { new: 40, learning: 5, reviewing: 3, mastered: 2, total: 50 },
+      words: [
+        {
+          id: 1,
+          korean: '가',
+          english: 'a',
+          bucket: 'new',
+          stability: 0,
+          reps: 0,
+          lapses: 0,
+          dueAt: null,
+        },
+      ],
+      total: 50,
+    });
+    renderPage();
+    await screen.findByText('가');
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 30 }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('keeps the loaded list when a REFETCH fails (graceful degrade)', async () => {
+    const user = userEvent.setup();
+    // First load succeeds; the bucket-filter refetch then fails.
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery
+      .mockResolvedValueOnce(MASTERY_DEFAULT)
+      .mockRejectedValue(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText('사랑')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Mastered/ }));
+    // Refetch failed → the prior words stay + a subtle inline retry appears
+    // (NOT the full ErrorCard, and the list is NOT wiped).
+    expect(
+      await screen.findByText(/showing the last loaded mastery/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('사랑')).toBeInTheDocument();
   });
 });

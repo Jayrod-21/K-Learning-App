@@ -29,6 +29,8 @@ import type {
   InitCardsBody,
   InitCardsResult,
   ListListsResponse,
+  MasteryBucket,
+  MasteryPage,
   MineWordInput,
   MineWordResult,
   PatchListBody,
@@ -97,6 +99,32 @@ export async function getEntry(
     `/vocab/entries/${String(entryId)}`,
     signal !== undefined ? { signal } : undefined,
   );
+}
+
+/** Filter + pagination for `GET /vocab/mastery` (F-013). */
+export interface FetchMasteryOptions {
+  /** Restrict the word list to one bucket; omit for all buckets. */
+  bucket?: MasteryBucket;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * GET /vocab/mastery — the signed-in user's per-word FSRS mastery: a bucket
+ * summary plus a paginated, optionally bucket-filtered list of words.
+ */
+export async function fetchMastery(
+  opts: FetchMasteryOptions = {},
+  signal?: AbortSignal,
+): Promise<MasteryPage> {
+  const params: Record<string, string | number> = {};
+  if (opts.bucket !== undefined) params.bucket = opts.bucket;
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<MasteryPage>('/vocab/mastery', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 /**
