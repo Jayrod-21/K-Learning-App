@@ -3854,6 +3854,32 @@ body {
 .km-resources__list-row { grid-template-columns: 1fr auto; padding: 0; }
 .km-resources__pos { text-transform: none; letter-spacing: 0; }
 
+/* 초성 (initial-consonant) browse index — a wrapping row of consonant buttons. */
+.km-resources__initials {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.km-resources__initial {
+  min-width: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--paper-mute);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.km-resources__initial:hover { border-color: var(--vermilion); color: var(--ink); }
+.km-resources__initial.is-active {
+  background: var(--vermilion-soft);
+  border-color: var(--vermilion);
+  color: var(--vermilion);
+}
+
 .km-resources__list-open {
   display: grid;
   grid-template-columns: 1.4fr 2fr auto;

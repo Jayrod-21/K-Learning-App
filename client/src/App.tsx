@@ -36,7 +36,6 @@ import { Shell } from './components/Shell';
 import Login from './pages/Login';
 import Today from './pages/Today';
 import Topik from './pages/Topik';
-import Reading from './pages/Reading';
 import Review from './pages/Review';
 import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
@@ -81,7 +80,13 @@ export default function App(): JSX.Element {
                   >
                     <Route index element={<Today />} />
                     <Route path="topik" element={<Topik />} />
-                    <Route path="reading" element={<Reading />} />
+                    {/* Read is retired — its content lives in Listen (/ttmik),
+                        which does TTMIK + Iyagi with audio + transcripts. Keep
+                        the path as a redirect so old links/tiles still land. */}
+                    <Route
+                      path="reading"
+                      element={<Navigate to="/ttmik" replace />}
+                    />
                     <Route path="review" element={<Review />} />
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="grammar" element={<Grammar />} />

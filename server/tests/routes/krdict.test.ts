@@ -77,6 +77,39 @@ describe('GET /krdict/search — matching', () => {
     expect(typeof res.body.entries[0].id).toBe('number');
   });
 
+  it('browse with initial= narrows to one 초성 section', async () => {
+    await seedKrdictEntry(pg.pool, {
+      headword: '가방',
+      definitionEn: 'bag',
+      definitionKo: '물건을 넣는 물건',
+    });
+    await seedKrdictEntry(pg.pool, {
+      headword: '마음',
+      definitionEn: 'mind',
+      definitionKo: '사람의 생각',
+    });
+    await seedKrdictEntry(pg.pool, {
+      headword: '하늘',
+      definitionEn: 'sky',
+      definitionKo: '머리 위 공간',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search?initial=%E3%85%81'); // ㅁ
+    expect(res.status).toBe(200);
+    const heads = (res.body.entries as Array<{ headword: string }>).map(
+      (e) => e.headword,
+    );
+    expect(heads).toContain('마음');
+    expect(heads).not.toContain('가방');
+    expect(heads).not.toContain('하늘');
+  });
+
+  it('rejects an initial that is not one of the 14 base consonants', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search?initial=X');
+    expect(res.status).toBe(400);
+  });
+
   it('falls back to the English definition (gloss search)', async () => {
     await seedKrdictEntry(pg.pool, {
       headword: '사과',
