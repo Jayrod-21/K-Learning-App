@@ -204,3 +204,232 @@ label shapes to keep — the inverse of both heuristics tried so far, and the on
 further hyphen/case tricks to get right. Add the missing test case class (bare single-syllable /
 un-hyphenated romanization, e.g. `"네. [ne]"` → `"네."`) before the next re-review, and separately file a
 ticket for the red `test_classify_line_cases` cases (pre-existing, not blocking, but should not stay red).
+
+---
+
+## Round 2 re-review
+
+**Fix commit:** `b78a250` ("fixpass round 2: allow-list romanization detection"). **Method:** same as
+round 1 — independent SELECT-only queries against the reloaded live `ttmik_transcript_lines`; a
+from-scratch re-run of the actual unmodified round-2 parser against the three source PDFs in a throwaway
+venv; a side-by-side diff of round-1 (`c1d122a`) vs round-2 (`b78a250`) `_is_romanization` across every
+inline bracket in the corpus; and an actual `pytest` run.
+
+### Verdict: **PASS WITH CONDITIONS**
+
+The round-1 BLOCKER-1 — the non-hyphenated bracket leak (243/303 rows: `네 [ne]`, `이 [i]`, `아니요
+[aniyo]`) — is **genuinely resolved** by the allow-list rewrite, and I independently confirm the
+coordinator's "37 distinct brackets survive, all legit" claim for ASCII `]`-closed brackets. The
+approach is correct and the tests are falsifiable. **However, the commit's stronger claim — "ZERO
+romanization" — is refuted:** 20 rows still carry romanization through delimiter channels the
+bracket-strip never covered (slash `/an-da/`, fullwidth `［…］`, parentheses `(…)`) plus one *new*
+round-2 bracket regression. And round 2 introduces a small **new over-strip** of 4 legitimate English
+annotation brackets. Both residuals are far smaller than round 1 and mostly out of the bracket-fix's
+original scope, but they keep the migration's "lossless / no romanization anywhere" contract from being
+literally true. Ship-decision is the coordinator's: the scoped bracket blocker is fixed; two residual
+defects remain.
+
+### BLOCKER-1 (romanization leak) — bracket channel **FIXED**; "zero romanization" **REFUTED** (20 residual rows)
+
+Round-2 `_is_romanization` (`load_ttmik_transcript.py:118-149`) strips letter-leading Latin brackets by
+default and keeps only Hangul-bearing content, an allow-listed English label (`_LABEL_EXACT` +
+`"…tense"`/`"…marker"`), a single uppercase slot, or an English prose fragment (`_ENGLISH_HINT_RE`:
+`...`/`etc`/`and`/`or`/`the`). Verified correct for the round-1 leak class:
+
+- **Live enumeration of every ASCII `]`-closed bracket** (both columns):
+  `SELECT DISTINCT (regexp_matches(korean|english,'\[[^][]*\]','g'))[1] …` → **37 distinct**, and I
+  hand-classified all 37 — every one is a genuine label (`[noun]`, `[past tense]`, `[subject marker]`,
+  `[be]`, `[p.p.]`, `[polite/formal]`), a slot (`[A]/[B]/[D]/[S]`), an English fragment
+  (`[a friend and a movie]`, `[More calm and neutral]`, `[often/fast/early/soon/etc...]`), or a
+  Korean-bearing note (`[NOT 그렇은]`, `[verb: 가다]`, `[verb stem + -는 것]`). **Zero romanization
+  among the 37.** The coordinator's claim holds *for this query's scope*.
+- **Corpus diff (round-1 vs round-2 inline `_is_romanization`):** 168 distinct forms (357 occurrences)
+  that round 1 kept are now correctly stripped — `ne`(×11), `i`(×17), `ga`(×11), `da`(×10), `aniyo`,
+  `jondaetmal`, number glosses `baek / 100`, `cheon = thousand`, etc. This is the 243/303 leak, gone.
+
+**But "zero romanization anywhere" is false.** My round-1 review warned that my *own* verify query
+shared the parser's blind spot; the coordinator's 37-bracket query (`\[[^][]*\]`) has the same one — it
+only matches ASCII `[`…`]`. Probing the delimiter forms it misses:
+
+```
+-- slash-delimited romanization  /xxx-xxx/
+SELECT count(*) … WHERE korean ~ '/[a-z-]+-[a-z-]+/' OR english ~ '/[a-z-]+-[a-z-]+/';   -- 13
+-- fullwidth-bracket romanization  ［ … ］  (U+FF3B/U+FF3D, not ASCII '[')
+SELECT count(*) … WHERE korean ~ '［' OR english ~ '［';                                   -- 3
+-- 3+-syllable hyphen-chain anywhere (romanization hallmark)
+SELECT count(*) … WHERE korean ~ '[a-z]+-[a-z]+-[a-z]+' OR english ~ '[a-z]+-[a-z]+-[a-z]+'; -- 13 (1 = "know-it-all" false pos)
+-- dedup across all channels, minus the "know-it-all" English false positive
+SELECT count(DISTINCT id) …;                                                              -- 20
+```
+
+The 20 residual leak rows, by channel:
+| channel | rows | example (id, lesson) |
+|---|---|---|
+| slash-delimited `/…/` inside parens | 13 | `(Verb: 앉다 /an-da/ to sit)` — id 72735, L139-140 |
+| fullwidth brackets `［…］` | 3 | `갔을 리가 없어요［ga-sseul li-ga eop-seo-yo］` — id 70600, L85 |
+| parenthesized romanization `(…)` | ~3 | `돈을 모아서 뭐 할 거예요? (do-neul mo-a-seo mwo hal geo-ye-yo?)` — id 69701, L62; `(dong-yeong-sang)` id 70706; `(gwaen-ha-da)` id 70712 |
+| **bracket + Hangul short-circuit (NEW round-2 regression)** | 1 | `Present Tense: 이상해요 [i-sang-hae-yo) (NOT 이상하여요)` — id 67712, L17 |
+
+The slash / fullwidth / paren channels (19 rows) never involve an ASCII `[…]` and so leaked in **every**
+round — they are pre-existing and orthogonal to the bracket heuristic that was the scoped fix, but they
+are romanization sitting in the shipped "no romanization anywhere" table. The **one genuinely new**
+round-2 leak is `id=67712`: the bracket `[i-sang-hae-yo) (NOT 이상하여요)` (closed on `)`, greedy content
+spans to the final `)`) contains *both* romanization and Hangul; round 2's `HANGUL_RE` short-circuit
+(`load_ttmik_transcript.py:135-136`) keeps the whole bracket, romanization included. Round-1 code
+stripped this exact bracket (its content has the `[a-z]-[a-z]` hyphen-join) — confirmed by the corpus
+diff ("round-1 stripped but round-2 keeps: `i-sang-hae-yo) (NOT 이상하여요`", 1 occurrence). So the new
+Hangul short-circuit, while correct for pure glosses, regresses this mixed romanization+Hangul bracket.
+
+### BLOCKER-2 (over-strip) — **NEW over-strip of 4 legit English brackets** (small)
+
+The 37 surviving ASCII brackets prove no *label* was wrongly deleted. But the corpus diff surfaced 4
+inline **English-annotation** brackets that round 1 kept and round 2 now deletes, because "strip by
+default" fires and `_ENGLISH_HINT_RE` (`...`/`etc`/`and`/`or`/`the`) does not match them:
+
+| bracket (round-1 KEPT → round-2 STRIP) | line before → after |
+|---|---|
+| `[more common in written language]` | `- 항상 [hang-sang] = always [more common in written language]` → `- 항상 = always` |
+| `[more common in spoken language]` | `- 맨날 … all the time [more common in spoken language]` → `- 맨날 … all the time` |
+| `[one's]` | `take off [one's] shoes` → `take off shoes` |
+| `[watching them]` | `…you can't quit [watching them] easily.` → `…you can't quit easily.` |
+
+These are legitimate English — a register annotation (the *entire* pedagogical point of the 항상-vs-맨날
+contrast is "written vs spoken"), a placeholder, and a clarifying gloss — deleted from a column the
+migration documents as "lossless verbatim." Same defect class as the original BLOCKER-2, reintroduced at
+~4-row scale (down from 76). `_ENGLISH_HINT_RE` is an incomplete allow-list for prose fragments; it
+needs a broader English-detection signal (e.g. ≥2 dictionary words, or a space-separated multi-token
+all-lowercase-ASCII run that isn't a romanization hyphen-chain).
+
+### New parametrized tests — **GREEN and falsifiable**, but blind to the residuals
+
+`pytest tools/ingest/tests/test_load_ttmik_transcript.py` → **45 passed** (was 30 passed / 2 failed;
+the 2 stale `test_classify_line_cases` for `가다 [ga-da]` / `맛있다 [ma-sit-da]` are fixed — their
+expectations now reflect the stripped Korean, which is correct). I re-ran the 6 new non-hyphenated
+cases (`네. [ne]`→`네.`, `이 [i]`→`이`, `아니요`, `존댓말`, `일 [il = one]`) against the round-1
+`_strip_inline_rom`: **6/6 FAIL** — the new tests genuinely catch the round-1 blocker. Good falsifiable
+coverage of the bracket channel. **Gaps:** no test covers (a) slash/fullwidth/paren romanization, (b)
+the Hangul-short-circuit-with-embedded-romanization case (`[i-sang-hae-yo) (NOT 이상하여요)`), or (c) the
+newly over-stripped English phrases (`[more common in written language]`, `[watching them]`) — so the
+green suite does not backstop any of the residuals above.
+
+### Regressions — clean
+
+- **Counts:** 9,526 rows / 232 distinct lessons — matches the commit claim and an independent
+  from-scratch re-parse of the source PDFs exactly.
+- **Ordinal contiguity:** 0 bad lessons (`HAVING count(*) <> max(ordinal) OR min(ordinal) <> 1`).
+- **`kind='romanization'`:** 0 (standalone bracket-only lines still dropped at parse time, as designed).
+- **Endpoint / reading.ts SHOULD-FIX items** from round 1 remain in place (unchanged by `b78a250`).
+
+### Recommendation
+
+**Shippable for the bracket blocker; two residual tickets before the "zero romanization anywhere" claim
+can be made truthfully.** The allow-list rewrite is the right design and demonstrably kills the round-1
+243/303 leak. Before the directive is literally satisfied: (1) extend stripping beyond ASCII `[…]` to
+the slash/fullwidth/paren romanization channels (19 pre-existing rows, concentrated in L139-140 slash,
+L85 fullwidth) and fix the new `id=67712` Hangul-short-circuit leak by stripping any romanization
+sub-span even inside a Hangul-bearing bracket; (2) tighten the English-fragment allow-list so
+`[more common in written language]` / `[watching them]` / `[one's]` are kept (4-row over-strip); (3) add
+regression tests for all three. If the coordinator scopes round 2 strictly to the ASCII-bracket leak the
+round-1 review named, this is a PASS; scoped to the migration's literal "no romanization anywhere"
+contract, 20 romanization rows still ship, so it is PASS-WITH-CONDITIONS at best.
+
+---
+
+## Round 3 re-review
+
+**Fix commit:** `16ace8a` ("fixpass round 3: strip romanization across ALL delimiters + fix
+over-strip/regression"). **Method:** SELECT-only queries on the reloaded live table; an independent
+from-scratch delimiter sweep (fullwidth / slash / paren / naked / mixed-with-Korean, not just ASCII
+`[…]`); a diff of the round-3 vs round-2 `_strip_inline_rom` on the 6 new test cases; and a `pytest`
+run in a throwaway venv.
+
+### Verdict: **PASS WITH CONDITIONS**
+
+Every channel the round-2 review flagged is **genuinely fixed** — fullwidth `［…］`, slash `/an-da/`, the
+`(dong-yeong-sang)` paren class, and the `id=67712` `[i-sang-hae-yo) (NOT 이상하여요)` regression all
+verify to **0** by my own queries, and the 4 over-stripped English brackets from round 2 are restored
+(3 of them). But my deeper delimiter sweep — the kind I flagged twice as the thing that keeps getting
+missed — surfaces **3 residual romanization rows** the "= 0 across every channel" claim does not cover,
+plus **1 over-strip the commit claims to have fixed but did not** (`[one's]`, a curly-apostrophe miss).
+The magnitude is now ~4 rows out of 9,524 (0.04%), down from round-2's 24 and round-1's 130–243 — a
+strong convergence, and none of the 4 destroys a line's primary Korean/English content. So: shippable
+with two small follow-ups; "zero romanization anywhere" is still not *literally* true.
+
+### BLOCKER-1 (romanization leak) — round-2 channels **FIXED**; 3 new residual rows found
+
+Confirmed fixed by direct query on the reloaded table:
+```
+fullwidth ［…］ :  WHERE korean~'［|］' OR english~'［|］'                              -> 0
+slash /xx-yy/  :  WHERE korean~'/[a-z]+-[a-z]' OR english~'/[a-z]+-[a-z]'           -> 0
+3+ syllable chain: WHERE (…~'[a-z]+-[a-z]+-[a-z]+') minus 'know-it-all'             -> 0
+id 67712 (이상해요 [i-sang-hae-yo)…): WHERE korean~'i-sang-hae-yo'                    -> 0 rows
+ASCII bracket enumeration (both cols)                                              -> 40 distinct, all legit
+```
+The 40 surviving ASCII brackets are all genuine (labels `[noun]`/`[past tense]`/`[subject marker]`,
+slots `[A]/[B]/[D]/[S]`, English fragments `[a friend and a movie]`/`[More calm and neutral]`/
+`[often/fast/early/soon/etc...]`, Korean notes `[NOT 그렇은]`/`[verb: 가다]`, and the 3 restored
+`[more common in written/spoken language]`/`[watching them]`). The round-2 delimiter work is correct.
+
+**But "zero romanization across EVERY delimiter" is refuted** — 3 rows still leak, via channels the
+round-3 rules structurally don't cover (all confirmed by an independent paren/mixed sweep):
+
+| # | lesson | id | leaked romanization | why it survives |
+|---|---|---|---|---|
+| 1 | L1 L22 | 77398 | `( 현재 시제: hyeon-je si-je)` + `(과거 시 제: gwa-geo si-je)` | `_paren_is_romanization` returns False when the parenthetical contains Hangul — but here the paren holds the Korean term **and** its romanization pronunciation guide after a colon, so the romanization rides along, kept. Exactly the mixed-content class as the `id=67712` bracket regression, one delimiter over (parens, not brackets). |
+| 2 | L2 L25 | 78601 | `(-n-ga)` | `_paren_is_romanization` requires **≥2** latin hyphen-joins; `-n-ga` has one (`n-g`), so it falls below the threshold and is kept. Any single-syllable-pair paren romanization leaks. |
+| 3 | L5 L28 | 82065 | `…없다 l su ba-kke eopda]` | The PDF text-extraction dropped this bracket's opening `[`, leaving naked romanization `l su ba-kke eopda` + a stray `]`. No opener → the bracket pass never matches it; not slash- or paren-wrapped either. |
+
+Sweep confirming completeness: a query for *any* parenthetical carrying both a Hangul char and a latin
+hyphen-join returns **only** id 77398 (2 instances); the single-hyphen-paren sweep returns only id 78601
+(`-n-ga`) besides the correctly-kept English `(make-up)`. So the residual is these 3 rows, not a broad
+class. Note the `[a-z]-[a-z]` sweep otherwise returns 95 rows that are all **legitimate** — English
+hyphenated words (`well-being`, `make-up`, `ex-boyfriend`, `know-it-all`, `part-time`, `e-mail`) and
+romanized proper **names inside English translations** (`Kyeong-eun`, `Kyung-hwa`, `So-yeon`) — which
+must be kept (stripping them would gut the English prose), so the parser is right to leave those.
+
+### BLOCKER-2 (over-strip) — 3 of 4 restored; **`[one's]` NOT fixed (curly-apostrophe miss)**
+
+The 40-bracket enumeration confirms `[more common in written language]`, `[more common in spoken
+language]`, and `[watching them]` are all back, and the English parentheticals `(make-up)`/`(room)`/
+`(to move)`/`(image)`/`(owner)` are intact (ids 80002-80012). But **`[one's]` is still over-stripped.**
+The corpus token uses a curly apostrophe `[one`+U+2019+`s]`, while the widened `_ENGLISH_HINT_RE`
+matches `'s\b` with a **straight** ASCII quote — so it misses the real token:
+```
+_strip_inline_rom("take off [one’s] shoes")   -> "take off shoes"      # curly (as in corpus) — STILL STRIPPED
+_strip_inline_rom("take off [one's] shoes")    -> "take off [one's] shoes"  # straight — kept
+```
+`[one's]` does not appear in the 40-bracket live enumeration, confirming it was stripped on reload
+(lesson content degraded from "take off [one's] shoes" to "take off shoes"). The commit's claim
+"`[one's]` restored" is false. **This also exposes a test gap:** the new
+`test_strip_inline_rom_multi_delimiter` asserts `("[one's]", "[one's]")` with a **straight** apostrophe —
+a placeholder that passes while the real curly-apostrophe corpus token fails (the project's own
+"test with real corpus data, not placeholders" rule). Fix: make `_ENGLISH_HINT_RE` accept both quote
+forms (`['`+U+2019+`]s\b`) and change the test to the curly corpus token.
+
+### Tests — GREEN and load-bearing
+
+`pytest tools/ingest/tests/test_load_ttmik_transcript.py` -> **57 passed** (was 45). The 6 new
+`test_strip_inline_rom_multi_delimiter` cases (slash, paren, sentence-in-paren, the `[i-sang-hae-yo)`
+mixed bracket, and the English keeps) all **FAIL on round-2 code** (6/6, verified against the extracted
+`b78a250` `_strip_inline_rom`) — genuinely falsifiable coverage of the delimiter fixes. The only test
+weakness is the straight-vs-curly `[one's]` placeholder noted above; no test covers the 3 residual leak
+shapes (colon pronunciation-guide in a Korean paren, single-hyphen paren, opener-less mangled bracket).
+
+### Regressions — clean
+
+- **Counts:** 9,524 rows / 232 distinct lessons (matches commit + independent re-parse).
+- **Ordinal contiguity:** 0 bad lessons (`HAVING count(*) <> max(ordinal) OR min(ordinal) <> 1`).
+- **`kind='romanization'`:** 0. **English parentheticals** `(make-up)`/`(room)` preserved.
+
+### Recommendation
+
+**Shippable; two small follow-up tickets to make "zero romanization anywhere" literally true.**
+The delimiter-expansion is the right design and demonstrably closed every round-2 channel. Remaining:
+(1) the 3 residual leak rows — strip romanization even when it rides *inside* a Korean-bearing
+parenthetical after a colon (id 77398, mirror the bracket-level Hangul-AND-hyphen-join fix onto parens),
+lower or special-case the single-hyphen paren threshold for `-x-y`-marker forms (id 78601), and handle
+the opener-less mangled bracket (id 82065, a PDF-extraction artifact — e.g. strip a naked
+`\bl?\s?[a-z]+-[a-z]+…]` trailing a Korean grammar token); (2) the `[one's]` curly-apostrophe over-strip
++ its placeholder test. All four are edge cases affecting 4 rows / 0.04% of the corpus and none destroy
+a line's primary content — a reasonable ship-then-ticket call, but the literal "no romanization
+anywhere" contract is not yet met.

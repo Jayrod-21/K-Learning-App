@@ -322,7 +322,20 @@ def test_strip_inline_rom_strips_romanization_keeps_labels(text: str, expected: 
         ("주격 조사 (이)", "주격 조사 (이)"),
         ("always [more common in written language]", "always [more common in written language]"),
         ("[watching them]", "[watching them]"),
-        ("[one's]", "[one's]"),
+        # Curly apostrophe (U+2019) exactly as the corpus stores it — a straight-
+        # only "'s" match silently over-stripped "[one’s]" to nothing.
+        ("take off [one’s] shoes", "take off [one’s] shoes"),
+        # Particle romanization in parens; colon pronunciation guide inside a
+        # Korean-bearing paren; orphaned run from a PDF-mangled bracket (lost "[").
+        ("이다 (-n-ga)", "이다"),
+        ("( 현재 시제: hyeon-je si-je)", "( 현재 시제)"),
+        ("구조 -(으)ㄹ 수 밖에 없다 l su ba-kke eopda]. This is", "구조 -(으)ㄹ 수 밖에 없다. This is"),
+        # Bracket that lost its CLOSING "]" (romanization ran into Korean/English).
+        ("안녕히 계세요 [an-nyeong-hi gyeor 안녕히 가세요", "안녕히 계세요 안녕히 가세요"),
+        ("수고 많았어요. [su-go ma-na- This expression", "수고 많았어요. This expression"),
+        # Mostly-romanization bracket with an English placeholder riding along —
+        # >=2 syllable hyphen-joins mark it romanization despite the "(person's name)".
+        ("[jeo-neun (person’s name)-i-ra-go hae-yo.]", ""),
     ],
 )
 def test_strip_inline_rom_multi_delimiter(text: str, expected: str) -> None:

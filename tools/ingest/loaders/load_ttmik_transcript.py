@@ -122,7 +122,9 @@ _LABEL_EXACT = frozenset(
 # English token absent from the corpus's 161 romanization forms; short syllables
 # that collide with romanization ("a"/"an"/"i"/"to") are deliberately excluded.
 _ENGLISH_HINT_RE = re.compile(
-    r"\.\.\.|'s\b|\b(?:and|or|the|etc|more|less|common|written|spoken|language|"
+    # Both straight (') and curly (’ U+2019) apostrophes appear in the corpus,
+    # so "[one's]" must match either — a straight-only "'s" silently over-stripped it.
+    r"\.\.\.|['’]s\b|\b(?:and|or|the|etc|more|less|common|written|spoken|language|"
     r"watching|them|always|only|also|used|means|when|what|how|word|words)\b",
     re.IGNORECASE,
 )
@@ -158,6 +160,10 @@ def _is_romanization(inner: str) -> bool:
         return False  # Korean-bearing gloss WITHOUT inline romanization → keep
         # (a bracket carrying BOTH Korean AND romanization, e.g. a greedily
         # captured "[i-sang-hae-yo) (NOT 이상하여요)", falls through and is stripped)
+    if len(_LATIN_HYPHEN_RE.findall(c)) >= 2:
+        return True  # >=2 romanized-syllable hyphen-joins → romanization, even when
+        # an English placeholder rides along ("[jeo-neun (person's name)-i-ra-go
+        # hae-yo.]"). No genuine English label/phrase carries two syllable-joins.
     if _is_english_label(c):
         return False  # closed-set English grammar label → keep
     if len(c) == 1 and c.isupper():
@@ -175,16 +181,33 @@ _FULLWIDTH_BRACKETS = str.maketrans({"［": "[", "］": "]"})
 # Romanization wrapped in slashes ("/an-da/"), a single hyphenated token — the
 # corpus has no slash-wrapped English word, so this is unambiguous.
 _SLASH_ROM_RE = re.compile(r"\s*/[a-z]+(?:-[a-z]+)+/")
+# A romanization pronunciation guide introduced by a colon ("현재 시제: hyeon-je
+# si-je") — it can ride inside a Korean-bearing parenthetical the paren pass keeps.
+_COLON_ROM_RE = re.compile(r"\s*:\s*[a-z]+(?:-[a-z]+)+(?:\s+[a-z]+(?:-[a-z]+)*)*")
+# A PDF-mangled bracket that lost its opening "[" leaves a Latin romanization run
+# ending in a stray "]" ("… 없다 l su ba-kke eopda]. This is …") — mid-line, not
+# just trailing. Only applied when the line has a "]" but NO "[" and a Latin
+# hyphen-join is present, so a legit "[label]" is never touched.
+_ORPHAN_ROM_RE = re.compile(r"\s*(?:[A-Za-z][A-Za-z-]*\s+)*[A-Za-z][A-Za-z-]*\]")
+# A bracket that lost its CLOSING "]" (extraction ran the romanization into the
+# following Korean/English): "[an-nyeong-hi gye…". Strip "[" + the lowercase-Latin
+# run only when it carries a hyphen-join (romanization), so an unclosed English
+# aside never matches.
+_OPEN_ROM_RE = re.compile(r"\[\s*[a-z][a-z\s-]*")
 
 
 def _paren_is_romanization(content: str) -> bool:
-    """A parenthetical is romanized Korean iff it has >=2 lowercase-latin
-    hyphen-joins ("(dong-yeong-sang)", "(do-neul mo-a-seo ...)") and carries no
-    Korean or English words. English parentheticals hyphenate at most once
-    ("(make-up)"); the corpus contains no 3-part English hyphenate."""
-    if HANGUL_RE.search(content) or _ENGLISH_HINT_RE.search(content):
+    """A parenthetical is romanized Korean iff it leads with a particle marker
+    ("(-n-ga)") or has >=2 lowercase-latin hyphen-joins ("(dong-yeong-sang)",
+    "(do-neul mo-a-seo ...)"), and carries no Korean or English words. English
+    parentheticals hyphenate at most once ("(make-up)") and never lead with "-";
+    the corpus contains no 3-part English hyphenate."""
+    c = content.strip()
+    if HANGUL_RE.search(c) or _ENGLISH_HINT_RE.search(c):
         return False
-    return len(_LATIN_HYPHEN_RE.findall(content)) >= 2
+    if c.startswith("-"):
+        return True  # grammar-particle romanization, e.g. "(-n-ga)"
+    return len(_LATIN_HYPHEN_RE.findall(c)) >= 2
 
 
 def _strip_inline_rom(s: str) -> str:
@@ -195,11 +218,18 @@ def _strip_inline_rom(s: str) -> str:
     s = s.translate(_FULLWIDTH_BRACKETS)
     s = _BRACKET_RE.sub(lambda m: "" if _is_romanization(m.group(1)) else m.group(0), s)
     s = _SLASH_ROM_RE.sub("", s)
+    s = _COLON_ROM_RE.sub("", s)
     s = re.sub(
         r"\s*\(([^()]*)\)",
         lambda m: "" if _paren_is_romanization(m.group(1)) else m.group(0),
         s,
     )
+    if "]" in s and "[" not in s and _LATIN_HYPHEN_RE.search(s):
+        s = _ORPHAN_ROM_RE.sub("", s)  # orphaned romanization from a lost "["
+    if "[" in s:  # a bracket left after the closed-bracket pass lost its "]"
+        s = _OPEN_ROM_RE.sub(
+            lambda m: "" if _LATIN_HYPHEN_RE.search(m.group(0)) else m.group(0), s
+        )
     return re.sub(r"\s{2,}", " ", s).strip()
 
 # "A: ..." / "B : ..." dialog speaker prefix.
