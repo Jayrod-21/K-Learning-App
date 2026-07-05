@@ -23,13 +23,16 @@
 FROM python:3.12-slim
 
 # psycopg[binary] ships the libpq wheel (no apt/build-essential). psycopg-pool is
-# used by the corpus loader runtime; pydantic + defusedxml by the KRDICT path.
+# used by the corpus loader runtime; pydantic + defusedxml by the KRDICT path;
+# pypdf (pure-python — no poppler/apt needed) by the ttmik_transcript loader,
+# which reads the Lesson Scripts PDFs straight from the corpus mount.
 RUN pip install --no-cache-dir \
         "psycopg[binary]==3.2.3" \
         "psycopg-pool>=3.2,<4" \
         "structlog==24.4.0" \
         "pydantic>=2,<3" \
-        "defusedxml>=0.7,<0.8"
+        "defusedxml>=0.7,<0.8" \
+        "pypdf>=5,<6"
 
 WORKDIR /app
 
