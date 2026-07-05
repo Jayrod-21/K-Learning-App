@@ -868,7 +868,7 @@ function TapKorean({
   minedIds,
   onTapWord,
 }: {
-  text: string;
+  text: string | null;
   minedIds: ReadonlySet<string>;
   onTapWord: TapWordHandler;
 }): JSX.Element {
@@ -882,7 +882,9 @@ function TapKorean({
             key={`${String(i)}:${tk.w}`}
             mined={minedIds.has(tk.w)}
             onTap={() => {
-              onTapWord(tk.w, text);
+              // `text` is non-null whenever a token exists (null tokenises to []),
+              // so this is only for the type — the '' branch is never reached.
+              onTapWord(tk.w, text ?? '');
             }}
           >
             {tk.w}
@@ -1014,7 +1016,9 @@ function TranscriptLineItem({
       return (
         <li style={{ padding: '14px 0 2px' }}>
           <h3 className="km-eyebrow" style={{ margin: 0 }}>
-            {line.korean !== '' ? line.korean : line.english ?? ''}
+            {line.korean != null && line.korean !== ''
+              ? line.korean
+              : line.english ?? ''}
           </h3>
         </li>
       );
@@ -1025,7 +1029,7 @@ function TranscriptLineItem({
     case 'prose':
       return (
         <li className="km-reference__row" style={{ padding: '8px 0' }}>
-          {line.korean !== '' ? (
+          {line.korean != null && line.korean !== '' ? (
             <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
               <TapKorean
                 text={line.korean}
@@ -1049,13 +1053,15 @@ function TranscriptLineItem({
     case 'dialog':
       return (
         <li className="km-reference__row" style={{ padding: '10px 0' }}>
-          <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
-            <TapKorean
-              text={line.korean}
-              minedIds={minedIds}
-              onTapWord={onTapWord}
-            />
-          </p>
+          {line.korean != null && line.korean !== '' ? (
+            <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
+              <TapKorean
+                text={line.korean}
+                minedIds={minedIds}
+                onTapWord={onTapWord}
+              />
+            </p>
+          ) : null}
           {line.english !== null && line.english !== '' ? (
             <p className="km-reference__row-en" style={{ margin: '2px 0 0' }}>
               {line.english}

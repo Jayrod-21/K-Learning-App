@@ -59,9 +59,11 @@ export const GLOSS_UNAVAILABLE = 'Definition unavailable';
  * post-enrichment) always carry a non-empty English string, so callers can
  * branch fast-path vs slow-path via {@link isPlaceholderGloss}.
  */
-export function tokeniseKorean(korean: string): PassageToken[] {
+export function tokeniseKorean(korean: string | null | undefined): PassageToken[] {
   const tokens: PassageToken[] = [];
-  const parts = korean.match(/\s+|\S+/g) ?? [];
+  // Transcript header / English-only prose lines carry `korean: null`; tokenising
+  // one must yield no tokens, never throw (a bare `null.match` crashed the render).
+  const parts = korean?.match(/\s+|\S+/g) ?? [];
   for (const part of parts) {
     if (/^\s+$/.test(part)) {
       tokens.push({ w: part });
