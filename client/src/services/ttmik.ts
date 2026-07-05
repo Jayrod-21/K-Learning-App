@@ -79,6 +79,16 @@ export async function getIyagiEpisode(
 }
 
 /**
+ * The ONLY two app-relative shapes the server emits for `audioUrl`. A prefix
+ * heuristic ("starts with `/` but not `//`") is bypassable — the browser and the
+ * URL parser normalize a leading backslash or an embedded tab/newline into `//`,
+ * so e.g. `"/\\evil.example/a.mp3"` would slip through and resolve to an attacker
+ * origin. Anchoring to the exact route shapes (digits + literal segments only)
+ * makes any off-origin / tampered `audioUrl` impossible to smuggle through.
+ */
+const AUDIO_URL_ALLOW = /^\/(?:ttmik\/lessons\/\d+\/\d+|iyagi\/episodes\/\d+)\/audio$/;
+
+/**
  * Resolve a detail response's `audioUrl` into a playable `<audio src>`.
  *
  * Joins the SAME API base the axios instance uses (single source of truth —
@@ -87,10 +97,9 @@ export async function getIyagiEpisode(
  * relative path through the LB).
  *
  * Returns `null` for a `null` input (no audio mapped → the page renders the
- * transcript-only state) AND for any value that is not an absolute app path.
- * Defends against: a tampered response body steering the media element to an
- * attacker origin (`https://…` or `//…` would otherwise be honoured verbatim
- * by the browser) — we only ever concatenate `base + "/app/path"`.
+ * transcript-only state) AND for any value that does not match the strict
+ * allow-list above — defending against a tampered response body steering the
+ * media element to an attacker origin. We only ever concatenate `base + path`.
  *
  * `base` is injectable for tests; production callers use the default.
  */
@@ -99,6 +108,6 @@ export function buildAudioSrc(
   base: string = getApiBaseUrl(),
 ): string | null {
   if (audioUrl === null) return null;
-  if (!audioUrl.startsWith('/') || audioUrl.startsWith('//')) return null;
+  if (!AUDIO_URL_ALLOW.test(audioUrl)) return null;
   return base === '' ? audioUrl : `${base}${audioUrl}`;
 }

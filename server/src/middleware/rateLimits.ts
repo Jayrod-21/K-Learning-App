@@ -30,6 +30,7 @@ function userOrIpKey(req: Request): string {
 let _cheap: RateLimitRequestHandler | null = null;
 let _expensive: RateLimitRequestHandler | null = null;
 let _auth: RateLimitRequestHandler | null = null;
+let _media: RateLimitRequestHandler | null = null;
 
 function buildCheap(): RateLimitRequestHandler {
   const cfg = loadConfig();
@@ -73,6 +74,22 @@ function buildAuth(): RateLimitRequestHandler {
   });
 }
 
+// Audio/Range streaming: its own, higher, per-user bucket so an active listening
+// session (many partial-content requests) cannot exhaust the shared cheap per-IP
+// bucket and 429 the user's unrelated JSON calls (F-012 review R1).
+function buildMedia(): RateLimitRequestHandler {
+  const cfg = loadConfig();
+  return rateLimit({
+    windowMs: cfg.RATE_LIMIT_WINDOW_MS,
+    max: cfg.RATE_LIMIT_MEDIA_MAX,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
+    keyGenerator: userOrIpKey,
+    message: { error: { code: 'rate_limited', message: 'too many requests' } },
+  });
+}
+
 /**
  * Each accessor returns a STABLE wrapper that delegates to the current limiter
  * instance. Routes capture this wrapper at import time
@@ -99,6 +116,9 @@ function ensureExpensive(): RateLimitRequestHandler {
 function ensureAuth(): RateLimitRequestHandler {
   return (_auth ??= buildAuth());
 }
+function ensureMedia(): RateLimitRequestHandler {
+  return (_media ??= buildMedia());
+}
 
 export function cheapLimiter(): RequestHandler {
   // Lazy: the limiter (and its loadConfig() call) is resolved on the FIRST
@@ -117,9 +137,15 @@ export function authLimiter(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction) => ensureAuth()(req, res, next);
 }
 
+/** Higher, per-user bucket for audio/Range streaming (config RATE_LIMIT_MEDIA_MAX). */
+export function mediaLimiter(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => ensureMedia()(req, res, next);
+}
+
 /** Reset limiter instances (drops their in-memory hit stores) — test-only. */
 export function resetLimiters(): void {
   _cheap = null;
   _expensive = null;
   _auth = null;
+  _media = null;
 }

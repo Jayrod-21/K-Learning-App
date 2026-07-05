@@ -103,6 +103,11 @@ const EnvSchema = z.object({
   RATE_LIMIT_CHEAP_MAX: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_EXPENSIVE_MAX: z.coerce.number().int().positive().default(20),
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
+  // Audio streaming: one listening session fires many Range requests (each seek
+  // = several partials), so audio gets its OWN, higher, per-user bucket rather
+  // than sharing the cheap per-IP one (which it would exhaust, 429-ing unrelated
+  // JSON calls). See mediaLimiter in middleware/rateLimits.
+  RATE_LIMIT_MEDIA_MAX: z.coerce.number().int().positive().default(600),
 
   // Logging
   LOG_LEVEL: z

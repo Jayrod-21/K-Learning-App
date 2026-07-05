@@ -61,6 +61,11 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
         ("22 ttmik iyagi 22.MP3", EpisodeKey(number=22)),
         ("TTMIK Iyagi #7.mp3", EpisodeKey(number=7)),
         ("TTMIK Iyagi episode 12.mp3", EpisodeKey(number=12)),
+        # Trailing "-<n>" part suffix on a single-part lesson/episode (F-012 R2):
+        # real corpus files "Lesson 17-1.mp3", "Lesson 20-1.mp3", "Iyagi 67-1.mp3".
+        ("17 TTMIK Level 9 Lesson 17-1.mp3", LessonKey(level=9, number=17)),
+        ("20 TTMIK Level 5 Lesson 20-1.mp3", LessonKey(level=5, number=20)),
+        ("67 TTMIK Iyagi 67-1.mp3", EpisodeKey(number=67)),
         # Non-matches: no key, wrong tokens, missing number
         ("random song.mp3", None),
         ("TTMIK Iyagi.mp3", None),

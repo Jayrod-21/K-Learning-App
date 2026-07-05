@@ -48,7 +48,7 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, resolve, sep } from 'node:path';
 import { getLogger } from '../logging.js';
 import { requireAuth } from '../middleware/auth.js';
-import { cheapLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, mediaLimiter } from '../middleware/rateLimits.js';
 import { validateParams } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
@@ -181,7 +181,7 @@ ttmikRouter.get(
 
 ttmikRouter.get(
   '/lessons/:level/:number/audio',
-  cheapLimiter(),
+  mediaLimiter(),
   validateParams(LessonParamsSchema),
   async (req, res, next) => {
     try {
@@ -266,7 +266,7 @@ iyagiRouter.get(
 
 iyagiRouter.get(
   '/episodes/:number/audio',
-  cheapLimiter(),
+  mediaLimiter(),
   validateParams(EpisodeParamsSchema),
   async (req, res, next) => {
     try {

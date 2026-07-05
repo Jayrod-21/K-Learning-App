@@ -6,7 +6,10 @@ filename into either a (lesson_level, lesson_number) pair or an Iyagi
 episode number, and writes the file's corpus-RELATIVE path into
 ``ttmik_lessons.audio_path`` / ``iyagi_episodes.audio_path`` (migration 035).
 
-Filename ground truth (1,179 files):
+Filename patterns that map to a DB table. NOTE: the corpus holds 1,179 mp3s
+across several TTMIK sets, but only the two below have tables — the ~796
+"How To Sound Like A Native Korean Speaker" bonus files (and other sets) have
+no table and stay unmatched BY DESIGN; ~383 lesson/Iyagi files map here.
 
   * Iyagi:   ``TTMIK/이야기들/이야기/<N> TTMIK Iyagi <N>.mp3``
              → ``iyagi_episodes.episode_number = <N>``
@@ -54,7 +57,10 @@ TTMIK_SUBDIR = "TTMIK"
 # whitespace. Anchored on the END of the filename so leading track numbers
 # ("03 TTMIK Level 1 Lesson 3.mp3") and any future prefix junk are ignored.
 _LESSON_RE = re.compile(
-    r"ttmik\s+level\s+(\d{1,2})\s+lesson\s+(\d{1,3})\s*\.mp3$",
+    # Trailing ``-<n>`` (e.g. "Lesson 17-1.mp3") is a part suffix on a
+    # single-part lesson — map it to the lesson number; duplicate keys are
+    # resolved first-wins downstream.
+    r"ttmik\s+level\s+(\d{1,2})\s+lesson\s+(\d{1,3})(?:-\d+)?\s*\.mp3$",
     re.IGNORECASE,
 )
 
@@ -62,7 +68,9 @@ _LESSON_RE = re.compile(
 # ``episode`` tokens absorb known publisher variance without loosening the
 # match into false positives (the number is still required).
 _IYAGI_RE = re.compile(
-    r"ttmik\s+iyagi\s+(?:episode\s+)?#?\s*(\d{1,4})\s*\.mp3$",
+    # Trailing ``-<n>`` (e.g. "Iyagi 67-1.mp3") is a part suffix — map to the
+    # episode number (first-wins on duplicate keys downstream).
+    r"ttmik\s+iyagi\s+(?:episode\s+)?#?\s*(\d{1,4})(?:-\d+)?\s*\.mp3$",
     re.IGNORECASE,
 )
 

@@ -165,5 +165,15 @@ describe('buildAudioSrc', () => {
     expect(buildAudioSrc('https://evil.example/a.mp3', '')).toBeNull();
     expect(buildAudioSrc('//evil.example/a.mp3', '')).toBeNull();
     expect(buildAudioSrc('evil.example/a.mp3', '')).toBeNull();
+    // Normalization bypass (F-012 R3 BLOCKER): a leading backslash or an embedded
+    // tab/newline normalizes to `//` in the browser/URL parser, so the old prefix
+    // heuristic let these resolve off-origin. The strict allow-list rejects them.
+    expect(buildAudioSrc('/\\evil.example/a.mp3', '')).toBeNull();
+    expect(buildAudioSrc('/\tevil.example/a.mp3', '')).toBeNull();
+    expect(buildAudioSrc('/\nevil.example/a.mp3', '')).toBeNull();
+    // Right prefix but wrong shape (extra segments / traversal / missing id) — rejected.
+    expect(buildAudioSrc('/ttmik/lessons/2/21/audio/../../x', '')).toBeNull();
+    expect(buildAudioSrc('/ttmik/lessons/2/audio', '')).toBeNull();
+    expect(buildAudioSrc('/ttmik/lessons/2/21/audiox', '')).toBeNull();
   });
 });

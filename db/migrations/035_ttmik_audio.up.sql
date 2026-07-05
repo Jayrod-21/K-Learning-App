@@ -1,7 +1,9 @@
 -- 035 (up): add audio_path to ttmik_lessons + iyagi_episodes (F-012, TTMIK audio).
 --
--- Feature: the corpus ships 1,179 TTMIK mp3s (lesson tracks + Iyagi episode
--- recordings). The server streams them via GET /ttmik/lessons/:level/:number/audio
+-- Feature: the corpus ships TTMIK mp3s across several sets; the ~383 lesson-track
+-- + Iyagi-episode files map to these two tables (other sets, e.g. the "How To
+-- Sound Like A Native Korean Speaker" bonus course, have no table).
+-- The server streams them via GET /ttmik/lessons/:level/:number/audio
 -- and GET /iyagi/episodes/:number/audio; the loader
 -- tools/ingest/loaders/load_ttmik_audio.py walks the corpus audio tree and
 -- writes this column for every row whose (lesson_level, lesson_number) /
