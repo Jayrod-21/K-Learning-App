@@ -20,9 +20,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedIyagiEpisode, seedTtmikLesson } from '../helpers/seed.js';
+import {
+  registerUser,
+  seedIyagiEpisode,
+  seedTtmikLesson,
+  seedTtmikTranscript,
+} from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
-import { parseRangeHeader } from '../../src/routes/ttmik.js';
+import { parseRangeHeader, splitHosts } from '../../src/routes/ttmik.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -153,7 +158,7 @@ describe('GET /iyagi/episodes', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /ttmik/lessons/:level/:number', () => {
-  it('returns meta + ordered transcript + audioUrl', async () => {
+  it('returns meta + ordered highlights + audioUrl', async () => {
     await seedLessonWithAudio();
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/ttmik/lessons/1/1');
@@ -165,8 +170,40 @@ describe('GET /ttmik/lessons/:level/:number', () => {
       hasAudio: true,
     });
     expect(res.body.audioUrl).toBe('/ttmik/lessons/1/1/audio');
-    expect(res.body.sentences.map((s: { ordinal: number }) => s.ordinal)).toEqual([1, 2]);
-    expect(res.body.sentences[0]).toMatchObject({ korean: '안녕하세요', english: 'hello' });
+    expect(res.body.highlights.map((s: { ordinal: number }) => s.ordinal)).toEqual([1, 2]);
+    expect(res.body.highlights[0]).toMatchObject({ korean: '안녕하세요', english: 'hello' });
+    // No romanization on the wire — a strict check (toMatchObject alone would not
+    // catch a `romanization` field regressing back onto the sentence).
+    expect(res.body.highlights[0]).not.toHaveProperty('romanization');
+  });
+
+  it('returns the full transcript in ordinal order alongside highlights', async () => {
+    const lessonId = await seedLessonWithAudio();
+    // Inserted out of ordinal order on purpose — the endpoint must sort.
+    await seedTtmikTranscript(pg.pool, lessonId, [
+      { ordinal: 3, korean: 'A: 안녕하세요.', english: 'Hello.', kind: 'dialog' },
+      { ordinal: 1, korean: '안녕하세요.', english: 'Hello. / Hi.', kind: 'pair' },
+      { ordinal: 2, korean: null, english: 'Sample Conversation', kind: 'header' },
+    ]);
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/ttmik/lessons/1/1');
+    expect(res.status).toBe(200);
+    expect(res.body.transcript).toEqual([
+      { ordinal: 1, korean: '안녕하세요.', english: 'Hello. / Hi.', kind: 'pair' },
+      { ordinal: 2, korean: null, english: 'Sample Conversation', kind: 'header' },
+      { ordinal: 3, korean: 'A: 안녕하세요.', english: 'Hello.', kind: 'dialog' },
+    ]);
+    // Highlights are independent of the transcript's presence.
+    expect(res.body.highlights).toHaveLength(2);
+  });
+
+  it('transcript is an empty array before the transcript loader has run', async () => {
+    await seedTtmikLesson(pg.pool, { level: 1, number: 1, title: 'greetings' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/ttmik/lessons/1/1');
+    expect(res.status).toBe(200);
+    expect(res.body.transcript).toEqual([]);
+    expect(res.body.highlights).toHaveLength(2);
   });
 
   it('audioUrl is null when no audio is mapped', async () => {
@@ -205,6 +242,29 @@ describe('GET /iyagi/episodes/:number', () => {
     });
     expect(res.body.audioUrl).toBe('/iyagi/episodes/3/audio');
     expect(res.body.sentences.map((s: { ordinal: number }) => s.ordinal)).toEqual([1, 2]);
+  });
+
+  it('hosts TEXT column ("최경은 & 진석진") is returned as string[] (regression)', async () => {
+    // Regression: the DB stores hosts as ONE plain string; the endpoint used
+    // to pass it through where the client expects string[], crashing the
+    // episode detail render ("couldn't load").
+    await seedIyagiEpisode(pg.pool, { number: 5, hosts: '최경은 & 진석진' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/iyagi/episodes/5');
+    expect(res.status).toBe(200);
+    expect(res.body.meta.hosts).toEqual(['최경은', '진석진']);
+  });
+
+  it('single-host string → one-element array; NULL hosts → []', async () => {
+    await seedIyagiEpisode(pg.pool, { number: 6, hosts: '석진' });
+    await seedIyagiEpisode(pg.pool, { number: 8, hosts: null });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const single = await agent.get('/iyagi/episodes/6');
+    expect(single.status).toBe(200);
+    expect(single.body.meta.hosts).toEqual(['석진']);
+    const none = await agent.get('/iyagi/episodes/8');
+    expect(none.status).toBe(200);
+    expect(none.body.meta.hosts).toEqual([]);
   });
 
   it('unknown episode → 404', async () => {
@@ -387,5 +447,25 @@ describe('parseRangeHeader', () => {
     ['garbage', null],
   ])('parseRangeHeader(%j, 100) → %j', (header, expected) => {
     expect(parseRangeHeader(header, SIZE)).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitHosts — pure unit coverage of the hosts TEXT → string[] mapping
+// ---------------------------------------------------------------------------
+
+describe('splitHosts', () => {
+  it.each<[string | null | undefined, string[]]>([
+    ['최경은 & 진석진', ['최경은', '진석진']],
+    ['석진', ['석진']],
+    ['A&B', ['A', 'B']], // no spaces around the ampersand
+    ['  경화  &  석진  ', ['경화', '석진']], // stray whitespace trimmed
+    ['경은 & 현우 & 석진', ['경은', '현우', '석진']], // three hosts
+    ['& 석진', ['석진']], // leading dangling separator → no empty entry
+    ['', []],
+    [null, []],
+    [undefined, []],
+  ])('splitHosts(%j) → %j', (input, expected) => {
+    expect(splitHosts(input)).toEqual(expected);
   });
 });

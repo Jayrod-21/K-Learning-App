@@ -14,6 +14,8 @@ Usage:
     python -m tools.ingest.load_to_postgres --corpus topik --resume
     python -m tools.ingest.load_to_postgres --corpus ttmik_audio \
         --audio-dir /path/to/corpus   # dir CONTAINING the TTMIK/ mp3 tree
+    python -m tools.ingest.load_to_postgres --corpus ttmik_transcript \
+        --scripts-dir "/path/to/TTMIK/Lessons/Lesson Scripts"  # the 3 PDFs
 
 Exits 0 on success, non-zero on any loader failure.
 """
@@ -35,6 +37,7 @@ from .loaders import (
     load_topik,
     load_ttmik,
     load_ttmik_audio,
+    load_ttmik_transcript,
     load_vocab_2000,
 )
 from .loaders.runtime import (
@@ -66,6 +69,13 @@ ALL_CORPORA = (
 #   python -m tools.ingest.load_to_postgres --corpus ttmik_audio \
 #       --audio-dir /path/to/corpus
 AUDIO_CORPUS = "ttmik_audio"
+
+# Also OUTSIDE ALL_CORPORA for the same reason: the transcript loader reads
+# the three "Lesson Scripts" PDFs straight from the corpus mount
+# (--scripts-dir), not the parser-output JSON directory. Opt-in only:
+#   python -m tools.ingest.load_to_postgres --corpus ttmik_transcript \
+#       --scripts-dir "/path/to/TTMIK/Lessons/Lesson Scripts"
+TRANSCRIPT_CORPUS = "ttmik_transcript"
 
 
 def _discover_files(input_dir: Path, corpus: str) -> list[Path]:
@@ -108,6 +118,8 @@ _DISPATCH: dict[str, LoaderFn] = {
     "hanja": load_hanja.load,
     # Not JSON-driven: its "source path" is the corpus audio ROOT (see run()).
     AUDIO_CORPUS: load_ttmik_audio.load,
+    # Not JSON-driven either: its source paths are the Lesson Scripts PDFs.
+    TRANSCRIPT_CORPUS: load_ttmik_transcript.load,
 }
 
 
@@ -117,6 +129,7 @@ async def run(
     input_dir: Path,
     cfg: LoaderConfig,
     audio_dir: Path | None = None,
+    scripts_dir: Path | None = None,
 ) -> dict[str, list[dict]]:
     """Run the configured loaders. Returns per-corpus result dicts."""
     results: dict[str, list[dict]] = {c: [] for c in corpora}
@@ -127,6 +140,19 @@ async def run(
                 # file. main() has already validated --audio-dir is present.
                 assert audio_dir is not None, "--audio-dir required for ttmik_audio"
                 files = [audio_dir]
+            elif corpus == TRANSCRIPT_CORPUS:
+                # Sources are the Lesson Scripts PDFs themselves. A dir with
+                # zero PDFs is a mispointed mount — fail loud, never a silent
+                # "no files" no-op (the operator would believe it loaded).
+                assert scripts_dir is not None, (
+                    "--scripts-dir required for ttmik_transcript"
+                )
+                files = sorted(scripts_dir.glob("*.pdf"))
+                if not files:
+                    raise FileNotFoundError(
+                        f"no *.pdf in {scripts_dir} — --scripts-dir must point "
+                        "at the TTMIK Lesson Scripts directory"
+                    )
             else:
                 files = _discover_files(input_dir, corpus)
             if not files:
@@ -160,10 +186,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--corpus",
         required=True,
-        choices=("all",) + ALL_CORPORA + (AUDIO_CORPUS,),
+        choices=("all",) + ALL_CORPORA + (AUDIO_CORPUS, TRANSCRIPT_CORPUS),
         help=(
             "Corpus name to load, or 'all' for every known JSON corpus "
-            f"('{AUDIO_CORPUS}' is opt-in only; it needs --audio-dir)."
+            f"('{AUDIO_CORPUS}' and '{TRANSCRIPT_CORPUS}' are opt-in only; "
+            "they need --audio-dir / --scripts-dir respectively)."
         ),
     )
     p.add_argument(
@@ -179,6 +206,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Corpus audio ROOT (the directory containing TTMIK/). Required "
             f"when --corpus {AUDIO_CORPUS}; ignored otherwise."
+        ),
+    )
+    p.add_argument(
+        "--scripts-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory holding the TTMIK Lesson Scripts PDFs. Required when "
+            f"--corpus {TRANSCRIPT_CORPUS}; ignored otherwise."
         ),
     )
     p.add_argument(
@@ -223,6 +259,12 @@ def main(argv: list[str] | None = None) -> int:
             hint=f"--corpus {AUDIO_CORPUS} needs --audio-dir <corpus root>",
         )
         return 1
+    if TRANSCRIPT_CORPUS in corpora and args.scripts_dir is None:
+        logger.error(
+            "scripts_dir_required",
+            hint=f"--corpus {TRANSCRIPT_CORPUS} needs --scripts-dir <Lesson Scripts dir>",
+        )
+        return 1
     try:
         results = asyncio.run(
             run(
@@ -230,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
                 input_dir=args.input_dir,
                 cfg=cfg,
                 audio_dir=args.audio_dir,
+                scripts_dir=args.scripts_dir,
             )
         )
     except Exception as err:

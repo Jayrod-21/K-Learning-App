@@ -191,20 +191,51 @@ export async function seedTtmikLesson(
   return lessonId;
 }
 
-/** Seed an Iyagi episode + 2 sentences. Returns the episode id. */
+/** One transcript line to seed via seedTtmikTranscript. */
+export interface TranscriptLineSeed {
+  ordinal: number;
+  korean: string | null;
+  english: string | null;
+  kind: 'header' | 'pair' | 'romanization' | 'prose' | 'dialog';
+}
+
+/**
+ * Seed full-transcript lines (ttmik_transcript_lines, migration 036) for a
+ * lesson created by seedTtmikLesson.
+ */
+export async function seedTtmikTranscript(
+  pool: Pool,
+  lessonId: number,
+  lines: TranscriptLineSeed[],
+): Promise<void> {
+  for (const line of lines) {
+    await pool.query(
+      `INSERT INTO ttmik_transcript_lines (lesson_id, ordinal, korean, english, kind)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [lessonId, line.ordinal, line.korean, line.english, line.kind],
+    );
+  }
+}
+
+/**
+ * Seed an Iyagi episode + 2 sentences. Returns the episode id.
+ *
+ * `hosts` mirrors production data: a plain TEXT column holding a string like
+ * "최경은 & 진석진" (the detail endpoint splits it into string[]).
+ */
 export async function seedIyagiEpisode(
   pool: Pool,
-  opts: { number?: number } = {},
+  opts: { number?: number; hosts?: string | null } = {},
 ): Promise<number> {
   const corpusSourceId = await ensureCorpusSource(pool, 'iyagi', 'intermediate');
   const episodeNumber = opts.number ?? Math.floor(Math.random() * 999_998) + 1;
   const sourceId = `iyagi-${episodeNumber}`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO iyagi_episodes (
-        corpus_source_id, corpus, source_id, episode_number, ordinal, title)
-     VALUES ($1, 'iyagi'::corpus, $2, $3, 1, 'mock episode')
+        corpus_source_id, corpus, source_id, episode_number, ordinal, title, hosts)
+     VALUES ($1, 'iyagi'::corpus, $2, $3, 1, 'mock episode', $4)
      RETURNING id`,
-    [corpusSourceId, sourceId, episodeNumber],
+    [corpusSourceId, sourceId, episodeNumber, opts.hosts ?? null],
   );
   const episodeId = Number(rows[0]!.id);
   await pool.query(

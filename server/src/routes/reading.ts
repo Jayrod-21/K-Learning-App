@@ -106,7 +106,7 @@ router.get(
       }).validatedParams;
       if (p.corpus === 'ttmik') {
         const { rows } = await query(
-          `SELECT id, ordinal, korean, english, romanization, speaker, is_dialog
+          `SELECT id, ordinal, korean, english, speaker, is_dialog
              FROM ttmik_sentences
             WHERE lesson_id = $1
             ORDER BY ordinal`,
@@ -117,7 +117,7 @@ router.get(
         return;
       }
       const { rows } = await query(
-        `SELECT id, ordinal, korean, english, romanization, speaker, is_dialog
+        `SELECT id, ordinal, korean, english, speaker, is_dialog
            FROM iyagi_sentences
           WHERE episode_id = $1
           ORDER BY ordinal`,

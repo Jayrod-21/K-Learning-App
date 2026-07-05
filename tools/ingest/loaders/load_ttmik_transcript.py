@@ -1,0 +1,675 @@
+"""
+TTMIK full-lesson-transcript loader.
+
+Parses the three "Lesson Scripts" PDFs (Levels 1-3 / 4-6 / 7-9, 232 lessons)
+and writes one row per rendered transcript line into ``ttmik_transcript_lines``
+(migration 036). ``ttmik_sentences`` (the curated highlights) is untouched —
+the client shows both: highlights tab + full transcript.
+
+PIPELINE
+    1. Extract text per page with pypdf (the PDFs have a real text layer; the
+       km-loader image has no poppler, so no ``pdftotext`` shell-out here —
+       pypdf is a pure-python wheel baked into Deploy/loader.Dockerfile).
+    2. Split into lesson blocks on ``LEVEL <L> LESSON <M>`` header lines
+       (a lesson spanning pages repeats its header — repeats of the CURRENT
+       lesson are skipped so paragraphs re-join across page breaks).
+    3. Classify every surviving line (page furniture stripped) into a ``kind``
+       and split korean/english — see ``classify_line`` / ``parse_script_text``.
+    4. Match each block to ``ttmik_lessons`` by (lesson_level, lesson_number)
+       and replace that lesson's transcript atomically (DELETE + INSERT in one
+       transaction per lesson).
+
+LINE CLASSIFICATION (kind → columns):
+    * 'romanization'  line consisting only of ``[...]`` groups. Text → english
+                      (romanization is Latin; korean stays NULL).
+    * 'dialog'        ``A: <korean...> = <english>`` — speaker prefix and any
+                      inline ``[rom]`` stay in the korean side VERBATIM
+                      (lossless); english = text right of the first `` = ``.
+    * 'pair'          any other Hangul-left `` = `` line ("안녕 = well-being",
+                      formation lines like "안녕+하세요 = 안녕하세요." included).
+                      korean = left of the FIRST `` = ``, english = the rest.
+    * 'header'        short title-case section heading with no Hangul, no
+                      `` = `` and no terminal punctuation ("Sample
+                      Conversation", "Conjugation"). Heuristic — only fires
+                      between paragraphs, never inside one. Text → english.
+    * 'prose'         everything else. Consecutive wrap lines are re-joined
+                      into paragraphs (flush on sentence-terminal punctuation)
+                      and hard hyphenation is repaired ("grati-"+"tude" →
+                      "gratitude"). Text → korean when the paragraph contains
+                      Hangul, else english (client renders korean ?? english).
+
+    A prose-looking fragment that starts lowercase immediately after a
+    pair/dialog line whose english side is clearly unterminated is treated as
+    the wrapped tail of that line and appended to it (the PDFs wrap long
+    translations mid-sentence).
+
+IDEMPOTENCY / RESUME: same contract as load_ttmik.py — a load_state checkpoint
+row keyed (corpus='ttmik', source_path=<the PDF>) gives sha256 skip-on-complete
+and lesson-granular resume; each lesson's DELETE + INSERT is one transaction,
+so a crash never leaves a lesson half-replaced. ``corpus_sources`` is NOT
+touched: lessons already carry their corpus_source_id from the highlights
+load, and upserting here would clobber that row's provenance.
+
+REPORTING (fail-loud visibility, never guess): matched / unmatched lesson
+blocks, per-kind line counts, and the count of catalog lessons still lacking
+any transcript after the run.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import structlog
+from psycopg_pool import AsyncConnectionPool
+
+from .runtime import (
+    LoaderConfig,
+    batched,
+    checkpoint_progress,
+    get_or_create_checkpoint,
+    mark_complete,
+    mark_failed,
+    mark_in_progress,
+    sha256_of_file,
+)
+
+logger = structlog.get_logger(__name__)
+
+# load_state is keyed (corpus, source_path); 'ttmik' + the PDF path is a
+# distinct row from the highlights loader's JSON rows, so the two coexist.
+CORPUS = "ttmik"
+
+# ---------------------------------------------------------------------------
+# Pure parsing layer — no I/O, no DB. Unit-tested against fixture text.
+# ---------------------------------------------------------------------------
+
+# "LEVEL 1 LESSON 5" on a line of its own (whitespace-tolerant).
+LESSON_HEADER_RE = re.compile(r"^\s*LEVEL\s+(\d{1,2})\s+LESSON\s+(\d{1,3})\s*$", re.IGNORECASE)
+
+# Hangul syllables + compatibility jamo + archaic jamo block.
+HANGUL_RE = re.compile(r"[가-힣㄰-㆏ᄀ-ᇿ]")
+
+# A line that is nothing but bracketed romanization group(s):
+# "[an-nyeong]         [ha-se-yo]"
+ROMANIZATION_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]]+\]\s*)+$")
+
+# Control characters that only appear in mojibake / binary-garbage lines from a
+# bad PDF text-extraction (e.g. "\x01*sN\x01TP…"). Such lines are dropped.
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+# A bracket group, tolerant of OCR-mangled ')' / '\' closers seen in the PDFs.
+_BRACKET_RE = re.compile(r"\[([^\[\]]*)[\]\)\\]")
+
+# The corpus's CLOSED set of English grammar-annotation labels that appear
+# bracketed — ground-truthed from all three Lesson Scripts PDFs. Romanization and
+# labels are otherwise indistinguishable (both short lowercase Latin: "[ne]" vs
+# "[be]"), so two structural heuristics were tried and BOTH leaked (first-letter
+# stripped real labels; hyphen-presence missed un-hyphenated glosses "[ne]"/"[i]").
+# The robust split is to STRIP by default and allow-list what to KEEP.
+_LABEL_EXACT = frozenset(
+    {
+        "noun", "verb", "adjective", "adverb", "pronoun", "particle", "number",
+        "counter", "honorific", "plain", "polite", "formal", "informal", "casual",
+        "neutral", "be", "p.p.", "object", "subject", "topic", "noun group",
+        "verb a", "verb b", "polite/casual", "polite/formal", "polite/plain",
+    }
+)
+# English prose fragments used as inline examples ("[a friend and a movie]",
+# "[more common in written language]", "[watching them]", "[one's]") — kept, since
+# stripping breaks the sentence. Every word here is a distinctive multi-char
+# English token absent from the corpus's 161 romanization forms; short syllables
+# that collide with romanization ("a"/"an"/"i"/"to") are deliberately excluded.
+_ENGLISH_HINT_RE = re.compile(
+    # Both straight (') and curly (’ U+2019) apostrophes appear in the corpus,
+    # so "[one's]" must match either — a straight-only "'s" silently over-stripped it.
+    r"\.\.\.|['’]s\b|\b(?:and|or|the|etc|more|less|common|written|spoken|language|"
+    r"watching|them|always|only|also|used|means|when|what|how|word|words)\b",
+    re.IGNORECASE,
+)
+# A lowercase-latin hyphen-join ("keo-pi") — detects romanization riding ALONGSIDE
+# Korean inside one greedily-captured bracket, and counts syllables in parentheticals.
+_LATIN_HYPHEN_RE = re.compile(r"[a-z]-[a-z]")
+
+
+def _is_english_label(c: str) -> bool:
+    """A bracket whose contents are one of the corpus's closed English grammar
+    labels — an exact allow-list match, or a "… tense" / "… marker" form."""
+    cl = re.sub(r"\s+", " ", c.strip().lower())
+    return cl in _LABEL_EXACT or cl.endswith(("tense", "marker"))
+
+
+def _is_romanization(inner: str) -> bool:
+    """True iff a bracket's contents are romanized Korean (strip), not something
+    to keep. Strips by DEFAULT (romanization is the norm for letter-leading Latin
+    brackets in this corpus) and keeps only a closed set:
+      * KEEP  — a Korean-bearing gloss ("[Original verb: 닫다 = to close]"), an
+        allow-listed grammar label ("[noun]", "[past tense]", "[subject marker]"),
+        a single-letter pattern slot ("[A]", "[B]"), or an English prose fragment
+        ("[a friend and a movie]").
+      * STRIP — everything else leading with a Latin letter (optionally a "-"/"("
+        particle marker): romanized Korean ("[ne]", "[i]", "[keo-pi]", "[-do]").
+    """
+    c = inner.strip()
+    if not c:
+        return True  # empty bracket
+    if "TalkToMeInKorean" in c:
+        return True  # PDF page-break boilerplate captured inside a bracket
+    if HANGUL_RE.search(c) and not _LATIN_HYPHEN_RE.search(c):
+        return False  # Korean-bearing gloss WITHOUT inline romanization → keep
+        # (a bracket carrying BOTH Korean AND romanization, e.g. a greedily
+        # captured "[i-sang-hae-yo) (NOT 이상하여요)", falls through and is stripped)
+    if len(_LATIN_HYPHEN_RE.findall(c)) >= 2:
+        return True  # >=2 romanized-syllable hyphen-joins → romanization, even when
+        # an English placeholder rides along ("[jeo-neun (person's name)-i-ra-go
+        # hae-yo.]"). No genuine English label/phrase carries two syllable-joins.
+    if _is_english_label(c):
+        return False  # closed-set English grammar label → keep
+    if len(c) == 1 and c.isupper():
+        return False  # single-letter pattern / speaker slot (A, B, S, D) → keep
+    if _ENGLISH_HINT_RE.search(c):
+        return False  # English prose fragment used as an inline example → keep
+    # Latin, possibly behind a run of particle markers ("-", "(", ")") — the shape
+    # of a grammar-ending romanization like "-(eu)l", "-(i)ra-go" → romanization.
+    return bool(re.match(r"[-()\s]*[A-Za-z]", c))
+
+
+# Fullwidth bracket variants → ASCII, so the same bracket pass catches them
+# ("［ga-sseul li-ga eop-seo-yo］").
+_FULLWIDTH_BRACKETS = str.maketrans({"［": "[", "］": "]"})
+# Romanization wrapped in slashes ("/an-da/"), a single hyphenated token — the
+# corpus has no slash-wrapped English word, so this is unambiguous.
+_SLASH_ROM_RE = re.compile(r"\s*/[a-z]+(?:-[a-z]+)+/")
+# A romanization pronunciation guide introduced by a colon ("현재 시제: hyeon-je
+# si-je") — it can ride inside a Korean-bearing parenthetical the paren pass keeps.
+_COLON_ROM_RE = re.compile(r"\s*:\s*[a-z]+(?:-[a-z]+)+(?:\s+[a-z]+(?:-[a-z]+)*)*")
+# A PDF-mangled bracket that lost its opening "[" leaves a Latin romanization run
+# ending in a stray "]" ("… 없다 l su ba-kke eopda]. This is …") — mid-line, not
+# just trailing. Only applied when the line has a "]" but NO "[" and a Latin
+# hyphen-join is present, so a legit "[label]" is never touched.
+_ORPHAN_ROM_RE = re.compile(r"\s*(?:[A-Za-z][A-Za-z-]*\s+)*[A-Za-z][A-Za-z-]*\]")
+# A bracket that lost its CLOSING "]" (extraction ran the romanization into the
+# following Korean/English): "[an-nyeong-hi gye…". Strip "[" + the lowercase-Latin
+# run only when it carries a hyphen-join (romanization), so an unclosed English
+# aside never matches.
+_OPEN_ROM_RE = re.compile(r"\[\s*[a-z][a-z\s-]*")
+
+
+def _paren_is_romanization(content: str) -> bool:
+    """A parenthetical is romanized Korean iff it leads with a particle marker
+    ("(-n-ga)") or has >=2 lowercase-latin hyphen-joins ("(dong-yeong-sang)",
+    "(do-neul mo-a-seo ...)"), and carries no Korean or English words. English
+    parentheticals hyphenate at most once ("(make-up)") and never lead with "-";
+    the corpus contains no 3-part English hyphenate."""
+    c = content.strip()
+    if HANGUL_RE.search(c) or _ENGLISH_HINT_RE.search(c):
+        return False
+    if c.startswith("-"):
+        return True  # grammar-particle romanization, e.g. "(-n-ga)"
+    return len(_LATIN_HYPHEN_RE.findall(c)) >= 2
+
+
+def _strip_inline_rom(s: str, *, final: bool = False) -> str:
+    """Remove inline romanization across EVERY delimiter the corpus uses —
+    ASCII/fullwidth brackets, slashes, and parentheticals — while KEEPING English
+    labels, Korean glosses, and English prose fragments. Collapses leftover spaces.
+
+    The unclosed-bracket ("[") and orphaned-closer ("]") passes run ONLY when
+    ``final=True`` — the post-merge cleanup pass in ``parse_script_text``. A long
+    romanization example often wraps across physical PDF lines with its "[" on one
+    line and its "]" on the next; applied per physical line, these passes would
+    strip the opener before the closer arrives, EMPTYING the first line so it can
+    no longer wrap-join with its continuation — orphaning the romanized tail (which
+    then survives as its own line). Deferring them to the merged text lets the
+    whole bracket re-form and be stripped by ``_BRACKET_RE`` in one piece; only a
+    bracket still unbalanced AFTER merging is a genuine extraction artifact for
+    these passes to clean up.
+    """
+    s = s.translate(_FULLWIDTH_BRACKETS)
+    s = _BRACKET_RE.sub(lambda m: "" if _is_romanization(m.group(1)) else m.group(0), s)
+    s = _SLASH_ROM_RE.sub("", s)
+    s = _COLON_ROM_RE.sub("", s)
+    s = re.sub(
+        r"\s*\(([^()]*)\)",
+        lambda m: "" if _paren_is_romanization(m.group(1)) else m.group(0),
+        s,
+    )
+    if final:
+        if "]" in s and "[" not in s and _LATIN_HYPHEN_RE.search(s):
+            s = _ORPHAN_ROM_RE.sub("", s)  # orphaned romanization from a lost "["
+        if "[" in s:  # a bracket still missing its "]" even after wrap-joining
+            s = _OPEN_ROM_RE.sub(
+                lambda m: "" if _LATIN_HYPHEN_RE.search(m.group(0)) else m.group(0), s
+            )
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+# "A: ..." / "B : ..." dialog speaker prefix.
+DIALOG_PREFIX_RE = re.compile(r"^[A-Z]\s*:\s*\S")
+
+# The korean/english separator. Space-padded so inline '=' inside prose
+# ("A=B notation") without spacing never splits, and the FIRST occurrence
+# wins so formation chains ("맛있다 = 맛있 + -을수록 = ...") keep the remainder
+# intact on the english side.
+PAIR_SPLIT_RE = re.compile(r"\s+=\s+")
+
+# Page furniture the PDFs inject on every page (headers/footers/print stamps).
+# Superset of parse_ttmik.py's list — pypdf emits the same boilerplate.
+BOILERPLATE_RES = (
+    re.compile(r"This PDF is to be used along with the MP3 audio lesson"),
+    re.compile(r"Please feel free to share TalkToMeInKorean"),
+    re.compile(r"is studying Korean\. If you have any questions"),
+    re.compile(r"^\s*TalkToMeInKorean\.com - Free Korean Lesson Notes\s*$"),
+    re.compile(r"^\s*From TalkToMeInKorean\.com\s*$"),
+    re.compile(r"^\s*Printed by the Korea Seoul South Mission\s*$"),
+    re.compile(r"^\s*Printed \w+ \d{4}\s*$"),
+    re.compile(r"^\s*Levels? \d+(\s*-\s*\d+)?\s*$"),
+)
+
+# Punctuation that closes a paragraph line. Includes curly/straight quotes and
+# the ellipsis so quoted sentence ends and trailing "etc..." flush correctly.
+_TERMINAL_PUNCT = ('.', '?', '!', '"', '”', '…', ':', ')')
+
+
+@dataclass(frozen=True)
+class TranscriptLine:
+    """One classified transcript line (ordinal assigned per lesson at the end)."""
+
+    kind: str
+    korean: str | None
+    english: str | None
+
+
+@dataclass
+class ParsedScript:
+    """Outcome of parsing one Lesson Scripts text dump."""
+
+    # (level, lesson) → lines, in document order. dict preserves insertion
+    # order; re-appearing headers append to the existing block.
+    lessons: dict[tuple[int, int], list[TranscriptLine]] = field(default_factory=dict)
+    # Non-empty lines before the first LEVEL header (title-page noise).
+    preamble_lines: int = 0
+
+
+def _is_boilerplate(line: str) -> bool:
+    return any(rx.search(line) for rx in BOILERPLATE_RES)
+
+
+def _single_text_line(kind: str, text: str) -> TranscriptLine:
+    """Column contract for single-text kinds: Hangul → korean, else english."""
+    if HANGUL_RE.search(text):
+        return TranscriptLine(kind=kind, korean=text, english=None)
+    return TranscriptLine(kind=kind, korean=None, english=text)
+
+
+def _looks_like_section_header(line: str) -> bool:
+    """Heuristic for standalone section titles ("Sample Conversation").
+
+    Deliberately narrow: short, starts uppercase, no Hangul, no pair
+    separator, no closing punctuation, ≤4 words. Only consulted BETWEEN
+    paragraphs (the caller guarantees the prose buffer is empty), so wrapped
+    mid-paragraph fragments can never match. Misclassification is cosmetic
+    (render style), not data loss — the text is stored verbatim either way.
+    """
+    if len(line) > 48 or HANGUL_RE.search(line):
+        return False
+    if PAIR_SPLIT_RE.search(line):
+        return False
+    if line.endswith(_TERMINAL_PUNCT) or line.endswith((',', ';', '-')):
+        return False
+    if not line[0].isupper():
+        return False
+    return len(line.split()) <= 4
+
+
+def classify_line(line: str) -> TranscriptLine:
+    """Classify one stripped, non-empty, non-boilerplate line.
+
+    Prose wrap-merging and header detection are context-dependent and live in
+    ``parse_script_text``; this function handles the context-free kinds and
+    falls back to a single 'prose' line.
+    """
+    if ROMANIZATION_LINE_RE.match(line):
+        # Pure-romanization line — kind kept so the caller drops it entirely.
+        return TranscriptLine(kind="romanization", korean=None, english=None)
+
+    # Strip any INLINE romanization before classifying: a dialog like
+    # "A: 안녕하세요. [annyeong-haseyo]" becomes "A: 안녕하세요.".
+    line = _strip_inline_rom(line)
+    if not line:
+        return TranscriptLine(kind="romanization", korean=None, english=None)
+
+    parts = PAIR_SPLIT_RE.split(line, maxsplit=1)
+    is_dialog = bool(DIALOG_PREFIX_RE.match(line)) and HANGUL_RE.search(line) is not None
+    if len(parts) == 2 and HANGUL_RE.search(parts[0]):
+        left, right = parts[0].strip(), parts[1].strip()
+        if left and right:
+            return TranscriptLine(
+                kind="dialog" if is_dialog else "pair", korean=left, english=right
+            )
+    if is_dialog:
+        # Dialog line without a translation half ("A: 안녕하세요.").
+        return TranscriptLine(kind="dialog", korean=line, english=None)
+    return _single_text_line("prose", line)
+
+
+def _join_wrapped(prefix: str, continuation: str) -> str:
+    """Join a hard-wrapped continuation, repairing end-of-line hyphenation.
+
+    "grati-" + "tude" → "gratitude", but "verb ending -을수록" style trailing
+    hyphens (not between two Latin letters) join with a space untouched.
+    """
+    if (
+        prefix.endswith("-")
+        and len(prefix) >= 2
+        and prefix[-2].isalpha()
+        and not HANGUL_RE.search(prefix[-2])
+        and continuation[:1].islower()
+    ):
+        return prefix[:-1] + continuation
+    return f"{prefix} {continuation}"
+
+
+def _paragraph_open(text: str) -> bool:
+    """True while a prose paragraph looks unterminated (mid-wrap)."""
+    return not text.endswith(_TERMINAL_PUNCT)
+
+
+def parse_script_text(text: str) -> ParsedScript:
+    """Parse one PDF's extracted text into per-lesson classified lines.
+
+    Pure function over the text dump — this is the unit-tested surface.
+    """
+    parsed = ParsedScript()
+    current: tuple[int, int] | None = None
+    # Paragraph accumulator for prose wrap-merging. Flushed on terminal
+    # punctuation, on any non-prose line, and on lesson switches. Page
+    # boilerplate does NOT flush it, so paragraphs re-join across page breaks.
+    prose_buf: str | None = None
+
+    def flush() -> None:
+        nonlocal prose_buf
+        if prose_buf is not None and current is not None:
+            parsed.lessons[current].append(_single_text_line("prose", prose_buf))
+        prose_buf = None
+
+    def emit(line: TranscriptLine) -> None:
+        assert current is not None
+        parsed.lessons[current].append(line)
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            flush()
+            continue
+
+        header = LESSON_HEADER_RE.match(line)
+        if header:
+            key = (int(header.group(1)), int(header.group(2)))
+            if key != current:
+                flush()
+                current = key
+                parsed.lessons.setdefault(key, [])
+            # Same-lesson repeat (page break): skip silently, keep the buffer.
+            continue
+
+        if _is_boilerplate(line):
+            continue
+
+        if current is None:
+            parsed.preamble_lines += 1
+            continue
+
+        classified = classify_line(line)
+        if classified.kind == "romanization":
+            # No romanization anywhere (user directive) — drop the line entirely.
+            continue
+
+        if classified.kind == "prose":
+            block = parsed.lessons[current]
+            # Wrapped tail of a pair/dialog translation: lowercase fragment
+            # arriving between paragraphs while the previous line's english
+            # side is clearly unterminated.
+            if (
+                prose_buf is None
+                and block
+                and block[-1].kind in ("pair", "dialog")
+                and block[-1].english is not None
+                and _paragraph_open(block[-1].english)
+                and line[:1].islower()
+            ):
+                prev = block[-1]
+                block[-1] = TranscriptLine(
+                    kind=prev.kind,
+                    korean=prev.korean,
+                    english=_join_wrapped(prev.english or "", line),
+                )
+                continue
+            if prose_buf is None and _looks_like_section_header(line):
+                emit(TranscriptLine(kind="header", korean=None, english=line))
+                continue
+            text_line = classified.korean or classified.english or ""
+            prose_buf = (
+                text_line if prose_buf is None else _join_wrapped(prose_buf, text_line)
+            )
+            if not _paragraph_open(prose_buf):
+                flush()
+            continue
+
+        flush()
+        emit(classified)
+
+    flush()
+    # Final pass: strip inline romanization that only became a complete "[…]"
+    # AFTER wrap-joining across lines (each half alone had no closing bracket),
+    # and drop any line emptied by the removal. Guarantees zero romanization.
+    for key, lines in parsed.lessons.items():
+        cleaned: list[TranscriptLine] = []
+        for ln in lines:
+            if _CTRL_RE.search(ln.korean or "") or _CTRL_RE.search(ln.english or ""):
+                continue  # mojibake / binary garbage from a bad PDF extraction
+            kr = _strip_inline_rom(ln.korean, final=True) if ln.korean else ln.korean
+            en = _strip_inline_rom(ln.english, final=True) if ln.english else ln.english
+            if kr or en:
+                cleaned.append(
+                    TranscriptLine(kind=ln.kind, korean=kr or None, english=en or None)
+                )
+        parsed.lessons[key] = cleaned
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# PDF text extraction (thin, isolated so the parser stays pure).
+# ---------------------------------------------------------------------------
+
+
+def extract_pdf_text(pdf_path: Path) -> str:
+    """Extract the full text layer of a PDF, pages joined by newlines.
+
+    pypdf is imported lazily so this module (and the pure parser tests) can
+    load in environments without it; the km-loader image bakes it in
+    (Deploy/loader.Dockerfile).
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError as err:  # pragma: no cover - env guard, not logic
+        raise RuntimeError(
+            "pypdf is required for the ttmik_transcript loader "
+            "(baked into Deploy/loader.Dockerfile; `pip install pypdf` locally)"
+        ) from err
+
+    reader = PdfReader(str(pdf_path))
+    pages = [page.extract_text() or "" for page in reader.pages]
+    return "\n".join(pages)
+
+
+# ---------------------------------------------------------------------------
+# DB loading
+# ---------------------------------------------------------------------------
+
+
+def _lesson_source_id(level: int, lesson: int) -> str:
+    """Same checkpoint id scheme as load_ttmik.py (resume ordering)."""
+    return f"ttmik-L{level}-{lesson:02d}"
+
+
+async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) -> dict:
+    """Load one Lesson Scripts PDF into ttmik_transcript_lines.
+
+    Returns a report dict: matched/unmatched lessons, line counts, and the
+    global count of catalog lessons still lacking a transcript.
+    """
+    log = logger.bind(corpus=CORPUS, source_path=str(source_path))
+
+    parsed = parse_script_text(extract_pdf_text(source_path))
+    if not parsed.lessons:
+        # A Lesson Scripts PDF with zero LEVEL headers is a mispointed file,
+        # not an empty corpus — fail loud rather than mark it complete.
+        raise ValueError(
+            f"{source_path}: no 'LEVEL <n> LESSON <m>' headers found — "
+            "is this really a TTMIK Lesson Scripts PDF?"
+        )
+
+    sha = sha256_of_file(source_path)
+    total_lines = sum(len(v) for v in parsed.lessons.values())
+    log.info(
+        "parse_complete",
+        lessons=len(parsed.lessons),
+        lines=total_lines,
+        preamble_lines_skipped=parsed.preamble_lines,
+    )
+
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            cp = await get_or_create_checkpoint(
+                conn, corpus=CORPUS, source_path=str(source_path)
+            )
+            if cp.status == "complete" and cp.source_sha256 == sha and not cfg.force:
+                log.info("skip_complete", reason="sha256-matches", sha256=sha)
+                return {"loaded": 0, "skipped": total_lines, "status": "skipped"}
+            await mark_in_progress(
+                conn,
+                corpus=CORPUS,
+                source_path=str(source_path),
+                source_sha256=sha,
+                items_in_source=total_lines,
+            )
+
+    loaded_lines = 0
+    skipped_lines = 0
+    matched_lessons = 0
+    unmatched: list[str] = []
+    try:
+        for (level, lesson), lines in sorted(parsed.lessons.items()):
+            source_id = _lesson_source_id(level, lesson)
+            if (
+                cp.status == "in_progress"
+                and cp.last_item_id
+                and source_id <= cp.last_item_id
+            ):
+                skipped_lines += len(lines)
+                continue
+
+            async with pool.connection() as conn:
+                async with conn.transaction():
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            SELECT id FROM ttmik_lessons
+                             WHERE lesson_level = %s AND lesson_number = %s
+                            """,
+                            (level, lesson),
+                        )
+                        row = await cur.fetchone()
+                        if row is None:
+                            # Report, never guess (ADR-019 §D10): a PDF block
+                            # with no catalog row is an operator-visible gap.
+                            unmatched.append(source_id)
+                        else:
+                            lesson_id = int(row[0])
+                            # Atomic replace: DELETE + INSERT inside this
+                            # lesson's transaction keeps re-runs idempotent
+                            # and a crash can never half-replace a lesson.
+                            await cur.execute(
+                                "DELETE FROM ttmik_transcript_lines WHERE lesson_id = %s",
+                                (lesson_id,),
+                            )
+                            ordinal = 0
+                            rows = []
+                            for tl in lines:
+                                ordinal += 1
+                                rows.append(
+                                    (lesson_id, ordinal, tl.korean, tl.english, tl.kind)
+                                )
+                            for chunk in batched(rows, cfg.batch_size):
+                                await cur.executemany(
+                                    """
+                                    INSERT INTO ttmik_transcript_lines (
+                                        lesson_id, ordinal, korean, english, kind)
+                                    VALUES (%s, %s, %s, %s, %s)
+                                    """,
+                                    chunk,
+                                )
+                            matched_lessons += 1
+                            loaded_lines += len(rows)
+                    await checkpoint_progress(
+                        conn,
+                        corpus=CORPUS,
+                        source_path=str(source_path),
+                        last_item_id=source_id,
+                        items_loaded_delta=len(lines),
+                    )
+            log.info(
+                "lesson_transcript_loaded",
+                lesson_source_id=source_id,
+                lines=len(lines),
+                matched=row is not None,
+            )
+
+        # Visibility: catalog rows with no transcript at all (across ALL
+        # loads — the three PDFs partition the catalog by level, so this
+        # number should reach 0 only after the last of the three runs).
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT COUNT(*)::int
+                      FROM ttmik_lessons l
+                     WHERE NOT EXISTS (
+                           SELECT 1 FROM ttmik_transcript_lines t
+                            WHERE t.lesson_id = l.id)
+                    """
+                )
+                row = await cur.fetchone()
+                lessons_without_transcript = int(row[0]) if row else 0
+
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                await mark_complete(conn, corpus=CORPUS, source_path=str(source_path))
+
+        for source_id in unmatched:
+            log.warning("pdf_lesson_without_catalog_row", lesson_source_id=source_id)
+        report = {
+            "status": "complete",
+            "lessons_in_pdf": len(parsed.lessons),
+            "lessons_matched": matched_lessons,
+            "lessons_unmatched": len(unmatched),
+            "unmatched_ids": unmatched,
+            "loaded": loaded_lines,
+            "skipped": skipped_lines,
+            "lessons_without_transcript": lessons_without_transcript,
+        }
+        log.info("load_complete", **report)
+        return report
+
+    except Exception as err:
+        log.error("loader_failed", error=str(err))
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                await mark_failed(
+                    conn,
+                    corpus=CORPUS,
+                    source_path=str(source_path),
+                    error=repr(err),
+                )
+        raise

@@ -3,11 +3,23 @@
  *
  * Read-only corpus surface:
  *   GET /ttmik/lessons                        → { lessons: [{ level, number, title, hasAudio }] }
- *   GET /ttmik/lessons/:level/:number         → { meta, sentences[], audioUrl }
+ *   GET /ttmik/lessons/:level/:number         → { meta, highlights[], transcript[], audioUrl }
  *   GET /ttmik/lessons/:level/:number/audio   → the mp3 (Range-capable)
  *   GET /iyagi/episodes                       → { episodes: [{ number, title, hasAudio }] }
  *   GET /iyagi/episodes/:number               → { meta, sentences[], audioUrl }
  *   GET /iyagi/episodes/:number/audio         → the mp3 (Range-capable)
+ *
+ * TTMIK lesson detail carries TWO bodies of text:
+ *   - `highlights`  — the curated key phrases/vocab from ttmik_sentences
+ *                     (previously the `sentences` field; renamed when the full
+ *                     transcript landed so the two can't be confused).
+ *   - `transcript`  — the FULL lesson notes from ttmik_transcript_lines
+ *                     (migration 036), ordered by ordinal. Each line is
+ *                     { ordinal, korean, english, kind } where kind ∈
+ *                     header|pair|romanization|prose|dialog; for single-text
+ *                     kinds render `korean ?? english` (see the migration's
+ *                     column contract). Empty array until the transcript
+ *                     loader has run — the client falls back to highlights.
  *
  * `audioUrl` is the app-relative path of the sibling audio endpoint (or null
  * when no audio is mapped) — the client hands it straight to an <audio> tag;
@@ -81,7 +93,6 @@ interface SentenceRow {
   ordinal: number;
   korean: string;
   english: string | null;
-  romanization: string | null;
   speaker: string | null;
   is_dialog: boolean | null;
 }
@@ -90,11 +101,36 @@ interface UnitRow {
   id: number;
   title: string;
   audio_path: string | null;
-  hosts?: string[] | null;
+  // iyagi_episodes.hosts is a plain TEXT column ("최경은 & 진석진"), NOT an
+  // array — the endpoint splits it into string[] for the client (see the
+  // episode detail route). Typing it string here is what makes that mapping
+  // compile-checked; the old `string[]` type let the raw string leak through
+  // and crash the client's .map() render.
+  hosts?: string | null;
 }
 
-const SENTENCE_COLUMNS =
-  'id, ordinal, korean, english, romanization, speaker, is_dialog';
+interface TranscriptLineRow {
+  ordinal: number;
+  korean: string | null;
+  english: string | null;
+  kind: 'header' | 'pair' | 'romanization' | 'prose' | 'dialog';
+}
+
+/**
+ * DB "최경은 & 진석진" → ['최경은', '진석진']; NULL/empty → [].
+ * Tolerates missing spaces around '&' and stray whitespace — the column was
+ * hand-entered per episode. Exported for direct unit coverage.
+ */
+export function splitHosts(hosts: string | null | undefined): string[] {
+  if (!hosts) return [];
+  return hosts
+    .split('&')
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0);
+}
+
+// No romanization anywhere (user directive) — not selected, so never on the wire.
+const SENTENCE_COLUMNS = 'id, ordinal, korean, english, speaker, is_dialog';
 
 // ---------------------------------------------------------------------------
 // Param schemas — positive ints only; these are the ONLY client inputs on this
@@ -138,7 +174,7 @@ ttmikRouter.get('/lessons', cheapLimiter(), async (_req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /ttmik/lessons/:level/:number — meta + transcript + audioUrl
+// GET /ttmik/lessons/:level/:number — meta + highlights + full transcript
 // ---------------------------------------------------------------------------
 
 ttmikRouter.get(
@@ -156,17 +192,32 @@ ttmikRouter.get(
       );
       const lesson = unit.rows[0];
       if (!lesson) throw new NotFoundError('lesson not found');
-      const { rows: sentences } = await query<SentenceRow>(
-        `SELECT ${SENTENCE_COLUMNS}
-           FROM ttmik_sentences
-          WHERE lesson_id = $1
-          ORDER BY ordinal`,
-        [lesson.id],
-      );
+      // Independent reads — fire in parallel (both keyed on the same
+      // already-resolved lesson id; no waterfall).
+      const [{ rows: highlights }, { rows: transcript }] = await Promise.all([
+        query<SentenceRow>(
+          `SELECT ${SENTENCE_COLUMNS}
+             FROM ttmik_sentences
+            WHERE lesson_id = $1
+            ORDER BY ordinal`,
+          [lesson.id],
+        ),
+        query<TranscriptLineRow>(
+          // `kind <> 'romanization'` is belt-and-suspenders: the loader never
+          // inserts romanization rows (no romanization anywhere), but the DB
+          // CHECK still permits the value, so the endpoint defends it too.
+          `SELECT ordinal, korean, english, kind
+             FROM ttmik_transcript_lines
+            WHERE lesson_id = $1 AND kind <> 'romanization'
+            ORDER BY ordinal`,
+          [lesson.id],
+        ),
+      ]);
       const hasAudio = lesson.audio_path !== null;
       res.status(200).json({
         meta: { level: p.level, number: p.number, title: lesson.title, hasAudio },
-        sentences,
+        highlights,
+        transcript,
         audioUrl: hasAudio ? lessonAudioUrl(p.level, p.number) : null,
       });
     } catch (err) {
@@ -248,7 +299,11 @@ iyagiRouter.get(
         meta: {
           number: p.number,
           title: episode.title,
-          hosts: episode.hosts ?? [],
+          // BUG FIX: hosts is a TEXT column ("최경은 & 진석진"); the old
+          // `episode.hosts ?? []` passed the raw string through where the
+          // client DTO expects string[], crashing the episode render. Split
+          // at the endpoint boundary — the DTO stays string[].
+          hosts: splitHosts(episode.hosts),
           hasAudio,
         },
         sentences,

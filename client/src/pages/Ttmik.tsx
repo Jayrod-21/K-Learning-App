@@ -1,16 +1,37 @@
 /**
  * Listen screen (F-012) — TTMIK lesson / Iyagi episode audio + read-along.
  *
- * Two browse sections behind sub-tabs (same tablist idiom as Reference):
- *   - TTMIK Lessons — grouped by level, then lesson number.
- *   - Iyagi Episodes — a numbered list.
- * Each row shows the title plus an audio indicator (`hasAudio`). Selecting a
- * row swaps the screen into the player/detail view: a REAL `<audio controls>`
- * element streaming from the server (HTTP Range → seekable), with the
- * transcript rendered line-by-line underneath — Korean prominent, English +
- * romanization secondary, and a speaker label on dialog turns. Per-line
- * karaoke highlighting is a documented follow-up: the corpus has no
- * per-sentence timestamps, so the read-along is untimed for now.
+ * Browse view (unchanged): two sections behind sub-tabs (same tablist idiom
+ * as Reference) — TTMIK Lessons grouped by level, Iyagi Episodes as a
+ * numbered list. Each row shows the title plus an audio indicator
+ * (`hasAudio`). Selecting a row swaps the screen into the detail view.
+ *
+ * Detail view (F-012 rework):
+ *   1. A REAL `<audio controls>` player that is PERSISTENT across the
+ *      lesson sub-tabs. The element is rendered exactly once, ABOVE and
+ *      OUTSIDE the tab-switched subtree, and is never keyed on the active
+ *      tab — switching Highlights ↔ Transcript changes only the panel
+ *      below it, so React reconciliation keeps the same DOM node (same
+ *      element type at the same stable position in the child list) and
+ *      playback position/state survives every switch. The detail view IS
+ *      keyed on the selection, so opening a *different* lesson deliberately
+ *      remounts the player (fresh src, position 0 — the desired reset).
+ *   2. TTMIK lessons get two sub-tabs UNDER the player: Highlights (key
+ *      phrases — the original layout) and Transcript (the full ordered
+ *      lesson text; `header` lines as section headings, `pair`/`dialog` as
+ *      Korean + English, `prose` as explanation notes, `romanization`
+ *      subtle). Both arrive in the one detail response, so switching is
+ *      instant — no fetch, no spinner, no audio interruption.
+ *   3. CLICKABLE WORDS — every Korean line (highlights, transcript, and the
+ *      Iyagi transcript) renders through the Read tab's tap-anything path:
+ *      the shared `lib/tapChain.tokeniseKorean` splitter + the same
+ *      `Tapword` control, so tapping a word fires the abortable
+ *      lemmatize → define → enrich chain (`resolveWordPopover`) and opens
+ *      the same `WordPopover` with definition / usage / examples and
+ *      Add-to-bank (FU-NF-33 `POST /vocab/mine`, optimistic + rollback).
+ *   4. Iyagi episode detail: same persistent player + full clickable
+ *      transcript; the hosts line renders from `meta.hosts`, a real
+ *      `string[]` on the wire (the old string shape crashed this view).
  *
  * Audio `src` contract: `buildAudioSrc` (services/ttmik.ts) joins the
  * detail's app-relative `audioUrl` onto the SAME API base the axios services
@@ -18,28 +39,52 @@
  * routes it) and same-site in dev (Vite :5173 → API :4000) — either way the
  * `SameSite=Strict` session cookie rides the request with no extra plumbing.
  * `audioUrl === null` / `hasAudio === false` → transcript-only with a small
- * "no audio" note, no player. This deliberately does NOT use the fake
- * `AudioBlock` (that component is the B-004 prototype placeholder).
+ * "no audio" note, no player.
  *
  * Threat model:
  *   - All data is server corpus text rendered through React text children —
- *     escaped; no dangerouslySetInnerHTML anywhere on this screen.
+ *     escaped; no dangerouslySetInnerHTML anywhere on this screen. The tap
+ *     chain's popover fields go through the same contract (lib/tapChain).
  *   - The audio src is never free-form: `buildAudioSrc` rejects anything but
- *     an absolute app path, so a tampered response body cannot point the
- *     player at a third-party origin.
- *   - GET-only surface — no CSRF exposure; the session cookie posture is
- *     owned by services/api.ts (ADR-002).
- *   - Stale-response race: every fetch is keyed to an AbortController that
- *     the next fetch (or unmount) aborts; settle handlers check the signal
- *     so a slow response never paints over a newer selection.
+ *     the exact allow-listed route shapes, so a tampered response body
+ *     cannot point the player at a third-party origin.
+ *   - Tap-anything fan-out (lemmatize/define/enrich per tap) mirrors the
+ *     Read tab's behavioural-telemetry posture: rate limiting lives
+ *     server-side; the client neither batches nor fingerprints. The chain
+ *     is popover-scoped and aborted on close / new tap / unmount, so an
+ *     abandoned tap cancels its in-flight HTTP work — and it never touches
+ *     the `<audio>` element, so a tap (or its abort) cannot stall playback.
+ *   - Stale-response races: the detail fetch and the tap chain each key to
+ *     their own AbortController; settle handlers check the signal so a slow
+ *     response never paints over a newer selection or tap.
+ *   - GET-only data surface plus `POST /vocab/mine` on Add — that POST rides
+ *     the SameSite=Strict cookie posture owned by services/api.ts (ADR-002),
+ *     and its failure path never echoes server text (fixed toast copy).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
+import { Tapword } from '../components/Tapword';
 import { Topbar } from '../components/Topbar';
+import { WordPopover } from '../components/WordPopover';
+import type { WordPopoverData } from '../components/WordPopover';
+import { useToast } from '../components/useToast';
+import {
+  GLOSS_DICTIONARY_ENTRY,
+  GLOSS_UNAVAILABLE,
+  resolveWordPopover,
+  tokeniseKorean,
+} from '../lib/tapChain';
 import { ApiError } from '../services/api';
 import {
   buildAudioSrc,
@@ -48,10 +93,12 @@ import {
   getTtmikLesson,
   getTtmikLessons,
 } from '../services/ttmik';
+import { mineWord } from '../services/vocab';
 import type {
   IyagiEpisode,
+  ListenSentence,
   TtmikLesson,
-  TtmikSentence,
+  TtmikTranscriptLine,
 } from '../types/domain';
 
 type Tab = 'ttmik' | 'iyagi';
@@ -59,6 +106,14 @@ type Tab = 'ttmik' | 'iyagi';
 const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'ttmik', label: 'TTMIK Lessons' },
   { id: 'iyagi', label: 'Iyagi Episodes' },
+];
+
+/** TTMIK lesson-detail sub-tabs (below the persistent player). */
+type LessonTab = 'highlights' | 'transcript';
+
+const LESSON_TABS: ReadonlyArray<{ id: LessonTab; label: string }> = [
+  { id: 'highlights', label: 'Highlights' },
+  { id: 'transcript', label: 'Transcript' },
 ];
 
 /**
@@ -70,17 +125,38 @@ type Selection =
   | { corpus: 'ttmik'; level: number; number: number; title: string }
   | { corpus: 'iyagi'; number: number; title: string };
 
-/** Everything the detail view renders, normalised across the two corpora. */
-interface DetailData {
-  /** Context line above the title, e.g. `Level 2 · Lesson 21`. */
-  eyebrow: string;
-  title: string;
-  /** Iyagi hosts line; null for TTMIK lessons / hostless episodes. */
-  subtitle: string | null;
-  sentences: TtmikSentence[];
-  /** Fully-resolved `<audio src>`; null → transcript-only. */
-  audioSrc: string | null;
+/** Stable identity for a selection — keys the detail view (see DetailView). */
+function selectionKey(selection: Selection): string {
+  return selection.corpus === 'ttmik'
+    ? `ttmik:${String(selection.level)}:${String(selection.number)}`
+    : `iyagi:${String(selection.number)}`;
 }
+
+/**
+ * Everything the detail view renders. Discriminated on `corpus`: TTMIK
+ * lessons carry the highlights/transcript pair behind sub-tabs; Iyagi
+ * episodes carry one flat transcript plus the hosts line.
+ */
+type DetailData =
+  | {
+      corpus: 'ttmik';
+      /** Context line above the title, e.g. `Level 2 · Lesson 21`. */
+      eyebrow: string;
+      title: string;
+      /** Fully-resolved `<audio src>`; null → transcript-only. */
+      audioSrc: string | null;
+      highlights: ListenSentence[];
+      transcript: TtmikTranscriptLine[];
+    }
+  | {
+      corpus: 'iyagi';
+      eyebrow: string;
+      title: string;
+      /** Hosts line; null when the episode has no hosts listed. */
+      subtitle: string | null;
+      audioSrc: string | null;
+      sentences: ListenSentence[];
+    };
 
 export default function Ttmik(): JSX.Element {
   const [tab, setTab] = useState<Tab>('ttmik');
@@ -139,7 +215,11 @@ export default function Ttmik(): JSX.Element {
       </span>
 
       {selection !== null ? (
-        <DetailView selection={selection} />
+        // Keyed on the selection: opening a DIFFERENT unit remounts the
+        // detail (fresh sub-tab, fresh player, fresh popover state), while
+        // everything within one unit — including the <audio> element —
+        // keeps its identity across every re-render.
+        <DetailView key={selectionKey(selection)} selection={selection} />
       ) : (
         <>
           <div
@@ -410,7 +490,7 @@ function IyagiEpisodesTab({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Detail view — real player + line-by-line read-along transcript
+// Detail view — persistent player + sub-tabs + clickable read-along
 // ─────────────────────────────────────────────────────────────
 
 /** Skeleton placeholder while a transcript loads (mirrors Reading's). */
@@ -438,22 +518,28 @@ async function loadDetail(
       signal,
     );
     return {
+      corpus: 'ttmik',
       eyebrow: `Level ${String(detail.meta.level)} · Lesson ${String(detail.meta.number)}`,
       title: detail.meta.title,
-      subtitle: null,
-      sentences: detail.sentences,
       audioSrc: buildAudioSrc(detail.audioUrl),
+      highlights: detail.highlights,
+      transcript: detail.transcript,
     };
   }
   const detail = await getIyagiEpisode(selection.number, signal);
   return {
+    corpus: 'iyagi',
     eyebrow: `Iyagi · Episode ${String(detail.meta.number)}`,
     title: detail.meta.title,
-    subtitle: detail.meta.hosts.length > 0 ? detail.meta.hosts.join(' · ') : null,
-    sentences: detail.sentences,
+    subtitle:
+      detail.meta.hosts.length > 0 ? detail.meta.hosts.join(' · ') : null,
     audioSrc: buildAudioSrc(detail.audioUrl),
+    sentences: detail.sentences,
   };
 }
+
+/** Signature every tap surface funnels into: raw word + its sentence. */
+type TapWordHandler = (raw: string, sentenceText: string) => void;
 
 function DetailView({ selection }: { selection: Selection }): JSX.Element {
   const [data, setData] = useState<DetailData | null>(null);
@@ -461,6 +547,22 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const ctrlRef = useRef<AbortController | null>(null);
+
+  // Lesson sub-tab (TTMIK only). Lives here — NOT in a per-tab component —
+  // so flipping it re-renders this view in place without remounting it,
+  // which is what keeps the <audio> element's identity stable.
+  const [lessonTab, setLessonTab] = useState<LessonTab>('highlights');
+
+  // Tap-anything popover state (same machine as Reading's).
+  const [popData, setPopData] = useState<WordPopoverData | null>(null);
+  const [popLoading, setPopLoading] = useState(false);
+  const [minedIds, setMinedIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  // Popover-scoped chain controller — aborted on close, new tap, unmount.
+  const inFlightCtrlRef = useRef<AbortController | null>(null);
+
+  const { toast } = useToast();
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -493,15 +595,150 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     };
   }, [selection, reloadTick]);
 
+  // Abort any in-flight tap chain when the detail view unmounts (Browse /
+  // different unit) — a late resolve must not leak a setState.
+  useEffect(
+    () => () => {
+      inFlightCtrlRef.current?.abort();
+    },
+    [],
+  );
+
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
   }, []);
 
-  // Render in ordinal order regardless of wire order (defensive sort — the
+  /**
+   * Tap on a Korean word — the Read tab's slow path verbatim: open the
+   * popover immediately with a loading stub, run the abortable
+   * lemmatize → define → enrich chain, land the resolved payload. The
+   * chain never touches the <audio> element, so playback is unaffected
+   * by taps, resolutions, or aborts.
+   */
+  const handleTapWord = useCallback<TapWordHandler>(
+    (raw, sentenceText) => {
+      inFlightCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      inFlightCtrlRef.current = ctrl;
+
+      setPopLoading(true);
+      setPopData({
+        kr: raw,
+        en: '',
+        pos: 'word',
+        ex_kr: '',
+        ex_en: '',
+        mined: minedIds.has(raw),
+      });
+
+      void resolveWordPopover(raw, sentenceText, ctrl.signal).then(
+        (popover) => {
+          // null = aborted (closed / newer tap) — paint nothing stale.
+          if (popover === null || ctrl.signal.aborted) return;
+          popover.mined = minedIds.has(popover.kr);
+          setPopData(popover);
+          setPopLoading(false);
+        },
+        () => {
+          // The chain catches its own step failures, so a rejection here is
+          // a defect belt-and-braces path — still resolve the popover to the
+          // fixed fallback rather than stranding the spinner.
+          if (ctrl.signal.aborted) return;
+          setPopData({
+            kr: raw,
+            en: GLOSS_UNAVAILABLE,
+            pos: 'word',
+            ex_kr: '',
+            ex_en: '',
+            mined: minedIds.has(raw),
+          });
+          setPopLoading(false);
+        },
+      );
+    },
+    [minedIds],
+  );
+
+  /** Close the popover and abort any still-pending chain. */
+  const handleClosePopover = useCallback((): void => {
+    inFlightCtrlRef.current?.abort();
+    inFlightCtrlRef.current = null;
+    setPopData(null);
+    setPopLoading(false);
+  }, []);
+
+  /**
+   * Add-to-bank (FU-NF-33) — same optimistic-flip + rollback + fixed-copy
+   * toast contract as Reading's vocab branch: the underline lands
+   * instantly, a real failure rolls it back and surfaces a non-blocking
+   * toast (never server text), a close-aborted request is swallowed.
+   */
+  const handleAdd = useCallback(
+    (d: WordPopoverData): void | Promise<void> => {
+      const lemma = d.kr;
+      setMinedIds((prev) => {
+        const next = new Set(prev);
+        next.add(lemma);
+        return next;
+      });
+
+      // Reuse the popover-scoped controller so a popover close cancels the
+      // bank too; fall back to a fresh one if the chain already cleared it.
+      const ctrl = inFlightCtrlRef.current ?? new AbortController();
+      inFlightCtrlRef.current = ctrl;
+
+      return mineWord(
+        {
+          lemma,
+          ...(d.en && d.en !== GLOSS_DICTIONARY_ENTRY && d.en !== GLOSS_UNAVAILABLE
+            ? { english: d.en }
+            : {}),
+          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
+          ...(d.krdictEntryId !== undefined
+            ? { krdictEntryId: d.krdictEntryId }
+            : {}),
+        },
+        ctrl.signal,
+      ).then(
+        () => undefined,
+        (err: unknown) => {
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setMinedIds((prev) => {
+            if (!prev.has(lemma)) return prev;
+            const next = new Set(prev);
+            next.delete(lemma);
+            return next;
+          });
+          toast({ message: "Couldn't bank — try again", tone: 'error' });
+          // Re-throw so WordPopover rolls its "Added" button back too.
+          throw err instanceof Error ? err : new Error('bank failed');
+        },
+      );
+    },
+    [toast],
+  );
+
+  // Render in ordinal order regardless of wire order (defensive sorts — the
   // server already orders by ordinal).
+  const orderedHighlights = useMemo(
+    () =>
+      data?.corpus === 'ttmik'
+        ? [...data.highlights].sort((a, b) => a.ordinal - b.ordinal)
+        : [],
+    [data],
+  );
+  const orderedTranscript = useMemo(
+    () =>
+      data?.corpus === 'ttmik'
+        ? [...data.transcript].sort((a, b) => a.ordinal - b.ordinal)
+        : [],
+    [data],
+  );
   const orderedSentences = useMemo(
     () =>
-      data ? [...data.sentences].sort((a, b) => a.ordinal - b.ordinal) : [],
+      data?.corpus === 'iyagi'
+        ? [...data.sentences].sort((a, b) => a.ordinal - b.ordinal)
+        : [],
     [data],
   );
 
@@ -521,20 +758,25 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
       <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
         {data.title}
       </h2>
-      {data.subtitle !== null ? (
+      {data.corpus === 'iyagi' && data.subtitle !== null ? (
         <p className="km-reference__row-en" style={{ margin: '0 0 12px' }}>
           {data.subtitle}
         </p>
       ) : null}
 
+      {/* PERSISTENT PLAYER — rendered exactly once, at a stable position
+          ABOVE the sub-tab subtree and never keyed on the active tab.
+          React reconciliation therefore reuses this exact DOM node across
+          Highlights ↔ Transcript switches (only the panel below swaps),
+          so playback position and play/pause state survive. Do NOT move
+          this inside a per-tab component or add a tab-derived key. */}
       <div style={{ margin: '12px 0 18px' }}>
         {data.audioSrc !== null ? (
-          // Real streaming player (NOT the B-004 AudioBlock placeholder).
-          // The server endpoint supports HTTP Range, so seeking works.
-          // No timed caption track exists for this corpus; the full
-          // line-by-line transcript renders directly below the player
-          // (per-line karaoke sync is the documented follow-up once
-          // timestamps exist), hence the a11y rule exemption.
+          // Real streaming player; the server endpoint supports HTTP Range,
+          // so seeking works. No timed caption track exists for this corpus;
+          // the full read-along transcript renders directly below (per-line
+          // karaoke sync is the documented follow-up once timestamps
+          // exist), hence the a11y rule exemption.
           // eslint-disable-next-line jsx-a11y/media-has-caption
           <audio
             controls
@@ -550,62 +792,312 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
         )}
       </div>
 
-      <Card variant="default" style={{ padding: '20px 22px' }}>
-        <ol
-          aria-label="Transcript"
-          style={{ listStyle: 'none', margin: 0, padding: 0 }}
-        >
-          {orderedSentences.map((sentence) => (
-            <TranscriptLine key={sentence.id} sentence={sentence} />
-          ))}
-        </ol>
-        {orderedSentences.length === 0 ? (
-          <p className="km-reference__empty">
-            No transcript lines for this one.
-          </p>
-        ) : null}
-      </Card>
+      {data.corpus === 'ttmik' ? (
+        <>
+          <div
+            className="km-review__tabs"
+            role="tablist"
+            aria-label="Lesson content"
+          >
+            {LESSON_TABS.map((t) => {
+              const selected = lessonTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+                  onClick={() => {
+                    setLessonTab(t.id);
+                  }}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {lessonTab === 'highlights' ? (
+            <HighlightsPanel
+              rows={orderedHighlights}
+              minedIds={minedIds}
+              onTapWord={handleTapWord}
+            />
+          ) : (
+            <TranscriptPanel
+              lines={orderedTranscript}
+              minedIds={minedIds}
+              onTapWord={handleTapWord}
+            />
+          )}
+        </>
+      ) : (
+        <SentencesPanel
+          rows={orderedSentences}
+          minedIds={minedIds}
+          onTapWord={handleTapWord}
+        />
+      )}
+
+      {popData ? (
+        <WordPopover
+          data={popData}
+          onClose={handleClosePopover}
+          onAdd={handleAdd}
+          isLoading={popLoading}
+        />
+      ) : null}
     </div>
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Clickable Korean text — the Read tab's tap path, inline
+// ─────────────────────────────────────────────────────────────
+
 /**
- * One read-along row — Korean prominent, English + romanization secondary,
- * speaker label on dialog turns. All strings are server corpus text rendered
- * as React text children (escaped).
+ * Render a Korean string through the shared tokeniser (`tokeniseKorean` —
+ * the exact splitter the Read tab feeds KoreanPassage with) as inline
+ * `Tapword`s, so every word is the same tap-anything control as on Read.
+ * Spaces render as bare spans; all text goes through React children
+ * (escaped).
  */
-function TranscriptLine({
-  sentence,
+function TapKorean({
+  text,
+  minedIds,
+  onTapWord,
 }: {
-  sentence: TtmikSentence;
+  text: string;
+  minedIds: ReadonlySet<string>;
+  onTapWord: TapWordHandler;
 }): JSX.Element {
-  const speaker =
-    sentence.is_dialog && sentence.speaker !== null && sentence.speaker !== ''
-      ? sentence.speaker
-      : null;
+  const tokens = useMemo(() => tokeniseKorean(text), [text]);
+  return (
+    <>
+      {tokens.map((tk, i) =>
+        tk.gloss ? (
+          <Tapword
+            // Position within one immutable line — stable for this text.
+            key={`${String(i)}:${tk.w}`}
+            mined={minedIds.has(tk.w)}
+            onTap={() => {
+              onTapWord(tk.w, text);
+            }}
+          >
+            {tk.w}
+          </Tapword>
+        ) : (
+          <span key={`${String(i)}:sp`}>{tk.w}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Detail panels
+// ─────────────────────────────────────────────────────────────
+
+interface PanelProps {
+  minedIds: ReadonlySet<string>;
+  onTapWord: TapWordHandler;
+}
+
+/**
+ * One spoken row — Korean prominent (clickable), English + romanization
+ * secondary, speaker label on dialog turns. Shared by the TTMIK Highlights
+ * panel and the Iyagi transcript.
+ */
+function SentenceRow({
+  sentence,
+  minedIds,
+  onTapWord,
+}: PanelProps & { sentence: ListenSentence }): JSX.Element {
+  const speaker = sentence.speaker ?? null;
   return (
     <li className="km-reference__row" style={{ padding: '10px 0' }}>
-      {speaker !== null ? (
+      {sentence.is_dialog && speaker !== null && speaker !== '' ? (
         <div className="km-eyebrow" style={{ marginBottom: 2 }}>
           {speaker}
         </div>
       ) : null}
       <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
-        {sentence.korean}
+        <TapKorean
+          text={sentence.korean}
+          minedIds={minedIds}
+          onTapWord={onTapWord}
+        />
       </p>
       {sentence.english !== null && sentence.english !== '' ? (
         <p className="km-reference__row-en" style={{ margin: '2px 0 0' }}>
           {sentence.english}
         </p>
       ) : null}
-      {sentence.romanization !== null && sentence.romanization !== '' ? (
-        <p
-          className="km-reference__row-en"
-          style={{ margin: '2px 0 0', fontStyle: 'italic' }}
-        >
-          {sentence.romanization}
+    </li>
+  );
+}
+
+/** TTMIK Highlights — the key-phrase layout (the original detail body). */
+function HighlightsPanel({
+  rows,
+  minedIds,
+  onTapWord,
+}: PanelProps & { rows: ListenSentence[] }): JSX.Element {
+  return (
+    <Card variant="default" style={{ padding: '20px 22px' }}>
+      <ol
+        aria-label="Highlights"
+        style={{ listStyle: 'none', margin: 0, padding: 0 }}
+      >
+        {rows.map((sentence) => (
+          <SentenceRow
+            key={sentence.ordinal}
+            sentence={sentence}
+            minedIds={minedIds}
+            onTapWord={onTapWord}
+          />
+        ))}
+      </ol>
+      {rows.length === 0 ? (
+        <p className="km-reference__empty">No highlights for this one.</p>
+      ) : null}
+    </Card>
+  );
+}
+
+/** Iyagi episode transcript — flat ordered list of spoken rows. */
+function SentencesPanel({
+  rows,
+  minedIds,
+  onTapWord,
+}: PanelProps & { rows: ListenSentence[] }): JSX.Element {
+  return (
+    <Card variant="default" style={{ padding: '20px 22px' }}>
+      <ol
+        aria-label="Transcript"
+        style={{ listStyle: 'none', margin: 0, padding: 0 }}
+      >
+        {rows.map((sentence) => (
+          <SentenceRow
+            key={sentence.ordinal}
+            sentence={sentence}
+            minedIds={minedIds}
+            onTapWord={onTapWord}
+          />
+        ))}
+      </ol>
+      {rows.length === 0 ? (
+        <p className="km-reference__empty">
+          No transcript lines for this one.
         </p>
       ) : null}
-    </li>
+    </Card>
+  );
+}
+
+/**
+ * One line of the full TTMIK transcript, rendered by `kind`:
+ *   - `header`       → section heading (Korean text, English fallback).
+ *   - `pair`/`dialog`→ clickable Korean + English below.
+ *   - `prose`        → explanation note (clickable Korean when present,
+ *                      English in the note style).
+ *   - `romanization` → subtle italic line, NOT clickable (it isn't Korean).
+ */
+function TranscriptLineItem({
+  line,
+  minedIds,
+  onTapWord,
+}: PanelProps & { line: TtmikTranscriptLine }): JSX.Element {
+  switch (line.kind) {
+    case 'header':
+      return (
+        <li style={{ padding: '14px 0 2px' }}>
+          <h3 className="km-eyebrow" style={{ margin: 0 }}>
+            {line.korean !== '' ? line.korean : line.english ?? ''}
+          </h3>
+        </li>
+      );
+    case 'romanization':
+      // No romanization anywhere (user directive). The loader drops these lines,
+      // so this is defensive — render nothing if one ever slips through.
+      return <></>;
+    case 'prose':
+      return (
+        <li className="km-reference__row" style={{ padding: '8px 0' }}>
+          {line.korean !== '' ? (
+            <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
+              <TapKorean
+                text={line.korean}
+                minedIds={minedIds}
+                onTapWord={onTapWord}
+              />
+            </p>
+          ) : null}
+          {line.english !== null && line.english !== '' ? (
+            <p
+              className="km-reference__row-en"
+              style={{ margin: '2px 0 0' }}
+              role="note"
+            >
+              {line.english}
+            </p>
+          ) : null}
+        </li>
+      );
+    case 'pair':
+    case 'dialog':
+      return (
+        <li className="km-reference__row" style={{ padding: '10px 0' }}>
+          <p className="kr km-reference__row-kr" style={{ margin: 0 }}>
+            <TapKorean
+              text={line.korean}
+              minedIds={minedIds}
+              onTapWord={onTapWord}
+            />
+          </p>
+          {line.english !== null && line.english !== '' ? (
+            <p className="km-reference__row-en" style={{ margin: '2px 0 0' }}>
+              {line.english}
+            </p>
+          ) : null}
+        </li>
+      );
+    default: {
+      // Exhaustiveness guard — a new wire kind fails the type-check here
+      // instead of silently dropping lines at runtime.
+      const exhausted: never = line.kind;
+      return <li style={{ display: 'none' }}>{exhausted}</li>;
+    }
+  }
+}
+
+/** TTMIK full transcript — ordered lines rendered by kind. */
+function TranscriptPanel({
+  lines,
+  minedIds,
+  onTapWord,
+}: PanelProps & { lines: TtmikTranscriptLine[] }): JSX.Element {
+  return (
+    <Card variant="default" style={{ padding: '20px 22px' }}>
+      <ol
+        aria-label="Transcript"
+        style={{ listStyle: 'none', margin: 0, padding: 0 }}
+      >
+        {lines.map((line) => (
+          <TranscriptLineItem
+            key={line.ordinal}
+            line={line}
+            minedIds={minedIds}
+            onTapWord={onTapWord}
+          />
+        ))}
+      </ol>
+      {lines.length === 0 ? (
+        <p className="km-reference__empty">
+          No transcript lines for this one.
+        </p>
+      ) : null}
+    </Card>
   );
 }
