@@ -1778,7 +1778,8 @@ export type TtmikTranscriptKind =
 export interface TtmikTranscriptLine {
   /** 1-based position within the transcript — the render order. */
   ordinal: number;
-  korean: string;
+  /** `null` on `header` and English-only `prose` lines (render `english`). */
+  korean: string | null;
   english: string | null;
   kind: TtmikTranscriptKind;
 }

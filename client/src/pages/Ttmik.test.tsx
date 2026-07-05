@@ -84,12 +84,14 @@ const LESSON_DETAIL: TtmikLessonDetail = {
     },
   ],
   transcript: [
-    { ordinal: 1, korean: '인사', english: 'Greetings', kind: 'header' },
+    // header + English-only prose carry korean: null in the real corpus (409 +
+    // 2903 rows) — NOT '' — which crashed the tokeniser. Fixtures mirror that.
+    { ordinal: 1, korean: null, english: 'Greetings', kind: 'header' },
     { ordinal: 2, korean: '안녕하세요.', english: 'Hello.', kind: 'pair' },
     { ordinal: 3, korean: 'annyeonghaseyo', english: null, kind: 'romanization' },
     {
       ordinal: 4,
-      korean: '',
+      korean: null,
       english: 'This greeting works at any time of day.',
       kind: 'prose',
     },
@@ -289,9 +291,9 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     await user.click(screen.getByRole('tab', { name: 'Transcript' }));
     const transcript = await screen.findByRole('list', { name: 'Transcript' });
 
-    // header → a section heading.
+    // header with korean: null → falls back to the English title, no crash.
     expect(
-      within(transcript).getByRole('heading', { name: '인사' }),
+      within(transcript).getByRole('heading', { name: 'Greetings' }),
     ).toBeInTheDocument();
     // pair → clickable Korean + English below.
     expect(
