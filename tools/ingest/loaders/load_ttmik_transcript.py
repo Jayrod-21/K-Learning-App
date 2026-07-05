@@ -117,8 +117,18 @@ _LABEL_EXACT = frozenset(
     }
 )
 # English prose fragments used as inline examples ("[a friend and a movie]",
-# "[often/fast/early/soon/etc...]") — kept, since stripping breaks the sentence.
-_ENGLISH_HINT_RE = re.compile(r"\.\.\.|\betc\b|\b(?:and|or|the)\b", re.IGNORECASE)
+# "[more common in written language]", "[watching them]", "[one's]") — kept, since
+# stripping breaks the sentence. Every word here is a distinctive multi-char
+# English token absent from the corpus's 161 romanization forms; short syllables
+# that collide with romanization ("a"/"an"/"i"/"to") are deliberately excluded.
+_ENGLISH_HINT_RE = re.compile(
+    r"\.\.\.|'s\b|\b(?:and|or|the|etc|more|less|common|written|spoken|language|"
+    r"watching|them|always|only|also|used|means|when|what|how|word|words)\b",
+    re.IGNORECASE,
+)
+# A lowercase-latin hyphen-join ("keo-pi") — detects romanization riding ALONGSIDE
+# Korean inside one greedily-captured bracket, and counts syllables in parentheticals.
+_LATIN_HYPHEN_RE = re.compile(r"[a-z]-[a-z]")
 
 
 def _is_english_label(c: str) -> bool:
@@ -144,8 +154,10 @@ def _is_romanization(inner: str) -> bool:
         return True  # empty bracket
     if "TalkToMeInKorean" in c:
         return True  # PDF page-break boilerplate captured inside a bracket
-    if HANGUL_RE.search(c):
-        return False  # Korean-bearing gloss / annotation → keep
+    if HANGUL_RE.search(c) and not _LATIN_HYPHEN_RE.search(c):
+        return False  # Korean-bearing gloss WITHOUT inline romanization → keep
+        # (a bracket carrying BOTH Korean AND romanization, e.g. a greedily
+        # captured "[i-sang-hae-yo) (NOT 이상하여요)", falls through and is stripped)
     if _is_english_label(c):
         return False  # closed-set English grammar label → keep
     if len(c) == 1 and c.isupper():
@@ -157,14 +169,38 @@ def _is_romanization(inner: str) -> bool:
     return bool(re.match(r"[-()\s]*[A-Za-z]", c))
 
 
+# Fullwidth bracket variants → ASCII, so the same bracket pass catches them
+# ("［ga-sseul li-ga eop-seo-yo］").
+_FULLWIDTH_BRACKETS = str.maketrans({"［": "[", "］": "]"})
+# Romanization wrapped in slashes ("/an-da/"), a single hyphenated token — the
+# corpus has no slash-wrapped English word, so this is unambiguous.
+_SLASH_ROM_RE = re.compile(r"\s*/[a-z]+(?:-[a-z]+)+/")
+
+
+def _paren_is_romanization(content: str) -> bool:
+    """A parenthetical is romanized Korean iff it has >=2 lowercase-latin
+    hyphen-joins ("(dong-yeong-sang)", "(do-neul mo-a-seo ...)") and carries no
+    Korean or English words. English parentheticals hyphenate at most once
+    ("(make-up)"); the corpus contains no 3-part English hyphenate."""
+    if HANGUL_RE.search(content) or _ENGLISH_HINT_RE.search(content):
+        return False
+    return len(_LATIN_HYPHEN_RE.findall(content)) >= 2
+
+
 def _strip_inline_rom(s: str) -> str:
-    """Remove inline romanization brackets (KEEPING English-label brackets) and
-    collapse the leftover spaces."""
-
-    def repl(m: "re.Match[str]") -> str:
-        return "" if _is_romanization(m.group(1)) else m.group(0)
-
-    return re.sub(r"\s{2,}", " ", _BRACKET_RE.sub(repl, s)).strip()
+    """Remove inline romanization across EVERY delimiter the corpus uses —
+    ASCII/fullwidth brackets, slashes, and parentheticals — while KEEPING English
+    labels, Korean glosses, and English prose fragments. Collapses leftover spaces.
+    """
+    s = s.translate(_FULLWIDTH_BRACKETS)
+    s = _BRACKET_RE.sub(lambda m: "" if _is_romanization(m.group(1)) else m.group(0), s)
+    s = _SLASH_ROM_RE.sub("", s)
+    s = re.sub(
+        r"\s*\(([^()]*)\)",
+        lambda m: "" if _paren_is_romanization(m.group(1)) else m.group(0),
+        s,
+    )
+    return re.sub(r"\s{2,}", " ", s).strip()
 
 # "A: ..." / "B : ..." dialog speaker prefix.
 DIALOG_PREFIX_RE = re.compile(r"^[A-Z]\s*:\s*\S")

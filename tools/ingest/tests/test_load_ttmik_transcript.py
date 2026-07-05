@@ -303,3 +303,29 @@ def test_strip_inline_rom_strips_romanization_keeps_labels(text: str, expected: 
     from loaders.load_ttmik_transcript import _strip_inline_rom
 
     assert _strip_inline_rom(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Romanization in delimiters the bracket pass alone misses.
+        ("갔을 리가 없어요［ga-sseul li-ga eop-seo-yo］", "갔을 리가 없어요"),  # fullwidth ［］
+        ("(Verb: 앉다 /an-da/ to sit)", "(Verb: 앉다 to sit)"),  # slash /rom/
+        ("동영상 (dong-yeong-sang)", "동영상"),  # parenthesized romanization
+        ("뭐 (do-neul mo-a-seo mwo hal geo-ye-yo?)", "뭐"),  # sentence in parens
+        # Bracket carrying BOTH romanization AND Korean (greedy capture) → stripped.
+        ("이상해요 [i-sang-hae-yo) (NOT 이상하여요)", "이상해요"),
+        # KEEP: English parentheticals (<=1 hyphen) and English prose fragments.
+        ("화장 (make-up)", "화장 (make-up)"),
+        ("당신 (formal, written language)", "당신 (formal, written language)"),
+        ("맨날 (lit. everyday,)", "맨날 (lit. everyday,)"),
+        ("주격 조사 (이)", "주격 조사 (이)"),
+        ("always [more common in written language]", "always [more common in written language]"),
+        ("[watching them]", "[watching them]"),
+        ("[one's]", "[one's]"),
+    ],
+)
+def test_strip_inline_rom_multi_delimiter(text: str, expected: str) -> None:
+    from loaders.load_ttmik_transcript import _strip_inline_rom
+
+    assert _strip_inline_rom(text) == expected
