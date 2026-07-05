@@ -35,7 +35,8 @@ export type NavItemId =
   | 'chat'
   | 'reference'
   | 'settings'
-  | 'progress';
+  | 'progress'
+  | 'ttmik';
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
@@ -157,6 +158,17 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     headerTitle: '성장 · Progress',
     icon: 'history',
   },
+  // F-012: appended at the end (same pure-append convention as F-010) —
+  // parallel work also touches this manifest.
+  {
+    id: 'ttmik',
+    path: '/ttmik',
+    label: 'Listen',
+    kr: '듣기',
+    eyebrow: 'TTMIK · Iyagi audio',
+    headerTitle: '듣기 · Listen',
+    icon: 'headphones',
+  },
 ];
 
 // Note: the `as const` is load-bearing — it narrows `typeof X[number]` to a
@@ -180,6 +192,7 @@ export const MORE_TAB_IDS = [
   'reference',
   'settings',
   'progress',
+  'ttmik',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 /**

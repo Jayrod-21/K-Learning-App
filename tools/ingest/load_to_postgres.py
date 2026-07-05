@@ -12,6 +12,8 @@ Usage:
     python -m tools.ingest.load_to_postgres --corpus all
     python -m tools.ingest.load_to_postgres --corpus ttmik --dry-run
     python -m tools.ingest.load_to_postgres --corpus topik --resume
+    python -m tools.ingest.load_to_postgres --corpus ttmik_audio \
+        --audio-dir /path/to/corpus   # dir CONTAINING the TTMIK/ mp3 tree
 
 Exits 0 on success, non-zero on any loader failure.
 """
@@ -32,6 +34,7 @@ from .loaders import (
     load_kgiu,
     load_topik,
     load_ttmik,
+    load_ttmik_audio,
     load_vocab_2000,
 )
 from .loaders.runtime import (
@@ -55,6 +58,14 @@ ALL_CORPORA = (
     "vocab_2000_intermediate",
     "hanja",
 )
+
+# Deliberately OUTSIDE ALL_CORPORA: the audio loader walks the corpus AUDIO
+# tree (--audio-dir, the directory CONTAINING TTMIK/), not the parser-output
+# JSON directory, and the audio mount is absent in the plain ingest container.
+# It must be requested explicitly:
+#   python -m tools.ingest.load_to_postgres --corpus ttmik_audio \
+#       --audio-dir /path/to/corpus
+AUDIO_CORPUS = "ttmik_audio"
 
 
 def _discover_files(input_dir: Path, corpus: str) -> list[Path]:
@@ -95,6 +106,8 @@ _DISPATCH: dict[str, LoaderFn] = {
     "vocab_2000_beginner": load_vocab_2000.load,
     "vocab_2000_intermediate": load_vocab_2000.load,
     "hanja": load_hanja.load,
+    # Not JSON-driven: its "source path" is the corpus audio ROOT (see run()).
+    AUDIO_CORPUS: load_ttmik_audio.load,
 }
 
 
@@ -103,12 +116,19 @@ async def run(
     corpora: tuple[str, ...],
     input_dir: Path,
     cfg: LoaderConfig,
+    audio_dir: Path | None = None,
 ) -> dict[str, list[dict]]:
     """Run the configured loaders. Returns per-corpus result dicts."""
     results: dict[str, list[dict]] = {c: [] for c in corpora}
     async with open_pool(cfg) as pool:
         for corpus in corpora:
-            files = _discover_files(input_dir, corpus)
+            if corpus == AUDIO_CORPUS:
+                # The audio loader's "source" is a directory tree, not a JSON
+                # file. main() has already validated --audio-dir is present.
+                assert audio_dir is not None, "--audio-dir required for ttmik_audio"
+                files = [audio_dir]
+            else:
+                files = _discover_files(input_dir, corpus)
             if not files:
                 logger.warning("no_files_found", corpus=corpus)
                 continue
@@ -140,14 +160,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--corpus",
         required=True,
-        choices=("all",) + ALL_CORPORA,
-        help="Corpus name to load, or 'all' for every known corpus.",
+        choices=("all",) + ALL_CORPORA + (AUDIO_CORPUS,),
+        help=(
+            "Corpus name to load, or 'all' for every known JSON corpus "
+            f"('{AUDIO_CORPUS}' is opt-in only; it needs --audio-dir)."
+        ),
     )
     p.add_argument(
         "--input-dir",
         type=Path,
         default=Path(__file__).resolve().parent / "output",
         help="Directory containing parser output JSON files.",
+    )
+    p.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Corpus audio ROOT (the directory containing TTMIK/). Required "
+            f"when --corpus {AUDIO_CORPUS}; ignored otherwise."
+        ),
     )
     p.add_argument(
         "--dry-run", action="store_true", help="Discover and validate; do not write."
@@ -185,9 +217,20 @@ def main(argv: list[str] | None = None) -> int:
         application_name="korean-master-loader",
     )
     corpora = ALL_CORPORA if args.corpus == "all" else (args.corpus,)
+    if AUDIO_CORPUS in corpora and args.audio_dir is None:
+        logger.error(
+            "audio_dir_required",
+            hint=f"--corpus {AUDIO_CORPUS} needs --audio-dir <corpus root>",
+        )
+        return 1
     try:
         results = asyncio.run(
-            run(corpora=corpora, input_dir=args.input_dir, cfg=cfg)
+            run(
+                corpora=corpora,
+                input_dir=args.input_dir,
+                cfg=cfg,
+                audio_dir=args.audio_dir,
+            )
         )
     except Exception as err:
         logger.error("orchestrator_failed", error=str(err))

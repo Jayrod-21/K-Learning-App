@@ -112,11 +112,22 @@ services:
       - MFA_REQUIRED=${MFA_REQUIRED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMAGE_STORAGE_DIR=${IMAGE_STORAGE_DIR:-/app/var/images}
+      # F-012: where the server reads corpus mp3s (routes/ttmik.ts). Matches
+      # the read-only bind mount below — fixed in-container path, both colors.
+      - CORPUS_AUDIO_DIR=/corpus
 
     volumes:
       # SHARED image volume — BOTH colors mount km_images at the same path so
       # user-uploaded OCR images persist across a color switch.
       - km_images:${IMAGE_STORAGE_DIR:-/app/var/images}
+      # F-012: corpus audio tree (TTMIK/Iyagi mp3s), READ-ONLY — the server
+      # only ever streams from it; a compromised server cannot alter the
+      # corpus. Set CORPUS_AUDIO_DIR_HOST in the .env to the host directory
+      # CONTAINING the TTMIK/ tree (e.g. ~/data/korean-master/corpus, spelled
+      # absolute). If unset, the default is bind-mounted (Docker creates it
+      # empty when missing) and audio endpoints simply 404 — a missing corpus
+      # never blocks a deploy.
+      - ${CORPUS_AUDIO_DIR_HOST:-/srv/korean-master/corpus}:/corpus:ro
 
     ports:
       # Direct debug port, LOOPBACK ONLY (operator curls the color in isolation,
