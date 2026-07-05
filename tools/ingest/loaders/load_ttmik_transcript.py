@@ -101,29 +101,60 @@ _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # A bracket group, tolerant of OCR-mangled ')' / '\' closers seen in the PDFs.
 _BRACKET_RE = re.compile(r"\[([^\[\]]*)[\]\)\\]")
-# A lowercase-latin hyphen-join ("keo-pi", "an-nyeong") — the hallmark of
-# romanized Korean, absent from English annotation labels.
-_LATIN_SYLLABLE_HYPHEN_RE = re.compile(r"[a-z]-[a-z]")
+
+# The corpus's CLOSED set of English grammar-annotation labels that appear
+# bracketed — ground-truthed from all three Lesson Scripts PDFs. Romanization and
+# labels are otherwise indistinguishable (both short lowercase Latin: "[ne]" vs
+# "[be]"), so two structural heuristics were tried and BOTH leaked (first-letter
+# stripped real labels; hyphen-presence missed un-hyphenated glosses "[ne]"/"[i]").
+# The robust split is to STRIP by default and allow-list what to KEEP.
+_LABEL_EXACT = frozenset(
+    {
+        "noun", "verb", "adjective", "adverb", "pronoun", "particle", "number",
+        "counter", "honorific", "plain", "polite", "formal", "informal", "casual",
+        "neutral", "be", "p.p.", "object", "subject", "topic", "noun group",
+        "verb a", "verb b", "polite/casual", "polite/formal", "polite/plain",
+    }
+)
+# English prose fragments used as inline examples ("[a friend and a movie]",
+# "[often/fast/early/soon/etc...]") — kept, since stripping breaks the sentence.
+_ENGLISH_HINT_RE = re.compile(r"\.\.\.|\betc\b|\b(?:and|or|the)\b", re.IGNORECASE)
+
+
+def _is_english_label(c: str) -> bool:
+    """A bracket whose contents are one of the corpus's closed English grammar
+    labels — an exact allow-list match, or a "… tense" / "… marker" form."""
+    cl = re.sub(r"\s+", " ", c.strip().lower())
+    return cl in _LABEL_EXACT or cl.endswith(("tense", "marker"))
 
 
 def _is_romanization(inner: str) -> bool:
-    """True iff a bracket's contents are romanized Korean, not an English label.
-
-    Told apart precisely (an earlier heuristic both LEAKED and CORRUPTED):
-      * STRIP — romanized Korean carries a lowercase-latin hyphen-join
-        ("keo-pi jo-a-hae-yo?", "an-nyeong-ha-se-yo"), or is a grammar-particle
-        romanization led by a hyphen/paren ("-do", "-go si-peo-yo", "(i)rang").
-        It may also carry the source's punctuation ("?", "/", "+") — the hyphen
-        check tolerates that.
-      * KEEP  — English annotation labels ("noun", "verb", "past tense",
-        "Original verb: 닫다 = to close") have no inter-syllable hyphen.
+    """True iff a bracket's contents are romanized Korean (strip), not something
+    to keep. Strips by DEFAULT (romanization is the norm for letter-leading Latin
+    brackets in this corpus) and keeps only a closed set:
+      * KEEP  — a Korean-bearing gloss ("[Original verb: 닫다 = to close]"), an
+        allow-listed grammar label ("[noun]", "[past tense]", "[subject marker]"),
+        a single-letter pattern slot ("[A]", "[B]"), or an English prose fragment
+        ("[a friend and a movie]").
+      * STRIP — everything else leading with a Latin letter (optionally a "-"/"("
+        particle marker): romanized Korean ("[ne]", "[i]", "[keo-pi]", "[-do]").
     """
     c = inner.strip()
     if not c:
         return True  # empty bracket
-    if _LATIN_SYLLABLE_HYPHEN_RE.search(c):
-        return True
-    return c.startswith("-") or c.startswith("(")
+    if "TalkToMeInKorean" in c:
+        return True  # PDF page-break boilerplate captured inside a bracket
+    if HANGUL_RE.search(c):
+        return False  # Korean-bearing gloss / annotation → keep
+    if _is_english_label(c):
+        return False  # closed-set English grammar label → keep
+    if len(c) == 1 and c.isupper():
+        return False  # single-letter pattern / speaker slot (A, B, S, D) → keep
+    if _ENGLISH_HINT_RE.search(c):
+        return False  # English prose fragment used as an inline example → keep
+    # Latin, possibly behind a run of particle markers ("-", "(", ")") — the shape
+    # of a grammar-ending romanization like "-(eu)l", "-(i)ra-go" → romanization.
+    return bool(re.match(r"[-()\s]*[A-Za-z]", c))
 
 
 def _strip_inline_rom(s: str) -> str:

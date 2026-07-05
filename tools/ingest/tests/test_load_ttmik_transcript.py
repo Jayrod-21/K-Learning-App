@@ -208,11 +208,12 @@ def test_every_line_has_text_and_valid_kind(parsed) -> None:
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
+        # Inline romanization ([ga-da], [gal-su-rok]) is stripped from the Korean.
         (
             "가다 [ga-da] --> 갈수록 [gal-su-rok] = the more you go, the more ...",
             TranscriptLine(
                 kind="pair",
-                korean="가다 [ga-da] --> 갈수록 [gal-su-rok]",
+                korean="가다 --> 갈수록",
                 english="the more you go, the more ...",
             ),
         ),
@@ -220,7 +221,7 @@ def test_every_line_has_text_and_valid_kind(parsed) -> None:
         (
             "맛있다 [ma-sit-da] = 맛있 + -을수록 = 맛있을수록",
             TranscriptLine(
-                kind="pair", korean="맛있다 [ma-sit-da]", english="맛있 + -을수록 = 맛있을수록"
+                kind="pair", korean="맛있다", english="맛있 + -을수록 = 맛있을수록"
             ),
         ),
         # Dialog without a translation half.
@@ -279,6 +280,23 @@ def test_no_headers_yields_empty_lessons_and_counts_preamble() -> None:
         ("[honorific] form", "[honorific] form"),
         ("닫다 [Original verb: 닫다 = to close]", "닫다 [Original verb: 닫다 = to close]"),
         ("[noun] + 을/를", "[noun] + 을/를"),
+        # Un-hyphenated single-syllable / short romanization — the shape the hyphen
+        # heuristic missed at scale (243/303 rows). Now stripped by the allow-list.
+        ("네. [ne]", "네."),
+        ("이 [i]", "이"),
+        ("가 [ga]", "가"),
+        ("아니요 [aniyo]", "아니요"),
+        ("존댓말 [jondaetmal] polite", "존댓말 polite"),
+        ("일 [il = one]", "일"),  # romanization = number gloss
+        # Grammar-ending romanizations led by "-(" markers, e.g. -(으)ㄹ.
+        ("것 [-(eu)l geo-ye-yo]", "것"),
+        ("을 [-(eu)l]", "을"),
+        ("이라고 [-(i)ra-go]", "이라고"),
+        # More labels / pattern slots / English prose fragments KEPT.
+        ("A [subject marker] B", "A [subject marker] B"),
+        ("pattern [A] + [B]", "pattern [A] + [B]"),
+        ("means [a friend and a movie].", "means [a friend and a movie]."),
+        ("register [polite/formal]", "register [polite/formal]"),
     ],
 )
 def test_strip_inline_rom_strips_romanization_keeps_labels(text: str, expected: str) -> None:
