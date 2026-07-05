@@ -141,20 +141,6 @@ export interface PassageToken {
   mined?: boolean;
 }
 
-/** One sentence in a passage — KR tokens + EN translation line. */
-export interface PassageSentence {
-  en: string;
-  tokens: PassageToken[];
-}
-
-/** Reading passage — mirrors `READING_PASSAGE` in data.js. */
-export interface ReadingPassage {
-  title: string;
-  level: string;
-  meta: string;
-  sentences: PassageSentence[];
-}
-
 // ─────────────────────────────────────────────────────────────
 // TOPIK
 // ─────────────────────────────────────────────────────────────
@@ -669,66 +655,6 @@ export interface Settings {
 // mock loaders and screens (which speak the fixture shapes) keep
 // compiling. The service modules in `src/services/*` translate at the
 // boundary where the in-app shape and the wire shape differ.
-
-/** Reading corpus the server supports for `/reading/units`. */
-export type ReadingCorpus = 'ttmik' | 'iyagi';
-
-/** Server-side reading-unit row (corpus-tagged via the query). */
-export interface ReadingUnit {
-  id: number;
-  /** Present for TTMIK lessons. */
-  lesson_level?: number;
-  /** Present for TTMIK lessons. */
-  lesson_number?: number;
-  /** Present for Iyagi episodes. */
-  episode_number?: number;
-  /** Present for Iyagi episodes. */
-  hosts?: string[];
-  title: string;
-}
-
-/**
- * A persisted passage pick for the Reading screen — the corpus, the unit id
- * within it, and the unit's display title. Lives in `localStorage` so a
- * return visit reopens the same passage with its title already in hand (no
- * extra units lookup on load); `null` means "no pick yet" (default to the
- * first unit). The title is display-only — a stale value (corpus re-ordered
- * between visits) is harmless text, never a routing input.
- */
-export interface ReadingSelection {
-  corpus: ReadingCorpus;
-  unitId: number;
-  title: string;
-}
-
-/**
- * A page of reading units — the envelope for `GET /reading/units`. `total`
- * is the full corpus size (across all pages) so the picker's pager can show
- * "N–M of T" in one round-trip.
- */
-export interface ReadingUnitsPage {
-  corpus: ReadingCorpus;
-  total: number;
-  units: ReadingUnit[];
-}
-
-/** One sentence in a reading unit as the server emits it. */
-export interface ReadingSentenceRow {
-  id: number;
-  ordinal: number;
-  korean: string;
-  english: string | null;
-  romanization: string | null;
-  speaker: string | null;
-  is_dialog: boolean;
-}
-
-/** Envelope for `GET /reading/units/:corpus/:unitId/sentences`. */
-export interface ReadingSentences {
-  corpus: ReadingCorpus;
-  unit_id: number;
-  sentences: ReadingSentenceRow[];
-}
 
 /** One token in a `/lemmatize` response — mirrors Kiwi's output schema. */
 export interface LemmaToken {
