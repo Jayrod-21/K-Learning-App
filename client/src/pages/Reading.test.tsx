@@ -330,17 +330,28 @@ describe('Reading', () => {
     const tap = screen.getByRole('button', { name: '재택근무' });
     await user.click(tap);
 
+    // The chain is abortable end-to-end: every call carries the popover-
+    // scoped AbortSignal (lib/tapChain threads it into the HTTP layer).
     await waitFor(() => {
-      expect(vi.mocked(lemmatize)).toHaveBeenCalledWith('재택근무');
+      expect(vi.mocked(lemmatize)).toHaveBeenCalledWith(
+        '재택근무',
+        expect.any(AbortSignal),
+      );
     });
     await waitFor(() => {
-      expect(vi.mocked(defineEntry)).toHaveBeenCalledWith('재택근무');
+      expect(vi.mocked(defineEntry)).toHaveBeenCalledWith(
+        '재택근무',
+        expect.any(AbortSignal),
+      );
     });
     await waitFor(() => {
-      expect(vi.mocked(enrich)).toHaveBeenCalledWith({
-        lemma: '재택근무',
-        sourceSentence: '재택근무 합니다.',
-      });
+      expect(vi.mocked(enrich)).toHaveBeenCalledWith(
+        {
+          lemma: '재택근무',
+          sourceSentence: '재택근무 합니다.',
+        },
+        expect.any(AbortSignal),
+      );
     });
     // Popover surfaces the enrichment nuance as the gloss line (the entry
     // carried no English definition).

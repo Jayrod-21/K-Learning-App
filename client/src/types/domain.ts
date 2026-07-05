@@ -1742,21 +1742,45 @@ export interface GradeWritingResponse {
 // the UI renders transcript-only in that case.
 
 /**
- * One transcript sentence for a TTMIK lesson or Iyagi episode — the same row
- * shape for both corpora (`GET /ttmik/lessons/:level/:number` and
- * `GET /iyagi/episodes/:number` emit identical sentence rows). `korean` is
- * the primary read-along line; `english`/`romanization` are secondary and
- * nullable. `speaker` labels dialog turns when `is_dialog` is set.
+ * One spoken row — the shape shared by a TTMIK lesson's `highlights` (key
+ * phrases) and an Iyagi episode's `sentences` (full transcript). `korean` is
+ * the primary read-along line; `english`/`romanization` are secondary.
+ * `romanization`/`speaker` are optional ON THE WIRE (the server may omit
+ * them or send null — both mean "absent"). `speaker` labels dialog turns
+ * when `is_dialog` is set.
  */
-export interface TtmikSentence {
-  id: number;
-  /** 1-based position within the unit — the transcript render order. */
+export interface ListenSentence {
+  /** 1-based position within the unit — the render order. */
   ordinal: number;
   korean: string;
   english: string | null;
-  romanization: string | null;
-  speaker: string | null;
+  romanization?: string | null;
+  speaker?: string | null;
   is_dialog: boolean;
+}
+
+/**
+ * Line kinds in a TTMIK lesson's full `transcript`:
+ *   - `header`       — section heading within the lesson.
+ *   - `pair`         — Korean line + English translation.
+ *   - `dialog`       — a dialog turn (rendered like `pair`).
+ *   - `prose`        — explanatory note (usually English commentary).
+ *   - `romanization` — romanized rendering of the preceding line (subtle).
+ */
+export type TtmikTranscriptKind =
+  | 'header'
+  | 'pair'
+  | 'romanization'
+  | 'prose'
+  | 'dialog';
+
+/** One ordered line of a TTMIK lesson's full transcript. */
+export interface TtmikTranscriptLine {
+  /** 1-based position within the transcript — the render order. */
+  ordinal: number;
+  korean: string;
+  english: string | null;
+  kind: TtmikTranscriptKind;
 }
 
 /** One TTMIK lesson row from `GET /ttmik/lessons` (ordered by level, number). */
@@ -1776,9 +1800,12 @@ export interface TtmikLessonsResponse {
 /** Detail envelope for `GET /ttmik/lessons/:level/:number`. */
 export interface TtmikLessonDetail {
   meta: TtmikLesson;
-  sentences: TtmikSentence[];
   /** App-relative audio stream path, or null when no audio is mapped. */
   audioUrl: string | null;
+  /** Key phrases — the Highlights sub-tab. */
+  highlights: ListenSentence[];
+  /** Full ordered lesson transcript — the Transcript sub-tab. */
+  transcript: TtmikTranscriptLine[];
 }
 
 /** One Iyagi episode row from `GET /iyagi/episodes` (ordered by number). */
@@ -1796,14 +1823,15 @@ export interface IyagiEpisodesResponse {
 
 /** `meta` block of `GET /iyagi/episodes/:number` — the row plus hosts. */
 export interface IyagiEpisodeMeta extends IyagiEpisode {
-  /** Episode hosts (display-only text). */
+  /** Episode hosts (display-only text) — a real array on the wire. */
   hosts: string[];
 }
 
 /** Detail envelope for `GET /iyagi/episodes/:number`. */
 export interface IyagiEpisodeDetail {
   meta: IyagiEpisodeMeta;
-  sentences: TtmikSentence[];
   /** App-relative audio stream path, or null when no audio is mapped. */
   audioUrl: string | null;
+  /** Full ordered episode transcript. */
+  sentences: ListenSentence[];
 }

@@ -68,15 +68,10 @@
  *     and tap a new word before the previous chain settles. Without
  *     guarding, the late resolve would clobber the new popover's data.
  *     The controller in `inFlightCtrlRef` is aborted on `setPopData(null)`
- *     AND on every new tap; settle handlers check `signal.aborted` before
- *     calling `setPopData` so the latest tap always wins. The three
- *     service modules don't accept an `AbortSignal` parameter today (see
- *     `services/api.ts` — `api.get/post` wrap `apiRequest` and don't
- *     forward call-site config beyond what each service hard-codes), so
- *     we cannot cancel the in-flight HTTP request itself. The
- *     ignore-late-response pattern keeps UI state correct; the wasted
- *     network round-trip is small and the server's rate limiter caps the
- *     cost. Threading `signal` end-to-end is tracked for the services pass.
+ *     AND on every new tap; the shared chain (`lib/tapChain`) threads the
+ *     signal into every service call — an abort cancels the in-flight
+ *     HTTP request itself — and resolves `null` when aborted so the
+ *     latest tap always wins and a slow response never paints stale data.
  *   - **Passage rendering.** Tokens render as React children → escaped.
  *     The server contract (see types/domain.ts `ReadingSentenceRow`)
  *     keeps `korean` as a text field; never HTML.
@@ -111,24 +106,24 @@ import {
   loadReadingSelection,
   saveReadingSelection,
 } from '../lib/readingSelection';
-import { lemmatize } from '../services/lemmatize';
-import { defineEntry } from '../services/define';
-import { enrich } from '../services/enrich';
+import {
+  GLOSS_DICTIONARY_ENTRY,
+  GLOSS_UNAVAILABLE,
+  isPlaceholderGloss,
+  resolveWordPopover,
+  tokeniseKorean,
+} from '../lib/tapChain';
 import { identifyPattern } from '../services/grammar';
 import { mineWord } from '../services/vocab';
 import { ApiError } from '../services/api';
 import { useToast } from '../components/useToast';
 import type {
-  DefineResult,
-  EnrichResult,
   PassageGloss,
   PassageSentence,
-  PassageToken,
   PatternMatch,
   ReadingPassage,
   ReadingSelection,
   ReadingSentences,
-  VocabExample,
 } from '../types/domain';
 
 /** Skeleton placeholder while the passage loads. */
@@ -177,7 +172,7 @@ function adaptWirePassage(
 ): ReadingPassage {
   const sentences: PassageSentence[] = wire.sentences.map((row) => ({
     en: row.english ?? '',
-    tokens: tokeniseSentence(row.korean),
+    tokens: tokeniseKorean(row.korean),
   }));
   return {
     title: unitTitle,
@@ -185,41 +180,6 @@ function adaptWirePassage(
     meta: `Reading · ${wire.corpus}`,
     sentences,
   };
-}
-
-/**
- * Split a Korean sentence into eojeol-boundary tokens plus the spaces
- * between them. Every non-space token gets a placeholder gloss so it
- * renders as a Tapword; the slow-path on tap replaces the placeholder.
- *
- * Placeholder sentinel: `en === ''`. Real glosses (fixture-attached or
- * post-enrichment) always carry a non-empty English string, so the
- * fast-path / slow-path branch in `handleOpenWord` can key off this.
- */
-function tokeniseSentence(korean: string): PassageToken[] {
-  const tokens: PassageToken[] = [];
-  // Match runs of whitespace OR runs of non-whitespace. Punctuation rides
-  // with its adjacent word — fine for a tap target; the slow-path lemma
-  // chain strips it server-side.
-  const parts = korean.match(/\s+|\S+/g) ?? [];
-  for (const part of parts) {
-    if (/^\s+$/.test(part)) {
-      tokens.push({ w: part });
-    } else {
-      tokens.push({
-        w: part,
-        vid: null,
-        gloss: {
-          kr: part,
-          pos: 'n.',
-          en: '',
-          ex_kr: '',
-          ex_en: '',
-        },
-      });
-    }
-  }
-  return tokens;
 }
 
 /**
@@ -262,152 +222,6 @@ async function loadReadingReal(
   // (a tampered/garbled persisted value coerced to '' by the loader).
   const heading = title.trim() || `${corpus.toUpperCase()} · ${String(unitId)}`;
   return adaptWirePassage(heading, wire);
-}
-
-/** True when the gloss is the placeholder synthesised by the adapter. */
-function isPlaceholderGloss(g: PassageGloss): boolean {
-  return g.en === '';
-}
-
-/**
- * The enrichment fields the popover consumes, extracted from the opaque
- * `/enrich` envelope. The inner `result` is owned by B4's
- * `EnrichmentResultSchema` (server `services/claude/models.ts`):
- * `{ nuance, usageNote, examples: [{korean, english}], dontConfuseWith:
- * [{lemma, distinction}], proficiency, register? }`. Every field is
- * structurally validated before use rather than trusted via a cast — a
- * malformed or legacy-cached envelope degrades to nulls / empty lists,
- * never to rendered garbage.
- */
-interface EnrichmentSummary {
-  /** One-line nuance gloss — the popover's headline fallback. */
-  nuance: string | null;
-  /** Usage note — rendered in the drawer's Usage section. */
-  usageNote: string | null;
-  /** Extra example sentences — extend the "More examples" drawer. */
-  examples: VocabExample[];
-  /** "Don't confuse with" line assembled from the dontConfuseWith list. */
-  contrast: string | null;
-}
-
-const EMPTY_ENRICHMENT: EnrichmentSummary = {
-  nuance: null,
-  usageNote: null,
-  examples: [],
-  contrast: null,
-};
-
-/** A non-empty trimmed string, or null. */
-function textOrNull(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() !== '' ? value : null;
-}
-
-/**
- * Extract the popover-relevant fields from the enrichment envelope.
- *
- * B-002 regression note: the previous version looked for `summary` /
- * `gloss` / `en` — fields the real `EnrichmentResult` schema never had —
- * so every real-data tap fell through to the 'Definition unavailable'
- * literal even when Claude had returned a full enrichment.
- */
-function summariseEnrichment(enrichment: EnrichResult | null): EnrichmentSummary {
-  if (!enrichment) return EMPTY_ENRICHMENT;
-  const inner = enrichment.result;
-  if (typeof inner !== 'object' || inner === null) return EMPTY_ENRICHMENT;
-  const rec = inner as Record<string, unknown>;
-
-  const examples: VocabExample[] = Array.isArray(rec.examples)
-    ? rec.examples.flatMap((ex): VocabExample[] => {
-        if (typeof ex !== 'object' || ex === null) return [];
-        const e = ex as Record<string, unknown>;
-        const kr = textOrNull(e.korean);
-        if (kr === null) return [];
-        return [{ kr, en: textOrNull(e.english) ?? '' }];
-      })
-    : [];
-
-  const contrastLines: string[] = Array.isArray(rec.dontConfuseWith)
-    ? rec.dontConfuseWith.flatMap((c): string[] => {
-        if (typeof c !== 'object' || c === null) return [];
-        const cc = c as Record<string, unknown>;
-        const lemma = textOrNull(cc.lemma);
-        if (lemma === null) return [];
-        const distinction = textOrNull(cc.distinction);
-        return [distinction !== null ? `${lemma} — ${distinction}` : lemma];
-      })
-    : [];
-
-  return {
-    nuance: textOrNull(rec.nuance),
-    usageNote: textOrNull(rec.usageNote),
-    examples,
-    contrast: contrastLines.length > 0 ? contrastLines.join(' · ') : null,
-  };
-}
-
-/**
- * Build the popover payload from whatever the tap chain resolved.
- *
- * KRDICT is the spine when present: headword, POS, the first English
- * definition, and the example sentences `/define` now joins in from
- * `krdict_examples`. Claude enrichment supplements it: the nuance line
- * backfills a missing English definition, its examples extend the
- * "More examples" drawer, and its usage note / don't-confuse list fill the
- * drawer's Usage section. With no dictionary entry at all (KRDICT 404, or
- * 503 while the tables aren't loaded — B-011) the enrichment alone still
- * yields a real popover; the 'Definition unavailable' literal is the last
- * resort when BOTH sources came back empty.
- */
-/**
- * Sentinel gloss strings the popover falls back to when there's no real
- * definition. Shared consts so the mine-filter (which must NOT persist a
- * sentinel as a word's English) can never drift from what buildWordPopover
- * produces (B-002 review SF-1).
- */
-const GLOSS_DICTIONARY_ENTRY = 'Dictionary entry';
-const GLOSS_UNAVAILABLE = 'Definition unavailable';
-
-function buildWordPopover(
-  lemma: string,
-  defineResult: DefineResult | null,
-  enrichment: EnrichResult | null,
-): WordPopoverData {
-  const first = defineResult?.entries[0];
-  const enriched = summariseEnrichment(enrichment);
-
-  // Dictionary examples lead (they anchor the headword sense); enrichment
-  // examples follow. The first becomes the popover's primary example, the
-  // rest feed the drawer.
-  const defineExamples: VocabExample[] = (first?.examples ?? []).flatMap(
-    (ex): VocabExample[] => {
-      const kr = textOrNull(ex.korean);
-      if (kr === null) return [];
-      return [{ kr, en: textOrNull(ex.english) ?? '' }];
-    },
-  );
-  const examples = [...defineExamples, ...enriched.examples];
-  const primary = examples[0];
-  const extra = examples.slice(1);
-
-  const gloss =
-    textOrNull(first?.definition_english) ??
-    enriched.nuance ??
-    (first ? GLOSS_DICTIONARY_ENTRY : GLOSS_UNAVAILABLE);
-
-  return {
-    kr: first?.headword ?? lemma,
-    en: gloss,
-    pos: first?.part_of_speech ?? 'word',
-    // The KRDICT entry id is what FU-NF-33 mines on — it gives the server a
-    // stable, homograph-safe dedup key. Absent only when `/define` returned
-    // no entries (the fallback popover keys on the lemma instead).
-    ...(first ? { krdictEntryId: first.id } : {}),
-    ex_kr: primary?.kr ?? '',
-    ex_en: primary?.en ?? '',
-    ...(extra.length > 0 ? { extra } : {}),
-    ...(enriched.usageNote !== null ? { notes: enriched.usageNote } : {}),
-    ...(enriched.contrast !== null ? { contrast: enriched.contrast } : {}),
-  };
 }
 
 /** Same idea for an identify-pattern envelope. */
@@ -520,12 +334,10 @@ export function Reading(): JSX.Element {
   }, []);
 
   /**
-   * Slow-path: tap on a placeholder-gloss token. Chain is
-   * lemmatize → (define ‖ enrich). Define is the spine of the popover;
-   * enrich is enrichment — if enrich fails the popover still opens with
-   * just the dictionary entry. If lemmatize itself fails we fall back to
-   * showing the raw token so the user isn't left staring at a closed
-   * popover (graceful degradation).
+   * Slow-path: tap on a placeholder-gloss token. The chain itself
+   * (lemmatize → define → enrich, with per-step graceful degradation)
+   * lives in `lib/tapChain.resolveWordPopover` — shared with the Listen
+   * screen. This wrapper owns the UI state around it.
    */
   const runSlowPath = useCallback(
     async (
@@ -551,40 +363,9 @@ export function Reading(): JSX.Element {
         mined: minedIds.has(raw),
       });
 
-      let lemma = raw;
-      try {
-        const tokens = await lemmatize(raw);
-        const first = tokens[0];
-        if (first && first.lemma) lemma = first.lemma;
-      } catch {
-        // Lemmatize failure → fall through with the raw form. Define
-        // will still try; KRDICT often matches the conjugated form.
-      }
-      if (ctrl.signal.aborted) return;
-
-      let defineResult: DefineResult | null = null;
-      try {
-        defineResult = await defineEntry(lemma);
-      } catch {
-        // Define failure → graceful degradation: render a "definition
-        // unavailable" popover keyed on the lemma so the user still has
-        // a tappable Add-to-bank surface.
-      }
-      if (ctrl.signal.aborted) return;
-
-      let enrichResult: EnrichResult | null = null;
-      try {
-        enrichResult = await enrich({
-          lemma,
-          sourceSentence: sentenceText,
-        });
-      } catch {
-        // Enrich failure is non-fatal — popover still opens on the
-        // dictionary entry alone (graceful-degradation contract above).
-      }
-      if (ctrl.signal.aborted) return;
-
-      const popover = buildWordPopover(lemma, defineResult, enrichResult);
+      const popover = await resolveWordPopover(raw, sentenceText, ctrl.signal);
+      // null = aborted mid-chain (popover closed / newer tap) — paint nothing.
+      if (popover === null || ctrl.signal.aborted) return;
       // Fold in the mined flag — the gloss's own kr (post-define) is what
       // counts for the bank dotted-underline.
       popover.mined = minedIds.has(popover.kr);

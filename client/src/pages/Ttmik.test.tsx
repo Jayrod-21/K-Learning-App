@@ -1,18 +1,25 @@
 /**
- * Listen page (F-012) — browse tabs, player/detail view, and read-along
- * transcript over stubbed services.
+ * Listen page (F-012 rework) — browse tabs, detail view with a PERSISTENT
+ * audio player + Highlights/Transcript sub-tabs, clickable transcript words
+ * (the Read tab's tap chain), and the Iyagi hosts-array line.
  *
  * The four fetchers in `services/ttmik` are mocked per test; `buildAudioSrc`
  * stays REAL so the assertions cover the actual src the page hands to the
  * `<audio>` element (empty API base in the test env → app-relative path).
- * The audio element has no ARIA role, so presence/absence is asserted via a
- * DOM query — everything else goes through accessible surfaces.
+ * The tap chain services (lemmatize/define/enrich) are mocked as modules —
+ * the page goes through `lib/tapChain.resolveWordPopover`, which calls them.
+ * The audio element has no ARIA role, so identity/presence is asserted via
+ * DOM queries — everything else goes through accessible surfaces.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
+import { lemmatize } from '../services/lemmatize';
+import { defineEntry } from '../services/define';
+import { enrich } from '../services/enrich';
 import {
   getIyagiEpisode,
   getIyagiEpisodes,
@@ -36,8 +43,11 @@ vi.mock('../services/ttmik', async (importOriginal) => {
     getIyagiEpisode: vi.fn(),
   };
 });
+vi.mock('../services/lemmatize', () => ({ lemmatize: vi.fn() }));
+vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
+vi.mock('../services/enrich', () => ({ enrich: vi.fn() }));
 
-// Import after the mock so the page binds the mocked fetchers.
+// Import after the mocks so the page binds the mocked fetchers.
 import Ttmik from './Ttmik';
 
 const LESSONS: TtmikLesson[] = [
@@ -51,12 +61,12 @@ const EPISODES: IyagiEpisode[] = [
   { number: 143, title: '한국의 카페 문화', hasAudio: false },
 ];
 
-/** Sentences arrive deliberately OUT of ordinal order — the page must sort. */
+/** Highlights arrive deliberately OUT of ordinal order — the page must sort. */
 const LESSON_DETAIL: TtmikLessonDetail = {
   meta: { level: 1, number: 1, title: 'Hello / Thank you', hasAudio: true },
-  sentences: [
+  audioUrl: '/ttmik/lessons/1/1/audio',
+  highlights: [
     {
-      id: 12,
       ordinal: 2,
       korean: '감사합니다.',
       english: 'Thank you.',
@@ -65,7 +75,6 @@ const LESSON_DETAIL: TtmikLessonDetail = {
       is_dialog: true,
     },
     {
-      id: 11,
       ordinal: 1,
       korean: '안녕하세요.',
       english: 'Hello.',
@@ -74,19 +83,31 @@ const LESSON_DETAIL: TtmikLessonDetail = {
       is_dialog: false,
     },
   ],
-  audioUrl: '/ttmik/lessons/1/1/audio',
+  transcript: [
+    { ordinal: 1, korean: '인사', english: 'Greetings', kind: 'header' },
+    { ordinal: 2, korean: '안녕하세요.', english: 'Hello.', kind: 'pair' },
+    { ordinal: 3, korean: 'annyeonghaseyo', english: null, kind: 'romanization' },
+    {
+      ordinal: 4,
+      korean: '',
+      english: 'This greeting works at any time of day.',
+      kind: 'prose',
+    },
+    { ordinal: 5, korean: '감사합니다.', english: 'Thank you.', kind: 'dialog' },
+  ],
 };
 
 const EPISODE_DETAIL: IyagiEpisodeDetail = {
   meta: {
     number: 143,
     title: '한국의 카페 문화',
+    // A REAL string[] on the wire (the old string shape crashed this view).
     hosts: ['경화', '석진'],
     hasAudio: false,
   },
+  audioUrl: null,
   sentences: [
     {
-      id: 31,
       ordinal: 1,
       korean: '요즘 카페 자주 가세요?',
       english: 'Do you go to cafes often these days?',
@@ -95,15 +116,27 @@ const EPISODE_DETAIL: IyagiEpisodeDetail = {
       is_dialog: true,
     },
   ],
-  audioUrl: null,
 };
 
 function renderPage(): void {
   render(
     <MemoryRouter>
-      <Ttmik />
+      <ToastProvider>
+        <Ttmik />
+      </ToastProvider>
     </MemoryRouter>,
   );
+}
+
+/** Open lesson 1 from the browse view and wait for its detail header. */
+async function openLessonOne(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await screen.findByText('Level 1');
+  await user.click(
+    screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
+  );
+  await screen.findByText('Level 1 · Lesson 1');
 }
 
 beforeEach(() => {
@@ -111,6 +144,9 @@ beforeEach(() => {
   vi.mocked(getIyagiEpisodes).mockReset().mockResolvedValue(EPISODES);
   vi.mocked(getTtmikLesson).mockReset().mockResolvedValue(LESSON_DETAIL);
   vi.mocked(getIyagiEpisode).mockReset().mockResolvedValue(EPISODE_DETAIL);
+  vi.mocked(lemmatize).mockReset();
+  vi.mocked(defineEntry).mockReset();
+  vi.mocked(enrich).mockReset();
 });
 
 describe('Ttmik page — browse', () => {
@@ -175,18 +211,12 @@ describe('Ttmik page — browse', () => {
   });
 });
 
-describe('Ttmik page — detail (player + read-along)', () => {
-  it('opens a lesson: real audio element with the API-base src, transcript in ordinal order', async () => {
+describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
+  it('opens a lesson: real audio element with the API-base src, Highlights by default in ordinal order', async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText('Level 1');
+    await openLessonOne(user);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
-    );
-
-    // Header context for the opened lesson.
-    expect(await screen.findByText('Level 1 · Lesson 1')).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Hello / Thank you' }),
     ).toBeInTheDocument();
@@ -197,18 +227,25 @@ describe('Ttmik page — detail (player + read-along)', () => {
     expect(audio).toHaveAttribute('controls');
     expect(audio).toHaveAttribute('src', '/ttmik/lessons/1/1/audio');
 
-    // Read-along transcript: one row per sentence, ordinal order (the wire
-    // fixture is deliberately reversed), Korean + English + romanization,
-    // speaker label on the dialog turn.
-    const transcript = screen.getByRole('list', { name: 'Transcript' });
-    const lines = within(transcript).getAllByRole('listitem');
-    expect(lines).toHaveLength(2);
-    expect(within(lines[0]!).getByText('안녕하세요.')).toBeInTheDocument();
-    expect(within(lines[0]!).getByText('Hello.')).toBeInTheDocument();
-    expect(within(lines[0]!).getByText('annyeonghaseyo')).toBeInTheDocument();
-    expect(within(lines[0]!).queryByText('현우')).not.toBeInTheDocument();
-    expect(within(lines[1]!).getByText('감사합니다.')).toBeInTheDocument();
-    expect(within(lines[1]!).getByText('현우')).toBeInTheDocument();
+    // Sub-tabs render under the player; Highlights is the default panel.
+    expect(
+      screen.getByRole('tab', { name: 'Highlights', selected: true }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: 'Transcript', selected: false }),
+    ).toBeInTheDocument();
+
+    // Highlights: ordinal order (the wire fixture is deliberately reversed),
+    // Korean + English + romanization, speaker label on the dialog turn.
+    const highlights = screen.getByRole('list', { name: 'Highlights' });
+    const rows = within(highlights).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText('안녕하세요.')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('Hello.')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('annyeonghaseyo')).toBeInTheDocument();
+    expect(within(rows[0]!).queryByText('현우')).not.toBeInTheDocument();
+    expect(within(rows[1]!).getByText('감사합니다.')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('현우')).toBeInTheDocument();
 
     expect(vi.mocked(getTtmikLesson)).toHaveBeenCalledWith(
       1,
@@ -217,47 +254,134 @@ describe('Ttmik page — detail (player + read-along)', () => {
     );
   });
 
-  it('renders transcript-only (no player, a note) when audioUrl is null', async () => {
+  it('keeps the SAME audio element across sub-tab switches (no remount, no refetch)', async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText('Level 1');
+    await openLessonOne(user);
 
-    await user.click(screen.getByRole('tab', { name: 'Iyagi Episodes' }));
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+
+    // Highlights → Transcript: the panel below swaps, the player does not.
+    await user.click(screen.getByRole('tab', { name: 'Transcript' }));
+    await screen.findByRole('list', { name: 'Transcript' });
+    // Identity assertion — the exact same DOM node, not an equal-looking
+    // replacement. A remount would produce a new element (and reset
+    // playback); toBe checks reference equality.
+    expect(document.querySelector('audio')).toBe(audio);
+
+    // And back again.
+    await user.click(screen.getByRole('tab', { name: 'Highlights' }));
+    await screen.findByRole('list', { name: 'Highlights' });
+    expect(document.querySelector('audio')).toBe(audio);
+    expect(audio).toHaveAttribute('src', '/ttmik/lessons/1/1/audio');
+
+    // Both panels came from the single detail response — no extra fetch.
+    expect(vi.mocked(getTtmikLesson)).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders every transcript line kind: header, pair, romanization, prose, dialog', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    await user.click(screen.getByRole('tab', { name: 'Transcript' }));
+    const transcript = await screen.findByRole('list', { name: 'Transcript' });
+
+    // header → a section heading.
+    expect(
+      within(transcript).getByRole('heading', { name: '인사' }),
+    ).toBeInTheDocument();
+    // pair → clickable Korean + English below.
+    expect(
+      within(transcript).getByRole('button', { name: '안녕하세요.' }),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText('Hello.')).toBeInTheDocument();
+    // romanization → subtle plain line (NOT a tap target — it isn't Korean).
+    expect(within(transcript).getByText('annyeonghaseyo')).toBeInTheDocument();
+    expect(
+      within(transcript).queryByRole('button', { name: 'annyeonghaseyo' }),
+    ).not.toBeInTheDocument();
+    // prose → explanation note.
+    expect(within(transcript).getByRole('note')).toHaveTextContent(
+      'This greeting works at any time of day.',
+    );
+    // dialog → rendered like a pair.
+    expect(
+      within(transcript).getByRole('button', { name: '감사합니다.' }),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText('Thank you.')).toBeInTheDocument();
+  });
+
+  it('tapping a Korean word runs the abortable tap chain and opens the word popover', async () => {
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '안녕하세요.', lemma: '안녕하세요', tag: 'IC', start: 0, length: 6 },
+    ]);
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '안녕하세요',
+      entries: [
+        {
+          id: 7,
+          headword: '안녕하세요',
+          part_of_speech: 'interj.',
+          definition_korean: null,
+          definition_english: 'hello (polite)',
+          examples: [],
+        },
+      ],
+    });
+    vi.mocked(enrich).mockResolvedValue({
+      result: {
+        nuance: 'standard polite greeting',
+        usageNote: 'Use with strangers and elders.',
+        examples: [],
+        dontConfuseWith: [],
+        proficiency: 'L1',
+      },
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    // Highlight Korean renders as a Tapword (role=button) via the shared
+    // tokeniser — tap it.
+    const highlights = screen.getByRole('list', { name: 'Highlights' });
     await user.click(
-      await screen.findByRole('button', {
-        name: 'Open episode 143: 한국의 카페 문화',
-      }),
+      within(highlights).getByRole('button', { name: '안녕하세요.' }),
     );
 
-    expect(await screen.findByText('Iyagi · Episode 143')).toBeInTheDocument();
-    // Hosts line rides the meta.
-    expect(screen.getByText('경화 · 석진')).toBeInTheDocument();
-
-    // No audio mapped → no player, a fixed note instead.
-    expect(document.querySelector('audio')).toBeNull();
-    expect(screen.getByRole('note')).toHaveTextContent(/No audio/);
-
-    // The transcript still renders.
-    const transcript = screen.getByRole('list', { name: 'Transcript' });
+    // Popover opens as a dialog and lands the resolved definition.
+    const dialog = await screen.findByRole('dialog');
     expect(
-      within(transcript).getByText('요즘 카페 자주 가세요?'),
+      await within(dialog).findByText('hello (polite)'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: /Add to vocab/i }),
     ).toBeInTheDocument();
 
-    expect(vi.mocked(getIyagiEpisode)).toHaveBeenCalledWith(
-      143,
+    // The chain ran with the popover-scoped AbortSignal at every step.
+    expect(vi.mocked(lemmatize)).toHaveBeenCalledWith(
+      '안녕하세요.',
       expect.any(AbortSignal),
     );
+    expect(vi.mocked(defineEntry)).toHaveBeenCalledWith(
+      '안녕하세요',
+      expect.any(AbortSignal),
+    );
+    expect(vi.mocked(enrich)).toHaveBeenCalledWith(
+      { lemma: '안녕하세요', sourceSentence: '안녕하세요.' },
+      expect.any(AbortSignal),
+    );
+
+    // The audio element survived the whole interaction untouched.
+    expect(document.querySelector('audio')).not.toBeNull();
   });
 
   it('returns to the browse list via the Browse button', async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText('Level 1');
-
-    await user.click(
-      screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
-    );
-    await screen.findByText('Level 1 · Lesson 1');
+    await openLessonOne(user);
 
     await user.click(
       screen.getByRole('button', {
@@ -287,5 +411,44 @@ describe('Ttmik page — detail (player + read-along)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Level 1 · Lesson 1')).toBeInTheDocument();
+  });
+});
+
+describe('Ttmik page — Iyagi episode detail', () => {
+  it('renders the hosts array as a hosts line, a no-audio note, and a clickable transcript', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Level 1');
+
+    await user.click(screen.getByRole('tab', { name: 'Iyagi Episodes' }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Open episode 143: 한국의 카페 문화',
+      }),
+    );
+
+    expect(await screen.findByText('Iyagi · Episode 143')).toBeInTheDocument();
+    // hosts: string[] → joined display line (the old string shape crashed here).
+    expect(screen.getByText('경화 · 석진')).toBeInTheDocument();
+
+    // No audio mapped → no player, a fixed note instead.
+    expect(document.querySelector('audio')).toBeNull();
+    expect(screen.getByRole('note')).toHaveTextContent(/No audio/);
+
+    // Transcript renders with the speaker label, and the Korean words are
+    // tap targets (the same Read-tab tap path).
+    const transcript = screen.getByRole('list', { name: 'Transcript' });
+    expect(within(transcript).getByText('경화')).toBeInTheDocument();
+    expect(
+      within(transcript).getByRole('button', { name: '요즘' }),
+    ).toBeInTheDocument();
+    expect(
+      within(transcript).getByRole('button', { name: '가세요?' }),
+    ).toBeInTheDocument();
+
+    expect(vi.mocked(getIyagiEpisode)).toHaveBeenCalledWith(
+      143,
+      expect.any(AbortSignal),
+    );
   });
 });
