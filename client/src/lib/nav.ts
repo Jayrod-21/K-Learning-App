@@ -25,7 +25,6 @@ export interface NavItem {
 export type NavItemId =
   | 'today'
   | 'topik'
-  | 'reading'
   | 'review'
   | 'diagnostic'
   | 'grammar'
@@ -56,15 +55,6 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     eyebrow: 'Mock test',
     headerTitle: '모의 · TOPIK',
     icon: 'spark',
-  },
-  {
-    id: 'reading',
-    path: '/reading',
-    label: 'Read',
-    kr: '읽기',
-    eyebrow: 'Passage',
-    headerTitle: '읽기 · Read',
-    icon: 'book',
   },
   {
     id: 'review',
@@ -178,7 +168,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
 export const PRIMARY_TAB_IDS = [
   'today',
   'topik',
-  'reading',
+  'ttmik',
   'review',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
@@ -192,7 +182,6 @@ export const MORE_TAB_IDS = [
   'reference',
   'settings',
   'progress',
-  'ttmik',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 /**
