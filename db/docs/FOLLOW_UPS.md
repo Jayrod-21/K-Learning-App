@@ -14,6 +14,21 @@ the transcript feature; each should become a tracked ticket.
   tests need `testcontainers[postgres]` + `structlog`/`psycopg`/`pypdf`; the
   transcript parser tests are pure and could run without a DB if scoped.
 
+## Romanization — known residual (~19 rows / 0.2%)
+
+Every *well-formed* delimiter channel is clean (brackets, fullwidth `［］`, slash,
+parens, colon guides, mixed/unclosed/orphaned brackets — all verified 0). The
+remaining ~19 rows are romanized example **sentences** that the PDF text-extraction
+**wrap-split across lines**: the opening `[` lands on one transcript row and the
+tail (`…jo-a-hae-yo.] = English translation`) on the next, so no single row is a
+well-formed bracket the strip pass can catch. Free-text stripping is unsafe here —
+romanized Korean and English (`well-known`, `know-it-all`) are structurally
+identical. The correct fix is a **wrap-merge parser pass** that rejoins a bracket
+spanning consecutive rows before romanization stripping runs. Deferred pending a
+ship-vs-deeper-work decision. Romanized proper **names** in English translations
+(`Kyung-hwa`, `Hyojin`) are intentionally KEPT — they are proper nouns like "Seoul",
+not pronunciation guides.
+
 ## Parser / loader (`load_ttmik_transcript.py`)
 
 - **Reload idempotency footgun.** A parser bugfix silently no-ops on reload because
