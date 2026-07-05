@@ -257,3 +257,31 @@ def test_no_headers_yields_empty_lessons_and_counts_preamble() -> None:
     parsed = parse_script_text("just some stray text\nwith no lesson headers\n")
     assert parsed.lessons == {}
     assert parsed.preamble_lines == 2
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Romanization STRIPPED — including particle romanizations that lead with
+        # a hyphen or paren (these leaked past the old "[A-Za-z]" heuristic).
+        ("안녕하세요. [an-nyeong-ha-se-yo]", "안녕하세요."),
+        ("-도 [-do]", "-도"),
+        ("-고 싶어요 [-go si-peo-yo] means", "-고 싶어요 means"),
+        ("(이)랑 [(i)rang]", "(이)랑"),
+        ("이상해요 [i-sang-hae-yo) mangled", "이상해요 mangled"),  # OCR-mangled ')' close
+        # Romanization carrying the source's punctuation (?, /, +) — still stripped.
+        ("커피 좋아해요? [keo-pi jo-a-hae-yo?]", "커피 좋아해요?"),
+        ("이에요 / 예요 [i-e-yo / ye-yo] role", "이에요 / 예요 role"),
+        ("가방 + 이에요 [ga-bang + i-e-yo]", "가방 + 이에요"),
+        # English annotation labels KEPT — the old heuristic corrupted these.
+        ("the [noun] goes", "the [noun] goes"),
+        ("[verb] and [past tense]", "[verb] and [past tense]"),
+        ("[honorific] form", "[honorific] form"),
+        ("닫다 [Original verb: 닫다 = to close]", "닫다 [Original verb: 닫다 = to close]"),
+        ("[noun] + 을/를", "[noun] + 을/를"),
+    ],
+)
+def test_strip_inline_rom_strips_romanization_keeps_labels(text: str, expected: str) -> None:
+    from loaders.load_ttmik_transcript import _strip_inline_rom
+
+    assert _strip_inline_rom(text) == expected

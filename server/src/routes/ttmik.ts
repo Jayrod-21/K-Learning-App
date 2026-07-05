@@ -203,9 +203,12 @@ ttmikRouter.get(
           [lesson.id],
         ),
         query<TranscriptLineRow>(
+          // `kind <> 'romanization'` is belt-and-suspenders: the loader never
+          // inserts romanization rows (no romanization anywhere), but the DB
+          // CHECK still permits the value, so the endpoint defends it too.
           `SELECT ordinal, korean, english, kind
              FROM ttmik_transcript_lines
-            WHERE lesson_id = $1
+            WHERE lesson_id = $1 AND kind <> 'romanization'
             ORDER BY ordinal`,
           [lesson.id],
         ),

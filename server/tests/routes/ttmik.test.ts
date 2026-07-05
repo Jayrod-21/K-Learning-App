@@ -172,6 +172,9 @@ describe('GET /ttmik/lessons/:level/:number', () => {
     expect(res.body.audioUrl).toBe('/ttmik/lessons/1/1/audio');
     expect(res.body.highlights.map((s: { ordinal: number }) => s.ordinal)).toEqual([1, 2]);
     expect(res.body.highlights[0]).toMatchObject({ korean: '안녕하세요', english: 'hello' });
+    // No romanization on the wire — a strict check (toMatchObject alone would not
+    // catch a `romanization` field regressing back onto the sentence).
+    expect(res.body.highlights[0]).not.toHaveProperty('romanization');
   });
 
   it('returns the full transcript in ordinal order alongside highlights', async () => {

@@ -95,20 +95,45 @@ HANGUL_RE = re.compile(r"[가-힣㄰-㆏ᄀ-ᇿ]")
 # "[an-nyeong]         [ha-se-yo]"
 ROMANIZATION_LINE_RE = re.compile(r"^\s*(?:\[[^\[\]]+\]\s*)+$")
 
-# Inline romanization: a bracketed group whose first char is a Latin letter,
-# e.g. "안녕하세요. [annyeong-haseyo]" -> "안녕하세요.". Per user directive there is
-# NO romanization anywhere, so these are stripped from every line.
-# Close on ']' OR OCR-mangled ')' / '\' variants seen in the source PDFs.
-_INLINE_ROM_RE = re.compile(r"\s*\[[A-Za-z][^\]\)\\]*[\]\)\\]")
-
 # Control characters that only appear in mojibake / binary-garbage lines from a
 # bad PDF text-extraction (e.g. "\x01*sN\x01TP…"). Such lines are dropped.
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+# A bracket group, tolerant of OCR-mangled ')' / '\' closers seen in the PDFs.
+_BRACKET_RE = re.compile(r"\[([^\[\]]*)[\]\)\\]")
+# A lowercase-latin hyphen-join ("keo-pi", "an-nyeong") — the hallmark of
+# romanized Korean, absent from English annotation labels.
+_LATIN_SYLLABLE_HYPHEN_RE = re.compile(r"[a-z]-[a-z]")
+
+
+def _is_romanization(inner: str) -> bool:
+    """True iff a bracket's contents are romanized Korean, not an English label.
+
+    Told apart precisely (an earlier heuristic both LEAKED and CORRUPTED):
+      * STRIP — romanized Korean carries a lowercase-latin hyphen-join
+        ("keo-pi jo-a-hae-yo?", "an-nyeong-ha-se-yo"), or is a grammar-particle
+        romanization led by a hyphen/paren ("-do", "-go si-peo-yo", "(i)rang").
+        It may also carry the source's punctuation ("?", "/", "+") — the hyphen
+        check tolerates that.
+      * KEEP  — English annotation labels ("noun", "verb", "past tense",
+        "Original verb: 닫다 = to close") have no inter-syllable hyphen.
+    """
+    c = inner.strip()
+    if not c:
+        return True  # empty bracket
+    if _LATIN_SYLLABLE_HYPHEN_RE.search(c):
+        return True
+    return c.startswith("-") or c.startswith("(")
+
 
 def _strip_inline_rom(s: str) -> str:
-    """Remove inline [latin…] romanization groups + collapse the leftover spaces."""
-    return re.sub(r"\s{2,}", " ", _INLINE_ROM_RE.sub("", s)).strip()
+    """Remove inline romanization brackets (KEEPING English-label brackets) and
+    collapse the leftover spaces."""
+
+    def repl(m: "re.Match[str]") -> str:
+        return "" if _is_romanization(m.group(1)) else m.group(0)
+
+    return re.sub(r"\s{2,}", " ", _BRACKET_RE.sub(repl, s)).strip()
 
 # "A: ..." / "B : ..." dialog speaker prefix.
 DIALOG_PREFIX_RE = re.compile(r"^[A-Z]\s*:\s*\S")
