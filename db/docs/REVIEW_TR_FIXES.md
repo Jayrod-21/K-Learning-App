@@ -433,3 +433,38 @@ the opener-less mangled bracket (id 82065, a PDF-extraction artifact — e.g. st
 + its placeholder test. All four are edge cases affecting 4 rows / 0.04% of the corpus and none destroy
 a line's primary content — a reasonable ship-then-ticket call, but the literal "no romanization
 anywhere" contract is not yet met.
+
+---
+
+## Round 4 — fixes applied (parser-verified; live-DB reload pending)
+
+**Working-tree changes to `tools/ingest/loaders/load_ttmik_transcript.py` + its tests** addressing the
+Round-3 residuals (`[one's]` over-strip, `(-n-ga)` paren, `hyeon-je si-je` colon guide, `ba-kke]`
+orphan) plus a mixed romanization+English bracket (`[jeo-neun (person's name)-i-ra-go hae-yo.]`):
+
+- `_ENGLISH_HINT_RE` accepts BOTH straight and curly apostrophe (`['’]s`) — restores `[one's]`.
+- `_is_romanization` strips a bracket with ≥2 latin hyphen-joins even when an English placeholder rides
+  along — kills `[jeo-neun (person's name)-i-ra-go hae-yo.]` without harming the 40 kept labels/phrases.
+- `_paren_is_romanization` strips a `-`-led single-join paren (`(-n-ga)`); `_COLON_ROM_RE` strips a
+  colon pronunciation guide inside a Korean paren; `_ORPHAN_ROM_RE`/`_OPEN_ROM_RE` handle brackets that
+  lost a `[`/`]` in PDF extraction.
+
+**Regression found and fixed during verification.** The unclosed-/orphaned-bracket passes, applied per
+physical line, stripped a bracket's opener before its `]` arrived on the next wrapped line — breaking the
+paragraph wrap-join and orphaning the romanized tail as its own surviving line (**18 romanized-sentence
+leaks**, e.g. `ni-kka-yo.] = I said …`, vs `0` in the Round-3 committed code). Fixed by gating those two
+passes to `final=True` (the post-merge cleanup pass only), so a bracket split across lines re-forms and
+is stripped whole; only a bracket still unbalanced after merging is treated as an artifact. A direct
+gating-contract regression test (`test_unclosed_bracket_opener_is_deferred_to_final_pass`) was added and
+confirmed to FAIL on the ungated implementation.
+
+**Parser-level verification (independent, against the three real corpus PDFs):** 9,524 lines /
+232 lessons; romanization across EVERY channel = **0** (3+-syllable chain, fullwidth `［］`, slash `/…/`,
+paren, colon, orphan/open bracket); English content preserved (`[one's]` 68 rows, `[watching them]`,
+`[more common in written/spoken language]`, `(make-up)`, `(room)` all intact); no empty lessons.
+Parser test suite: **64 passed**.
+
+**PENDING (verify later):** the live `ttmik_transcript_lines` still holds the previous load and currently
+shows residual romanization — it must be RELOADED with this fixed loader (`--force`, per the SHOULD-FIX-3
+footgun) and then re-swept on the live table to confirm zero romanization end-to-end before this is
+considered shipped.

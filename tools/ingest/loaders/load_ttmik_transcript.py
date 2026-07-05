@@ -210,10 +210,21 @@ def _paren_is_romanization(content: str) -> bool:
     return len(_LATIN_HYPHEN_RE.findall(c)) >= 2
 
 
-def _strip_inline_rom(s: str) -> str:
+def _strip_inline_rom(s: str, *, final: bool = False) -> str:
     """Remove inline romanization across EVERY delimiter the corpus uses —
     ASCII/fullwidth brackets, slashes, and parentheticals — while KEEPING English
     labels, Korean glosses, and English prose fragments. Collapses leftover spaces.
+
+    The unclosed-bracket ("[") and orphaned-closer ("]") passes run ONLY when
+    ``final=True`` — the post-merge cleanup pass in ``parse_script_text``. A long
+    romanization example often wraps across physical PDF lines with its "[" on one
+    line and its "]" on the next; applied per physical line, these passes would
+    strip the opener before the closer arrives, EMPTYING the first line so it can
+    no longer wrap-join with its continuation — orphaning the romanized tail (which
+    then survives as its own line). Deferring them to the merged text lets the
+    whole bracket re-form and be stripped by ``_BRACKET_RE`` in one piece; only a
+    bracket still unbalanced AFTER merging is a genuine extraction artifact for
+    these passes to clean up.
     """
     s = s.translate(_FULLWIDTH_BRACKETS)
     s = _BRACKET_RE.sub(lambda m: "" if _is_romanization(m.group(1)) else m.group(0), s)
@@ -224,12 +235,13 @@ def _strip_inline_rom(s: str) -> str:
         lambda m: "" if _paren_is_romanization(m.group(1)) else m.group(0),
         s,
     )
-    if "]" in s and "[" not in s and _LATIN_HYPHEN_RE.search(s):
-        s = _ORPHAN_ROM_RE.sub("", s)  # orphaned romanization from a lost "["
-    if "[" in s:  # a bracket left after the closed-bracket pass lost its "]"
-        s = _OPEN_ROM_RE.sub(
-            lambda m: "" if _LATIN_HYPHEN_RE.search(m.group(0)) else m.group(0), s
-        )
+    if final:
+        if "]" in s and "[" not in s and _LATIN_HYPHEN_RE.search(s):
+            s = _ORPHAN_ROM_RE.sub("", s)  # orphaned romanization from a lost "["
+        if "[" in s:  # a bracket still missing its "]" even after wrap-joining
+            s = _OPEN_ROM_RE.sub(
+                lambda m: "" if _LATIN_HYPHEN_RE.search(m.group(0)) else m.group(0), s
+            )
     return re.sub(r"\s{2,}", " ", s).strip()
 
 # "A: ..." / "B : ..." dialog speaker prefix.
@@ -456,8 +468,8 @@ def parse_script_text(text: str) -> ParsedScript:
         for ln in lines:
             if _CTRL_RE.search(ln.korean or "") or _CTRL_RE.search(ln.english or ""):
                 continue  # mojibake / binary garbage from a bad PDF extraction
-            kr = _strip_inline_rom(ln.korean) if ln.korean else ln.korean
-            en = _strip_inline_rom(ln.english) if ln.english else ln.english
+            kr = _strip_inline_rom(ln.korean, final=True) if ln.korean else ln.korean
+            en = _strip_inline_rom(ln.english, final=True) if ln.english else ln.english
             if kr or en:
                 cleaned.append(
                     TranscriptLine(kind=ln.kind, korean=kr or None, english=en or None)

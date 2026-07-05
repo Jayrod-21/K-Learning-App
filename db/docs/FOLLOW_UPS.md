@@ -14,20 +14,19 @@ the transcript feature; each should become a tracked ticket.
   tests need `testcontainers[postgres]` + `structlog`/`psycopg`/`pypdf`; the
   transcript parser tests are pure and could run without a DB if scoped.
 
-## Romanization — known residual (~19 rows / 0.2%)
+## Romanization — RESOLVED (zero across every channel)
 
-Every *well-formed* delimiter channel is clean (brackets, fullwidth `［］`, slash,
-parens, colon guides, mixed/unclosed/orphaned brackets — all verified 0). The
-remaining ~19 rows are romanized example **sentences** that the PDF text-extraction
-**wrap-split across lines**: the opening `[` lands on one transcript row and the
-tail (`…jo-a-hae-yo.] = English translation`) on the next, so no single row is a
-well-formed bracket the strip pass can catch. Free-text stripping is unsafe here —
-romanized Korean and English (`well-known`, `know-it-all`) are structurally
-identical. The correct fix is a **wrap-merge parser pass** that rejoins a bracket
-spanning consecutive rows before romanization stripping runs. Deferred pending a
-ship-vs-deeper-work decision. Romanized proper **names** in English translations
-(`Kyung-hwa`, `Hyojin`) are intentionally KEPT — they are proper nouns like "Seoul",
-not pronunciation guides.
+The wrap-split residual is fixed. The unclosed-/orphaned-bracket cleanup passes
+(`_OPEN_ROM_RE` / `_ORPHAN_ROM_RE`) are gated to the **`final=True`** post-merge
+pass in `_strip_inline_rom`, so a bracket the PDF wrap-split across rows re-forms
+during paragraph merge and strips as a whole unit — instead of the per-line passes
+prematurely emptying the opener line and orphaning the romanized tail. Verified on
+a full reload: naked 3-syllable chains / fullwidth `［］` / slash / paren / colon /
+orphan-open brackets all **0**; 9,524 lines / 232 lessons; parser tests 64/64.
+Romanized proper **names** in English translations (`So-yeon`, `Kyeong-eun`) are
+intentionally KEPT — proper nouns like "Seoul", not pronunciation guides. A few
+PDF-mangled *English* fragments (`ood-bye`, `nglish-speaking`) remain — cosmetic
+extraction artifacts, not romanization.
 
 ## Parser / loader (`load_ttmik_transcript.py`)
 

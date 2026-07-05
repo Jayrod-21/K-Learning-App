@@ -341,4 +341,22 @@ def test_strip_inline_rom_strips_romanization_keeps_labels(text: str, expected: 
 def test_strip_inline_rom_multi_delimiter(text: str, expected: str) -> None:
     from loaders.load_ttmik_transcript import _strip_inline_rom
 
-    assert _strip_inline_rom(text) == expected
+    # final=True mirrors the post-merge cleanup pass — the unclosed-"[" / orphaned-"]"
+    # cases only resolve there (they must NOT fire per physical line, or they break
+    # the wrap-join that reunites a bracket split across two PDF lines).
+    assert _strip_inline_rom(text, final=True) == expected
+
+
+def test_unclosed_bracket_opener_is_deferred_to_final_pass() -> None:
+    # Regression (gating contract): a romanization example often wraps across two
+    # physical PDF lines — "[" on the first, "]" on the next. Stripping the opener
+    # per physical line empties it, breaks the wrap-join that reunites the bracket,
+    # and orphans the romanized tail as its own surviving line (the 18-row leak the
+    # ungated pass caused). So per line (final=False) the unclosed opener MUST be
+    # left intact; only the post-merge pass (final=True) may strip a still-unbalanced
+    # bracket. This asserts both directions and fails on the ungated implementation.
+    from loaders.load_ttmik_transcript import _strip_inline_rom
+
+    opener = "계세요 [an-nyeong-hi gye-"
+    assert _strip_inline_rom(opener) == opener  # per line: preserved for the merge
+    assert _strip_inline_rom(opener, final=True) == "계세요"  # post-merge: stripped
