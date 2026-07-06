@@ -90,6 +90,17 @@ class FakeProxyClient:
         pass
 
 
+def _proxy_result(pattern_key: str, confidence: float = 0.8) -> dict[str, Any]:
+    """A /grammar/identify response in the REAL ProxyResult envelope shape:
+    ``{"result": PatternResult, "metadata": ...}`` — the canonical pattern lives
+    under ``result.patternKey`` (see server/src/services/claude/models.ts), NOT
+    at the top level. strategy_c_claude must read it there."""
+    return {
+        "result": {"patternKey": pattern_key, "confidence": confidence},
+        "metadata": {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Postgres fixtures (module-scoped — one container per test module)
 # ---------------------------------------------------------------------------
@@ -759,13 +770,15 @@ def test_strategy_c_caps_deps_per_item_and_rejects_short_fragments(schema):
                 underline=None,
             )
 
-            # Fragment for the short option ("오") would be 1 Hangul char —
-            # below the minimum (3). Fragment for "오는데" is 3 chars —
-            # above the minimum. Proxy returns the option verbatim as the
-            # claimed pattern.
+            # The proxy returns the canonical grammar patternKey (the abstract
+            # form Claude returns in production), wrapped in the real ProxyResult
+            # envelope — NOT the raw conjugated usage. The long span "오는데" maps
+            # to "-(으)ㄴ/는데", which substring-matches all 12 seeded
+            # "-(으)ㄴ/는데" entries → hits the cap. The short span "오" is 1 Hangul
+            # char — below the minimum — so it's dropped before any DB lookup.
             proxy = FakeProxyClient({
-                "오는데": {"pattern": "오는데", "confidence": 0.8},
-                "오": {"pattern": "오", "confidence": 0.8},
+                "오는데": _proxy_result("-(으)ㄴ/는데"),
+                "오": _proxy_result("오"),
             })
 
             deps = await ltd.strategy_c_claude(
@@ -817,9 +830,7 @@ def test_strategy_c_uses_proxy_only_when_uncovered(schema):
                 options=["오면"],
                 underline="오면",
             )
-            proxy = FakeProxyClient({
-                "오면": {"pattern": "-(으)면", "confidence": 0.8}
-            })
+            proxy = FakeProxyClient({"오면": _proxy_result("-(으)면")})
             # Already covered → proxy must NOT be called.
             deps_skip = await ltd.strategy_c_claude(conn, proxy, item, already_covered=True)
             assert deps_skip == []

@@ -102,23 +102,16 @@ jobs:
         # tooling but never RAN its test suite (two red parser tests once shipped
         # unnoticed as a result). BLOCKING — real failures fail the build.
         #
-        # Exclusions are all deliberate + documented (never silent truncation):
-        #   * 3 tests scan the gitignored, generated tools/ingest/output/*.json,
-        #     absent on a clean checkout (test_topik_item_type_validation,
-        #     test_hanja_hunmeum, test_resolve_cross_references_integration) —
-        #     same rationale as db-checks excluding test_discriminator_coverage.
-        #     Tracked: FOLLOW_UPS.md F-UP-003.
-        #   * 2 strategy_c tests deselected — strategy_c_claude yields no dep for a
-        #     seeded, matching kgiu_entry: a real linker issue this gate surfaced,
-        #     distinct from the stale seed-fixture ON CONFLICT and the module-
-        #     identity split that were BOTH fixed in this PR. Tracked: F-UP-002.
+        # The only exclusions are 3 tests that scan the gitignored, generated
+        # tools/ingest/output/*.json, absent on a clean checkout
+        # (test_topik_item_type_validation, test_hanja_hunmeum,
+        # test_resolve_cross_references_integration) — same rationale as db-checks
+        # excluding test_discriminator_coverage. Tracked: FOLLOW_UPS.md F-UP-003.
         run: |
           python -m pytest tests -q \
             --ignore=tests/test_topik_item_type_validation.py \
             --ignore=tests/test_hanja_hunmeum.py \
-            --ignore=tests/test_resolve_cross_references_integration.py \
-            --deselect "tests/test_link_topik_dependencies.py::test_strategy_c_caps_deps_per_item_and_rejects_short_fragments" \
-            --deselect "tests/test_link_topik_dependencies.py::test_strategy_c_uses_proxy_only_when_uncovered"
+            --ignore=tests/test_resolve_cross_references_integration.py
 
   db-checks:
     name: Database — Migration Tests

@@ -89,32 +89,31 @@ shipped. Deferred:
 The `ingest-checks` CI job now runs `pytest tests/` (272 green). Two sets of tests
 are `--ignore`d in that job; both are tracked here.
 
-### F-UP-002 · `strategy_c_claude` produces no dependency for a matching kgiu_entry (2 tests)
+### F-UP-002 · `strategy_c_claude` produces no dependency for a matching kgiu_entry (2 tests) — ✅ RESOLVED 2026-07-05
+- **Root cause (real production bug, caught by the /fixpass review):**
+  `strategy_c_claude` read the proxy response as top-level `result["pattern"]` /
+  `["confidence"]`, but `/grammar/identify` returns the `ProxyResult` envelope
+  `{"result": {"patternKey", "confidence", …}, "metadata": …}`
+  (server/src/services/claude/models.ts). So against real infra `pattern_text` was
+  ALWAYS `""` → Strategy C silently produced ZERO deps regardless of threshold. The
+  originally-quarantined tests' FakeProxy mirrored the same buggy top-level shape,
+  so they could never have caught it.
+- **Fix:** (1) read `result["result"]["patternKey"]` + `["confidence"]`. (2) both
+  tests' FakeProxy now return the REAL envelope (`_proxy_result()` helper), so they
+  validate the actual contract — reverting the code read fails them. (3)
+  `_STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS` 3→2 (the filter targets single-SYLLABLE
+  fragments per its own comment, but 3 also dropped legit 2-syllable forms like
+  `으면`). Ingest suite 290→292; both tests re-included in CI.
 - **Severity:** real linker bug, P2.
-- **What:** `tools/ingest/link_topik_dependencies.py` `strategy_c_claude` returns
-  an empty dep list even when the proxy resolves an underline to a pattern that
-  matches a seeded `kgiu_entry` (`-(으)면`). `test_strategy_c_caps_deps_per_item_and_rejects_short_fragments`
-  and `test_strategy_c_uses_proxy_only_when_uncovered` assert `len(deps_run) >= 1`
-  and get `[]` (AssertionError ~line 829).
-- **Root cause (traced in re-review):** `strategy_c_claude` extracts the fragment
-  `-(으)면`, reduces it to `hangul_only="으면"` (2 syllables), and the
-  `_STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 3` filter drops it BEFORE the DB lookup,
-  so no dep is produced (`0 >= 1` fails). The min-3 rule was added to reject
-  1-char fragments (e.g. `오`) but also kills legitimate 2-syllable grammar
-  patterns. The fixture is correct (`_seed_kgiu_entry(pattern="-(으)면")`, line 805).
-- **Fix direction:** lower the threshold to 2, or exempt whitelisted grammatical
-  patterns from the min-length filter; then drop the two `--deselect`s and confirm
-  green.
-- **History (important — supersedes the earlier misdiagnosis):** these 2 were
-  among the 13 the CI gate first surfaced, but two OTHER bugs masked them and are
-  now FIXED in this PR: (1) a stale seed fixture — `ON CONFLICT (test_number,
-  section)` → `(test_number, topik_level, section)` after migration 029 widened
-  `uq_topik_tests_*` — and (2) the `cluster_canonical_grammar.py` dual-import
-  module-identity split (bare vs `tools.ingest.*` `PatternOccurrence`). Those two
-  fixes turned 11 of the 13 green. The production `topik_dependencies` COALESCE
-  upsert is NOT at fault — it has a matching unique index from migration 008.
-- **Status:** the 2 tests are `--deselect`ed in the ingest-checks CI job; the
-  other 11 (both files) now run green. Re-include once strategy_c is root-caused.
+
+### F-UP-010 · strategy_c pattern match is brittle to patternKey↔KGIU formatting (P3)
+- `grammar_candidates_by_pattern_substring` does `kgiu_entries.pattern ILIKE
+  '%<fragment>%'`, and `_HANGUL_RE` includes `-` `(` `)` `/` in the fragment. A
+  Claude `patternKey` like `-는데` will NOT substring-match a KGIU entry stored as
+  `-(으)ㄴ/는데` (dash vs `/는데`) even though they are the same grammar — so
+  Strategy C can miss real links when the returned key's punctuation differs from
+  the stored form. Consider normalizing both sides (strip `-()/`, compare on
+  syllables) or matching on the KGIU canonical key. Surfaced in the F-UP-002 review.
 
 ### F-UP-003 · 3 ingest tests scan the gitignored generated `output/*.json`
 - **Severity:** test-infra, P3.
