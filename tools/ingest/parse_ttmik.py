@@ -202,6 +202,38 @@ def parse_lesson_text(level: int, lesson: int, ordinal: int, lines: list[str]) -
     return unit
 
 
+def _merge_units_by_lesson(units: list[Unit]) -> list[Unit]:
+    """F-UP-009 durable fix: collapse Units that share a (level, lesson).
+
+    A lesson can appear in NON-CONTIGUOUS places in the PDF — e.g. a "Word
+    Builder"/Hanja appendix re-declares an earlier lesson's header — so the
+    line-scan emits two Units with the same (level, lesson), each numbering its
+    sentences from 1. Both resolve to the SAME ttmik_lessons row (the loader
+    upserts the lesson on a level/lesson-derived source_id), so their sentences
+    land under one lesson_id with COLLIDING ordinals. The sentence upsert keys on
+    (lesson_id, content_hash), not ordinal, so it cannot catch this — L6L12 had
+    to be renumbered live.
+
+    Merge in first-seen order (keeping the first Unit's ordinal + title),
+    concatenate sentences, then re-sequence each merged Unit's sentence ordinals
+    to a contiguous 1..N so every lesson has unique ordinals. Idempotent on
+    re-ingest: the same source produces the same merged Units and ordinals.
+    """
+    merged: dict[tuple[int, int], Unit] = {}
+    for u in units:
+        key = (u.level, u.lesson)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = u
+        else:
+            existing.sentences.extend(u.sentences)
+    result = list(merged.values())
+    for u in result:
+        for i, s in enumerate(u.sentences, start=1):
+            s.ordinal = i
+    return result
+
+
 def parse(pdf_path: Path, slug: str, title: str) -> tuple[Source, list[Unit]]:
     raw_text = extract_text(pdf_path)
     lines = raw_text.splitlines()
@@ -236,6 +268,7 @@ def parse(pdf_path: Path, slug: str, title: str) -> tuple[Source, list[Unit]]:
             current_lines.append(line)
 
     flush()
+    units = _merge_units_by_lesson(units)
 
     source = Source(
         slug=slug,
