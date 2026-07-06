@@ -12,6 +12,10 @@
      us as pointer events. Without this, touch drags on the carousel would
      either hijack scrolling or never reach our handlers. */
   touch-action: pan-y;
+  /* A mouse drag across the track must move pages, not smear a text
+     selection through the chart labels and readout inside them. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .km-carousel__track {

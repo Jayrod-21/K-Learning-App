@@ -13,10 +13,17 @@
  * for it instead of a chart. A fresh object is built per call (never a shared
  * module-level constant) so no caller can mutate another's series.
  *
- * `Promise.all` is all-or-nothing on purpose: the carousel is one widget, and
- * painting three real charts next to one silently-missing skill would lie
- * about the user's progress. A single rejection propagates to
- * `useEndpointOrMock`, which owns the mock fallback + error surfacing.
+ * Failure model — degrade per skill, NEVER fabricate:
+ * `Promise.allSettled`, not `Promise.all`. A rejected route degrades that
+ * skill (both TOPIK skills for the topik route) to the `metric: 'none'`
+ * placeholder, so its panel honestly reads "No data yet" while the other
+ * skills still show real data. The old all-or-nothing rejection propagated to
+ * `useEndpointOrMock`, whose mock fallback then painted ALL FIVE panels with
+ * hardcoded fixture numbers as if they were the user's real progress — for a
+ * stats widget, fabricated data is the worst available failure mode. This
+ * function therefore never rejects on a route failure (total outage = five
+ * placeholder panels, still honest); the only rejection is cancellation via
+ * the caller's `signal`, preserved so aborts stay aborts.
  *
  * Threat model:
  *   - **Auth + session.** All three routes are `requireAuth` server-side; the
@@ -37,7 +44,7 @@
  * `realFn`), which owns cancellation itself — the param is for symmetry and
  * future direct callers.
  */
-import { api } from './api';
+import { api, ApiError } from './api';
 import type { AllSkillSeries, SkillSeries } from '../types/domain';
 
 /** Envelope returned by `GET /topik/series` — two skills in one response. */
@@ -52,10 +59,20 @@ export interface SingleSeriesResponse {
 }
 
 /**
+ * Placeholder for a skill whose route failed (or does not exist) — the
+ * carousel renders it as an honest "No data yet" panel, never fixture
+ * numbers. Fresh object per call so no caller can mutate another's series.
+ */
+function unavailableSeries(): SkillSeries {
+  return { metric: 'none', unit: '', points: [] };
+}
+
+/**
  * Fetch all five skill trends for the last `days` days (server default 30).
  *
  * The three GETs run in parallel; `writing` is synthesized empty (no route).
- * Rejects with the first request's `ApiError` if any of the three fails.
+ * A failed route degrades its skill(s) to the `metric: 'none'` placeholder —
+ * this function only rejects when `signal` aborts the fan-out.
  */
 export async function fetchSkillSeries(
   days = 30,
@@ -66,17 +83,26 @@ export async function fetchSkillSeries(
     ...(signal !== undefined ? { signal } : {}),
   };
 
-  const [topik, vocab, grammar] = await Promise.all([
+  const [topik, vocab, grammar] = await Promise.allSettled([
     api.get<TopikSeriesResponse>('/topik/series', config),
     api.get<SingleSeriesResponse>('/vocab/series', config),
     api.get<SingleSeriesResponse>('/grammar/series', config),
   ]);
 
+  // An aborted fan-out is a cancellation, not "five skills with no data" —
+  // rethrow the canonical canceled error so callers (and the hook's abort
+  // guards) still see a rejection, exactly as with `Promise.all`.
+  if (signal?.aborted) {
+    throw new ApiError('request canceled', { status: 0, code: 'canceled' });
+  }
+
+  const topikRes = topik.status === 'fulfilled' ? topik.value : null;
   return {
-    reading: topik.reading,
-    listening: topik.listening,
-    vocab: vocab.series,
-    grammar: grammar.series,
+    reading: topikRes !== null ? topikRes.reading : unavailableSeries(),
+    listening: topikRes !== null ? topikRes.listening : unavailableSeries(),
+    vocab: vocab.status === 'fulfilled' ? vocab.value.series : unavailableSeries(),
+    grammar:
+      grammar.status === 'fulfilled' ? grammar.value.series : unavailableSeries(),
     // No /writing/series route yet — synthesize the client-only sentinel so
     // the carousel can render its "start writing" placeholder panel.
     writing: { metric: 'none', unit: '', points: [] },

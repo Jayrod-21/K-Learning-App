@@ -18,9 +18,13 @@
  *   - non-finite values are dropped defensively before plotting.
  *
  * Hover layer (per the dataviz interaction default and the TrendChart
- * pattern): one keyboard-reachable hit button per point drives a crosshair
- * plus an always-visible readout that defaults to the latest point — the
- * data is never gated behind a pointer.
+ * pattern): one hit button per point drives a crosshair plus an
+ * always-visible readout that defaults to the latest point — the data is
+ * never gated behind a pointer. The buttons form a ROVING-tabindex group
+ * (one tab stop per chart, not one per point — a 30-day series must not
+ * inject 30 sequential tab stops): Left/Right arrows move the reading,
+ * Home/End jump to the first/last point. Arrows clamp at the ends rather
+ * than wrap — this is a time axis, not a tab ring.
  *
  * Color: the line/area/dots wear `--km-chart-accent` (fallback vermilion),
  * so a wrapper assigns each skill its validated categorical hue (see
@@ -31,7 +35,7 @@
  * as React children or attribute strings → escaped by React. No HTML is
  * ever injected.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { JSX } from 'react';
 import type { SeriesPoint } from '../types/domain';
 import './LineChart.css';
@@ -116,6 +120,9 @@ export function LineChart({
   ariaLabel,
 }: LineChartProps): JSX.Element {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  // Hit-button elements for the roving-tabindex focus moves (callback refs —
+  // never written during render, per the strict react-hooks/refs contract).
+  const hitRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // Drop non-finite values defensively — one NaN from a bad row must not
   // corrupt the whole polyline into an invisible chart.
@@ -158,6 +165,25 @@ export function LineChart({
   // pointer at all — hover/focus enhances, never gates.
   const readoutIdx = hoverIdx ?? n - 1;
   const readoutPt = pts[readoutIdx];
+
+  // Roving tabindex: exactly one hit button (the readout's point) is in the
+  // tab order; arrows move the reading + focus together. Clamped at the ends
+  // (a time axis, not a wrapping tab ring); Home/End jump to first/last.
+  const rovingIdx = readoutIdx;
+  const onHitKeyDown = (
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    i: number,
+  ): void => {
+    let next: number | null = null;
+    if (e.key === 'ArrowRight') next = Math.min(n - 1, i + 1);
+    else if (e.key === 'ArrowLeft') next = Math.max(0, i - 1);
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = n - 1;
+    if (next === null) return;
+    e.preventDefault();
+    setHoverIdx(next);
+    hitRefs.current[next]?.focus();
+  };
 
   return (
     <div className="km-linechart">
@@ -238,7 +264,8 @@ export function LineChart({
           ))}
         </svg>
 
-        {/* Keyboard-reachable hover layer: one real button per point. */}
+        {/* Keyboard-reachable hover layer: one real button per point, with a
+            roving tabindex so the whole chart is a single tab stop. */}
         {pts.map((p, i) => {
           const startX = i === 0 ? PAD.left - 10 : ((xs[i - 1] ?? 0) + (xs[i] ?? 0)) / 2;
           const endX =
@@ -246,6 +273,9 @@ export function LineChart({
           return (
             <button
               key={`hit-${p.date}`}
+              ref={(el) => {
+                hitRefs.current[i] = el;
+              }}
               type="button"
               className="km-linechart__hit focusring"
               style={{
@@ -253,6 +283,10 @@ export function LineChart({
                 width: `${String(((endX - startX) / W) * 100)}%`,
               }}
               aria-label={`${metricLabel} on ${formatDay(p.date)}: ${formatValue(p.value)}`}
+              tabIndex={i === rovingIdx ? 0 : -1}
+              onKeyDown={(e) => {
+                onHitKeyDown(e, i);
+              }}
               onMouseEnter={() => {
                 setHoverIdx(i);
               }}

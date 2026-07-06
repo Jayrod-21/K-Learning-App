@@ -1245,6 +1245,52 @@ describe('GET /vocab/series — daily review-count time-series (F-017)', () => {
     expect(res.body.series).toEqual({ metric: 'count', unit: 'reviews', points: [] });
   });
 
+  it('pins day buckets to UTC even under a non-UTC DB session TimeZone', async () => {
+    // A review at 00:30 UTC today is YESTERDAY afternoon in America/Anchorage
+    // (UTC-9/-8). The route buckets with `(reviewed_at AT TIME ZONE
+    // 'UTC')::date`; a regression to a bare `reviewed_at::date` would follow
+    // the session TimeZone and land this row on yesterday's bucket. The main
+    // suite pool runs in UTC (where both expressions agree), so this
+    // ephemeral app pins its pool connections to Anchorage to make them
+    // disagree.
+    const tz = buildTestApp({ connectionString: pg.connectionString });
+    tz.pool.on('connect', (client) => {
+      client.query("SET TimeZone = 'America/Anchorage'").catch(() => {
+        // Swallowed on purpose: the SHOW TimeZone assertion below fails
+        // loudly if the pin did not apply.
+      });
+    });
+    try {
+      // Prove the pin applied — otherwise this silently degrades tz-neutral.
+      const shown = await tz.pool.query('SHOW TimeZone');
+      expect(shown.rows[0]).toEqual({ TimeZone: 'America/Anchorage' });
+
+      // Capture "today" (UTC) BEFORE inserting so a midnight rollover
+      // between insert and assert can't flake the expected bucket.
+      const today = await utcDay(0);
+      const { agent, userId } = await registerUser(tz.app, pg.pool);
+      const cardId = await seedVocabCard(pg.pool, userId);
+      await pg.pool.query(
+        `INSERT INTO card_reviews (
+            card_id, user_id, rating,
+            state_before, stability_before, difficulty_before, elapsed_days_before,
+            state_after, stability_after, difficulty_after, scheduled_days_after,
+            reviewed_at)
+         VALUES ($1, $2, 'good'::fsrs_rating,
+                 'new'::fsrs_state, 0, 5, -1,
+                 'learning'::fsrs_state, 1, 5, 1,
+                 ($3::date + time '00:30') AT TIME ZONE 'UTC')`,
+        [cardId, userId, today],
+      );
+
+      const res = await agent.get('/vocab/series');
+      expect(res.status).toBe(200);
+      expect(res.body.series.points).toEqual([{ date: today, value: 1 }]);
+    } finally {
+      await teardownTestApp(tz);
+    }
+  });
+
   it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(`/vocab/series?${qs}`);

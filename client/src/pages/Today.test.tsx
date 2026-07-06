@@ -108,22 +108,34 @@ const SERIES: AllSkillSeries = {
       { date: '2026-06-30', value: 58 },
     ],
   },
+  // Real wire shapes (grammar is score/pts, vocab counts REVIEWS — never
+  // accuracy/% or cards): together with reading/listening this fixture
+  // exercises all three wire metrics (accuracy, count, score) in render.
   vocab: {
     metric: 'count',
-    unit: 'cards',
+    unit: 'reviews',
     points: [
       { date: '2026-06-08', value: 12 },
       { date: '2026-06-29', value: 35 },
     ],
   },
   grammar: {
-    metric: 'accuracy',
-    unit: '%',
+    metric: 'score',
+    unit: 'pts',
     points: [
       { date: '2026-06-10', value: 39 },
       { date: '2026-06-30', value: 52 },
     ],
   },
+  writing: { metric: 'none', unit: '', points: [] },
+};
+
+/** A brand-new user: every skill exists, none has any activity yet. */
+const EMPTY_SERIES: AllSkillSeries = {
+  reading: { metric: 'accuracy', unit: '%', points: [] },
+  listening: { metric: 'accuracy', unit: '%', points: [] },
+  vocab: { metric: 'count', unit: 'reviews', points: [] },
+  grammar: { metric: 'score', unit: 'pts', points: [] },
   writing: { metric: 'none', unit: '', points: [] },
 };
 
@@ -161,7 +173,7 @@ describe('Today', () => {
     hoisted.series.state = { kind: 'loading' };
   });
 
-  it('renders loading skeletons while both fetches are pending', () => {
+  it('renders loading skeletons while the three fetches are pending', () => {
     hoisted.today.state = { kind: 'loading' };
     hoisted.diag.state = { kind: 'loading' };
 
@@ -312,7 +324,48 @@ describe('Today', () => {
     const panels = screen.getAllByRole('tabpanel', { hidden: true });
     expect(panels[2]).toHaveAttribute('aria-hidden', 'false');
     expect(panels[2]).toHaveTextContent('Vocab');
-    expect(panels[2]).toHaveTextContent('35 cards');
+    expect(panels[2]).toHaveTextContent('35 reviews');
+  });
+
+  it('renders the Grammar page with the score metric (score/pts wire shape)', async () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: SERIES };
+
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Grammar is page 4. Its series is `metric: 'score'` on the real wire —
+    // this pins the score render path (headline "N pts" + a real chart).
+    await user.click(screen.getByRole('tab', { name: 'Page 4 of 5' }));
+
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[3]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[3]).toHaveTextContent('Grammar');
+    expect(panels[3]).toHaveTextContent('52 pts');
+    expect(
+      screen.getByRole('img', { name: 'Grammar trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders every panel honestly for a fresh user (all series empty)', () => {
+    // The COMMON real state for this app's audience: routes respond fine,
+    // zero activity anywhere. Every headline is an em dash; the four charted
+    // skills say "No data yet"; writing keeps its invitation.
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: EMPTY_SERIES };
+
+    renderTodayAt();
+
+    expect(screen.getAllByText('—')).toHaveLength(5);
+    expect(screen.getAllByText('No data yet')).toHaveLength(4);
+    expect(
+      screen.getByText('Start writing to see your progress here.'),
+    ).toBeInTheDocument();
+    // No chart images and no NaN/undefined leakage anywhere.
+    expect(screen.queryByRole('img', { name: /trend over/ })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/NaN|undefined/);
   });
 
   it('keeps the SkillsCompare snapshot card alongside the carousel', () => {

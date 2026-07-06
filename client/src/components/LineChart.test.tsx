@@ -121,4 +121,97 @@ describe('LineChart', () => {
     // The hover layer still covers every point.
     expect(container.querySelectorAll('button.km-linechart__hit')).toHaveLength(30);
   });
+
+  it('renders an all-zero count series against the 0–1 fallback scale', () => {
+    // niceCeil(0) → 1: the baseline still reads, no divide-by-zero collapse.
+    const { container } = renderChart(
+      [
+        { date: '2026-06-08', value: 0 },
+        { date: '2026-06-09', value: 0 },
+      ],
+      { unit: 'reviews', metricLabel: 'Count' },
+    );
+
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('0.5')).toBeInTheDocument();
+    expect(container.querySelectorAll('circle.km-linechart__dot')).toHaveLength(2);
+    expect(container.querySelectorAll('polyline.km-linechart__line')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('Jun 9 · 0 reviews');
+  });
+
+  it('renders an all-equal series as a flat line (no zero-span blowup)', () => {
+    const { container } = renderChart(
+      [
+        { date: '2026-06-08', value: 40 },
+        { date: '2026-06-09', value: 40 },
+        { date: '2026-06-10', value: 40 },
+      ],
+      { unit: 'reviews', metricLabel: 'Count' },
+    );
+
+    // max 40 → nice ceiling 50, half-tick 25; a real line still paints.
+    expect(screen.getByText('50')).toBeInTheDocument();
+    expect(screen.getByText('25')).toBeInTheDocument();
+    expect(container.querySelectorAll('polyline.km-linechart__line')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('Jun 10 · 40 reviews');
+  });
+
+  it('moves the readout on mouse hover, not only on focus', () => {
+    renderChart(POINTS);
+    const readout = screen.getByRole('status');
+
+    const first = screen.getByRole('button', { name: 'Accuracy on Jun 8: 58%' });
+    // React synthesizes onMouseEnter from native mouseover.
+    fireEvent.mouseOver(first);
+    expect(readout).toHaveTextContent('Jun 8 · 58%');
+    fireEvent.mouseOut(first, { relatedTarget: document.body });
+    expect(readout).toHaveTextContent('Jun 30 · 74%');
+  });
+
+  // ── Roving tabindex on the hit layer (one tab stop per chart) ─
+
+  it('exposes exactly one tab stop — the latest point — not one per point', () => {
+    const { container } = renderChart(POINTS);
+
+    const hits = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.km-linechart__hit'),
+    );
+    expect(hits).toHaveLength(POINTS.length);
+    expect(hits.filter((b) => b.tabIndex === 0)).toHaveLength(1);
+    // The tab stop sits on the latest point (the readout's default).
+    expect(hits[hits.length - 1]?.tabIndex).toBe(0);
+    expect(hits.slice(0, -1).every((b) => b.tabIndex === -1)).toBe(true);
+  });
+
+  it('moves reading + focus with arrow keys, clamped at the ends, Home/End jump', () => {
+    renderChart(POINTS);
+    const readout = screen.getByRole('status');
+    const last = screen.getByRole('button', { name: 'Accuracy on Jun 30: 74%' });
+
+    last.focus();
+    expect(readout).toHaveTextContent('Jun 30 · 74%');
+
+    // ArrowRight at the newest point clamps (a time axis, not a tab ring).
+    fireEvent.keyDown(last, { key: 'ArrowRight' });
+    expect(readout).toHaveTextContent('Jun 30 · 74%');
+
+    // ArrowLeft steps back one point; focus roves with the reading.
+    fireEvent.keyDown(last, { key: 'ArrowLeft' });
+    const third = screen.getByRole('button', { name: 'Accuracy on Jun 22: 70%' });
+    expect(third).toHaveFocus();
+    expect(readout).toHaveTextContent('Jun 22 · 70%');
+
+    // Home jumps to the oldest point; ArrowLeft there clamps.
+    fireEvent.keyDown(third, { key: 'Home' });
+    const first = screen.getByRole('button', { name: 'Accuracy on Jun 8: 58%' });
+    expect(first).toHaveFocus();
+    expect(readout).toHaveTextContent('Jun 8 · 58%');
+    fireEvent.keyDown(first, { key: 'ArrowLeft' });
+    expect(first).toHaveFocus();
+
+    // End jumps back to the newest point.
+    fireEvent.keyDown(first, { key: 'End' });
+    expect(last).toHaveFocus();
+    expect(readout).toHaveTextContent('Jun 30 · 74%');
+  });
 });

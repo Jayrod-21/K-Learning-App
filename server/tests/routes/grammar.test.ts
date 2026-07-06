@@ -692,6 +692,48 @@ describe('GET /grammar/series — daily drill-score time-series (F-017)', () => 
     expect(res.body.series).toEqual({ metric: 'score', unit: 'pts', points: [] });
   });
 
+  it('pins day buckets to UTC even under a non-UTC DB session TimeZone', async () => {
+    // A scored attempt at 00:30 UTC today is YESTERDAY afternoon in
+    // America/Anchorage (UTC-9/-8). The route buckets with `(scored_at AT
+    // TIME ZONE 'UTC')::date`; a regression to a bare `scored_at::date`
+    // would follow the session TimeZone and land this row on yesterday's
+    // bucket. The main suite pool runs in UTC (where both expressions
+    // agree), so this ephemeral app pins its pool connections to Anchorage
+    // to make them disagree.
+    const tz = buildTestApp({ connectionString: pg.connectionString });
+    tz.pool.on('connect', (client) => {
+      client.query("SET TimeZone = 'America/Anchorage'").catch(() => {
+        // Swallowed on purpose: the SHOW TimeZone assertion below fails
+        // loudly if the pin did not apply.
+      });
+    });
+    try {
+      // Prove the pin applied — otherwise this silently degrades tz-neutral.
+      const shown = await tz.pool.query('SHOW TimeZone');
+      expect(shown.rows[0]).toEqual({ TimeZone: 'America/Anchorage' });
+
+      // Capture "today" (UTC) BEFORE inserting so a midnight rollover
+      // between insert and assert can't flake the expected bucket.
+      const today = await utcDay(0);
+      const { agent, userId } = await registerUser(tz.app, pg.pool);
+      await pg.pool.query(
+        `INSERT INTO grammar_drill_attempts (
+            user_id, pattern_key, pattern_display, drill_type, item,
+            user_answer, score, verdict, feedback, scored_at)
+         VALUES ($1, 'GR-tz-test', '-(으)면', 'cloze', '{}'::jsonb,
+                 '답변', 88, 'good', '{}'::jsonb,
+                 ($2::date + time '00:30') AT TIME ZONE 'UTC')`,
+        [userId, today],
+      );
+
+      const res = await agent.get('/grammar/series');
+      expect(res.status).toBe(200);
+      expect(res.body.series.points).toEqual([{ date: today, value: 88 }]);
+    } finally {
+      await teardownTestApp(tz);
+    }
+  });
+
   it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(`/grammar/series?${qs}`);

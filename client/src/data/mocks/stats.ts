@@ -3,10 +3,12 @@
  *
  * Mock-fallback for `fetchSkillSeries` (the `/topik|/vocab|/grammar /series`
  * fan-out). Shapes mirror the wire contract exactly: ascending `YYYY-MM-DD`
- * dates, activity days only (gaps are absent, not zero-filled), accuracy in
- * 0–100 with `unit: '%'`, vocab as a daily review count. `writing` is the
- * client-only `metric: 'none'` sentinel — no series route exists for it, so
- * the carousel shows its placeholder panel.
+ * dates, activity days only (gaps are absent, not zero-filled), TOPIK
+ * accuracy in 0–100 with `unit: '%'`, vocab as a daily review COUNT with
+ * `unit: 'reviews'`, grammar as a daily average drill SCORE with
+ * `unit: 'pts'` (the real routes' metrics — grammar is `score`, never
+ * `accuracy`). `writing` is the client-only `metric: 'none'` sentinel — no
+ * series route exists for it, so the carousel shows its placeholder panel.
  */
 import type { AllSkillSeries } from '../../types/domain';
 import { mockDelay } from './_delay';
@@ -42,7 +44,7 @@ export const SKILL_SERIES_FIXTURE: AllSkillSeries = {
   },
   vocab: {
     metric: 'count',
-    unit: 'cards',
+    unit: 'reviews',
     points: [
       { date: '2026-06-08', value: 12 },
       { date: '2026-06-09', value: 20 },
@@ -56,8 +58,8 @@ export const SKILL_SERIES_FIXTURE: AllSkillSeries = {
     ],
   },
   grammar: {
-    metric: 'accuracy',
-    unit: '%',
+    metric: 'score',
+    unit: 'pts',
     points: [
       { date: '2026-06-10', value: 39 },
       { date: '2026-06-14', value: 45 },

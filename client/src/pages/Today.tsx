@@ -16,7 +16,10 @@
  * Three fetches because Today composes the plan AND the snapshot AND the
  * per-skill trends; pulling them separately matches the server split
  * (`/plan/today` vs `/diagnostic/latest` vs the `/…/series` fan-out) and
- * lets each fail independently in the UI.
+ * lets each fail independently in the UI. The series fan-out itself degrades
+ * per skill (`fetchSkillSeries` never rejects on a route failure — a failed
+ * skill becomes an honest "No data yet" panel, never fixture numbers), so
+ * the carousel card has no error state of its own.
  *
  * F-017 adds the "Progress by skill" card below the snapshot: a SwipeCarousel
  * of five panels (Reading / Listening / Vocab / Grammar / Writing), each a
@@ -133,6 +136,12 @@ interface TaskTile {
 // Progress-by-skill carousel (F-017)
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Trend window (days) — the single source for both the fetch and the chart
+ * aria-labels, so the labels can never drift from the data window.
+ */
+const TREND_WINDOW_DAYS = 30;
+
 /** Carousel page order — fixed by the feature spec (F-017). */
 const SERIES_PANELS: ReadonlyArray<{
   key: keyof AllSkillSeries;
@@ -189,16 +198,21 @@ function SkillTrendPanel({
         <span className="km-today__trendValue">{latestValue(series)}</span>
       </div>
       {series.metric === 'none' ? (
-        // Writing has no series route yet — an invitation, not a broken chart.
+        // `none` is the client-only placeholder: Writing has no series route
+        // yet (an invitation, not a broken chart), and any other skill lands
+        // here when its fetch failed — an honest "No data yet", never
+        // fabricated numbers.
         <div className="km-today__trendEmpty">
-          Start writing to see your progress here.
+          {skillKey === 'writing'
+            ? 'Start writing to see your progress here.'
+            : 'No data yet'}
         </div>
       ) : (
         <LineChart
           points={series.points}
           unit={series.unit}
           metricLabel={METRIC_LABELS[series.metric]}
-          ariaLabel={`${label} trend over the last 30 days`}
+          ariaLabel={`${label} trend over the last ${String(TREND_WINDOW_DAYS)} days`}
         />
       )}
     </div>
@@ -235,11 +249,14 @@ export function Today(): JSX.Element {
     { realFn: () => fetchLatestSnapshot() },
   );
   // F-017 — the per-skill 30-day trends behind the "Progress by skill"
-  // carousel. One fan-out call; falls back to its mock like the other two.
+  // carousel. One fan-out call. Unlike the other two, its realFn never
+  // rejects — a failed route degrades that skill to a "No data yet" panel
+  // (fetchSkillSeries owns that), so this source can't trip the mock
+  // fallback and paint fixture numbers as real progress.
   const series = useEndpointOrMock<AllSkillSeries>(
     'today.series',
     loadSkillSeriesMock,
-    { realFn: () => fetchSkillSeries() },
+    { realFn: () => fetchSkillSeries(TREND_WINDOW_DAYS) },
   );
 
   const dateStr = formatDateEyebrow(new Date());
@@ -247,10 +264,10 @@ export function Today(): JSX.Element {
   // Retry routes through the hook's `refetch()` rather than a brutal
   // `window.location.reload()`. Each ErrorCard targets the failing fetch
   // alone — a diagnostic-snapshot failure no longer reloads the entire
-  // app to recover the today plan.
+  // app to recover the today plan. (The series source has no ErrorCard:
+  // its realFn never rejects — per-skill degradation instead.)
   const retryToday = today.refetch;
   const retryDiag = diag.refetch;
-  const retrySeries = series.refetch;
 
   // MockBadge tracks realFn-backed sources (the unified Pass-3 semantics).
   // All three fetches are realFn-backed, so any one falling back to its mock
@@ -351,12 +368,11 @@ export function Today(): JSX.Element {
               ))}
             </SwipeCarousel>
           </Card>
-        ) : (
-          <ErrorCard
-            message="Skill trends are unavailable."
-            onRetry={retrySeries}
-          />
-        )}
+        ) : // Unreachable in practice: the series realFn never rejects (per-
+        // skill degradation) and the mock loader cannot fail, so post-loading
+        // data is always present. `null` (not a dead ErrorCard) satisfies the
+        // type-level narrowing without shipping UI that can never render.
+        null}
       </section>
 
       {/* Review queue CTA ────────────────────────────────────── */}

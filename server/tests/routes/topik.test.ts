@@ -387,6 +387,13 @@ describe('GET /topik/series — per-skill daily accuracy time-series (F-017)', (
     await insertResponse(userId, readingId, { correct: true, daysAgo: 2 });
     await insertResponse(userId, readingId, { correct: false, daysAgo: 2 });
     await insertResponse(userId, readingId, { correct: false, daysAgo: 2 });
+    // Reading, yesterday: 2 correct of 3 → round(100.0 * 2/3) = 67, where
+    // integer division would truncate to 66. Every other case in this test
+    // has round == trunc, so this day alone makes a regression to
+    // `round(100 * c / n)` (bigint division) detectable.
+    await insertResponse(userId, readingId, { correct: true, daysAgo: 1 });
+    await insertResponse(userId, readingId, { correct: true, daysAgo: 1 });
+    await insertResponse(userId, readingId, { correct: false, daysAgo: 1 });
     // Reading, today: 3 correct of 4 → 75.
     await insertResponse(userId, readingId, { correct: true });
     await insertResponse(userId, readingId, { correct: true });
@@ -405,6 +412,7 @@ describe('GET /topik/series — per-skill daily accuracy time-series (F-017)', (
     expect(res.body.reading.unit).toBe('%');
     expect(res.body.reading.points).toEqual([
       { date: await utcDay(2), value: 33 },
+      { date: await utcDay(1), value: 67 },
       { date: await utcDay(0), value: 75 },
     ]);
 
@@ -457,6 +465,47 @@ describe('GET /topik/series — per-skill daily accuracy time-series (F-017)', (
     expect(res.status).toBe(200);
     expect(res.body.reading).toEqual({ metric: 'accuracy', unit: '%', points: [] });
     expect(res.body.listening).toEqual({ metric: 'accuracy', unit: '%', points: [] });
+  });
+
+  it('pins day buckets to UTC even under a non-UTC DB session TimeZone', async () => {
+    // A response at 00:30 UTC today is YESTERDAY afternoon in
+    // America/Anchorage (UTC-9/-8). The route buckets with
+    // `(answered_at AT TIME ZONE 'UTC')::date`; a regression to a bare
+    // `answered_at::date` would follow the session TimeZone and land this
+    // row on yesterday's bucket. The main suite pool runs in UTC (where the
+    // two expressions agree), so this ephemeral app pins every one of its
+    // pool connections to Anchorage — the documented node-postgres
+    // per-connection setup hook — making the two expressions disagree.
+    const tz = buildTestApp({ connectionString: pg.connectionString });
+    tz.pool.on('connect', (client) => {
+      client.query("SET TimeZone = 'America/Anchorage'").catch(() => {
+        // Swallowed on purpose: the SHOW TimeZone assertion below fails
+        // loudly if the pin did not apply.
+      });
+    });
+    try {
+      // Prove the pin actually applied — otherwise this test could silently
+      // degrade back into the tz-neutral variant it exists to strengthen.
+      const shown = await tz.pool.query('SHOW TimeZone');
+      expect(shown.rows[0]).toEqual({ TimeZone: 'America/Anchorage' });
+
+      // Capture "today" (UTC) BEFORE inserting so a midnight rollover
+      // between insert and assert can't flake the expected bucket.
+      const today = await utcDay(0);
+      const itemId = await seedTopikItem(pg.pool, { section: 'reading' });
+      const { agent, userId } = await registerUser(tz.app, pg.pool);
+      await pg.pool.query(
+        `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, answered_at)
+         VALUES ($1, $2, 'a', true, 'study', ($3::date + time '00:30') AT TIME ZONE 'UTC')`,
+        [userId, itemId, today],
+      );
+
+      const res = await agent.get('/topik/series');
+      expect(res.status).toBe(200);
+      expect(res.body.reading.points).toEqual([{ date: today, value: 100 }]);
+    } finally {
+      await teardownTestApp(tz);
+    }
   });
 
   it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {

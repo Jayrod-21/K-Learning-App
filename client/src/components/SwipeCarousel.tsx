@@ -6,13 +6,23 @@
  * slides horizontally and snaps to exactly one page.
  *
  * Interaction model:
- *   - **Pointer drag.** pointerdown arms a gesture; the first ~8px of
- *     movement decides its axis. Horizontal-dominant → the carousel captures
- *     the pointer and drags the track; vertical-dominant → the gesture is
- *     surrendered so the page keeps scrolling (`touch-action: pan-y` on the
- *     viewport tells the browser the same thing for touch). Releasing past
- *     the snap threshold (20% of the viewport, min 48px) advances one page;
- *     short drags spring back. Overscroll at either end is damped 3:1.
+ *   - **Pointer drag.** A primary-pointer, left/first-button pointerdown arms
+ *     a gesture; the first ~8px of movement decides its axis.
+ *     Horizontal-dominant → the carousel captures the pointer and drags the
+ *     track; vertical-dominant → the gesture is surrendered IMMEDIATELY
+ *     (tracking stops, the ref clears) so the page keeps scrolling
+ *     (`touch-action: pan-y` on the viewport tells the browser the same thing
+ *     for touch). Releasing past the snap threshold (20% of the viewport,
+ *     min 48px) advances one page; short drags spring back. Overscroll at
+ *     either end is damped 3:1.
+ *   - **Stuck-drag safety.** Mouse pointers have no implicit capture, and we
+ *     deliberately defer `setPointerCapture` until the axis locks `'h'` (so
+ *     `click` retargeting can't break interactive page content). That means
+ *     a still-undecided gesture whose pointer leaves the viewport would never
+ *     see its `pointerup` — so `pointerleave` ends any non-captured gesture,
+ *     and `lostpointercapture` ends a captured one whose capture is revoked.
+ *     Without these, one off-viewport release would silently swallow every
+ *     future swipe until remount.
  *   - **Dots.** `role="tablist"` of `role="tab"` buttons below the track
  *     (the W3C carousel-with-tabs pattern): click to jump, Left/Right arrows
  *     move selection (with wrap), Home/End jump to the ends. Roving
@@ -105,6 +115,10 @@ export function SwipeCarousel({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     if (count < 2) return;
+    // Only the primary pointer with the left/first button may arm a gesture —
+    // a right-click (whose pointerup a context menu can suppress) or a second
+    // touch must never start (or corrupt) a drag.
+    if (!e.isPrimary || e.button !== 0) return;
     // A second touch while a gesture is live is ignored, not restarted.
     if (dragRef.current !== null) return;
     dragRef.current = {
@@ -138,8 +152,11 @@ export function SwipeCarousel({
         }
       } else {
         // Vertical-dominant: this is a page scroll, not a swipe. Surrender
-        // the gesture entirely so we never hijack vertical scrolling.
-        d.axis = 'v';
+        // the gesture entirely — and stop tracking it NOW. Keeping the ref
+        // alive here is the stuck-drag bug: a mouse released off-viewport
+        // never delivers pointerup to us, and the immortal ref would then
+        // swallow every future gesture via the guard in onPointerDown.
+        endDrag();
         return;
       }
     }
@@ -170,6 +187,17 @@ export function SwipeCarousel({
     const d = dragRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
     endDrag();
+  };
+
+  const onPointerLeave = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+    // Once the axis locks 'h' the pointer is captured, so moves keep coming
+    // and a leave is not a concern. A gesture still in the capture-less
+    // 'none' phase can never complete once the pointer leaves (mouse
+    // pointerup off-element would never reach us) — end it here so it can't
+    // permanently block future gestures.
+    if (d.axis !== 'h') endDrag();
   };
 
   // ── Dot keyboard navigation (W3C tabs pattern, with wrap) ──
@@ -203,6 +231,10 @@ export function SwipeCarousel({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
+        onPointerLeave={onPointerLeave}
+        // Belt-and-braces: if a captured 'h' drag has its capture revoked
+        // externally, drop the gesture rather than stranding dragX mid-track.
+        onLostPointerCapture={endDrag}
       >
         <div
           className={`km-carousel__track${dragging ? ' km-carousel__track--dragging' : ''}`}
