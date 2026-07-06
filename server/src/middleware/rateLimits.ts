@@ -54,7 +54,18 @@ function buildExpensive(): RateLimitRequestHandler {
     legacyHeaders: false,
     validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
     keyGenerator: userOrIpKey,
-    message: { error: { code: 'rate_limited', message: 'too many requests' } },
+    // B-016: include retry_after (whole seconds) so a 429 from an expensive
+    // route (grade-writing, lemmatize, enrich, diagnostic gen) carries a real
+    // "try again in N s" hint. The client already parses error.retry_after into
+    // ApiError.retryAfter and the Writing screen has a live branch for it — this
+    // fills the field that branch was waiting on.
+    message: {
+      error: {
+        code: 'rate_limited',
+        message: 'too many requests',
+        retry_after: Math.ceil(cfg.RATE_LIMIT_WINDOW_MS / 1000),
+      },
+    },
   });
 }
 

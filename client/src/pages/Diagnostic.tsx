@@ -989,7 +989,11 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
 
   return (
     <section aria-labelledby="dg-results-h" className="km-diagnostic__results">
-      <Eyebrow>Diagnostic · completed 5 min ago</Eyebrow>
+      {/* B-007: the results snapshot carries no capture timestamp, so the old
+          hard-coded "completed 5 min ago" was always a lie. Drop the false time
+          claim. ("TOPIK II Level 4" below is the app's fixed target, not a
+          per-attempt value, so it stays.) */}
+      <Eyebrow>Your results</Eyebrow>
       <h1 id="dg-results-h" className="kr-display km-diagnostic__results-title">
         Diagnostic
       </h1>
