@@ -404,7 +404,21 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add a history endpoint returning all snapshots ordered by `captured_at`, and a page charting per-dimension trends. Pairs with B-007 (stale-result fix) so a fresh attempt actually appears.
 
 ### F-011 · Diagnostic is a heuristic, not a valid psychometric test
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (DATA, DATABASE)
+- **Status:** 🟢 done (2026-07-06, deployed — hardening pass) · **Priority:** P2 · **Category:** BACKEND (DATA, DATABASE)
+- **Resolution (2026-07-06):** the "cheap heuristic pass" per `BRIEF_F011_diagnostic_hardening.md`
+  — makes the diagnostic more trustworthy WITHOUT a psychometrics rebuild (θ staircase
+  intentionally untouched; guessing-correction / adaptive-stopping / real-IRT still deferred).
+  (1) 2→4 items/dimension (16-item interleaved run; B-006 already decoupled `/next` gen from
+  grading so the 8 Claude gens don't re-freeze). (2) Per-dimension estimate uses proportion
+  correct (`ESTIMATE_SPREAD`), not a 3-bucket delta — every item counts. `RUBRIC_VERSION` v1.0.0
+  → v1.1.0. (3) Agresti-Coull confidence band per dimension (`BAND_Z`) — non-zero even at 0/4
+  and 4/4, narrows as n grows, persisted in `evidence.dimensionStats` (no migration); legacy
+  v1.0.0 snapshots still load (zero-width band). Client renders a subtle band range in
+  SkillsCompare + honest "rough placement estimate, not an official score" framing (dropped the
+  hardcoded "Level 4"); Intro copy corrected to 16 items / 4 per section. Built by 2 Fable
+  agents; full /fixpass (1 BLOCKER: intro count mismatch → re-review PASS, math verified by a
+  966-cell sweep + 5 mutation probes). Consts tunable. **Note for F-010** (progress history):
+  the rubric bump means history must compare like RUBRIC_VERSIONs. server 59 / client 699. PR #55.
 - **Where:** Diagnostic engine.
 - **What it actually is today (from reading the code):**
   - **8 items total, 2 per dimension** (fixed interleaved schedule) — reading/listening
