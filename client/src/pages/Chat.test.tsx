@@ -19,10 +19,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type {
   AppendMessageBody,
   ConversationsList,
 } from '../types/domain';
+import type { ChatSeedState } from '../lib/askSeed';
 import { ApiError } from '../services/api';
 
 // ── Hoisted shared state — mocks read fresh values per test ─────────────
@@ -149,6 +152,41 @@ vi.mock('../services/conversation', () => ({
 
 import { Chat } from './Chat';
 
+/**
+ * Chat now reads `useLocation`/`useNavigate` (F-020 seeding), so every render
+ * needs a router. `seedState`, when given, rides in as the `/chat` entry's
+ * router state — exactly how `AskAboutThisButton` delivers it.
+ */
+function renderChat(seedState?: ChatSeedState): ReturnType<typeof render> {
+  return render(
+    <MemoryRouter
+      initialEntries={
+        seedState !== undefined
+          ? [{ pathname: '/chat', state: seedState }]
+          : ['/chat']
+      }
+    >
+      <Chat />
+      <LocationStateProbe />
+    </MemoryRouter>,
+  );
+}
+
+/**
+ * Exposes whether the current history entry still carries router state —
+ * lets the seed tests assert Chat cleared the consumed seed.
+ */
+function LocationStateProbe(): JSX.Element {
+  const location = useLocation();
+  return (
+    <div data-testid="location-state">
+      {location.state === null || location.state === undefined
+        ? 'empty'
+        : 'present'}
+    </div>
+  );
+}
+
 /** Reset shared state between tests so each starts from a clean slate. */
 function resetState(): void {
   hoisted.ref.endpoint = { kind: 'loading', data: null };
@@ -182,7 +220,7 @@ describe('Chat', () => {
   it('renders the skeleton while loading', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'loading', data: null };
-    render(<Chat />);
+    renderChat();
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
   });
@@ -190,7 +228,7 @@ describe('Chat', () => {
   it('renders the personalised opener once listConversations resolves', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    render(<Chat />);
+    renderChat();
     expect(screen.getByText('대화 · Chat')).toBeInTheDocument();
     // The fallback opener (formal greeting) is shown until the first real
     // tutor reply lands.
@@ -206,7 +244,7 @@ describe('Chat', () => {
       resetState();
       hoisted.ref.endpoint = { kind: 'data', data: LIST };
       const user = userEvent.setup();
-      render(<Chat />);
+      renderChat();
 
       const input = screen.getByLabelText('Reply input');
       await user.type(input, '감사합니다');
@@ -230,7 +268,7 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
-    render(<Chat />);
+    renderChat();
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '안녕');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -267,7 +305,7 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
-    render(<Chat />);
+    renderChat();
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '테스트');
     const send = screen.getByRole('button', { name: 'Send' });
@@ -282,7 +320,7 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
-    render(<Chat />);
+    renderChat();
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '실패');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -314,7 +352,7 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
-    render(<Chat />);
+    renderChat();
 
     // First send: capture the minted requestId off the failing call.
     const input = screen.getByLabelText('Reply input');
@@ -361,7 +399,7 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
-    const { unmount } = render(<Chat />);
+    const { unmount } = renderChat();
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '중간');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -372,5 +410,92 @@ describe('Chat', () => {
 
     unmount();
     expect(call.signal.aborted).toBe(true);
+  });
+});
+
+// ── "Ask about this" seeding (F-020) ─────────────────────────────────────
+describe('Chat seed (F-020)', () => {
+  const SEED: ChatSeedState = {
+    seedText: 'About this TOPIK question:\n\n알맞은 것을 고르십시오.',
+    mode: 'topik_prep',
+  };
+
+  it('pre-fills the composer from location.state and does NOT auto-send', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(SEED);
+
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toBe(SEED.seedText);
+    // Pre-fill only — no stream was dispatched and no user bubble appended.
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+    // The user can review + send: the button is enabled (composer non-empty).
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  });
+
+  it('clears the router state after consuming the seed (no re-seed on re-render)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(SEED);
+
+    // The clearing replace-navigation lands after mount.
+    await waitFor(() => {
+      expect(screen.getByTestId('location-state')).toHaveTextContent('empty');
+    });
+    // The pre-filled text survives the state-clearing re-render.
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toBe(SEED.seedText);
+  });
+
+  it('keeps user edits — the seed never re-applies over typed text', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat(SEED);
+
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    await user.type(input, ' 감사합니다');
+    expect(input.value).toBe(`${SEED.seedText} 감사합니다`);
+  });
+
+  it('prefers the seed mode when lazily starting the conversation', async () => {
+    resetState();
+    // No existing conversations — sending must lazy-start one.
+    hoisted.ref.endpoint = { kind: 'data', data: { conversations: [] } };
+    const user = userEvent.setup();
+    renderChat(SEED);
+
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(hoisted.ref.startCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.startCalls[0]?.mode).toBe('topik_prep');
+    // And the seed text is what went out.
+    expect(hoisted.ref.streamCalls[0]?.body.content).toBe(SEED.seedText);
+  });
+
+  it('ignores malformed router state (untrusted history state)', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    render(
+      <MemoryRouter
+        initialEntries={[
+          { pathname: '/chat', state: { seedText: 42, mode: 'topik_prep' } },
+        ]}
+      >
+        <Chat />
+      </MemoryRouter>,
+    );
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toBe('');
+  });
+
+  it('renders with an empty composer when no seed state is present', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toBe('');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 });

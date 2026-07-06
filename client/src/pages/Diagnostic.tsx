@@ -57,6 +57,7 @@ import {
   type JSX,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Pill } from '../components/Pill';
@@ -760,6 +761,26 @@ function TakingBlock({
         >
           <Eyebrow>{reveal.correct ? 'Correct' : 'Not quite'}</Eyebrow>
           <p className="km-diagnostic__explain">{reveal.explain}</p>
+          {/* F-020: hand the graded item to the Chat tutor. The stem lives on
+              `item`, the key + explanation on the server's `reveal` — the
+              choice ids are resolved to their display text here so the seed
+              reads naturally. */}
+          <div style={{ marginTop: 10 }}>
+            <AskAboutThisButton
+              prompt={item.prompt}
+              correctText={
+                item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
+                reveal.correctAnswer
+              }
+              passage={item.passage}
+              explanation={reveal.explain}
+              userPick={
+                !reveal.correct && picked !== null
+                  ? item.choices.find((c) => c.id === picked)?.kr
+                  : undefined
+              }
+            />
+          </div>
         </Card>
       ) : null}
 

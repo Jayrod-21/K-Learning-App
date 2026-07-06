@@ -7,7 +7,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import type { ApiError } from '../services/api';
 import type { Mistake } from '../services/topik';
@@ -70,6 +72,21 @@ function renderPage(): void {
   );
 }
 
+/**
+ * Lands at `/chat` after an "Ask about this" click (F-020) and prints the
+ * router state the navigation carried, so the test can assert the seed.
+ */
+function ChatSeedProbe(): JSX.Element {
+  const location = useLocation();
+  const state = location.state as { seedText?: string; mode?: string } | null;
+  return (
+    <div data-testid="chat-seed">
+      {state?.seedText ?? 'no-seed'}
+      {state?.mode !== undefined ? ` mode=${state.mode}` : ''}
+    </div>
+  );
+}
+
 describe('Mistakes page (F-021)', () => {
   beforeEach(() => {
     hoisted.state = { kind: 'loading' };
@@ -85,6 +102,29 @@ describe('Mistakes page (F-021)', () => {
     // The correct answer is named (appears in the choice + the reveal block).
     expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
     expect(screen.getAllByText('나 정답').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('F-020: each miss carries an "Ask about this" handoff seeded with the item', async () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={['/mistakes']}>
+        <Routes>
+          <Route path="/mistakes" element={<Mistakes />} />
+          <Route path="/chat" element={<ChatSeedProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    // The navigation carried the mistake's fields into the Chat seed.
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('알맞은 것을 고르십시오.');
+    expect(probe.textContent).toContain('Correct answer: 나 정답');
+    expect(probe.textContent).toContain('My answer: 가 오답 (incorrect)');
+    expect(probe.textContent).toContain('Why: 정답은 나입니다.');
+    expect(probe.textContent).toContain('mode=topik_prep');
   });
 
   it('shows an empty state when there are no mistakes', () => {

@@ -49,6 +49,7 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { AskAboutThisButton } from '../../components/AskAboutThisButton';
 import { Card } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { Pill } from '../../components/Pill';
@@ -1252,6 +1253,22 @@ export function TopikResults({
                 {!row.isCorrect && row.explanation.trim().length > 0 ? (
                   <p className="km-topik__explain">{row.explanation}</p>
                 ) : null}
+                {/* F-020: hand this reviewed item to the Chat tutor. The
+                    explanation/miss fields mirror the F-009 gating above —
+                    the seed only carries what this reveal actually shows. */}
+                <div style={{ marginTop: 10 }}>
+                  <AskAboutThisButton
+                    prompt={row.prompt}
+                    correctText={row.correctText}
+                    passage={row.passage}
+                    explanation={!row.isCorrect ? row.explanation : undefined}
+                    userPick={
+                      !row.isCorrect && row.pickedText !== 'skipped'
+                        ? row.pickedText
+                        : undefined
+                    }
+                  />
+                </div>
               </Card>
             </li>
           );

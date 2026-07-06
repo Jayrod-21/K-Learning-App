@@ -267,6 +267,11 @@ describe('Diagnostic', () => {
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
     expect(await screen.findByText('Not quite')).toBeInTheDocument();
 
+    // F-020: the reveal carries the "Ask about this" Chat handoff.
+    expect(
+      screen.getByRole('button', { name: 'Ask about this' }),
+    ).toBeInTheDocument();
+
     // done:true → no second /next prefetch was issued.
     expect(nextDiagnostic).toHaveBeenCalledTimes(1);
 

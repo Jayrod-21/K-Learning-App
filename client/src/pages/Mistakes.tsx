@@ -10,6 +10,7 @@
  * the dev-only 🅂 badge lights when the fixture is serving.
  */
 import { type JSX } from 'react';
+import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Eyebrow } from '../components/Eyebrow';
@@ -34,6 +35,7 @@ function whenLabel(iso: string): string {
 function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
   const { item, picked } = mistake;
   const correct = item.options.find((o) => o.correct);
+  const pickedOpt = item.options.find((o) => o.id === picked);
   const when = whenLabel(mistake.answeredAt);
   return (
     <Card className="km-mistakes__card">
@@ -89,6 +91,17 @@ function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
           <p className="km-mistakes__explain-text">{item.explanation}</p>
         </Card>
       ) : null}
+
+      {/* F-020: hand this miss to the Chat tutor for an AI follow-up. */}
+      <div style={{ marginTop: 10 }}>
+        <AskAboutThisButton
+          prompt={item.prompt}
+          correctText={correct?.kr ?? ''}
+          passage={item.passage}
+          explanation={item.explanation}
+          userPick={pickedOpt?.kr}
+        />
+      </div>
     </Card>
   );
 }

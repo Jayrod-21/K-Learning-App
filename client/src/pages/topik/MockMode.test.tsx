@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import type { MockResult, MockTest } from '../../types/domain';
 
 const svc = vi.hoisted(() => ({
@@ -117,7 +118,7 @@ describe('MockMode (Mock test)', () => {
   });
 
   it('renders the section select with a disabled Writing card', () => {
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
     expect(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
     ).toBeEnabled();
@@ -132,7 +133,7 @@ describe('MockMode (Mock test)', () => {
 
   it('starts a section → enters the exam with answer-stripped items', async () => {
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -160,7 +161,7 @@ describe('MockMode (Mock test)', () => {
 
   it('countdown timer starts at the section budget in h:mm:ss', async () => {
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
     );
@@ -174,7 +175,7 @@ describe('MockMode (Mock test)', () => {
   it('countdown timer starts at 1:00:00 for the Listening section', async () => {
     svc.fetchMockTest.mockResolvedValueOnce({ ...TEST, section: 'listening' });
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
     await user.click(
       screen.getByRole('button', { name: /Start Listening mock test/i }),
     );
@@ -189,7 +190,7 @@ describe('MockMode (Mock test)', () => {
     // the auto-submit test below for the fireEvent/act pattern rationale).
     vi.useFakeTimers();
     try {
-      render(<MockMode />);
+      render(<MockMode />, { wrapper: MemoryRouter });
       fireEvent.click(
         screen.getByRole('button', { name: /Start Reading mock test/i }),
       );
@@ -224,7 +225,7 @@ describe('MockMode (Mock test)', () => {
 
   it('answers items, submits with confirm, and shows results with reveals', async () => {
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -280,6 +281,11 @@ describe('MockMode (Mock test)', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText('C restates the phrase.')).toBeInTheDocument();
 
+    // F-020: every review row offers the "Ask about this" Chat handoff.
+    expect(
+      screen.getAllByRole('button', { name: 'Ask about this' }),
+    ).toHaveLength(2);
+
     // The submit body carried the user's picks for both items.
     const body = svc.submitMockTest.mock.calls[0]?.[0] as {
       sourceTest: number;
@@ -331,7 +337,7 @@ describe('MockMode (Mock test)', () => {
     });
 
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
     );
@@ -361,7 +367,7 @@ describe('MockMode (Mock test)', () => {
     // promise flushes inside `act`.
     vi.useFakeTimers();
     try {
-      render(<MockMode />);
+      render(<MockMode />, { wrapper: MemoryRouter });
       // Start the Reading section.
       fireEvent.click(
         screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -421,7 +427,7 @@ describe('MockMode (Mock test)', () => {
       ],
     });
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -453,7 +459,7 @@ describe('MockMode (Mock test)', () => {
       items: [{ ...TEST.items[0]!, passage: passageText }, TEST.items[1]!],
     });
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -478,7 +484,7 @@ describe('MockMode (Mock test)', () => {
   it('falls back to an error card (not a blank screen) when fetch + fixture both fail', async () => {
     svc.fetchMockTest.mockRejectedValueOnce(new Error('down'));
     const user = userEvent.setup();
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     await user.click(
       screen.getByRole('button', { name: /Start Reading mock test/i }),
@@ -499,7 +505,7 @@ describe('MockMode (Mock test)', () => {
       answered: 1,
       updatedAt: '2026-07-06T10:00:00.000Z',
     });
-    render(<MockMode />);
+    render(<MockMode />, { wrapper: MemoryRouter });
 
     // The banner appears once the mount-time fetchAttempt resolves.
     const resumeBtn = await screen.findByRole('button', { name: /^Resume$/ });
