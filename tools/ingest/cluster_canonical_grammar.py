@@ -68,10 +68,17 @@ _REPO_ROOT = _HERE.parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# Local imports (after sys.path tweak). Try package-relative first (the
-# clean form), fall back to bare-name (script invocation).
+# Local imports (after sys.path tweak). Import the BARE module name FIRST: the
+# rest of the ingest suite resolves it that way (conftest puts tools/ingest/ on
+# sys.path; every test + sibling loader imports `canonical_grammar` bare), and
+# _HERE is on sys.path under all three invocation modes above, so the bare import
+# always succeeds. Preferring the package form here loaded canonical_grammar
+# under TWO module identities (bare in the tests, tools.ingest.* here) whose
+# distinct PatternOccurrence classes then failed pydantic's isinstance check on
+# CanonicalCluster.members — a module-identity split. The package form stays as a
+# fallback for any context where the bare name is not importable.
 try:  # pragma: no cover — import-mode plumbing
-    from tools.ingest.canonical_grammar import (  # noqa: E402
+    from canonical_grammar import (  # noqa: E402
         CanonicalCluster,
         ClusterDocument,
         PatternOccurrence,
@@ -81,7 +88,7 @@ try:  # pragma: no cover — import-mode plumbing
         split_compound_pattern,
     )
 except ImportError:  # pragma: no cover
-    from canonical_grammar import (  # type: ignore[no-redef]  # noqa: E402
+    from tools.ingest.canonical_grammar import (  # type: ignore[no-redef,import-not-found]  # noqa: E402
         CanonicalCluster,
         ClusterDocument,
         PatternOccurrence,

@@ -1,0 +1,25 @@
+# Dev/test dependencies for the ingest tooling (loaders + parsers + resolver).
+#
+# There is no runtime requirements.txt because ingest runs ad-hoc from an
+# operator machine, not as a deployed service. This file exists so CI — and any
+# contributor — can reproduce a green `pytest tests/` run. Several of these are
+# imported by the runtime loaders at MODULE LOAD (pydantic, httpx, defusedxml,
+# pypdf, PyMuPDF, anthropic, psycopg), so they are required merely to COLLECT the
+# test suite, not just to exercise it.
+#
+# The collection-critical libs are PINNED to exact versions: an incompatible
+# major bump in any of them breaks the ENTIRE gate (a collection error, not a
+# single test), so they get the same treatment as psycopg/structlog. anthropic in
+# particular is a fast-moving SDK (see the ingest notes) — bump deliberately.
+# testcontainers + pytest stay as ranges to match the db-checks job.
+psycopg[binary]==3.2.3
+psycopg_pool==3.3.1
+structlog==24.4.0
+pydantic==2.13.4
+httpx==0.28.1
+defusedxml==0.7.1
+pypdf==6.14.2
+PyMuPDF==1.28.0
+anthropic==0.116.0
+testcontainers[postgres]>=4,<5
+pytest>=8,<10
