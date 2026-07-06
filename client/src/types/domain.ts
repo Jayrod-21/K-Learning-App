@@ -773,6 +773,41 @@ export interface VocabEntriesPage {
   total?: number;
 }
 
+// ── Word mastery (F-013 — Progress page) ──────────────────────────────
+/** FSRS maturity bucket for a vocab card. */
+export type MasteryBucket = 'new' | 'learning' | 'reviewing' | 'mastered';
+
+/** Per-bucket card counts across all of the user's vocab cards. */
+export interface MasterySummary {
+  new: number;
+  learning: number;
+  reviewing: number;
+  mastered: number;
+  total: number;
+}
+
+/** One word in the mastery list — the card's FSRS state made human. */
+export interface MasteryWord {
+  id: number;
+  korean: string;
+  english: string | null;
+  bucket: MasteryBucket;
+  /** FSRS memory stability in days. */
+  stability: number;
+  reps: number;
+  lapses: number;
+  /** ISO timestamp of the next review, or null. */
+  dueAt: string | null;
+}
+
+/** Envelope for `GET /vocab/mastery`: summary + a (filtered) page of words. */
+export interface MasteryPage {
+  summary: MasterySummary;
+  words: MasteryWord[];
+  /** Total matching the current bucket filter (for the word-list pager). */
+  total: number;
+}
+
 // ── KRDICT dictionary search (Resources Dictionary tab) ───────────────
 
 /**

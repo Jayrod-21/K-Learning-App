@@ -34,7 +34,7 @@
  *     failure can never paint fabricated progress; when the real call fails
  *     and the fallback is empty we show the error card, not a fake state.
  */
-import { useState, type JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -44,10 +44,15 @@ import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { getHistory } from '../services/diagnostic';
+import { fetchMastery } from '../services/vocab';
+import { ApiError } from '../services/api';
 import { mockDelay } from '../data/mocks/_delay';
 import type {
   DiagnosticHistoryResponse,
   DiagnosticHistorySnapshot,
+  MasteryBucket,
+  MasteryPage,
+  MasterySummary,
 } from '../types/domain';
 import './Progress.css';
 
@@ -216,6 +221,8 @@ function Progress(): JSX.Element {
           <HistoryBlocks snapshots={snapshots} />
         )
       ) : null}
+
+      <WordMasterySection />
     </section>
   );
 }
@@ -673,6 +680,222 @@ function AttemptsTable({ snapshots }: HistoryProps): JSX.Element {
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Word mastery (F-013)
+// ─────────────────────────────────────────────────────────────
+
+const MASTERY_PAGE = 30;
+
+const BUCKET_META: Record<MasteryBucket, { label: string; cls: string }> = {
+  new: { label: 'New', cls: 'is-new' },
+  learning: { label: 'Learning', cls: 'is-learning' },
+  reviewing: { label: 'Reviewing', cls: 'is-reviewing' },
+  mastered: { label: 'Mastered', cls: 'is-mastered' },
+};
+const BUCKET_ORDER: readonly MasteryBucket[] = [
+  'new',
+  'learning',
+  'reviewing',
+  'mastered',
+];
+
+/** Proportion bar + tappable bucket legend — each chip filters the word list. */
+function MasteryBar({
+  summary,
+  selected,
+  onSelect,
+}: {
+  summary: MasterySummary;
+  selected: MasteryBucket | null;
+  onSelect: (bucket: MasteryBucket | null) => void;
+}): JSX.Element {
+  const denom = Math.max(1, summary.total);
+  return (
+    <div className="km-mastery__summary">
+      <div
+        className="km-mastery__bar"
+        role="img"
+        aria-label={`${String(summary.mastered)} mastered, ${String(
+          summary.reviewing,
+        )} reviewing, ${String(summary.learning)} learning, ${String(
+          summary.new,
+        )} new`}
+      >
+        {BUCKET_ORDER.map((b) =>
+          summary[b] > 0 ? (
+            <span
+              key={b}
+              className={`km-mastery__seg ${BUCKET_META[b].cls}`}
+              style={{ width: `${String((summary[b] / denom) * 100)}%` }}
+            />
+          ) : null,
+        )}
+      </div>
+      <div className="km-mastery__legend">
+        {BUCKET_ORDER.map((b) => (
+          <button
+            key={b}
+            type="button"
+            className={`km-mastery__chip ${BUCKET_META[b].cls}${
+              selected === b ? ' is-active' : ''
+            }`}
+            aria-pressed={selected === b}
+            onClick={() => {
+              onSelect(selected === b ? null : b);
+            }}
+          >
+            <span className="km-mastery__dot" aria-hidden="true" />
+            {BUCKET_META[b].label} <b>{summary[b]}</b>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Progress-page section: per-word FSRS mastery — summary + a filterable list. */
+function WordMasterySection(): JSX.Element {
+  const [bucket, setBucket] = useState<MasteryBucket | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState<MasteryPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  // Selecting a bucket (or toggling it off) always returns to page 1 — done in
+  // the handler, NOT a separate effect, so one tap triggers ONE fetch not two.
+  function selectBucket(next: MasteryBucket | null): void {
+    setBucket(next);
+    setOffset(0);
+  }
+  function retry(): void {
+    setNonce((n) => n + 1);
+  }
+
+  // Real-data-only on purpose — NOT wired through useEndpointOrMock: (1) that
+  // hook resets data→null on every key change, which would wipe the loaded list
+  // on each bucket/page switch and break the graceful keep-stale-on-refetch-
+  // failure behaviour below (which depends on retaining `page`); and (2) it falls
+  // back to a mockFn on failure, and fake mastery numbers would misrepresent real
+  // progress. The effect cleanup aborts the in-flight request on re-run/unmount.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetchMastery(
+      { ...(bucket !== null ? { bucket } : {}), limit: MASTERY_PAGE, offset },
+      ctrl.signal,
+    )
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setPage(res);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          err instanceof ApiError ? err.message : 'Could not load word mastery.',
+        );
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [bucket, offset, nonce]);
+
+  return (
+    <Card className="km-progress__card">
+      <Eyebrow>Vocabulary · 단어 숙달</Eyebrow>
+      <div className="km-progress__card-title">Word mastery</div>
+
+      {page === null ? (
+        loading ? (
+          <div className="km-progress__state">Loading word mastery…</div>
+        ) : error !== null ? (
+          <ErrorCard message={error} onRetry={retry} />
+        ) : null
+      ) : page.summary.total === 0 ? (
+        <p className="km-progress__note">
+          No vocab cards yet — tap a word in Read/Listen and add it to your
+          review deck, and its mastery shows up here.
+        </p>
+      ) : (
+        <>
+          {error !== null ? (
+            <p className="km-mastery__stale" role="alert">
+              Couldn’t refresh — showing the last loaded mastery.{' '}
+              <button
+                type="button"
+                className="km-mastery__retry"
+                onClick={retry}
+              >
+                Retry
+              </button>
+            </p>
+          ) : null}
+          <MasteryBar
+            summary={page.summary}
+            selected={bucket}
+            onSelect={selectBucket}
+          />
+          {page.words.length === 0 ? (
+            <p className="km-progress__note">No words in this group.</p>
+          ) : (
+            <ul className="km-mastery__list">
+              {page.words.map((w) => (
+                <li key={w.id} className="km-mastery__row">
+                  <span className="kr km-mastery__kr">{w.korean}</span>
+                  <span className="km-mastery__en">{w.english ?? ''}</span>
+                  <span
+                    className={`km-mastery__badge ${BUCKET_META[w.bucket].cls}`}
+                  >
+                    {BUCKET_META[w.bucket].label}
+                  </span>
+                  <span className="km-mastery__stab">
+                    {w.bucket === 'new'
+                      ? '—'
+                      : `${String(Math.round(w.stability))}d`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {page.total > MASTERY_PAGE ? (
+            <div className="km-mastery__pager">
+              <Button
+                variant="ghost"
+                disabled={offset === 0}
+                onClick={() => {
+                  setOffset((o) => Math.max(0, o - MASTERY_PAGE));
+                }}
+              >
+                Prev
+              </Button>
+              <span className="km-mastery__pageinfo">
+                {String(offset + 1)}–
+                {String(Math.min(offset + MASTERY_PAGE, page.total))} of{' '}
+                {String(page.total)}
+              </span>
+              <Button
+                variant="ghost"
+                disabled={offset + MASTERY_PAGE >= page.total}
+                onClick={() => {
+                  setOffset((o) => o + MASTERY_PAGE);
+                }}
+              >
+                Next
+              </Button>
+            </div>
+          ) : null}
+        </>
+      )}
+    </Card>
   );
 }
 

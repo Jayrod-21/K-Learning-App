@@ -13,7 +13,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedVocabEntry } from '../helpers/seed.js';
+import {
+  registerUser,
+  seedTopikItem,
+  seedVocabCard,
+  seedVocabEntry,
+} from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
@@ -41,6 +46,7 @@ describe('vocab — auth required', () => {
     ['GET', '/vocab/entries'],
     ['GET', '/vocab/entries/1'],
     ['GET', '/vocab/cards/due'],
+    ['GET', '/vocab/mastery'],
     ['POST', '/vocab/cards/init'],
     ['POST', '/vocab/mine'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
@@ -1044,5 +1050,101 @@ describe('vocab — DB error', () => {
     } finally {
       await pg.pool.query('ALTER TABLE vocab_entries_hidden RENAME TO vocab_entries');
     }
+  });
+});
+
+describe('GET /vocab/mastery — F-013 word mastery', () => {
+  it('summarises buckets, lists words, and filters by bucket', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedVocabCard(pg.pool, userId); // default fsrs_state 'new'
+    const learn = await seedVocabCard(pg.pool, userId);
+    const mature = await seedVocabCard(pg.pool, userId);
+    await pg.pool.query(
+      `UPDATE vocab_cards SET fsrs_state = 'learning', stability = 6 WHERE id = $1`,
+      [learn],
+    );
+    await pg.pool.query(
+      `UPDATE vocab_cards SET fsrs_state = 'review', stability = 30 WHERE id = $1`,
+      [mature],
+    );
+
+    const res = await agent.get('/vocab/mastery');
+    expect(res.status).toBe(200);
+    expect(res.body.summary).toMatchObject({
+      new: 1,
+      learning: 1,
+      reviewing: 0,
+      mastered: 1,
+      total: 3,
+    });
+    expect(res.body.words).toHaveLength(3);
+    // Sorted stability DESC → the mature (30d) card is first.
+    expect(res.body.words[0].bucket).toBe('mastered');
+    expect(res.body.words[0].stability).toBe(30);
+
+    // Bucket filter narrows the LIST but the summary still reflects all cards.
+    const only = await agent.get('/vocab/mastery?bucket=mastered');
+    expect(only.status).toBe(200);
+    expect(only.body.words).toHaveLength(1);
+    expect(only.body.words[0].bucket).toBe('mastered');
+    expect(only.body.total).toBe(1);
+    expect(only.body.summary.total).toBe(3);
+  });
+
+  it("never counts another user's cards", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await seedVocabCard(pg.pool, b.userId);
+    const res = await a.agent.get('/vocab/mastery');
+    expect(res.status).toBe(200);
+    expect(res.body.summary.total).toBe(0);
+    expect(res.body.words).toHaveLength(0);
+  });
+
+  it('rejects an invalid bucket with 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/mastery?bucket=nope');
+    expect(res.status).toBe(400);
+  });
+
+  it('buckets exactly at the 21-day maturity threshold (>= is mature)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const at21 = await seedVocabCard(pg.pool, userId);
+    const below = await seedVocabCard(pg.pool, userId);
+    await pg.pool.query(
+      `UPDATE vocab_cards SET fsrs_state = 'review', stability = 21 WHERE id = $1`,
+      [at21],
+    );
+    await pg.pool.query(
+      `UPDATE vocab_cards SET fsrs_state = 'review', stability = 20.9 WHERE id = $1`,
+      [below],
+    );
+    const res = await agent.get('/vocab/mastery');
+    expect(res.status).toBe(200);
+    expect(res.body.summary).toMatchObject({ mastered: 1, reviewing: 1 });
+    const byStab = new Map(
+      (res.body.words as Array<{ stability: number; bucket: string }>).map(
+        (w) => [w.stability, w.bucket],
+      ),
+    );
+    expect(byStab.get(21)).toBe('mastered');
+    expect(byStab.get(20.9)).toBe('reviewing');
+  });
+
+  it('excludes non-vocab (topik) cards from the summary and list', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedVocabCard(pg.pool, userId); // one real vocab card
+    const topikId = await seedTopikItem(pg.pool);
+    // A topik card has topik_item_id set and vocab_entry_id NULL — it is not a
+    // "word" and must not appear in either the summary or the list.
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, topik_item_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now())`,
+      [userId, topikId],
+    );
+    const res = await agent.get('/vocab/mastery');
+    expect(res.status).toBe(200);
+    expect(res.body.summary.total).toBe(1);
+    expect(res.body.words).toHaveLength(1);
   });
 });

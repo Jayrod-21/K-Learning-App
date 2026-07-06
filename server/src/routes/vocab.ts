@@ -800,4 +800,122 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
   }
 });
 
+// ── F-013: word mastery ──────────────────────────────────────────────────────
+// "Mastered" mirrors the SRS "mature" convention: a review-state card whose
+// memory stability is at least ~3 weeks (retained long enough to count as known).
+const MASTERY_MATURE_DAYS = 21;
+
+const MasteryQuerySchema = z.object({
+  bucket: z.enum(['new', 'learning', 'reviewing', 'mastered']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  offset: z.coerce.number().int().nonnegative().default(0),
+});
+
+// Card → bucket, kept byte-identical between the summary counts and the per-word
+// list so the two can never disagree. No user input is interpolated — the
+// fragments below are fixed constants and MASTERY_MATURE_DAYS is a number.
+const BUCKET_CASE = `CASE
+    WHEN c.fsrs_state = 'new' THEN 'new'
+    WHEN c.fsrs_state IN ('learning', 'relearning') THEN 'learning'
+    WHEN c.fsrs_state = 'review' AND c.stability >= ${MASTERY_MATURE_DAYS} THEN 'mastered'
+    ELSE 'reviewing'
+  END`;
+const BUCKET_PREDICATE: Record<'new' | 'learning' | 'reviewing' | 'mastered', string> =
+  {
+    new: `c.fsrs_state = 'new'`,
+    learning: `c.fsrs_state IN ('learning', 'relearning')`,
+    reviewing: `c.fsrs_state = 'review' AND c.stability < ${MASTERY_MATURE_DAYS}`,
+    mastered: `c.fsrs_state = 'review' AND c.stability >= ${MASTERY_MATURE_DAYS}`,
+  };
+
+/**
+ * GET /vocab/mastery — per-word FSRS mastery for the signed-in user (F-013).
+ * Returns a bucket summary (New / Learning / Reviewing / Mastered) plus a
+ * paginated, optionally bucket-filtered list of the user's vocab words. Only
+ * vocab cards (vocab_entry_id set) count — grammar / sentence / topik cards are
+ * not "words". User-isolated via c.user_id; vocab_entries is shared reference
+ * data joined on the FK alone.
+ */
+router.get(
+  '/mastery',
+  cheapLimiter(),
+  validateQuery(MasteryQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & {
+          validatedQuery: z.infer<typeof MasteryQuerySchema>;
+        }
+      ).validatedQuery;
+
+      const { rows: summaryRows } = await query<{
+        new: string;
+        learning: string;
+        reviewing: string;
+        mastered: string;
+        total: string;
+      }>(
+        `SELECT
+           count(*) FILTER (WHERE fsrs_state = 'new')::text AS new,
+           count(*) FILTER (WHERE fsrs_state IN ('learning','relearning'))::text AS learning,
+           count(*) FILTER (WHERE fsrs_state = 'review' AND stability <  $2)::text AS reviewing,
+           count(*) FILTER (WHERE fsrs_state = 'review' AND stability >= $2)::text AS mastered,
+           count(*)::text AS total
+         FROM vocab_cards
+         WHERE user_id = $1 AND deleted_at IS NULL AND vocab_entry_id IS NOT NULL`,
+        [userId, MASTERY_MATURE_DAYS],
+      );
+      const s = summaryRows[0];
+      const summary = {
+        new: Number(s?.new ?? 0),
+        learning: Number(s?.learning ?? 0),
+        reviewing: Number(s?.reviewing ?? 0),
+        mastered: Number(s?.mastered ?? 0),
+        total: Number(s?.total ?? 0),
+      };
+
+      const filter = q.bucket ? `AND (${BUCKET_PREDICATE[q.bucket]})` : '';
+      const { rows: wordRows } = await query<{
+        id: number;
+        korean: string;
+        english: string | null;
+        bucket: string;
+        stability: string;
+        reps: number;
+        lapses: number;
+        due_at: Date | null;
+        total: string;
+      }>(
+        `SELECT c.id, v.korean, v.english,
+                ${BUCKET_CASE} AS bucket,
+                c.stability::text AS stability, c.reps, c.lapses, c.due_at,
+                count(*) OVER ()::text AS total
+           FROM vocab_cards c
+           JOIN vocab_entries v ON v.id = c.vocab_entry_id
+          WHERE c.user_id = $1 AND c.deleted_at IS NULL ${filter}
+          ORDER BY c.stability DESC NULLS LAST, v.korean COLLATE "C", c.id
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+
+      const words = wordRows.map((r) => ({
+        id: Number(r.id),
+        korean: r.korean,
+        english: r.english,
+        bucket: r.bucket,
+        stability: Number(r.stability),
+        reps: r.reps,
+        lapses: r.lapses,
+        dueAt: r.due_at ? r.due_at.toISOString() : null,
+      }));
+      const total = wordRows.length > 0 ? Number(wordRows[0]?.total) : 0;
+
+      res.status(200).json({ summary, words, total });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;
