@@ -353,6 +353,123 @@ describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () =
   });
 });
 
+describe('TOPIK mock-attempt persistence — resume (F-007)', () => {
+  it('GET /attempt returns null when there is no in-progress attempt', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt).toBeNull();
+  });
+
+  it('PUT saves an attempt; GET returns it; a second PUT upserts (one row per user)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const save1 = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 1300,
+      currentIdx: 5,
+      picks: { '11': 'a', '12': 'c' },
+      remainingMs: 2_400_000,
+    });
+    expect(save1.status).toBe(204);
+
+    const g1 = await agent.get('/topik/attempt');
+    expect(g1.status).toBe(200);
+    expect(g1.body.attempt).toMatchObject({
+      section: 'reading',
+      sourceTest: 1300,
+      currentIdx: 5,
+      picks: { '11': 'a', '12': 'c' },
+      remainingMs: 2_400_000,
+      answered: 2,
+    });
+    expect(typeof g1.body.attempt.updatedAt).toBe('string');
+
+    // A second save REPLACES the first (upsert on user_id — one attempt per user).
+    const save2 = await agent.put('/topik/attempt').send({
+      section: 'listening',
+      sourceTest: 1301,
+      currentIdx: 8,
+      picks: { '20': 'd' },
+      remainingMs: 1_000_000,
+    });
+    expect(save2.status).toBe(204);
+    const g2 = await agent.get('/topik/attempt');
+    expect(g2.body.attempt).toMatchObject({
+      section: 'listening',
+      sourceTest: 1301,
+      currentIdx: 8,
+      answered: 1,
+    });
+  });
+
+  it('DELETE clears the attempt (idempotent)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent
+      .put('/topik/attempt')
+      .send({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: {}, remainingMs: 100 });
+    expect((await agent.delete('/topik/attempt')).status).toBe(204);
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+    // Deleting again is still 204 (idempotent).
+    expect((await agent.delete('/topik/attempt')).status).toBe(204);
+  });
+
+  it('is user-scoped — one user cannot see or clobber another user\'s attempt', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await a.agent
+      .put('/topik/attempt')
+      .send({ section: 'reading', sourceTest: 42, currentIdx: 3, picks: { '9': 'b' }, remainingMs: 500 });
+    // B sees nothing of A's.
+    expect((await b.agent.get('/topik/attempt')).body.attempt).toBeNull();
+    // B saving its own does NOT disturb A's (distinct user_id rows).
+    await b.agent
+      .put('/topik/attempt')
+      .send({ section: 'listening', sourceTest: 99, currentIdx: 1, picks: {}, remainingMs: 10 });
+    expect((await a.agent.get('/topik/attempt')).body.attempt).toMatchObject({ sourceTest: 42 });
+  });
+
+  it('rejects a malformed body (bad section / bad choice / oversized picks) with 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bad = async (body: object): Promise<number> =>
+      (await agent.put('/topik/attempt').send(body)).status;
+    expect(await bad({ section: 'writing', sourceTest: 1, currentIdx: 0, picks: {}, remainingMs: 1 })).toBe(400);
+    expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: { '1': 'e' }, remainingMs: 1 })).toBe(400);
+    const tooMany = Object.fromEntries(
+      Array.from({ length: 61 }, (_, i) => [String(i + 1), 'a']),
+    );
+    expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: tooMany, remainingMs: 1 })).toBe(400);
+  });
+
+  it('submitting a mock clears the in-progress attempt', async () => {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 1500,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+      extra: { explanation: 'x' },
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 1500,
+      currentIdx: 0,
+      picks: { [String(id)]: 'b' },
+      remainingMs: 999,
+    });
+    expect((await agent.get('/topik/attempt')).body.attempt).not.toBeNull();
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1500,
+      section: 'reading',
+      answers: [{ itemId: id, picked: 'b' }],
+      durationMs: 1000,
+    });
+    expect(submit.status).toBe(200);
+    // The finished section's attempt is gone — the resume banner won't re-offer it.
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+  });
+});
+
 describe('shared reading passages on the item DTO (B-008)', () => {
   const PASSAGE =
     '도시의 도로는 대부분 아스팔트로 뒤덮여 있다. 그래서 비가 오면 빗물이 지하로 잘 흘러 들어가지 ( ㉠ ) 도로가 물에 잠기는 일도 자주 발생한다.';

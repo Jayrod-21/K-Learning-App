@@ -62,7 +62,13 @@ import { cn } from '../../lib/cn';
 import { splitImageItem } from '../../lib/topikImage';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { ApiError } from '../../services/api';
-import { fetchMockTest, submitMockTest } from '../../services/topik';
+import {
+  fetchMockTest,
+  submitMockTest,
+  fetchAttempt,
+  saveAttempt,
+  type AttemptState,
+} from '../../services/topik';
 import {
   loadTopikMockTest,
   submitTopikMockTestMock,
@@ -129,6 +135,16 @@ export function MockMode(): JSX.Element {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [errorKind, setErrorKind] = useState<NetErrorKind>('fetch');
 
+  // F-007 resume: a saved in-progress attempt found on mount (drives the resume
+  // banner on the select screen), and the state to hydrate ExamRunner with when
+  // resuming. Both null in the fresh-start path.
+  const [resumable, setResumable] = useState<AttemptState | null>(null);
+  const [initialExam, setInitialExam] = useState<{
+    idx: number;
+    picks: Map<number, ChoiceId>;
+    remainingSec: number;
+  } | null>(null);
+
   // One controller per in-flight call; aborts the previous and on unmount.
   const ctrlRef = useRef<AbortController | null>(null);
   // The submit payload is stashed so a submit-retry re-sends the SAME picks
@@ -149,6 +165,79 @@ export function MockMode(): JSX.Element {
     return ctrl;
   }, []);
 
+  // On mount, look for a saved in-progress attempt to offer resuming (F-007).
+  // A missing/failed fetch simply means no banner — it never blocks the screen.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchAttempt(ctrl.signal)
+      .then((a) => {
+        if (!ctrl.signal.aborted) setResumable(a);
+      })
+      .catch(() => {
+        /* no attempt or offline — no resume banner */
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, []);
+
+  // Persist the exam's in-progress state (F-007). Fire-and-forget: a failed save
+  // just means this exam can't be resumed, which must never break the exam.
+  const handleSaveProgress = useCallback(
+    (state: ExamSaveState): void => {
+      if (test === null) return;
+      const picks: Record<string, ChoiceId> = {};
+      for (const [itemId, choice] of state.picks) picks[String(itemId)] = choice;
+      void saveAttempt({
+        section: test.section,
+        sourceTest: test.sourceTest,
+        currentIdx: state.currentIdx,
+        picks,
+        remainingMs: state.remainingSec * 1000,
+      }).catch(() => {
+        /* ignore — best-effort persistence */
+      });
+    },
+    [test],
+  );
+
+  // Resume a saved attempt: re-fetch the SAME deterministic exam (by its stored
+  // source_test) and hydrate ExamRunner with the saved picks / index / timer.
+  const resumeAttempt = useCallback(
+    (attempt: AttemptState): void => {
+      const ctrl = beginCall();
+      setNet('loading');
+      setErrorMsg(null);
+      setResult(null);
+      fetchMockTest(attempt.section, ctrl.signal, attempt.sourceTest)
+        .then((real) => {
+          if (ctrl.signal.aborted) return;
+          const picks = new Map<number, ChoiceId>();
+          for (const [k, v] of Object.entries(attempt.picks)) {
+            picks.set(Number(k), v);
+          }
+          setInitialExam({
+            idx: attempt.currentIdx,
+            picks,
+            remainingSec: Math.round(attempt.remainingMs / 1000),
+          });
+          setTest(real);
+          setIsMock(false);
+          setNet('idle');
+          setResumable(null);
+          setPhase('exam');
+        })
+        .catch(() => {
+          // The exact exam couldn't be re-fetched — drop the (now stale) banner
+          // and stay on select rather than block. The attempt row is harmless.
+          if (ctrl.signal.aborted) return;
+          setResumable(null);
+          setNet('idle');
+        });
+    },
+    [beginCall],
+  );
+
   // Start a section: fetch the answer-stripped exam, falling back to the
   // offline fixture so the exam always opens (failure-safe).
   const startSection = useCallback(
@@ -157,6 +246,10 @@ export function MockMode(): JSX.Element {
       setNet('loading');
       setErrorMsg(null);
       setResult(null);
+      // Fresh start: no hydration, and dismiss any resume banner. The exam's
+      // first save will upsert-replace any prior in-progress attempt.
+      setInitialExam(null);
+      setResumable(null);
       fetchMockTest(section, ctrl.signal)
         .then((real) => {
           if (ctrl.signal.aborted) return;
@@ -243,6 +336,10 @@ export function MockMode(): JSX.Element {
     setErrorMsg(null);
     setIsMock(false);
     setNet('idle');
+    // The just-finished section's attempt was cleared server-side on submit; a
+    // fresh select shows no resume banner.
+    setInitialExam(null);
+    setResumable(null);
     setPhase('select');
   }, []);
 
@@ -275,11 +372,29 @@ export function MockMode(): JSX.Element {
       {net !== 'loading' && net !== 'submitting' && net !== 'error' ? (
         <>
           {phase === 'select' ? (
-            <SectionSelect onStart={startSection} />
+            <>
+              {resumable !== null ? (
+                <ResumeBanner
+                  attempt={resumable}
+                  onResume={() => {
+                    resumeAttempt(resumable);
+                  }}
+                  onDismiss={() => {
+                    setResumable(null);
+                  }}
+                />
+              ) : null}
+              <SectionSelect onStart={startSection} />
+            </>
           ) : null}
 
           {phase === 'exam' && test !== null ? (
-            <ExamRunner test={test} onSubmit={runSubmit} />
+            <ExamRunner
+              test={test}
+              onSubmit={runSubmit}
+              initial={initialExam ?? undefined}
+              onSave={handleSaveProgress}
+            />
           ) : null}
 
           {phase === 'results' && result !== null ? (
@@ -359,9 +474,81 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
 // Phase: exam
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * Resume banner (F-007) — shown atop the section-select screen when a saved
+ * in-progress mock is found. Dismissible; "Resume" re-fetches the same exam and
+ * restores the saved picks / index / timer.
+ */
+function ResumeBanner({
+  attempt,
+  onResume,
+  onDismiss,
+}: {
+  attempt: AttemptState;
+  onResume: () => void;
+  onDismiss: () => void;
+}): JSX.Element {
+  const sectionKr = attempt.section === 'reading' ? '읽기' : '듣기';
+  const remainingSec = Math.round(attempt.remainingMs / 1000);
+  return (
+    <div
+      className="km-mock__resume"
+      role="status"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        marginBottom: 16,
+        padding: '12px 16px',
+        borderRadius: 12,
+        border: '1px solid rgba(127, 127, 127, 0.25)',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <strong>
+          Resume your <span className="kr">{sectionKr}</span> test
+        </strong>
+        <span style={{ fontSize: '0.85rem', color: 'var(--paper-mute)' }}>
+          {attempt.answered} answered · {formatClock(remainingSec)} left
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+        <button
+          type="button"
+          className="km-btn km-btn--sm focusring"
+          onClick={onResume}
+        >
+          Resume
+        </button>
+        <button
+          type="button"
+          className="km-btn km-btn--ghost km-btn--sm focusring"
+          onClick={onDismiss}
+          aria-label="Dismiss resume banner"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** In-progress exam state persisted for resume (F-007). */
+interface ExamSaveState {
+  currentIdx: number;
+  picks: Map<number, ChoiceId>;
+  remainingSec: number;
+}
+
 interface ExamRunnerProps {
   test: MockTest;
   onSubmit: (body: MockSubmitBody) => void;
+  /** When RESUMING a saved attempt: the state to hydrate into (F-007). */
+  initial?: { idx: number; picks: Map<number, ChoiceId>; remainingSec: number };
+  /** Persist the in-progress state — called on each pick/nav, every 15s, and on
+   *  unmount, so the mock survives a reload / leaving the screen (F-007). */
+  onSave: (state: ExamSaveState) => void;
 }
 
 /**
@@ -380,16 +567,23 @@ function formatClock(totalSeconds: number): string {
   return h > 0 ? `${String(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
+function ExamRunner({
+  test,
+  onSubmit,
+  initial,
+  onSave,
+}: ExamRunnerProps): JSX.Element {
   const items = test.items;
   const total = items.length;
-  const [idx, setIdx] = useState(0);
+  const [idx, setIdx] = useState(initial?.idx ?? 0);
   // Picks held in memory: itemId(number) → chosen ChoiceId. Render state (not
   // a ref) because the palette marking, the current pick highlight, and the
   // answered count are all render inputs. Switching items preserves picks; we
   // replace the Map immutably on each pick so React sees a new reference. The
   // map is small (≤ section size), so the per-pick copy is negligible.
-  const [picks, setPicks] = useState<Map<number, ChoiceId>>(() => new Map());
+  const [picks, setPicks] = useState<Map<number, ChoiceId>>(
+    () => initial?.picks ?? new Map(),
+  );
   // Whether the confirm-submit dialog is showing.
   const [confirming, setConfirming] = useState(false);
   // Guard so an auto-submit + a manual submit can't both fire.
@@ -442,7 +636,7 @@ function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
   // effect with cleanup. Initialised from the section's allotted minutes. The
   // interval is the ONLY ticker; render never reads the clock.
   const [remaining, setRemaining] = useState<number>(
-    () => SECTION_MINUTES[test.section] * 60,
+    () => initial?.remainingSec ?? SECTION_MINUTES[test.section] * 60,
   );
 
   // Build the submit body from the picks state + per-item timings. Reads the
@@ -518,6 +712,45 @@ function ExamRunner({ test, onSubmit }: ExamRunnerProps): JSX.Element {
       return next;
     });
   }, []);
+
+  // ── Resume persistence (F-007) ──────────────────────────────────────────
+  // Mirror the live state in a ref so the interval + unmount saves read the
+  // LATEST values (their closures would otherwise capture stale state). Writing
+  // a ref during render is the standard "latest value" pattern — it's not
+  // reactive state and triggers no re-render.
+  const stateRef = useRef<ExamSaveState>({
+    currentIdx: idx,
+    picks,
+    remainingSec: remaining,
+  });
+  // Keep the ref current via an effect (writing a ref during render is
+  // disallowed). Declared BEFORE the save effects so the ref is up-to-date when
+  // they read it. Runs each tick — a cheap assignment, no re-render.
+  useEffect(() => {
+    stateRef.current = { currentIdx: idx, picks, remainingSec: remaining };
+  }, [idx, picks, remaining]);
+
+  // Persist the current in-progress state. No-op once submitted — the server
+  // clears the attempt on submit, so a late save must not resurrect it.
+  const saveProgress = useCallback((): void => {
+    if (submittedRef.current) return;
+    onSave(stateRef.current);
+  }, [onSave]);
+
+  // Save on each pick / navigation (captures every answer) + once on mount.
+  useEffect(() => {
+    saveProgress();
+  }, [idx, picks, saveProgress]);
+
+  // Save periodically so the countdown's progress survives an idle close, plus a
+  // final flush on unmount (leaving the screen mid-exam).
+  useEffect(() => {
+    const id = setInterval(saveProgress, 15000);
+    return () => {
+      clearInterval(id);
+      saveProgress();
+    };
+  }, [saveProgress]);
 
   if (current === undefined) {
     // Defensive: an empty exam can't be taken. Offer a way out rather than

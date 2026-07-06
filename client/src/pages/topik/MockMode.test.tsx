@@ -19,11 +19,15 @@ import type { MockResult, MockTest } from '../../types/domain';
 const svc = vi.hoisted(() => ({
   fetchMockTest: vi.fn(),
   submitMockTest: vi.fn(),
+  fetchAttempt: vi.fn(),
+  saveAttempt: vi.fn(),
 }));
 
 vi.mock('../../services/topik', () => ({
   fetchMockTest: svc.fetchMockTest,
   submitMockTest: svc.submitMockTest,
+  fetchAttempt: svc.fetchAttempt,
+  saveAttempt: svc.saveAttempt,
 }));
 
 // Keep the offline fallbacks out of the way — they must never be reached when
@@ -99,8 +103,13 @@ describe('MockMode (Mock test)', () => {
   beforeEach(() => {
     svc.fetchMockTest.mockReset();
     svc.submitMockTest.mockReset();
+    svc.fetchAttempt.mockReset();
+    svc.saveAttempt.mockReset();
     svc.fetchMockTest.mockResolvedValue(TEST);
     svc.submitMockTest.mockResolvedValue(RESULT);
+    // No saved attempt by default (no resume banner); saves are best-effort no-ops.
+    svc.fetchAttempt.mockResolvedValue(null);
+    svc.saveAttempt.mockResolvedValue(undefined);
   });
 
   it('renders the section select with a disabled Writing card', () => {
@@ -455,6 +464,34 @@ describe('MockMode (Mock test)', () => {
     // loadTopikMockTest is mocked to reject too → the error card surfaces.
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+  });
+  it('shows a resume banner for a saved attempt, and Resume re-fetches the same exam by source_test (F-007)', async () => {
+    const user = userEvent.setup();
+    svc.fetchAttempt.mockResolvedValue({
+      section: 'reading',
+      sourceTest: 777,
+      currentIdx: 2,
+      picks: { '1001': 'b' },
+      remainingMs: 1_800_000,
+      answered: 1,
+      updatedAt: '2026-07-06T10:00:00.000Z',
+    });
+    render(<MockMode />);
+
+    // The banner appears once the mount-time fetchAttempt resolves.
+    const resumeBtn = await screen.findByRole('button', { name: /^Resume$/ });
+    expect(screen.getByText(/Resume your/i)).toBeInTheDocument();
+
+    await user.click(resumeBtn);
+    // Resume re-fetches the SAME exam via its stored source_test (3rd arg), so
+    // the saved picks / index / timer line up with the identical item set.
+    await waitFor(() => {
+      expect(svc.fetchMockTest).toHaveBeenCalledWith(
+        'reading',
+        expect.anything(),
+        777,
+      );
     });
   });
 });
