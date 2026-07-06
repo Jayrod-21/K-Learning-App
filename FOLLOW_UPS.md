@@ -58,23 +58,32 @@ Consider promoting the audits to HARD gates once these are clean (bar wants SCA 
 The `ingest-checks` CI job now runs `pytest tests/` (272 green). Two sets of tests
 are `--ignore`d in that job; both are tracked here.
 
-### F-UP-002 · `topik_dependencies` ON CONFLICT has no matching unique index (13 tests red)
-- **Severity:** real bug (loader idempotency / data-integrity), P2.
-- **What:** `tools/ingest/link_topik_dependencies.py` (~line 488) and the
-  canonical-grammar apply path upsert with an EXPRESSION conflict target —
-  `ON CONFLICT (topik_item_id, dep_type, COALESCE(grammar_entry_id,0), COALESCE(vocab_entry_id,0))`.
-  No migration creates a UNIQUE INDEX on that exact expression, so Postgres raises
-  `InvalidColumnReference: there is no unique or exclusion constraint matching the
-  ON CONFLICT specification`. The loaders' idempotency contract ("re-run writes no
-  new rows") is broken against a real schema.
-- **Evidence:** 13 tests fail — all of `tests/test_link_topik_dependencies.py` and
-  `tests/test_canonical_grammar_db.py`. Hidden until now because CI never ran the
-  ingest suite (the gap this gate closed).
-- **Fix:** add a reversible migration creating the matching expression-based unique
-  index (`CREATE UNIQUE INDEX … ON topik_dependencies (topik_item_id, dep_type,
-  COALESCE(grammar_entry_id,0), COALESCE(vocab_entry_id,0))`) and the equivalent for
-  the canonical-grammar target; verify no existing rows would violate it; then drop
-  the two `--ignore` lines and confirm 13 → green.
+### F-UP-002 · `strategy_c_claude` produces no dependency for a matching kgiu_entry (2 tests)
+- **Severity:** real linker bug, P2.
+- **What:** `tools/ingest/link_topik_dependencies.py` `strategy_c_claude` returns
+  an empty dep list even when the proxy resolves an underline to a pattern that
+  matches a seeded `kgiu_entry` (`-(으)면`). `test_strategy_c_caps_deps_per_item_and_rejects_short_fragments`
+  and `test_strategy_c_uses_proxy_only_when_uncovered` assert `len(deps_run) >= 1`
+  and get `[]` (AssertionError ~line 829).
+- **Root cause (traced in re-review):** `strategy_c_claude` extracts the fragment
+  `-(으)면`, reduces it to `hangul_only="으면"` (2 syllables), and the
+  `_STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 3` filter drops it BEFORE the DB lookup,
+  so no dep is produced (`0 >= 1` fails). The min-3 rule was added to reject
+  1-char fragments (e.g. `오`) but also kills legitimate 2-syllable grammar
+  patterns. The fixture is correct (`_seed_kgiu_entry(pattern="-(으)면")`, line 805).
+- **Fix direction:** lower the threshold to 2, or exempt whitelisted grammatical
+  patterns from the min-length filter; then drop the two `--deselect`s and confirm
+  green.
+- **History (important — supersedes the earlier misdiagnosis):** these 2 were
+  among the 13 the CI gate first surfaced, but two OTHER bugs masked them and are
+  now FIXED in this PR: (1) a stale seed fixture — `ON CONFLICT (test_number,
+  section)` → `(test_number, topik_level, section)` after migration 029 widened
+  `uq_topik_tests_*` — and (2) the `cluster_canonical_grammar.py` dual-import
+  module-identity split (bare vs `tools.ingest.*` `PatternOccurrence`). Those two
+  fixes turned 11 of the 13 green. The production `topik_dependencies` COALESCE
+  upsert is NOT at fault — it has a matching unique index from migration 008.
+- **Status:** the 2 tests are `--deselect`ed in the ingest-checks CI job; the
+  other 11 (both files) now run green. Re-include once strategy_c is root-caused.
 
 ### F-UP-003 · 3 ingest tests scan the gitignored generated `output/*.json`
 - **Severity:** test-infra, P3.

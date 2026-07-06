@@ -107,18 +107,18 @@ jobs:
         #     absent on a clean checkout (test_topik_item_type_validation,
         #     test_hanja_hunmeum, test_resolve_cross_references_integration) —
         #     same rationale as db-checks excluding test_discriminator_coverage.
-        #   * 2 DB test files quarantined for a PRE-EXISTING failure THIS gate
-        #     surfaced: link_topik_dependencies + canonical_grammar_db use an
-        #     `ON CONFLICT (… COALESCE(…) …)` expression target with no matching
-        #     unique index in the migrations (13 tests). Tracked in FOLLOW_UPS.md
-        #     (F-UP-002); re-include once the index migration lands.
+        #     Tracked: FOLLOW_UPS.md F-UP-003.
+        #   * 2 strategy_c tests deselected — strategy_c_claude yields no dep for a
+        #     seeded, matching kgiu_entry: a real linker issue this gate surfaced,
+        #     distinct from the stale seed-fixture ON CONFLICT and the module-
+        #     identity split that were BOTH fixed in this PR. Tracked: F-UP-002.
         run: |
           python -m pytest tests -q \
             --ignore=tests/test_topik_item_type_validation.py \
             --ignore=tests/test_hanja_hunmeum.py \
             --ignore=tests/test_resolve_cross_references_integration.py \
-            --ignore=tests/test_link_topik_dependencies.py \
-            --ignore=tests/test_canonical_grammar_db.py
+            --deselect "tests/test_link_topik_dependencies.py::test_strategy_c_caps_deps_per_item_and_rejects_short_fragments" \
+            --deselect "tests/test_link_topik_dependencies.py::test_strategy_c_uses_proxy_only_when_uncovered"
 
   db-checks:
     name: Database — Migration Tests
