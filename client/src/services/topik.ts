@@ -165,3 +165,43 @@ export async function submitMockTest(
     signal !== undefined ? { signal } : undefined,
   );
 }
+
+/** One incorrectly-answered TOPIK item, for the mistakes-review screen (F-021). */
+export interface Mistake {
+  responseId: string;
+  /** The choice id the user picked (wrong). */
+  picked: string;
+  /** ISO timestamp of when it was answered. */
+  answeredAt: string;
+  mode: string;
+  /** The full item — carries the inline `correct` flag + `explanation` (review). */
+  item: TopikItem;
+}
+
+interface MistakesEnvelope {
+  mistakes: Mistake[];
+}
+
+/**
+ * GET /topik/mistakes — the caller's recent WRONG answers for review (F-021).
+ *
+ * Returns TOPIK items the session user missed within the last `days` (server
+ * default 30 — a rolling window), newest first, each with the FULL item (options
+ * + inline `correct` flag + `explanation`) plus the user's wrong `picked` choice.
+ * Because these are items the user already attempted, this surface intentionally
+ * carries the answer key inline (as /items + /study also do for authenticated
+ * reads — only the exam-taking /mock flow withholds it until submit).
+ */
+export async function fetchMistakes(
+  opts: { days?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<Mistake[]> {
+  const params: Record<string, number> = {};
+  if (opts.days !== undefined) params.days = opts.days;
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  const res = await api.get<MistakesEnvelope>('/topik/mistakes', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
+  return res.mistakes;
+}

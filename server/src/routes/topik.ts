@@ -451,6 +451,85 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
   }
 });
 
+const MistakesQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(30),
+  limit: z.coerce.number().int().min(1).max(200).default(100),
+});
+
+interface MistakeRow extends TopikItemRow {
+  response_id: number;
+  picked: string;
+  answered_at: Date;
+  mode: string;
+}
+
+interface MistakeDTO {
+  responseId: string;
+  /** The choice id the user picked (wrong). */
+  picked: ChoiceId;
+  answeredAt: string;
+  mode: string;
+  item: TopikItemDTO;
+}
+
+/**
+ * GET /topik/mistakes — the caller's recent WRONG answers, for review (F-021).
+ *
+ * Returns TOPIK items the SESSION user answered incorrectly within the last
+ * `days` (default 30 — the rolling window; a query WINDOW, not deletion), newest
+ * first, each with the FULL item (options + which is `correct` + `explanation`)
+ * plus the user's wrong `picked` choice and when they answered. Serving the
+ * answer key here is intentional and safe: these are items the user already
+ * attempted (their OWN response log), so this is a review surface, not a browse
+ * (like /items and /study, which also carry the inline key for authenticated
+ * reads — only the answer-stripped exam flow /mock withholds it until submit).
+ * User-scoped to `getUserId(req)` —
+ * never a client-supplied id (no IDOR). Backed by
+ * ix_topik_responses_user_answered_at (user_id, answered_at DESC).
+ */
+router.get(
+  '/mistakes',
+  cheapLimiter(),
+  validateQuery(MistakesQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof MistakesQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<MistakeRow>(
+        `SELECT ${ITEM_COLUMNS},
+                r.id AS response_id, r.picked, r.answered_at, r.mode::text AS mode
+           FROM topik_responses r
+           JOIN topik_items i ON i.id = r.topik_item_id
+           JOIN topik_tests t ON t.id = i.topik_test_id
+          WHERE r.user_id = $1
+            AND r.is_correct = false
+            AND r.answered_at > now() - make_interval(days => $2)
+          ORDER BY r.answered_at DESC
+          LIMIT $3`,
+        [userId, q.days, q.limit],
+      );
+      const mistakes: MistakeDTO[] = [];
+      for (const row of rows) {
+        const item = mapRowToDTO(row);
+        // Skip a row whose item is no longer a usable MC item (corpus edit).
+        if (item === null) continue;
+        mistakes.push({
+          responseId: String(row.response_id),
+          picked: row.picked as ChoiceId,
+          answeredAt: row.answered_at.toISOString(),
+          mode: row.mode,
+          item,
+        });
+      }
+      res.status(200).json({ mistakes });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 /**
  * The mock section schema — like `SectionSchema` (accepts enum OR Korean label),
  * but CONSTRAINED to the MCQ sections. Writing mock (constructed-response, graded

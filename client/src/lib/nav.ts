@@ -35,6 +35,7 @@ export type NavItemId =
   | 'reference'
   | 'settings'
   | 'progress'
+  | 'mistakes'
   | 'ttmik';
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
@@ -100,6 +101,15 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     eyebrow: 'The bones inside the words',
     headerTitle: '한자 · Hanja',
     icon: 'hanja',
+  },
+  {
+    id: 'mistakes',
+    path: '/mistakes',
+    label: 'Mistakes',
+    kr: '틀린 문제',
+    eyebrow: 'What you missed, in one place',
+    headerTitle: '틀린 문제 · Mistakes',
+    icon: 'history',
   },
   {
     id: 'images',
@@ -173,6 +183,7 @@ export const PRIMARY_TAB_IDS = [
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 export const MORE_TAB_IDS = [
+  'mistakes',
   'hanja',
   'images',
   'diagnostic',
