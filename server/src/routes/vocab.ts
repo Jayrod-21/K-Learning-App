@@ -918,4 +918,59 @@ router.get(
   },
 );
 
+// ── F-017: per-skill stats time-series ───────────────────────────────────────
+
+const SeriesQuerySchema = z.object({
+  // Rolling window, 1..90 days, default 30 — mirrors /topik/mistakes. An
+  // out-of-range value 400s at the boundary (ValidationError).
+  days: z.coerce.number().int().min(1).max(90).default(30),
+});
+
+/**
+ * GET /vocab/series — daily SRS review-count time-series (F-017).
+ *
+ * Buckets the caller's append-only `card_reviews` log by UTC day over the last
+ * `days` (default 30); each point's value is how many reviews (Again/Hard/Good/
+ * Easy presses) the user logged that day. Points are ASCENDING by date with one
+ * entry per day that has activity — inactive days are absent, not zero-filled
+ * (locked F-017 contract; the topik/grammar series behave identically).
+ *
+ * User-scoped to `getUserId(req)` — never a client-supplied id (no IDOR).
+ * Bucketing pins `AT TIME ZONE 'UTC'` so the day boundary is stable regardless
+ * of the DB session TimeZone GUC. The date is formatted 'YYYY-MM-DD' in SQL so
+ * the client never tz-reinterprets it.
+ */
+router.get(
+  '/series',
+  cheapLimiter(),
+  validateQuery(SeriesQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof SeriesQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<{ date: string; value: number }>(
+        `SELECT to_char((reviewed_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,
+                count(*)::int AS value
+           FROM card_reviews
+          WHERE user_id = $1
+            AND reviewed_at > now() - make_interval(days => $2)
+          GROUP BY (reviewed_at AT TIME ZONE 'UTC')::date
+          ORDER BY (reviewed_at AT TIME ZONE 'UTC')::date`,
+        [userId, q.days],
+      );
+      res.status(200).json({
+        series: {
+          metric: 'count',
+          unit: 'reviews',
+          points: rows.map((r) => ({ date: r.date, value: r.value })),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 export default router;

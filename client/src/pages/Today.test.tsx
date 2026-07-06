@@ -1,19 +1,25 @@
 /**
  * Today — loading + rendered + interaction.
  *
- * We mock `useEndpointOrMock` to control the data the screen reads. Both
- * fetches (today plan + diagnostic snapshot) share the same hook, so we
- * dispatch on the `key` arg. As of Pass 5 both fetches are realFn-backed
- * (`/plan/today` + `/diagnostic/latest`); the hook mock here stands in for
- * either source, so the screen assertions hold regardless of which resolved.
+ * We mock `useEndpointOrMock` to control the data the screen reads. All
+ * three fetches (today plan + diagnostic snapshot + F-017 skill series)
+ * share the same hook, so we dispatch on the `key` arg. All are
+ * realFn-backed (`/plan/today`, `/diagnostic/latest`, the `/…/series`
+ * fan-out); the hook mock here stands in for any source, so the screen
+ * assertions hold regardless of which resolved. `services/stats` is also
+ * mocked so the realFn closure can never touch the network.
  *
  * Interaction: clicking the Review queue card navigates to /review.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { TodayPlan, DiagnosticSnapshot } from '../types/domain';
+import type {
+  AllSkillSeries,
+  TodayPlan,
+  DiagnosticSnapshot,
+} from '../types/domain';
 
 // Hook mock — control loading + data per key. `vi.hoisted` is necessary
 // because `vi.mock` is hoisted above imports; sharing mutable state requires
@@ -25,12 +31,18 @@ const hoisted = vi.hoisted(() => {
   return {
     today: { state: { kind: 'loading' } as HookState },
     diag: { state: { kind: 'loading' } as HookState },
+    series: { state: { kind: 'loading' } as HookState },
   };
 });
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: (key: string) => {
-    const s = key === 'today' ? hoisted.today.state : hoisted.diag.state;
+    const s =
+      key === 'today'
+        ? hoisted.today.state
+        : key === 'today.snapshot'
+          ? hoisted.diag.state
+          : hoisted.series.state;
     if (s.kind === 'loading') {
       return {
         data: null,
@@ -48,6 +60,13 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       refetch: () => undefined,
     };
   },
+}));
+
+// The screen imports `fetchSkillSeries` for its realFn; with the hook mocked
+// it is never invoked, but mock the module anyway so no test path can reach
+// the real axios layer.
+vi.mock('../services/stats', () => ({
+  fetchSkillSeries: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
 
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
@@ -69,6 +88,43 @@ const PLAN: TodayPlan = {
     tag: 'Writing',
   },
   largestGap: 'Listening',
+};
+
+const SERIES: AllSkillSeries = {
+  reading: {
+    metric: 'accuracy',
+    unit: '%',
+    points: [
+      { date: '2026-06-08', value: 58 },
+      { date: '2026-06-15', value: 66 },
+      { date: '2026-06-30', value: 74 },
+    ],
+  },
+  listening: {
+    metric: 'accuracy',
+    unit: '%',
+    points: [
+      { date: '2026-06-09', value: 42 },
+      { date: '2026-06-30', value: 58 },
+    ],
+  },
+  vocab: {
+    metric: 'count',
+    unit: 'cards',
+    points: [
+      { date: '2026-06-08', value: 12 },
+      { date: '2026-06-29', value: 35 },
+    ],
+  },
+  grammar: {
+    metric: 'accuracy',
+    unit: '%',
+    points: [
+      { date: '2026-06-10', value: 39 },
+      { date: '2026-06-30', value: 52 },
+    ],
+  },
+  writing: { metric: 'none', unit: '', points: [] },
 };
 
 const SNAP: DiagnosticSnapshot = {
@@ -98,6 +154,13 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
 }
 
 describe('Today', () => {
+  beforeEach(() => {
+    // Every fetch starts pending; each test opts specific keys into data.
+    hoisted.today.state = { kind: 'loading' };
+    hoisted.diag.state = { kind: 'loading' };
+    hoisted.series.state = { kind: 'loading' };
+  });
+
   it('renders loading skeletons while both fetches are pending', () => {
     hoisted.today.state = { kind: 'loading' };
     hoisted.diag.state = { kind: 'loading' };
@@ -192,5 +255,80 @@ describe('Today', () => {
     expect(screen.queryByText('도시화와 환경')).not.toBeInTheDocument();
     expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
     expect(screen.getByText(/Paragraph in/)).toBeInTheDocument();
+  });
+
+  // ── Progress-by-skill carousel (F-017) ─────────────────────
+
+  it('renders the Progress by skill carousel card with the series data', () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: SERIES };
+
+    renderTodayAt();
+
+    // Bilingual card heading, consistent with the page's other sections.
+    expect(
+      screen.getByText('실력 추이 · Progress by skill'),
+    ).toBeInTheDocument();
+
+    // The carousel region is present with one dot per skill (5 pages).
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+
+    // First panel (Reading) is the active page and shows its latest value.
+    const firstPanel = screen.getAllByRole('tabpanel', { hidden: true })[0];
+    expect(firstPanel).toHaveAttribute('aria-hidden', 'false');
+    expect(firstPanel).toHaveTextContent('Reading');
+    expect(firstPanel).toHaveTextContent('74%');
+    expect(
+      screen.getByRole('img', { name: 'Reading trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the Writing page as a placeholder (no series route yet)', () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: SERIES };
+
+    renderTodayAt();
+
+    expect(
+      screen.getByText('Start writing to see your progress here.'),
+    ).toBeInTheDocument();
+  });
+
+  it('navigates carousel pages via the dots (Vocab shows its count)', async () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: SERIES };
+
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Page order is Reading, Listening, Vocab, Grammar, Writing → Vocab = 3.
+    await user.click(screen.getByRole('tab', { name: 'Page 3 of 5' }));
+
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[2]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[2]).toHaveTextContent('Vocab');
+    expect(panels[2]).toHaveTextContent('35 cards');
+  });
+
+  it('keeps the SkillsCompare snapshot card alongside the carousel', () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = { kind: 'data', data: SERIES };
+
+    renderTodayAt();
+
+    // The snapshot card (complementary, not replaced) still renders its
+    // dimensions while the carousel card renders below it.
+    expect(
+      screen.getByRole('progressbar', { name: 'Grammar skill' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('실력 추이 · Progress by skill'),
+    ).toBeInTheDocument();
   });
 });

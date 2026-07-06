@@ -352,6 +352,66 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
   }
 });
 
+/* ---------- Per-skill stats time-series (F-017) ---------- */
+
+const SeriesQuerySchema = z.object({
+  // Rolling window, 1..90 days, default 30 — mirrors /topik/mistakes. An
+  // out-of-range value 400s at the boundary (ValidationError).
+  days: z.coerce.number().int().min(1).max(90).default(30),
+});
+
+/**
+ * GET /grammar/series — daily grammar-drill score time-series (F-017).
+ *
+ * Buckets the caller's SCORED `grammar_drill_attempts` (migration 019) by UTC
+ * day over the last `days` (default 30); each point's value is round(avg(score))
+ * for that day (Claude's 0..100 drill score). Unscored attempts
+ * (`scored_at IS NULL` — generated but never submitted) never count; the
+ * defensive `score IS NOT NULL` guard keeps a hypothetical scored-without-score
+ * row from producing a NULL average. Points are ASCENDING by date with one
+ * entry per day that has activity — inactive days are absent, not zero-filled
+ * (locked F-017 contract; the topik/vocab series behave identically).
+ *
+ * User-scoped to `getUserId(req)` — never a client-supplied id (no IDOR).
+ * Bucketing pins `AT TIME ZONE 'UTC'` so the day boundary is stable regardless
+ * of the DB session TimeZone GUC. The date is formatted 'YYYY-MM-DD' in SQL so
+ * the client never tz-reinterprets it.
+ */
+router.get(
+  '/series',
+  cheapLimiter(),
+  validateQuery(SeriesQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof SeriesQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<{ date: string; value: number }>(
+        `SELECT to_char((scored_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,
+                round(avg(score))::int AS value
+           FROM grammar_drill_attempts
+          WHERE user_id = $1
+            AND scored_at IS NOT NULL
+            AND score IS NOT NULL
+            AND scored_at > now() - make_interval(days => $2)
+          GROUP BY (scored_at AT TIME ZONE 'UTC')::date
+          ORDER BY (scored_at AT TIME ZONE 'UTC')::date`,
+        [userId, q.days],
+      );
+      res.status(200).json({
+        series: {
+          metric: 'score',
+          unit: 'pts',
+          points: rows.map((r) => ({ date: r.date, value: r.value })),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 /* ---------- AI-assisted highlight → pattern identification ---------- */
 
 const IdentifySchema = z.object({

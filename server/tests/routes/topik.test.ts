@@ -63,6 +63,7 @@ beforeEach(async () => {
 describe('topik — auth required', () => {
   it.each([
     ['GET', '/topik/items'],
+    ['GET', '/topik/series'],
     ['POST', '/topik/mock'],
     ['POST', '/topik/mock/submit'],
     ['POST', '/topik/study'],
@@ -350,6 +351,118 @@ describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () =
     // Widening the window to 90 days surfaces the old miss too.
     const resWide = await a.agent.get('/topik/mistakes?days=90');
     expect(resWide.body.mistakes.length).toBe(2);
+  });
+});
+
+describe('GET /topik/series — per-skill daily accuracy time-series (F-017)', () => {
+  /** The UTC calendar day `daysAgo` days back, formatted as the route emits it. */
+  async function utcDay(daysAgo: number): Promise<string> {
+    const { rows } = await pg.pool.query<{ d: string }>(
+      `SELECT to_char((now() AT TIME ZONE 'UTC')::date - $1::int, 'YYYY-MM-DD') AS d`,
+      [daysAgo],
+    );
+    return rows[0]!.d;
+  }
+
+  /** Append a topik_responses row `daysAgo` days back (the series time axis). */
+  async function insertResponse(
+    userId: number,
+    itemId: number,
+    opts: { correct: boolean; daysAgo?: number },
+  ): Promise<void> {
+    await pg.pool.query(
+      `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, answered_at)
+       VALUES ($1, $2, 'a', $3, 'study', now() - make_interval(days => $4))`,
+      [userId, itemId, opts.correct, opts.daysAgo ?? 0],
+    );
+  }
+
+  it('buckets accuracy per UTC day, split by section, ascending; writing never counts', async () => {
+    const readingId = await seedTopikItem(pg.pool, { section: 'reading' });
+    const listeningId = await seedTopikItem(pg.pool, { section: 'listening' });
+    const writingId = await seedTopikItem(pg.pool, { section: 'writing' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Reading, two days ago: 1 correct of 3 → round(100 * 1/3) = 33.
+    await insertResponse(userId, readingId, { correct: true, daysAgo: 2 });
+    await insertResponse(userId, readingId, { correct: false, daysAgo: 2 });
+    await insertResponse(userId, readingId, { correct: false, daysAgo: 2 });
+    // Reading, today: 3 correct of 4 → 75.
+    await insertResponse(userId, readingId, { correct: true });
+    await insertResponse(userId, readingId, { correct: true });
+    await insertResponse(userId, readingId, { correct: true });
+    await insertResponse(userId, readingId, { correct: false });
+    // Listening, today: 1 of 1 → 100.
+    await insertResponse(userId, listeningId, { correct: true });
+    // A writing answer exists in the log but writing is not a charted skill.
+    await insertResponse(userId, writingId, { correct: false });
+
+    const res = await agent.get('/topik/series');
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body).sort()).toEqual(['listening', 'reading']);
+
+    expect(res.body.reading.metric).toBe('accuracy');
+    expect(res.body.reading.unit).toBe('%');
+    expect(res.body.reading.points).toEqual([
+      { date: await utcDay(2), value: 33 },
+      { date: await utcDay(0), value: 75 },
+    ]);
+
+    expect(res.body.listening.metric).toBe('accuracy');
+    expect(res.body.listening.unit).toBe('%');
+    expect(res.body.listening.points).toEqual([
+      { date: await utcDay(0), value: 100 },
+    ]);
+  });
+
+  it("is user-scoped (no IDOR) — another user's answers never appear", async () => {
+    const itemId = await seedTopikItem(pg.pool, { section: 'reading' });
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await insertResponse(a.userId, itemId, { correct: true });
+    await insertResponse(b.userId, itemId, { correct: false });
+
+    // B sees only B's own (wrong) answer, never A's.
+    const resB = await b.agent.get('/topik/series');
+    expect(resB.status).toBe(200);
+    expect(resB.body.reading.points).toEqual([{ date: await utcDay(0), value: 0 }]);
+
+    // A's accuracy is unpolluted by B's miss.
+    const resA = await a.agent.get('/topik/series');
+    expect(resA.body.reading.points).toEqual([{ date: await utcDay(0), value: 100 }]);
+  });
+
+  it('honors the days window (default 30, widenable to 90)', async () => {
+    const itemId = await seedTopikItem(pg.pool, { section: 'reading' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await insertResponse(userId, itemId, { correct: true });
+    await insertResponse(userId, itemId, { correct: false, daysAgo: 40 });
+
+    // Default 30-day window: the 40-day-old answer is outside it.
+    const res = await agent.get('/topik/series');
+    expect(res.status).toBe(200);
+    expect(res.body.reading.points).toEqual([{ date: await utcDay(0), value: 100 }]);
+
+    // Widening to 90 days surfaces it as its own (older-first) day bucket.
+    const wide = await agent.get('/topik/series?days=90');
+    expect(wide.body.reading.points).toEqual([
+      { date: await utcDay(40), value: 0 },
+      { date: await utcDay(0), value: 100 },
+    ]);
+  });
+
+  it('no activity → 200 with empty points (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/series');
+    expect(res.status).toBe(200);
+    expect(res.body.reading).toEqual({ metric: 'accuracy', unit: '%', points: [] });
+    expect(res.body.listening).toEqual({ metric: 'accuracy', unit: '%', points: [] });
+  });
+
+  it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/topik/series?${qs}`);
+    expect(res.status).toBe(400);
   });
 });
 

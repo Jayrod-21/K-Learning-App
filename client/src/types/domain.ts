@@ -1796,3 +1796,49 @@ export interface IyagiEpisodeDetail {
   /** Full ordered episode transcript. */
   sentences: ListenSentence[];
 }
+
+// ─────────────────────────────────────────────────────────────
+// Per-skill trend series (F-017 — Today's "Progress by skill")
+// ─────────────────────────────────────────────────────────────
+
+/** One day's data point in a skill trend series (F-017). */
+export interface SeriesPoint {
+  /** Calendar day, `YYYY-MM-DD` (server-local). */
+  date: string;
+  value: number;
+}
+
+/**
+ * One skill's trend over the requested window, as the series endpoints
+ * (`GET /topik/series`, `GET /vocab/series`, `GET /grammar/series`) return
+ * it. `points` is ascending by date; days without activity are absent, not
+ * zero-filled.
+ *
+ * `metric` names what `value` measures:
+ *   - `accuracy` — percent correct that day (0–100; `unit` is `'%'`).
+ *   - `count`    — how many of something (e.g. cards reviewed).
+ *   - `score`    — a graded score on the server's scale.
+ *   - `none`     — CLIENT-ONLY sentinel for a skill with no series endpoint
+ *                  yet (Writing). Never on the wire; `points` is empty.
+ */
+export interface SkillSeries {
+  metric: 'accuracy' | 'count' | 'score' | 'none';
+  /** Display unit for `value` (`'%'`, `'cards'`, …). Empty for `none`. */
+  unit: string;
+  /** Ascending by `date`. */
+  points: SeriesPoint[];
+}
+
+/**
+ * All five skill trends the Today carousel renders, assembled by
+ * `fetchSkillSeries` from the three series endpoints. `writing` is
+ * synthesized client-side as `{ metric: 'none', unit: '', points: [] }` —
+ * there is no `/writing/series` route yet.
+ */
+export interface AllSkillSeries {
+  reading: SkillSeries;
+  listening: SkillSeries;
+  vocab: SkillSeries;
+  grammar: SkillSeries;
+  writing: SkillSeries;
+}

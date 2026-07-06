@@ -11,10 +11,19 @@
  * Data:
  *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })                        → TodayPlan
  *   useEndpointOrMock('today.snapshot', loadDiagnosticSnapshotMock, { realFn: fetchLatestSnapshot }) → DiagnosticSnapshot
+ *   useEndpointOrMock('today.series', loadSkillSeriesMock, { realFn: fetchSkillSeries })     → AllSkillSeries (F-017)
  *
- * Two fetches because Today composes the plan AND the snapshot; pulling them
- * separately matches the Pass 4/5 server split (`/plan/today` vs
- * `/diagnostic/latest`) and lets each fail independently in the UI.
+ * Three fetches because Today composes the plan AND the snapshot AND the
+ * per-skill trends; pulling them separately matches the server split
+ * (`/plan/today` vs `/diagnostic/latest` vs the `/…/series` fan-out) and
+ * lets each fail independently in the UI.
+ *
+ * F-017 adds the "Progress by skill" card below the snapshot: a SwipeCarousel
+ * of five panels (Reading / Listening / Vocab / Grammar / Writing), each a
+ * LineChart of that skill's 30-day series. It complements — never replaces —
+ * the SkillsCompare snapshot above it (snapshot = where you are now,
+ * carousel = how you got here). Writing has no series route yet, so its
+ * panel is a "start writing" placeholder.
  *
  * Threat model:
  *   Fixture text rendered as React children → escaped by React. Pass 3+ wire
@@ -35,16 +44,23 @@ import type {
 import { MockBadge } from '../components/MockBadge';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
+import { LineChart } from '../components/LineChart';
+import { SwipeCarousel } from '../components/SwipeCarousel';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
+import { loadSkillSeriesMock } from '../data/mocks/stats';
 import { fetchToday } from '../services/plan';
 import { fetchLatestSnapshot } from '../services/diagnostic';
+import { fetchSkillSeries } from '../services/stats';
 import { loadDiagnosticSnapshotMock } from '../data/mocks/diagnostic';
 import type {
+  AllSkillSeries,
   DiagnosticSnapshot,
+  SkillSeries,
   TodayPlan,
   TodayTask,
 } from '../types/domain';
+import './Today.css';
 
 /** Format the current date in the design's eyebrow style ("Monday, May 28"). */
 function formatDateEyebrow(d: Date): string {
@@ -113,6 +129,82 @@ interface TaskTile {
   nav: string;
 }
 
+// ─────────────────────────────────────────────────────────────
+// Progress-by-skill carousel (F-017)
+// ─────────────────────────────────────────────────────────────
+
+/** Carousel page order — fixed by the feature spec (F-017). */
+const SERIES_PANELS: ReadonlyArray<{
+  key: keyof AllSkillSeries;
+  label: string;
+  kr: string;
+}> = [
+  { key: 'reading', label: 'Reading', kr: '읽기' },
+  { key: 'listening', label: 'Listening', kr: '듣기' },
+  { key: 'vocab', label: 'Vocab', kr: '어휘' },
+  { key: 'grammar', label: 'Grammar', kr: '문법' },
+  { key: 'writing', label: 'Writing', kr: '쓰기' },
+];
+
+/** Chart caption per metric — `none` never reaches the chart (placeholder). */
+const METRIC_LABELS: Record<SkillSeries['metric'], string> = {
+  accuracy: 'Accuracy',
+  count: 'Count',
+  score: 'Score',
+  none: '',
+};
+
+/**
+ * Latest-value headline for a panel: "74%" for accuracy, "35 cards" for
+ * counts/scores, an em dash when the series has no points yet.
+ */
+function latestValue(series: SkillSeries): string {
+  const last = series.points[series.points.length - 1];
+  if (last === undefined) return '—';
+  if (series.metric === 'accuracy') return `${String(Math.round(last.value))}%`;
+  const unitSuffix = series.unit !== '' ? ` ${series.unit}` : '';
+  return `${String(last.value)}${unitSuffix}`;
+}
+
+/** One carousel page: skill name + latest value + the trend chart. */
+function SkillTrendPanel({
+  skillKey,
+  label,
+  kr,
+  series,
+}: {
+  skillKey: keyof AllSkillSeries;
+  label: string;
+  kr: string;
+  series: SkillSeries;
+}): JSX.Element {
+  return (
+    // data-skill drives the per-skill chart accent in Today.css (the
+    // validated categorical palette shared with Progress).
+    <div className="km-today__trendPanel" data-skill={skillKey}>
+      <div className="km-today__trendHead">
+        <span className="km-today__trendSkill">
+          {label} <span className="km-today__trendKr">{kr}</span>
+        </span>
+        <span className="km-today__trendValue">{latestValue(series)}</span>
+      </div>
+      {series.metric === 'none' ? (
+        // Writing has no series route yet — an invitation, not a broken chart.
+        <div className="km-today__trendEmpty">
+          Start writing to see your progress here.
+        </div>
+      ) : (
+        <LineChart
+          points={series.points}
+          unit={series.unit}
+          metricLabel={METRIC_LABELS[series.metric]}
+          ariaLabel={`${label} trend over the last 30 days`}
+        />
+      )}
+    </div>
+  );
+}
+
 /** Render a quick skeleton-shaped card while data loads. */
 function SkeletonCard(): JSX.Element {
   // Static height + dimmed paint mimics card-shaped loading per CLAUDE plan.
@@ -142,6 +234,13 @@ export function Today(): JSX.Element {
     loadDiagnosticSnapshotMock,
     { realFn: () => fetchLatestSnapshot() },
   );
+  // F-017 — the per-skill 30-day trends behind the "Progress by skill"
+  // carousel. One fan-out call; falls back to its mock like the other two.
+  const series = useEndpointOrMock<AllSkillSeries>(
+    'today.series',
+    loadSkillSeriesMock,
+    { realFn: () => fetchSkillSeries() },
+  );
 
   const dateStr = formatDateEyebrow(new Date());
 
@@ -151,15 +250,19 @@ export function Today(): JSX.Element {
   // app to recover the today plan.
   const retryToday = today.refetch;
   const retryDiag = diag.refetch;
+  const retrySeries = series.refetch;
 
-  // MockBadge tracks realFn-backed sources (the unified Pass-3 semantics). As
-  // of Pass 5 both the plan AND the diagnostic snapshot are realFn-backed, so
-  // either falling back to its mock should trip the dev-only 🅂 badge.
-  const isMock = today.isMock || diag.isMock;
+  // MockBadge tracks realFn-backed sources (the unified Pass-3 semantics).
+  // All three fetches are realFn-backed, so any one falling back to its mock
+  // should trip the dev-only 🅂 badge.
+  const isMock = today.isMock || diag.isMock || series.isMock;
 
   // Build the visible task tiles. Tasks the server couldn't fill (empty corpus)
   // arrive null and are simply omitted — no faked card. `largestGap` defaults
   // to Listening (the design's emphasis) until the user has a diagnostic run.
+  // Local binding so TS narrowing survives into the panel-mapping closure.
+  const seriesData = series.data;
+
   const gapTag: TodayTask['tag'] = today.data?.largestGap ?? 'Listening';
   const taskTiles: TaskTile[] = [];
   if (today.data) {
@@ -223,6 +326,35 @@ export function Today(): JSX.Element {
           <ErrorCard
             message="Skills snapshot is unavailable."
             onRetry={retryDiag}
+          />
+        )}
+      </section>
+
+      {/* Progress by skill (F-017) ───────────────────────────── */}
+      <section style={{ marginBottom: 16 }}>
+        {series.loading ? (
+          <SkeletonCard />
+        ) : seriesData !== null ? (
+          <Card variant="default" style={{ padding: '20px 22px' }}>
+            <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+              실력 추이 · Progress by skill
+            </div>
+            <SwipeCarousel ariaLabel="Progress by skill">
+              {SERIES_PANELS.map((p) => (
+                <SkillTrendPanel
+                  key={p.key}
+                  skillKey={p.key}
+                  label={p.label}
+                  kr={p.kr}
+                  series={seriesData[p.key]}
+                />
+              ))}
+            </SwipeCarousel>
+          </Card>
+        ) : (
+          <ErrorCard
+            message="Skill trends are unavailable."
+            onRetry={retrySeries}
           />
         )}
       </section>

@@ -1,0 +1,116 @@
+/*
+ * LineChart (F-017) — component-scoped styles.
+ *
+ * Colocated with LineChart.tsx (same rationale as Progress.css: the global
+ * sheet is shared mutable state across parallel feature branches). Uses only
+ * the shared design tokens (--ink/--paper/--line families), so both themes
+ * come free.
+ *
+ * The series accent is the ONE knob a wrapper turns: set `--km-chart-accent`
+ * on any ancestor to give the chart its entity color (Today assigns each
+ * skill its validated categorical hue — see Today.css). The fallback is the
+ * brand vermilion. All text wears text tokens, never the series color (per
+ * the dataviz rules).
+ */
+
+.km-linechart {
+  position: relative;
+}
+
+.km-linechart__plotwrap {
+  position: relative;
+}
+
+.km-linechart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.km-linechart__grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.km-linechart__axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.km-linechart__tick {
+  fill: var(--paper-faint);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+.km-linechart__crosshair {
+  stroke: var(--paper-faint);
+  stroke-width: 1;
+}
+
+.km-linechart__line {
+  fill: none;
+  stroke: var(--km-chart-accent, var(--vermilion));
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Soft magnitude wash under the line — low opacity so the grid reads through. */
+.km-linechart__area {
+  fill: var(--km-chart-accent, var(--vermilion));
+  opacity: 0.08;
+}
+
+/* Markers carry a 2px surface ring so they stay legible on the area fill. */
+.km-linechart__dot {
+  fill: var(--km-chart-accent, var(--vermilion));
+  stroke: var(--ink-1);
+  stroke-width: 2;
+}
+
+/* Invisible per-point hit columns over the plot (hover + keyboard focus). */
+.km-linechart__hit {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: default;
+  /* The carousel needs vertical pans to keep scrolling the page. */
+  touch-action: pan-y;
+}
+
+.km-linechart__readout {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--paper-dim);
+  min-height: 18px;
+}
+
+.km-linechart__readoutMetric {
+  color: var(--paper-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+
+/* Empty series — a friendly placeholder, never a broken chart. */
+.km-linechart--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+}
+
+.km-linechart__emptyText {
+  color: var(--paper-mute);
+  font-size: 13px;
+}

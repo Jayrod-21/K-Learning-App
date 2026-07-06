@@ -47,6 +47,7 @@ describe('grammar — auth required', () => {
   it.each([
     ['GET', '/grammar/kgiu'],
     ['GET', '/grammar/kgiu/1'],
+    ['GET', '/grammar/series'],
     ['POST', '/grammar/bank'],
     ['GET', '/grammar/bank'],
     ['POST', '/grammar/bank/1/graduate'],
@@ -596,5 +597,104 @@ describe('grammar — DB error', () => {
     } finally {
       await pg.pool.query('ALTER TABLE grammar_entries_hidden RENAME TO grammar_entries');
     }
+  });
+});
+
+describe('GET /grammar/series — daily drill-score time-series (F-017)', () => {
+  /** The UTC calendar day `daysAgo` days back, formatted as the route emits it. */
+  async function utcDay(daysAgo: number): Promise<string> {
+    const { rows } = await pg.pool.query<{ d: string }>(
+      `SELECT to_char((now() AT TIME ZONE 'UTC')::date - $1::int, 'YYYY-MM-DD') AS d`,
+      [daysAgo],
+    );
+    return rows[0]!.d;
+  }
+
+  /**
+   * Insert a grammar_drill_attempts row. `score: null` models a generated-but-
+   * never-submitted attempt (scored_at NULL — must never count); a numeric
+   * score models a scored submission `daysAgo` days back.
+   */
+  async function insertAttempt(
+    userId: number,
+    opts: { score: number | null; daysAgo?: number },
+  ): Promise<void> {
+    await pg.pool.query(
+      `INSERT INTO grammar_drill_attempts (
+          user_id, pattern_key, pattern_display, drill_type, item,
+          user_answer, score, verdict, feedback, scored_at)
+       VALUES ($1, 'GR-series-test', '-(으)면', 'cloze', '{}'::jsonb,
+               CASE WHEN $2::int IS NULL THEN NULL ELSE '답변' END,
+               $2::int,
+               CASE WHEN $2::int IS NULL THEN NULL ELSE 'good' END,
+               CASE WHEN $2::int IS NULL THEN NULL ELSE '{}'::jsonb END,
+               CASE WHEN $2::int IS NULL THEN NULL
+                    ELSE now() - make_interval(days => $3) END)`,
+      [userId, opts.score, opts.daysAgo ?? 0],
+    );
+  }
+
+  it('averages scores per UTC day (rounded), ascending; unscored attempts never count', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Two days ago: scores 70 + 75 → round(avg 72.5) = 73. Today: 90.
+    await insertAttempt(userId, { score: 70, daysAgo: 2 });
+    await insertAttempt(userId, { score: 75, daysAgo: 2 });
+    await insertAttempt(userId, { score: 90 });
+    // Generated but never submitted (scored_at NULL) — excluded from the series.
+    await insertAttempt(userId, { score: null });
+
+    const res = await agent.get('/grammar/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series.metric).toBe('score');
+    expect(res.body.series.unit).toBe('pts');
+    expect(res.body.series.points).toEqual([
+      { date: await utcDay(2), value: 73 },
+      { date: await utcDay(0), value: 90 },
+    ]);
+  });
+
+  it("is user-scoped (no IDOR) — another user's attempts never appear", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await insertAttempt(a.userId, { score: 80 });
+
+    const resB = await b.agent.get('/grammar/series');
+    expect(resB.status).toBe(200);
+    expect(resB.body.series.points).toEqual([]);
+
+    const resA = await a.agent.get('/grammar/series');
+    expect(resA.body.series.points).toEqual([{ date: await utcDay(0), value: 80 }]);
+  });
+
+  it('honors the days window (default 30, widenable to 90)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await insertAttempt(userId, { score: 90 });
+    await insertAttempt(userId, { score: 40, daysAgo: 40 });
+
+    // Default 30-day window: the 40-day-old attempt is outside it.
+    const res = await agent.get('/grammar/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series.points).toEqual([{ date: await utcDay(0), value: 90 }]);
+
+    // Widening to 90 days surfaces it as its own (older-first) day bucket.
+    const wide = await agent.get('/grammar/series?days=90');
+    expect(wide.body.series.points).toEqual([
+      { date: await utcDay(40), value: 40 },
+      { date: await utcDay(0), value: 90 },
+    ]);
+  });
+
+  it('no activity → 200 with empty points (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series).toEqual({ metric: 'score', unit: 'pts', points: [] });
+  });
+
+  it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/grammar/series?${qs}`);
+    expect(res.status).toBe(400);
   });
 });

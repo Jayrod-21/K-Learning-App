@@ -47,6 +47,7 @@ describe('vocab — auth required', () => {
     ['GET', '/vocab/entries/1'],
     ['GET', '/vocab/cards/due'],
     ['GET', '/vocab/mastery'],
+    ['GET', '/vocab/series'],
     ['POST', '/vocab/cards/init'],
     ['POST', '/vocab/mine'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
@@ -1146,5 +1147,107 @@ describe('GET /vocab/mastery — F-013 word mastery', () => {
     expect(res.status).toBe(200);
     expect(res.body.summary.total).toBe(1);
     expect(res.body.words).toHaveLength(1);
+  });
+});
+
+describe('GET /vocab/series — daily review-count time-series (F-017)', () => {
+  /** The UTC calendar day `daysAgo` days back, formatted as the route emits it. */
+  async function utcDay(daysAgo: number): Promise<string> {
+    const { rows } = await pg.pool.query<{ d: string }>(
+      `SELECT to_char((now() AT TIME ZONE 'UTC')::date - $1::int, 'YYYY-MM-DD') AS d`,
+      [daysAgo],
+    );
+    return rows[0]!.d;
+  }
+
+  /**
+   * Append a card_reviews row `daysAgo` days back. FSRS snapshot columns are
+   * minimal valid values (never-reviewed sentinel -1, new → learning) — the
+   * series route only counts rows, it never reads the snapshots.
+   */
+  async function insertReview(
+    userId: number,
+    cardId: number,
+    daysAgo = 0,
+  ): Promise<void> {
+    await pg.pool.query(
+      `INSERT INTO card_reviews (
+          card_id, user_id, rating,
+          state_before, stability_before, difficulty_before, elapsed_days_before,
+          state_after, stability_after, difficulty_after, scheduled_days_after,
+          reviewed_at)
+       VALUES ($1, $2, 'good'::fsrs_rating,
+               'new'::fsrs_state, 0, 5, -1,
+               'learning'::fsrs_state, 1, 5, 1,
+               now() - make_interval(days => $3))`,
+      [cardId, userId, daysAgo],
+    );
+  }
+
+  it('counts reviews per UTC day, ascending, with metric/unit', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const cardId = await seedVocabCard(pg.pool, userId);
+
+    // Two days ago: 2 reviews. Today: 3 reviews.
+    await insertReview(userId, cardId, 2);
+    await insertReview(userId, cardId, 2);
+    await insertReview(userId, cardId);
+    await insertReview(userId, cardId);
+    await insertReview(userId, cardId);
+
+    const res = await agent.get('/vocab/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series.metric).toBe('count');
+    expect(res.body.series.unit).toBe('reviews');
+    expect(res.body.series.points).toEqual([
+      { date: await utcDay(2), value: 2 },
+      { date: await utcDay(0), value: 3 },
+    ]);
+  });
+
+  it("is user-scoped (no IDOR) — another user's reviews never appear", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const cardA = await seedVocabCard(pg.pool, a.userId);
+    await insertReview(a.userId, cardA);
+
+    const resB = await b.agent.get('/vocab/series');
+    expect(resB.status).toBe(200);
+    expect(resB.body.series.points).toEqual([]);
+
+    const resA = await a.agent.get('/vocab/series');
+    expect(resA.body.series.points).toEqual([{ date: await utcDay(0), value: 1 }]);
+  });
+
+  it('honors the days window (default 30, widenable to 90)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const cardId = await seedVocabCard(pg.pool, userId);
+    await insertReview(userId, cardId);
+    await insertReview(userId, cardId, 40);
+
+    // Default 30-day window: the 40-day-old review is outside it.
+    const res = await agent.get('/vocab/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series.points).toEqual([{ date: await utcDay(0), value: 1 }]);
+
+    // Widening to 90 days surfaces it as its own (older-first) day bucket.
+    const wide = await agent.get('/vocab/series?days=90');
+    expect(wide.body.series.points).toEqual([
+      { date: await utcDay(40), value: 1 },
+      { date: await utcDay(0), value: 1 },
+    ]);
+  });
+
+  it('no activity → 200 with empty points (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/series');
+    expect(res.status).toBe(200);
+    expect(res.body.series).toEqual({ metric: 'count', unit: 'reviews', points: [] });
+  });
+
+  it.each([['days=0'], ['days=91']])('%s → 400 (window is 1..90)', async (qs) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/vocab/series?${qs}`);
+    expect(res.status).toBe(400);
   });
 });
