@@ -218,7 +218,17 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Acquire the KRDICT bulk XML and run `Deploy/load-krdict.sh <dir>`. No code change.
 
 ### B-012 · Verify vocab-2000 completeness (3,188 loaded vs nominal ~4,000)
-- **Status:** 🟡 mostly resolved (2026-07-05) · **Priority:** P3 · **Category:** DATA
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** DATA
+- **Spot-check result (2026-07-05):** source JSON → DB load is **100% complete**
+  (source beginner 1706 / intermediate 1696 == DB), so nothing was lost in
+  loading — the gap vs nominal is entirely in the OCR/parse of the PDFs. Also
+  found + **deleted 214 completely-empty entries** (blank korean AND english — OCR
+  artifacts, fully orphaned: 0 FK refs from cards/relations/lists/deps) that could
+  have surfaced as blank rows; real count is now 1598 + 1590 = **3188**. Residual
+  (low-value): a page-level headword spot-check to confirm OCR didn't miss words
+  on covered pages — the gap is already mostly explained by cross_refs + rounding.
+  Durable follow-up: the loader should SKIP empty-headword rows (a re-ingest would
+  reintroduce the 214).
 - **Where:** Vocab corpus (`vocab_entries`) — loaded 2026-07-03 from the copyright-safe OCR.
 - **Root cause / state:** Both "2000 Essential Korean Words" books were OCR'd with FULL
   page coverage (beginner 505/505 PDF pages, intermediate 538/538, all themes + appendices),

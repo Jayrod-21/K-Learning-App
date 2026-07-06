@@ -69,9 +69,15 @@ shipped. Deferred:
 - **F-UP-008 (P3) — Review "More examples" drawer is dead** (`extra` hardcoded to
   `[]` when mining a card) — the affordance is already correctly hidden when empty,
   so this is "populate `extra`", a data-plumbing task, not a bug.
-- **F-UP-009 (P3) — data quality:** Level 6 Lesson 12 has duplicate `ordinal`s in
-  `ttmik_sentences` (no uniqueness constraint there → dupe React keys / jumbled
-  order); Level 9 Lesson 5 is content-empty. Both single-lesson corpus issues.
+- **F-UP-009 (P3) — data quality — ⚠️ live-fixed, loader root-cause deferred:**
+  L6L12 was the ONLY lesson with duplicate `ordinal`s — its grammar block and an
+  appended "Word Builder 과" Hanja block both started ordinals at 1. Re-sequenced
+  live (16 unique ordinals, grammar then Word Builder). **Durable fix deferred:**
+  the loader assigns per-sub-section ordinals that collide when sub-sections merge
+  into one lesson; it should assign a single unique sequence per lesson (else a
+  re-ingest reintroduces the collision). L9L5 (content-empty) got a real title
+  from the TTMIK syllabus in the F-UP-006 titles work. No `(lesson_id, ordinal)`
+  unique index exists on `ttmik_sentences` — consider adding one.
 
 ## Rate-limit retry_after (from B-016 review, 2026-07-05)
 
