@@ -1018,6 +1018,10 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
     label: d.label,
     kr: d.kr,
     score: d.score,
+    // F-011: confidence band edges. SkillBar renders no band when they
+    // collapse onto the score (the server's "unknown confidence" fallback).
+    scoreLow: d.scoreLow,
+    scoreHigh: d.scoreHigh,
     note: d.note,
   }));
   const references: ReadonlyArray<SkillReference> = snapshot.references.map(
@@ -1032,16 +1036,19 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
 
   return (
     <section aria-labelledby="dg-results-h" className="km-diagnostic__results">
-      {/* B-007: the results snapshot carries no capture timestamp, so the old
-          hard-coded "completed 5 min ago" was always a lie. Drop the false time
-          claim. ("TOPIK II Level 4" below is the app's fixed target, not a
-          per-attempt value, so it stays.) */}
-      <Eyebrow>Your results</Eyebrow>
+      {/* Honest labeling (B-007 + F-011): the snapshot carries no capture
+          timestamp, so the old hard-coded "completed 5 min ago" was always a
+          lie — dropped, and a neutral eyebrow stands in for a time claim. The
+          hard-coded "Against TOPIK II Level 4" implied an official placement
+          the quiz can't deliver; the sub-line now says what this actually is
+          (a rough estimate with per-skill confidence bands). */}
+      <Eyebrow>Quick placement estimate</Eyebrow>
       <h1 id="dg-results-h" className="kr-display km-diagnostic__results-title">
         Diagnostic
       </h1>
       <p className="km-diagnostic__results-sub">
-        Against TOPIK II <span className="km-diagnostic__level">Level 4</span>.
+        A short adaptive quiz — a rough placement estimate, not an official
+        TOPIK score. Bands show how confident each result is.
       </p>
 
       <Card className="km-diagnostic__skills-card">

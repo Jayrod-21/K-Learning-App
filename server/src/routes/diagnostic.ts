@@ -30,8 +30,9 @@
  *   - Out-of-order / double answers are rejected 409 (replay defense).
  *   - Item generation (vocab/grammar via Claude) is behind expensiveLimiter on
  *     the routes that can generate (/diagnostic, /:runId/next) and bounded to
- *     ≤4 calls per run by the fixed 8-item, 2-each schedule plus /next's
- *     re-serve-pending idempotency. Grading (/answer) never calls Claude, so
+ *     ≤ 2*ITEMS_PER_DIMENSION (8) calls per run by the fixed 16-item, 4-each
+ *     schedule plus /next's re-serve-pending idempotency. Grading (/answer)
+ *     never calls Claude, so
  *     it sits behind cheapLimiter — a limiter 429 can no longer withhold a
  *     reveal the user already earned.
  *
@@ -61,10 +62,12 @@ import {
   RUBRIC_VERSION,
   estimateToScore,
   estimatesByDimension,
+  resultsByDimension,
   type DiagnosticDimensionKey,
   type ScoredResponse,
 } from '../services/diagnostic/scoring.js';
 import { sharedPassageFor } from '../services/topik/passages.js';
+import { getLogger } from '../logging.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -73,20 +76,19 @@ router.use(requireAuth);
 // Types + constants
 // ---------------------------------------------------------------------------
 
-/** Fixed, interleaved serve schedule (ordinals 1..8). Interleaving spreads the
- *  adaptivity across all four skills. */
-const SCHEDULE: readonly DiagnosticDimensionKey[] = [
-  'reading',
-  'listening',
-  'vocab',
-  'grammar',
-  'reading',
-  'listening',
-  'vocab',
-  'grammar',
-];
+/** Items served per dimension. 4 balances reliability against Claude cost
+ *  (vocab+grammar are generated → 2*ITEMS_PER_DIMENSION Claude calls/run). */
+const ITEMS_PER_DIMENSION = 4;
 
-const TARGET_ITEM_COUNT = SCHEDULE.length;
+/** Fixed, interleaved serve schedule: DIMENSION_ORDER repeated
+ *  ITEMS_PER_DIMENSION times → reading,listening,vocab,grammar, reading,…
+ *  Interleaving spreads the adaptivity across all four skills. */
+const SCHEDULE: readonly DiagnosticDimensionKey[] = Array.from(
+  { length: ITEMS_PER_DIMENSION },
+  () => DIMENSION_ORDER,
+).flat();
+
+const TARGET_ITEM_COUNT = SCHEDULE.length; // 16
 
 type ChoiceId = 'a' | 'b' | 'c' | 'd';
 const CHOICE_IDS: readonly ChoiceId[] = ['a', 'b', 'c', 'd'];
@@ -643,7 +645,17 @@ async function serveNextItem(
     const section = SCHEDULE[ordinal - 1]!;
     const exclude = await servedTopikIds(runId);
     const item = await buildItemForSection(section, theta, exclude, correlationId, userId);
-    if (item === null) continue; // empty pool — skip this ordinal
+    if (item === null) {
+      // Empty/short pool — skip this ordinal. Scoring already tolerates a
+      // dimension that received < ITEMS_PER_DIMENSION items (and omits one
+      // that got 0), but a silently shrinking run is a corpus-data problem we
+      // want visible in the logs, not swallowed.
+      getLogger().warn(
+        { runId, ordinal, section, ...(correlationId !== undefined ? { correlationId } : {}) },
+        'diagnostic: section pool empty — skipping ordinal',
+      );
+      continue;
+    }
     const responseId = await insertResponse(runId, ordinal, item);
     return { responseId, ordinal, item };
   }
@@ -659,6 +671,12 @@ interface SnapshotDimensionDTO {
   readonly label: string;
   readonly kr: string;
   readonly score: number;
+  /** Confidence-band floor, 0–100. Equal to `score` (zero-width band) when
+   *  the snapshot predates the band (rubric < v1.1.0) or its stats are
+   *  missing/malformed — degrade, never crash. */
+  readonly scoreLow: number;
+  /** Confidence-band ceiling, 0–100. Same degradation rule as `scoreLow`. */
+  readonly scoreHigh: number;
   readonly note: string;
 }
 
@@ -697,17 +715,99 @@ function emptySnapshot(): SnapshotDTO {
   return { dimensions: [], references: REFERENCES, defaultRef: 'L4', goals: [] };
 }
 
-/** Build the SnapshotDTO from the four stored estimates. */
+/**
+ * Per-dimension scoring stats persisted in the snapshot's `evidence` JSONB
+ * under `dimensionStats` (rubric v1.1.0+, F-011). The snapshot table stores
+ * only the point-estimate columns, so the band (which needs n/correct) is
+ * carried here — no migration needed. Read back by `/latest`, `/history` and
+ * the idempotent `/finish` to rebuild `scoreLow`/`scoreHigh`.
+ */
+interface DimensionStat {
+  readonly n: number;
+  readonly correct: number;
+  readonly estimate: number;
+  readonly score: number;
+  readonly scoreLow: number;
+  readonly scoreHigh: number;
+}
+
+const DIMENSION_STAT_FIELDS = [
+  'n',
+  'correct',
+  'estimate',
+  'score',
+  'scoreLow',
+  'scoreHigh',
+] as const;
+
+/**
+ * Extract the per-dimension band stats from a snapshot's `evidence` JSONB.
+ *
+ * Deliberately forgiving: legacy rubric v1.0.0 rows ('{}' or no
+ * `dimensionStats`), and any malformed/partial entry, simply yield no stat
+ * for that dimension — the DTO builder then degrades that dimension to a
+ * zero-width band (`scoreLow = scoreHigh = score`). Old snapshots must keep
+ * loading forever; this reader must NEVER throw on their shape.
+ */
+function dimensionStatsFromEvidence(
+  evidence: unknown,
+): Partial<Record<DiagnosticDimensionKey, DimensionStat>> {
+  const out: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {};
+  if (typeof evidence !== 'object' || evidence === null) return out;
+  const block = (evidence as Record<string, unknown>)['dimensionStats'];
+  if (typeof block !== 'object' || block === null) return out;
+  for (const key of DIMENSION_ORDER) {
+    const raw = (block as Record<string, unknown>)[key];
+    if (typeof raw !== 'object' || raw === null) continue;
+    const stat = raw as Record<string, unknown>;
+    const valid = DIMENSION_STAT_FIELDS.every((f) => {
+      const v = stat[f];
+      return typeof v === 'number' && Number.isFinite(v);
+    });
+    if (!valid) continue; // malformed entry — degrade this dimension to no band
+    out[key] = {
+      n: stat['n'] as number,
+      correct: stat['correct'] as number,
+      estimate: stat['estimate'] as number,
+      score: stat['score'] as number,
+      scoreLow: stat['scoreLow'] as number,
+      scoreHigh: stat['scoreHigh'] as number,
+    };
+  }
+  return out;
+}
+
+/**
+ * Build the SnapshotDTO from the four stored estimates plus (optionally) the
+ * per-dimension band stats. A dimension with no stat — every pre-v1.1.0
+ * snapshot, or a malformed evidence entry — degrades to a zero-width band
+ * (`scoreLow = scoreHigh = score`); it never crashes. When a stat IS present,
+ * the band is re-anchored on the freshly computed `score` (min/max) so a
+ * corrupt stored band can never invert the `scoreLow ≤ score ≤ scoreHigh`
+ * invariant the client renders against.
+ */
 function buildSnapshotDTO(
   estimates: Partial<Record<DiagnosticDimensionKey, number | null>>,
+  stats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {},
 ): SnapshotDTO {
   const dimensions: SnapshotDimensionDTO[] = [];
   for (const key of DIMENSION_ORDER) {
     const est = estimates[key];
     if (est === undefined || est === null) continue;
     const score = estimateToScore(est);
+    const stat = stats[key];
+    const scoreLow = stat !== undefined ? Math.min(stat.scoreLow, score) : score;
+    const scoreHigh = stat !== undefined ? Math.max(stat.scoreHigh, score) : score;
     const labels = DIMENSION_LABELS[key];
-    dimensions.push({ key, label: labels.label, kr: labels.kr, score, note: noteForScore(score) });
+    dimensions.push({
+      key,
+      label: labels.label,
+      kr: labels.kr,
+      score,
+      scoreLow,
+      scoreHigh,
+      note: noteForScore(score),
+    });
   }
   const goals: string[] = [];
   if (dimensions.length > 0) {
@@ -1146,6 +1246,28 @@ router.post(
       }));
       const estimates = estimatesByDimension(scored);
 
+      // Per-dimension band stats (F-011). The snapshot table's estimate
+      // columns can't reproduce the confidence band on read (it needs n and
+      // the correct-count), so the full stats ride in the `evidence` JSONB —
+      // `dimensionStatsFromEvidence` reads them back for /latest, /history and
+      // the idempotent re-finish. Dimensions that received zero items are
+      // omitted, mirroring the estimate columns.
+      const results = resultsByDimension(scored);
+      const dimensionStats: Partial<Record<DiagnosticDimensionKey, DimensionStat>> = {};
+      for (const dim of DIMENSION_ORDER) {
+        const result = results[dim];
+        if (result === null) continue;
+        const correct = scored.filter((r) => r.section === dim && r.isCorrect).length;
+        dimensionStats[dim] = {
+          n: result.n,
+          correct,
+          estimate: result.estimate,
+          score: result.score,
+          scoreLow: result.scoreLow,
+          scoreHigh: result.scoreHigh,
+        };
+      }
+
       // Reconstruct the per-answer θ trajectory from the ordered responses.
       // The single `ability_estimate` column only persists the LATEST θ, so the
       // sequence is recomputed deterministically here: fold the CAT update over
@@ -1174,6 +1296,7 @@ router.post(
         })),
         theta_trajectory: thetaTrajectory,
         schedule: SCHEDULE,
+        dimensionStats,
       };
 
       // Write the snapshot + flip the run to finished in one short transaction.
@@ -1225,7 +1348,8 @@ router.post(
 
       // Build the DTO from the snapshot we just wrote (or the one the race
       // winner wrote — reload it user-scoped to be safe).
-      const dto = (await loadSnapshotDTO(snapshotId, userId)) ?? buildSnapshotDTO(estimates);
+      const dto =
+        (await loadSnapshotDTO(snapshotId, userId)) ?? buildSnapshotDTO(estimates, dimensionStats);
       res.status(200).json({ snapshot: dto });
     } catch (err) {
       next(mapClaudeError(err));
@@ -1233,27 +1357,34 @@ router.post(
   },
 );
 
-/** Load a stored snapshot (user-scoped) and rebuild its DTO. */
+/** Load a stored snapshot (user-scoped) and rebuild its DTO. The band comes
+ *  from `evidence.dimensionStats` (v1.1.0+); legacy v1.0.0 rows have no such
+ *  block and degrade to a zero-width band — they must never fail to load. */
 async function loadSnapshotDTO(snapshotId: number, userId: number): Promise<SnapshotDTO | null> {
   const { rows } = await query<{
     reading_estimate: string | null;
     listening_estimate: string | null;
     grammar_estimate: string | null;
     vocab_estimate: string | null;
+    evidence: unknown;
   }>(
-    `SELECT reading_estimate, listening_estimate, grammar_estimate, vocab_estimate
+    `SELECT reading_estimate, listening_estimate, grammar_estimate, vocab_estimate,
+            evidence
        FROM diagnostic_snapshots
       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
     [snapshotId, userId],
   );
   const row = rows[0];
   if (!row) return null;
-  return buildSnapshotDTO({
-    reading: row.reading_estimate !== null ? Number(row.reading_estimate) : null,
-    listening: row.listening_estimate !== null ? Number(row.listening_estimate) : null,
-    grammar: row.grammar_estimate !== null ? Number(row.grammar_estimate) : null,
-    vocab: row.vocab_estimate !== null ? Number(row.vocab_estimate) : null,
-  });
+  return buildSnapshotDTO(
+    {
+      reading: row.reading_estimate !== null ? Number(row.reading_estimate) : null,
+      listening: row.listening_estimate !== null ? Number(row.listening_estimate) : null,
+      grammar: row.grammar_estimate !== null ? Number(row.grammar_estimate) : null,
+      vocab: row.vocab_estimate !== null ? Number(row.vocab_estimate) : null,
+    },
+    dimensionStatsFromEvidence(row.evidence),
+  );
 }
 
 /**
@@ -1355,9 +1486,10 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
       listening_estimate: string | null;
       grammar_estimate: string | null;
       vocab_estimate: string | null;
+      evidence: unknown;
     }>(
       `SELECT captured_at, reading_estimate, listening_estimate,
-              grammar_estimate, vocab_estimate
+              grammar_estimate, vocab_estimate, evidence
          FROM diagnostic_snapshots
         WHERE user_id = $1 AND deleted_at IS NULL
         ORDER BY captured_at ASC, id ASC`,
@@ -1365,12 +1497,17 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
     );
     const snapshots: HistorySnapshotDTO[] = rows.map((r) => ({
       capturedAt: r.captured_at.toISOString(),
-      ...buildSnapshotDTO({
-        reading: r.reading_estimate !== null ? Number(r.reading_estimate) : null,
-        listening: r.listening_estimate !== null ? Number(r.listening_estimate) : null,
-        grammar: r.grammar_estimate !== null ? Number(r.grammar_estimate) : null,
-        vocab: r.vocab_estimate !== null ? Number(r.vocab_estimate) : null,
-      }),
+      // Band from evidence.dimensionStats — same reader as /latest, same
+      // zero-width degradation for pre-v1.1.0 rows.
+      ...buildSnapshotDTO(
+        {
+          reading: r.reading_estimate !== null ? Number(r.reading_estimate) : null,
+          listening: r.listening_estimate !== null ? Number(r.listening_estimate) : null,
+          grammar: r.grammar_estimate !== null ? Number(r.grammar_estimate) : null,
+          vocab: r.vocab_estimate !== null ? Number(r.vocab_estimate) : null,
+        },
+        dimensionStatsFromEvidence(r.evidence),
+      ),
     }));
     res.status(200).json({ snapshots });
   } catch (err) {

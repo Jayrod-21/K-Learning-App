@@ -31,6 +31,29 @@ const REFS: ReadonlyArray<SkillReference> = [
   { id: 'native', label: 'Native', kr: '원어민', value: 100, isCeiling: true },
 ];
 
+// F-011: reading carries a real confidence band; listening carries the
+// degenerate low == score == high fallback, which must render NO band.
+const BANDED_SKILLS: ReadonlyArray<SkillRow> = [
+  {
+    key: 'reading',
+    label: 'Reading',
+    kr: '읽기',
+    score: 60,
+    scoreLow: 52,
+    scoreHigh: 68,
+    note: 'On track',
+  },
+  {
+    key: 'listening',
+    label: 'Listening',
+    kr: '듣기',
+    score: 45,
+    scoreLow: 45,
+    scoreHigh: 45,
+    note: 'Largest gap',
+  },
+];
+
 describe('SkillsCompare', () => {
   it('defaults to the first reference id', () => {
     render(<SkillsCompare skills={SKILLS} references={REFS} />);
@@ -105,6 +128,44 @@ describe('SkillsCompare', () => {
       <SkillsCompare skills={SKILLS} references={[]} />,
     );
     expect(container.querySelector('.km-skillscompare--empty')).toBeTruthy();
+  });
+
+  it('F-011: renders a confidence band for scoreLow < scoreHigh, and none for a degenerate range', () => {
+    const { container } = render(
+      <SkillsCompare skills={BANDED_SKILLS} references={REFS} />,
+    );
+    // Only reading (52–68) draws a band; listening (45–45) degrades to the
+    // plain bar — no visible range, no crash.
+    const bands = container.querySelectorAll('.km-skillbar__band');
+    expect(bands).toHaveLength(1);
+    const band = bands[0] as HTMLElement;
+    expect(band.style.left).toBe('52%');
+    expect(band.style.width).toBe('16%');
+    // The overlay is decorative — the range is announced via aria-label.
+    expect(band).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('F-011: announces "estimated X, range Low–High" on a banded bar and stays plain otherwise', () => {
+    render(<SkillsCompare skills={BANDED_SKILLS} references={REFS} />);
+    expect(
+      screen.getByRole('progressbar', {
+        name: 'Reading skill — estimated 60, range 52–68',
+      }),
+    ).toBeInTheDocument();
+    // Degenerate band keeps the pre-F-011 label — no fake range claim.
+    expect(
+      screen.getByRole('progressbar', { name: 'Listening skill' }),
+    ).toBeInTheDocument();
+  });
+
+  it('F-011: the legend explains the band only when at least one bar draws one', () => {
+    const { rerender } = render(
+      <SkillsCompare skills={BANDED_SKILLS} references={REFS} />,
+    );
+    expect(screen.getByText('Confidence band')).toBeInTheDocument();
+    // No banded rows (legacy snapshot shape) → no band legend entry.
+    rerender(<SkillsCompare skills={SKILLS} references={REFS} />);
+    expect(screen.queryByText('Confidence band')).not.toBeInTheDocument();
   });
 
   it('fans the bars in with a per-index transition delay (i * 70ms)', () => {

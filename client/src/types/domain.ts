@@ -325,6 +325,13 @@ export interface DiagnosticDimension {
   label: string;
   kr: string;
   score: number;
+  // F-011 confidence band. The server guarantees 0 ≤ scoreLow ≤ score ≤
+  // scoreHigh ≤ 100; when the band is unknown (legacy snapshots, degenerate
+  // stats) both equal `score`, which the UI renders as "no band".
+  /** Lower edge of the confidence band, 0–100. */
+  scoreLow: number;
+  /** Upper edge of the confidence band, 0–100. */
+  scoreHigh: number;
   note: string;
 }
 

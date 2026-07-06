@@ -52,6 +52,10 @@ const { HISTORY_3 } = vi.hoisted(() => {
         label: LABELS[key]?.label ?? key,
         kr: LABELS[key]?.kr ?? key,
         score,
+        // F-011: the trend chart only reads `score`; the degenerate band
+        // satisfies the now-required dimension shape.
+        scoreLow: score,
+        scoreHigh: score,
         note: 'note',
       }),
     ),

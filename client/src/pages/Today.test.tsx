@@ -149,11 +149,30 @@ const EMPTY_SERIES: AllSkillSeries = {
 };
 
 const SNAP: DiagnosticSnapshot = {
+  // F-011 made scoreLow/scoreHigh required on the dimension; Today's compact
+  // tile doesn't render the band, so the degenerate low == score == high
+  // shape keeps this fixture honest without implying a band on-screen.
   dimensions: [
-    { key: 'reading', label: 'Reading', kr: '읽기', score: 62, note: 'n' },
+    {
+      key: 'reading',
+      label: 'Reading',
+      kr: '읽기',
+      score: 62,
+      scoreLow: 62,
+      scoreHigh: 62,
+      note: 'n',
+    },
     // Pass 5 adds grammar to the dimension union; the snapshot card renders it
     // generically (SkillsCompare keys on the string `key`), so it must survive.
-    { key: 'grammar', label: 'Grammar', kr: '문법', score: 48, note: 'g' },
+    {
+      key: 'grammar',
+      label: 'Grammar',
+      kr: '문법',
+      score: 48,
+      scoreLow: 48,
+      scoreHigh: 48,
+      note: 'g',
+    },
   ],
   references: [
     { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },

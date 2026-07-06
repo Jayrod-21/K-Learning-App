@@ -92,9 +92,27 @@ const EMPTY_SNAPSHOT: DiagnosticSnapshot = {
 };
 
 const POPULATED_SNAPSHOT: DiagnosticSnapshot = {
+  // F-011: reading carries a real confidence band; grammar carries the
+  // degenerate low == score == high fallback (renders no band).
   dimensions: [
-    { key: 'reading', label: 'Reading', kr: '읽기', score: 62, note: 'OK' },
-    { key: 'grammar', label: 'Grammar', kr: '문법', score: 44, note: 'Gap' },
+    {
+      key: 'reading',
+      label: 'Reading',
+      kr: '읽기',
+      score: 62,
+      scoreLow: 54,
+      scoreHigh: 70,
+      note: 'OK',
+    },
+    {
+      key: 'grammar',
+      label: 'Grammar',
+      kr: '문법',
+      score: 44,
+      scoreLow: 44,
+      scoreHigh: 44,
+      note: 'Gap',
+    },
   ],
   references: [
     { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
@@ -259,6 +277,50 @@ describe('Diagnostic', () => {
     expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /begin today/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('F-011: results show the honest placement disclaimer — no "Level 4" or fake timestamp', () => {
+    hookState.snapshot = {
+      data: POPULATED_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    renderWithRouter();
+    // The honest framing replaces the hard-coded "Against TOPIK II Level 4".
+    expect(
+      screen.getByText(
+        /rough placement estimate, not an official TOPIK score/i,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Quick placement estimate')).toBeInTheDocument();
+    // The dishonest literals must never come back (B-007 + F-011).
+    expect(screen.queryByText(/Level 4/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/min ago/i)).not.toBeInTheDocument();
+  });
+
+  it('F-011: results render a confidence band only for dimensions with a real range', () => {
+    hookState.snapshot = {
+      data: POPULATED_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    const { container } = renderWithRouter();
+    // reading (54–70) draws a band; grammar (44–44, degenerate) must not.
+    const bands = container.querySelectorAll('.km-skillbar__band');
+    expect(bands).toHaveLength(1);
+    expect((bands[0] as HTMLElement).style.left).toBe('54%');
+    expect((bands[0] as HTMLElement).style.width).toBe('16%');
+    // The band range is announced on the bar, not just painted.
+    expect(
+      screen.getByRole('progressbar', {
+        name: 'Reading skill — estimated 62, range 54–70',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', { name: 'Grammar skill' }),
     ).toBeInTheDocument();
   });
 
