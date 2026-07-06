@@ -1,15 +1,19 @@
 /**
  * POST /grade-writing — TOPIK-rubric writing grader (proxied to B4).
  *
- * Body fields mirror B4's GradeInputSchema.
+ * Body fields mirror B4's GradeInputSchema, plus an edge-only `promptId`
+ * (F-014). On a successful grade the route persists a writing_attempts row
+ * (best-effort — see the persist block) which feeds GET /writing/series.
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { getUserId, requireAuth } from '../middleware/auth.js';
 import { expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody } from '../middleware/validate.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import { UpstreamError } from '../middleware/errors.js';
+import { query } from '../db/pool.js';
+import { getLogger } from '../logging.js';
 
 const router = Router();
 
@@ -29,12 +33,22 @@ const router = Router();
 //                  out-of-set value (e.g. 'L9') is a 400. Accepted at the edge
 //                  for forward-compat but NOT forwarded to the proxy (the grader
 //                  derives the level from the sample; see GradeInput).
+//   * promptId   — OPTIONAL (F-014). The writing_prompts row the learner picked;
+//                  stored as the persisted attempt's soft prompt link, never
+//                  forwarded to the grader. A non-integer / non-positive value
+//                  is a 400; a WELL-FORMED id that doesn't exist merely fails
+//                  the best-effort persist (FK violation → logged, grade still
+//                  returned) — an attacker probing ids learns nothing.
 const GradeSchema = z
   .object({
     prompt: z.string().min(1).max(2_000),
     sample: z.string().min(1).max(5_000),
     rubric: z.enum(['topik_ii_53', 'topik_ii_54']).default('topik_ii_54'),
     targetLevel: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
+    // writing_prompts.id is BIGINT; ids are identity-generated well below
+    // 2^53, so a JS-safe-integer cap rejects garbage without ever rejecting a
+    // real id.
+    promptId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 
@@ -56,6 +70,66 @@ router.post(
           userId: req.user?.id ?? null,
         },
       );
+
+      // F-014: persist the successful grade as a writing_attempts row (feeds
+      // GET /writing/series + a future history screen). BEST-EFFORT: the grade
+      // already cost a Claude call, so a persist failure (down DB, FK violation
+      // on a stale promptId) must never fail the response — log with the
+      // correlation id and continue. An out-of-contract totalScore is clamped
+      // below (with a warn) rather than left to trip the range CHECK, so a
+      // systematic grader-contract violation cannot silently lose every row.
+      // Stamped with the SESSION user (getUserId), never a client id (no IDOR).
+      try {
+        const grade = result.result;
+        // The grader contract types scores as `number`; the columns are
+        // INTEGER. Round here so a fractional score becomes a clean insert
+        // instead of a text-to-int cast error from pg.
+        const maxTotal = Math.round(grade.maxTotal);
+        const rawTotalScore = Math.round(grade.totalScore);
+        // ck_writing_attempts_total_in_range requires total_score in
+        // [0, max_total]. GradeResultSchema only pins totalScore nonnegative —
+        // no cross-field totalScore <= maxTotal refinement (deliberate: a
+        // refinement would fail the whole paid grade). So an out-of-contract
+        // grader score (e.g. 31/30) would trip the CHECK and silently drop the
+        // attempt on EVERY such grade. Clamp instead, and warn with the raw
+        // values so the contract violation is observable. The grade RESPONSE
+        // is untouched — only the persisted history row is normalized.
+        const totalScore = Math.min(Math.max(rawTotalScore, 0), maxTotal);
+        if (totalScore !== rawTotalScore) {
+          getLogger().warn(
+            {
+              correlationId: req.correlationId,
+              rawTotalScore: grade.totalScore,
+              rawMaxTotal: grade.maxTotal,
+              persistedTotalScore: totalScore,
+            },
+            'grade-writing: grader returned an out-of-contract totalScore — clamped to [0, maxTotal] for persist',
+          );
+        }
+        await query(
+          `INSERT INTO writing_attempts
+              (user_id, prompt_id, rubric, prompt_kr, sample,
+               total_score, max_total, estimated_level, result)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)`,
+          [
+            getUserId(req),
+            body.promptId ?? null,
+            body.rubric,
+            body.prompt,
+            body.sample,
+            totalScore,
+            maxTotal,
+            grade.estimatedLevel,
+            JSON.stringify(grade),
+          ],
+        );
+      } catch (persistErr) {
+        getLogger().error(
+          { err: persistErr, correlationId: req.correlationId },
+          'grade-writing: attempt persist failed — returning the grade anyway',
+        );
+      }
+
       res.status(200).json(result);
     } catch (err) {
       if (err && typeof err === 'object' && 'httpStatus' in err) {

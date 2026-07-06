@@ -1,23 +1,24 @@
 /**
  * Per-skill trend series (F-017 — Today's "Progress by skill" carousel).
  *
- * Assembles the five-skill `AllSkillSeries` from the three series endpoints
+ * Assembles the five-skill `AllSkillSeries` from the four series endpoints
  * in one `Promise.all` fan-out:
  *
  *   GET /topik/series?days=N   → { reading, listening }   (two SkillSeries)
  *   GET /vocab/series?days=N   → { series }               (one SkillSeries)
  *   GET /grammar/series?days=N → { series }               (one SkillSeries)
+ *   GET /writing/series?days=N → { series }               (one SkillSeries)
  *
- * Writing has no series route yet, so its slot is synthesized client-side as
- * the `metric: 'none'` sentinel — the carousel renders a placeholder panel
- * for it instead of a chart. A fresh object is built per call (never a shared
- * module-level constant) so no caller can mutate another's series.
+ * Writing's route landed with F-014 (graded attempts persist server-side, so
+ * a real per-day score series exists — normalized to % of the rubric max).
  *
  * Failure model — degrade per skill, NEVER fabricate:
  * `Promise.allSettled`, not `Promise.all`. A rejected route degrades that
  * skill (both TOPIK skills for the topik route) to the `metric: 'none'`
  * placeholder, so its panel honestly reads "No data yet" while the other
- * skills still show real data. The old all-or-nothing rejection propagated to
+ * skills still show real data. A fresh placeholder object is built per call
+ * (never a shared module-level constant) so no caller can mutate another's
+ * series. The old all-or-nothing rejection propagated to
  * `useEndpointOrMock`, whose mock fallback then painted ALL FIVE panels with
  * hardcoded fixture numbers as if they were the user's real progress — for a
  * stats widget, fabricated data is the worst available failure mode. This
@@ -26,10 +27,10 @@
  * the caller's `signal`, preserved so aborts stay aborts.
  *
  * Threat model:
- *   - **Auth + session.** All three routes are `requireAuth` server-side; the
+ *   - **Auth + session.** All four routes are `requireAuth` server-side; the
  *     session cookie rides via `withCredentials` on the shared axios
  *     instance. No bearer token is read or echoed from JS.
- *   - **CSRF.** All three are GETs (no state change); the `SameSite=Strict`
+ *   - **CSRF.** All four are GETs (no state change); the `SameSite=Strict`
  *     session cookie covers them regardless.
  *   - **Injection.** `days` is a caller-supplied number serialized by axios
  *     into the query string — never interpolated into the path — and the
@@ -39,7 +40,7 @@
  *     markup.
  *
  * Signal note: the optional `signal` lets a direct caller cancel the whole
- * fan-out (one signal aborts all three requests). Like the other services,
+ * fan-out (one signal aborts all four requests). Like the other services,
  * the Today screen consumes this through `useEndpointOrMock` (no-arg
  * `realFn`), which owns cancellation itself — the param is for symmetry and
  * future direct callers.
@@ -53,15 +54,15 @@ export interface TopikSeriesResponse {
   listening: SkillSeries;
 }
 
-/** Envelope returned by `GET /vocab/series` and `GET /grammar/series`. */
+/** Envelope of `GET /vocab/series`, `GET /grammar/series`, `GET /writing/series`. */
 export interface SingleSeriesResponse {
   series: SkillSeries;
 }
 
 /**
- * Placeholder for a skill whose route failed (or does not exist) — the
- * carousel renders it as an honest "No data yet" panel, never fixture
- * numbers. Fresh object per call so no caller can mutate another's series.
+ * Placeholder for a skill whose route failed — the carousel renders it as an
+ * honest "No data yet" panel, never fixture numbers. Fresh object per call
+ * so no caller can mutate another's series.
  */
 function unavailableSeries(): SkillSeries {
   return { metric: 'none', unit: '', points: [] };
@@ -70,9 +71,9 @@ function unavailableSeries(): SkillSeries {
 /**
  * Fetch all five skill trends for the last `days` days (server default 30).
  *
- * The three GETs run in parallel; `writing` is synthesized empty (no route).
- * A failed route degrades its skill(s) to the `metric: 'none'` placeholder —
- * this function only rejects when `signal` aborts the fan-out.
+ * The four GETs run in parallel. A failed route degrades its skill(s) to the
+ * `metric: 'none'` placeholder — this function only rejects when `signal`
+ * aborts the fan-out.
  */
 export async function fetchSkillSeries(
   days = 30,
@@ -83,10 +84,11 @@ export async function fetchSkillSeries(
     ...(signal !== undefined ? { signal } : {}),
   };
 
-  const [topik, vocab, grammar] = await Promise.allSettled([
+  const [topik, vocab, grammar, writing] = await Promise.allSettled([
     api.get<TopikSeriesResponse>('/topik/series', config),
     api.get<SingleSeriesResponse>('/vocab/series', config),
     api.get<SingleSeriesResponse>('/grammar/series', config),
+    api.get<SingleSeriesResponse>('/writing/series', config),
   ]);
 
   // An aborted fan-out is a cancellation, not "five skills with no data" —
@@ -103,8 +105,7 @@ export async function fetchSkillSeries(
     vocab: vocab.status === 'fulfilled' ? vocab.value.series : unavailableSeries(),
     grammar:
       grammar.status === 'fulfilled' ? grammar.value.series : unavailableSeries(),
-    // No /writing/series route yet — synthesize the client-only sentinel so
-    // the carousel can render its "start writing" placeholder panel.
-    writing: { metric: 'none', unit: '', points: [] },
+    writing:
+      writing.status === 'fulfilled' ? writing.value.series : unavailableSeries(),
   };
 }

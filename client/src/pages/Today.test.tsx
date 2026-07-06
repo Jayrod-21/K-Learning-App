@@ -127,7 +127,16 @@ const SERIES: AllSkillSeries = {
       { date: '2026-06-30', value: 52 },
     ],
   },
-  writing: { metric: 'none', unit: '', points: [] },
+  // Real /writing/series wire shape (F-014): per-day average grade score
+  // normalized to percent-of-max (score/%, never accuracy).
+  writing: {
+    metric: 'score',
+    unit: '%',
+    points: [
+      { date: '2026-06-16', value: 60 },
+      { date: '2026-06-30', value: 72 },
+    ],
+  },
 };
 
 /** A brand-new user: every skill exists, none has any activity yet. */
@@ -136,7 +145,7 @@ const EMPTY_SERIES: AllSkillSeries = {
   listening: { metric: 'accuracy', unit: '%', points: [] },
   vocab: { metric: 'count', unit: 'reviews', points: [] },
   grammar: { metric: 'score', unit: 'pts', points: [] },
-  writing: { metric: 'none', unit: '', points: [] },
+  writing: { metric: 'score', unit: '%', points: [] },
 };
 
 const SNAP: DiagnosticSnapshot = {
@@ -298,16 +307,66 @@ describe('Today', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders the Writing page as a placeholder (no series route yet)', () => {
+  it('renders the Writing page as a real chart when it has points (F-014)', async () => {
     hoisted.today.state = { kind: 'data', data: PLAN };
     hoisted.diag.state = { kind: 'data', data: SNAP };
     hoisted.series.state = { kind: 'data', data: SERIES };
+
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Writing is page 5. Its series is `metric: 'score'` + `unit: '%'` on the
+    // real wire — headline formats as a percent, and a real chart renders
+    // (no invitation, no placeholder).
+    await user.click(screen.getByRole('tab', { name: 'Page 5 of 5' }));
+
+    const panels = screen.getAllByRole('tabpanel', { hidden: true });
+    expect(panels[4]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[4]).toHaveTextContent('Writing');
+    expect(panels[4]).toHaveTextContent('72%');
+    expect(
+      screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Start writing to see your progress here.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the invitation only when the writing series is EMPTY', () => {
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = {
+      kind: 'data',
+      data: { ...SERIES, writing: { metric: 'score', unit: '%', points: [] } },
+    };
 
     renderTodayAt();
 
     expect(
       screen.getByText('Start writing to see your progress here.'),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('degrades the Writing panel to "No data yet" when its route failed', () => {
+    // fetchSkillSeries degrades a failed /writing/series to the metric:'none'
+    // placeholder — the panel must read as unavailable, NOT invite the user
+    // as if they had never written (and never fabricate points).
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    hoisted.series.state = {
+      kind: 'data',
+      data: { ...SERIES, writing: { metric: 'none', unit: '', points: [] } },
+    };
+
+    renderTodayAt();
+
+    expect(screen.getByText('No data yet')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Start writing to see your progress here.'),
+    ).not.toBeInTheDocument();
   });
 
   it('navigates carousel pages via the dots (Vocab shows its count)', async () => {

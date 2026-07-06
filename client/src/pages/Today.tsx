@@ -25,8 +25,9 @@
  * of five panels (Reading / Listening / Vocab / Grammar / Writing), each a
  * LineChart of that skill's 30-day series. It complements — never replaces —
  * the SkillsCompare snapshot above it (snapshot = where you are now,
- * carousel = how you got here). Writing has no series route yet, so its
- * panel is a "start writing" placeholder.
+ * carousel = how you got here). Writing charts its real `/writing/series`
+ * data as of F-014; with zero graded attempts its panel is a "start
+ * writing" invitation instead of an empty chart.
  *
  * Threat model:
  *   Fixture text rendered as React children → escaped by React. Pass 3+ wire
@@ -164,13 +165,15 @@ const METRIC_LABELS: Record<SkillSeries['metric'], string> = {
 };
 
 /**
- * Latest-value headline for a panel: "74%" for accuracy, "35 cards" for
- * counts/scores, an em dash when the series has no points yet.
+ * Latest-value headline for a panel: "74%" for percent series (TOPIK
+ * accuracy, Writing's normalized score), "35 reviews" / "52 pts" for the
+ * rest, an em dash when the series has no points yet. Keyed on the unit —
+ * not the metric — so it matches the LineChart readout's own `%` formatting.
  */
 function latestValue(series: SkillSeries): string {
   const last = series.points[series.points.length - 1];
   if (last === undefined) return '—';
-  if (series.metric === 'accuracy') return `${String(Math.round(last.value))}%`;
+  if (series.unit === '%') return `${String(Math.round(last.value))}%`;
   const unitSuffix = series.unit !== '' ? ` ${series.unit}` : '';
   return `${String(last.value)}${unitSuffix}`;
 }
@@ -198,14 +201,17 @@ function SkillTrendPanel({
         <span className="km-today__trendValue">{latestValue(series)}</span>
       </div>
       {series.metric === 'none' ? (
-        // `none` is the client-only placeholder: Writing has no series route
-        // yet (an invitation, not a broken chart), and any other skill lands
-        // here when its fetch failed — an honest "No data yet", never
-        // fabricated numbers.
+        // `none` is the client-only degraded placeholder: this skill's route
+        // failed, so its panel honestly reads "No data yet" — never
+        // fabricated numbers (F-014 gave Writing a real /writing/series
+        // route, so it degrades like every other skill now).
+        <div className="km-today__trendEmpty">No data yet</div>
+      ) : skillKey === 'writing' && series.points.length === 0 ? (
+        // Writing's route answered but the user has no graded attempts yet —
+        // an invitation to start, not a bare empty chart. Only the empty
+        // REAL series lands here; a failed route reads "No data yet" above.
         <div className="km-today__trendEmpty">
-          {skillKey === 'writing'
-            ? 'Start writing to see your progress here.'
-            : 'No data yet'}
+          Start writing to see your progress here.
         </div>
       ) : (
         <LineChart

@@ -281,19 +281,53 @@ describe('GET /plan/today — graceful empty corpus', () => {
   });
 });
 
+describe('GET /plan/today — writing task after F-014 prompt reconciliation', () => {
+  it('advertises an active rubric-tagged prompt (the retired legacy rows never surface)', async () => {
+    // Migration 038 retired the 8 legacy register-drill rows (rubric IS NULL →
+    // is_active = FALSE) and seeded six rubric-tagged TOPIK II prompts. The
+    // active pool must therefore be entirely rubric-tagged…
+    const untaggedActive = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM writing_prompts
+        WHERE is_active AND rubric IS NULL`,
+    );
+    expect(untaggedActive.rows[0]!.n).toBe(0);
+    const taggedActive = await pg.pool.query<{ title: string }>(
+      `SELECT title FROM writing_prompts WHERE is_active AND rubric IS NOT NULL`,
+    );
+    expect(taggedActive.rows.length).toBeGreaterThan(0);
+
+    // …and /plan/today still resolves a Writing task, drawn from that pool —
+    // i.e. a prompt GET /writing/prompts also serves, closing the old
+    // tile-vs-screen mismatch.
+    await seedTtmikLesson(pg.pool);
+    await seedIyagiEpisode(pg.pool);
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const writing = (res.body as { writing: { title: string } | null }).writing;
+    expect(writing).not.toBeNull();
+    expect(taggedActive.rows.map((r) => r.title)).toContain(writing!.title);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Writing-branch tests that TRUNCATE the shared writing_prompts bank to control
 // it exactly. These MUST stay LAST in the file: beforeEach does NOT restore the
-// migration-013 seed rows, so any earlier test that relies on the bank (the
-// shape test, the graceful-empty test) would find it empty if these ran first.
+// migration seed rows, so any earlier test that relies on the bank (the shape
+// test, the graceful-empty test, the F-014 reconciliation test) would find it
+// empty if these ran first.
 // ---------------------------------------------------------------------------
 
 describe('GET /plan/today — writing band preference', () => {
   it('prefers a writing prompt whose band matches the writing estimate', async () => {
     // Control the bank exactly: one L3 prompt and one L5+ prompt, nothing else.
-    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY');
-    await seedWritingPrompt(pg.pool, { level: 'L3', title: 'L3 prompt' });
-    await seedWritingPrompt(pg.pool, { level: 'L5+', title: 'L5+ prompt' });
+    // CASCADE: writing_attempts.prompt_id now FKs writing_prompts (F-014, mig 038),
+    // so a bare TRUNCATE is refused even when writing_attempts is empty.
+    // Rubric-tagged: the /plan/today writing pick filters `rubric IS NOT NULL`
+    // (F-014 reconciliation), so untagged rows would never surface here.
+    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
+    await seedWritingPrompt(pg.pool, { level: 'L3', title: 'L3 prompt', rubric: 'topik_ii_53' });
+    await seedWritingPrompt(pg.pool, { level: 'L5+', title: 'L5+ prompt', rubric: 'topik_ii_54' });
     await seedTtmikLesson(pg.pool);
     await seedIyagiEpisode(pg.pool);
     const { agent, userId } = await registerUser(t.app, pg.pool);
@@ -307,12 +341,39 @@ describe('GET /plan/today — writing band preference', () => {
   });
 });
 
+describe('GET /plan/today — rubric-NULL prompts are structurally excluded', () => {
+  it('does NOT advertise an active but rubric-NULL (legacy) prompt', async () => {
+    // F-014 fix-pass (SF-1): the reconciliation invariant must hold by QUERY
+    // SHAPE, not just by data state. An operator re-activating a retired
+    // legacy row (is_active = TRUE, rubric = NULL) must not let /plan/today
+    // advertise a prompt GET /writing/prompts will never serve. Bank contains
+    // ONLY such a row → the writing task must be null, exactly as if the bank
+    // were empty. A regression that drops `rubric IS NOT NULL` from the
+    // plan.ts writing SELECT fails here.
+    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
+    await seedWritingPrompt(pg.pool, {
+      title: 'reactivated legacy drill',
+      isActive: true,
+      rubric: null,
+    });
+    await seedTtmikLesson(pg.pool);
+    await seedIyagiEpisode(pg.pool);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const body = res.body as { writing: unknown | null; reading: unknown | null };
+    expect(body.writing).toBeNull();
+    expect(body.reading).not.toBeNull(); // the exclusion is writing-scoped
+  });
+});
+
 describe('GET /plan/today — writing empty corpus', () => {
   it('returns null writing when the prompt bank is empty', async () => {
     // Empty the bank entirely → the Writing branch's else-arm must yield null
     // (a regression that threw or returned a malformed row on an empty bank
     // would surface here). Reading/listening still resolve from their corpora.
-    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY');
+    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
     await seedTtmikLesson(pg.pool);
     await seedIyagiEpisode(pg.pool);
     const { agent } = await registerUser(t.app, pg.pool);

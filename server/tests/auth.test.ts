@@ -154,6 +154,10 @@ describe('rate limiting', () => {
     // a precise, positive retry_after (seconds) like the expensive limiter.
     expect(typeof err?.retry_after).toBe('number');
     expect(err?.retry_after as number).toBeGreaterThan(0);
+    // Units guard (fix-pass SF-3): retry_after is seconds, and can never exceed
+    // the limiter window (60s here — RATE_LIMIT_WINDOW_MS='60000'). A dropped
+    // ms→s division would yield ~59_000 and still pass the two checks above.
+    expect(err?.retry_after as number).toBeLessThanOrEqual(60);
   });
 });
 

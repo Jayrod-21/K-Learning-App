@@ -1,9 +1,15 @@
 /**
  * writing service — URL/body wiring, timeout override, and error surface for
- * `POST /grade-writing`.
+ * `POST /grade-writing`; envelope unwrap + params wiring for
+ * `GET /writing/prompts` (F-014).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { gradeWriting, type GradeWritingResponse } from './writing';
+import {
+  fetchWritingPrompts,
+  gradeWriting,
+  type GradeWritingResponse,
+  type WritingPromptDTO,
+} from './writing';
 import { api, ApiError } from './api';
 
 afterEach(() => {
@@ -124,5 +130,80 @@ describe('gradeWriting', () => {
     await expect(
       gradeWriting({ prompt: 'p', sample: 's' }),
     ).rejects.toMatchObject({ status: 502 });
+  });
+
+  it('forwards promptId when the caller grades a served prompt (F-014)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(RESPONSE);
+    const body = {
+      prompt: '환경 보호에 대해 쓰십시오.',
+      sample: '환경 보호는 중요합니다.',
+      rubric: 'topik_ii_54' as const,
+      promptId: 7,
+    };
+
+    await gradeWriting(body);
+
+    // Still the exact caller body — .strict() server schema, no reshaping.
+    expect(spy).toHaveBeenCalledWith('/grade-writing', body, {
+      timeout: 65_000,
+    });
+  });
+});
+
+describe('fetchWritingPrompts', () => {
+  const PROMPTS: WritingPromptDTO[] = [
+    {
+      id: 1,
+      promptKr: '스트레스 해소 방법에 대해 쓰십시오.',
+      promptEn: 'Write about how you relieve stress.',
+      level: 'L4',
+      rubric: 'topik_ii_53',
+      estMinutes: 15,
+    },
+    {
+      id: 2,
+      promptKr: '인터넷 쇼핑의 장단점에 대해 쓰십시오.',
+      promptEn: null,
+      level: 'L4',
+      rubric: 'topik_ii_53',
+      estMinutes: null,
+    },
+  ];
+
+  it('GETs /writing/prompts with the rubric param and unwraps { prompts }', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ prompts: PROMPTS });
+
+    const out = await fetchWritingPrompts('topik_ii_53');
+
+    expect(spy).toHaveBeenCalledWith('/writing/prompts', {
+      params: { rubric: 'topik_ii_53' },
+    });
+    expect(out).toEqual(PROMPTS);
+  });
+
+  it('forwards the abort signal alongside the rubric param', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ prompts: [] });
+    const ctrl = new AbortController();
+
+    const out = await fetchWritingPrompts('topik_ii_54', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/writing/prompts', {
+      params: { rubric: 'topik_ii_54' },
+      signal: ctrl.signal,
+    });
+    // Empty pool resolves as [], not an error — the screen owns that state.
+    expect(out).toEqual([]);
+  });
+
+  it('surfaces a failed load as ApiError (no swallow, no fallback)', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('server error', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(fetchWritingPrompts('topik_ii_53')).rejects.toMatchObject({
+      status: 500,
+    });
   });
 });

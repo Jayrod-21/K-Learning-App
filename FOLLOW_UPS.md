@@ -181,6 +181,16 @@ robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scopin
 mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
 Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
 
+### F-UP-017 · F-014 Writing rework — NITs from the /fixpass (P3)
+Non-blocking NITs from the three F-014 reviews (full lists in
+`db/docs/REVIEW_F014_{backend,ratelimit,frontend}.md`; re-review PASSed). Notables:
+- **"New prompt" no-op when a rubric's server pool has exactly one prompt** — the
+  rotate cursor wraps to the same prompt (only clears the draft). Fetch-another or
+  disable the button at pool size 1.
+- Backend nits (4): minor doc/observability polish on the series + persist paths.
+- Rate-limit nits (2): 429 test/doc tidy-ups.
+None affect correctness; batch them into a Writing polish pass or the app overhaul.
+
 ### F-UP-016 · F-017 stats carousel — 3 cosmetic NITs from the re-review (P3)
 Left by the F-017 /fixpass re-review (verdict PASS; see `db/docs/REVIEW_FIXES_F017.md`), none
 shippable-blocking:

@@ -33,6 +33,7 @@ import hanjaRoutes from './routes/hanja.js';
 import imagesRoutes from './routes/images.js';
 import settingsRoutes from './routes/settings.js';
 import grammarDrillRoutes from './routes/grammarDrill.js';
+import writingRoutes from './routes/writing.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -64,6 +65,11 @@ export function createApp(): Express {
   app.use('/krdict', krdictRoutes);
   app.use('/enrich', enrichRoutes);
   app.use('/grade-writing', gradeRoutes);
+  // F-014: prompt bank + grade series. A DIFFERENT prefix from /grade-writing
+  // (which stays the Claude-grader endpoint) — both are on the km-lb nginx
+  // API allow-list (Deploy/nginx-{blue,green}-active.conf), which any NEW
+  // top-level prefix must be added to or the SPA shadows it.
+  app.use('/writing', writingRoutes);
 
   app.use('/progress', progressRoutes);
   // /vocab/lists routes MUST mount before the catch-all /vocab router so
