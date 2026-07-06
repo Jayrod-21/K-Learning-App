@@ -96,8 +96,8 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
 /**
  * Static intro descriptors — the Intro no longer pre-fetches a test bundle.
- * The live run is built server-side (2 each reading/listening/vocab/grammar,
- * 8 items, ~12 min adaptive); these are the human-readable section labels the
+ * The live run is built server-side (4 each reading/listening/vocab/grammar,
+ * 16 items, ~20 min adaptive); these are the human-readable section labels the
  * Intro card lists. Kept module-scope (immutable, never re-allocated).
  */
 const INTRO_SECTIONS: ReadonlyArray<{ id: string; label: string; kr: string }> =
@@ -108,9 +108,14 @@ const INTRO_SECTIONS: ReadonlyArray<{ id: string; label: string; kr: string }> =
     { id: 'grammar', label: 'Grammar', kr: '문법' },
   ];
 
-const INTRO_TOTAL_MINS = 12;
-const INTRO_TOTAL_ITEMS = 8;
-const INTRO_PER_SECTION = 2;
+// These MUST mirror the server's test shape — `ITEMS_PER_DIMENSION` in
+// `server/src/routes/diagnostic.ts` (4 per dimension → 16-item schedule).
+// The taking-screen progress bar counts to the server's total, so a stale
+// intro promise here is a user-visible contradiction (F-011 fixpass R3 B1).
+// Retune all three together when turning the server knob.
+const INTRO_TOTAL_MINS = 20;
+const INTRO_TOTAL_ITEMS = 16;
+const INTRO_PER_SECTION = 4;
 
 /** Normalise a thrown value to a user-facing message, defaulting to `fallback`. */
 function toMessage(err: unknown, fallback: string): string {
@@ -990,7 +995,7 @@ function DoneBlock({ onContinue }: DoneProps): JSX.Element {
         Diagnostic complete
       </h2>
       <p className="km-diagnostic__done-hint">
-        Scoring against TOPIK II L4 reference.
+        Comparing against TOPIK II L4 reference.
       </p>
       <Button
         variant="gold"

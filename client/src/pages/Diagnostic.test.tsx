@@ -266,6 +266,29 @@ describe('Diagnostic', () => {
     expect(screen.queryByText('Skills snapshot')).not.toBeInTheDocument();
   });
 
+  it('F-011: the intro advertises the real 16-item / 4-per-section test shape', () => {
+    // The server serves ITEMS_PER_DIMENSION = 4 → a 16-item schedule
+    // (server/src/routes/diagnostic.ts), and the taking-screen progress bar
+    // counts to the server's total. The intro's promise must match — the old
+    // "8 items / 2 items / 12 min" copy shipped one screen before a /16
+    // progress bar (fixpass R3 B1). This pins intro ↔ server-shape sync.
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    renderWithRouter();
+    // Eyebrow: "진단평가 · 20 min · 16 items".
+    expect(screen.getByText(/20 min · 16 items/)).toBeInTheDocument();
+    // Every one of the four section rows promises 4 items.
+    expect(screen.getAllByText('4 items')).toHaveLength(4);
+    // The stale pre-F-011 shape must never come back.
+    expect(screen.queryByText(/8 items/)).not.toBeInTheDocument();
+    expect(screen.queryByText('2 items')).not.toBeInTheDocument();
+    expect(screen.queryByText(/12 min/)).not.toBeInTheDocument();
+  });
+
   it('lands on Results when the snapshot has prior dimensions', () => {
     hookState.snapshot = {
       data: POPULATED_SNAPSHOT,

@@ -91,4 +91,31 @@ describe('SkillBar', () => {
     );
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
   });
+
+  it('F-011: an INVERTED band pair (scoreLow > scoreHigh) renders sorted — non-negative width, sorted aria range', () => {
+    // The server invariant is scoreLow <= scoreHigh, but SkillBar promises a
+    // corrupt inverted pair can never paint a negative-width band. Pin the
+    // min/max sort so a refactor can't "simplify" it away (fixpass R3 S1).
+    const { container } = render(
+      <SkillBar
+        label="Reading"
+        kr="읽기"
+        score={60}
+        target={55}
+        scoreLow={68}
+        scoreHigh={52}
+      />,
+    );
+    const band = container.querySelector('.km-skillbar__band');
+    expect(band).toBeInstanceOf(HTMLElement);
+    // Sorted geometry: left = min(52, 68) = 52%, width = 68 − 52 = 16%.
+    expect((band as HTMLElement).style.left).toBe('52%');
+    expect((band as HTMLElement).style.width).toBe('16%');
+    // The announced range is also the SORTED pair, not the raw inverted one.
+    expect(
+      screen.getByRole('progressbar', {
+        name: 'Reading skill — estimated 60, range 52–68',
+      }),
+    ).toBeInTheDocument();
+  });
 });

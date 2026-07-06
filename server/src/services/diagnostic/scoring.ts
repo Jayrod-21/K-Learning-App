@@ -109,6 +109,9 @@ export interface DimensionResult {
  * (Agresti-Coull, +2 successes / +4 trials) keeps the band non-zero at p=0/1
  * — with few items, a 4/4 or 0/4 is common and must NOT read as certainty —
  * and widens it for inconsistent (mid-p) answers; it also narrows as n grows.
+ * (Statistical note: +2/+4 is the classic z=2 Agresti-Coull smoothing, used
+ * here under a z=1 (BAND_Z) interval — intentional, deliberately conservative
+ * at the p extremes.)
  *
  * The margin is computed in estimate (0–6) units and mapped through the same
  * score curve as the point estimate, with the same [1, 6] clamp, so at the
