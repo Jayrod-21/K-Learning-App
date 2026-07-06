@@ -510,7 +510,18 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Rename/re-point the "More" nav entry to the chat screen, and add an in-chat dictionary lookup (reuse `/define` or `/krdict`). Depends on B-011.
 
 ### F-017 · Today: swipeable multi-skill stats carousel
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Resolution (2026-07-06):** new "실력 추이 · Progress by skill" card on Today (below
+  SkillsCompare, which is untouched) — a swipeable `SwipeCarousel` of 5 per-skill panels
+  (Reading/Listening accuracy %, Vocab reviews/day, Grammar avg score/day, Writing
+  placeholder), each a hand-rolled `LineChart`. Backend: 3 read-only user-scoped series
+  routes (`GET /topik/series`, `/vocab/series`, `/grammar/series`) aggregating the practice
+  logs by UTC day — NO migration, no nginx change (existing prefixes). Practice-level data
+  (fills in as you study); writing has no series → honest placeholder. Built by 2 Fable
+  agents (backend/frontend, locked contract). Full /fixpass: 3 Fable reviewers (1 BLOCKER —
+  carousel stuck-drag + ~8 SHOULD-FIX incl. fabricated-data fallback + fixture infidelity) →
+  Fable fix → Fable re-review PASS (both critical tests mutation-proven). Tests: server +21
+  (195 in the 3 suites), client +50ish (641 total). 3 cosmetic NITs → F-UP-016. PR #TBD.
 - **Where:** Today page — extend the existing "compare to" widget.
 - **What:** Make the Today stats widget **finger-swipeable** — a carousel / layered rotating display that pages through per-skill statistics for **all five skills (reading, listening, vocabulary, grammar, writing)**, e.g. a line graph of words mastered / items reviewed over time per skill. Swipe (or a rotating layered stack) moves between skills/metrics rather than showing just one.
 - **State:** The current widget compares against a single reference. Underlying time-series data partly exists (diagnostic snapshots per attempt — see F-010; FSRS review history for vocab mastery — see F-013), but not uniformly across all five skills; listening/writing especially may lack a time-series until those features produce data.

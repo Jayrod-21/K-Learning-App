@@ -181,6 +181,18 @@ robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scopin
 mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
 Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
 
+### F-UP-016 · F-017 stats carousel — 3 cosmetic NITs from the re-review (P3)
+Left by the F-017 /fixpass re-review (verdict PASS; see `db/docs/REVIEW_FIXES_F017.md`), none
+shippable-blocking:
+- **Total-outage silence**: with `Promise.allSettled`, if ALL 3 series routes fail (network
+  down), every panel shows "No data yet" with no "couldn't load" signal — rejection reasons
+  are discarded. A distinct per-skill "unavailable" state (vs empty) would be more honest on a
+  total outage. (Partial failure already degrades correctly.)
+- **Theoretical capture-throw corner** in `SwipeCarousel` — a `setPointerCapture` throw during
+  the `'h'`-lock transition isn't guarded; not reachable in practice.
+- **Cosmetic 'cards' residue** in a generic `LineChart` test fixture (harmless label, not the
+  vocab wire unit which is now correctly `reviews`).
+
 ### F-UP-015 · Resume-fetch failure is silent (P3, F-007, UX)
 On the resume banner's "Resume", if `fetchMockTest(section, …, sourceTest)` fails, the
 banner just disappears with no user feedback (`resumeAttempt`'s catch clears `resumable`
