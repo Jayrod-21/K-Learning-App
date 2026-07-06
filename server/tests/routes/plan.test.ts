@@ -323,9 +323,11 @@ describe('GET /plan/today — writing band preference', () => {
     // Control the bank exactly: one L3 prompt and one L5+ prompt, nothing else.
     // CASCADE: writing_attempts.prompt_id now FKs writing_prompts (F-014, mig 038),
     // so a bare TRUNCATE is refused even when writing_attempts is empty.
+    // Rubric-tagged: the /plan/today writing pick filters `rubric IS NOT NULL`
+    // (F-014 reconciliation), so untagged rows would never surface here.
     await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
-    await seedWritingPrompt(pg.pool, { level: 'L3', title: 'L3 prompt' });
-    await seedWritingPrompt(pg.pool, { level: 'L5+', title: 'L5+ prompt' });
+    await seedWritingPrompt(pg.pool, { level: 'L3', title: 'L3 prompt', rubric: 'topik_ii_53' });
+    await seedWritingPrompt(pg.pool, { level: 'L5+', title: 'L5+ prompt', rubric: 'topik_ii_54' });
     await seedTtmikLesson(pg.pool);
     await seedIyagiEpisode(pg.pool);
     const { agent, userId } = await registerUser(t.app, pg.pool);
@@ -336,6 +338,33 @@ describe('GET /plan/today — writing band preference', () => {
     const res = await agent.get('/plan/today');
     expect(res.status).toBe(200);
     expect((res.body as { writing: { level: string } | null }).writing?.level).toBe('L3');
+  });
+});
+
+describe('GET /plan/today — rubric-NULL prompts are structurally excluded', () => {
+  it('does NOT advertise an active but rubric-NULL (legacy) prompt', async () => {
+    // F-014 fix-pass (SF-1): the reconciliation invariant must hold by QUERY
+    // SHAPE, not just by data state. An operator re-activating a retired
+    // legacy row (is_active = TRUE, rubric = NULL) must not let /plan/today
+    // advertise a prompt GET /writing/prompts will never serve. Bank contains
+    // ONLY such a row → the writing task must be null, exactly as if the bank
+    // were empty. A regression that drops `rubric IS NOT NULL` from the
+    // plan.ts writing SELECT fails here.
+    await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
+    await seedWritingPrompt(pg.pool, {
+      title: 'reactivated legacy drill',
+      isActive: true,
+      rubric: null,
+    });
+    await seedTtmikLesson(pg.pool);
+    await seedIyagiEpisode(pg.pool);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const body = res.body as { writing: unknown | null; reading: unknown | null };
+    expect(body.writing).toBeNull();
+    expect(body.reading).not.toBeNull(); // the exclusion is writing-scoped
   });
 });
 

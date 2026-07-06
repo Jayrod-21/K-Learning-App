@@ -74,11 +74,38 @@ router.post(
       // F-014: persist the successful grade as a writing_attempts row (feeds
       // GET /writing/series + a future history screen). BEST-EFFORT: the grade
       // already cost a Claude call, so a persist failure (down DB, FK violation
-      // on a stale promptId, a CHECK trip on an out-of-contract score) must
-      // never fail the response — log with the correlation id and continue.
+      // on a stale promptId) must never fail the response — log with the
+      // correlation id and continue. An out-of-contract totalScore is clamped
+      // below (with a warn) rather than left to trip the range CHECK, so a
+      // systematic grader-contract violation cannot silently lose every row.
       // Stamped with the SESSION user (getUserId), never a client id (no IDOR).
       try {
         const grade = result.result;
+        // The grader contract types scores as `number`; the columns are
+        // INTEGER. Round here so a fractional score becomes a clean insert
+        // instead of a text-to-int cast error from pg.
+        const maxTotal = Math.round(grade.maxTotal);
+        const rawTotalScore = Math.round(grade.totalScore);
+        // ck_writing_attempts_total_in_range requires total_score in
+        // [0, max_total]. GradeResultSchema only pins totalScore nonnegative —
+        // no cross-field totalScore <= maxTotal refinement (deliberate: a
+        // refinement would fail the whole paid grade). So an out-of-contract
+        // grader score (e.g. 31/30) would trip the CHECK and silently drop the
+        // attempt on EVERY such grade. Clamp instead, and warn with the raw
+        // values so the contract violation is observable. The grade RESPONSE
+        // is untouched — only the persisted history row is normalized.
+        const totalScore = Math.min(Math.max(rawTotalScore, 0), maxTotal);
+        if (totalScore !== rawTotalScore) {
+          getLogger().warn(
+            {
+              correlationId: req.correlationId,
+              rawTotalScore: grade.totalScore,
+              rawMaxTotal: grade.maxTotal,
+              persistedTotalScore: totalScore,
+            },
+            'grade-writing: grader returned an out-of-contract totalScore — clamped to [0, maxTotal] for persist',
+          );
+        }
         await query(
           `INSERT INTO writing_attempts
               (user_id, prompt_id, rubric, prompt_kr, sample,
@@ -90,11 +117,8 @@ router.post(
             body.rubric,
             body.prompt,
             body.sample,
-            // The grader contract types scores as `number`; the columns are
-            // INTEGER. Round here so a fractional score becomes a clean insert
-            // instead of a text-to-int cast error from pg.
-            Math.round(grade.totalScore),
-            Math.round(grade.maxTotal),
+            totalScore,
+            maxTotal,
             grade.estimatedLevel,
             JSON.stringify(grade),
           ],

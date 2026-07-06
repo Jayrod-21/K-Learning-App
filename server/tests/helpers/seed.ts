@@ -324,6 +324,11 @@ export async function seedDiagnosticSnapshot(
  * is empty. Such a test must run LAST in its file: the `beforeEach` does not
  * restore the migration seed rows, so any earlier test that relies on the
  * seeded bank would otherwise find it empty.
+ *
+ * `rubric` defaults to NULL — a rubric-NULL row mirrors the retired pre-F-014
+ * legacy shape and is invisible to BOTH `GET /writing/prompts` and the
+ * `/plan/today` writing pick (each filters `rubric IS NOT NULL`). A test that
+ * needs the row to be servable/advertisable must pass an explicit rubric.
  */
 export async function seedWritingPrompt(
   pool: Pool,
@@ -332,14 +337,16 @@ export async function seedWritingPrompt(
     title?: string;
     estMinutes?: number;
     isActive?: boolean;
+    rubric?: 'topik_ii_53' | 'topik_ii_54' | null;
   } = {},
 ): Promise<number> {
   const sourceId = `wp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO writing_prompts (
-        source_id, title, prompt_kr, prompt_en, level, est_minutes, is_active)
+        source_id, title, prompt_kr, prompt_en, level, est_minutes, is_active,
+        rubric)
      VALUES ($1, $2, '테스트 작문 프롬프트', 'test writing prompt',
-             $3::proficiency_level, $4, $5)
+             $3::proficiency_level, $4, $5, $6)
      RETURNING id`,
     [
       sourceId,
@@ -347,6 +354,7 @@ export async function seedWritingPrompt(
       opts.level ?? 'L4',
       opts.estMinutes ?? 8,
       opts.isActive ?? true,
+      opts.rubric ?? null,
     ],
   );
   return Number(rows[0]!.id);

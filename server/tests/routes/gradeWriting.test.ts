@@ -4,9 +4,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
+import pino from 'pino';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser } from '../helpers/seed.js';
+import { getLogger, setLoggerForTesting } from '../../src/logging.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -174,6 +177,84 @@ describe('POST /grade-writing — attempt persistence (F-014)', () => {
     // …and nothing was persisted.
     expect(await attemptsFor(userId)).toHaveLength(0);
   });
+
+  it('an out-of-contract totalScore (> maxTotal) is clamped + warned and STILL persists a row', async () => {
+    // Fix-pass SF-2: GradeResultSchema pins totalScore only to nonnegative()
+    // — deliberately no totalScore <= maxTotal refinement, which would fail
+    // the whole paid grade. Without clamping, a 31/30 grader response trips
+    // ck_writing_attempts_total_in_range and the best-effort catch silently
+    // drops the attempt on EVERY such grade (systematic, not transient). The
+    // persist site must clamp to [0, max_total] and warn with the raw values.
+    const overGrader = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        gradeWriting: async (input) => ({
+          result: {
+            rubric: input.rubric,
+            content: { score: 11, maxScore: 10, evidence: ['e'], improvements: ['i'] },
+            organization: { score: 10, maxScore: 10, evidence: ['e'], improvements: ['i'] },
+            languageUse: { score: 10, maxScore: 10, evidence: ['e'], improvements: ['i'] },
+            totalScore: 31, // out of contract: exceeds maxTotal
+            maxTotal: 30,
+            estimatedLevel: 'L4' as const,
+            overallComment: 'mock over-max grade',
+          },
+          metadata: {
+            model: 'claude-sonnet-4-6' as const,
+            cacheHit: false,
+            latencyMs: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costEstimateUsd: 0,
+            requestId: randomUUID(),
+          },
+        }),
+      },
+    });
+    // Capture structured warns: swap in a pino logger writing to an array
+    // (LOG_LEVEL is 'silent' in tests, so the default logger drops warns).
+    const originalLogger = getLogger();
+    const warns: Array<Record<string, unknown>> = [];
+    setLoggerForTesting(
+      pino(
+        { level: 'warn' },
+        {
+          write: (line: string) => {
+            warns.push(JSON.parse(line) as Record<string, unknown>);
+          },
+        },
+      ),
+    );
+    try {
+      const { agent, userId } = await registerUser(overGrader.app, pg.pool);
+      const res = await agent
+        .post('/grade-writing')
+        .send({ prompt: 'topic', sample: 'my essay body' });
+      // The user's grade response is untouched — the raw grader output.
+      expect(res.status).toBe(200);
+      expect((res.body as { result: { totalScore: number } }).result.totalScore).toBe(31);
+      // The attempt persists, clamped — NOT silently dropped by the CHECK.
+      const rows = await attemptsFor(userId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.total_score).toBe(30);
+      expect(rows[0]!.max_total).toBe(30);
+      // The JSONB snapshot keeps the raw grader output (audit trail).
+      expect(rows[0]!.result.totalScore).toBe(31);
+      // The warn fired, structured with the raw + persisted values.
+      const warn = warns.find(
+        (w) => typeof w.msg === 'string' && w.msg.includes('out-of-contract totalScore'),
+      );
+      expect(warn).toBeDefined();
+      expect(warn!.rawTotalScore).toBe(31);
+      expect(warn!.rawMaxTotal).toBe(30);
+      expect(warn!.persistedTotalScore).toBe(30);
+    } finally {
+      setLoggerForTesting(originalLogger);
+      await teardownTestApp(overGrader);
+    }
+  });
 });
 
 describe('POST /grade-writing — downstream error', () => {
@@ -239,6 +320,13 @@ describe('POST /grade-writing — rate limit', () => {
     const retryAfter = err?.retry_after as number;
     expect(Number.isInteger(retryAfter)).toBe(true);
     expect(retryAfter).toBeGreaterThan(0);
+    // Units guard (fix-pass SF-3): header and body derive from ONE variable in
+    // the shared 429 handler, so integer+equality alone would still pass if a
+    // future edit dropped the ms→s division (retry_after ≈ 59_000). The value
+    // can never exceed the limiter window — 60s here (helpers/app.ts sets
+    // RATE_LIMIT_WINDOW_MS='60000') — so bound it to make a unit regression
+    // fail loudly.
+    expect(retryAfter).toBeLessThanOrEqual(60);
     // …and the standard Retry-After header, agreeing with the body exactly
     // (both are computed from one value in the shared 429 handler).
     expect(headers429['retry-after']).toBe(String(retryAfter));

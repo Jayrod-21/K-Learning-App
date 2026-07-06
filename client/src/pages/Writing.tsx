@@ -171,15 +171,14 @@ function Writing(): JSX.Element {
   const [promptsLoading, setPromptsLoading] = useState(true);
   const [promptsError, setPromptsError] = useState<string | null>(null);
   const [promptsTick, setPromptsTick] = useState(0);
-  const promptsCtrlRef = useRef<AbortController | null>(null);
 
   const textareaId = useId();
   const gradeId = useId();
 
   useEffect(() => {
+    // Stale-fetch safety needs no ref: the cleanup below aborts this
+    // controller before every re-run and on unmount (React guarantee).
     const ctrl = new AbortController();
-    promptsCtrlRef.current?.abort();
-    promptsCtrlRef.current = ctrl;
     // Sync-to-external-system (network fetch) — same documented exception
     // the Reference/TTMIK tabs use for their kickoff setState.
     /* eslint-disable react-hooks/set-state-in-effect */

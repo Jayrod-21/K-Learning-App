@@ -290,6 +290,11 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
       : null;
 
     // 5. Writing — one active prompt, band-preferred + deterministic per day.
+    // `rubric IS NOT NULL` mirrors GET /writing/prompts (writing.ts): the tile
+    // must only advertise a prompt the Writing screen can actually serve
+    // (F-014). Migration 038 retired every rubric-NULL row by data, but an
+    // operator re-activating a legacy row must not reopen the tile-vs-screen
+    // mismatch — the invariant is enforced structurally in BOTH queries.
     const writingBand = estimateToProficiency(writingEstimate);
     const writing = await query<{
       title: string;
@@ -299,6 +304,7 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
       `SELECT title, level::text AS level, est_minutes
          FROM writing_prompts
         WHERE is_active
+          AND rubric IS NOT NULL
         ORDER BY (CASE WHEN $2::proficiency_level IS NOT NULL
                         AND level = $2::proficiency_level THEN 0 ELSE 1 END),
                  md5($1::text || ${PLAN_DATE_SQL} || id::text)
