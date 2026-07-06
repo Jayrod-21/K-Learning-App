@@ -11,6 +11,24 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
+## Status snapshot (2026-07-05)
+
+**Bugs: 16 of 17 resolved.** B-001–B-011, B-013–B-016 are all 🟢 done (mix of the
+#19 Track-A wiring, the Read→Listen consolidation, the KRDICT dictionary load, and
+the 2026-07-05 bug pass — see `db/docs/BUG_RETRIAGE_2026-07-05.md` and the
+`REVIEW_*.md` trail). Only **B-012** remains (🟡 — the loaded count is fine at
+100%; only an OCR-completeness spot-check is left).
+
+**Features: 9 done, ~12 open.** 🟢 done: F-001, F-003, F-004, F-005, F-008, F-009,
+F-010, F-012, F-013. 🟡 in progress: F-019 (wrong-answer explanations, ~1920/2088).
+🔴 open: F-002, F-006, F-007, F-011, F-014, F-015, F-016, F-017, F-018, F-020,
+F-021.
+
+**Not in this doc — surfaced by the CI test gate + reviews (see `FOLLOW_UPS.md`):**
+F-UP-002 (strategy_c min-3 fragment filter drops legit 2-syllable patterns),
+F-UP-003 (3 ingest tests need generated output), F-UP-004/005 (rate-limit
+`retry_after` precision + coverage).
+
 > Triage done via read-only code scan on 2026-07-02. Path:line refs are pointers
 > for the coding session, not guaranteed exact after future edits.
 
@@ -91,7 +109,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Resolution (2026-07-06):** the Read tab was folded into **Listen** (`/ttmik`), which defaults to Iyagi prose and does TTMIK + Iyagi with audio + clickable transcripts. `reading.ts` + `Reading.tsx` are deleted. (Largely stale: once the Iyagi default landed, the Read tab no longer showed word-lists by default.)
 
 ### B-002 · Word lookup: "Definition unavailable"; no examples
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (UI, DATA)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P1 · **Category:** BACKEND (UI, DATA)
 - **Where:** Read tab → click a word → popover.
 - **Root cause:** Two stacked defects. (1) `GET /define` selects only the
   denormalized definition columns and never queries `krdict_examples`, so examples
@@ -104,7 +122,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** `/define` should join+return `krdict_examples` + `definition_english`; fix `summariseEnrichment`/`popoverFromDefine` to read the real enrichment fields and populate `ex_kr/ex_en/extra`; hide "More examples" when empty.
 
 ### B-003 · Read formatting is one word per line, not a paragraph
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA (UI)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** DATA (UI)
 - **Where:** Read tab.
 - **Root cause:** Downstream of B-001. `adaptWirePassage` maps each DB row 1:1 to
   a sentence and `KoreanPassage` renders each as its own `<p>`. When each row is a
@@ -114,7 +132,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Fix the content source (B-001); optionally group dialog turns into paragraphs so a passage is more than one row.
 
 ### B-004 · Read audio never plays
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI
 - **Where:** Read tab audio control.
 - **Root cause:** `AudioBlock` is a deliberately fake player — no `<audio>`
   element, no audio URL. The play button just animates a fake progress bar via
@@ -124,7 +142,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Wire a real `<audio>` source (TTS or corpus audio URL) and thread an audio field through the reading data model. This is a feature build, not a one-liner.
 
 ### B-005 · Today: Listening and Reading open the same screen
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI
 - **Where:** Today page tiles.
 - **Root cause:** Both the Reading and Listening tiles hardcode `nav: '/reading'`.
   There is no Listening screen or route at all (App.tsx has no listening route;
@@ -133,7 +151,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Build a real Listening screen + `/listening` route (needs an audio/listening feature first), or repoint the tile. Related to B-004.
 
 ### B-006 · Diagnostic freezes after selecting an answer
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (API)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P1 · **Category:** BACKEND (API)
 - **Where:** Diagnostic test.
 - **Root cause:** `POST /diagnostic/:runId/answer` grades the answer, then in the
   SAME request synchronously generates the NEXT item via a blocking Claude call
@@ -144,7 +162,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Return the graded reveal immediately; generate/fetch the next item separately (or pre-generate during the reveal dwell) so grading never blocks on Claude.
 
 ### B-007 · Diagnostic retake shows stale result
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (DATA)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (DATA)
 - **Where:** Diagnostic → results.
 - **Root cause:** Server is correct (each `/finish` INSERTs a new snapshot; `/latest`
   returns newest). Staleness is client-side: the latest-snapshot fetch runs once on
@@ -155,7 +173,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** `refetch()` the snapshot on finish and drive the results header from the snapshot data, not literals.
 
 ### B-008 · TOPIK question unanswerable — passage not rendered
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (UI, DATABASE)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P1 · **Category:** BACKEND (UI, DATABASE)
 - **Where:** TOPIK tab. Example: fill blank ㉠ with no passage shown.
 - **Root cause:** Passage IS in the DB but never reaches the screen. (1) `mapRowToDTO`
   collapses to `prompt ?? stem`, masking passage text stored in `stem`; and never
@@ -166,7 +184,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Join+select `topik_tests.passages`, stop masking `stem` behind `prompt`, emit passage text in the DTO, and render it via `KoreanPassage` before the choices.
 
 ### B-009 · Review card: English both sides, empty source/examples
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (UI, DATABASE)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P1 · **Category:** BACKEND (UI, DATABASE)
 - **Where:** Review tab.
 - **Root cause:** The due-cards query selects only scheduling + a grammar LEFT JOIN;
   it never joins `vocab_entries`, so a vocab card returns just a single `face` string
@@ -177,7 +195,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add `LEFT JOIN vocab_entries` to the due query, surface korean/english/example fields on `DueCard`, and populate them in `dueCardToVocab`.
 
 ### B-010 · Chat returns empty "TUTOR" box (NOT the API key)
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P1 · **Category:** UI (BACKEND)
 - **Where:** Chat tab.
 - **Root cause:** SSE wire-protocol mismatch. The server emits data-only JSON frames
   with the discriminator *inside* the payload (`data:{"event":"delta","text":…}`),
@@ -190,7 +208,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** In the client `onEvent`, `JSON.parse(ev.data)` and switch on the inner `.event` (delta/error/done) — or make the server emit real `event: <name>` SSE lines.
 
 ### B-011 · Dictionary is empty
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** DATA
 - **Where:** Reference → Dictionary.
 - **Root cause:** Schema + route work, but no KRDICT rows were ever loaded on this
   box. The route 503s only when tables are *missing*; empty-but-present tables just
@@ -200,7 +218,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Acquire the KRDICT bulk XML and run `Deploy/load-krdict.sh <dir>`. No code change.
 
 ### B-012 · Verify vocab-2000 completeness (3,188 loaded vs nominal ~4,000)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA
+- **Status:** 🟡 mostly resolved (2026-07-05) · **Priority:** P3 · **Category:** DATA
 - **Where:** Vocab corpus (`vocab_entries`) — loaded 2026-07-03 from the copyright-safe OCR.
 - **Root cause / state:** Both "2000 Essential Korean Words" books were OCR'd with FULL
   page coverage (beginner 505/505 PDF pages, intermediate 538/538, all themes + appendices),
@@ -216,7 +234,7 @@ Launch one focused session per group; cross-cutting items noted.
   fix unless undercounting is confirmed.
 
 ### B-013 · "Add to review" is inert — no UI to seed vocab review cards
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **Where:** Review tab (Lists tab "Add all to my bank" / "Study this list"); adding
   dictionary words to the review queue generally.
 - **Root cause / state:** `POST /vocab/cards/init` (seed recognition cards from a
@@ -230,21 +248,21 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Wire an "Add to review" / "Study this list" action to `POST /vocab/cards/init` (corpus + limit), then refetch the due queue. Pairs with F-003 (vocab filters) for choosing what to add.
 
 ### B-014 · Review: next card's English flashes before the card advances
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI
 - **Where:** Review tab — after flipping a card and tapping a rating (Again/Hard/Good/Easy), for a frame *before* the next card appears you can see the **next** card's English (its back face). Leaks the answer for the upcoming card.
 - **Root cause (suspected):** the rating handler advances the card index but the `flipped` state isn't reset to `false` synchronously with the index change, so the incoming card renders in its flipped (back = English) state for a render or two before `flipped` resets.
 - **Key files:** `client/src/pages/Review.tsx` (rating handler → card advance + `flipped` state); `client/src/components/Flashcard.tsx`
 - **Fix hint:** Reset `flipped=false` in the same state update that advances the card, or key the `Flashcard` on the card id so a new card always mounts unflipped — a new card must never render showing its back.
 
 ### B-015 · Reference "This Week": vocab + grammar need tabs; grammar overflows off-screen
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI
 - **Where:** Resources / Reference tab → the "This Week" section that lists this week's vocabulary + grammar.
 - **Root cause / state:** Weekly vocab and grammar are rendered stacked in one view and the layout doesn't fit — grammar rows overflow horizontally and get cut off the right edge of the visible area. Should be split into two tabs (Vocabulary | Grammar) with proper wrapping.
 - **Key files:** `client/src/pages/Reference.tsx` (weekly-suggestions / "This Week" section; vocab + grammar suggestion lists)
 - **Fix hint:** Split "This Week" vocab and grammar into tabbed sub-views (reuse Reference's existing tab pattern), and fix the grammar row layout so long pattern text wraps instead of overflowing (wrap or an `overflow-x` container).
 
 ### B-016 · `expensiveLimiter` 429 never sends `retry_after` → Writing retry copy is dead
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** BACKEND (UI)
 - **Where:** Any route behind `expensiveLimiter()` (Writing `/grade-writing`, lemmatize, enrich, diagnostic gen, …).
 - **Root cause / state:** Surfaced 2026-07-04 in the Track A /fixpass. `Writing.tsx` has a "retry in N seconds" UX path keyed on a structured `retryAfter` from the 429 body, but `expensiveLimiter`'s 429 response never sets `retry_after` — so that branch is unreachable and the client always falls back to fixed copy. Pre-existing shared-infra gap, not scoped to the Writing PR.
 - **Key files:** `server/src/middleware/rateLimits.ts` (`expensiveLimiter` 429 body); `client/src/pages/Writing.tsx` (the retryAfter branch)
@@ -255,7 +273,7 @@ Launch one focused session per group; cross-cutting items noted.
 ## ✨ Features / Improvements
 
 ### F-001 · Make "Writing" a real writing feature (backend already exists)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **Where:** Today → Writing tile.
 - **Root cause / state:** The tile hardcodes `nav: '/grammar'`. A real writing grader
   DOES exist server-side — `POST /grade-writing` (TOPIK rubric grader via Claude) —
@@ -275,7 +293,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** New migration to add enum values + L1/L2 band anchors, lower `THETA_MIN`, extend types/REFERENCES — and tag L1/L2 content (the real work).
 
 ### F-003 · Vocabulary: genre + difficulty filters
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** BACKEND (UI)
 - **State:** Columns already exist — difficulty ≈ `proficiency`/`book_level`, genre ≈
   `domain` (general/research/business), with a supporting index. Route currently
   accepts `corpus`+`proficiency` only; `domain`/`book_level` not wired.
@@ -283,7 +301,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add `domain`(+`book_level`) to `VocabSearchQuerySchema` + WHERE, then add filter controls in the VocabTab.
 
 ### F-004 · Grammar: clickable detail view (backend already exists)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI
 - **State:** The Reference Grammar tab renders each pattern as non-interactive spans —
   no onClick/Sheet. But `GET /grammar/kgiu/:id` already returns explanation/formation/
   examples/dialogues/tips/… and `grammarService.getPattern(id)` already exists. The
@@ -293,7 +311,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Make the row a button that calls `getPattern(p.id)` and renders it in a `Sheet` (reuse the Grammar.tsx pattern).
 
 ### F-005 · Grammar: difficulty + genre/source filters
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** BACKEND (UI)
 - **State:** `kgiu_entries` already carries `proficiency`, `book_level`, `domain`,
   `source_book`, `corpus`. Route filters on `corpus`+`proficiency` only.
 - **Key files:** `db/migrations/002_darakwon_corpora.up.sql:230`; `server/src/routes/grammar.ts:30,57`; `client/src/pages/Reference.tsx:715` (GrammarTab)
@@ -316,7 +334,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add a `topik_attempts` table (user_id, section, sourceTest, current_idx, picks JSONB, remaining_ms, status) + save/resume endpoints; hydrate `ExamRunner` from it.
 
 ### F-008 · TOPIK results / grade screen
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **State:** Mostly done. A full results screen already exists for **Mock mode**
   (`MockResults`: %, band, correct/total, per-item review) fed by `/topik/mock/submit`.
   The gap is **Study mode**, which only shows a "Set complete" count.
@@ -324,7 +342,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Reuse `MockResults`; for Study mode, tally client-side reveals into an equivalent summary card.
 
 ### F-009 · Wrong-answer explanations
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (DATA)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (DATA)
 - **State:** Explanations already flow end-to-end in Mock review, but for ALL items
   (ticket wants incorrect-only). Real risk is DATA coverage: explanation comes from
   `topik_items.extra->>'explanation'` and defaults to `''` when absent — many rows
@@ -333,7 +351,7 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Gate the explanation block on `!isCorrect`; audit/generate `topik_items.extra.explanation` coverage.
 
 ### F-010 · Progress / diagnostic history page with graph comparison
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **Where:** New tab/page (progress/history).
 - **What:** A page showing the user's diagnostic results over time — per-dimension
   (reading/listening/vocab/grammar) trend lines and an attempt-vs-attempt
@@ -379,7 +397,7 @@ Launch one focused session per group; cross-cutting items noted.
   and overlaps B-007 (same results-copy lines).
 
 ### F-012 · Talk To Me In Korean (TTMIK) tab — podcasts + lessons with audio + read-along script
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (DATABASE, DATA, UI)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** BACKEND (DATABASE, DATA, UI)
 - **Where:** NEW tab + route (`/ttmik`).
 - **What:** A dedicated TTMIK tab to consume the TTMIK content directly: (a) **Iyagi
   podcasts** — play the actual episode audio while reading the transcript/script along with
@@ -414,7 +432,7 @@ Launch one focused session per group; cross-cutting items noted.
   audio-serving infra + new tab.
 
 ### F-013 · Word mastery view — see how well a word is known
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **Where:** A surface for per-word mastery — likely a Progress tab, or the word popover / a vocab detail view. (Placement TBD.)
 - **State:** The mastery signal already exists in the DB: `vocab_cards` carries `stability`, `difficulty`, `fsrs_state`, `due_at` + review history (the FSRS scheduler state). Nothing shows a learner how well they know a given word, or an overview of mastery across their vocab.
 - **Key files:** `server/src/routes/vocab.ts` (cards + FSRS state; needs a per-word/summary read); `server/src/services/fsrs.ts` (stability → mastery mapping); client — new surface. Pairs with F-010 (progress/history) and F-017.
