@@ -71,6 +71,8 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from functools import lru_cache
+from itertools import product
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -417,70 +419,161 @@ async def grammar_candidates_by_category(
     ]
 
 
-async def grammar_candidates_by_pattern_substring(
-    conn: AsyncConnection, fragment: str, hangul_fragment: str
-) -> list[KgiuCandidate]:
-    """Find kgiu_entries whose pattern matches the extracted grammar fragment.
+# Structural markers in KGIU/TTMIK grammar notation that are NOT part of the
+# surface form: A/V/N are part-of-speech slots, ①②③ are sense markers, and
+# ? " ' . are stray punctuation. Stripped before expansion.
+_KGIU_POS_PREFIX_RE = re.compile(r"^(?:A/V|A|V|N)(?=[-(/가-힣ㄱ-ㅣ]|$)")
+_KGIU_NOISE_RE = re.compile(r"[①②③④⑤?\"'.]")
 
-    F-UP-010 (safe variant). Two OR'd match arms:
+# The candidate cap that used to be a SQL ``LIMIT 25``, now applied in Python
+# since the match is computed over the fetched rows.
+_STRATEGY_C_MATCHER_CANDIDATE_CAP = 25
 
-      1. RAW substring: ``pattern ILIKE '%<fragment>%'`` — the original
-         punctuation-exact match (``fragment`` still carries ``-``/``(``/``)``/``/``).
-         Kept for ALL fragments; it is the baseline behavior and its precision is
-         already accepted.
-      2. SYLLABLE-normalized substring, ONLY when the fragment has
-         ``>= _STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS`` syllables: both sides are
-         reduced to Hangul syllables (``regexp_replace(pattern, '[^가-힣]', '')``
-         vs ``hangul_fragment``). This recovers same-grammar links whose surface
-         punctuation differs (e.g. a Claude ``-으려고`` vs a stored ``-(으)려고``).
 
-    Why arm 2 is gated at 3 syllables and NOT applied to 2-syllable fragments:
-    stripping all punctuation from a 2-syllable fragment collapses distinct
-    grammar points that merely share a common ending. Validated against the real
-    KGIU corpus (285 grammar patterns, ``tools/ingest/output/grammar_kgiu_*.json``):
-    normalizing every fragment produced **26** spurious cross-links between
-    unrelated entries (``-다가``↔``-아/어다가``, ``(으)로``↔``-(으)ㅁ으로써``,
-    ``-데요``↔``-던데요`` …), essentially ALL of them driven by 2-syllable
-    fragments; restricting normalization to >= 3 syllables drops that to **2**
-    borderline (modifier-form patterns matching a modifier reference). Because
-    substring matching cannot distinguish a true 2-syllable variant (``는데`` →
-    ``-(으)ㄴ/는데``) from a false one (``다가`` → ``-아/어다가``), the 2-syllable
-    case is deliberately left to the raw arm only — a missed link is safer than a
-    wrong one for a prerequisite graph. FOLLOW_UPS F-UP-010 tracks the proper fix
-    (alternation-aware expansion of ``(으)``/``ㄴ/는`` into surface forms).
+def _expand_parens(s: str) -> list[str]:
+    """Expand each ``(X)`` optional group into both the present and absent form."""
+    m = re.search(r"\(([^)]*)\)", s)
+    if not m:
+        return [s]
+    pre, inner, post = s[: m.start()], m.group(1), s[m.end() :]
+    out: list[str] = []
+    for tail in _expand_parens(post):
+        out.append(pre + tail)  # optional morpheme ABSENT
+        out.append(pre + inner + tail)  # optional morpheme PRESENT
+    return out
 
-    Full table scan with a per-row regexp_replace, which is fine: kgiu_entries is
-    a few hundred rows and this runs only in the offline ingest linker. Both LIKE
-    operands are parameterized (``%s``); the char-class is a hardcoded literal.
+
+# Word-boundary marker in an expanded form. Joining per-word syllable parts with
+# it (instead of concatenating) keeps the form STRUCTURE-AWARE, so a single-word
+# ``는데`` (form ``는데``) does NOT collide with the two-word nominalizer ``-는 데``
+# (form ``는␟데``) — the F-UP-010 fixpass BLOCKER. Never appears in Korean text.
+_KGIU_FORM_SEP = "\x1f"
+
+
+@lru_cache(maxsize=1024)
+def _pattern_alternant_forms(pattern: str) -> frozenset[str]:
+    """Expand a KGIU/TTMIK grammar-notation string into its Hangul-syllable
+    SURFACE forms (F-UP-010 full fix — alternation-aware expansion).
+
+    The notation composes: ``-`` (leading ending marker), ``A/V``/``N`` (part-of-
+    speech slots), ``(X)`` (optional morpheme), ``X/Y`` (alternation), ``,``
+    (alternative whole patterns), spaces (word boundaries), and ``①②③`` sense
+    markers. Expansion:
+
+      1. Strip the ``①②③?"'.`` noise, then split on ``,`` (alternative patterns).
+      2. Expand ``(X)`` optionals on the WHOLE sub-string FIRST, so an optional
+         group that spans a space (``안 A/V (A/V-지 않다)``) is resolved as a unit
+         before the word split rather than shattered into garbage.
+      3. Split each branch on spaces into words; per word, strip the ``A/V``/``N``
+         POS prefix and split ``/`` alternations (kept INSIDE the word — the
+         notation never alternates across a space).
+      4. Cartesian-product the per-word alternant sets, reduce each word to Hangul
+         syllables, and JOIN the per-word parts with ``_KGIU_FORM_SEP`` (empty
+         jamo-only slots kept as boundaries so structure is fully preserved).
+
+    Matching two patterns by whether their form sets INTERSECT is far more precise
+    than substring matching, and the word-boundary marker makes it STRUCTURE-aware:
+      - Claude ``-는데`` (form ``는데``) links stored ``-(으)ㄴ/는데`` (``는데``) ✓
+      - but NOT the nominalizer ``-는 데`` (``는␟데``) — different word structure ✗
+      - Claude ``-다가`` (``다가``) does NOT match ``-아/어다가`` (``어다가``) ✗
+      - multi-word ``-으려고 하다`` (``으려고␟하다``) links ``-(으)려고 하다`` ✓
+    The ``/`` split is deliberately conservative (no shared-suffix guessing, which
+    the notation leaves ambiguous), trading a little recall for precision.
+    Validated on the real corpus (285 patterns): 6 cross-links total, ALL
+    same-grammar sense/POS variants or the ``대로`` family — zero genuinely-distinct
+    false positives (the earlier concat version had the ``는데``/``만하다`` ones).
+    Pure function of the pattern string, so ``lru_cache``d across the linker run.
     """
-    if not hangul_fragment or len(hangul_fragment) < 2:
+    forms: set[str] = set()
+    for sub in _KGIU_NOISE_RE.sub("", pattern).split(","):
+        for branch in _expand_parens(sub):
+            word_alts: list[set[str]] = []
+            for raw_word in branch.split(" "):
+                word = _KGIU_POS_PREFIX_RE.sub("", raw_word).strip("-")
+                if word:
+                    word_alts.append(set(word.split("/")))
+            if not word_alts:
+                continue
+            for combo in product(*word_alts):
+                parts = [
+                    "".join(ch for ch in w if "가" <= ch <= "힣") for w in combo
+                ]
+                if sum(len(p) for p in parts) >= 2:
+                    # Keep empty (jamo-only) word slots as boundaries rather than
+                    # dropping them, so a pattern whose word vanishes to jamo
+                    # (`-(으)ㄹ 만하다` → the `ㄹ` word → '') stays structurally
+                    # distinct (`␟만하다`) from a genuine one-word `만하다` — else it
+                    # would collapse back toward the concat form this join replaced.
+                    forms.add(_KGIU_FORM_SEP.join(parts))
+    return frozenset(forms)
+
+
+async def grammar_candidates_by_pattern_substring(
+    conn: AsyncConnection,
+    fragment: str,
+    hangul_fragment: str,
+    claude_pattern: str,
+) -> list[KgiuCandidate]:
+    """Find kgiu_entries matching a Claude grammar ``patternKey`` (F-UP-010).
+
+    Two OR'd arms per candidate, evaluated over ALL grammar entries (kgiu_entries
+    is a few hundred rows and this runs only in the offline linker, so a full
+    fetch + in-Python match is cheap — the per-pattern expansion is ``lru_cache``d):
+
+      1. RAW substring — the extracted ``fragment`` (the first Hangul run, with
+         punctuation intact) is a substring of the stored pattern. The original
+         baseline; its precision is already accepted.
+      2. ALTERNANT-FORM intersection — the FULL ``claude_pattern`` and the stored
+         pattern share a Hangul-syllable surface form (see
+         ``_pattern_alternant_forms``). The full key (not the space-truncated
+         ``fragment``) is used so a multi-word pattern like ``-(으)려고 하다``
+         matches by its whole form ``으려고하다``. This is the precise
+         punctuation/alternation-tolerant match: it recovers Claude ``-는데`` →
+         stored ``-(으)ㄴ/는데`` WITHOUT the substring approach's false positives
+         (Claude ``-다가`` does NOT match ``-아/어다가``).
+
+    Arm 2 skips the ``irregular`` category — its 7 ``'X' 불규칙`` entries are
+    conjugation-rule REFERENCES (not grammar-usage patterns an item depends on)
+    whose distinguishing jamo strips away, collapsing them onto the shared word
+    ``불규칙``; they are invalid dependency targets and would only cross-link.
+    """
+    frag_forms = _pattern_alternant_forms(claude_pattern)
+    # The RAW arm is only trustworthy for a >= 2-syllable fragment: a 1-syllable
+    # raw substring (e.g. "는") matches far too many patterns. The FORM arm is
+    # precise, so it runs whenever the full key yields any surface form — which is
+    # what lets a multi-word key with a short first word (``-는 데`` → first Hangul
+    # run ``는``, but form ``는␟데``) still reach arm 2.
+    raw_ok = bool(hangul_fragment) and len(hangul_fragment) >= 2
+    if not frag_forms and not raw_ok:
         return []
-    raw_like = f"%{fragment}%"
-    if len(hangul_fragment) >= _STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS:
-        where_clause = (
-            "( pattern ILIKE %s "
-            "  OR regexp_replace(pattern, '[^가-힣]', '', 'g') ILIKE %s )"
-        )
-        params: tuple[str, ...] = (raw_like, f"%{hangul_fragment}%")
-    else:
-        where_clause = "pattern ILIKE %s"
-        params = (raw_like,)
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT id, pattern, category, book_level::text "
             "  FROM kgiu_entries "
             " WHERE entry_type = 'grammar' "
-            f"   AND {where_clause} "
-            " LIMIT 25 ",
-            params,
+            " ORDER BY id ",  # deterministic order so the candidate cap below
+            #                   drops the same rows every run (idempotency).
         )
         rows = await cur.fetchall()
-    return [
-        KgiuCandidate(
-            id=int(r[0]), pattern=str(r[1]), category=r[2], book_level=str(r[3])
+    out: list[KgiuCandidate] = []
+    for r in rows:
+        pattern, category = str(r[1]), r[2]
+        raw = raw_ok and fragment in pattern
+        expand = category != "irregular" and bool(
+            frag_forms & _pattern_alternant_forms(pattern)
         )
-        for r in rows
-    ]
+        if raw or expand:
+            out.append(
+                KgiuCandidate(
+                    id=int(r[0]),
+                    pattern=pattern,
+                    category=category,
+                    book_level=str(r[3]),
+                )
+            )
+            if len(out) >= _STRATEGY_C_MATCHER_CANDIDATE_CAP:
+                break
+    return out
 
 
 async def vocab_candidates_for_lemmas(
@@ -705,13 +798,6 @@ _HANGUL_RE = re.compile(r"[㄰-㆏가-힯\-\(\)/]+")
 # "으면" (from "-(으)면") and "는데" — which the DB pattern match validates anyway,
 # so a 2-char fragment that is NOT a real grammar form simply yields no candidate.
 _STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 2
-# F-UP-010: the syllable-normalized match arm (which strips ALL punctuation) is
-# only applied to fragments with >= 3 Hangul syllables. Below that, stripping
-# punctuation collapses distinct 2-syllable grammar points that share an ending
-# and floods the linker with false positives (26 on the real KGIU corpus, vs 2
-# for >= 3) — so 2-syllable fragments use the raw, punctuation-exact arm only.
-# See grammar_candidates_by_pattern_substring for the full rationale + numbers.
-_STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS = 3
 _STRATEGY_C_MAX_DEPS_PER_ITEM = 10
 
 
@@ -774,7 +860,14 @@ async def strategy_c_claude(
         # `가`–`힣` (U+AC00–U+D7A3, the assigned Hangul-syllable range) so the
         # count here matches the SQL-side `[^가-힣]` strip in the matcher (N-1).
         hangul_only = "".join(ch for ch in fragment if "가" <= ch <= "힣")
-        if len(hangul_only) < _STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS:
+        # Skip only when BOTH arms are unusable: the first-Hangul-run fragment is
+        # too short for the raw arm AND the full key yields no alternation form.
+        # A multi-word key whose FIRST word is short (``-는 데`` → ``는``) still has
+        # a form (``는␟데``), so it is NOT skipped here — it reaches the form arm.
+        if (
+            len(hangul_only) < _STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS
+            and not _pattern_alternant_forms(pattern_text)
+        ):
             logger.debug(
                 "strategy_c_fragment_too_short",
                 item_id=item.id,
@@ -782,11 +875,12 @@ async def strategy_c_claude(
                 hangul_chars=len(hangul_only),
             )
             continue
-        # F-UP-010: pass BOTH the raw fragment (punctuation-exact match, all
-        # lengths) and the syllable-only form (normalized match, 3+ syllables
-        # only). `fragment` (with punctuation) is also kept for the evidence trail.
+        # F-UP-010: `fragment` (first Hangul run, punctuation intact) drives the
+        # raw substring arm + the evidence trail; the FULL `pattern_text` drives
+        # the alternation-form arm (so multi-word keys match by their whole
+        # surface form, not just the first word).
         candidates = await grammar_candidates_by_pattern_substring(
-            conn, fragment, hangul_only
+            conn, fragment, hangul_only, pattern_text
         )
         for c in candidates:
             if len(deps) >= _STRATEGY_C_MAX_DEPS_PER_ITEM:

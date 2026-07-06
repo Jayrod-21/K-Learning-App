@@ -111,35 +111,64 @@ are `--ignore`d in that job; both are tracked here.
   `으면`). Ingest suite 290→292; both tests re-included in CI.
 - **Severity:** real linker bug, P2.
 
-### F-UP-011 · test_strategy_a order-dependence in the shared linker test DB (P3, PRE-EXISTING)
-- Surfaced by the F-UP-010 re-review (NOT caused by it — confirmed via `git archive`
-  of the pre-fix parent that the bug predates F-UP-010).
-- `test_strategy_a_writes_grammar_dep_per_matched_kgiu_entry`
-  (`tools/ingest/tests/test_link_topik_dependencies.py:358`) asserts an exact dep
-  count (3) but does not isolate itself from other tests' seeded rows in the
-  module-scoped shared DB: run after a test that seeds `category="connective"`
-  kgiu_entries, its matcher picks those up too and it fails `15 != 3`. Passes today
-  only because file-definition order happens to run it early. Fix: assert on
-  seeded ids / a fixture-unique category (as the new F-UP-010 tests now do), OR
-  scope the count query — do this BEFORE enabling `pytest-randomly` for this suite
-  (which SENIOR_ENGINEER_BAR §5.5 recommends). Same class as the SF-2 concern.
+### F-UP-011 · test_link_topik_dependencies order-dependence — ✅ resolved 2026-07-06
+- Surfaced by the F-UP-010 re-review (pre-existing — `git archive` confirmed it
+  predates F-UP-010). `test_strategy_a` (and, found via `pytest-randomly`,
+  `test_strategy_b`) asserted exact dep counts / matched-id sets that were
+  contaminated by rows other tests seeded into the module-scoped shared DB.
+- **Fixed at the root:** an autouse `_isolate_tables` fixture TRUNCATEs the seeded
+  tables (topik_dependencies/items/tests, kgiu_entries, vocab_entries,
+  corpus_sources) before EVERY test, so the whole file is order-independent.
+  Verified: 15 passed on normal order + all of `pytest-randomly` seeds 1–10 (was
+  failing seed 1 before). No per-test assertion changes needed.
+- **Deferred:** actually turning ON `pytest-randomly` for the ingest suite in CI —
+  that needs the OTHER ingest test files audited for the same coupling first; this
+  fix only hardens `test_link_topik_dependencies.py`.
 
-### F-UP-010 · strategy_c pattern match brittleness — ⚠️ partially resolved 2026-07-06
-- **Shipped (safe variant):** `grammar_candidates_by_pattern_substring` now OR's a
-  raw punctuation-exact match (all fragments) with a syllable-normalized match
-  applied ONLY to fragments of `>= 3` Hangul syllables. This recovers 3+ syllable
-  format-variant links (e.g. `-으려고` → `-(으)려고 하다`) safely. Validated on the
-  real KGIU corpus: strip-everything gave **26** spurious cross-links, the ≥3 gate
-  gives **2** (borderline). See `db/docs/FIX_REPORT_FUP010.md`.
-- **Still open (the harder half):** the 2-syllable case (`는데` → `-(으)ㄴ/는데`) is
-  deliberately NOT handled — substring matching cannot tell it apart from a false
-  2-syllable match (`다가` → `-아/어다가`), and a missed link is safer than a wrong
-  one for a prerequisite graph. The proper fix is **alternation-aware expansion**:
-  parse the TTMIK/KGIU notation (`(으)` optional, `X/Y` alternation, `ㄴ/는` jamo)
-  into the set of surface forms and match the fragment against those (e.g.
-  `-(으)ㄴ/는데` → {ㄴ데, 은데, 는데}, so `는데` matches but `다가` doesn't match
-  `-아/어다가`'s {아다가, 어다가}). Non-trivial (notation is grammar-specific +
-  ambiguous); deferred until the linker's recall is a felt problem.
+### F-UP-010 · strategy_c pattern match brittleness — ✅ fully resolved 2026-07-06
+- **Full fix shipped — alternation-aware expansion.** The interim safe variant
+  (raw + syllable-normalized-if-≥3) was replaced by `_pattern_alternant_forms`,
+  which expands the KGIU/TTMIK notation into Hangul-syllable SURFACE forms word by
+  word (`(X)` optional, `X/Y` alternation within a word, `A/V`/`N` POS placeholders,
+  `①②③` markers, cartesian product across space-separated words). The matcher links
+  a candidate when the raw substring matches OR the two patterns' form sets
+  INTERSECT.
+- This **recovers the 2-syllable case the interim variant couldn't**: Claude `-는데`
+  shares the form `는데` with stored `-(으)ㄴ/는데` → linked; while `-다가` (form
+  {다가}) does NOT match `-아/어다가` (form {어다가}) — the conservative `/`-split (no
+  shared-suffix guessing) keeps it precise. Multi-word keys match on the FULL
+  `claude_pattern`, not the space-truncated first word (so `-으려고 하다` → whole
+  form `으려고하다`).
+- **Structure-aware forms (fixpass BLOCKER fix):** per-word syllable parts are
+  joined with a boundary marker (`_KGIU_FORM_SEP`), and `(X)` optionals are expanded
+  on the whole sub-string BEFORE the word split. So a one-word `는데` (form `는데`)
+  does NOT collide with the two-word nominalizer `-는 데` (form `는␟데`), and
+  `-(으)ㄹ 만하다` does NOT collide with `만 하다` — the two false positives the
+  first cut had. **Real-corpus cross-links: 26 (strip) → 11 (concat) → 6 (this),
+  and all 6 are CORRECT** (same-grammar sense/POS variants like `-(으)ㄹ까요? ①↔②↔③`
+  + the `대로` family). The `irregular` category (7 `'X' 불규칙` references) is excluded.
+- The caller gate + matcher were fixed so a MULTI-WORD key with a short first word
+  (`-(으)ㄹ 만하다` → first run `으`) still reaches the form arm (the raw arm stays
+  gated at 2 syllables). Candidate fetch is `ORDER BY id` (deterministic cap).
+- Tests: expander unit test, `는데`/`-으려고 하다` recall (empirically-proven
+  revert-catchers), `-다가`≠`-아/어다가` + `-는데`≠`-는 데` precision, and an
+  end-to-end `strategy_c_claude` test through the real gate. See
+  `db/docs/FIX_REPORT_FUP010.md` + `REVIEW_FUP010_FULL.md`.
+
+### F-UP-012 · strategy_c matcher — two residual precision SHOULD-FIXes (P3)
+From the F-UP-010-full re-review (PASS WITH CONDITIONS — not blockers):
+- **Parenthetical-alternative parens.** `_pattern_alternant_forms` treats every
+  `(X)` as an OPTIONAL MORPHEME, but ~3 patterns use `(…)` as a parenthetical
+  ALTERNATIVE spanning a space (e.g. `안 A/V (A/V-지 않다)` = short vs long negation).
+  These expand into garbage forms (`안␟지␟않다`) — not currently colliding with
+  anything, but the 3 negation entries can't be form-matched (recall gap). Fix:
+  detect a `(X)` whose content holds a space / `A/V` / `-` and treat it as a
+  separate alternative sub-pattern (like a comma), not an inline optional.
+- **Raw-arm candidate cap hit.** The matcher fetches all grammar rows and caps at
+  `_STRATEGY_C_MATCHER_CANDIDATE_CAP = 25`. `kgiu-advanced-049` genuinely raw-matches
+  25 unrelated entries, hitting the boundary — PRE-EXISTING raw-arm imprecision (the
+  raw substring arm, not the new form arm), now demonstrated on real data. Consider
+  tightening the raw arm (anchor it) or raising/removing the cap for the form arm.
 
 ### F-UP-003 · ingest CI exclusions — ⚠️ mostly resolved 2026-07-05
 - **Original premise was wrong.** Re-checked on a clean checkout: `test_topik_item_type_validation`

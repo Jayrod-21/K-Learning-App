@@ -138,6 +138,33 @@ def schema(database_url) -> str:
     return database_url
 
 
+async def _truncate_seeded_tables(url: str) -> None:
+    async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "TRUNCATE topik_dependencies, topik_items, topik_tests, "
+                "kgiu_entries, vocab_entries, corpus_sources "
+                "RESTART IDENTITY CASCADE"
+            )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tables(request) -> None:
+    """F-UP-011: the ``schema`` DB is module-scoped and shared by every DB test
+    in this file, so a test's exact-count / matched-id assertions can be
+    contaminated by rows another test seeded (e.g. `test_strategy_a` picking up
+    the caps test's `category="connective"` entries under reordering). Truncate
+    the seeded tables before EACH DB test so the suite is order-independent and
+    pytest-randomly-safe.
+
+    Gated on the test actually requesting ``schema`` so the file's PURE-UNIT tests
+    (which never touch the DB — e.g. `_pattern_alternant_forms` / skill-tag map)
+    are NOT forced onto Postgres/Docker just to run (F-UP-010 fixpass finding —
+    preserves the two-tier test design)."""
+    if "schema" in request.fixturenames:
+        asyncio.run(_truncate_seeded_tables(request.getfixturevalue("schema")))
+
+
 # ---------------------------------------------------------------------------
 # Seed helpers — write the minimal rows each test needs.
 # ---------------------------------------------------------------------------
@@ -808,65 +835,184 @@ def test_strategy_c_caps_deps_per_item_and_rejects_short_fragments(schema):
     asyncio.run(run_it())
 
 
-def test_grammar_matcher_normalizes_long_fragment_across_punctuation(schema):
-    """F-UP-010 RECALL: a 3+ syllable fragment links a stored pattern whose
-    surface punctuation differs. Claude '-으려고' (으려고, 3 syllables) must find a
-    KGIU entry stored '-(으)려고 하다': raw '-으려고' is NOT a substring of it (the
-    stored form has '(으)'), but the normalized arm ('으려고' in '으려고하다') is.
+def test_pattern_alternant_forms_expansion():
+    """F-UP-010 (full fix): the alternation expander turns grammar notation into
+    Hangul-syllable surface forms — (X) optional, X/Y alternation, A/V- & N POS
+    placeholders, ①②③ sense markers, and a per-word cartesian product."""
+    f = ltd._pattern_alternant_forms
+    sep = ltd._KGIU_FORM_SEP
+    # (으) optional + ㄴ/는 alternation → the '는데' surface form survives.
+    assert "는데" in f("A/V-(으)ㄴ/는데 ①")
+    # Alternation stays inside its word; words are joined with the boundary marker.
+    assert f("은/는 대로") == frozenset({f"은{sep}대로", f"는{sep}대로"})
+    # A distinct grammar does NOT yield a shorter sibling's form (the core
+    # precision property): '다가' is not a form of '-아/어다가'.
+    assert "어다가" in f("-아/어다가")
+    assert "다가" not in f("-아/어다가")
+    # POS placeholder + conservative '/'-split ({아, 어요}, not '아요').
+    assert "어요" in f("A/V-아/어요")
+    assert "아요" not in f("A/V-아/어요")
+    # A bare jamo ending yields no >= 2-syllable form (raw arm can still catch it).
+    assert f("-(으)ㄹ") == frozenset()
+    # STRUCTURE-aware (F-UP-010 fixpass BLOCKER): the one-word connective '는데'
+    # must NOT share a form with the TWO-word nominalizer '-는 데' ('는'+'데').
+    assert f("-는데").isdisjoint(f("-는 데"))
+    # ...but a multi-word key still matches its own whole structured form across a
+    # punctuation difference (shared '으려고␟하다').
+    assert f("-으려고 하다") & f("-(으)려고 하다")
 
-    Revert guard: the pre-F-UP-010 matcher (raw substring only) returns no
-    candidate for this fragment → `eid` absent → this fails. Isolation: asserts
-    only on the id it seeded, so it is order-independent on the shared module DB
-    (no TRUNCATE — SF-2)."""
+
+def test_grammar_matcher_links_two_syllable_variant(schema):
+    """F-UP-010 (full fix) — the 2-syllable case the earlier *safe union* variant
+    deliberately could NOT do. Claude '-는데' must link a KGIU entry stored
+    '-(으)ㄴ/는데': they share the alternant surface form '는데'. Raw substring
+    can't ('-는데' is not a substring of '-(으)ㄴ/는데'), and the strip-everything
+    approach couldn't do it without also mismatching '-다가'→'-아/어다가'.
+
+    Revert guard: with the expander arm removed (raw only) `eid` is absent → this
+    fails. Isolation: asserts only on the seeded id."""
     url = schema
 
     async def run_it():
         async with await psycopg.AsyncConnection.connect(url) as conn:
             eid = await _seed_kgiu_entry(
                 conn,
-                source_id="kgiu-fup010-recall",
-                pattern="-(으)려고 하다",
+                source_id="kgiu-fup010-nunde",
+                pattern="-(으)ㄴ/는데",
                 category="fup010-recall",
             )
             await conn.commit()
             cands = await ltd.grammar_candidates_by_pattern_substring(
-                conn, "-으려고", "으려고"
+                conn, "-는데", "는데", "-는데"
             )
             assert eid in {c.id for c in cands}, (
-                "3+ syllable normalized fragment '으려고' must match "
-                "'-(으)려고 하다' across the (으)/dash punctuation difference"
+                "'-는데' must link '-(으)ㄴ/는데' via the shared alternant form '는데'"
             )
 
     asyncio.run(run_it())
 
 
-def test_grammar_matcher_does_not_normalize_short_fragment(schema):
-    """F-UP-010 PRECISION: a 2-syllable fragment is NOT normalized, so it cannot
-    spuriously cross-match a longer, unrelated pattern that merely shares its
-    ending. Claude '-다가' (다가, 2 syllables) must NOT match the distinct
-    grammar '-아/어다가'.
-
-    Revert guard: the naive strip-everything matcher WOULD match this (다가 ⊂
-    아어다가 after stripping), which is exactly the 26-false-positive flood the
-    3-syllable gate exists to prevent — this asserts it does not. Isolation:
-    asserts only on the seeded id."""
+def test_grammar_matcher_links_multiword_variant_by_full_key(schema):
+    """F-UP-010: a MULTI-WORD key matches by its WHOLE surface form, using the
+    full claude_pattern rather than the space-truncated first word. Claude
+    '-으려고 하다' links a stored '-(으)려고 하다' via the shared form '으려고하다',
+    despite the (으)/dash difference (the first word '-으려고' alone would miss it).
+    """
     url = schema
 
     async def run_it():
         async with await psycopg.AsyncConnection.connect(url) as conn:
             eid = await _seed_kgiu_entry(
                 conn,
-                source_id="kgiu-fup010-precision",
+                source_id="kgiu-fup010-intend",
+                pattern="-(으)려고 하다",
+                category="fup010-recall",
+            )
+            await conn.commit()
+            cands = await ltd.grammar_candidates_by_pattern_substring(
+                conn, "-으려고", "으려고", "-으려고 하다"
+            )
+            assert eid in {c.id for c in cands}, (
+                "'-으려고 하다' must link '-(으)려고 하다' via the whole form '으려고하다'"
+            )
+
+    asyncio.run(run_it())
+
+
+def test_grammar_matcher_rejects_false_two_syllable_match(schema):
+    """F-UP-010 PRECISION: a fragment must NOT match a DISTINCT grammar that
+    merely shares an ending. Claude '-다가' (form {다가}) must NOT match
+    '-아/어다가' (form {어다가}) — exact-form intersection rejects it where naive
+    substring normalization (다가 ⊂ 어다가) produced a false link.
+
+    Revert guard: the strip-everything matcher matched this (one of the 26
+    real-corpus false positives); the expander does not. Isolation: seeded id."""
+    url = schema
+
+    async def run_it():
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            eid = await _seed_kgiu_entry(
+                conn,
+                source_id="kgiu-fup010-daga",
                 pattern="-아/어다가",
                 category="fup010-precision",
             )
             await conn.commit()
             cands = await ltd.grammar_candidates_by_pattern_substring(
-                conn, "-다가", "다가"
+                conn, "-다가", "다가", "-다가"
             )
             assert eid not in {c.id for c in cands}, (
-                "2-syllable fragment '다가' must NOT normalize-match the distinct "
-                "'-아/어다가' — only 3+ syllable fragments are normalized (F-UP-010)"
+                "'-다가' must NOT match the distinct '-아/어다가' — their alternant "
+                "forms {다가} and {어다가} do not intersect (F-UP-010)"
+            )
+
+    asyncio.run(run_it())
+
+
+def test_grammar_matcher_rejects_nominalizer_collision(schema):
+    """F-UP-010 fixpass BLOCKER: the connective '-는데' must NOT link the DISTINCT
+    nominalizer '-는 데' ('the fact/place that…'). They differ by a space (one word
+    vs two), so their structure-aware forms ('는데' vs '는␟데') do not intersect.
+    The earlier concat expander collapsed both to '는데' and wrongly linked them —
+    a textbook learner-confusion pair. Isolation: asserts on the seeded id."""
+    url = schema
+
+    async def run_it():
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            nomi = await _seed_kgiu_entry(
+                conn,
+                source_id="kgiu-fup010-nomi",
+                pattern="-는 데",
+                category="nominalization",
+            )
+            await conn.commit()
+            cands = await ltd.grammar_candidates_by_pattern_substring(
+                conn, "-는데", "는데", "-는데"
+            )
+            assert nomi not in {c.id for c in cands}, (
+                "connective '-는데' must NOT link the nominalizer '-는 데' — their "
+                "word structures differ (는데 vs 는␟데)"
+            )
+
+    asyncio.run(run_it())
+
+
+def test_strategy_c_end_to_end_multiword_key_through_gate(schema):
+    """F-UP-010 fixpass: exercise the REAL strategy_c_claude path (not the matcher
+    directly) for a MULTI-WORD key whose first Hangul run is short. '-(으)ㄹ 만하다'
+    truncates to first run '-(으)ㄹ' (1 syllable '으'), which the OLD caller gate
+    rejected before the form arm ran; the fix lets it through because the full key
+    yields the form '만하다'. The seeded '-(으)ㄹ 만하다' entry must be linked."""
+    url = schema
+
+    async def run_it():
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            eid = await _seed_kgiu_entry(
+                conn,
+                source_id="kgiu-fup010-e2e",
+                pattern="-(으)ㄹ 만하다",
+                category="recommendation",
+            )
+            await conn.commit()
+            item = ltd.TopikItemRow(
+                id=930,
+                source_id="topik-fup010-e2e",
+                test_number=1,
+                section="reading",
+                item_number=1,
+                skill_tag="grammar-degree",
+                stem="가 볼 만한 곳이에요.",
+                options=["볼 만하다"],
+                underline=None,
+            )
+            proxy = FakeProxyClient({"볼 만하다": _proxy_result("-(으)ㄹ 만하다")})
+            deps = await ltd.strategy_c_claude(
+                conn, proxy, item, already_covered=False
+            )
+            assert eid in {d.grammar_entry_id for d in deps}, (
+                "multi-word key '-(으)ㄹ 만하다' must link its entry through the real "
+                "strategy_c path — the caller gate must not reject it on the short "
+                "first Hangul run"
             )
 
     asyncio.run(run_it())
