@@ -276,6 +276,83 @@ describe('GET /topik/items — filters + pagination', () => {
   });
 });
 
+describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () => {
+  it('returns misses with the wrong pick + correct answer + explanation; excludes correct answers', async () => {
+    const wrongId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      options: ['가', '나', '다', '라'],
+      answer: 2, // correct = 'b'
+      prompt: '알맞은 것을 고르십시오.',
+      extra: { explanation: '정답은 나입니다.' },
+      itemNumber: 1,
+    });
+    const rightId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      options: ['가', '나', '다', '라'],
+      answer: 1, // correct = 'a'
+      itemNumber: 2,
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Miss the first (pick 'a' when 'b' is right); ace the second (pick 'a').
+    expect(
+      (await agent.post(`/topik/${wrongId}/answer`).send({ picked: 'a', mode: 'study' }))
+        .status,
+    ).toBe(200);
+    expect(
+      (await agent.post(`/topik/${rightId}/answer`).send({ picked: 'a', mode: 'study' }))
+        .status,
+    ).toBe(200);
+
+    const res = await agent.get('/topik/mistakes');
+    expect(res.status).toBe(200);
+    expect(res.body.mistakes.length).toBe(1); // only the miss, not the ace
+    const m = res.body.mistakes[0];
+    expect(m.item.id).toBe(String(wrongId));
+    expect(m.picked).toBe('a');
+    expect(m.mode).toBe('study');
+    expect(typeof m.answeredAt).toBe('string');
+    // Full review payload: the explanation + the correct option ARE served here
+    // (unlike /items) — the user already attempted the item.
+    expect(m.item.explanation).toBe('정답은 나입니다.');
+    expect(
+      m.item.options.find((o: { correct: boolean }) => o.correct).id,
+    ).toBe('b');
+  });
+
+  it('is user-scoped (no IDOR) and honors the 30-day window', async () => {
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+
+    // A misses it now, and ALSO has an old miss (40 days ago) outside the window.
+    await a.agent.post(`/topik/${itemId}/answer`).send({ picked: 'a', mode: 'study' });
+    await pg.pool.query(
+      `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, answered_at)
+       VALUES ($1, $2, 'c', false, 'study', now() - interval '40 days')`,
+      [a.userId, itemId],
+    );
+
+    // A sees only the RECENT miss (the 40-day-old one is outside the default 30d).
+    const resA = await a.agent.get('/topik/mistakes');
+    expect(resA.status).toBe(200);
+    expect(resA.body.mistakes.length).toBe(1);
+    expect(resA.body.mistakes[0].picked).toBe('a');
+
+    // B sees NONE of A's mistakes.
+    const resB = await b.agent.get('/topik/mistakes');
+    expect(resB.body.mistakes.length).toBe(0);
+
+    // Widening the window to 90 days surfaces the old miss too.
+    const resWide = await a.agent.get('/topik/mistakes?days=90');
+    expect(resWide.body.mistakes.length).toBe(2);
+  });
+});
+
 describe('shared reading passages on the item DTO (B-008)', () => {
   const PASSAGE =
     '도시의 도로는 대부분 아스팔트로 뒤덮여 있다. 그래서 비가 오면 빗물이 지하로 잘 흘러 들어가지 ( ㉠ ) 도로가 물에 잠기는 일도 자주 발생한다.';

@@ -1,0 +1,84 @@
+/* Mistakes-review screen (F-021). Reuses the global km-topik__choice option
+ * styling; these rules only lay out the page + review-card chrome. */
+
+.km-mistakes__list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.km-mistakes__card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.km-mistakes__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.km-mistakes__when {
+  font-size: 0.8rem;
+  color: var(--paper-mute);
+  white-space: nowrap;
+}
+
+.km-mistakes__prompt {
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.km-mistakes__passage {
+  line-height: 1.6;
+  color: var(--paper-mute);
+  white-space: pre-wrap;
+}
+
+.km-mistakes__tag {
+  margin-left: auto;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--danger, #b3261e);
+  white-space: nowrap;
+}
+
+.km-mistakes__explain {
+  margin-top: 2px;
+}
+
+.km-mistakes__answer {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.km-mistakes__explain-text {
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.km-mistakes__state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  text-align: center;
+  padding: 32px 20px;
+}
+
+.km-mistakes__empty-sub {
+  font-size: 0.85rem;
+  color: var(--paper-mute);
+}
+
+.km-mistakes__skeleton-line {
+  height: 14px;
+  border-radius: 6px;
+  background: var(--paper-line, rgba(0, 0, 0, 0.08));
+}
+
+.km-mistakes__skeleton-line + .km-mistakes__skeleton-line {
+  width: 70%;
+}

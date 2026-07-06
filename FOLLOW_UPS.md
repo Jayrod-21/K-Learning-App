@@ -155,7 +155,19 @@ are `--ignore`d in that job; both are tracked here.
   end-to-end `strategy_c_claude` test through the real gate. See
   `db/docs/FIX_REPORT_FUP010.md` + `REVIEW_FUP010_FULL.md`.
 
-### F-UP-012 · strategy_c matcher — two residual precision SHOULD-FIXes (P3)
+### F-UP-013 · 4 topik_items with answer keys that contradict their own content (P3, DATA)
+Surfaced by the F-019 explanation pass (the generator skipped them rather than ship a
+contradictory explanation). Each has enough accessible content to check, and the keyed
+`answer` looks WRONG against it:
+- **222** — two options both fail to match the self-contained text (no single clean answer).
+- **659** — keyed blank-fill contradicts the cap-and-trade logic (the "must buy" firm should
+  be an OVER-emitter, not one under its allocation).
+- **769** — transcript present, but the keyed answer is the WOMAN's argument while the stem
+  asks for the MAN's view.
+- **1086** — keyed answer not cleanly separable from a competing, equally-supported option.
+Likely source-bank answer-key alignment bugs, not un-explainable items. Manually re-check
+each `answer` against its stem/passage; if wrong, correct in the corpus + DB (these items
+are served in study/mock, so a wrong key mis-grades a learner). Low volume (4 of 2,088).
 From the F-UP-010-full re-review (PASS WITH CONDITIONS — not blockers):
 - **Parenthetical-alternative parens.** `_pattern_alternant_forms` treats every
   `(X)` as an OPTIONAL MORPHEME, but ~3 patterns use `(…)` as a parenthetical

@@ -42,6 +42,7 @@ import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
 import Writing from './pages/Writing';
 import Hanja from './pages/Hanja';
+import Mistakes from './pages/Mistakes';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
 import Reference from './pages/Reference';
@@ -93,6 +94,7 @@ export default function App(): JSX.Element {
                     <Route path="grammar" element={<Grammar />} />
                     <Route path="writing" element={<Writing />} />
                     <Route path="hanja" element={<Hanja />} />
+                    <Route path="mistakes" element={<Mistakes />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
                     <Route path="reference" element={<Reference />} />
