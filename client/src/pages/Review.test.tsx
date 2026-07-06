@@ -311,6 +311,42 @@ describe('Review', () => {
     expect(screen.getByText(/Tap card or press/)).toBeInTheDocument();
   });
 
+  it('mounts the answer face only when flipped (B-014 — no answer flash on advance)', async () => {
+    // Regression for B-014: the answer face must NOT be in the DOM while the
+    // card shows its front. If it were (as before this fix), the next card's
+    // English would sit in the back face and flash through during the 480ms
+    // flip-back rotation when a rating advances the deck.
+    const CARD_WITH_ANSWER: Vocab[] = [
+      {
+        id: 'd:101',
+        kr: '영향',
+        pos: 'n.',
+        en: 'influence',
+        ex_kr: '음악은 우리 생활에 큰 영향을 미친다.',
+        ex_en: 'Music has a big influence on our lives.',
+        extra: [],
+      },
+    ];
+    hoisted.due.state = { kind: 'data', data: CARD_WITH_ANSWER, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+
+    const user = userEvent.setup();
+    renderReview();
+
+    // Front is showing → the gloss and example translation are absent.
+    expect(screen.queryByText('influence')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Music has a big influence on our lives.'),
+    ).not.toBeInTheDocument();
+
+    // Reveal → the answer face mounts.
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    expect(screen.getByText('influence')).toBeInTheDocument();
+    expect(
+      screen.getByText('Music has a big influence on our lives.'),
+    ).toBeInTheDocument();
+  });
+
   it('rate Again calls submitReview when the card has a wire snapshot', async () => {
     // Wire the realFn to populate the dueCardIndex so submitReview can resolve
     // the numeric cardId. The hook mock captures realFn; we invoke it manually.
