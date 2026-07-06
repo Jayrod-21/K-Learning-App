@@ -58,9 +58,28 @@ const NEXT: DiagnosticNextResponse = {
 };
 
 const SNAPSHOT: DiagnosticSnapshot = {
+  // F-011: dimensions carry a confidence band (scoreLow ≤ score ≤ scoreHigh);
+  // grammar's degenerate band (low == score == high) is the server's honest
+  // "confidence unknown" fallback shape.
   dimensions: [
-    { key: 'reading', label: 'Reading', kr: '읽기', score: 62, note: 'OK' },
-    { key: 'grammar', label: 'Grammar', kr: '문법', score: 48, note: 'Gap' },
+    {
+      key: 'reading',
+      label: 'Reading',
+      kr: '읽기',
+      score: 62,
+      scoreLow: 54,
+      scoreHigh: 70,
+      note: 'OK',
+    },
+    {
+      key: 'grammar',
+      label: 'Grammar',
+      kr: '문법',
+      score: 48,
+      scoreLow: 48,
+      scoreHigh: 48,
+      note: 'Gap',
+    },
   ],
   references: [{ id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 }],
   defaultRef: 'L4',
@@ -245,6 +264,20 @@ describe('fetchLatestSnapshot', () => {
     expect(spy).toHaveBeenCalledWith('/diagnostic/latest', undefined);
     expect(snap.defaultRef).toBe('L4');
     expect(snap.dimensions[1].key).toBe('grammar');
+  });
+
+  it('passes the F-011 confidence band through unchanged (scoreLow ≤ score ≤ scoreHigh)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce(SNAPSHOT);
+
+    const snap = await fetchLatestSnapshot();
+
+    // A real band…
+    expect(snap.dimensions[0].scoreLow).toBe(54);
+    expect(snap.dimensions[0].scoreHigh).toBe(70);
+    // …and the degenerate "no band" fallback where both edges equal score.
+    expect(snap.dimensions[1].scoreLow).toBe(48);
+    expect(snap.dimensions[1].scoreHigh).toBe(48);
+    expect(snap.dimensions[1].score).toBe(48);
   });
 
   it('returns an empty-dimensions snapshot unchanged (no prior run)', async () => {

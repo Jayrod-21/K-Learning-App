@@ -9,8 +9,13 @@
 
 /** Semver of the scoring rubric. Must match the diagnostic_snapshots
  *  `^v\d+\.\d+\.\d+$` CHECK. Bump when the formulas below change so old runs
- *  can be re-graded. */
-export const RUBRIC_VERSION = 'v1.0.0';
+ *  can be re-graded.
+ *
+ *  v1.1.0 (F-011): per-dimension estimate moved from the 3-bucket
+ *  all/none/mixed delta to a smooth proportion-correct adjustment
+ *  (`ESTIMATE_SPREAD`), and dimensions gained an Agresti-Coull confidence
+ *  band (`dimensionResult`). */
+export const RUBRIC_VERSION = 'v1.1.0';
 
 /** The four diagnostic dimensions, in the fixed display order. */
 export const DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar'] as const;
@@ -37,35 +42,35 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** Estimate spread: how far proportion-correct can move the estimate off the
+ *  mean served difficulty. p=1 → +SPREAD/2, p=0 → −SPREAD/2. Tunable; 1.5
+ *  (±0.75 level at the extremes) is close to the old ±0.5…−1.0 intent but
+ *  symmetric. */
+export const ESTIMATE_SPREAD = 1.5;
+
 /**
- * Per-dimension estimate (0–6) from that dimension's (≤2) responses.
+ * Per-dimension estimate (0–6) from that dimension's responses.
  *
- *   base   = mean(difficulty of the dimension's served items)
- *   both correct → base + 0.5
- *   one correct  → base
- *   none correct → base − 1.0
+ *   base  = mean(difficulty of the dimension's served items)
+ *   p     = proportion correct (a skip counts as incorrect)
+ *   delta = ESTIMATE_SPREAD * (p − 0.5)
  *   then clamp to [1, 6].
+ *
+ * Smooth, symmetric and monotonic in p — every item counts. At the standard
+ * 4-item schedule: 4/4 → +0.75, 3/4 → +0.375, 2/4 → 0, 1/4 → −0.375,
+ * 0/4 → −0.75. (The old rubric's all/none/mixed delta collapsed 1/4, 2/4 and
+ * 3/4 to the same result, wasting most of the evidence.)
  *
  * Returns `null` when the dimension had ZERO served items (an empty pool that
  * could not be filled) — the caller omits that dimension from the snapshot.
- *
- * The formula generalizes beyond exactly-2 items (an empty-pool run may serve
- * 1): "both" = all correct, "none" = none correct, otherwise "some" = base.
+ * A short pool (1..ITEMS_PER_DIMENSION−1 items) still scores from what it got.
  */
 export function estimateForDimension(responses: readonly ScoredResponse[]): number | null {
   if (responses.length === 0) return null;
   const base =
     responses.reduce((sum, r) => sum + r.difficulty, 0) / responses.length;
-  const correctCount = responses.filter((r) => r.isCorrect).length;
-
-  let delta: number;
-  if (correctCount === responses.length) {
-    delta = 0.5; // all correct
-  } else if (correctCount === 0) {
-    delta = -1.0; // none correct
-  } else {
-    delta = 0.0; // mixed
-  }
+  const p = responses.filter((r) => r.isCorrect).length / responses.length; // 0..1
+  const delta = ESTIMATE_SPREAD * (p - 0.5);
   return round2(clampEstimate(base + delta));
 }
 
@@ -81,6 +86,65 @@ export function estimatesByDimension(
   const out = {} as Record<DiagnosticDimensionKey, number | null>;
   for (const dim of DIMENSION_ORDER) {
     out[dim] = estimateForDimension(responses.filter((r) => r.section === dim));
+  }
+  return out;
+}
+
+/** Z for the confidence band. 1.0 ≈ a 68% ("±1 SE") band — intentionally
+ *  modest so the UI doesn't look alarmist. Tunable. */
+export const BAND_Z = 1.0;
+
+/** One dimension's full scored result: point estimate, 0–100 score, and the
+ *  confidence band around the score. */
+export interface DimensionResult {
+  readonly estimate: number;   // 0–6
+  readonly score: number;      // 0–100 (estimateToScore(estimate))
+  readonly scoreLow: number;   // 0–100 band floor
+  readonly scoreHigh: number;  // 0–100 band ceiling
+  readonly n: number;          // items served in this dimension
+}
+
+/**
+ * Confidence band in SCORE points for one dimension. Smoothed proportion
+ * (Agresti-Coull, +2 successes / +4 trials) keeps the band non-zero at p=0/1
+ * — with few items, a 4/4 or 0/4 is common and must NOT read as certainty —
+ * and widens it for inconsistent (mid-p) answers; it also narrows as n grows.
+ * (Statistical note: +2/+4 is the classic z=2 Agresti-Coull smoothing, used
+ * here under a z=1 (BAND_Z) interval — intentional, deliberately conservative
+ * at the p extremes.)
+ *
+ * The margin is computed in estimate (0–6) units and mapped through the same
+ * score curve as the point estimate, with the same [1, 6] clamp, so at the
+ * scale ceiling/floor the band collapses toward the clamp edge but keeps its
+ * inward tail. Returns `null` for a zero-item dimension (same contract as
+ * `estimateForDimension`).
+ */
+export function dimensionResult(responses: readonly ScoredResponse[]): DimensionResult | null {
+  const estimate = estimateForDimension(responses);
+  if (estimate === null) return null;
+  const n = responses.length;
+  const k = responses.filter((r) => r.isCorrect).length;
+  const pTilde = (k + 2) / (n + 4);
+  const seEstimate = ESTIMATE_SPREAD * Math.sqrt((pTilde * (1 - pTilde)) / (n + 4));
+  const margin = BAND_Z * seEstimate; // in estimate (0–6) units
+  const score = estimateToScore(estimate);
+  const scoreLow = estimateToScore(clampEstimate(estimate - margin));
+  const scoreHigh = estimateToScore(clampEstimate(estimate + margin));
+  return { estimate, score, scoreLow, scoreHigh, n };
+}
+
+/**
+ * Group graded responses by dimension and compute each full result (estimate,
+ * score, band). Sibling of `estimatesByDimension`: dimensions with no
+ * responses map to `null`; all four dimensions are always present, in
+ * canonical order.
+ */
+export function resultsByDimension(
+  responses: readonly ScoredResponse[],
+): Record<DiagnosticDimensionKey, DimensionResult | null> {
+  const out = {} as Record<DiagnosticDimensionKey, DimensionResult | null>;
+  for (const dim of DIMENSION_ORDER) {
+    out[dim] = dimensionResult(responses.filter((r) => r.section === dim));
   }
   return out;
 }

@@ -15,12 +15,17 @@
  * the user picks a new ref, each `SkillBar` tick re-flows over 360ms (the
  * transition is on `.km-skillbar__tick` left). Tick color flips to indigo
  * when the picked ref is the Native ceiling — anchor, not goal.
+ *
+ * F-011: rows may carry `scoreLow`/`scoreHigh` confidence-band edges — each
+ * bar renders them as a subtle translucent range, and the full-mode legend
+ * gains a "Confidence band" entry only when at least one bar draws one.
  */
 import type { JSX } from 'react';
 import { useState } from 'react';
 import { Eyebrow } from './Eyebrow';
 import { SkillBar } from './SkillBar';
 import { cn } from '../lib/cn';
+import { hasVisibleBand } from '../lib/skillBand';
 
 export interface SkillRow {
   /** Stable key for React; e.g. 'reading'. */
@@ -31,6 +36,14 @@ export interface SkillRow {
   kr: string;
   /** Current score, 0–100. */
   score: number;
+  /**
+   * F-011 confidence band edges, 0–100. When `scoreLow < scoreHigh` the bar
+   * renders a subtle translucent range; omitted or equal edges render no
+   * band (honest "confidence unknown" degrade).
+   */
+  scoreLow?: number;
+  /** Upper edge of the confidence band, 0–100. See `scoreLow`. */
+  scoreHigh?: number;
   /** Optional one-line gap explanation; shown in full mode only. */
   note?: string;
 }
@@ -80,6 +93,9 @@ export function SkillsCompare({
   // the previously-selected id disappears — keeps the picker visible.
   const activeRef = references.find((r) => r.id === refId) ?? references[0];
   const isCompact = variant === 'compact';
+  // F-011: the legend explains the confidence band only when at least one
+  // bar actually draws one (same visibility rule as SkillBar itself).
+  const hasAnyBand = skills.some((s) => hasVisibleBand(s.scoreLow, s.scoreHigh));
 
   return (
     <div className={cn('km-skillscompare', isCompact && 'km-skillscompare--compact')}>
@@ -130,6 +146,8 @@ export function SkillsCompare({
             label={s.label}
             kr={s.kr}
             score={s.score}
+            scoreLow={s.scoreLow}
+            scoreHigh={s.scoreHigh}
             target={activeRef.value}
             tone={activeRef.isCeiling ? 'ceiling' : 'target'}
             compact={isCompact}
@@ -163,6 +181,12 @@ export function SkillsCompare({
             <span className="km-skillscompare__legendsq km-skillscompare__legendsq--below" />
             Below
           </span>
+          {hasAnyBand ? (
+            <span className="km-skillscompare__legenditem">
+              <span className="km-skillscompare__legendsq km-skillscompare__legendsq--band" />
+              Confidence band
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>

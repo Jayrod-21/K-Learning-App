@@ -1134,6 +1134,18 @@ body {
 }
 .km-skillbar__fill--meets { background: var(--moss); }
 .km-skillbar__fill--below { background: var(--paper-faint); }
+/* F-011 confidence band — a subtle translucent range over the track (NOT a
+ * second bold bar). Sits above the fill so the range reads across both the
+ * filled and empty halves of the track; --paper is the theme's type colour,
+ * so the same 14% wash stays legible on hanji (light) and sumi (dark). */
+.km-skillbar__band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--paper) 14%, transparent);
+  pointer-events: none;
+}
 .km-skillbar__tick {
   position: absolute;
   top: -4px;
@@ -1224,6 +1236,10 @@ body {
 }
 .km-skillscompare__legendsq--meets { background: var(--moss); }
 .km-skillscompare__legendsq--below { background: var(--paper-faint); }
+.km-skillscompare__legendsq--band {
+  background: color-mix(in srgb, var(--paper) 14%, transparent);
+  border: 1px solid var(--line-strong);
+}
 .km-skillscompare__legendkr { color: var(--paper-faint); }
 
 /* TaskCard ───────────────────────────────────────────────────────────── */
@@ -2337,7 +2353,6 @@ body {
   max-width: 560px;
   line-height: 1.55;
 }
-.km-diagnostic__level { color: var(--vermilion); font-weight: 500; }
 .km-diagnostic__skills-card { padding: 24px 26px; margin-bottom: 16px; }
 .km-diagnostic__goals-card { padding: 22px 24px; }
 .km-diagnostic__skills-title {

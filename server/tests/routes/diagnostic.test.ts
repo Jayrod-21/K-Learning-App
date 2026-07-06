@@ -62,10 +62,12 @@ beforeEach(async () => {
   resetLimiters();
 });
 
-/** Seed a corpus rich enough to serve a full 8-item diagnostic. */
+/** Seed a corpus rich enough to serve a full 16-item diagnostic
+ *  (ITEMS_PER_DIMENSION = 4 → 4 reading + 4 listening topik rows needed;
+ *  one spare each for slack against the already-served exclusion). */
 async function seedFullPool(): Promise<void> {
-  // 2 reading + 2 listening at L4 (answer index 1 → choice 'a').
-  for (let i = 0; i < 3; i += 1) {
+  // 5 reading + 5 listening at L4 (answer index 1 → choice 'a').
+  for (let i = 0; i < 5; i += 1) {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
   }
@@ -112,7 +114,7 @@ describe('POST /diagnostic — start', () => {
     const res = await agent.post('/diagnostic').send({});
     expect(res.status).toBe(201);
     expect(typeof res.body.runId).toBe('number');
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 8 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 16 });
 
     const item = res.body.item;
     expect(item.ordinal).toBe(1);
@@ -209,13 +211,13 @@ describe('POST /diagnostic/:runId/answer — grading (reveal only, B-006)', () =
     // item is served by the separate /next call.
     expect(res.body).not.toHaveProperty('next');
     expect(res.body.done).toBe(false);
-    expect(res.body.progress).toEqual({ ordinal: 1, total: 8 });
+    expect(res.body.progress).toEqual({ ordinal: 1, total: 16 });
 
     const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
     expect(nxt.status).toBe(200);
     expect(nxt.body.next).not.toBeNull();
     expect(nxt.body.next.section).toBe('listening'); // schedule[1]
-    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 8 });
+    expect(nxt.body.progress).toEqual({ ordinal: 2, total: 16 });
     // The next item is still answer-stripped.
     expect(nxt.body.next).not.toHaveProperty('correctAnswer');
     expect(nxt.body.next).not.toHaveProperty('correct_answer');
@@ -568,10 +570,10 @@ describe('answer/next decoupling (B-006)', () => {
       const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
       current = nxt.body.next;
     }
-    // The full 8-slot schedule was servable, so the final grade says done and
+    // The full 16-slot schedule was servable, so the final grade says done and
     // points progress at the last ordinal.
     expect(lastAnswer?.done).toBe(true);
-    expect(lastAnswer?.progress).toEqual({ ordinal: 8, total: 8 });
+    expect(lastAnswer?.progress).toEqual({ ordinal: 16, total: 16 });
   });
 });
 
@@ -609,7 +611,12 @@ describe('full run → finish → latest', () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { runId, snapshot } = await runToFinish(agent, 'a');
 
-    const dims = snapshot.dimensions as Array<{ key: string; score: number }>;
+    const dims = snapshot.dimensions as Array<{
+      key: string;
+      score: number;
+      scoreLow: number;
+      scoreHigh: number;
+    }>;
     const keys = dims.map((d) => d.key).sort();
     expect(keys).toEqual(['grammar', 'listening', 'reading', 'vocab']);
     // No writing dimension (deferred to Pass 8).
@@ -617,18 +624,76 @@ describe('full run → finish → latest', () => {
     for (const d of dims) {
       expect(d.score).toBeGreaterThanOrEqual(0);
       expect(d.score).toBeLessThanOrEqual(100);
+      // F-011 band: present on every dimension, ordered around the score, and
+      // NON-zero-width even on an all-correct run (Agresti-Coull smoothing —
+      // 4/4 must not read as certainty).
+      expect(d.scoreLow).toBeLessThanOrEqual(d.score);
+      expect(d.scoreHigh).toBeGreaterThanOrEqual(d.score);
+      expect(d.scoreHigh).toBeGreaterThan(d.scoreLow);
+      expect(d.scoreLow).toBeGreaterThanOrEqual(0);
+      expect(d.scoreHigh).toBeLessThanOrEqual(100);
     }
 
-    // Exact reading/listening score: the topik dimensions are seeded at L4
-    // (difficulty 4) and answered all-correct, so estimateForDimension =
-    // base(4) + 0.5 = 4.5, and estimateToScore(4.5) = 63 (midpoint of the
-    // [4→55, 5→70] segment). This pins the route↔scoring wiring, not just a
-    // range. (Vocab/grammar difficulty tracks the θ staircase and the band
-    // anchors, so those are not asserted exactly here.)
+    // Exact reading/listening result: the topik dimensions are seeded at L4
+    // (difficulty 4) and answered all-correct (4/4), so estimateForDimension =
+    // base(4) + ESTIMATE_SPREAD·(1 − 0.5) = 4.75, and estimateToScore(4.75) =
+    // 66. The band: pTilde = 6/8, margin = 1.5·√(0.75·0.25/8) ≈ 0.2296 in
+    // estimate units → scores 63..70. This pins the route↔scoring wiring, not
+    // just a range. (Vocab/grammar difficulty tracks the θ staircase and the
+    // band anchors, so those are not asserted exactly here.)
     const reading = dims.find((d) => d.key === 'reading');
     const listening = dims.find((d) => d.key === 'listening');
-    expect(reading?.score).toBe(63);
-    expect(listening?.score).toBe(63);
+    expect(reading?.score).toBe(66);
+    expect(listening?.score).toBe(66);
+    expect(reading?.scoreLow).toBe(63);
+    expect(reading?.scoreHigh).toBe(70);
+    expect(listening?.scoreLow).toBe(63);
+    expect(listening?.scoreHigh).toBe(70);
+
+    // The band evidence is persisted in the snapshot's JSONB (rubric v1.1.0):
+    // per-dimension { n, correct, estimate, score, scoreLow, scoreHigh } that
+    // /latest and /history rebuild the DTO band from.
+    const snapRow = await pg.pool.query<{
+      rubric_version: string;
+      evidence: {
+        dimensionStats?: Record<
+          string,
+          {
+            n: number;
+            correct: number;
+            estimate: number;
+            score: number;
+            scoreLow: number;
+            scoreHigh: number;
+          }
+        >;
+      };
+    }>(
+      `SELECT rubric_version, evidence FROM diagnostic_snapshots WHERE user_id = $1`,
+      [userId],
+    );
+    expect(snapRow.rows[0]?.rubric_version).toBe('v1.1.0');
+    const stats = snapRow.rows[0]?.evidence.dimensionStats;
+    expect(stats).toBeDefined();
+    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'listening', 'reading', 'vocab']);
+    expect(stats!['reading']).toEqual({
+      n: 4,
+      correct: 4,
+      estimate: 4.75,
+      score: 66,
+      scoreLow: 63,
+      scoreHigh: 70,
+    });
+
+    // /latest rebuilds the SAME band from evidence.dimensionStats.
+    const latestAfterFinish = await agent.get('/diagnostic/latest');
+    expect(latestAfterFinish.status).toBe(200);
+    const latestReading = (latestAfterFinish.body.dimensions as typeof dims).find(
+      (d) => d.key === 'reading',
+    );
+    expect(latestReading?.score).toBe(66);
+    expect(latestReading?.scoreLow).toBe(63);
+    expect(latestReading?.scoreHigh).toBe(70);
 
     // Idempotent re-finish: the SAME snapshot row is returned, not a duplicate.
     // Assert (a) the run's snapshot_id is unchanged, and (b) the user has
@@ -663,11 +728,10 @@ describe('full run → finish → latest', () => {
 
   it('an all-wrong run scores every dimension lower than an all-correct run', async () => {
     // Mixed-scoring branch: runToFinish(_, 'b') answers 'b' on every item. For
-    // topik items the correct choice is 'a' (answer=1) and for the stub-
-    // generated items the correct choice is 'a' (answerIndex 0) — so 'b' is
-    // wrong on EVERY item, exercising the none-correct (base − 1.0) estimate
-    // branch and the θ-decrement path end-to-end (which the all-'a' happy path
-    // never touches).
+    // topik items the correct choice is 'a' (answer=1) — so 'b' is wrong on
+    // every topik item, exercising the p=0 (base − ESTIMATE_SPREAD/2) end of
+    // the proportion estimate and the θ-decrement path end-to-end (which the
+    // all-'a' happy path never touches).
     const correctRun = await (async () => {
       await seedFullPool();
       const { agent } = await registerUser(t.app, pg.pool);
@@ -684,9 +748,10 @@ describe('full run → finish → latest', () => {
       return dims.find((d) => d.key === key)?.score ?? -1;
     };
     // reading/listening are seeded at fixed difficulty, so the comparison is
-    // apples-to-apples: all-correct est 4.5 → 63; all-wrong est 4 − 1 = 3 → 40.
-    expect(score(wrongRun.snapshot, 'reading')).toBe(40);
-    expect(score(wrongRun.snapshot, 'listening')).toBe(40);
+    // apples-to-apples: all-correct est 4.75 → 66; all-wrong est
+    // 4 − 0.75 = 3.25 → 44.
+    expect(score(wrongRun.snapshot, 'reading')).toBe(44);
+    expect(score(wrongRun.snapshot, 'listening')).toBe(44);
     expect(score(wrongRun.snapshot, 'reading')).toBeLessThan(
       score(correctRun.snapshot, 'reading'),
     );
@@ -791,6 +856,198 @@ describe('empty pool handling', () => {
     expect(keys).not.toContain('reading');
     expect(keys).not.toContain('listening');
     expect(keys.sort()).toEqual(['grammar', 'vocab']);
+  });
+});
+
+describe('partial short pool — a dimension exhausted mid-run still scores (F-011 fixpass R2 SF-2)', () => {
+  it('scores reading from the 2 items it got, with the true n persisted in dimensionStats', async () => {
+    // Only 2 reading rows (schedule wants 4), NO listening rows at all, and
+    // vocab/grammar generated by the stub. Reading's pool exhausts mid-run —
+    // the already-served exclusion returns null at its 3rd slot — so the
+    // skip-and-continue loop and pickTopikItem's exclusion must compose:
+    // reading still scores from the 2 items it DID get (the acceptance
+    // criterion's ">=1 items" middle ground the full/empty extremes miss).
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+    await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    const runId = start.body.runId;
+    let current: { responseId: number } | null = start.body.item;
+    while (current !== null) {
+      const ans = await agent
+        .post(`/diagnostic/${runId}/answer`)
+        .send({ responseId: current.responseId, picked: 'a' });
+      expect(ans.status).toBe(200);
+      if (ans.body.done === true) {
+        current = null;
+        continue;
+      }
+      const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+      expect(nxt.status).toBe(200);
+      current = nxt.body.next;
+    }
+    const fin = await agent.post(`/diagnostic/${runId}/finish`).send({});
+    expect(fin.status).toBe(200);
+
+    // reading survives on 2/4 items; listening (0 items) is the only omission.
+    const dims = fin.body.snapshot.dimensions as Array<{
+      key: string;
+      score: number;
+      scoreLow: number;
+      scoreHigh: number;
+    }>;
+    expect(dims.map((d) => d.key).sort()).toEqual(['grammar', 'reading', 'vocab']);
+
+    // Exact 2-item scoring: both reading items are L4 (difficulty 4), both
+    // correct → estimate 4 + 1.5·(1 − 0.5) = 4.75 → score 66. Band at n=2:
+    // pTilde = 4/6, margin = 1.5·√((4/6·2/6)/6) ≈ 0.2887 est units →
+    // [62, 71] — non-zero and WIDER than the 4-item run's [63, 70], pinning
+    // that the band honestly reflects the smaller n.
+    const reading = dims.find((d) => d.key === 'reading');
+    expect(reading?.score).toBe(66);
+    expect(reading?.scoreLow).toBe(62);
+    expect(reading?.scoreHigh).toBe(71);
+
+    // The persisted evidence records the TRUE served count (n=2, not 4).
+    const snapRow = await pg.pool.query<{
+      evidence: { dimensionStats?: Record<string, { n: number; correct: number }> };
+    }>(`SELECT evidence FROM diagnostic_snapshots WHERE user_id = $1`, [userId]);
+    const stats = snapRow.rows[0]?.evidence.dimensionStats;
+    expect(stats).toBeDefined();
+    expect(Object.keys(stats!).sort()).toEqual(['grammar', 'reading', 'vocab']);
+    expect(stats!['reading']?.n).toBe(2);
+    expect(stats!['reading']?.correct).toBe(2);
+  });
+});
+
+describe('corrupt evidence.dimensionStats (F-011 fixpass R2 SF-1)', () => {
+  it('/latest and /history survive malformed + inverted stored stats — valid DTO, no throw', async () => {
+    // Hostile evidence that only direct DB corruption (or a future writer
+    // bug) could produce. Each entry probes a different guard:
+    //   reading   → wrong-typed field ({ n: "x" })  — field validation
+    //   listening → array entry ([1])               — object-but-not-record
+    //   vocab     → null entry                      — null guard
+    //   grammar   → finite but INVERTED band (scoreLow 90 > scoreHigh 10)
+    //               — the Math.min/Math.max re-anchor in buildSnapshotDTO
+    // Deleting the parser's Number.isFinite/typeof validation, or replacing
+    // the re-anchor with a passthrough, must turn this test red.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const snapId = await seedDiagnosticSnapshot(pg.pool, userId, {
+      reading: 5, // → 70
+      listening: 4, // → 55
+      vocab: 4, // → 55
+      grammar: 4.75, // → 66
+    });
+    await pg.pool.query(
+      `UPDATE diagnostic_snapshots
+          SET evidence = $1::jsonb, rubric_version = 'v1.1.0'
+        WHERE id = $2`,
+      [
+        JSON.stringify({
+          dimensionStats: {
+            reading: { n: 'x' },
+            listening: [1],
+            vocab: null,
+            grammar: {
+              n: 4,
+              correct: 4,
+              estimate: 4.75,
+              score: 66,
+              scoreLow: 90,
+              scoreHigh: 10,
+            },
+          },
+        }),
+        snapId,
+      ],
+    );
+
+    const res = await agent.get('/diagnostic/latest');
+    expect(res.status).toBe(200); // never a 500 on corrupt evidence
+    const dims = res.body.dimensions as Array<{
+      key: string;
+      score: number;
+      scoreLow: number;
+      scoreHigh: number;
+    }>;
+    expect(dims.length).toBe(4);
+    // The client-facing invariant holds unconditionally:
+    // 0 ≤ scoreLow ≤ score ≤ scoreHigh ≤ 100, all finite.
+    for (const d of dims) {
+      expect(Number.isFinite(d.scoreLow)).toBe(true);
+      expect(Number.isFinite(d.scoreHigh)).toBe(true);
+      expect(d.scoreLow).toBeGreaterThanOrEqual(0);
+      expect(d.scoreLow).toBeLessThanOrEqual(d.score);
+      expect(d.scoreHigh).toBeGreaterThanOrEqual(d.score);
+      expect(d.scoreHigh).toBeLessThanOrEqual(100);
+    }
+    // Malformed entries degrade to a zero-width band at the recomputed score…
+    const byKey = (k: string): { score: number; scoreLow: number; scoreHigh: number } =>
+      dims.find((d) => d.key === k)!;
+    expect(byKey('reading')).toMatchObject({ score: 70, scoreLow: 70, scoreHigh: 70 });
+    expect(byKey('listening')).toMatchObject({ score: 55, scoreLow: 55, scoreHigh: 55 });
+    expect(byKey('vocab')).toMatchObject({ score: 55, scoreLow: 55, scoreHigh: 55 });
+    // …and the inverted grammar pair is re-anchored onto the score (min/max
+    // pulls 90→66 and 10→66), not passed through inverted.
+    expect(byKey('grammar')).toMatchObject({ score: 66, scoreLow: 66, scoreHigh: 66 });
+
+    // /history shares the parser + DTO builder — same row, same degradation.
+    const hist = await agent.get('/diagnostic/history');
+    expect(hist.status).toBe(200);
+    const histDims = (hist.body.snapshots as Array<{ dimensions: typeof dims }>)[0]!
+      .dimensions;
+    const histGrammar = histDims.find((d) => d.key === 'grammar')!;
+    expect(histGrammar.scoreLow).toBe(66);
+    expect(histGrammar.scoreHigh).toBe(66);
+  });
+});
+
+describe('legacy v1.0.0 snapshots (no evidence.dimensionStats)', () => {
+  it('/latest loads a v1.0.0 row without throwing — band degrades to zero width', async () => {
+    // seedDiagnosticSnapshot writes evidence '{}' and rubric 'v1.0.0' — the
+    // exact pre-F-011 shape. The reader must not 500 on it; each dimension
+    // degrades to scoreLow = scoreHigh = score (no band) instead.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 5, grammar: 4 });
+
+    const res = await agent.get('/diagnostic/latest');
+    expect(res.status).toBe(200);
+    const dims = res.body.dimensions as Array<{
+      key: string;
+      score: number;
+      scoreLow: number;
+      scoreHigh: number;
+    }>;
+    expect(dims.length).toBe(2);
+    for (const d of dims) {
+      expect(d.scoreLow).toBe(d.score);
+      expect(d.scoreHigh).toBe(d.score);
+    }
+    expect(dims.find((d) => d.key === 'reading')?.score).toBe(70);
+    expect(dims.find((d) => d.key === 'grammar')?.score).toBe(55);
+  });
+
+  it('/history loads v1.0.0 rows the same way (zero-width band, no throw)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 4 });
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 5 });
+
+    const res = await agent.get('/diagnostic/history');
+    expect(res.status).toBe(200);
+    const snapshots = res.body.snapshots as Array<{
+      dimensions: Array<{ key: string; score: number; scoreLow: number; scoreHigh: number }>;
+    }>;
+    expect(snapshots.length).toBe(2);
+    for (const snap of snapshots) {
+      for (const d of snap.dimensions) {
+        expect(d.scoreLow).toBe(d.score);
+        expect(d.scoreHigh).toBe(d.score);
+      }
+    }
   });
 });
 

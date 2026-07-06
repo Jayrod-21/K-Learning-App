@@ -42,12 +42,18 @@ export const DIAGNOSTIC_SNAPSHOT_FIXTURE: DiagnosticSnapshot = {
  * with the design HTML is preserved when Results renders.
  */
 export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
+  // F-011: each dimension carries a confidence band (scoreLow ≤ score ≤
+  // scoreHigh) so mock mode exercises the band rendering. `writing` keeps a
+  // degenerate band (low == score == high) to exercise the honest "no band"
+  // fallback the server sends when a dimension has no usable stats.
   dimensions: [
     {
       key: 'reading',
       label: 'Reading',
       kr: '읽기',
       score: 62,
+      scoreLow: 54,
+      scoreHigh: 70,
       note: 'Paragraph inference solid. Push academic register.',
     },
     {
@@ -55,6 +61,8 @@ export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
       label: 'Listening',
       kr: '듣기',
       score: 44,
+      scoreLow: 34,
+      scoreHigh: 54,
       note: 'News pace + interview clips are the gap.',
     },
     {
@@ -62,6 +70,8 @@ export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
       label: 'Writing',
       kr: '쓰기',
       score: 38,
+      scoreLow: 38,
+      scoreHigh: 38,
       note: 'Register too casual for 합쇼체.',
     },
     {
@@ -69,6 +79,8 @@ export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
       label: 'Vocabulary',
       kr: '어휘',
       score: 51,
+      scoreLow: 43,
+      scoreHigh: 59,
       note: 'Thin academic coverage (정책, 발전, 영향).',
     },
     {
@@ -76,6 +88,8 @@ export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
       label: 'Grammar',
       kr: '문법',
       score: 47,
+      scoreLow: 36,
+      scoreHigh: 58,
       note: 'Connectives (-더라도, -느라고) inconsistent under time.',
     },
   ],
