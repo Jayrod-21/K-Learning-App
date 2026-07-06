@@ -283,7 +283,13 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Split "This Week" vocab and grammar into tabbed sub-views (reuse Reference's existing tab pattern), and fix the grammar row layout so long pattern text wraps instead of overflowing (wrap or an `overflow-x` container).
 
 ### B-016 · `expensiveLimiter` 429 never sends `retry_after` → Writing retry copy is dead
-- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Status:** 🟢 done (2026-07-06, via F-014) · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Correction:** this was mis-marked done 2026-07-05 — the F-014 scout (2026-07-06)
+  confirmed it was still live (429 body carried no `retry_after`). Genuinely fixed as
+  part of F-014: `rateLimits.ts` now uses a shared `rateLimitedHandler` that sets the
+  `Retry-After` header + the JSON `retry_after` from one integer (floored at 1s), so the
+  Writing retry-countdown branch is now reachable + tested (incl. a `≤ 60` regression
+  guard). Benefits every `expensiveLimiter` route.
 - **Where:** Any route behind `expensiveLimiter()` (Writing `/grade-writing`, lemmatize, enrich, diagnostic gen, …).
 - **Root cause / state:** Surfaced 2026-07-04 in the Track A /fixpass. `Writing.tsx` has a "retry in N seconds" UX path keyed on a structured `retryAfter` from the 429 body, but `expensiveLimiter`'s 429 response never sets `retry_after` — so that branch is unreachable and the client always falls back to fixed copy. Pre-existing shared-infra gap, not scoped to the Writing PR.
 - **Key files:** `server/src/middleware/rateLimits.ts` (`expensiveLimiter` 429 body); `client/src/pages/Writing.tsx` (the retryAfter branch)
@@ -473,7 +479,20 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Derive a "mastery" level from FSRS stability (e.g. buckets → New/Learning/Familiar/Mastered), expose it per word + as an aggregate, and render it (progress tab and/or on the word popover). Decide placement first.
 
 ### F-014 · Today "Writing" tab — rework (scope to be identified)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Resolution (2026-07-06):** the audit found the Writing feature already worked
+  end-to-end (screen + Claude grader + Today tile → /writing; F-001's "points at
+  Grammar" was already fixed). The "rework" = 4 gaps, all closed: (1) **prompt
+  reconciliation** — migration 038 adds `writing_prompts.rubric`, retires the 8 legacy
+  register-drill rows, seeds the real Q53/Q54 prompts; `GET /writing/prompts` serves
+  them; `Writing.tsx` fetches per rubric tab (hardcoded list deleted); `/plan/today`
+  filters `rubric IS NOT NULL` so tile + screen agree. (2) **Persistence** — new
+  `writing_attempts` table; `/grade-writing` persists each grade (clamp-with-warn on an
+  out-of-contract score, never a silent drop; a persist failure never fails the paid
+  grade). (3) **F-017 Writing chart** — `GET /writing/series` (daily avg normalized to %)
+  turns the carousel Writing panel from placeholder → real chart. (4) **B-016** fixed
+  (see below). Built by 2 Fable agents; full /fixpass (0 BLOCKER → re-review PASS,
+  both fix tests mutation-proven). PR #53. Leftover nits → F-UP-017.
 - **Where:** Today page → Writing tile / the writing flow.
 - **State:** Flagged as needing rework; the exact changes still need to be identified by using it. Overlaps **F-001** (the Writing tile currently just navigates to Grammar, while a real `/grade-writing` grader exists server-side but is orphaned). Treat this as the investigation + redesign umbrella; fold F-001 in once the target behavior is decided.
 - **Key files:** `client/src/pages/Today.tsx` (Writing tile); `server/src/routes/gradeWriting.ts` (orphaned grader); see F-001.
