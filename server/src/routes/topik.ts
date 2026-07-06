@@ -360,6 +360,13 @@ const ANSWERABLE_ITEM_SQL =
   "jsonb_array_length(i.options) >= 2 AND i.answer IS NOT NULL " +
   "AND i.options->>0 NOT IN ('①','②','③','④')";
 
+// Official TOPIK II section size (F-UP-007): the corpus tests carry MORE items
+// than the real exam, so a mock caps to the first N answerable items per section
+// (ORDER BY item_number). Reading and Listening are both 50 on TOPIK II; Writing
+// mock is deferred (FU-NF-47). The client's section-select already advertises 50,
+// so this makes the served count match the label.
+const OFFICIAL_MOCK_SECTION_SIZE = 50;
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -525,7 +532,8 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
         WHERE t.test_number = $1
           AND i.section = $2::topik_section
           AND ${ANSWERABLE_ITEM_SQL}
-        ORDER BY i.item_number`,
+        ORDER BY i.item_number
+        LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}`,
       [sourceTest, body.section],
     );
 
@@ -618,7 +626,8 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
         WHERE t.test_number = $1
           AND i.section = $2::topik_section
           AND ${ANSWERABLE_ITEM_SQL}
-        ORDER BY i.item_number`,
+        ORDER BY i.item_number
+        LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}`,
       [body.sourceTest, body.section],
     );
     const items = mapRows(rows);
