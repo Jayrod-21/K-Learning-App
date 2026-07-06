@@ -360,7 +360,7 @@ Launch one focused session per group; cross-cutting items noted.
   can't resurrect a finished test); MockMode shows a dismissible resume banner on the mock
   select screen. Full /fixpass: 3 reviewers (0 BLOCKER) → 5 SHOULD-FIX fixed → re-review PASS.
   Tests: server 52 (6 new) / client 12 (2 new). Residual (resurrect-race window, silent
-  resume-fail) → F-UP-014/F-UP-015. PR #TBD.
+  resume-fail) → F-UP-014/F-UP-015. PR #51.
 - **State:** No attempt persistence today. `topik_responses` is an append-only log of
   *completed* answers only. In-progress state (picks map, index, timer) lives in
   in-memory React state and is lost on reload.
