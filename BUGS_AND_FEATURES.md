@@ -81,15 +81,14 @@ Launch one focused session per group; cross-cutting items noted.
 ## 🐞 Bugs
 
 ### B-001 · Read passages are vocab word-lists, not prose
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (DATABASE)
+- **Status:** 🟢 done (2026-07-06) · **Priority:** P1 · **Category:** DATA (DATABASE)
 - **Where:** Read tab. Example — Level 9 Lesson 13: 신제품·신기록·신학기·신인… (17 rows).
 - **Root cause:** Read tab is hard-pinned to the `ttmik` corpus, and many TTMIK
   lessons are hanja word-family lessons whose sentence rows are single words. The
   screen faithfully renders those rows → a "passage" is a word list. Real-prose
   podcast transcripts exist in `iyagi_sentences` but are only reachable via the
   picker, never the default.
-- **Key files:** `server/src/routes/reading.ts:107-127`; `client/src/pages/Reading.tsx:140,182-196`; `tools/ingest/output/ttmik_7_9.json`; `db/migrations/005_lesson_podcast_topik.up.sql:114-260`
-- **Fix hint:** Default the Read tab to prose/dialog corpora (iyagi transcripts, or filter `ttmik_sentences` to multi-word/dialog rows) instead of vocab word-group lessons.
+- **Resolution (2026-07-06):** the Read tab was folded into **Listen** (`/ttmik`), which defaults to Iyagi prose and does TTMIK + Iyagi with audio + clickable transcripts. `reading.ts` + `Reading.tsx` are deleted. (Largely stale: once the Iyagi default landed, the Read tab no longer showed word-lists by default.)
 
 ### B-002 · Word lookup: "Definition unavailable"; no examples
 - **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (UI, DATA)

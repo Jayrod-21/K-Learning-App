@@ -28,8 +28,7 @@
  * The list endpoints intentionally return the WHOLE corpus unpaginated: both
  * tables are small and fixed (232 lessons / 139 episodes — a closed published
  * catalog, not user data), and the lesson picker needs the full tree anyway.
- * (Deliberate, documented deviation from the paginate-every-list rule; the
- * paginated generic browser remains at GET /reading/units.)
+ * (Deliberate, documented deviation from the paginate-every-list rule.)
  *
  * AUDIO STREAMING — the security-sensitive part (threat model, Bar §0):
  *   - PATH TRAVERSAL / SYMLINK ESCAPE: `audio_path` comes ONLY from the DB row
