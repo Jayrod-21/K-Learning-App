@@ -75,14 +75,13 @@ shipped. Deferred:
 
 ## Rate-limit retry_after (from B-016 review, 2026-07-05)
 
-- **F-UP-004 (P3):** `retry_after` on the expensive limiter is a static full-window
-  overestimate (`ceil(RATE_LIMIT_WINDOW_MS/1000)`) rather than derived from
-  `req.rateLimit.resetTime`. Safe (never under-reports), but imprecise. To make it
-  exact, pass `message` as a function and compute from `req.rateLimit.resetTime`.
-- **F-UP-005 (P3):** only `buildExpensive` carries `retry_after`;
-  `buildMedia`/`buildCheap`/`buildAuth` still omit it. Correct scope for the B-016
-  ticket, but the same client plumbing would benefit — add it to all limiters
-  (auth keeps its own `too many auth attempts` message).
+- **F-UP-004 (P3) — ✅ RESOLVED 2026-07-05:** `message` is now a function
+  (`rateLimitedMessage`) that computes `retry_after` from `req.rateLimit.resetTime`
+  (precise per-client seconds; falls back to the full window; floored at 1s).
+- **F-UP-005 (P3) — ✅ RESOLVED 2026-07-05:** the shared `rateLimitedMessage`
+  helper is applied to ALL four limiters (cheap, expensive, auth, media), so every
+  429 carries `retry_after` (auth keeps its `too many auth attempts` text). Auth
+  429 test strengthened to assert the field.
 
 ## CI ingest test-gate (surfaced 2026-07-05 when the gate was added)
 

@@ -126,21 +126,34 @@ describe('GET /auth/me', () => {
 });
 
 describe('rate limiting', () => {
-  it('eventually 429s repeated failed logins from one IP', async () => {
+  it('eventually 429s repeated failed logins from one IP, with a retry_after hint (F-UP-005)', async () => {
     await request(t.app)
       .post('/auth/register')
       .send({ email: 'jared@example.com', password: 'correct horse battery staple' });
-    let limited = false;
+    let status429 = 0;
+    let body429: unknown = null;
     for (let i = 0; i < 12; i++) {
       const res = await request(t.app)
         .post('/auth/login')
         .send({ email: 'jared@example.com', password: 'definitely wrong here' });
       if (res.status === 429) {
-        limited = true;
+        status429 = res.status;
+        body429 = res.body;
         break;
       }
     }
-    expect(limited).toBe(true);
+    expect(status429).toBe(429);
+    const err = (
+      body429 as {
+        error?: { code?: string; message?: string; retry_after?: unknown };
+      }
+    ).error;
+    expect(err?.code).toBe('rate_limited');
+    expect(err?.message).toBe('too many auth attempts');
+    // F-UP-005: the auth limiter (previously carried NO retry_after) now includes
+    // a precise, positive retry_after (seconds) like the expensive limiter.
+    expect(typeof err?.retry_after).toBe('number');
+    expect(err?.retry_after as number).toBeGreaterThan(0);
   });
 });
 

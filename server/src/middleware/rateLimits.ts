@@ -25,6 +25,28 @@ function userOrIpKey(req: Request): string {
   return req.user?.id ? `u:${req.user.id}` : `ip:${ipKey(req)}`;
 }
 
+/**
+ * A 429 body carrying a PRECISE `retry_after` — whole seconds until THIS client's
+ * window resets, read from `req.rateLimit.resetTime` (F-UP-004; falls back to the
+ * full window if it's somehow unavailable, and never reports < 1s). Returned as a
+ * `message` FUNCTION so express-rate-limit evaluates it per-rejection with the
+ * populated `req.rateLimit`. Applied to EVERY limiter so any 429 feeds the
+ * client's `ApiError.retryAfter` / Writing "try again in N s" branch (F-UP-005).
+ */
+function rateLimitedMessage(code: string, message: string, windowMs: number) {
+  return (req: Request): unknown => {
+    const resetTime = (
+      req as Request & { rateLimit?: { resetTime?: Date } }
+    ).rateLimit?.resetTime;
+    const ms =
+      resetTime instanceof Date ? resetTime.getTime() - Date.now() : windowMs;
+    // Floor at 1s (not 0): even if the window just reset, advertise a >= 1s wait
+    // so a client honouring retry_after doesn't immediately re-hammer the route.
+    const retryAfter = Math.max(1, Math.ceil(ms / 1000));
+    return { error: { code, message, retry_after: retryAfter } };
+  };
+}
+
 // The actual rate-limit instances (each owns an in-memory hit store), built
 // lazily on first request and swappable via resetLimiters().
 let _cheap: RateLimitRequestHandler | null = null;
@@ -41,7 +63,11 @@ function buildCheap(): RateLimitRequestHandler {
     legacyHeaders: false,
     validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
     keyGenerator: ipKey,
-    message: { error: { code: 'rate_limited', message: 'too many requests' } },
+    message: rateLimitedMessage(
+      'rate_limited',
+      'too many requests',
+      cfg.RATE_LIMIT_WINDOW_MS,
+    ),
   });
 }
 
@@ -54,18 +80,14 @@ function buildExpensive(): RateLimitRequestHandler {
     legacyHeaders: false,
     validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
     keyGenerator: userOrIpKey,
-    // B-016: include retry_after (whole seconds) so a 429 from an expensive
-    // route (grade-writing, lemmatize, enrich, diagnostic gen) carries a real
-    // "try again in N s" hint. The client already parses error.retry_after into
-    // ApiError.retryAfter and the Writing screen has a live branch for it — this
-    // fills the field that branch was waiting on.
-    message: {
-      error: {
-        code: 'rate_limited',
-        message: 'too many requests',
-        retry_after: Math.ceil(cfg.RATE_LIMIT_WINDOW_MS / 1000),
-      },
-    },
+    // B-016 / F-UP-004: a 429 from an expensive route (grade-writing, lemmatize,
+    // enrich, diagnostic gen) carries a precise retry_after that the client's
+    // ApiError.retryAfter / Writing "try again in N s" branch consumes.
+    message: rateLimitedMessage(
+      'rate_limited',
+      'too many requests',
+      cfg.RATE_LIMIT_WINDOW_MS,
+    ),
   });
 }
 
@@ -81,7 +103,11 @@ function buildAuth(): RateLimitRequestHandler {
     // Don't count successful logins toward the limit — only failures matter
     // for brute-force defense.
     skipSuccessfulRequests: true,
-    message: { error: { code: 'rate_limited', message: 'too many auth attempts' } },
+    message: rateLimitedMessage(
+      'rate_limited',
+      'too many auth attempts',
+      cfg.RATE_LIMIT_WINDOW_MS,
+    ),
   });
 }
 
@@ -97,7 +123,11 @@ function buildMedia(): RateLimitRequestHandler {
     legacyHeaders: false,
     validate: { trustProxy: false, xForwardedForHeader: false, creationStack: false },
     keyGenerator: userOrIpKey,
-    message: { error: { code: 'rate_limited', message: 'too many requests' } },
+    message: rateLimitedMessage(
+      'rate_limited',
+      'too many requests',
+      cfg.RATE_LIMIT_WINDOW_MS,
+    ),
   });
 }
 
