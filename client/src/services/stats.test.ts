@@ -1,9 +1,9 @@
 /**
- * stats service — the three-endpoint fan-out, `days` forwarding, signal
- * threading, the synthesized `writing` sentinel, and per-skill degradation
- * on route failure (never a rejection, never fabricated data). Fixtures
- * carry the REAL wire metrics: topik accuracy/%, vocab count/reviews,
- * grammar score/pts.
+ * stats service — the four-endpoint fan-out, `days` forwarding, signal
+ * threading, and per-skill degradation on route failure (never a rejection,
+ * never fabricated data). Fixtures carry the REAL wire metrics: topik
+ * accuracy/%, vocab count/reviews, grammar score/pts, writing score/%
+ * (F-014 — normalized percent-of-max).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fetchSkillSeries } from './stats';
@@ -40,6 +40,16 @@ const GRAMMAR: SkillSeries = {
   unit: 'pts',
   points: [],
 };
+// Real wire shape for writing (F-014) is score/% — per-day average grade
+// normalized to percent-of-max, so Q53/30 and Q54/50 days are comparable.
+const WRITING: SkillSeries = {
+  metric: 'score',
+  unit: '%',
+  points: [
+    { date: '2026-06-25', value: 66 },
+    { date: '2026-06-29', value: 71 },
+  ],
+};
 
 /** What a failed route must degrade to — the honest placeholder. */
 const UNAVAILABLE: SkillSeries = { metric: 'none', unit: '', points: [] };
@@ -47,44 +57,57 @@ const UNAVAILABLE: SkillSeries = { metric: 'none', unit: '', points: [] };
 const TOPIK_RES: TopikSeriesResponse = { reading: READING, listening: LISTENING };
 const VOCAB_RES: SingleSeriesResponse = { series: VOCAB };
 const GRAMMAR_RES: SingleSeriesResponse = { series: GRAMMAR };
+const WRITING_RES: SingleSeriesResponse = { series: WRITING };
 
-/** api.get stub that answers each of the three series routes. */
-function stubApiGet() {
+const ALL_ROUTES = [
+  '/topik/series',
+  '/vocab/series',
+  '/grammar/series',
+  '/writing/series',
+] as const;
+
+/** The happy-path response for one series route. */
+function responseFor(url: string): unknown {
+  if (url === '/topik/series') return TOPIK_RES;
+  if (url === '/vocab/series') return VOCAB_RES;
+  if (url === '/grammar/series') return GRAMMAR_RES;
+  if (url === '/writing/series') return WRITING_RES;
+  throw new Error(`unexpected url: ${url}`);
+}
+
+/** api.get stub answering the four series routes; `failing` ones reject. */
+function stubApiGet(failing: readonly string[] = []) {
   return vi.spyOn(api, 'get').mockImplementation((url: string) => {
-    if (url === '/topik/series') return Promise.resolve(TOPIK_RES);
-    if (url === '/vocab/series') return Promise.resolve(VOCAB_RES);
-    if (url === '/grammar/series') return Promise.resolve(GRAMMAR_RES);
-    return Promise.reject(new Error(`unexpected url: ${url}`));
+    if (failing.includes(url)) {
+      return Promise.reject(
+        new ApiError('server error', { status: 500, code: 'server_error' }),
+      );
+    }
+    try {
+      return Promise.resolve(responseFor(url));
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error('bad url'));
+    }
   });
 }
 
 describe('fetchSkillSeries', () => {
-  it('GETs all three series routes and assembles the five-skill result', async () => {
+  it('GETs all four series routes and assembles the five-skill result', async () => {
     const spy = stubApiGet();
 
     const all = await fetchSkillSeries();
 
-    expect(spy).toHaveBeenCalledTimes(3);
-    expect(spy).toHaveBeenCalledWith('/topik/series', { params: { days: 30 } });
-    expect(spy).toHaveBeenCalledWith('/vocab/series', { params: { days: 30 } });
-    expect(spy).toHaveBeenCalledWith('/grammar/series', { params: { days: 30 } });
+    expect(spy).toHaveBeenCalledTimes(4);
+    for (const url of ALL_ROUTES) {
+      expect(spy).toHaveBeenCalledWith(url, { params: { days: 30 } });
+    }
 
     expect(all.reading).toEqual(READING);
     expect(all.listening).toEqual(LISTENING);
     expect(all.vocab).toEqual(VOCAB);
     expect(all.grammar).toEqual(GRAMMAR);
-  });
-
-  it('synthesizes the client-only empty writing series (no route)', async () => {
-    stubApiGet();
-
-    const all = await fetchSkillSeries();
-
-    expect(all.writing).toEqual({ metric: 'none', unit: '', points: [] });
-
-    // Fresh object per call — one caller mutating it must not leak to another.
-    const again = await fetchSkillSeries();
-    expect(again.writing).not.toBe(all.writing);
+    // Writing is the REAL wire series as of F-014 — never synthesized.
+    expect(all.writing).toEqual(WRITING);
   });
 
   it('forwards a non-default days window to every route', async () => {
@@ -92,18 +115,18 @@ describe('fetchSkillSeries', () => {
 
     await fetchSkillSeries(7);
 
-    expect(spy).toHaveBeenCalledWith('/topik/series', { params: { days: 7 } });
-    expect(spy).toHaveBeenCalledWith('/vocab/series', { params: { days: 7 } });
-    expect(spy).toHaveBeenCalledWith('/grammar/series', { params: { days: 7 } });
+    for (const url of ALL_ROUTES) {
+      expect(spy).toHaveBeenCalledWith(url, { params: { days: 7 } });
+    }
   });
 
-  it('threads one AbortSignal through to all three requests', async () => {
+  it('threads one AbortSignal through to all four requests', async () => {
     const spy = stubApiGet();
     const ctrl = new AbortController();
 
     await fetchSkillSeries(30, ctrl.signal);
 
-    for (const url of ['/topik/series', '/vocab/series', '/grammar/series']) {
+    for (const url of ALL_ROUTES) {
       expect(spy).toHaveBeenCalledWith(url, {
         params: { days: 30 },
         signal: ctrl.signal,
@@ -118,13 +141,7 @@ describe('fetchSkillSeries', () => {
   // placeholder ("No data yet") while the others keep their real data.
 
   it('degrades only the failed skill to the placeholder; the rest stay real', async () => {
-    vi.spyOn(api, 'get').mockImplementation((url: string) =>
-      url === '/vocab/series'
-        ? Promise.reject(
-            new ApiError('server error', { status: 500, code: 'server_error' }),
-          )
-        : Promise.resolve(url === '/topik/series' ? TOPIK_RES : GRAMMAR_RES),
-    );
+    stubApiGet(['/vocab/series']);
 
     const all = await fetchSkillSeries();
 
@@ -132,16 +149,24 @@ describe('fetchSkillSeries', () => {
     expect(all.reading).toEqual(READING);
     expect(all.listening).toEqual(LISTENING);
     expect(all.grammar).toEqual(GRAMMAR);
+    expect(all.writing).toEqual(WRITING);
+  });
+
+  it('degrades writing to the placeholder when /writing/series fails', async () => {
+    stubApiGet(['/writing/series']);
+
+    const all = await fetchSkillSeries();
+
+    // Placeholder — NOT a fabricated score series and NOT a rejection.
+    expect(all.writing).toEqual(UNAVAILABLE);
+    expect(all.reading).toEqual(READING);
+    expect(all.listening).toEqual(LISTENING);
+    expect(all.vocab).toEqual(VOCAB);
+    expect(all.grammar).toEqual(GRAMMAR);
   });
 
   it('degrades BOTH topik skills when the shared /topik/series route fails', async () => {
-    vi.spyOn(api, 'get').mockImplementation((url: string) =>
-      url === '/topik/series'
-        ? Promise.reject(
-            new ApiError('server error', { status: 500, code: 'server_error' }),
-          )
-        : Promise.resolve(url === '/vocab/series' ? VOCAB_RES : GRAMMAR_RES),
-    );
+    stubApiGet(['/topik/series']);
 
     const all = await fetchSkillSeries();
 
@@ -149,14 +174,11 @@ describe('fetchSkillSeries', () => {
     expect(all.listening).toEqual(UNAVAILABLE);
     expect(all.vocab).toEqual(VOCAB);
     expect(all.grammar).toEqual(GRAMMAR);
+    expect(all.writing).toEqual(WRITING);
   });
 
   it('resolves with all placeholders on a total outage (still never rejects)', async () => {
-    vi.spyOn(api, 'get').mockImplementation(() =>
-      Promise.reject(
-        new ApiError('server error', { status: 500, code: 'server_error' }),
-      ),
-    );
+    stubApiGet([...ALL_ROUTES]);
 
     const all = await fetchSkillSeries();
 
@@ -164,7 +186,12 @@ describe('fetchSkillSeries', () => {
     expect(all.listening).toEqual(UNAVAILABLE);
     expect(all.vocab).toEqual(UNAVAILABLE);
     expect(all.grammar).toEqual(UNAVAILABLE);
-    expect(all.writing).toEqual({ metric: 'none', unit: '', points: [] });
+    expect(all.writing).toEqual(UNAVAILABLE);
+
+    // Fresh placeholder objects per call — one caller mutating a degraded
+    // series must not leak into another caller's result.
+    const again = await fetchSkillSeries();
+    expect(again.writing).not.toBe(all.writing);
   });
 
   it('still rejects on cancellation — an abort is not "no data"', async () => {

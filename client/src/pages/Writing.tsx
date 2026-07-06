@@ -4,23 +4,29 @@
  * but was orphaned; this screen is its first caller).
  *
  * Flow:
- *   1. Pick a rubric (Q53 200–300자 description / Q54 600–700자 essay) and a
- *      curated task prompt (rotate with "New prompt").
+ *   1. Pick a rubric (Q53 200–300자 description / Q54 600–700자 essay). The
+ *      tab's curated task prompts are FETCHED from `GET /writing/prompts`
+ *      (F-014 — the DB replaced the screen's old hardcoded list, so the Today
+ *      tile and this screen can never advertise different tasks). Rotate
+ *      within the fetched pool with "New prompt".
  *   2. Compose Korean in the textarea (soft-capped at the server's 5,000-char
  *      Zod bound; live 자 count against the rubric's target band).
- *   3. Submit → `services/writing.gradeWriting` → reveal the grade: the three
- *      official rubric dimensions (내용 및 과제수행 / 전개구조 / 언어사용) with
- *      evidence + improvement notes, the total, an estimated TOPIK II level,
- *      and the overall comment.
+ *   3. Submit → `services/writing.gradeWriting` (with the served prompt's
+ *      `promptId`, so the persisted attempt links to its source row) → reveal
+ *      the grade: the three official rubric dimensions (내용 및 과제수행 /
+ *      전개구조 / 언어사용) with evidence + improvement notes, the total, an
+ *      estimated TOPIK II level, and the overall comment.
  *   4. "Revise & regrade" returns to composing with the text preserved;
  *      "New prompt" advances the rotation and clears the sheet.
  *
  * Failure is failure-SAFE, never a dead end (mirrors the Grammar drill): a
  * grade failure keeps the learner's text, surfaces a fixed-string inline
  * `role="alert"` ErrorCard (429 renders the structured `retryAfter` seconds
- * when present — never echoed server prose), and Submit stays available as
- * the retry. There is no mock fallback — a fabricated grade would be worse
- * than an honest error for a scoring feature.
+ * when present — live now that B-016 populates it — never echoed server
+ * prose), and Submit stays available as the retry. A prompts-fetch failure
+ * renders its own fixed-copy ErrorCard with a Retry that re-runs the fetch.
+ * There is no mock fallback for either leg — a fabricated grade (or a prompt
+ * id that doesn't exist server-side) would be worse than an honest error.
  *
  * Threat model:
  *   - The grade request is authenticated + user-scoped (session cookie via
@@ -51,7 +57,8 @@ import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
 import { ErrorCard } from '../components/ErrorCard';
 import { ApiError } from '../services/api';
-import { gradeWriting } from '../services/writing';
+import { fetchWritingPrompts, gradeWriting } from '../services/writing';
+import type { WritingPromptDTO } from '../services/writing';
 import type {
   TopikWritingRubric,
   WritingDimensionScore,
@@ -84,25 +91,6 @@ const RUBRIC_META: Record<
 
 /** Rubric tab order — Q53 first (the shorter, friendlier on-ramp). */
 const RUBRICS: readonly TopikWritingRubric[] = ['topik_ii_53', 'topik_ii_54'];
-
-/**
- * Curated TOPIK-style tasks, keyed by rubric. The selected task's `prompt` is
- * sent verbatim as the grade request's `prompt` (the grader needs the question
- * the learner answered), so every string here must stay within the server's
- * 1..2000 bound. Local constants — no fetch, nothing user-generated.
- */
-const WRITING_TASKS: Record<TopikWritingRubric, readonly string[]> = {
-  topik_ii_53: [
-    '여러분은 스트레스를 받을 때 어떻게 해소합니까? 자신의 스트레스 해소 방법과 그 방법의 좋은 점을 200~300자로 쓰십시오.',
-    '인터넷 쇼핑이 우리 생활에 주는 장점과 단점에 대해 200~300자로 쓰십시오.',
-    '여러분이 살고 싶은 도시는 어떤 곳입니까? 그 도시의 특징과 살고 싶은 이유를 200~300자로 쓰십시오.',
-  ],
-  topik_ii_54: [
-    '현대 사회에서 인공지능의 발달이 우리 생활에 미치는 영향에 대해 자신의 생각을 600~700자로 논술하십시오. 다음 내용을 포함하십시오: 인공지능 발달의 장점은 무엇인가? 어떤 문제점이 있는가? 우리는 어떤 태도를 가져야 하는가?',
-    "'실패는 성공의 어머니'라는 말이 있습니다. 실패의 경험이 우리에게 중요한 이유에 대해 자신의 생각을 600~700자로 논술하십시오.",
-    '환경 보호와 경제 발전 중 무엇이 더 중요하다고 생각합니까? 자신의 의견을 근거와 함께 600~700자로 논술하십시오.',
-  ],
-};
 
 /**
  * Phases of the grade lifecycle. Deliberately NO 'error' phase (mirrors the
@@ -145,6 +133,23 @@ function messageFor(err: ApiError): string {
   return "The grader couldn't score this sample. Your text is preserved — try again.";
 }
 
+/**
+ * Fixed-string error copy for the prompts fetch (same contract as
+ * `messageFor` — never echoed server prose). Loading tasks is a cheap GET,
+ * so the vocabulary is "retry", not "wait".
+ */
+function promptsMessageFor(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'network') {
+      return 'Network unreachable. Reconnect and retry to load the writing tasks.';
+    }
+    if (err.status === 401) {
+      return 'Your session has expired. Sign in again to load the writing tasks.';
+    }
+  }
+  return "The writing tasks couldn't be loaded. Try again in a moment.";
+}
+
 function Writing(): JSX.Element {
   const [rubric, setRubric] = useState<TopikWritingRubric>('topik_ii_53');
   // Per-rubric prompt rotation cursor, so switching tabs doesn't lose the
@@ -158,13 +163,61 @@ function Writing(): JSX.Element {
   const [grade, setGrade] = useState<WritingGradeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Prompts for the CURRENT rubric tab, fetched from `GET /writing/prompts`
+  // (F-014). `null` while loading / after a failure; the fetch effect below
+  // re-keys on the rubric, and `promptsTick` is the Retry trigger (the same
+  // monotonic-reload idiom the TTMIK tabs use).
+  const [prompts, setPrompts] = useState<WritingPromptDTO[] | null>(null);
+  const [promptsLoading, setPromptsLoading] = useState(true);
+  const [promptsError, setPromptsError] = useState<string | null>(null);
+  const [promptsTick, setPromptsTick] = useState(0);
+  const promptsCtrlRef = useRef<AbortController | null>(null);
+
   const textareaId = useId();
   const gradeId = useId();
 
-  const tasks = WRITING_TASKS[rubric];
-  // Non-null: WRITING_TASKS lists are non-empty consts and `idx % length` is
-  // always a valid index (same invariant as Grammar's `pool[idx % pool.length]!`).
-  const prompt = tasks[taskIdx[rubric] % tasks.length]!;
+  useEffect(() => {
+    const ctrl = new AbortController();
+    promptsCtrlRef.current?.abort();
+    promptsCtrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception
+    // the Reference/TTMIK tabs use for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setPromptsLoading(true);
+    setPromptsError(null);
+    setPrompts(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetchWritingPrompts(rubric, ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setPrompts(rows);
+        setPromptsLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setPromptsError(promptsMessageFor(err));
+        setPromptsLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [rubric, promptsTick]);
+
+  /** Retry for a failed prompts fetch — re-runs the effect without a reload. */
+  const retryPrompts = useCallback((): void => {
+    setPromptsTick((t) => t + 1);
+  }, []);
+
+  // The task on screen: the rotation cursor over the fetched pool. `null`
+  // while loading, after a fetch failure, or when the rubric's pool is empty
+  // — every consumer below guards on it (no grade without a served prompt).
+  const task =
+    prompts !== null && prompts.length > 0
+      ? // Non-null: `idx % length` is a valid index of a non-empty array
+        // (same invariant as Grammar's `pool[idx % pool.length]!`).
+        prompts[taskIdx[rubric] % prompts.length]!
+      : null;
 
   // In-flight grade controller: a re-submit or unmount aborts the stale call
   // so its settle can't clobber newer state.
@@ -177,7 +230,7 @@ function Writing(): JSX.Element {
 
   const submit = useCallback(async (): Promise<void> => {
     const trimmed = sample.trim();
-    if (trimmed.length === 0) return;
+    if (trimmed.length === 0 || task === null) return;
     ctrlRef.current?.abort();
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
@@ -186,7 +239,9 @@ function Writing(): JSX.Element {
     setGrade(null);
     try {
       const res = await gradeWriting(
-        { prompt, sample: trimmed, rubric },
+        // `promptId` links the persisted attempt to its `writing_prompts`
+        // source row (F-014); `promptKr` is the question the grader needs.
+        { prompt: task.promptKr, sample: trimmed, rubric, promptId: task.id },
         ctrl.signal,
       );
       if (ctrl.signal.aborted) return;
@@ -203,7 +258,7 @@ function Writing(): JSX.Element {
       );
       setPhase('composing');
     }
-  }, [sample, prompt, rubric]);
+  }, [sample, task, rubric]);
 
   /** Back to composing with the text intact, for a revise-and-regrade pass. */
   const revise = useCallback((): void => {
@@ -237,7 +292,7 @@ function Writing(): JSX.Element {
 
   const grading = phase === 'grading';
   const graded = phase === 'graded' && grade !== null;
-  const canSubmit = !grading && sample.trim().length > 0;
+  const canSubmit = !grading && sample.trim().length > 0 && task !== null;
 
   return (
     <section
@@ -273,70 +328,100 @@ function Writing(): JSX.Element {
       {/* Task prompt ─────────────────────────────────────────── */}
       <Card variant="default" style={{ marginBottom: 16 }}>
         <Eyebrow>{RUBRIC_META[rubric].eyebrow}</Eyebrow>
-        <p className="kr km-grammar__context">{prompt}</p>
-
-        <label
-          htmlFor={textareaId}
-          className="km-grammar__instruction"
-          style={{ display: 'block' }}
-        >
-          Your writing in Korean · target {RUBRIC_META[rubric].target}
-        </label>
-        <textarea
-          id={textareaId}
-          className="kr km-grammar__textarea focusring"
-          value={sample}
-          onChange={(e) => {
-            setSample(e.target.value);
-          }}
-          placeholder="여기에 한국어로 쓰십시오…"
-          rows={rubric === 'topik_ii_54' ? 10 : 6}
-          disabled={grading || graded}
-          aria-describedby={graded ? gradeId : undefined}
-          // Soft cap at the server's own Zod ceiling (1..5000) — defensive;
-          // keeps a runaway paste from authoring a guaranteed 400.
-          maxLength={SAMPLE_MAX_CHARS}
-        />
-        <div
-          style={{
-            fontSize: 12,
-            color: 'var(--paper-mute)',
-            marginTop: -8,
-            marginBottom: 12,
-          }}
-        >
-          {sample.length}자
-        </div>
-
-        {grading ? (
+        {promptsLoading ? (
           <div className="km-grammar__state" role="status">
-            Grading your writing… this can take up to a minute.
+            Loading writing tasks…
           </div>
-        ) : null}
+        ) : promptsError !== null ? (
+          <ErrorCard message={promptsError} onRetry={retryPrompts} />
+        ) : task === null ? (
+          // Fetched fine, but the rubric's active pool is empty — an honest
+          // empty state, not a spinner that never resolves.
+          <p className="km-reference__empty">
+            No writing tasks are available for this section yet.
+          </p>
+        ) : (
+          <>
+            <p className="kr km-grammar__context">{task.promptKr}</p>
+            {task.promptEn !== null ? (
+              // Optional English gloss of the task — muted, secondary to the
+              // Korean. Server text rendered as React children only (escaped).
+              <p
+                style={{
+                  fontSize: 12,
+                  color: 'var(--paper-mute)',
+                  marginTop: -6,
+                  marginBottom: 12,
+                }}
+              >
+                {task.promptEn}
+              </p>
+            ) : null}
 
-        {error ? <ErrorCard message={error} /> : null}
+            <label
+              htmlFor={textareaId}
+              className="km-grammar__instruction"
+              style={{ display: 'block' }}
+            >
+              Your writing in Korean · target {RUBRIC_META[rubric].target}
+            </label>
+            <textarea
+              id={textareaId}
+              className="kr km-grammar__textarea focusring"
+              value={sample}
+              onChange={(e) => {
+                setSample(e.target.value);
+              }}
+              placeholder="여기에 한국어로 쓰십시오…"
+              rows={rubric === 'topik_ii_54' ? 10 : 6}
+              disabled={grading || graded}
+              aria-describedby={graded ? gradeId : undefined}
+              // Soft cap at the server's own Zod ceiling (1..5000) — defensive;
+              // keeps a runaway paste from authoring a guaranteed 400.
+              maxLength={SAMPLE_MAX_CHARS}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--paper-mute)',
+                marginTop: -8,
+                marginBottom: 12,
+              }}
+            >
+              {sample.length}자
+            </div>
 
-        <div className="km-grammar__footer">
-          {!graded ? (
-            <>
-              <Button variant="ghost" onClick={nextPrompt} disabled={grading}>
-                New prompt
-              </Button>
-              <Button variant="gold" onClick={() => void submit()} disabled={!canSubmit}>
-                {grading ? 'Grading…' : 'Grade my writing'}
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button variant="ghost" onClick={revise}>
-                Revise &amp; regrade
-              </Button>
-              <Button variant="gold" onClick={nextPrompt}>
-                New prompt
-              </Button>
-            </>
-          )}
-        </div>
+            {grading ? (
+              <div className="km-grammar__state" role="status">
+                Grading your writing… this can take up to a minute.
+              </div>
+            ) : null}
+
+            {error ? <ErrorCard message={error} /> : null}
+
+            <div className="km-grammar__footer">
+              {!graded ? (
+                <>
+                  <Button variant="ghost" onClick={nextPrompt} disabled={grading}>
+                    New prompt
+                  </Button>
+                  <Button variant="gold" onClick={() => void submit()} disabled={!canSubmit}>
+                    {grading ? 'Grading…' : 'Grade my writing'}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="ghost" onClick={revise}>
+                    Revise &amp; regrade
+                  </Button>
+                  <Button variant="gold" onClick={nextPrompt}>
+                    New prompt
+                  </Button>
+                </>
+              )}
+            </div>
+          </>
+        )}
       </Card>
 
       {/* Grade reveal ────────────────────────────────────────── */}

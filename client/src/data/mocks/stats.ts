@@ -1,14 +1,15 @@
 /**
  * Skill-series fixture + loader (F-017 — Today's "Progress by skill").
  *
- * Mock-fallback for `fetchSkillSeries` (the `/topik|/vocab|/grammar /series`
- * fan-out). Shapes mirror the wire contract exactly: ascending `YYYY-MM-DD`
- * dates, activity days only (gaps are absent, not zero-filled), TOPIK
- * accuracy in 0–100 with `unit: '%'`, vocab as a daily review COUNT with
- * `unit: 'reviews'`, grammar as a daily average drill SCORE with
- * `unit: 'pts'` (the real routes' metrics — grammar is `score`, never
- * `accuracy`). `writing` is the client-only `metric: 'none'` sentinel — no
- * series route exists for it, so the carousel shows its placeholder panel.
+ * Mock-fallback for `fetchSkillSeries` (the `/topik|/vocab|/grammar|/writing
+ * /series` fan-out). Shapes mirror the wire contract exactly: ascending
+ * `YYYY-MM-DD` dates, activity days only (gaps are absent, not zero-filled),
+ * TOPIK accuracy in 0–100 with `unit: '%'`, vocab as a daily review COUNT
+ * with `unit: 'reviews'`, grammar as a daily average drill SCORE with
+ * `unit: 'pts'`, and writing (F-014) as a daily average grade SCORE
+ * normalized to percent-of-max with `unit: '%'` (so Q53/30 and Q54/50 days
+ * are comparable — the real routes' metrics; grammar/writing are `score`,
+ * never `accuracy`).
  */
 import type { AllSkillSeries } from '../../types/domain';
 import { mockDelay } from './_delay';
@@ -69,8 +70,20 @@ export const SKILL_SERIES_FIXTURE: AllSkillSeries = {
       { date: '2026-06-30', value: 52 },
     ],
   },
-  // No /writing/series route — the client-only sentinel (placeholder panel).
-  writing: { metric: 'none', unit: '', points: [] },
+  // Real /writing/series wire shape (F-014): per-day average grade score
+  // normalized to percent-of-max. Sparser than the other skills — grading an
+  // essay costs a Claude call, so writing days are rarer than review days.
+  writing: {
+    metric: 'score',
+    unit: '%',
+    points: [
+      { date: '2026-06-11', value: 57 },
+      { date: '2026-06-16', value: 60 },
+      { date: '2026-06-21', value: 55 },
+      { date: '2026-06-25', value: 66 },
+      { date: '2026-06-29', value: 71 },
+    ],
+  },
 };
 
 /** Mock loader — the `useEndpointOrMock` fallback for `fetchSkillSeries`. */

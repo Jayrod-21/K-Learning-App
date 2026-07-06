@@ -1676,6 +1676,9 @@ export interface WritingCallMetadata {
  *   - `prompt` — REQUIRED, 1..2000. The task the learner answered.
  *   - `sample` — REQUIRED, 1..5000. The learner's Korean writing.
  *   - `rubric` — optional; server defaults to `topik_ii_54`.
+ *   - `promptId` — optional (F-014); the `writing_prompts.id` of the served
+ *     task so the persisted `writing_attempts` row links to its source.
+ *     Omitted (never `undefined`-valued) for a promptless grade.
  * (The edge also tolerates an optional `targetLevel` hint but does not
  * forward it, so the client intentionally omits it.)
  */
@@ -1683,6 +1686,7 @@ export interface GradeWritingBody {
   prompt: string;
   sample: string;
   rubric?: TopikWritingRubric;
+  promptId?: number;
 }
 
 /** Envelope from `POST /grade-writing` — the proxy's `ProxyResult<GradeResult>`. */
@@ -1810,17 +1814,19 @@ export interface SeriesPoint {
 
 /**
  * One skill's trend over the requested window, as the series endpoints
- * (`GET /topik/series`, `GET /vocab/series`, `GET /grammar/series`) return
- * it. `points` is ascending by date; days without activity are absent, not
- * zero-filled.
+ * (`GET /topik/series`, `GET /vocab/series`, `GET /grammar/series`,
+ * `GET /writing/series`) return it. `points` is ascending by date; days
+ * without activity are absent, not zero-filled.
  *
  * `metric` names what `value` measures:
  *   - `accuracy` — percent correct that day (0–100; `unit` is `'%'`).
  *   - `count`    — how many of something (vocab reviews; `unit` is `'reviews'`).
- *   - `score`    — a graded score on the server's scale (`unit` is `'pts'`).
- *   - `none`     — CLIENT-ONLY sentinel: a skill with no series endpoint yet
- *                  (Writing), or one whose fetch failed and degraded to an
- *                  honest placeholder. Never on the wire; `points` is empty.
+ *   - `score`    — a graded score. Grammar scores on the server's raw scale
+ *                  (`unit` is `'pts'`); Writing normalizes to percent-of-max
+ *                  (`unit` is `'%'`) so Q53/30 and Q54/50 are comparable.
+ *   - `none`     — CLIENT-ONLY sentinel: a skill whose fetch failed and
+ *                  degraded to an honest placeholder. Never on the wire;
+ *                  `points` is empty.
  */
 export interface SkillSeries {
   metric: 'accuracy' | 'count' | 'score' | 'none';
@@ -1832,9 +1838,9 @@ export interface SkillSeries {
 
 /**
  * All five skill trends the Today carousel renders, assembled by
- * `fetchSkillSeries` from the three series endpoints. `writing` is
- * synthesized client-side as `{ metric: 'none', unit: '', points: [] }` —
- * there is no `/writing/series` route yet.
+ * `fetchSkillSeries` from the four series endpoints (F-014 gave Writing a
+ * real `/writing/series` route). A skill whose route failed degrades to the
+ * `metric: 'none'` placeholder — never fabricated points.
  */
 export interface AllSkillSeries {
   reading: SkillSeries;

@@ -37,6 +37,8 @@ const PROTECTED_GETS: { path: string; description: string }[] = [
   { path: '/vocab/lists', description: 'vocabLists.ts — GET /vocab/lists' },
   { path: '/ttmik/lessons', description: 'ttmik.ts — GET /ttmik/lessons' },
   { path: '/iyagi/episodes', description: 'ttmik.ts — GET /iyagi/episodes' },
+  { path: '/writing/prompts', description: 'writing.ts — GET /writing/prompts' },
+  { path: '/writing/series', description: 'writing.ts — GET /writing/series' },
 ];
 
 describe('protected route auth gate', () => {

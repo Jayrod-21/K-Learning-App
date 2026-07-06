@@ -314,13 +314,16 @@ export async function seedDiagnosticSnapshot(
 /**
  * Seed a single writing_prompts row. Returns its id.
  *
- * The shared writing_prompts bank is migration-013 reference data and is NOT
- * truncated by the per-test `beforeEach`. A test that needs to control the bank
- * exactly (e.g. to assert the Writing band-preference, or the empty-bank
- * branch) must `TRUNCATE writing_prompts` itself and then seed via this helper.
- * Such a test must run LAST in its file: the `beforeEach` does not restore the
- * migration's 8 rows, so any earlier test that relies on the seeded bank would
- * otherwise find it empty.
+ * The shared writing_prompts bank is migration-013 reference data (retagged +
+ * extended by migration 038, F-014) and is NOT truncated by the per-test
+ * `beforeEach`. A test that needs to control the bank exactly (e.g. to assert
+ * the Writing band-preference, or the empty-bank branch) must
+ * `TRUNCATE writing_prompts ... CASCADE` itself and then seed via this helper —
+ * CASCADE is required because writing_attempts.prompt_id now FKs
+ * writing_prompts(id), so a bare TRUNCATE is refused even when writing_attempts
+ * is empty. Such a test must run LAST in its file: the `beforeEach` does not
+ * restore the migration seed rows, so any earlier test that relies on the
+ * seeded bank would otherwise find it empty.
  */
 export async function seedWritingPrompt(
   pool: Pool,
