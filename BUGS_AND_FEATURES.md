@@ -521,7 +521,7 @@ Launch one focused session per group; cross-cutting items noted.
   agents (backend/frontend, locked contract). Full /fixpass: 3 Fable reviewers (1 BLOCKER —
   carousel stuck-drag + ~8 SHOULD-FIX incl. fabricated-data fallback + fixture infidelity) →
   Fable fix → Fable re-review PASS (both critical tests mutation-proven). Tests: server +21
-  (195 in the 3 suites), client +50ish (641 total). 3 cosmetic NITs → F-UP-016. PR #TBD.
+  (195 in the 3 suites), client +50ish (641 total). 3 cosmetic NITs → F-UP-016. PR #52.
 - **Where:** Today page — extend the existing "compare to" widget.
 - **What:** Make the Today stats widget **finger-swipeable** — a carousel / layered rotating display that pages through per-skill statistics for **all five skills (reading, listening, vocabulary, grammar, writing)**, e.g. a line graph of words mastered / items reviewed over time per skill. Swipe (or a rotating layered stack) moves between skills/metrics rather than showing just one.
 - **State:** The current widget compares against a single reference. Underlying time-series data partly exists (diagnostic snapshots per attempt — see F-010; FSRS review history for vocab mastery — see F-013), but not uniformly across all five skills; listening/writing especially may lack a time-series until those features produce data.
