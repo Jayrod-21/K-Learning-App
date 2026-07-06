@@ -4105,3 +4105,46 @@ body {
   /* Marker class — see MockBadge.tsx STYLE for the actual paint. */
 }
 
+
+/* PWA "new version — reload" banner (registerType: 'prompt'). Fixed above the
+   bottom nav; renders only when a waiting service worker is detected. */
+.km-pwa-update {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Same offset convention as .km-install, but z-index 80 (> the install
+     banner's 79) so if a not-yet-installed user has a tab open when a deploy
+     lands, the reload prompt sits ON TOP and is never covered. --ink-3 (highest
+     surface) keeps it visually distinct from the install banner behind it. */
+  bottom: calc(
+    var(--shell-bottomnav-h) + 12px + env(safe-area-inset-bottom)
+  );
+  z-index: 80;
+  width: calc(100% - 32px);
+  max-width: calc(var(--shell-max-width) - 32px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  background: var(--ink-3);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--vermilion);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  font-size: 14px;
+  color: var(--paper);
+}
+.km-pwa-update__text {
+  flex: 1;
+}
+.km-pwa-update__btn {
+  border: 1px solid var(--vermilion);
+  background: var(--vermilion-soft);
+  color: var(--vermilion);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
