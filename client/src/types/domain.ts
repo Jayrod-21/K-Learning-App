@@ -1816,14 +1816,15 @@ export interface SeriesPoint {
  *
  * `metric` names what `value` measures:
  *   - `accuracy` — percent correct that day (0–100; `unit` is `'%'`).
- *   - `count`    — how many of something (e.g. cards reviewed).
- *   - `score`    — a graded score on the server's scale.
- *   - `none`     — CLIENT-ONLY sentinel for a skill with no series endpoint
- *                  yet (Writing). Never on the wire; `points` is empty.
+ *   - `count`    — how many of something (vocab reviews; `unit` is `'reviews'`).
+ *   - `score`    — a graded score on the server's scale (`unit` is `'pts'`).
+ *   - `none`     — CLIENT-ONLY sentinel: a skill with no series endpoint yet
+ *                  (Writing), or one whose fetch failed and degraded to an
+ *                  honest placeholder. Never on the wire; `points` is empty.
  */
 export interface SkillSeries {
   metric: 'accuracy' | 'count' | 'score' | 'none';
-  /** Display unit for `value` (`'%'`, `'cards'`, …). Empty for `none`. */
+  /** Display unit for `value` (`'%'`, `'reviews'`, `'pts'`, …). Empty for `none`. */
   unit: string;
   /** Ascending by `date`. */
   points: SeriesPoint[];
