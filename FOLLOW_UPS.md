@@ -111,6 +111,19 @@ are `--ignore`d in that job; both are tracked here.
   `으면`). Ingest suite 290→292; both tests re-included in CI.
 - **Severity:** real linker bug, P2.
 
+### F-UP-011 · test_strategy_a order-dependence in the shared linker test DB (P3, PRE-EXISTING)
+- Surfaced by the F-UP-010 re-review (NOT caused by it — confirmed via `git archive`
+  of the pre-fix parent that the bug predates F-UP-010).
+- `test_strategy_a_writes_grammar_dep_per_matched_kgiu_entry`
+  (`tools/ingest/tests/test_link_topik_dependencies.py:358`) asserts an exact dep
+  count (3) but does not isolate itself from other tests' seeded rows in the
+  module-scoped shared DB: run after a test that seeds `category="connective"`
+  kgiu_entries, its matcher picks those up too and it fails `15 != 3`. Passes today
+  only because file-definition order happens to run it early. Fix: assert on
+  seeded ids / a fixture-unique category (as the new F-UP-010 tests now do), OR
+  scope the count query — do this BEFORE enabling `pytest-randomly` for this suite
+  (which SENIOR_ENGINEER_BAR §5.5 recommends). Same class as the SF-2 concern.
+
 ### F-UP-010 · strategy_c pattern match brittleness — ⚠️ partially resolved 2026-07-06
 - **Shipped (safe variant):** `grammar_candidates_by_pattern_substring` now OR's a
   raw punctuation-exact match (all fragments) with a syllable-normalized match
