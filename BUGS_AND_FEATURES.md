@@ -512,7 +512,18 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Type the `jsonb` fields on the DTO and render examples/dialogues/formation in a shared richer detail renderer used by both screens.
 
 ### F-019 · Generate wrong-answer explanations for topik_items
-- **Status:** 🟡 pilot done · **Priority:** P2 · **Category:** DATA
+- **Status:** 🟢 done (2026-07-06) · **Priority:** P2 · **Category:** DATA
+- **Resolution (2026-07-06):** the entry's "0 of 2,088" was stale — a prior session
+  had generated most already. Audited: 1,924/2,088 carried an explanation; a
+  subagent generated the remaining explainable ones in the approved format (quotes
+  Korean, covers all 4 choices, references by text). Applied 2 more → **1,926/2,088**.
+- **The remaining 162 are genuinely NOT explainable** (skip-over-guess, per the
+  entry): ~48 writing (open-ended, no MC answer), ~33 reading with the passage
+  absent (`options=[]`), 26 listening whose audio isn't in the corpus (stems read
+  "듣기 지문 없음"), 4 reading with copyright-withheld passages ("지문은 공개하지
+  않습니다"), and 4 (ids 222, 659, 769, 1086) whose keyed `answer` CONTRADICTS their
+  own accessible content — likely source-bank answer-key bugs, tracked in FOLLOW_UPS.
+  Feeds F-009 (gating), F-021 (mistakes log ✅).
 - **Where:** TOPIK item bank (`topik_items.extra->>'explanation'`).
 - **State:** F-009's UI gating shipped in Track A but a coverage audit found **0 of 2,088** `topik_items` carry an explanation — nothing shows. **Generated IN-SESSION (no API / no key):** Claude Code (main model + subagents) writes the explanations and bulk-inserts them — explanations are static per fixed item, so generate once. Pilot done 2026-07-04 (ids 1, 2, 349, 350); Jared approved the format.
 - **Format (approved):** English reasoning that QUOTES the Korean; covers ALL four choices (why the answer is right + why each distractor is a trap); reference the answer by its Korean TEXT, never by position ("option 3") so it survives display reordering. Depth scales with item difficulty.
@@ -529,7 +540,16 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add an "Ask about this" action that navigates to Chat with the item context as the conversation scenario/seed; reuse the conversation API. Composes with F-016 (More→Chat) and F-021.
 
 ### F-021 · Wrong-answer review log (mistakes) — 30-day window
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATABASE (BACKEND, UI)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** DATABASE (BACKEND, UI)
+- **Resolution (2026-07-06):** shipped as a "Review mistakes" screen (More tab, first).
+  Backend `GET /topik/mistakes` (auth-gated, user-scoped `getUserId` — no IDOR) over
+  `topik_responses` (is_correct=false, `make_interval(days)` rolling 30-day window)
+  joined to `topik_items`, returning the full item DTO (options + inline correct flag
+  + explanation) + wrong pick + answered_at. Reuses `ix_topik_responses_user_answered_at`
+  — no migration. Client: `fetchMistakes` + `Mistakes.tsx` (correct=green / wrong-pick=red
+  "Your answer") + mock + route + nav. Tests: server 46 (2 new incl. IDOR + 30-day window),
+  client 3. /fixpass APPROVE. PR #50. F-020's "Ask about this" per row is deferred (F-020
+  is later in the roadmap).
 - **Where:** New page/tab ("Review mistakes").
 - **What:** A persistent list of questions answered INCORRECTLY across sessions — each with the question, the user's wrong pick, the correct answer, and the explanation — so the user can leave, come back, and review why they missed things. Rolling **30-day** window.
 - **State:** Data partly exists — `topik_responses` is an append-only log of completed answers (verify it stores the picked answer + correctness + item id); `diagnostic_responses` logs diagnostic answers. A read endpoint filters incorrect answers within 30 days and joins `topik_items` for the question + explanation.
