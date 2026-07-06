@@ -909,7 +909,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
     return (
       <EmptyCard
         message="0 cards in your bank yet."
-        hint="Tap a word on the Read screen to mine it, or open Lists → New list to seed one."
+        hint="Tap a word on the Listen screen to mine it, or open Lists → New list to seed one."
       />
     );
   }
@@ -1445,7 +1445,7 @@ function AllPanel({
         <SearchRow query={query} onQuery={onQuery} />
         <EmptyCard
           message="0 banked cards."
-          hint="Mine a word from the Read screen or import a list from the Lists tab."
+          hint="Mine a word from the Listen screen or import a list from the Lists tab."
         />
       </div>
     );
