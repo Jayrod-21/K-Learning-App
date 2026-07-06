@@ -52,3 +52,36 @@ Consider promoting the audits to HARD gates once these are clean (bar wants SCA 
   file (R3 nit).
 - `local-test.sh`: pin `node:20-slim` / `python:3.12` by digest; make `db_suite`'s
   inlined pin set track a manifest (N1, N6).
+
+## CI ingest test-gate (surfaced 2026-07-05 when the gate was added)
+
+The `ingest-checks` CI job now runs `pytest tests/` (272 green). Two sets of tests
+are `--ignore`d in that job; both are tracked here.
+
+### F-UP-002 · `topik_dependencies` ON CONFLICT has no matching unique index (13 tests red)
+- **Severity:** real bug (loader idempotency / data-integrity), P2.
+- **What:** `tools/ingest/link_topik_dependencies.py` (~line 488) and the
+  canonical-grammar apply path upsert with an EXPRESSION conflict target —
+  `ON CONFLICT (topik_item_id, dep_type, COALESCE(grammar_entry_id,0), COALESCE(vocab_entry_id,0))`.
+  No migration creates a UNIQUE INDEX on that exact expression, so Postgres raises
+  `InvalidColumnReference: there is no unique or exclusion constraint matching the
+  ON CONFLICT specification`. The loaders' idempotency contract ("re-run writes no
+  new rows") is broken against a real schema.
+- **Evidence:** 13 tests fail — all of `tests/test_link_topik_dependencies.py` and
+  `tests/test_canonical_grammar_db.py`. Hidden until now because CI never ran the
+  ingest suite (the gap this gate closed).
+- **Fix:** add a reversible migration creating the matching expression-based unique
+  index (`CREATE UNIQUE INDEX … ON topik_dependencies (topik_item_id, dep_type,
+  COALESCE(grammar_entry_id,0), COALESCE(vocab_entry_id,0))`) and the equivalent for
+  the canonical-grammar target; verify no existing rows would violate it; then drop
+  the two `--ignore` lines and confirm 13 → green.
+
+### F-UP-003 · 3 ingest tests scan the gitignored generated `output/*.json`
+- **Severity:** test-infra, P3.
+- **What:** `test_topik_item_type_validation`, `test_hanja_hunmeum`, and
+  `test_resolve_cross_references_integration` read `tools/ingest/output/*.json`,
+  which is generated + gitignored, so they cannot run on a clean checkout (same
+  class as db/tests' excluded `test_discriminator_coverage.py`).
+- **Fix options:** commit tiny golden fixtures under `tests/fixtures/` and retarget
+  these tests, OR add a CI step that regenerates the needed `output/` artifacts
+  first. Until then they run only locally.

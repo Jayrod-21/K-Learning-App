@@ -86,6 +86,7 @@ jobs:
           pip install pip-audit ruff mypy pytest
           if [ -f pyproject.toml ]; then pip install -e .; fi
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
       - name: Ruff lint
         run: ruff check . || true
@@ -95,6 +96,29 @@ jobs:
         # the operator's checklist. We fail on HIGH severity but allow
         # the build to flag MEDIUM as a warning. See FIX_REPORT_B.md.
         run: pip-audit --strict || true
+
+      - name: Ingest tests (testcontainers spins its own Postgres)
+        # Closes the long-standing gap where this job lint+audited the ingest
+        # tooling but never RAN its test suite (two red parser tests once shipped
+        # unnoticed as a result). BLOCKING — real failures fail the build.
+        #
+        # Exclusions are all deliberate + documented (never silent truncation):
+        #   * 3 tests scan the gitignored, generated tools/ingest/output/*.json,
+        #     absent on a clean checkout (test_topik_item_type_validation,
+        #     test_hanja_hunmeum, test_resolve_cross_references_integration) —
+        #     same rationale as db-checks excluding test_discriminator_coverage.
+        #   * 2 DB test files quarantined for a PRE-EXISTING failure THIS gate
+        #     surfaced: link_topik_dependencies + canonical_grammar_db use an
+        #     `ON CONFLICT (… COALESCE(…) …)` expression target with no matching
+        #     unique index in the migrations (13 tests). Tracked in FOLLOW_UPS.md
+        #     (F-UP-002); re-include once the index migration lands.
+        run: |
+          python -m pytest tests -q \
+            --ignore=tests/test_topik_item_type_validation.py \
+            --ignore=tests/test_hanja_hunmeum.py \
+            --ignore=tests/test_resolve_cross_references_integration.py \
+            --ignore=tests/test_link_topik_dependencies.py \
+            --ignore=tests/test_canonical_grammar_db.py
 
   db-checks:
     name: Database — Migration Tests
