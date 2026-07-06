@@ -239,12 +239,13 @@ export function Today(): JSX.Element {
             navigate('/review');
           }}
           className="km-today__queue focusring"
-          aria-label={`Open review — ${String(today.data.reviewCount)} cards due`}
+          aria-label={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
         >
           <div>
             <Pill tone="gold">Due now</Pill>
             <div className="km-today__queueCount">
-              {today.data.reviewCount} cards due
+              {today.data.reviewCount}{' '}
+              {today.data.reviewCount === 1 ? 'card' : 'cards'} due
             </div>
             {/* No fabricated grammar/vocab split or minute estimate here —
                 /plan/today returns only `dueCount`, so any breakdown would

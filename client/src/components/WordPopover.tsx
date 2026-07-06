@@ -226,11 +226,19 @@ export function WordPopover({
               <div className="km-popover__desc">{data.desc}</div>
             ) : null}
 
-            <hr className="hr-gold km-popover__rule" />
-
-            <div className="km-eyebrow km-popover__eyebrow">Example</div>
-            <div className="kr km-popover__ex-kr">{data.ex_kr}</div>
-            <div className="km-popover__ex-en">{data.ex_en}</div>
+            {/* Only render the Example block when there's an actual example —
+                ~4% of KRDICT entries (and any enrichment miss) have none, and an
+                empty "Example" label with nothing under it reads as broken. */}
+            {data.ex_kr ? (
+              <>
+                <hr className="hr-gold km-popover__rule" />
+                <div className="km-eyebrow km-popover__eyebrow">Example</div>
+                <div className="kr km-popover__ex-kr">{data.ex_kr}</div>
+                {data.ex_en ? (
+                  <div className="km-popover__ex-en">{data.ex_en}</div>
+                ) : null}
+              </>
+            ) : null}
           </>
         )}
 
