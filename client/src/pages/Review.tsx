@@ -78,12 +78,14 @@ import {
 } from '../data/mocks/review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
+import { defineEntry } from '../services/define';
 import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
 import type {
   CreateListBody,
   CreateListResponse,
   CustomVocabList,
+  DefineExample,
   DueCard,
   FsrsRating,
   ServerVocabList,
@@ -245,7 +247,6 @@ function dueCardToVocab(d: DueCard): Vocab {
     ex_kr: d.vocabExampleKorean ?? '',
     ex_en: d.vocabExampleEnglish ?? '',
     mined_in: d.vocabSourceBook,
-    extra: [],
   };
 }
 
@@ -260,7 +261,6 @@ function vocabEntryToVocab(e: VocabEntry): Vocab {
     ex_kr: '',
     ex_en: '',
     mined_in: e.theme ?? undefined,
-    extra: [],
   };
 }
 
@@ -884,6 +884,44 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
     onRetry,
   } = props;
 
+  // F-UP-008: the "More examples" drawer used to be a dead affordance (`extra`
+  // is always []). Lazily fetch KRDICT example sentences for the current word
+  // when the drawer opens — lazy so we never load examples for the many cards a
+  // user rates without drilling into. Keyed on [drawer, cardKr]: fetches on open
+  // and on card change while open; aborts on close / card change / unmount.
+  const cardKr = card?.kr ?? null;
+  const [krdictExamples, setKrdictExamples] = useState<DefineExample[] | null>(
+    null,
+  );
+  const [examplesLoading, setExamplesLoading] = useState(false);
+  useEffect(() => {
+    if (!drawer || cardKr === null) {
+      return;
+    }
+    const ctrl = new AbortController();
+    setExamplesLoading(true);
+    setKrdictExamples(null);
+    defineEntry(cardKr, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setKrdictExamples(res.entries.flatMap((e) => e.examples).slice(0, 6));
+        setExamplesLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (
+          ctrl.signal.aborted ||
+          (err instanceof ApiError && err.code === 'canceled')
+        ) {
+          return;
+        }
+        setKrdictExamples([]); // degrade to "no additional examples"
+        setExamplesLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [drawer, cardKr]);
+
   if (loading) return <SkeletonCard height={360} />;
   if (fetchErrored) {
     return (
@@ -1009,12 +1047,22 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
             </button>
             {drawer ? (
               <div className="km-review__drawer">
-                {(card.extra ?? []).map((ex, i) => (
-                  <div key={i} className="km-review__drawerRow">
-                    <div className="kr">{ex.kr}</div>
-                    <div className="km-review__drawerEn">{ex.en}</div>
+                {examplesLoading ? (
+                  <div className="km-review__drawerEn">Loading examples…</div>
+                ) : (krdictExamples ?? []).length > 0 ? (
+                  (krdictExamples ?? []).map((ex, i) => (
+                    <div key={i} className="km-review__drawerRow">
+                      <div className="kr">{ex.korean}</div>
+                      {ex.english ? (
+                        <div className="km-review__drawerEn">{ex.english}</div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <div className="km-review__drawerEn">
+                    No additional examples.
                   </div>
-                ))}
+                )}
                 {card.notes ? (
                   <div className="km-review__notes">{card.notes}</div>
                 ) : null}
