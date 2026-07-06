@@ -14,7 +14,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 
 // Hoisted state the mocked hook reads from.
@@ -123,6 +124,34 @@ const ITEM_IMG: TopikItem = {
   hasImage: true,
 };
 
+/**
+ * Lands at `/chat` after an "Ask about this" click (F-020) and prints the
+ * router state the navigation carried, so a test can assert the actual seed
+ * payload (the Mistakes.test.tsx probe pattern).
+ */
+function ChatSeedProbe(): JSX.Element {
+  const location = useLocation();
+  const state = location.state as { seedText?: string; mode?: string } | null;
+  return (
+    <div data-testid="chat-seed">
+      {state?.seedText ?? 'no-seed'}
+      {state?.mode !== undefined ? ` mode=${state.mode}` : ''}
+    </div>
+  );
+}
+
+/** Render Topik with a `/chat` probe route so seed navigations land. */
+function renderWithChatProbe(): void {
+  render(
+    <MemoryRouter initialEntries={['/topik']}>
+      <Routes>
+        <Route path="/topik" element={<Topik />} />
+        <Route path="/chat" element={<ChatSeedProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 function setDraw(draw: TopikItem[], isMock = true): void {
   hookState.current = {
     data: draw,
@@ -220,10 +249,10 @@ describe('Topik (Study mode)', () => {
     ).toBeInTheDocument();
   });
 
-  it('F-020: the reveal offers an "Ask about this" Chat handoff (absent pre-reveal)', async () => {
+  it('F-020: the reveal offers an "Ask about this" handoff (absent pre-reveal) seeded with the item', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />, { wrapper: MemoryRouter });
+    renderWithChatProbe();
 
     // No handoff before the reveal — there is nothing to ask about yet.
     expect(
@@ -233,10 +262,38 @@ describe('Topik (Study mode)', () => {
     await user.click(screen.getAllByRole('radio')[0]); // 'a' — a wrong pick
     await user.click(screen.getByRole('button', { name: /submit/i }));
 
-    // The revealed card carries the Chat handoff.
-    expect(
-      screen.getByRole('button', { name: 'Ask about this' }),
-    ).toBeInTheDocument();
+    // The revealed card carries the Chat handoff; clicking it hands the
+    // item's fields to Chat on the RIGHT labels — 'b' (나) is the correct
+    // choice, 'a' (가) the wrong pick, so a swap fails these assertions.
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('이 글의 내용과 같은 것은?');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    expect(probe.textContent).toContain('My answer: 가 (incorrect)');
+    expect(probe.textContent).toContain(
+      'Why: Choice B summarises the passage faithfully.',
+    );
+    expect(probe.textContent).toContain('mode=topik_prep');
+  });
+
+  it('F-020: a CORRECT pick seeds no "My answer" but keeps the explanation the reveal shows', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    renderWithChatProbe();
+
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — the correct pick
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    // No wrong pick to report on a correct answer.
+    expect(probe.textContent).not.toContain('My answer');
+    // The study reveal shows the explanation on BOTH verdicts (F-009 gates
+    // the results list, not the in-flow reveal) — the seed matches the UI.
+    expect(probe.textContent).toContain(
+      'Why: Choice B summarises the passage faithfully.',
+    );
   });
 
   it('keeps the reveal even when recordTopikAnswer rejects (fire-and-forget)', async () => {

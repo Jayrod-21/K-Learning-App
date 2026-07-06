@@ -1120,6 +1120,15 @@ function ChoiceGroup({ item, picked, onPick }: ChoiceGroupProps): JSX.Element {
 // ─────────────────────────────────────────────────────────────
 
 /**
+ * Sentinel `pickedText` for an item the learner left unanswered. Shared by
+ * BOTH producers (mock rows in `buildMockResultsSummary` below, study rows in
+ * Topik.tsx `buildReviewRow`) and the F-020 seed gate that must never label a
+ * skip as a wrong "My answer" — one constant so a copy tweak can't silently
+ * desynchronize them.
+ */
+export const SKIPPED_PICK = 'skipped';
+
+/**
  * One row in the shared results review list (F-008). Mock mode derives this
  * from the server's per-item `MockReveal` (`buildMockResultsSummary` below);
  * Study mode (Topik.tsx `StudyMode`) tallies the same shape client-side from
@@ -1135,7 +1144,7 @@ export interface ResultsReviewRow {
   /** The shared reading passage the item was asked about (B-008), if any. */
   passage?: string;
   isCorrect: boolean;
-  /** Display text for the learner's pick, or 'skipped' if they left it blank. */
+  /** Display text for the learner's pick, or `SKIPPED_PICK` if left blank. */
   pickedText: string;
   /** Display text for the correct choice — always computed, only ever shown
    *  when `!isCorrect` (F-009: wrong-answer detail is for misses only). */
@@ -1263,7 +1272,7 @@ export function TopikResults({
                     passage={row.passage}
                     explanation={!row.isCorrect ? row.explanation : undefined}
                     userPick={
-                      !row.isCorrect && row.pickedText !== 'skipped'
+                      !row.isCorrect && row.pickedText !== SKIPPED_PICK
                         ? row.pickedText
                         : undefined
                     }
@@ -1321,7 +1330,8 @@ function buildMockResultsSummary(
       prompt: item?.prompt ?? '',
       ...(item?.passage !== undefined ? { passage: item.passage } : {}),
       isCorrect: rev.isCorrect,
-      pickedText: rev.picked === null ? 'skipped' : choiceText(item, rev.picked),
+      pickedText:
+        rev.picked === null ? SKIPPED_PICK : choiceText(item, rev.picked),
       correctText: choiceText(item, rev.correctChoiceId),
       explanation: rev.explanation,
     };

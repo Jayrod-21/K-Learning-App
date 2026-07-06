@@ -764,15 +764,19 @@ function TakingBlock({
           {/* F-020: hand the graded item to the Chat tutor. The stem lives on
               `item`, the key + explanation on the server's `reveal` — the
               choice ids are resolved to their display text here so the seed
-              reads naturally. */}
+              reads naturally. When the correct id can't be resolved (corrupt
+              data — the green highlight is equally broken then), the line is
+              OMITTED via '' rather than seeding a bare id like "b" that
+              corresponds to nothing the learner saw (choices are labelled
+              ①②③④ on screen). */}
           <div style={{ marginTop: 10 }}>
             <AskAboutThisButton
               prompt={item.prompt}
               correctText={
                 item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
-                reveal.correctAnswer
+                ''
               }
-              passage={item.passage}
+              passage={buildSeedPassage(item)}
               explanation={reveal.explain}
               userPick={
                 !reveal.correct && picked !== null
@@ -855,6 +859,24 @@ function sectionLabel(section: DiagnosticLiveItem['section']): string {
       return _never;
     }
   }
+}
+
+/**
+ * The passage-equivalent context an "Ask about this" seed carries (F-020).
+ * Mirrors what the item actually rendered:
+ *   - listening items keep their content in `audio.transcript` (shown by
+ *     `AudioBlock`) — without it the tutor gets a stem like "무엇에 대한
+ *     이야기입니까?" with no idea what was said;
+ *   - underline items emphasise a span of the passage (`PassageCard` below)
+ *     — the seed marks it with ⟨ ⟩ so "밑줄 친 부분…" questions keep WHICH
+ *     span was underlined.
+ */
+function buildSeedPassage(item: DiagnosticLiveItem): string | undefined {
+  const passage = item.passage ?? item.audio?.transcript;
+  if (passage === undefined) return undefined;
+  const underline = item.underline ?? '';
+  if (underline === '' || !passage.includes(underline)) return passage;
+  return passage.split(underline).join(`⟨${underline}⟩`);
 }
 
 interface PassageCardProps {

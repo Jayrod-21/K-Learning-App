@@ -174,16 +174,23 @@ function renderChat(seedState?: ChatSeedState): ReturnType<typeof render> {
 
 /**
  * Exposes whether the current history entry still carries router state —
- * lets the seed tests assert Chat cleared the consumed seed.
+ * lets the seed tests assert Chat cleared the consumed seed — plus the full
+ * URL, so they can assert the clearing replace-navigation preserved
+ * search + hash (it must drop ONLY the state).
  */
 function LocationStateProbe(): JSX.Element {
   const location = useLocation();
   return (
-    <div data-testid="location-state">
-      {location.state === null || location.state === undefined
-        ? 'empty'
-        : 'present'}
-    </div>
+    <>
+      <div data-testid="location-state">
+        {location.state === null || location.state === undefined
+          ? 'empty'
+          : 'present'}
+      </div>
+      <div data-testid="location-url">
+        {`${location.pathname}${location.search}${location.hash}`}
+      </div>
+    </>
   );
 }
 
@@ -443,6 +450,38 @@ describe('Chat seed (F-020)', () => {
       expect(screen.getByTestId('location-state')).toHaveTextContent('empty');
     });
     // The pre-filled text survives the state-clearing re-render.
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toBe(SEED.seedText);
+  });
+
+  it('preserves search + hash when clearing the seed state (only the state drops)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/chat',
+            search: '?conversation=7',
+            hash: '#latest',
+            state: SEED,
+          },
+        ]}
+      >
+        <Chat />
+        <LocationStateProbe />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location-state')).toHaveTextContent('empty');
+    });
+    // The replace-navigation rebuilt the FULL URL — a future deep-link param
+    // must survive a seeded arrival.
+    expect(screen.getByTestId('location-url')).toHaveTextContent(
+      '/chat?conversation=7#latest',
+    );
+    // And the seed still landed in the composer.
     const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
     expect(input.value).toBe(SEED.seedText);
   });

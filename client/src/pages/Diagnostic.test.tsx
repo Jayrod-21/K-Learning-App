@@ -19,7 +19,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import type {
@@ -137,6 +138,76 @@ function renderWithRouter(): ReturnType<typeof render> {
       </ToastProvider>
     </MemoryRouter>,
   );
+}
+
+/**
+ * Lands at `/chat` after an "Ask about this" click (F-020) and prints the
+ * router state the navigation carried, so a test can assert the actual seed
+ * payload (the Mistakes.test.tsx probe pattern).
+ */
+function ChatSeedProbe(): JSX.Element {
+  const location = useLocation();
+  const state = location.state as { seedText?: string; mode?: string } | null;
+  return (
+    <div data-testid="chat-seed">
+      {state?.seedText ?? 'no-seed'}
+      {state?.mode !== undefined ? ` mode=${state.mode}` : ''}
+    </div>
+  );
+}
+
+/** Render Diagnostic with a `/chat` probe route so seed navigations land. */
+function renderWithChatProbe(): void {
+  render(
+    <MemoryRouter initialEntries={['/diagnostic']}>
+      <ToastProvider>
+        <Routes>
+          <Route path="/diagnostic" element={<Diagnostic />} />
+          <Route path="/chat" element={<ChatSeedProbe />} />
+        </Routes>
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+}
+
+/**
+ * Boot a fresh single-item run for the F-020 seed tests: intro → item, then
+ * grade with `result` (done:true, so no /next prefetch to satisfy). Pass the
+ * choice index to pick, or null to Skip.
+ */
+async function driveToReveal(
+  user: ReturnType<typeof userEvent.setup>,
+  item: DiagnosticLiveItem,
+  result: { correct: boolean; correctAnswer: string; explain: string },
+  pickIndex: number | null,
+): Promise<void> {
+  hookState.snapshot = {
+    data: EMPTY_SNAPSHOT,
+    loading: false,
+    error: null,
+    isMock: true,
+  };
+  startDiagnostic.mockResolvedValue({
+    runId: 31,
+    item,
+    progress: { ordinal: 1, total: 1 },
+  });
+  answerDiagnostic.mockResolvedValueOnce({
+    result,
+    done: true,
+    progress: { ordinal: 1, total: 1 },
+  });
+
+  renderWithChatProbe();
+  await user.click(screen.getByRole('button', { name: /begin test/i }));
+  await screen.findByText(item.prompt);
+  if (pickIndex !== null) {
+    await user.click(screen.getAllByRole('radio')[pickIndex]!);
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+  } else {
+    await user.click(screen.getByRole('button', { name: /^skip$/i }));
+  }
+  await screen.findByRole('button', { name: 'Ask about this' });
 }
 
 describe('Diagnostic', () => {
@@ -324,6 +395,96 @@ describe('Diagnostic', () => {
         timeMs: expect.any(Number),
       });
     });
+  });
+
+  it('F-020: a wrong pick seeds Chat with the resolved correct/pick texts and the explanation', async () => {
+    // The server keys the reveal by choice ID ('a') — the seed must resolve
+    // both ids to their display text on the RIGHT labels: 'a' (발표) is
+    // correct, 'b' (발견) the wrong pick, so a swap or a raw id fails here.
+    const user = userEvent.setup();
+    await driveToReveal(
+      user,
+      ITEM_1,
+      { correct: false, correctAnswer: 'a', explain: '발표하다 = announce.' },
+      1, // pick 'b' — wrong
+    );
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('회사에서 새로운 정책을 ( ) 했다.');
+    expect(probe.textContent).toContain('Correct answer: 발표');
+    expect(probe.textContent).toContain('My answer: 발견 (incorrect)');
+    expect(probe.textContent).toContain('Why: 발표하다 = announce.');
+    expect(probe.textContent).toContain('mode=topik_prep');
+  });
+
+  it('F-020: an unresolvable correct-choice id OMITS the "Correct answer" line (no bare id)', async () => {
+    // Corrupt data: the reveal names an id absent from the served choices.
+    // Seeding "Correct answer: z" would be meaningless to the learner (the UI
+    // labels choices ①②③④) and to the AI — the line must drop instead.
+    const user = userEvent.setup();
+    await driveToReveal(
+      user,
+      ITEM_1,
+      { correct: false, correctAnswer: 'z', explain: '해설입니다.' },
+      0,
+    );
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).not.toContain('Correct answer');
+    expect(probe.textContent).not.toContain(': z');
+    // The rest of the seed is still worth asking about.
+    expect(probe.textContent).toContain('회사에서 새로운 정책을 ( ) 했다.');
+    expect(probe.textContent).toContain('Why: 해설입니다.');
+  });
+
+  it('F-020: a listening item seeds its audio transcript as the passage context', async () => {
+    // Without the transcript the AI receives a stem like "무엇에 대한
+    // 이야기입니까?" with no idea what was said.
+    const listening: DiagnosticLiveItem = {
+      ...ITEM_1,
+      section: 'listening',
+      prompt: '무엇에 대한 이야기입니까?',
+      audio: { duration: 12, transcript: '내일은 전국에 비가 오겠습니다.' },
+    };
+    const user = userEvent.setup();
+    await driveToReveal(
+      user,
+      listening,
+      { correct: false, correctAnswer: 'a', explain: '날씨 예보입니다.' },
+      1,
+    );
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain(
+      '지문: 내일은 전국에 비가 오겠습니다.',
+    );
+  });
+
+  it('F-020: an underline item seeds the passage with the underlined span marked', async () => {
+    // A "밑줄 친 부분…" question is unanswerable without knowing WHICH span
+    // was underlined — the seed marks it with ⟨ ⟩.
+    const underlined: DiagnosticLiveItem = {
+      ...ITEM_1,
+      prompt: '밑줄 친 부분과 의미가 비슷한 것을 고르십시오.',
+      passage: '그는 하루가 멀다 하고 도서관에 갔다.',
+      underline: '하루가 멀다 하고',
+    };
+    const user = userEvent.setup();
+    await driveToReveal(
+      user,
+      underlined,
+      { correct: false, correctAnswer: 'a', explain: '거의 매일이라는 뜻입니다.' },
+      1,
+    );
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain(
+      '지문: 그는 ⟨하루가 멀다 하고⟩ 도서관에 갔다.',
+    );
   });
 
   it('recovers from a mid-run answer failure via the inline Retry control', async () => {

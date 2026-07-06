@@ -275,8 +275,18 @@ export function Chat(): JSX.Element {
   useEffect(() => {
     if (chatSeed === null || seedClearedRef.current) return;
     seedClearedRef.current = true;
-    navigate(location.pathname, { replace: true, state: null });
-  }, [chatSeed, navigate, location.pathname]);
+    // Preserve search + hash: rebuilding the URL from the pathname alone
+    // would silently strip any future query param (deep-linked conversation
+    // id, ?mode=…) from a seeded arrival. Only the state is dropped.
+    navigate(
+      {
+        pathname: location.pathname,
+        search: location.search,
+        hash: location.hash,
+      },
+      { replace: true, state: null },
+    );
+  }, [chatSeed, navigate, location.pathname, location.search, location.hash]);
 
   const seededRef = useRef<boolean>(false);
   useEffect(() => {

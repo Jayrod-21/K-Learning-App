@@ -60,6 +60,7 @@ import { splitImageItem } from '../lib/topikImage';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 import {
   MockMode,
+  SKIPPED_PICK,
   TopikResults,
   type ResultsReviewRow,
   type ResultsSummary,
@@ -343,7 +344,7 @@ function StudyMode(): JSX.Element {
         prompt: item.prompt,
         ...(item.passage !== undefined ? { passage: item.passage } : {}),
         isCorrect,
-        pickedText: pickedOpt ? pickedOpt.kr : 'skipped',
+        pickedText: pickedOpt ? pickedOpt.kr : SKIPPED_PICK,
         correctText: correctOpt ? correctOpt.kr : '—',
         explanation,
       };

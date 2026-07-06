@@ -14,7 +14,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type { MockResult, MockTest } from '../../types/domain';
 
 const svc = vi.hoisted(() => ({
@@ -101,6 +102,57 @@ const RESULT: MockResult = {
     },
   ],
 };
+
+/**
+ * Lands at `/chat` after an "Ask about this" click (F-020) and prints the
+ * router state the navigation carried, so a test can assert the seed payload
+ * itself — the real handoff contract, not just that a button rendered
+ * (mirrors the Mistakes.test.tsx probe).
+ */
+function ChatSeedProbe(): JSX.Element {
+  const location = useLocation();
+  const state = location.state as { seedText?: string; mode?: string } | null;
+  return (
+    <div data-testid="chat-seed">
+      {state?.seedText ?? 'no-seed'}
+      {state?.mode !== undefined ? ` mode=${state.mode}` : ''}
+    </div>
+  );
+}
+
+/** Render MockMode with a `/chat` probe route so seed navigations land. */
+function renderWithChatProbe(): void {
+  render(
+    <MemoryRouter initialEntries={['/topik']}>
+      <Routes>
+        <Route path="/topik" element={<MockMode />} />
+        <Route path="/chat" element={<ChatSeedProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+/**
+ * Drive the mock flow start → submit → confirm → results (no answers needed
+ * — `submitMockTest` is mocked, so the graded rows come from the fixture).
+ */
+async function driveToResults(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await user.click(
+    screen.getByRole('button', { name: /Start Reading mock test/i }),
+  );
+  await waitFor(() => {
+    expect(screen.getByRole('timer')).toBeInTheDocument();
+  });
+  await user.click(screen.getByRole('button', { name: /Submit test/i }));
+  await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+  await waitFor(() => {
+    expect(
+      screen.getAllByRole('button', { name: 'Ask about this' }).length,
+    ).toBeGreaterThan(0);
+  });
+}
 
 describe('MockMode (Mock test)', () => {
   beforeEach(() => {
@@ -357,6 +409,83 @@ describe('MockMode (Mock test)', () => {
         'This explanation must stay hidden — the pick was correct.',
       ),
     ).not.toBeInTheDocument();
+  });
+
+  it('F-020: a MISS row seeds Chat with the correct answer, the wrong pick, and the explanation', async () => {
+    // RESULT: item 1002 was missed (picked 'a' = 하나, correct 'c' = 셋). The
+    // seed must carry the resolved display texts on the RIGHT labels — this
+    // fails if correct/pick are ever swapped or left as raw choice ids.
+    const user = userEvent.setup();
+    renderWithChatProbe();
+    await driveToResults(user);
+
+    const buttons = screen.getAllByRole('button', { name: 'Ask about this' });
+    await user.click(buttons[1]!); // row 2 = item 1002, the miss
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('두 번째 문제입니다.');
+    expect(probe.textContent).toContain('Correct answer: 셋');
+    expect(probe.textContent).toContain('My answer: 하나 (incorrect)');
+    expect(probe.textContent).toContain('Why: C restates the phrase.');
+    expect(probe.textContent).toContain('mode=topik_prep');
+  });
+
+  it('F-020: a CORRECT row seeds no "My answer" and no explanation (F-009 gate)', async () => {
+    // RESULT: item 1001 was answered correctly — its seed carries only the
+    // prompt + correct answer the results screen already showed. Leaking a
+    // "My answer: … (incorrect)" line or the withheld explanation here would
+    // contradict the on-screen review.
+    const user = userEvent.setup();
+    renderWithChatProbe();
+    await driveToResults(user);
+
+    const buttons = screen.getAllByRole('button', { name: 'Ask about this' });
+    await user.click(buttons[0]!); // row 1 = item 1001, answered correctly
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('첫 번째 문제입니다.');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    expect(probe.textContent).not.toContain('My answer');
+    expect(probe.textContent).not.toContain('Why:');
+  });
+
+  it('F-020: a SKIPPED row never seeds the sentinel as a wrong "My answer"', async () => {
+    // A skip is graded as a miss (picked: null) — the seed keeps the
+    // explanation but must NOT fabricate `My answer: skipped (incorrect)`.
+    svc.fetchMockTest.mockResolvedValueOnce({
+      ...TEST,
+      items: [TEST.items[0]!],
+    });
+    svc.submitMockTest.mockResolvedValueOnce({
+      sourceTest: 7,
+      section: 'reading',
+      totalItems: 1,
+      answered: 0,
+      correct: 0,
+      percentage: 0,
+      band: 'L3 range',
+      items: [
+        {
+          itemId: 1001,
+          picked: null,
+          correctChoiceId: 'b',
+          isCorrect: false,
+          explanation: 'B is the consistent summary.',
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    renderWithChatProbe();
+    await driveToResults(user);
+
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    expect(probe.textContent).toContain('Why: B is the consistent summary.');
+    expect(probe.textContent).not.toContain('My answer');
+    expect(probe.textContent).not.toContain('skipped');
   });
 
   it('auto-submits when the countdown reaches 0', async () => {
