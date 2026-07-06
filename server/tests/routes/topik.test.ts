@@ -183,6 +183,27 @@ describe('GET /topik/items — filters + pagination', () => {
     expect(mockIds).not.toContain(String(picture));
   });
 
+  it('caps a mock section to the official 50 items (F-UP-007)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // 60 answerable reading items in one test — more than the official exam.
+    for (let n = 1; n <= 60; n++) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 1300,
+        itemNumber: n,
+        options: ['가', '나', '다', '라'],
+        answer: 1,
+      });
+    }
+    const res = await agent.post('/topik/mock').send({ section: 'reading' });
+    expect(res.status).toBe(200);
+    // Capped to 50, not the 60 that exist.
+    expect(res.body.items.length).toBe(50);
+    // Item numbers are the first 50 (ORDER BY item_number).
+    expect(res.body.items[0].number).toBe(1);
+    expect(res.body.items[49].number).toBe(50);
+  });
+
   it('filters by section (Korean label) and by level', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L3' });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4' });
