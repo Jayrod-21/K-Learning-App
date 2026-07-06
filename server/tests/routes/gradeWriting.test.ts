@@ -109,18 +109,28 @@ describe('POST /grade-writing — downstream error', () => {
 });
 
 describe('POST /grade-writing — rate limit', () => {
-  it('expensive-bucket exceeded → 429', async () => {
+  it('expensive-bucket exceeded → 429 with a numeric retry_after (B-016)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    let got429 = false;
+    let status429 = 0;
+    let body429: unknown = null;
     for (let i = 0; i < 40; i++) {
       const res = await agent
         .post('/grade-writing')
         .send({ prompt: 'topic', sample: 'body' });
       if (res.status === 429) {
-        got429 = true;
+        status429 = res.status;
+        body429 = res.body;
         break;
       }
     }
-    expect(got429).toBe(true);
+    expect(status429).toBe(429);
+    const err = (
+      body429 as { error?: { code?: string; retry_after?: unknown } }
+    ).error;
+    expect(err?.code).toBe('rate_limited');
+    // B-016: the 429 must carry a numeric retry_after (seconds) so the client's
+    // ApiError.retryAfter / Writing "try again in N s" branch has real data.
+    expect(typeof err?.retry_after).toBe('number');
+    expect(err?.retry_after as number).toBeGreaterThan(0);
   });
 });

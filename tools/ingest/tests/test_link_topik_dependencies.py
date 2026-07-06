@@ -213,7 +213,7 @@ async def _seed_topik_item(
             INSERT INTO topik_tests (
                 corpus_source_id, corpus, test_number, topik_level, section)
             VALUES (%s, 'topik'::corpus, %s, 'TOPIK II', %s::topik_section)
-            ON CONFLICT (test_number, section) DO UPDATE
+            ON CONFLICT (test_number, topik_level, section) DO UPDATE
               SET topik_level = EXCLUDED.topik_level
             RETURNING id
             """,

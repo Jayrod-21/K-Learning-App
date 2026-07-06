@@ -25,7 +25,6 @@ import vocabRoutes from './routes/vocab.js';
 import vocabListsRoutes from './routes/vocabLists.js';
 import conversationRoutes from './routes/conversation.js';
 import grammarRoutes from './routes/grammar.js';
-import readingRoutes from './routes/reading.js';
 import planRoutes from './routes/plan.js';
 import diagnosticRoutes from './routes/diagnostic.js';
 import topikRoutes from './routes/topik.js';
@@ -79,7 +78,6 @@ export function createApp(): Express {
   // specific path first documents the precedence for the next engineer.
   app.use('/grammar-drill', grammarDrillRoutes);
   app.use('/grammar', grammarRoutes);
-  app.use('/reading', readingRoutes);
   app.use('/plan', planRoutes);
   app.use('/diagnostic', diagnosticRoutes);
   app.use('/topik', topikRoutes);

@@ -32,6 +32,7 @@ import { SettingsProvider } from './hooks/SettingsProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { InstallPrompt } from './components/InstallPrompt';
+import { PwaUpdatePrompt } from './components/PwaUpdatePrompt';
 import { Shell } from './components/Shell';
 import Login from './pages/Login';
 import Today from './pages/Today';
@@ -109,6 +110,10 @@ export default function App(): JSX.Element {
                 Renders null unless the browser offers an install opportunity,
                 so the mount is effectively free. */}
             <InstallPrompt />
+            {/* Surfaces a "new version — reload" banner when a freshly-deployed
+                service worker is waiting (registerType: 'prompt'). Renders null
+                until then, so the mount is free. */}
+            <PwaUpdatePrompt />
           </ToastProvider>
         </SettingsProvider>
       </ThemeProvider>

@@ -909,7 +909,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
     return (
       <EmptyCard
         message="0 cards in your bank yet."
-        hint="Tap a word on the Read screen to mine it, or open Lists → New list to seed one."
+        hint="Tap a word on the Listen screen to mine it, or open Lists → New list to seed one."
       />
     );
   }
@@ -970,6 +970,15 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
           </div>
         }
         back={
+          // B-014: mount the answer face only while `flipped`. When a rating
+          // advances the deck `flipped` goes true->false and the content swaps
+          // to the next card in the SAME commit; if the answer face were always
+          // mounted, the next card's English would sit in the back face and
+          // flash through during the 480ms flip-back rotation (its angle sweeps
+          // through the front-facing range). Rendering null when not flipped
+          // leaves nothing to leak — and keeps the answer out of the a11y tree
+          // until the user reveals it.
+          flipped ? (
           <div className="km-review__back">
             <div className="km-review__backHead">
               <div className="kr-display km-review__backWord">{card.kr}</div>
@@ -1012,6 +1021,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
               </div>
             ) : null}
           </div>
+          ) : null
         }
       />
 
@@ -1445,7 +1455,7 @@ function AllPanel({
         <SearchRow query={query} onQuery={onQuery} />
         <EmptyCard
           message="0 banked cards."
-          hint="Mine a word from the Read screen or import a list from the Lists tab."
+          hint="Mine a word from the Listen screen or import a list from the Lists tab."
         />
       </div>
     );

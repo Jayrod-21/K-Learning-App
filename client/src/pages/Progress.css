@@ -265,3 +265,96 @@
 
 .km-progress__delta--up { color: var(--moss); }
 .km-progress__delta--down { color: var(--vermilion); }
+
+/* ── F-013 — word mastery ─────────────────────────────────────────────── */
+.km-mastery__summary { margin: 8px 0 14px; }
+.km-mastery__bar {
+  display: flex;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--line);
+}
+.km-mastery__seg { height: 100%; }
+.km-mastery__seg.is-new { background: var(--paper-mute); }
+.km-mastery__seg.is-learning { background: var(--ochre); }
+.km-mastery__seg.is-reviewing { background: var(--indigo); }
+.km-mastery__seg.is-mastered { background: var(--moss); }
+
+.km-mastery__legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.km-mastery__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--paper-mute);
+  font-size: 13px;
+  cursor: pointer;
+}
+.km-mastery__chip b { color: var(--paper); font-weight: 700; }
+.km-mastery__chip.is-active { border-color: var(--paper); color: var(--paper); }
+.km-mastery__dot { width: 9px; height: 9px; border-radius: 50%; background: var(--paper-mute); }
+.km-mastery__chip.is-learning .km-mastery__dot { background: var(--ochre); }
+.km-mastery__chip.is-reviewing .km-mastery__dot { background: var(--indigo); }
+.km-mastery__chip.is-mastered .km-mastery__dot { background: var(--moss); }
+
+.km-mastery__list { list-style: none; margin: 4px 0 0; padding: 0; }
+.km-mastery__row {
+  display: grid;
+  grid-template-columns: minmax(70px, 1.1fr) 2fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-top: 1px solid var(--line);
+}
+.km-mastery__kr { font-size: 16px; }
+.km-mastery__en {
+  color: var(--paper-mute);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.km-mastery__badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--paper-mute);
+  white-space: nowrap;
+}
+.km-mastery__badge.is-learning { color: var(--ochre); border-color: var(--ochre); }
+.km-mastery__badge.is-reviewing { color: var(--indigo); border-color: var(--indigo); }
+.km-mastery__badge.is-mastered { color: var(--moss); border-color: var(--moss); }
+.km-mastery__stab {
+  color: var(--paper-mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+.km-mastery__pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+.km-mastery__pageinfo {
+  color: var(--paper-mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.km-mastery__stale { color: var(--ochre); font-size: 12px; margin: 0 0 8px; }
+.km-mastery__retry {
+  background: none;
+  border: none;
+  color: var(--paper);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
