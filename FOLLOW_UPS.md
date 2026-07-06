@@ -168,6 +168,24 @@ contradictory explanation). Each has enough accessible content to check, and the
 Likely source-bank answer-key alignment bugs, not un-explainable items. Manually re-check
 each `answer` against its stem/passage; if wrong, correct in the corpus + DB (these items
 are served in study/mock, so a wrong key mis-grades a learner). Low volume (4 of 2,088).
+
+### F-UP-014 · topik_attempts resurrect-race — mitigated, not fully closed (P3, F-007)
+The mock-resume save race (a progress `PUT /topik/attempt` in flight when the exam
+submits) is mitigated but not eliminated. `doSubmit` aborts the in-flight save and
+`runSubmit` fires a `clearAttempt()` mop-up on real-submit success — but the abort is
+CLIENT-side only, so a PUT already on the wire that the server delays past BOTH the
+`/mock/submit` DELETE and the `clearAttempt` DELETE can still re-INSERT the row and
+resurface a resume banner for a graded test. Window is far narrower than pre-fix and
+recoverable (dismiss / re-submit). Acceptable for the private single-device app; the
+robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scoping the
+mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
+Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
+
+### F-UP-015 · Resume-fetch failure is silent (P3, F-007, UX)
+On the resume banner's "Resume", if `fetchMockTest(section, …, sourceTest)` fails, the
+banner just disappears with no user feedback (`resumeAttempt`'s catch clears `resumable`
++ resets net to idle). Rare, but a brief "couldn't resume — start fresh" notice would be
+better than a silent drop. Low priority (personal app).
 From the F-UP-010-full re-review (PASS WITH CONDITIONS — not blockers):
 - **Parenthetical-alternative parens.** `_pattern_alternant_forms` treats every
   `(X)` as an OPTIONAL MORPHEME, but ~3 patterns use `(…)` as a parenthetical

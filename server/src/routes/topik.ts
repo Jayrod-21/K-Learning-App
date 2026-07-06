@@ -536,15 +536,22 @@ router.get(
 
 const AttemptSectionSchema = z.enum(['reading', 'listening']);
 
+// Postgres INTEGER (int4) upper bound. source_test / current_idx / remaining_ms
+// are INTEGER columns, so the zod schema must reject anything above this at the
+// boundary (400) rather than let it reach SQL and overflow (500). See the
+// project's grammar-Bank incident: a validation schema looser than the DB
+// constraint behind it turns bad input into a 500.
+const INT4_MAX = 2_147_483_647;
+
 const AttemptBodySchema = z
   .object({
     section: AttemptSectionSchema,
-    sourceTest: z.number().int().positive(),
-    currentIdx: z.number().int().nonnegative(),
+    sourceTest: z.number().int().positive().max(INT4_MAX),
+    currentIdx: z.number().int().nonnegative().max(INT4_MAX),
     // { "<topik_item_id>": "a"|"b"|"c"|"d" } — the picks so far. Keys are numeric
     // item-id strings; values are choice ids.
     picks: z.record(z.string().regex(/^\d+$/), z.enum(['a', 'b', 'c', 'd'])),
-    remainingMs: z.number().int().nonnegative(),
+    remainingMs: z.number().int().nonnegative().max(INT4_MAX),
   })
   // A mock section is <= 50 items (F-UP-007); cap the picks map so a malformed
   // client cannot stuff an unbounded JSONB blob into the row.

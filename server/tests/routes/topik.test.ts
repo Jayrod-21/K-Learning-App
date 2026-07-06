@@ -428,16 +428,25 @@ describe('TOPIK mock-attempt persistence — resume (F-007)', () => {
     expect((await a.agent.get('/topik/attempt')).body.attempt).toMatchObject({ sourceTest: 42 });
   });
 
-  it('rejects a malformed body (bad section / bad choice / oversized picks) with 400', async () => {
+  it('rejects a malformed body (bad section / choice / picks key / oversized / INT4 overflow) with 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const bad = async (body: object): Promise<number> =>
       (await agent.put('/topik/attempt').send(body)).status;
+    // Writing is not a mock section.
     expect(await bad({ section: 'writing', sourceTest: 1, currentIdx: 0, picks: {}, remainingMs: 1 })).toBe(400);
+    // Choice value outside a..d.
     expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: { '1': 'e' }, remainingMs: 1 })).toBe(400);
+    // Non-numeric picks KEY (the `^\d+$` guard — the item id must be an integer).
+    expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: { abc: 'a' }, remainingMs: 1 })).toBe(400);
+    // More than 60 picks (a mock section is <= 50).
     const tooMany = Object.fromEntries(
       Array.from({ length: 61 }, (_, i) => [String(i + 1), 'a']),
     );
     expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: tooMany, remainingMs: 1 })).toBe(400);
+    // Above INT4 max → rejected at the boundary (400), never reaching the
+    // INTEGER column to overflow (which would 500).
+    expect(await bad({ section: 'reading', sourceTest: 2_147_483_648, currentIdx: 0, picks: {}, remainingMs: 1 })).toBe(400);
+    expect(await bad({ section: 'reading', sourceTest: 1, currentIdx: 0, picks: {}, remainingMs: 2_147_483_648 })).toBe(400);
   });
 
   it('submitting a mock clears the in-progress attempt', async () => {

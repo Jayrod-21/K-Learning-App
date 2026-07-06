@@ -67,6 +67,7 @@ import {
   submitMockTest,
   fetchAttempt,
   saveAttempt,
+  clearAttempt,
   type AttemptState,
 } from '../../services/topik';
 import {
@@ -184,18 +185,21 @@ export function MockMode(): JSX.Element {
   // Persist the exam's in-progress state (F-007). Fire-and-forget: a failed save
   // just means this exam can't be resumed, which must never break the exam.
   const handleSaveProgress = useCallback(
-    (state: ExamSaveState): void => {
+    (state: ExamSaveState, signal?: AbortSignal): void => {
       if (test === null) return;
       const picks: Record<string, ChoiceId> = {};
       for (const [itemId, choice] of state.picks) picks[String(itemId)] = choice;
-      void saveAttempt({
-        section: test.section,
-        sourceTest: test.sourceTest,
-        currentIdx: state.currentIdx,
-        picks,
-        remainingMs: state.remainingSec * 1000,
-      }).catch(() => {
-        /* ignore — best-effort persistence */
+      void saveAttempt(
+        {
+          section: test.section,
+          sourceTest: test.sourceTest,
+          currentIdx: state.currentIdx,
+          picks,
+          remainingMs: state.remainingSec * 1000,
+        },
+        signal,
+      ).catch(() => {
+        /* ignore — best-effort persistence (incl. deliberate abort on submit) */
       });
     },
     [test],
@@ -300,6 +304,13 @@ export function MockMode(): JSX.Element {
           setIsMock(false);
           setNet('idle');
           setPhase('results');
+          // Mop-up (F-007): /mock/submit already cleared the attempt in its tx,
+          // but a progress save that raced the DELETE could have re-created it.
+          // Only on a REAL submit — an offline-graded fallback never reached the
+          // server, so its attempt legitimately remains for a retry.
+          void clearAttempt().catch(() => {
+            /* best-effort */
+          });
         })
         .catch((realErr: unknown) => {
           if (ctrl.signal.aborted) return;
@@ -547,8 +558,10 @@ interface ExamRunnerProps {
   /** When RESUMING a saved attempt: the state to hydrate into (F-007). */
   initial?: { idx: number; picks: Map<number, ChoiceId>; remainingSec: number };
   /** Persist the in-progress state — called on each pick/nav, every 15s, and on
-   *  unmount, so the mock survives a reload / leaving the screen (F-007). */
-  onSave: (state: ExamSaveState) => void;
+   *  unmount, so the mock survives a reload / leaving the screen (F-007). The
+   *  optional signal lets the caller cancel an in-flight save (on submit, so a
+   *  late PUT can't resurrect the attempt the submit just cleared). */
+  onSave: (state: ExamSaveState, signal?: AbortSignal) => void;
 }
 
 /**
@@ -588,6 +601,11 @@ function ExamRunner({
   const [confirming, setConfirming] = useState(false);
   // Guard so an auto-submit + a manual submit can't both fire.
   const submittedRef = useRef(false);
+  // One AbortController per in-flight progress save (F-007), so a newer save —
+  // or submit — cancels the previous one. Prevents out-of-order PUTs and,
+  // critically, stops a save in flight at submit time from re-INSERTing the
+  // attempt that /mock/submit just deleted.
+  const saveCtrlRef = useRef<AbortController | null>(null);
   // Container for the submit-confirm alertdialog — focus-trapped via
   // useModalA11y so it meets the same modal a11y bar as Sheet / WordPopover
   // (initial focus in, Esc to dismiss, focus restored on close).
@@ -665,6 +683,9 @@ function ExamRunner({
   const doSubmit = useCallback((): void => {
     if (submittedRef.current) return;
     submittedRef.current = true;
+    // Cancel any in-flight progress save so it can't land after the submit's
+    // DELETE and resurrect the attempt (F-007).
+    saveCtrlRef.current?.abort();
     setConfirming(false);
     onSubmit(buildBody());
   }, [buildBody, onSubmit]);
@@ -734,7 +755,10 @@ function ExamRunner({
   // clears the attempt on submit, so a late save must not resurrect it.
   const saveProgress = useCallback((): void => {
     if (submittedRef.current) return;
-    onSave(stateRef.current);
+    saveCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    saveCtrlRef.current = ctrl;
+    onSave(stateRef.current, ctrl.signal);
   }, [onSave]);
 
   // Save on each pick / navigation (captures every answer) + once on mount.

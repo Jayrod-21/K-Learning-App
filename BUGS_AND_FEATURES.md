@@ -347,7 +347,20 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Add a mail provider client + env config (domain sender, SPF/DKIM) and a scheduled worker that fans out reminders/word lists from the stored intents. Ties into the deploy email-verification checklist.
 
 ### F-007 · Resume an in-progress TOPIK test
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATABASE (BACKEND, UI)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** DATABASE (BACKEND, UI)
+- **Resolution (2026-07-06):** new `topik_attempts` table (migration 037) persists ONE
+  in-progress mock per user (section, source_test, current_idx, picks JSONB, remaining_ms).
+  No item snapshot — `/topik/mock` is deterministic per (section, sourceTest) (a true total
+  order via `uq_topik_items_test_number`), so resume re-fetches the identical exam and
+  restores picks/index/timer. Backend `GET/PUT/DELETE /topik/attempt` (auth, user-scoped —
+  no IDOR; upsert ON CONFLICT (user_id); picks capped 60; int fields `.max(INT4_MAX)`);
+  `/mock/submit` clears the attempt in the score tx. Client: `fetchMockTest` gains optional
+  `sourceTest`; ExamRunner hydrates from a saved attempt + persists on each pick/nav, every
+  15s, on unmount (in-flight save aborted on submit + `clearAttempt` mop-up so a raced save
+  can't resurrect a finished test); MockMode shows a dismissible resume banner on the mock
+  select screen. Full /fixpass: 3 reviewers (0 BLOCKER) → 5 SHOULD-FIX fixed → re-review PASS.
+  Tests: server 52 (6 new) / client 12 (2 new). Residual (resurrect-race window, silent
+  resume-fail) → F-UP-014/F-UP-015. PR #TBD.
 - **State:** No attempt persistence today. `topik_responses` is an append-only log of
   *completed* answers only. In-progress state (picks map, index, timer) lives in
   in-memory React state and is lost on reload.

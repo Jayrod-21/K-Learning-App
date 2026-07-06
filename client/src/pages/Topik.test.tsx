@@ -65,9 +65,10 @@ vi.mock('../services/topik', () => ({
   fetchMockTest: () => Promise.reject(new Error('not used in tests')),
   submitMockTest: () => Promise.reject(new Error('not used in tests')),
   // MockMode fetches any resumable attempt on mount (F-007) — no attempt here,
-  // so no resume banner; saves are best-effort no-ops.
+  // so no resume banner; saves/clears are best-effort no-ops.
   fetchAttempt: () => Promise.resolve(null),
   saveAttempt: () => Promise.resolve(),
+  clearAttempt: () => Promise.resolve(),
 }));
 
 const { recordTopikAnswer } = svc;
