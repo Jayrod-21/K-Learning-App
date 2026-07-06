@@ -44,23 +44,17 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // autoUpdate: a new SW activates as soon as it's installed (no user
-      // "reload to update" prompt). Fine for a single-user study app; the
-      // injected registration handles the lifecycle.
-      //
-      // Deploy-time UX tradeoff: with skipWaiting()+clientsClaim() the new SW
-      // claims open tabs immediately. A tab still running the OLD bundle that
-      // then lazy-loads a chunk whose content-hash changed will 404 against
-      // the new precache until the user reloads — a reload always recovers
-      // (cleanupOutdatedCaches runs), so no tab is permanently stranded. If a
-      // smoother "reload to update" flow is wanted later, switch to
-      // registerType: 'prompt' and surface an update toast. See REVIEW_PF_pwa
-      // SF-1.
-      registerType: 'autoUpdate',
-      // Inject the registration script automatically into the built HTML —
-      // no manual `navigator.serviceWorker.register` in main.tsx needed, and
-      // the plugin already guards on `'serviceWorker' in navigator` + prod.
-      injectRegister: 'auto',
+      // 'prompt': a new SW installs but WAITS. The app surfaces a persistent
+      // "new version — reload" banner (PwaUpdatePrompt); only when the user taps
+      // it does the SW skipWaiting() and the page reload onto the fresh bundle —
+      // deterministically, in one reload. This replaces the old 'autoUpdate',
+      // which updated silently on the *next* visit (so an open tab kept the stale
+      // bundle — the "I don't see the change after deploy" problem) and could
+      // 404 a lazy chunk whose hash changed mid-session.
+      registerType: 'prompt',
+      // Registration is owned by useRegisterSW() inside PwaUpdatePrompt (so we
+      // get the onNeedRefresh hook) — do NOT also auto-inject a registration.
+      injectRegister: null,
       // Do NOT run the SW in dev — avoids stale-cache surprises while iterating
       // and keeps the dev server / Vitest from registering a worker.
       devOptions: { enabled: false },
