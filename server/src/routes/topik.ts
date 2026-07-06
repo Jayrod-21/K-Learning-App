@@ -346,6 +346,20 @@ const ITEM_COLUMNS = `i.id::text AS id,
                       i.has_image, i.image_text, i.extra,
                       t.passages AS test_passages`;
 
+/**
+ * The answerable-item guard, shared by every draw/assembly so they all agree:
+ *   - >= 2 options AND a non-null answer (the "survivor guard" — mirrors the
+ *     /answer lookup and the diagnostic's pickTopikRow).
+ *   - excludes picture-choice listening items: 60 items whose `options` are bare
+ *     ①②③④ glyphs with has_image=true but NO image asset and NULL image_text,
+ *     so all four choices render identically and the item is unanswerable
+ *     (tester sweep P2-1). 900 answerable listening items remain — plenty for a
+ *     mock. Assumes topik_items is aliased `i`.
+ */
+const ANSWERABLE_ITEM_SQL =
+  "jsonb_array_length(i.options) >= 2 AND i.answer IS NOT NULL " +
+  "AND i.options->>0 NOT IN ('①','②','③','④')";
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -385,7 +399,7 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
     // Build the shared WHERE once so the count and the page agree exactly. The
     // survivor guard restricts both to gradeable rows (>=2 options, non-null
     // answer), mirroring the /answer lookup + pickTopikRow.
-    const filters: string[] = ['jsonb_array_length(i.options) >= 2', 'i.answer IS NOT NULL'];
+    const filters: string[] = [ANSWERABLE_ITEM_SQL];
     const filterParams: unknown[] = [];
     if (q.section !== undefined) {
       filterParams.push(q.section);
@@ -471,8 +485,7 @@ async function resolveMockSourceTest(
        FROM topik_tests t
        JOIN topik_items i ON i.topik_test_id = t.id
       WHERE i.section = $1::topik_section
-        AND jsonb_array_length(i.options) >= 2
-        AND i.answer IS NOT NULL
+        AND ${ANSWERABLE_ITEM_SQL}
       ORDER BY t.test_number DESC
       LIMIT 1`,
     [section],
@@ -511,6 +524,7 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
          JOIN topik_tests t ON t.id = i.topik_test_id
         WHERE t.test_number = $1
           AND i.section = $2::topik_section
+          AND ${ANSWERABLE_ITEM_SQL}
         ORDER BY i.item_number`,
       [sourceTest, body.section],
     );
@@ -603,6 +617,7 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
          JOIN topik_tests t ON t.id = i.topik_test_id
         WHERE t.test_number = $1
           AND i.section = $2::topik_section
+          AND ${ANSWERABLE_ITEM_SQL}
         ORDER BY i.item_number`,
       [body.sourceTest, body.section],
     );
@@ -695,7 +710,7 @@ router.post('/study', cheapLimiter(), validateBody(StudyBodySchema), async (req,
     const body = req.body as z.infer<typeof StudyBodySchema>;
 
     const params: unknown[] = [];
-    const filters: string[] = [];
+    const filters: string[] = [ANSWERABLE_ITEM_SQL];
     if (body.section !== undefined) {
       params.push(body.section);
       filters.push(`i.section = $${params.length}::topik_section`);

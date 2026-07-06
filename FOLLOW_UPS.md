@@ -53,6 +53,26 @@ Consider promoting the audits to HARD gates once these are clean (bar wants SCA 
 - `local-test.sh`: pin `node:20-slim` / `python:3.12` by digest; make `db_suite`'s
   inlined pin set track a manifest (N1, N6).
 
+## Tester-sweep deferred items (2026-07-05, see db/docs/SWEEP_*.md)
+
+Batch A (client UX) + Batch B (TOPIK picture-item exclusion + study survivor guard)
+shipped. Deferred:
+
+- **F-UP-006 (P2, data) — all 232 TTMIK lesson titles are the placeholder "Level N
+  Lesson M"** (`tools/ingest/parse_ttmik.py:127`), never the real name. 100% of
+  Listen browse rows + headers. Needs the real titles from the TTMIK source (data
+  availability unknown) + a re-ingest; not a code one-liner.
+- **F-UP-007 (P3) — Mock section-select advertises a fixed item count** ("50 items"
+  in `MockMode.tsx:94-98`) but the mock serves all corpus items for the picked
+  test (~80). Product call: cap the mock to the official TOPIK II counts (Reading
+  50 / Listening 50) vs. show the real dynamic count. Left as-is pending that call.
+- **F-UP-008 (P3) — Review "More examples" drawer is dead** (`extra` hardcoded to
+  `[]` when mining a card) — the affordance is already correctly hidden when empty,
+  so this is "populate `extra`", a data-plumbing task, not a bug.
+- **F-UP-009 (P3) — data quality:** Level 6 Lesson 12 has duplicate `ordinal`s in
+  `ttmik_sentences` (no uniqueness constraint there → dupe React keys / jumbled
+  order); Level 9 Lesson 5 is content-empty. Both single-lesson corpus issues.
+
 ## Rate-limit retry_after (from B-016 review, 2026-07-05)
 
 - **F-UP-004 (P3):** `retry_after` on the expensive limiter is a static full-window

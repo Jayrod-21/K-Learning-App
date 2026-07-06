@@ -139,6 +139,50 @@ describe('GET /topik/items — filters + pagination', () => {
     expect(plain).not.toHaveProperty('imageText');
   });
 
+  it('excludes picture-choice items + enforces the survivor guard on study and mock (P2-1, P3-3)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const normal = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+      testNumber: 950,
+      itemNumber: 1,
+    });
+    // Bare ①②③④ options with no image asset — visually unanswerable (P2-1).
+    const picture = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      options: ['①', '②', '③', '④'],
+      answer: 1,
+      hasImage: true,
+      testNumber: 950,
+      itemNumber: 2,
+    });
+    // <2 options — exercises the survivor guard the study draw previously lacked
+    // (P3-3): it must be excluded from the study pool.
+    const tooFew = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      options: ['가'],
+      answer: 1,
+      testNumber: 950,
+      itemNumber: 3,
+    });
+
+    const study = await agent
+      .post('/topik/study')
+      .send({ section: 'listening', limit: 50 });
+    expect(study.status).toBe(200);
+    const studyIds = (study.body.items as Array<{ id: string }>).map((i) => i.id);
+    expect(studyIds).toContain(String(normal));
+    expect(studyIds).not.toContain(String(picture));
+    expect(studyIds).not.toContain(String(tooFew));
+
+    const mock = await agent.post('/topik/mock').send({ section: 'listening' });
+    expect(mock.status).toBe(200);
+    const mockIds = (mock.body.items as Array<{ id: string }>).map((i) => i.id);
+    expect(mockIds).toContain(String(normal));
+    expect(mockIds).not.toContain(String(picture));
+  });
+
   it('filters by section (Korean label) and by level', async () => {
     await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L3' });
     await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4' });
@@ -501,6 +545,54 @@ describe('POST /topik/mock/submit — bulk server-graded scoring (FU-NF-39)', ()
     expect(r1).toMatchObject({ picked: 'b', correctChoiceId: 'b', isCorrect: true, explanation: '1번 설명' });
     expect(r2).toMatchObject({ picked: 'a', correctChoiceId: 'c', isCorrect: false, explanation: '2번 설명' });
     expect(r3).toMatchObject({ picked: null, correctChoiceId: 'a', isCorrect: false, explanation: '3번 설명' });
+  });
+
+  it('mock grading excludes picture-choice items so the graded universe matches the served set (P2-1)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const a = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 1200,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2, // correct 'b'
+      extra: { explanation: 'A' },
+    });
+    const b = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 1200,
+      itemNumber: 2,
+      options: ['가', '나', '다', '라'],
+      answer: 1, // correct 'a'
+      extra: { explanation: 'B' },
+    });
+    // Picture-choice item in the SAME test — must be excluded from BOTH the
+    // assembly and the grading universe (or scores grade against an item that
+    // was never served).
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 1200,
+      itemNumber: 3,
+      options: ['①', '②', '③', '④'],
+      answer: 1,
+      hasImage: true,
+      extra: { explanation: 'PIC' },
+    });
+
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 1200,
+      section: 'listening',
+      answers: [
+        { itemId: a, picked: 'b' },
+        { itemId: b, picked: 'a' },
+      ],
+    });
+    expect(res.status).toBe(200);
+    // 2, not 3 — the picture item is not in the graded universe.
+    expect(res.body.totalItems).toBe(2);
+    expect(res.body.correct).toBe(2);
+    expect(
+      (res.body.items as Array<{ itemId: string }>).map((r) => r.itemId),
+    ).toEqual([String(a), String(b)]);
   });
 
   it("writes one topik_responses(mode='mock') row per ANSWERED item, server-computed is_correct", async () => {
