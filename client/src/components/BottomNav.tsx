@@ -90,7 +90,7 @@ export function BottomNav({
 
 /**
  * Map the current URL to a primary tab id, or null if we're on a More-tab
- * route. Longest-prefix wins so `/reading/abc-123` still lights "Reading".
+ * route. Longest-prefix wins so `/ttmik/lessons/1/1` still lights "Listen".
  */
 function matchActiveId(pathname: string): NavItemId | null {
   let best: { id: NavItemId; len: number } | null = null;
