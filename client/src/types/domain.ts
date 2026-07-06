@@ -79,7 +79,6 @@ export interface Vocab {
   ex_kr: string;
   ex_en: string;
   notes?: string;
-  extra?: VocabExample[];
   /** Provenance — where the learner mined this card from. */
   mined_in?: string;
 }

@@ -31,7 +31,6 @@ psycopg_pool = pytest.importorskip("psycopg_pool")
 psycopg = pytest.importorskip("psycopg")
 
 from testcontainers.postgres import PostgresContainer  # noqa: E402
-from psycopg_pool import AsyncConnectionPool  # noqa: E402
 
 # Allow imports of `link_topik_dependencies` and `loaders.runtime`.
 import sys  # noqa: E402
@@ -804,6 +803,70 @@ def test_strategy_c_caps_deps_per_item_and_rejects_short_fragments(schema):
             assert short_deps == [], (
                 "Strategy C must drop too-short fragments before the DB "
                 "lookup (REVIEW_C4 F3)"
+            )
+
+    asyncio.run(run_it())
+
+
+def test_grammar_matcher_normalizes_long_fragment_across_punctuation(schema):
+    """F-UP-010 RECALL: a 3+ syllable fragment links a stored pattern whose
+    surface punctuation differs. Claude '-으려고' (으려고, 3 syllables) must find a
+    KGIU entry stored '-(으)려고 하다': raw '-으려고' is NOT a substring of it (the
+    stored form has '(으)'), but the normalized arm ('으려고' in '으려고하다') is.
+
+    Revert guard: the pre-F-UP-010 matcher (raw substring only) returns no
+    candidate for this fragment → `eid` absent → this fails. Isolation: asserts
+    only on the id it seeded, so it is order-independent on the shared module DB
+    (no TRUNCATE — SF-2)."""
+    url = schema
+
+    async def run_it():
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            eid = await _seed_kgiu_entry(
+                conn,
+                source_id="kgiu-fup010-recall",
+                pattern="-(으)려고 하다",
+                category="fup010-recall",
+            )
+            await conn.commit()
+            cands = await ltd.grammar_candidates_by_pattern_substring(
+                conn, "-으려고", "으려고"
+            )
+            assert eid in {c.id for c in cands}, (
+                "3+ syllable normalized fragment '으려고' must match "
+                "'-(으)려고 하다' across the (으)/dash punctuation difference"
+            )
+
+    asyncio.run(run_it())
+
+
+def test_grammar_matcher_does_not_normalize_short_fragment(schema):
+    """F-UP-010 PRECISION: a 2-syllable fragment is NOT normalized, so it cannot
+    spuriously cross-match a longer, unrelated pattern that merely shares its
+    ending. Claude '-다가' (다가, 2 syllables) must NOT match the distinct
+    grammar '-아/어다가'.
+
+    Revert guard: the naive strip-everything matcher WOULD match this (다가 ⊂
+    아어다가 after stripping), which is exactly the 26-false-positive flood the
+    3-syllable gate exists to prevent — this asserts it does not. Isolation:
+    asserts only on the seeded id."""
+    url = schema
+
+    async def run_it():
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            eid = await _seed_kgiu_entry(
+                conn,
+                source_id="kgiu-fup010-precision",
+                pattern="-아/어다가",
+                category="fup010-precision",
+            )
+            await conn.commit()
+            cands = await ltd.grammar_candidates_by_pattern_substring(
+                conn, "-다가", "다가"
+            )
+            assert eid not in {c.id for c in cands}, (
+                "2-syllable fragment '다가' must NOT normalize-match the distinct "
+                "'-아/어다가' — only 3+ syllable fragments are normalized (F-UP-010)"
             )
 
     asyncio.run(run_it())

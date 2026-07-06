@@ -111,14 +111,35 @@ are `--ignore`d in that job; both are tracked here.
   `으면`). Ingest suite 290→292; both tests re-included in CI.
 - **Severity:** real linker bug, P2.
 
-### F-UP-010 · strategy_c pattern match is brittle to patternKey↔KGIU formatting (P3)
-- `grammar_candidates_by_pattern_substring` does `kgiu_entries.pattern ILIKE
-  '%<fragment>%'`, and `_HANGUL_RE` includes `-` `(` `)` `/` in the fragment. A
-  Claude `patternKey` like `-는데` will NOT substring-match a KGIU entry stored as
-  `-(으)ㄴ/는데` (dash vs `/는데`) even though they are the same grammar — so
-  Strategy C can miss real links when the returned key's punctuation differs from
-  the stored form. Consider normalizing both sides (strip `-()/`, compare on
-  syllables) or matching on the KGIU canonical key. Surfaced in the F-UP-002 review.
+### F-UP-011 · test_strategy_a order-dependence in the shared linker test DB (P3, PRE-EXISTING)
+- Surfaced by the F-UP-010 re-review (NOT caused by it — confirmed via `git archive`
+  of the pre-fix parent that the bug predates F-UP-010).
+- `test_strategy_a_writes_grammar_dep_per_matched_kgiu_entry`
+  (`tools/ingest/tests/test_link_topik_dependencies.py:358`) asserts an exact dep
+  count (3) but does not isolate itself from other tests' seeded rows in the
+  module-scoped shared DB: run after a test that seeds `category="connective"`
+  kgiu_entries, its matcher picks those up too and it fails `15 != 3`. Passes today
+  only because file-definition order happens to run it early. Fix: assert on
+  seeded ids / a fixture-unique category (as the new F-UP-010 tests now do), OR
+  scope the count query — do this BEFORE enabling `pytest-randomly` for this suite
+  (which SENIOR_ENGINEER_BAR §5.5 recommends). Same class as the SF-2 concern.
+
+### F-UP-010 · strategy_c pattern match brittleness — ⚠️ partially resolved 2026-07-06
+- **Shipped (safe variant):** `grammar_candidates_by_pattern_substring` now OR's a
+  raw punctuation-exact match (all fragments) with a syllable-normalized match
+  applied ONLY to fragments of `>= 3` Hangul syllables. This recovers 3+ syllable
+  format-variant links (e.g. `-으려고` → `-(으)려고 하다`) safely. Validated on the
+  real KGIU corpus: strip-everything gave **26** spurious cross-links, the ≥3 gate
+  gives **2** (borderline). See `db/docs/FIX_REPORT_FUP010.md`.
+- **Still open (the harder half):** the 2-syllable case (`는데` → `-(으)ㄴ/는데`) is
+  deliberately NOT handled — substring matching cannot tell it apart from a false
+  2-syllable match (`다가` → `-아/어다가`), and a missed link is safer than a wrong
+  one for a prerequisite graph. The proper fix is **alternation-aware expansion**:
+  parse the TTMIK/KGIU notation (`(으)` optional, `X/Y` alternation, `ㄴ/는` jamo)
+  into the set of surface forms and match the fragment against those (e.g.
+  `-(으)ㄴ/는데` → {ㄴ데, 은데, 는데}, so `는데` matches but `다가` doesn't match
+  `-아/어다가`'s {아다가, 어다가}). Non-trivial (notation is grammar-specific +
+  ambiguous); deferred until the linker's recall is a felt problem.
 
 ### F-UP-003 · ingest CI exclusions — ⚠️ mostly resolved 2026-07-05
 - **Original premise was wrong.** Re-checked on a clean checkout: `test_topik_item_type_validation`

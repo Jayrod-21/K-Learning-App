@@ -418,24 +418,61 @@ async def grammar_candidates_by_category(
 
 
 async def grammar_candidates_by_pattern_substring(
-    conn: AsyncConnection, fragment: str
+    conn: AsyncConnection, fragment: str, hangul_fragment: str
 ) -> list[KgiuCandidate]:
-    """Find kgiu_entries whose pattern contains the substring (case-insensitive).
+    """Find kgiu_entries whose pattern matches the extracted grammar fragment.
 
-    The fragment is parameterized; we wrap it ourselves in % markers so the
-    DB sees a parameterized LIKE.
+    F-UP-010 (safe variant). Two OR'd match arms:
+
+      1. RAW substring: ``pattern ILIKE '%<fragment>%'`` — the original
+         punctuation-exact match (``fragment`` still carries ``-``/``(``/``)``/``/``).
+         Kept for ALL fragments; it is the baseline behavior and its precision is
+         already accepted.
+      2. SYLLABLE-normalized substring, ONLY when the fragment has
+         ``>= _STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS`` syllables: both sides are
+         reduced to Hangul syllables (``regexp_replace(pattern, '[^가-힣]', '')``
+         vs ``hangul_fragment``). This recovers same-grammar links whose surface
+         punctuation differs (e.g. a Claude ``-으려고`` vs a stored ``-(으)려고``).
+
+    Why arm 2 is gated at 3 syllables and NOT applied to 2-syllable fragments:
+    stripping all punctuation from a 2-syllable fragment collapses distinct
+    grammar points that merely share a common ending. Validated against the real
+    KGIU corpus (285 grammar patterns, ``tools/ingest/output/grammar_kgiu_*.json``):
+    normalizing every fragment produced **26** spurious cross-links between
+    unrelated entries (``-다가``↔``-아/어다가``, ``(으)로``↔``-(으)ㅁ으로써``,
+    ``-데요``↔``-던데요`` …), essentially ALL of them driven by 2-syllable
+    fragments; restricting normalization to >= 3 syllables drops that to **2**
+    borderline (modifier-form patterns matching a modifier reference). Because
+    substring matching cannot distinguish a true 2-syllable variant (``는데`` →
+    ``-(으)ㄴ/는데``) from a false one (``다가`` → ``-아/어다가``), the 2-syllable
+    case is deliberately left to the raw arm only — a missed link is safer than a
+    wrong one for a prerequisite graph. FOLLOW_UPS F-UP-010 tracks the proper fix
+    (alternation-aware expansion of ``(으)``/``ㄴ/는`` into surface forms).
+
+    Full table scan with a per-row regexp_replace, which is fine: kgiu_entries is
+    a few hundred rows and this runs only in the offline ingest linker. Both LIKE
+    operands are parameterized (``%s``); the char-class is a hardcoded literal.
     """
-    if not fragment or len(fragment) < 2:
+    if not hangul_fragment or len(hangul_fragment) < 2:
         return []
-    pattern = f"%{fragment}%"
+    raw_like = f"%{fragment}%"
+    if len(hangul_fragment) >= _STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS:
+        where_clause = (
+            "( pattern ILIKE %s "
+            "  OR regexp_replace(pattern, '[^가-힣]', '', 'g') ILIKE %s )"
+        )
+        params: tuple[str, ...] = (raw_like, f"%{hangul_fragment}%")
+    else:
+        where_clause = "pattern ILIKE %s"
+        params = (raw_like,)
     async with conn.cursor() as cur:
         await cur.execute(
             "SELECT id, pattern, category, book_level::text "
             "  FROM kgiu_entries "
             " WHERE entry_type = 'grammar' "
-            "   AND pattern ILIKE %s "
+            f"   AND {where_clause} "
             " LIMIT 25 ",
-            (pattern,),
+            params,
         )
         rows = await cur.fetchall()
     return [
@@ -668,6 +705,13 @@ _HANGUL_RE = re.compile(r"[㄰-㆏가-힯\-\(\)/]+")
 # "으면" (from "-(으)면") and "는데" — which the DB pattern match validates anyway,
 # so a 2-char fragment that is NOT a real grammar form simply yields no candidate.
 _STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 2
+# F-UP-010: the syllable-normalized match arm (which strips ALL punctuation) is
+# only applied to fragments with >= 3 Hangul syllables. Below that, stripping
+# punctuation collapses distinct 2-syllable grammar points that share an ending
+# and floods the linker with false positives (26 on the real KGIU corpus, vs 2
+# for >= 3) — so 2-syllable fragments use the raw, punctuation-exact arm only.
+# See grammar_candidates_by_pattern_substring for the full rationale + numbers.
+_STRATEGY_C_MIN_NORMALIZED_HANGUL_CHARS = 3
 _STRATEGY_C_MAX_DEPS_PER_ITEM = 10
 
 
@@ -727,7 +771,9 @@ async def strategy_c_claude(
         # Hangul-only character count for the discriminating-length check.
         # Strip non-syllable characters (-, (, ), /) so "(으)면" counts as 2
         # discriminating syllables, not 5.
-        hangul_only = "".join(ch for ch in fragment if "가" <= ch <= "힯")
+        # `가`–`힣` (U+AC00–U+D7A3, the assigned Hangul-syllable range) so the
+        # count here matches the SQL-side `[^가-힣]` strip in the matcher (N-1).
+        hangul_only = "".join(ch for ch in fragment if "가" <= ch <= "힣")
         if len(hangul_only) < _STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS:
             logger.debug(
                 "strategy_c_fragment_too_short",
@@ -736,7 +782,12 @@ async def strategy_c_claude(
                 hangul_chars=len(hangul_only),
             )
             continue
-        candidates = await grammar_candidates_by_pattern_substring(conn, fragment)
+        # F-UP-010: pass BOTH the raw fragment (punctuation-exact match, all
+        # lengths) and the syllable-only form (normalized match, 3+ syllables
+        # only). `fragment` (with punctuation) is also kept for the evidence trail.
+        candidates = await grammar_candidates_by_pattern_substring(
+            conn, fragment, hangul_only
+        )
         for c in candidates:
             if len(deps) >= _STRATEGY_C_MAX_DEPS_PER_ITEM:
                 over_cap += 1

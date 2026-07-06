@@ -140,9 +140,12 @@ vi.mock('../services/progress', () => ({
   updateMetric: vi.fn(),
 }));
 
+vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
+
 import { Review } from './Review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
+import { defineEntry } from '../services/define';
 
 /**
  * Captures the most recent navigation target + router state so the FU-NF-42
@@ -181,7 +184,6 @@ const DUE_VOCAB: Vocab[] = [
     en: '',
     ex_kr: '',
     ex_en: '',
-    extra: [],
   },
 ];
 
@@ -311,6 +313,40 @@ describe('Review', () => {
     expect(screen.getByText(/Tap card or press/)).toBeInTheDocument();
   });
 
+  it('lazily loads KRDICT examples into the More examples drawer (F-UP-008)', async () => {
+    const user = userEvent.setup();
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '영향',
+      entries: [
+        {
+          id: 1,
+          headword: '영향',
+          part_of_speech: null,
+          definition_korean: null,
+          definition_english: null,
+          examples: [
+            { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
+            { korean: '큰 영향을 받았다.', english: null },
+          ],
+        },
+      ],
+    });
+    renderReview();
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    // Lazy: nothing is fetched until the user opens the drawer.
+    expect(defineEntry).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: /More examples/ }));
+    expect(
+      await screen.findByText('음악은 영향을 준다.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Music has an influence.')).toBeInTheDocument();
+    expect(defineEntry).toHaveBeenCalledWith('영향', expect.anything());
+  });
+
   it('mounts the answer face only when flipped (B-014 — no answer flash on advance)', async () => {
     // Regression for B-014: the answer face must NOT be in the DOM while the
     // card shows its front. If it were (as before this fix), the next card's
@@ -324,7 +360,6 @@ describe('Review', () => {
         en: 'influence',
         ex_kr: '음악은 우리 생활에 큰 영향을 미친다.',
         ex_en: 'Music has a big influence on our lives.',
-        extra: [],
       },
     ];
     hoisted.due.state = { kind: 'data', data: CARD_WITH_ANSWER, isMock: false };

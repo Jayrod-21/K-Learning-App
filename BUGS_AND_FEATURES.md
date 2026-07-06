@@ -218,17 +218,28 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Acquire the KRDICT bulk XML and run `Deploy/load-krdict.sh <dir>`. No code change.
 
 ### B-012 · Verify vocab-2000 completeness (3,188 loaded vs nominal ~4,000)
-- **Status:** 🟢 done (2026-07-05) · **Priority:** P3 · **Category:** DATA
-- **Spot-check result (2026-07-05):** source JSON → DB load is **100% complete**
-  (source beginner 1706 / intermediate 1696 == DB), so nothing was lost in
-  loading — the gap vs nominal is entirely in the OCR/parse of the PDFs. Also
-  found + **deleted 214 completely-empty entries** (blank korean AND english — OCR
-  artifacts, fully orphaned: 0 FK refs from cards/relations/lists/deps) that could
-  have surfaced as blank rows; real count is now 1598 + 1590 = **3188**. Residual
-  (low-value): a page-level headword spot-check to confirm OCR didn't miss words
-  on covered pages — the gap is already mostly explained by cross_refs + rounding.
-  Durable follow-up: the loader should SKIP empty-headword rows (a re-ingest would
-  reintroduce the 214).
+- **Status:** 🟢 done (2026-07-06) · **Priority:** P3 · **Category:** DATA
+- **Spot-check result (2026-07-05):** source JSON → DB load is/was **100% complete**
+  (source beginner 1706 / intermediate 1696 == DB), so nothing was lost in loading —
+  the gap vs nominal is entirely OCR/parse of the PDFs. The load was never actually
+  incomplete; "3,188" is the `word`-type subset (3402 total rows − 214 navigational).
+- **⚠️ CORRECTION (2026-07-06) — earlier deletion was a MISTAKE, to be undone:**
+  The 214 rows I deleted on 2026-07-05 as "empty artifacts" are **legitimate
+  navigational rows** — `theme_intro` (31), `subsection_intro` (142), `reference`
+  (41) — whose content lives in the `theme`/`subsection`/`notes` fields, NOT in
+  `korean`/`english` (which are NULL by design; ck_vocab_entries_korean_required
+  only applies to `word` rows). Verified against the real corpus: 214/214 carry
+  theme/subsection content (e.g. "01 사람 / People", "1 가족/친척 / Family/Relatives").
+  I misread "NULL korean + 0 FK refs" as "artifact" — a `theme_intro` legitimately
+  has both. The follow-on loader "skip empty rows" fix (rejected in fixpass —
+  `db/docs/REVIEW_LOADER_FIXES.md`) has been reverted; it would have dropped these
+  legitimate rows AND broken the count assertion on re-ingest.
+- **TODO (live data):** the 214 deleted navigational rows should be restored to the
+  running km-db (they organize vocab into themes/subsections). No functional impact
+  today — every app vocab query filters `entry_type='word'`, so the navigational
+  rows are display-only metadata the current UI never reads — hence low priority. A
+  force re-ingest of `vocab_2000_{beginner,intermediate}.json` re-inserts them (the
+  loader upserts on source_id). See the deploy notes / morning summary.
 - **Where:** Vocab corpus (`vocab_entries`) — loaded 2026-07-03 from the copyright-safe OCR.
 - **Root cause / state:** Both "2000 Essential Korean Words" books were OCR'd with FULL
   page coverage (beginner 505/505 PDF pages, intermediate 538/538, all themes + appendices),

@@ -935,9 +935,9 @@ function GrammarTab(): JSX.Element {
   }, [q, domain, level]);
 
   useEffect(() => {
-    // Sync-to-external-system on mount / query change (same documented
-    // exception the diagnostic mount effect uses for `runStart()`).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // Fetch on mount / query change. The set-state-in-effect rule only flags a
+    // DIRECT setState in an effect body; `load()` is a function call (its
+    // setState runs inside the async fetch), so no disable directive is needed.
     load();
     return () => {
       ctrlRef.current?.abort();
