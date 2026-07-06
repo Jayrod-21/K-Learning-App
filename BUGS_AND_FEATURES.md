@@ -467,7 +467,22 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** First pass = use the current Writing flow and write down exactly what's wrong / what it should do; then design the real Writing screen (likely wiring `/grade-writing`). Blocked on that scoping note.
 
 ### F-015 · Hanja — finish the feature + populate the data
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA (BACKEND, UI)
+- **Status:** 🟢 done (2026-07-06) · **Priority:** P2 · **Category:** DATA (BACKEND, UI)
+- **Resolution (2026-07-06):** the feature was ALREADY fully built (route + 21 tests,
+  `Hanja.tsx` UI, `/hanja` route + `More`-tab nav entry, all wired) — the only gap was
+  empty tables. Ran the pipeline: `build_hanja.py` (auto-fetches Unihan, mines the
+  Darakwon vocab `hanja` glosses) → **857 characters** (all with reading/gloss/strokes/
+  frequency/level + ≥1 compound) → `output/hanja.json` → loaded into the shared km-db
+  via `DEPLOY_TAG=local bash Deploy/load-corpora.sh <output-dir> --corpus hanja`.
+  Live counts: **857 `hanja_characters` + 1,853 `hanja_compounds`** (idempotent upsert;
+  covers both blue/green). `/hanja` verified wired (401 JSON, in the nginx allow-list);
+  `/hanja/today` returns a character. Server 21 + client 35 tests green.
+- **Known v1 gaps (both intentional, tracked):** `etymology` is empty for all rows
+  (build script documents no clean primary source; route maps `etymology AS note` and
+  the code comment already says "v1 empty" — UI degrades to no note). The
+  `hanja_extensions` table is unused (no loader, not queried by route/client — dead
+  scaffolding; safe to drop in a future cleanup). Reproducible: re-run the two commands
+  above (data is gitignored `output/hanja.json`, not committed).
 - **Where:** Hanja feature / tab.
 - **State:** Backend scaffolding exists — `server/src/routes/hanja.ts` + `server/tests/routes/hanja.test.ts` (21 tests) — but the hanja content isn't populated and the feature isn't finished end-to-end (data + UI). Needs a hanja dataset loaded and the flow completed so it's actually usable.
 - **Key files:** `server/src/routes/hanja.ts`; `server/tests/routes/hanja.test.ts`; the hanja table (verify which migration defines it); a hanja loader + corpus (to acquire); client hanja page/route.
