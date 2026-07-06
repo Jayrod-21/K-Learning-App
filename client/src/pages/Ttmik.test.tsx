@@ -257,6 +257,55 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     );
   });
 
+  it('a lesson with no Highlights opens on Transcript and hides the empty Highlights tab', async () => {
+    // ~14% of TTMIK lessons have no Highlights but a real Transcript. Landing on
+    // an empty Highlights default reads as "no content" — instead default to
+    // Transcript and don't offer the empty tab.
+    vi.mocked(getTtmikLesson).mockResolvedValue({
+      ...LESSON_DETAIL,
+      highlights: [],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    expect(
+      screen.getByRole('tab', { name: 'Transcript', selected: true }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('tab', { name: 'Highlights' }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole('list', { name: 'Transcript' }),
+    ).toBeInTheDocument();
+    // The panel below must match the visible tab — the empty HighlightsPanel's
+    // "No highlights for this one." must never leak (the derived-tab fix means
+    // there is no post-render flash showing it, unlike a set-state-in-effect).
+    expect(
+      screen.queryByText('No highlights for this one.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a lesson with neither Highlights nor Transcript shows an empty-content note (no empty tablist)', async () => {
+    vi.mocked(getTtmikLesson).mockResolvedValue({
+      ...LESSON_DETAIL,
+      highlights: [],
+      transcript: [],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    expect(
+      await screen.findByText('No read-along content for this lesson yet.'),
+    ).toBeInTheDocument();
+    // No tablist with zero tabs (ARIA-invalid) and no leaked empty panels.
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('No highlights for this one.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps the SAME audio element across sub-tab switches (no remount, no refetch)', async () => {
     const user = userEvent.setup();
     renderPage();

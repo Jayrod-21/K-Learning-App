@@ -822,8 +822,8 @@ function WordMasterySection(): JSX.Element {
         ) : null
       ) : page.summary.total === 0 ? (
         <p className="km-progress__note">
-          No vocab cards yet — tap a word in Read/Listen and add it to your
-          review deck, and its mastery shows up here.
+          No vocab cards yet — tap a word in Listen and add it to your review
+          deck, and its mastery shows up here.
         </p>
       ) : (
         <>

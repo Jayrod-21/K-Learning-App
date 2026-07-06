@@ -752,6 +752,22 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     );
   }
 
+  // Derive the shown sub-tab during render (never set state in an effect): if the
+  // selected tab has no content, fall back to the other. Covers the ~14% of TTMIK
+  // lessons with a transcript but no highlights — they open on Transcript instead
+  // of an empty default tab, with no post-render flash.
+  const hasHighlights = orderedHighlights.length > 0;
+  const hasTranscript = orderedTranscript.length > 0;
+  const effectiveTab: LessonTab =
+    lessonTab === 'highlights' && !hasHighlights
+      ? 'transcript'
+      : lessonTab === 'transcript' && !hasTranscript
+        ? 'highlights'
+        : lessonTab;
+  const visibleLessonTabs = LESSON_TABS.filter((t) =>
+    t.id === 'highlights' ? hasHighlights : hasTranscript,
+  );
+
   return (
     <div>
       <Eyebrow>{data.eyebrow}</Eyebrow>
@@ -793,45 +809,51 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
       </div>
 
       {data.corpus === 'ttmik' ? (
-        <>
-          <div
-            className="km-review__tabs"
-            role="tablist"
-            aria-label="Lesson content"
-          >
-            {LESSON_TABS.map((t) => {
-              const selected = lessonTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-                  onClick={() => {
-                    setLessonTab(t.id);
-                  }}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
+        visibleLessonTabs.length === 0 ? (
+          <p className="km-reference__row-en" style={{ margin: '8px 0' }}>
+            No read-along content for this lesson yet.
+          </p>
+        ) : (
+          <>
+            <div
+              className="km-review__tabs"
+              role="tablist"
+              aria-label="Lesson content"
+            >
+              {visibleLessonTabs.map((t) => {
+                const selected = effectiveTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+                    onClick={() => {
+                      setLessonTab(t.id);
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
 
-          {lessonTab === 'highlights' ? (
-            <HighlightsPanel
-              rows={orderedHighlights}
-              minedIds={minedIds}
-              onTapWord={handleTapWord}
-            />
-          ) : (
-            <TranscriptPanel
-              lines={orderedTranscript}
-              minedIds={minedIds}
-              onTapWord={handleTapWord}
-            />
-          )}
-        </>
+            {effectiveTab === 'highlights' ? (
+              <HighlightsPanel
+                rows={orderedHighlights}
+                minedIds={minedIds}
+                onTapWord={handleTapWord}
+              />
+            ) : (
+              <TranscriptPanel
+                lines={orderedTranscript}
+                minedIds={minedIds}
+                onTapWord={handleTapWord}
+              />
+            )}
+          </>
+        )
       ) : (
         <SentencesPanel
           rows={orderedSentences}

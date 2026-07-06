@@ -323,12 +323,16 @@
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  color: var(--paper-mute);
+  /* Text is the readable ink token, never the raw brand accent: at 11px the
+     accents (--ochre/--indigo/--moss) fail WCAG AA on the card paper in light
+     theme (3.1–4.3:1). The bucket is still color-coded by the border. Same fix
+     the F-013 review applied to the filter chips — extended here to the badges. */
+  color: var(--paper);
   white-space: nowrap;
 }
-.km-mastery__badge.is-learning { color: var(--ochre); border-color: var(--ochre); }
-.km-mastery__badge.is-reviewing { color: var(--indigo); border-color: var(--indigo); }
-.km-mastery__badge.is-mastered { color: var(--moss); border-color: var(--moss); }
+.km-mastery__badge.is-learning { border-color: var(--ochre); }
+.km-mastery__badge.is-reviewing { border-color: var(--indigo); }
+.km-mastery__badge.is-mastered { border-color: var(--moss); }
 .km-mastery__stab {
   color: var(--paper-mute);
   font-size: 12px;

@@ -139,4 +139,20 @@ describe('WordPopover', () => {
     // No extras → the "More examples" heading is suppressed inside the drawer.
     expect(screen.queryByText('More examples')).not.toBeInTheDocument();
   });
+
+  it('omits the Example section entirely when the entry has no example', () => {
+    // ~4% of KRDICT entries (plus any enrichment miss) have no example. A bare
+    // "Example" heading with nothing under it reads as broken — suppress it.
+    const noExample: WordPopoverData = {
+      kr: '먹다',
+      pos: 'v.',
+      en: 'to eat',
+      ex_kr: '',
+      ex_en: '',
+    };
+    render(<WordPopover data={noExample} onClose={() => undefined} />);
+    expect(screen.queryByText('Example')).not.toBeInTheDocument();
+    // The gloss still renders in full.
+    expect(screen.getByText('to eat')).toBeInTheDocument();
+  });
 });

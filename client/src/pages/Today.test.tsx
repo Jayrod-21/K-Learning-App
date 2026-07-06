@@ -125,6 +125,14 @@ describe('Today', () => {
     expect(screen.getByText('Register drill')).toBeInTheDocument();
   });
 
+  it('singularises the due count at 1 ("1 card due", not "cards")', () => {
+    hoisted.today.state = { kind: 'data', data: { ...PLAN, reviewCount: 1 } };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    renderTodayAt();
+    expect(screen.getByText('1 card due')).toBeInTheDocument();
+    expect(screen.queryByText('1 cards due')).not.toBeInTheDocument();
+  });
+
   it('navigates to /review when the review queue card is clicked', async () => {
     hoisted.today.state = { kind: 'data', data: PLAN };
     hoisted.diag.state = { kind: 'data', data: SNAP };
