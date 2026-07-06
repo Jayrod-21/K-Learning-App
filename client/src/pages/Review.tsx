@@ -886,19 +886,35 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
 
   // F-UP-008: the "More examples" drawer used to be a dead affordance (`extra`
   // is always []). Lazily fetch KRDICT example sentences for the current word
-  // when the drawer opens — lazy so we never load examples for the many cards a
-  // user rates without drilling into. Keyed on [drawer, cardKr]: fetches on open
-  // and on card change while open; aborts on close / card change / unmount.
+  // when the drawer OPENS — lazy so we never load examples for the many cards a
+  // user rates without drilling into.
+  //
+  // The fetch is kicked off from the drawer button's CLICK handler
+  // (`loadExamplesForOpen`), not from an effect: React allows synchronous
+  // setState in event handlers but not in effect bodies
+  // (react-hooks/set-state-in-effect — a synchronous set in an effect triggers a
+  // cascading render). The effect below holds only the abort cleanup (no
+  // setState in its body), keyed on `cardKr` so advancing the deck aborts an
+  // in-flight fetch; unmount aborts too.
   const cardKr = card?.kr ?? null;
   const [krdictExamples, setKrdictExamples] = useState<DefineExample[] | null>(
     null,
   );
   const [examplesLoading, setExamplesLoading] = useState(false);
+  const examplesCtrl = useRef<AbortController | null>(null);
   useEffect(() => {
-    if (!drawer || cardKr === null) {
+    return () => {
+      examplesCtrl.current?.abort();
+    };
+  }, [cardKr]);
+
+  const loadExamplesForOpen = (): void => {
+    if (cardKr === null) {
       return;
     }
+    examplesCtrl.current?.abort();
     const ctrl = new AbortController();
+    examplesCtrl.current = ctrl;
     setExamplesLoading(true);
     setKrdictExamples(null);
     defineEntry(cardKr, ctrl.signal)
@@ -917,10 +933,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
         setKrdictExamples([]); // degrade to "no additional examples"
         setExamplesLoading(false);
       });
-    return () => {
-      ctrl.abort();
-    };
-  }, [drawer, cardKr]);
+  };
 
   if (loading) return <SkeletonCard height={360} />;
   if (fetchErrored) {
@@ -1038,7 +1051,10 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
                 // Stop bubbling so the flashcard's outer onClick doesn't
                 // flip the card when the user clicks the drawer toggle.
                 e.stopPropagation();
+                const willOpen = !drawer;
                 onToggleDrawer();
+                // Fetch KRDICT examples only on the OPEN transition (F-UP-008).
+                if (willOpen) loadExamplesForOpen();
               }}
               className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawerBtn"
               aria-expanded={drawer}
