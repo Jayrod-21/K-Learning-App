@@ -663,7 +663,11 @@ _HANGUL_RE = re.compile(r"[㄰-㆏가-힯\-\(\)/]+")
 #   2. Cap the TOTAL Strategy C deps written PER ITEM. Anything beyond
 #      the cap is dropped with a WARN log so the operator can decide
 #      whether to tighten the prompt or accept the loss.
-_STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 3
+# 2, not 3: reject only single-SYLLABLE (1-char) fragments, per note 1 above.
+# Requiring 3 also silently dropped legitimate 2-syllable grammar patterns like
+# "으면" (from "-(으)면") and "는데" — which the DB pattern match validates anyway,
+# so a 2-char fragment that is NOT a real grammar form simply yields no candidate.
+_STRATEGY_C_MIN_FRAGMENT_HANGUL_CHARS = 2
 _STRATEGY_C_MAX_DEPS_PER_ITEM = 10
 
 
@@ -705,8 +709,15 @@ async def strategy_c_claude(
         )
         if not result:
             continue
-        pattern_text = str(result.get("pattern") or result.get("patternDisplay") or "")
-        confidence = float(result.get("confidence", 0.65))
+        # /grammar/identify returns the ProxyResult envelope
+        # { "result": PatternResult, "metadata": CallMetadata } — see
+        # server/src/services/claude/models.ts. The canonical pattern and the
+        # confidence live UNDER "result" (keyed patternKey), not at the top level.
+        inner = result.get("result")
+        if not isinstance(inner, dict):
+            continue
+        pattern_text = str(inner.get("patternKey") or "")
+        confidence = float(inner.get("confidence", 0.65))
         confidence = max(0.0, min(1.0, confidence))
         # Trim to Hangul-ish characters to use as a substring lookup.
         m = _HANGUL_RE.search(pattern_text)
