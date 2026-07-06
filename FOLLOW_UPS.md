@@ -120,12 +120,14 @@ are `--ignore`d in that job; both are tracked here.
   the stored form. Consider normalizing both sides (strip `-()/`, compare on
   syllables) or matching on the KGIU canonical key. Surfaced in the F-UP-002 review.
 
-### F-UP-003 · 3 ingest tests scan the gitignored generated `output/*.json`
-- **Severity:** test-infra, P3.
-- **What:** `test_topik_item_type_validation`, `test_hanja_hunmeum`, and
-  `test_resolve_cross_references_integration` read `tools/ingest/output/*.json`,
-  which is generated + gitignored, so they cannot run on a clean checkout (same
-  class as db/tests' excluded `test_discriminator_coverage.py`).
-- **Fix options:** commit tiny golden fixtures under `tests/fixtures/` and retarget
-  these tests, OR add a CI step that regenerates the needed `output/` artifacts
-  first. Until then they run only locally.
+### F-UP-003 · ingest CI exclusions — ⚠️ mostly resolved 2026-07-05
+- **Original premise was wrong.** Re-checked on a clean checkout: `test_topik_item_type_validation`
+  and `test_hanja_hunmeum` run clean (28 passed / 1 skipped — hanja `skipif`s its
+  single output-dependent test), so they are now **un-ignored** in the ingest-checks
+  job (CI 292 → 320 tests).
+- **Residual (P3):** only `test_resolve_cross_references_integration` stays excluded,
+  and NOT for an `output/` reason — it uses committed fixtures. Its
+  `test_prerequisite_error_when_corpus_not_loaded` TRUNCATEs the shared module-scoped
+  testcontainer to assert the "corpus not loaded" error, so it fails when run
+  alongside its `schema`-fixture module-mates (passes in isolation). Fix = give that
+  one test an isolated DB/schema, then drop the last `--ignore`.

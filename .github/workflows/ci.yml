@@ -102,15 +102,15 @@ jobs:
         # tooling but never RAN its test suite (two red parser tests once shipped
         # unnoticed as a result). BLOCKING — real failures fail the build.
         #
-        # The only exclusions are 3 tests that scan the gitignored, generated
-        # tools/ingest/output/*.json, absent on a clean checkout
-        # (test_topik_item_type_validation, test_hanja_hunmeum,
-        # test_resolve_cross_references_integration) — same rationale as db-checks
-        # excluding test_discriminator_coverage. Tracked: FOLLOW_UPS.md F-UP-003.
+        # One exclusion: test_resolve_cross_references_integration —
+        # test_prerequisite_error_when_corpus_not_loaded truncates the shared
+        # module-scoped container to assert the "corpus not loaded" error, so it
+        # fails when run alongside its `schema`-fixture module-mates (a test-
+        # isolation flake, NOT an output/ dependency — verified it passes in
+        # isolation). Tracked: FOLLOW_UPS.md F-UP-003. (The other two formerly-
+        # excluded files run clean on a checkout and are now included.)
         run: |
           python -m pytest tests -q \
-            --ignore=tests/test_topik_item_type_validation.py \
-            --ignore=tests/test_hanja_hunmeum.py \
             --ignore=tests/test_resolve_cross_references_integration.py
 
   db-checks:
