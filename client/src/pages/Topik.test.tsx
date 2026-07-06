@@ -14,6 +14,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 
 // Hoisted state the mocked hook reads from.
@@ -122,6 +124,34 @@ const ITEM_IMG: TopikItem = {
   hasImage: true,
 };
 
+/**
+ * Lands at `/chat` after an "Ask about this" click (F-020) and prints the
+ * router state the navigation carried, so a test can assert the actual seed
+ * payload (the Mistakes.test.tsx probe pattern).
+ */
+function ChatSeedProbe(): JSX.Element {
+  const location = useLocation();
+  const state = location.state as { seedText?: string; mode?: string } | null;
+  return (
+    <div data-testid="chat-seed">
+      {state?.seedText ?? 'no-seed'}
+      {state?.mode !== undefined ? ` mode=${state.mode}` : ''}
+    </div>
+  );
+}
+
+/** Render Topik with a `/chat` probe route so seed navigations land. */
+function renderWithChatProbe(): void {
+  render(
+    <MemoryRouter initialEntries={['/topik']}>
+      <Routes>
+        <Route path="/topik" element={<Topik />} />
+        <Route path="/chat" element={<ChatSeedProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 function setDraw(draw: TopikItem[], isMock = true): void {
   hookState.current = {
     data: draw,
@@ -150,13 +180,13 @@ describe('Topik (Study mode)', () => {
   });
 
   it('shows the loading state until the draw resolves', () => {
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
     expect(screen.getByRole('status')).toHaveTextContent('Loading items');
   });
 
   it('renders the first item, the draw position, and the MockBadge in dev', () => {
     setDraw([ITEM_A, ITEM_B]);
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
     expect(screen.getByText('이 글의 내용과 같은 것은?')).toBeInTheDocument();
     expect(screen.getAllByRole('radio')).toHaveLength(4);
     // Eyebrow reflects 1-based position within the draw length.
@@ -167,14 +197,14 @@ describe('Topik (Study mode)', () => {
 
   it('does NOT render the MockBadge when the draw is from the real endpoint', () => {
     setDraw([ITEM_A, ITEM_B], false);
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
   it('a WRONG submit reveals the verdict, the correct answer, and the explanation', async () => {
     setDraw([ITEM_A, ITEM_B]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     // Pick wrong choice (A) to confirm the "Not quite" branch.
     const choices = screen.getAllByRole('radio');
@@ -207,7 +237,7 @@ describe('Topik (Study mode)', () => {
   it('a CORRECT submit also reveals the correct answer + explanation', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[1]); // 'b' — the correct pick
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -219,11 +249,58 @@ describe('Topik (Study mode)', () => {
     ).toBeInTheDocument();
   });
 
+  it('F-020: the reveal offers an "Ask about this" handoff (absent pre-reveal) seeded with the item', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    renderWithChatProbe();
+
+    // No handoff before the reveal — there is nothing to ask about yet.
+    expect(
+      screen.queryByRole('button', { name: 'Ask about this' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('radio')[0]); // 'a' — a wrong pick
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+
+    // The revealed card carries the Chat handoff; clicking it hands the
+    // item's fields to Chat on the RIGHT labels — 'b' (나) is the correct
+    // choice, 'a' (가) the wrong pick, so a swap fails these assertions.
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('이 글의 내용과 같은 것은?');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    expect(probe.textContent).toContain('My answer: 가 (incorrect)');
+    expect(probe.textContent).toContain(
+      'Why: Choice B summarises the passage faithfully.',
+    );
+    expect(probe.textContent).toContain('mode=topik_prep');
+  });
+
+  it('F-020: a CORRECT pick seeds no "My answer" but keeps the explanation the reveal shows', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    renderWithChatProbe();
+
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — the correct pick
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+
+    const probe = screen.getByTestId('chat-seed');
+    expect(probe.textContent).toContain('Correct answer: 나');
+    // No wrong pick to report on a correct answer.
+    expect(probe.textContent).not.toContain('My answer');
+    // The study reveal shows the explanation on BOTH verdicts (F-009 gates
+    // the results list, not the in-flow reveal) — the seed matches the UI.
+    expect(probe.textContent).toContain(
+      'Why: Choice B summarises the passage faithfully.',
+    );
+  });
+
   it('keeps the reveal even when recordTopikAnswer rejects (fire-and-forget)', async () => {
     recordTopikAnswer.mockRejectedValueOnce(new Error('network down'));
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[1]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -236,7 +313,7 @@ describe('Topik (Study mode)', () => {
   it('steps to the next item on Next and clears the prior pick', async () => {
     setDraw([ITEM_A, ITEM_B]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[1]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -263,7 +340,7 @@ describe('Topik (Study mode)', () => {
     });
     setDraw([ITEM_B]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[0]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -289,7 +366,7 @@ describe('Topik (Study mode)', () => {
     });
     setDraw([ITEM_B]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[0]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -318,7 +395,7 @@ describe('Topik (Study mode)', () => {
     const itemB2: TopikItem = { ...ITEM_B, id: '204', number: 45 };
     setDraw([ITEM_B, itemB2]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[0]);
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -344,7 +421,7 @@ describe('Topik (Study mode)', () => {
 
   it('features the bracketed image description for a hasImage item', async () => {
     setDraw([ITEM_IMG]);
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     // The affordance block renders, carrying the description pulled from the
     // prompt's bracketed segment…
@@ -367,7 +444,7 @@ describe('Topik (Study mode)', () => {
     const passageText =
       '최근 재택근무를 도입하는 회사가 늘고 있다. 재택근무는 출퇴근 시간을 줄여 주지만 동료와의 소통이 어려워질 수 있다.';
     setDraw([{ ...ITEM_A, passage: passageText }]);
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     const passage = screen.getByText(passageText);
     expect(passage).toHaveClass('km-topik__passage');
@@ -382,14 +459,14 @@ describe('Topik (Study mode)', () => {
 
   it('omits the passage block for a self-contained item', () => {
     setDraw([ITEM_A]); // no `passage` on the item
-    const { container } = render(<Topik />);
+    const { container } = render(<Topik />, { wrapper: MemoryRouter });
     expect(container.querySelector('.km-topik__passage')).toBeNull();
   });
 
   it('F-008: lands on the shared results/grade summary after the last item and refetches on New set', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     // ITEM_A's correct choice is 'b' (index 1) — answer it correctly.
     await user.click(screen.getAllByRole('radio')[1]);
@@ -414,7 +491,7 @@ describe('Topik (Study mode)', () => {
   it('F-008: tallies a skipped Study item as a miss in the results summary', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getByRole('button', { name: /skip/i }));
 
@@ -427,7 +504,7 @@ describe('Topik (Study mode)', () => {
   it('F-009: shows the review explanation for a Study item the learner missed', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     // Pick the WRONG choice (a) — ITEM_A's correct choice is 'b'.
     await user.click(screen.getAllByRole('radio')[0]);
@@ -445,7 +522,7 @@ describe('Topik (Study mode)', () => {
   it('F-009: withholds the review explanation for a Study item answered correctly (fails on pre-fix behavior)', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getAllByRole('radio')[1]); // correct pick 'b'
     await user.click(screen.getByRole('button', { name: /submit/i }));
@@ -472,7 +549,7 @@ describe('Topik (Study mode)', () => {
       refetch: vi.fn(),
     };
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     expect(screen.getByRole('status')).toHaveTextContent(/No items match/);
     const newSet = screen.getByRole('button', { name: /new set/i });
@@ -485,7 +562,7 @@ describe('Topik (Study mode)', () => {
 
   it('defaults to Study mode and exposes a Study/Mock tablist', () => {
     setDraw([ITEM_A, ITEM_B]);
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
     // Study tab is selected by default; the study item renders.
     const studyTab = screen.getByRole('tab', { name: /study/i });
     expect(studyTab).toHaveAttribute('aria-selected', 'true');
@@ -502,7 +579,7 @@ describe('Topik (Study mode)', () => {
   it('switches to Mock mode and renders the section select', async () => {
     setDraw([ITEM_A, ITEM_B]);
     const user = userEvent.setup();
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
 
     await user.click(screen.getByRole('tab', { name: /mock/i }));
 
@@ -528,7 +605,7 @@ describe('Topik (Study mode)', () => {
       isMock: false,
       refetch: vi.fn(),
     };
-    render(<Topik />);
+    render(<Topik />, { wrapper: MemoryRouter });
     expect(screen.getByRole('alert')).toHaveTextContent(
       /Couldn’t load study items/,
     );

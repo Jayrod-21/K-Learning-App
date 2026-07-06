@@ -23,6 +23,14 @@
  *     optimistic user-turn into a `failed → retry` chip and surfaces an
  *     inline error message under the composer.
  *
+ * "Ask about this" seeding (F-020):
+ *   A review surface (Mistakes / TOPIK mock / TOPIK study / Diagnostic) can
+ *   navigate here with a `ChatSeedState` in router state. The seed text
+ *   pre-fills the composer ONCE at mount (never auto-sent, never clobbers
+ *   typed text — it's a lazy state initializer), its `mode` is preferred
+ *   when THIS visit lazily starts the conversation, and the router state is
+ *   then cleared so a reload / back-nav can't re-seed.
+ *
  * Settings integration:
  *   First tutor message is personalised with `settings.name` when set
  *   (`안녕하세요, ${name}님. …`). Falls back to the fixture's generic greeting.
@@ -67,6 +75,7 @@ import {
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -77,6 +86,7 @@ import { ErrorCard } from '../components/ErrorCard';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { loadConversationMock } from '../data/mocks/chat';
+import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
 import * as conversationService from '../services/conversation';
 import { ApiError } from '../services/api';
 import type {
@@ -168,6 +178,19 @@ interface ThreadRow extends ConversationMessage {
 
 export function Chat(): JSX.Element {
   const { settings } = useSettings();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // ── "Ask about this" seed (F-020) ──────────────────────────────────
+  // A review surface may navigate here with a `ChatSeedState` in router
+  // state. It is captured ONCE via a lazy state initializer — the seed can
+  // only ever apply at mount, so it can never clobber a conversation in
+  // progress or text the user has since typed, and there is no set-state-
+  // in-effect. The state is untrusted history state, so it is runtime-
+  // narrowed (see askSeed.ts threat model).
+  const [chatSeed] = useState<ChatSeedState | null>(() =>
+    readChatSeedState(location.state),
+  );
 
   // Real call: list the user's conversations. Mock fallback: load the
   // fixture as a stand-in "conversation" the screen still renders.
@@ -226,7 +249,10 @@ export function Chat(): JSX.Element {
   }, [active, mockSeed, settings.name]);
 
   const [msgs, setMsgs] = useState<ThreadRow[]>([]);
-  const [input, setInput] = useState<string>('');
+  // Composer text — pre-filled from an "Ask about this" seed when one rode
+  // in on the navigation (F-020). Pre-fill only: the user reviews and hits
+  // Send themselves, nothing is auto-sent.
+  const [input, setInput] = useState<string>(chatSeed?.seedText ?? '');
   const [hintsOn, setHintsOn] = useState<boolean>(true);
   const [streaming, setStreaming] = useState<boolean>(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -240,6 +266,27 @@ export function Chat(): JSX.Element {
       versionRef.current = active.version;
     }
   }, [active]);
+
+  // Clear the consumed seed out of router/history state so a reload or a
+  // back-navigation to /chat never re-seeds the composer (F-020). Navigation
+  // is a side effect (not a state set), and the ref-guard makes it fire at
+  // most once even though the replace itself changes `location` identity.
+  const seedClearedRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (chatSeed === null || seedClearedRef.current) return;
+    seedClearedRef.current = true;
+    // Preserve search + hash: rebuilding the URL from the pathname alone
+    // would silently strip any future query param (deep-linked conversation
+    // id, ?mode=…) from a seeded arrival. Only the state is dropped.
+    navigate(
+      {
+        pathname: location.pathname,
+        search: location.search,
+        hash: location.hash,
+      },
+      { replace: true, state: null },
+    );
+  }, [chatSeed, navigate, location.pathname, location.search, location.hash]);
 
   const seededRef = useRef<boolean>(false);
   useEffect(() => {
@@ -288,16 +335,21 @@ export function Chat(): JSX.Element {
     refetch();
   };
 
-  /** Ensure we have a server conversation id; lazy-start if none. */
+  /**
+   * Ensure we have a server conversation id; lazy-start if none. An "Ask
+   * about this" seed's mode (F-020, `topik_prep`) wins over the screen
+   * default when it is this navigation that starts the conversation — an
+   * already-active conversation keeps its own mode untouched.
+   */
   const ensureConversationId = useCallback(async (): Promise<number> => {
     if (conversationId !== null) return conversationId;
     const started = await conversationService.startConversation({
-      mode: DEFAULT_START_MODE,
+      mode: chatSeed?.mode ?? DEFAULT_START_MODE,
     });
     setConversationId(started.conversation.id);
     versionRef.current = 1;
     return started.conversation.id;
-  }, [conversationId]);
+  }, [conversationId, chatSeed]);
 
   /**
    * Drive one streaming send. Body and requestId are passed in so a Retry

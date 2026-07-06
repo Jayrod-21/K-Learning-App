@@ -575,7 +575,19 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Fan out subagents over the 2,088 items (chunked), each generating explanations in the approved format → `jsonb_set(extra,'{explanation}',…)`, idempotent (skip rows that already have one). Feeds F-009 (gating), F-020 (ask-in-chat), F-021 (mistakes log).
 
 ### F-020 · "Ask about this" — push a question + explanation into Chat
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Resolution (2026-07-06):** an "Ask about this" button on every reviewed item
+  (Mistakes log, TOPIK mock + study reveal, diagnostic reveal). Frontend-only, NO
+  backend change — `navigate('/chat', { state })` → `Chat.tsx` pre-fills the composer
+  from `useLocation()` (user reviews + sends; never auto-sends). `lib/askSeed.ts`
+  builds the seed (prompt + correct answer + wrong pick + explanation) and
+  `readChatSeedState` runtime-narrows the forgeable router state + clamps to the 4000
+  char message cap; the seed rides the same sanitize path as any chat message. Chat
+  seed captured via a lazy useState initializer (can't clobber typed text / an
+  in-progress thread). F-009 gating respected. Built by a Fable agent; full /fixpass
+  (0 BLOCKER → re-review PASS; the MockMode seed-payload probe is mutation-proven — a
+  correct-vs-pick field swap fails it). Independent of F-016 by design. client 682
+  (+29). PR #54.
 - **Where:** Any reviewed wrong answer — TOPIK study/mock review, diagnostic review, and the F-021 mistakes log.
 - **What:** A button on a reviewed question that opens Chat pre-seeded with the item context — the question (stem/dialogue), the options, the user's pick, the correct answer, and the stored explanation — so the user can ask the AI tutor follow-ups ("why is 일부 동의 wrong?", "break down 그런데"). Turns a static explanation into an interactive tutoring session.
 - **State:** Chat/conversation already exists (`Chat.tsx`, `/conversation`, working after B-010). Need to open a conversation SEEDED with the item context (as the scenario / first message) + the button in the review UI.

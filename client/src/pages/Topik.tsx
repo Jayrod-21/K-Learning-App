@@ -42,6 +42,7 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -59,6 +60,7 @@ import { splitImageItem } from '../lib/topikImage';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 import {
   MockMode,
+  SKIPPED_PICK,
   TopikResults,
   type ResultsReviewRow,
   type ResultsSummary,
@@ -342,7 +344,7 @@ function StudyMode(): JSX.Element {
         prompt: item.prompt,
         ...(item.passage !== undefined ? { passage: item.passage } : {}),
         isCorrect,
-        pickedText: pickedOpt ? pickedOpt.kr : 'skipped',
+        pickedText: pickedOpt ? pickedOpt.kr : SKIPPED_PICK,
         correctText: correctOpt ? correctOpt.kr : '—',
         explanation,
       };
@@ -513,6 +515,10 @@ function TopikBody({
   const correctIndex = item.options.findIndex((o) => o.correct);
   const correctChoice =
     correctIndex >= 0 ? item.options[correctIndex] : undefined;
+  // The learner's picked option — feeds the "Ask about this" seed (F-020)
+  // so a wrong pick travels to Chat as "My answer: … (incorrect)".
+  const pickedChoice =
+    picked !== null ? item.options.find((o) => o.id === picked) : undefined;
   const isCorrect =
     revealed && picked !== null && picked === correctChoice?.id;
   // Unique per draw + position so two draws never collide on the same id.
@@ -620,6 +626,18 @@ function TopikBody({
           {explanation !== '' ? (
             <p className="km-topik__explain">{explanation}</p>
           ) : null}
+          {/* F-020: hand the just-revealed item to the Chat tutor. Only
+              rendered inside the reveal block, so there is always content
+              (verdict + correct answer) to ask about. */}
+          <div style={{ marginTop: 10 }}>
+            <AskAboutThisButton
+              prompt={item.prompt}
+              correctText={correctChoice?.kr ?? ''}
+              passage={item.passage}
+              explanation={explanation !== '' ? explanation : undefined}
+              userPick={!isCorrect ? pickedChoice?.kr : undefined}
+            />
+          </div>
         </Card>
       ) : null}
 
