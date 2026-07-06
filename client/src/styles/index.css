@@ -3821,6 +3821,12 @@ body {
   .km-resources__week-cols { grid-template-columns: 1fr 1fr; }
 }
 .km-resources__week-coltitle { margin-bottom: 6px; }
+/* B-015: grid items default to min-width:auto, which refuses to shrink below
+   their content — a long unbreakable grammar pattern/gloss then forces the
+   column wider than its track and overflows the card's right edge. min-width:0
+   lets the 1fr columns (and the nested suggest-row cells below) actually shrink;
+   overflow-wrap lets long strings break instead of pushing the row wide. */
+.km-resources__week-col { min-width: 0; }
 
 .km-resources__suggest-list {
   list-style: none;
@@ -3836,8 +3842,8 @@ body {
   border-bottom: 1px solid var(--line);
 }
 .km-resources__suggest-row:last-child { border-bottom: none; }
-.km-resources__suggest-kr { font-size: 16px; font-weight: 500; color: var(--paper); }
-.km-resources__suggest-en { font-size: 12px; color: var(--paper-dim); }
+.km-resources__suggest-kr { font-size: 16px; font-weight: 500; color: var(--paper); min-width: 0; overflow-wrap: anywhere; }
+.km-resources__suggest-en { font-size: 12px; color: var(--paper-dim); min-width: 0; overflow-wrap: anywhere; }
 .km-resources__suggest-level { min-width: 36px; justify-content: center; }
 
 .km-resources__entry-row,
@@ -3852,6 +3858,16 @@ body {
 .km-resources__entry-row { grid-template-columns: 1.3fr 2fr auto auto; }
 .km-resources__dict-row { grid-template-columns: 1.2fr auto 2.4fr; }
 .km-resources__list-row { grid-template-columns: 1fr auto; padding: 0; }
+/* B-015 (defensive, same class of bug): these sibling fr-grid rows on the
+   Dictionary / Lists / entries screens share the min-width:auto overflow risk.
+   Let their cells shrink + wrap so long headwords/definitions can't push the
+   row past the card edge. Harmless on the small `auto` (level/action) columns. */
+.km-resources__entry-row > *,
+.km-resources__dict-row > *,
+.km-resources__list-row > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .km-resources__pos { text-transform: none; letter-spacing: 0; }
 
 /* 초성 (initial-consonant) browse index — a wrapping row of consonant buttons. */
