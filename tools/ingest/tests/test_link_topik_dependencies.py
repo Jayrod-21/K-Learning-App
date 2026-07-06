@@ -138,6 +138,29 @@ def schema(database_url) -> str:
     return database_url
 
 
+async def _truncate_seeded_tables(url: str) -> None:
+    async with await psycopg.AsyncConnection.connect(url, autocommit=True) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "TRUNCATE topik_dependencies, topik_items, topik_tests, "
+                "kgiu_entries, vocab_entries, corpus_sources "
+                "RESTART IDENTITY CASCADE"
+            )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tables(schema) -> None:
+    """F-UP-011: the ``schema`` DB is module-scoped and shared by every DB test
+    in this file, so a test's exact-count / matched-id assertions can be
+    contaminated by rows another test seeded (e.g. `test_strategy_a` picking up
+    the caps test's `category="connective"` entries under reordering). Truncate
+    the seeded tables before EACH test so the suite is order-independent and
+    pytest-randomly-safe. The pure-unit tests in this file never touch these
+    tables, so this is a no-op for them (and the file already ``importorskip``s
+    testcontainers, so every test here already requires the DB container)."""
+    asyncio.run(_truncate_seeded_tables(schema))
+
+
 # ---------------------------------------------------------------------------
 # Seed helpers — write the minimal rows each test needs.
 # ---------------------------------------------------------------------------

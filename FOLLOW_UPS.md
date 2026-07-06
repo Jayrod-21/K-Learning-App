@@ -111,18 +111,19 @@ are `--ignore`d in that job; both are tracked here.
   `으면`). Ingest suite 290→292; both tests re-included in CI.
 - **Severity:** real linker bug, P2.
 
-### F-UP-011 · test_strategy_a order-dependence in the shared linker test DB (P3, PRE-EXISTING)
-- Surfaced by the F-UP-010 re-review (NOT caused by it — confirmed via `git archive`
-  of the pre-fix parent that the bug predates F-UP-010).
-- `test_strategy_a_writes_grammar_dep_per_matched_kgiu_entry`
-  (`tools/ingest/tests/test_link_topik_dependencies.py:358`) asserts an exact dep
-  count (3) but does not isolate itself from other tests' seeded rows in the
-  module-scoped shared DB: run after a test that seeds `category="connective"`
-  kgiu_entries, its matcher picks those up too and it fails `15 != 3`. Passes today
-  only because file-definition order happens to run it early. Fix: assert on
-  seeded ids / a fixture-unique category (as the new F-UP-010 tests now do), OR
-  scope the count query — do this BEFORE enabling `pytest-randomly` for this suite
-  (which SENIOR_ENGINEER_BAR §5.5 recommends). Same class as the SF-2 concern.
+### F-UP-011 · test_link_topik_dependencies order-dependence — ✅ resolved 2026-07-06
+- Surfaced by the F-UP-010 re-review (pre-existing — `git archive` confirmed it
+  predates F-UP-010). `test_strategy_a` (and, found via `pytest-randomly`,
+  `test_strategy_b`) asserted exact dep counts / matched-id sets that were
+  contaminated by rows other tests seeded into the module-scoped shared DB.
+- **Fixed at the root:** an autouse `_isolate_tables` fixture TRUNCATEs the seeded
+  tables (topik_dependencies/items/tests, kgiu_entries, vocab_entries,
+  corpus_sources) before EVERY test, so the whole file is order-independent.
+  Verified: 15 passed on normal order + all of `pytest-randomly` seeds 1–10 (was
+  failing seed 1 before). No per-test assertion changes needed.
+- **Deferred:** actually turning ON `pytest-randomly` for the ingest suite in CI —
+  that needs the OTHER ingest test files audited for the same coupling first; this
+  fix only hardens `test_link_topik_dependencies.py`.
 
 ### F-UP-010 · strategy_c pattern match brittleness — ⚠️ partially resolved 2026-07-06
 - **Shipped (safe variant):** `grammar_candidates_by_pattern_substring` now OR's a
