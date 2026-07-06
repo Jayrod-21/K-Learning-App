@@ -1,0 +1,67 @@
+/*
+ * Today (F-017) — page-scoped styles for the "Progress by skill" carousel.
+ *
+ * Colocated with Today.tsx instead of appended to styles/index.css (the
+ * global sheet is shared mutable state across parallel feature branches).
+ * Same design tokens as the rest of the app, so both themes come free.
+ *
+ * Per-skill chart accents reuse the categorical palette validated for
+ * Progress.css with the dataviz palette validator (all six checks PASS,
+ * all-pairs CVD mode; see the rationale there). Color follows the entity:
+ * Reading is the same hue here and on the Progress page.
+ */
+
+.km-today__trendPanel {
+  padding: 2px 2px 0;
+}
+
+.km-today__trendPanel[data-skill='reading'] { --km-chart-accent: #b83a2e; }
+.km-today__trendPanel[data-skill='listening'] { --km-chart-accent: #2e5f94; }
+.km-today__trendPanel[data-skill='vocab'] { --km-chart-accent: #147e5a; }
+.km-today__trendPanel[data-skill='grammar'] { --km-chart-accent: #b07a1f; }
+
+[data-theme='dark'] .km-today__trendPanel[data-skill='reading'] { --km-chart-accent: #d9594a; }
+[data-theme='dark'] .km-today__trendPanel[data-skill='listening'] { --km-chart-accent: #4e8bc9; }
+[data-theme='dark'] .km-today__trendPanel[data-skill='vocab'] { --km-chart-accent: #35a582; }
+[data-theme='dark'] .km-today__trendPanel[data-skill='grammar'] { --km-chart-accent: #b98a2b; }
+
+.km-today__trendHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.km-today__trendSkill {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.km-today__trendKr {
+  color: var(--paper-mute);
+  font-weight: 400;
+  margin-left: 2px;
+}
+
+/* Latest value is the headline number — text ink, never the series color. */
+.km-today__trendValue {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Writing placeholder — mirrors LineChart's empty state so the carousel
+   pages read as one family. */
+.km-today__trendEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+  padding: 0 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--paper-mute);
+  font-size: 13px;
+  text-align: center;
+}

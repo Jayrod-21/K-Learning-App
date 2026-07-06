@@ -531,6 +531,95 @@ router.get(
 );
 
 // ---------------------------------------------------------------------------
+// Per-skill stats time-series (F-017).
+// ---------------------------------------------------------------------------
+
+const SeriesQuerySchema = z.object({
+  // Same rolling window as /mistakes: 1..90 days, default 30. Out-of-range
+  // 400s at the boundary (ValidationError), matching /mistakes.
+  days: z.coerce.number().int().min(1).max(90).default(30),
+});
+
+/** One daily data point on the F-017 stats chart. */
+interface SeriesPointDTO {
+  /** UTC day bucket, formatted 'YYYY-MM-DD' in SQL — no client tz reinterpretation. */
+  date: string;
+  value: number;
+}
+
+/**
+ * The per-skill series shape the client's stats chart consumes (F-017 locked
+ * contract). `points` is ASCENDING by date with one entry per day that has
+ * activity — days without activity are absent, not zero-filled.
+ */
+interface SkillSeriesDTO {
+  metric: 'accuracy' | 'count' | 'score';
+  unit: string;
+  points: SeriesPointDTO[];
+}
+
+interface SeriesRow {
+  section: 'reading' | 'listening';
+  date: string;
+  value: number;
+}
+
+/**
+ * GET /topik/series — daily TOPIK accuracy time-series, split by section (F-017).
+ *
+ * Buckets the caller's `topik_responses` log by UTC day over the last `days`
+ * (default 30) and returns per-day accuracy (round(100 * correct / total)) for
+ * the reading and listening sections separately. Days with no answers in a
+ * section simply have no point (the chart draws gaps, not zeroes). Writing has
+ * no graded MC answers (mock is reading/listening only — FU-NF-47), so it is
+ * excluded at the SQL level.
+ *
+ * User-scoped to `getUserId(req)` — never a client-supplied id (no IDOR).
+ * Bucketing pins `AT TIME ZONE 'UTC'` so the day boundary is stable regardless
+ * of the DB session TimeZone GUC. Backed by
+ * ix_topik_responses_user_answered_at (user_id, answered_at DESC).
+ */
+router.get(
+  '/series',
+  cheapLimiter(),
+  validateQuery(SeriesQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof SeriesQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<SeriesRow>(
+        `SELECT i.section::text AS section,
+                to_char((r.answered_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,
+                round(100.0 * count(*) FILTER (WHERE r.is_correct) / count(*))::int AS value
+           FROM topik_responses r
+           JOIN topik_items i ON i.id = r.topik_item_id
+          WHERE r.user_id = $1
+            AND r.answered_at > now() - make_interval(days => $2)
+            AND i.section IN ('reading'::topik_section, 'listening'::topik_section)
+          GROUP BY i.section, (r.answered_at AT TIME ZONE 'UTC')::date
+          ORDER BY (r.answered_at AT TIME ZONE 'UTC')::date`,
+        [userId, q.days],
+      );
+      const skillSeries = (section: SeriesRow['section']): SkillSeriesDTO => ({
+        metric: 'accuracy',
+        unit: '%',
+        points: rows
+          .filter((r) => r.section === section)
+          .map((r) => ({ date: r.date, value: r.value })),
+      });
+      res.status(200).json({
+        reading: skillSeries('reading'),
+        listening: skillSeries('listening'),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Mock-attempt persistence — resume an in-progress test (F-007).
 // ---------------------------------------------------------------------------
 

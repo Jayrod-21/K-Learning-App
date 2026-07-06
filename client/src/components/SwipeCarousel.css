@@ -1,0 +1,86 @@
+/*
+ * SwipeCarousel (F-017) — component-scoped styles.
+ *
+ * Colocated with SwipeCarousel.tsx (the global sheet is shared mutable state
+ * across parallel feature branches). Only shared design tokens, so both
+ * themes come free.
+ */
+
+.km-carousel__viewport {
+  overflow: hidden;
+  /* The browser owns vertical pans (page scroll); horizontal pans come to
+     us as pointer events. Without this, touch drags on the carousel would
+     either hijack scrolling or never reach our handlers. */
+  touch-action: pan-y;
+  /* A mouse drag across the track must move pages, not smear a text
+     selection through the chart labels and readout inside them. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.km-carousel__track {
+  display: flex;
+  width: 100%;
+  transition: transform 240ms ease;
+}
+
+/* Track follows the finger 1:1 while dragging — no easing lag. */
+.km-carousel__track--dragging {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-carousel__track {
+    transition: none;
+  }
+}
+
+.km-carousel__page {
+  flex: 0 0 100%;
+  min-width: 0;
+}
+
+/* Dot indicators ─────────────────────────────────────────── */
+
+.km-carousel__dots {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+/* Each dot is a 24px hit target painting a small centered disc. */
+.km-carousel__dot {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.km-carousel__dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--paper-faint);
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.km-carousel__dot--active::after {
+  background: var(--vermilion);
+  transform: scale(1.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-carousel__dot::after {
+    transition: none;
+  }
+}
