@@ -19,11 +19,17 @@ import type { MockResult, MockTest } from '../../types/domain';
 const svc = vi.hoisted(() => ({
   fetchMockTest: vi.fn(),
   submitMockTest: vi.fn(),
+  fetchAttempt: vi.fn(),
+  saveAttempt: vi.fn(),
+  clearAttempt: vi.fn(),
 }));
 
 vi.mock('../../services/topik', () => ({
   fetchMockTest: svc.fetchMockTest,
   submitMockTest: svc.submitMockTest,
+  fetchAttempt: svc.fetchAttempt,
+  saveAttempt: svc.saveAttempt,
+  clearAttempt: svc.clearAttempt,
 }));
 
 // Keep the offline fallbacks out of the way — they must never be reached when
@@ -99,8 +105,15 @@ describe('MockMode (Mock test)', () => {
   beforeEach(() => {
     svc.fetchMockTest.mockReset();
     svc.submitMockTest.mockReset();
+    svc.fetchAttempt.mockReset();
+    svc.saveAttempt.mockReset();
+    svc.clearAttempt.mockReset();
     svc.fetchMockTest.mockResolvedValue(TEST);
     svc.submitMockTest.mockResolvedValue(RESULT);
+    // No saved attempt by default (no resume banner); saves/clears are no-ops.
+    svc.fetchAttempt.mockResolvedValue(null);
+    svc.saveAttempt.mockResolvedValue(undefined);
+    svc.clearAttempt.mockResolvedValue(undefined);
   });
 
   it('renders the section select with a disabled Writing card', () => {
@@ -229,6 +242,18 @@ describe('MockMode (Mock test)', () => {
     expect(screen.getByText('두 번째 문제입니다.')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /하나/ }));
 
+    // The save side (F-007): each pick fires a fire-and-forget saveAttempt, and
+    // the latest one carries the full picks map keyed by item id.
+    await waitFor(() => {
+      expect(svc.saveAttempt).toHaveBeenCalled();
+    });
+    const lastSave = svc.saveAttempt.mock.calls.at(-1)?.[0] as {
+      sourceTest: number;
+      picks: Record<string, string>;
+    };
+    expect(lastSave.sourceTest).toBe(7);
+    expect(lastSave.picks).toMatchObject({ '1001': 'b', '1002': 'a' });
+
     // Submit → confirm.
     await user.click(screen.getByRole('button', { name: /Submit test/i }));
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
@@ -241,6 +266,12 @@ describe('MockMode (Mock test)', () => {
     });
     expect(screen.getByText('50')).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 2 correct/)).toBeInTheDocument();
+
+    // Submit mops up the attempt client-side too (F-007), so a save that raced
+    // the server-side clear can't leave a stale resume banner.
+    await waitFor(() => {
+      expect(svc.clearAttempt).toHaveBeenCalled();
+    });
     // F-009: explanation is gated on !isCorrect — item 1001 was answered
     // correctly, so its explanation is withheld; item 1002 was missed, so
     // its explanation shows.
@@ -455,6 +486,34 @@ describe('MockMode (Mock test)', () => {
     // loadTopikMockTest is mocked to reject too → the error card surfaces.
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+  });
+  it('shows a resume banner for a saved attempt, and Resume re-fetches the same exam by source_test (F-007)', async () => {
+    const user = userEvent.setup();
+    svc.fetchAttempt.mockResolvedValue({
+      section: 'reading',
+      sourceTest: 777,
+      currentIdx: 2,
+      picks: { '1001': 'b' },
+      remainingMs: 1_800_000,
+      answered: 1,
+      updatedAt: '2026-07-06T10:00:00.000Z',
+    });
+    render(<MockMode />);
+
+    // The banner appears once the mount-time fetchAttempt resolves.
+    const resumeBtn = await screen.findByRole('button', { name: /^Resume$/ });
+    expect(screen.getByText(/Resume your/i)).toBeInTheDocument();
+
+    await user.click(resumeBtn);
+    // Resume re-fetches the SAME exam via its stored source_test (3rd arg), so
+    // the saved picks / index / timer line up with the identical item set.
+    await waitFor(() => {
+      expect(svc.fetchMockTest).toHaveBeenCalledWith(
+        'reading',
+        expect.anything(),
+        777,
+      );
     });
   });
 });

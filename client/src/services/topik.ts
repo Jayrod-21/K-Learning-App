@@ -42,6 +42,7 @@
  */
 import { api } from './api';
 import type {
+  ChoiceId,
   MockResult,
   MockSection,
   MockSubmitBody,
@@ -137,10 +138,68 @@ export async function recordTopikAnswer(
 export async function fetchMockTest(
   section: MockSection,
   signal?: AbortSignal,
+  sourceTest?: number,
 ): Promise<MockTest> {
+  // `sourceTest` is supplied only when RESUMING (F-007): the mock assembly is
+  // deterministic per (section, sourceTest), so re-fetching the same test_number
+  // returns the identical item set the saved picks/index refer to. A fresh mock
+  // omits it and lets the server pick.
   return api.post<MockTest>(
     '/topik/mock',
-    { section },
+    sourceTest !== undefined ? { section, sourceTest } : { section },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/** A persisted in-progress mock attempt (F-007), as GET /topik/attempt returns it. */
+export interface AttemptState {
+  section: MockSection;
+  sourceTest: number;
+  currentIdx: number;
+  /** { "<itemId>": choiceId } — the picks so far. */
+  picks: Record<string, ChoiceId>;
+  remainingMs: number;
+  /** How many items are answered (server-computed, for the resume banner). */
+  answered: number;
+  updatedAt: string;
+}
+
+/** The fields the client PUTs to save an attempt (server stamps user + timestamps). */
+export interface AttemptSaveBody {
+  section: MockSection;
+  sourceTest: number;
+  currentIdx: number;
+  picks: Record<string, ChoiceId>;
+  remainingMs: number;
+}
+
+/** GET /topik/attempt — the caller's single in-progress mock attempt, or null. */
+export async function fetchAttempt(
+  signal?: AbortSignal,
+): Promise<AttemptState | null> {
+  const res = await api.get<{ attempt: AttemptState | null }>(
+    '/topik/attempt',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.attempt;
+}
+
+/** PUT /topik/attempt — save (upsert) the in-progress attempt. */
+export async function saveAttempt(
+  body: AttemptSaveBody,
+  signal?: AbortSignal,
+): Promise<void> {
+  await api.put<void>(
+    '/topik/attempt',
+    body,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/** DELETE /topik/attempt — discard the in-progress attempt (abandon / start fresh). */
+export async function clearAttempt(signal?: AbortSignal): Promise<void> {
+  await api.delete<void>(
+    '/topik/attempt',
     signal !== undefined ? { signal } : undefined,
   );
 }

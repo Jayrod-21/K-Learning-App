@@ -530,6 +530,138 @@ router.get(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Mock-attempt persistence — resume an in-progress test (F-007).
+// ---------------------------------------------------------------------------
+
+const AttemptSectionSchema = z.enum(['reading', 'listening']);
+
+// Postgres INTEGER (int4) upper bound. source_test / current_idx / remaining_ms
+// are INTEGER columns, so the zod schema must reject anything above this at the
+// boundary (400) rather than let it reach SQL and overflow (500). See the
+// project's grammar-Bank incident: a validation schema looser than the DB
+// constraint behind it turns bad input into a 500.
+const INT4_MAX = 2_147_483_647;
+
+const AttemptBodySchema = z
+  .object({
+    section: AttemptSectionSchema,
+    sourceTest: z.number().int().positive().max(INT4_MAX),
+    currentIdx: z.number().int().nonnegative().max(INT4_MAX),
+    // { "<topik_item_id>": "a"|"b"|"c"|"d" } — the picks so far. Keys are numeric
+    // item-id strings; values are choice ids.
+    picks: z.record(z.string().regex(/^\d+$/), z.enum(['a', 'b', 'c', 'd'])),
+    remainingMs: z.number().int().nonnegative().max(INT4_MAX),
+  })
+  // A mock section is <= 50 items (F-UP-007); cap the picks map so a malformed
+  // client cannot stuff an unbounded JSONB blob into the row.
+  .refine((b) => Object.keys(b.picks).length <= 60, {
+    message: 'too many picks for a single mock section',
+  });
+
+interface AttemptRow {
+  section: string;
+  source_test: number;
+  current_idx: number;
+  picks: Record<string, string>;
+  remaining_ms: number;
+  updated_at: Date;
+}
+
+/**
+ * GET /topik/attempt — the caller's single in-progress mock attempt, or null.
+ *
+ * User-scoped (`getUserId` — no IDOR); feeds the mock-select screen's resume
+ * banner (F-007). Returns `{ attempt: null }` when there is none.
+ */
+router.get('/attempt', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<AttemptRow>(
+      `SELECT section::text AS section, source_test, current_idx, picks,
+              remaining_ms, updated_at
+         FROM topik_attempts
+        WHERE user_id = $1`,
+      [userId],
+    );
+    const row = rows[0];
+    res.status(200).json({
+      attempt: row
+        ? {
+            section: row.section,
+            sourceTest: row.source_test,
+            currentIdx: row.current_idx,
+            picks: row.picks,
+            remainingMs: row.remaining_ms,
+            answered: Object.keys(row.picks).length,
+            updatedAt: row.updated_at.toISOString(),
+          }
+        : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PUT /topik/attempt — save (upsert) the caller's in-progress mock attempt.
+ *
+ * ONE row per user (`ON CONFLICT (user_id)`) — advancing/starting a mock replaces
+ * any prior in-progress attempt. `user_id` is the SESSION id, never client-
+ * supplied. The client calls this as the user answers + on unmount.
+ */
+router.put(
+  '/attempt',
+  cheapLimiter(),
+  validateBody(AttemptBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const b = req.body as z.infer<typeof AttemptBodySchema>;
+      await query(
+        `INSERT INTO topik_attempts
+           (user_id, section, source_test, current_idx, picks, remaining_ms)
+         VALUES ($1, $2::topik_section, $3, $4, $5::jsonb, $6)
+         ON CONFLICT (user_id) DO UPDATE SET
+           section      = EXCLUDED.section,
+           source_test  = EXCLUDED.source_test,
+           current_idx  = EXCLUDED.current_idx,
+           picks        = EXCLUDED.picks,
+           remaining_ms = EXCLUDED.remaining_ms,
+           version      = topik_attempts.version + 1`,
+        [
+          userId,
+          b.section,
+          b.sourceTest,
+          b.currentIdx,
+          JSON.stringify(b.picks),
+          b.remainingMs,
+        ],
+      );
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * DELETE /topik/attempt — discard the caller's in-progress mock attempt.
+ *
+ * Used when the user abandons a test / starts fresh. Idempotent (204 whether or
+ * not a row existed). Submitting a mock also clears the attempt inside
+ * /mock/submit's transaction.
+ */
+router.delete('/attempt', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    await query(`DELETE FROM topik_attempts WHERE user_id = $1`, [userId]);
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
 /**
  * The mock section schema — like `SectionSchema` (accepts enum OR Korean label),
  * but CONSTRAINED to the MCQ sections. Writing mock (constructed-response, graded
@@ -758,6 +890,12 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
           [userId, row.itemId, row.picked, row.isCorrect, row.timeMs],
         );
       }
+      // The section is now submitted — clear the in-progress attempt so the
+      // resume banner doesn't offer to re-take a finished test (F-007). Same tx
+      // as the score write: a graded section and a cleared attempt commit together.
+      await client.query(`DELETE FROM topik_attempts WHERE user_id = $1`, [
+        userId,
+      ]);
     });
 
     const totalItems = reveals.length;
