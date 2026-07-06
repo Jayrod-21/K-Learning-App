@@ -119,12 +119,36 @@ def is_footer(line: str) -> bool:
     return any(p.search(line) for p in FOOTER_PATTERNS)
 
 
+# Curated real lesson titles, derived from each lesson's actual content (the
+# TTMIK PDFs ship no per-lesson titles — only "Level N Lesson M"). Keyed by
+# (level, lesson); see data/ttmik_lesson_titles.json. Missing entries fall back
+# to the old placeholder so a new/unseen lesson still loads.
+_TITLES_PATH = Path(__file__).parent / "data" / "ttmik_lesson_titles.json"
+
+
+def _load_lesson_titles() -> dict[tuple[int, int], str]:
+    if not _TITLES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_TITLES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {
+        (int(e["level"]), int(e["lesson"])): str(e["title"]).strip()
+        for e in data
+        if str(e.get("title", "")).strip()
+    }
+
+
+_LESSON_TITLES = _load_lesson_titles()
+
+
 def parse_lesson_text(level: int, lesson: int, ordinal: int, lines: list[str]) -> Unit:
     unit = Unit(
         ordinal=ordinal,
         level=level,
         lesson=lesson,
-        title=f"Level {level} Lesson {lesson}",
+        title=_LESSON_TITLES.get((level, lesson)) or f"Level {level} Lesson {lesson}",
     )
     sent_ord = 1
     for raw in lines:
