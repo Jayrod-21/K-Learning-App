@@ -17,7 +17,14 @@
  * at will and inspect the screen's reaction. No real SSE.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -69,6 +76,8 @@ const hoisted = vi.hoisted(() => {
       startResult: { conversation: { id: 9001 } } as { conversation: { id: number } },
       defineCalls: [] as CapturedDefineCall[],
       mineCalls: [] as MineWordInput[],
+      /** When set, the next (and every) mineWord call rejects with this. */
+      mineRejectWith: null as Error | null,
     },
   };
 });
@@ -189,6 +198,8 @@ vi.mock('../services/define', () => ({
 vi.mock('../services/vocab', () => ({
   mineWord: vi.fn(async (input: MineWordInput): Promise<MineWordResult> => {
     hoisted.ref.mineCalls.push(input);
+    const rejection = hoisted.ref.mineRejectWith;
+    if (rejection !== null) throw rejection;
     return { entryId: 1, card: { id: 1, version: 1 } };
   }),
 }));
@@ -249,6 +260,7 @@ function resetState(): void {
   hoisted.ref.startResult = { conversation: { id: 9001 } };
   hoisted.ref.defineCalls = [];
   hoisted.ref.mineCalls = [];
+  hoisted.ref.mineRejectWith = null;
 }
 
 const LIST: ConversationsList = {
@@ -617,6 +629,41 @@ describe('Chat dictionary lookup (F-016)', () => {
     ],
   };
 
+  /** A second, distinguishable entry — lets races assert WHOSE result won. */
+  const TREE_RESULT: DefineResult = {
+    word: '나무',
+    entries: [
+      {
+        id: 88,
+        headword: '나무',
+        part_of_speech: 'noun',
+        definition_korean: null,
+        definition_english: 'tree',
+        examples: [],
+      },
+    ],
+  };
+
+  /**
+   * Entry with NO English gloss — `buildWordPopover` fills the popover's
+   * `en` with the app-wide `GLOSS_DICTIONARY_ENTRY` sentinel ('Dictionary
+   * entry'). The bank payload must never persist that sentinel as the
+   * word's English (B-002 SF-1 contract, Chat.tsx sentinel filter).
+   */
+  const SENTINEL_RESULT: DefineResult = {
+    word: '사전',
+    entries: [
+      {
+        id: 77,
+        headword: '사전',
+        part_of_speech: 'noun',
+        definition_korean: null,
+        definition_english: null,
+        examples: [],
+      },
+    ],
+  };
+
   /** Open the lookup field via the book toggle and type a word into it. */
   async function openDictAndType(
     user: ReturnType<typeof userEvent.setup>,
@@ -669,6 +716,29 @@ describe('Chat dictionary lookup (F-016)', () => {
 
     expect(hoisted.ref.defineCalls.length).toBe(1);
     expect(hoisted.ref.defineCalls[0]?.word).toBe('사전');
+  });
+
+  it('Enter during an in-flight lookup is a no-op — matches the disabled button', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.keyboard('{Enter}');
+    expect(hoisted.ref.defineCalls.length).toBe(1);
+
+    // The lookup is still pending (dictLoading true — the search button is
+    // disabled). Enter must obey the same gate: no abort-and-refire behind
+    // a visibly disabled affordance. fireEvent targets the input directly
+    // because the loading popover has moved focus to its Close button.
+    fireEvent.keyDown(screen.getByLabelText('Dictionary word'), {
+      key: 'Enter',
+    });
+
+    // No second lookup fired AND the first was not aborted-and-restarted.
+    expect(hoisted.ref.defineCalls.length).toBe(1);
+    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(false);
   });
 
   it('shows the friendly no-entry notice when the lookup matches nothing', async () => {
@@ -791,6 +861,131 @@ describe('Chat dictionary lookup (F-016)', () => {
     expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
   });
 
+  it('ignores a lookup result that lands AFTER the popover was closed (SF-1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    // Close while the lookup is still pending — this aborts the controller.
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
+
+    // The mocked promise now resolves LATE, with a full entry. Without the
+    // `ctrl.signal.aborted` guard on the success continuation this would
+    // repaint the popover the user just dismissed.
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+    });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('word-popover-loading'),
+    ).not.toBeInTheDocument();
+    // And no stray notice either — the late result must be a total no-op.
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('stays silent when a lookup FAILS after the popover was closed (SF-1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
+
+    // Late REJECTION (a real network error, not axios's ERR_CANCELED — so
+    // the aborted-guard on the error continuation is the only defense).
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.reject(
+        new ApiError('connect ECONNREFUSED 127.0.0.1:3000', {
+          status: 0,
+          code: 'network',
+        }),
+      );
+    });
+
+    // No error notice for a lookup the user already walked away from.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('ECONNREFUSED');
+  });
+
+  it('a lookup that settles after unmount neither throws nor warns (SF-1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    const errSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    try {
+      const { unmount } = renderChat();
+
+      await openDictAndType(user, '사전');
+      await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+      unmount();
+      expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
+
+      // Late resolution against a dead tree — must be swallowed by the
+      // aborted-guard, producing no state update, no throw, no warning.
+      await act(async () => {
+        hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+      });
+
+      expect(errSpy).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('a newer lookup aborts the prior controller — only the newest result renders (SF-2)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    // Lookup A resolves and paints its popover. Its controller stays in the
+    // ref, un-aborted.
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+    });
+    expect(
+      within(screen.getByRole('dialog')).getByText('dictionary'),
+    ).toBeInTheDocument();
+
+    // Lookup B fires. The FIRST thing lookupWord does is abort the prior
+    // controller — remove that line and A's signal stays un-aborted.
+    const input = screen.getByLabelText('Dictionary word');
+    await user.clear(input);
+    await user.type(input, '나무');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    expect(hoisted.ref.defineCalls.length).toBe(2);
+    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
+    expect(hoisted.ref.defineCalls[1]?.signal?.aborted).toBe(false);
+
+    // Only B's result paints; A's content is gone.
+    await act(async () => {
+      hoisted.ref.defineCalls[1]?.resolve(TREE_RESULT);
+    });
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('나무')).toBeInTheDocument();
+    expect(within(dialog).getByText('tree')).toBeInTheDocument();
+    expect(within(dialog).queryByText('dictionary')).not.toBeInTheDocument();
+  });
+
   it('Add to bank mines the looked-up word with its KRDICT entry id', async () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
@@ -821,6 +1016,92 @@ describe('Chat dictionary lookup (F-016)', () => {
     expect(
       within(dialog).getByRole('button', { name: /Added to vocab/ }),
     ).toBeInTheDocument();
+  });
+
+  it('rolls back the optimistic flip, toasts fixed copy, and unlocks the button when the bank fails (SF-3)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.mineRejectWith = new ApiError(
+      'duplicate key value violates unique constraint "vocab_entries_pkey"',
+      { status: 500, code: 'server_error' },
+    );
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+    });
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: /Add to vocab/ }),
+    );
+
+    // Fixed-copy toast — never the server prose riding on the error.
+    expect(
+      await screen.findByText(/Couldn't bank — try again/i),
+    ).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('duplicate key');
+
+    // The re-throw reached WordPopover: its "Added" lock rolled back so the
+    // user can retry. Remove the re-throw and the button stays locked.
+    await waitFor(() => {
+      expect(
+        within(dialog).getByRole('button', { name: /Add to vocab/ }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      within(dialog).queryByRole('button', { name: /Added to vocab/ }),
+    ).not.toBeInTheDocument();
+
+    // The optimistic dictMined flip rolled back too: a re-lookup of the
+    // same word must NOT claim it was banked. Remove the rollback block in
+    // handleDictAdd and this pill appears.
+    hoisted.ref.mineRejectWith = null;
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[1]?.resolve(ENTRY_RESULT);
+    });
+    const dialog2 = screen.getByRole('dialog');
+    expect(
+      within(dialog2).queryByText('already banked'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('never persists a sentinel gloss as the banked English (SF-3)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(SENTINEL_RESULT);
+    });
+
+    // The popover shows the sentinel (a real entry with no English gloss).
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Dictionary entry')).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /Add to vocab/ }),
+    );
+    await waitFor(() => {
+      expect(hoisted.ref.mineCalls.length).toBe(1);
+    });
+
+    // `english` is omitted entirely — the sentinel filter in handleDictAdd
+    // must strip both GLOSS_DICTIONARY_ENTRY and GLOSS_UNAVAILABLE.
+    expect(hoisted.ref.mineCalls[0]).toEqual({
+      lemma: '사전',
+      pos: 'noun',
+      krdictEntryId: 77,
+    });
+    expect(hoisted.ref.mineCalls[0]).not.toHaveProperty('english');
   });
 
   it('leaves the send flow untouched — composer send still streams', async () => {

@@ -732,6 +732,10 @@ export function Chat(): JSX.Element {
   const onDictKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      // Mirror the search button's disabled state exactly: Enter must not
+      // restart an in-flight lookup (it would abort + refire behind a
+      // visibly disabled button) and must not submit whitespace.
+      if (dictLoading || !dictInput.trim()) return;
       lookupWord();
     }
   };
