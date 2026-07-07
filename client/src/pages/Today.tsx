@@ -1,39 +1,41 @@
 /**
- * Today screen — daily plan dashboard.
+ * Today screen — the daily ACTION hub (Overhaul P1.2, Slice A).
  *
- * Layout (per design README §2):
+ * P1.2 rebalanced Today/Progress: every "where am I" surface (the compact
+ * SkillsCompare TOPIK-level snapshot and the F-017 per-skill trends
+ * carousel) moved to the Progress page; Today keeps only things the user can
+ * DO right now. Layout, top to bottom:
+ *
  *   1. Topbar: date eyebrow + 오늘 · Today serif title.
- *   2. Skills snapshot card (compact SkillsCompare).
- *   3. Review queue accent card (vermilion border, live "{n} cards due", FSRS meta).
- *   4. Three TaskCards in responsive grid — Reading / Listening / Writing.
- *      Listening = "Largest gap" (gold). Writing = "Register drill" (red/indigo).
+ *   2. **Review queue** accent card (lead action) — live "{n} cards due",
+ *      FSRS meta → `/learn/vocab` (the flashcards page, re-homed in P1.1).
+ *   3. **Today's tasks carousel** — the Reading / Listening / Writing
+ *      TaskCards, reshaped from a grid into a `SwipeCarousel` (one task per
+ *      page). Real targets: `/learn/listen` (Reading + Listening — the
+ *      retired Read screen's content lives there) and `/learn/writing`.
+ *      Listening = "Largest gap" (gold). Writing = "Register drill".
+ *   4. **Grammar practice** — designed "coming soon" placeholder (the
+ *      grammar-due carousel backing is P4).
+ *   5. **TOPIK carousel** — page 1 surfaces the F-007 saved mock attempt
+ *      when one exists ("Resume exam" → `/learn/topik`, where MockMode's
+ *      resume banner takes over); with no attempt it offers the TOPIK page
+ *      directly. Page 2 is the recommendation placeholder (heuristic is P4).
+ *   6. **Review shortcut** row → `/review/mistakes`.
  *
  * Data:
- *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })                        → TodayPlan
- *   useEndpointOrMock('today.snapshot', loadDiagnosticSnapshotMock, { realFn: fetchLatestSnapshot }) → DiagnosticSnapshot
- *   useEndpointOrMock('today.series', loadSkillSeriesMock, { realFn: fetchSkillSeries })     → AllSkillSeries (F-017)
+ *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })          → TodayPlan
+ *   useEndpointOrMock('today.attempt', loadOpenAttemptMock, { realFn: fetchAttempt }) → AttemptState | null
  *
- * Three fetches because Today composes the plan AND the snapshot AND the
- * per-skill trends; pulling them separately matches the server split
- * (`/plan/today` vs `/diagnostic/latest` vs the `/…/series` fan-out) and
- * lets each fail independently in the UI. The series fan-out itself degrades
- * per skill (`fetchSkillSeries` never rejects on a route failure — a failed
- * skill becomes an honest "Couldn't load this trend." panel, never fixture
- * numbers). When EVERY route failed (total outage) the whole card collapses
- * to a single ErrorCard with a retry (F-UP-016a) — a failure is never
- * dressed up as five fresh-account "No data yet" panels.
- *
- * F-017 adds the "Progress by skill" card below the snapshot: a SwipeCarousel
- * of five panels (Reading / Listening / Vocab / Grammar / Writing), each a
- * LineChart of that skill's 30-day series. It complements — never replaces —
- * the SkillsCompare snapshot above it (snapshot = where you are now,
- * carousel = how you got here). Writing charts its real `/writing/series`
- * data as of F-014; with zero graded attempts its panel is a "start
- * writing" invitation instead of an empty chart.
+ * Two fetches because the plan and the open-exam lookup are independent
+ * server concerns (`/plan/today` vs `/topik/attempt`) and each fails
+ * independently in the UI. The attempt mock resolves `null` on purpose — a
+ * fabricated resumable attempt would paint a resume CTA for an exam that
+ * doesn't exist, so the dev fallback (and any prod failure) degrades to the
+ * honest "no exam in progress" panel instead.
  *
  * Threat model:
- *   Fixture text rendered as React children → escaped by React. Pass 3+ wire
- *   must keep this contract (text fields, not HTML strings).
+ *   Fixture/server text rendered as React children → escaped by React. Pass
+ *   3+ wire must keep this contract (text fields, not HTML strings).
  */
 import { useNavigate } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -41,31 +43,20 @@ import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
 import { Icon } from '../components/Icon';
+import type { IconName } from '../components/Icon';
 import { TaskCard } from '../components/TaskCard';
-import { SkillsCompare } from '../components/SkillsCompare';
-import type {
-  SkillReference,
-  SkillRow,
-} from '../components/SkillsCompare';
 import { MockBadge } from '../components/MockBadge';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
-import { LineChart } from '../components/LineChart';
 import { SwipeCarousel } from '../components/SwipeCarousel';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
-import { loadSkillSeriesMock } from '../data/mocks/stats';
+import { mockDelay } from '../data/mocks/_delay';
 import { fetchToday } from '../services/plan';
-import { fetchLatestSnapshot } from '../services/diagnostic';
-import { fetchSkillSeries } from '../services/stats';
-import { loadDiagnosticSnapshotMock } from '../data/mocks/diagnostic';
-import type {
-  AllSkillSeries,
-  DiagnosticSnapshot,
-  SkillSeries,
-  TodayPlan,
-  TodayTask,
-} from '../types/domain';
+import { fetchAttempt } from '../services/topik';
+import type { AttemptState } from '../services/topik';
+import type { TodayPlan, TodayTask } from '../types/domain';
 import './Today.css';
 
 /** Format the current date in the design's eyebrow style ("Monday, May 28"). */
@@ -75,27 +66,6 @@ function formatDateEyebrow(d: Date): string {
     month: 'long',
     day: 'numeric',
   });
-}
-
-/** Map a domain snapshot to the SkillsCompare props shape. */
-function toSkillRows(snap: DiagnosticSnapshot): ReadonlyArray<SkillRow> {
-  return snap.dimensions.map((d) => ({
-    key: d.key,
-    label: d.label,
-    kr: d.kr,
-    score: d.score,
-    note: d.note,
-  }));
-}
-function toSkillRefs(snap: DiagnosticSnapshot): ReadonlyArray<SkillReference> {
-  return snap.references.map((r) => ({
-    id: r.id,
-    label: r.label,
-    kr: r.kr,
-    value: r.value,
-    // `native` is the ceiling — design paints its tick indigo, not vermilion.
-    isCeiling: r.id === 'native',
-  }));
 }
 
 /**
@@ -136,95 +106,124 @@ interface TaskTile {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Progress-by-skill carousel (F-017)
+// Open-exam lookup (F-007 attempt surfaced on the action hub)
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Trend window (days) — the single source for both the fetch and the chart
- * aria-labels, so the labels can never drift from the data window.
+ * Mock fallback for the open-exam lookup — resolves "no exam in progress".
+ * Deliberately null: fabricating a resumable attempt would paint a resume
+ * CTA for an exam that doesn't exist (the same honesty rule as the Progress
+ * page's empty history mock). Module scope per the useEndpointOrMock
+ * contract.
  */
-const TREND_WINDOW_DAYS = 30;
+async function loadOpenAttemptMock(): Promise<AttemptState | null> {
+  await mockDelay();
+  return null;
+}
 
-/** Carousel page order — fixed by the feature spec (F-017). */
-const SERIES_PANELS: ReadonlyArray<{
-  key: keyof AllSkillSeries;
-  label: string;
-  kr: string;
-}> = [
-  { key: 'reading', label: 'Reading', kr: '읽기' },
-  { key: 'listening', label: 'Listening', kr: '듣기' },
-  { key: 'vocab', label: 'Vocab', kr: '어휘' },
-  { key: 'grammar', label: 'Grammar', kr: '문법' },
-  { key: 'writing', label: 'Writing', kr: '쓰기' },
-];
-
-/** Chart caption per metric — `none` never reaches the chart (placeholder). */
-const METRIC_LABELS: Record<SkillSeries['metric'], string> = {
-  accuracy: 'Accuracy',
-  count: 'Count',
-  score: 'Score',
-  none: '',
+/** Bilingual section labels for the saved mock attempt's exam section. */
+const SECTION_LABELS: Record<AttemptState['section'], { label: string; kr: string }> = {
+  reading: { label: 'Reading', kr: '읽기' },
+  listening: { label: 'Listening', kr: '듣기' },
 };
 
 /**
- * Latest-value headline for a panel: "74%" for percent series (TOPIK
- * accuracy, Writing's normalized score), "35 reviews" / "52 pts" for the
- * rest, an em dash when the series has no points yet. Keyed on the unit —
- * not the metric — so it matches the LineChart readout's own `%` formatting.
+ * TOPIK carousel page 1 — the open-exam entry. With a saved F-007 attempt
+ * it reads as a resume CTA (MockMode's own resume banner takes over on
+ * arrival); otherwise it offers the TOPIK page directly. A failed lookup
+ * degrades to the no-attempt copy (`data` stays null) — the same "no resume
+ * banner when offline" behaviour MockMode itself uses, never a fake resume.
  */
-function latestValue(series: SkillSeries): string {
-  const last = series.points[series.points.length - 1];
-  if (last === undefined) return '—';
-  if (series.unit === '%') return `${String(Math.round(last.value))}%`;
-  const unitSuffix = series.unit !== '' ? ` ${series.unit}` : '';
-  return `${String(last.value)}${unitSuffix}`;
+function OpenExamPanel({
+  attempt,
+  onOpen,
+}: {
+  attempt: UseEndpointOrMockResult<AttemptState | null>;
+  onOpen: () => void;
+}): JSX.Element {
+  if (attempt.loading) {
+    return (
+      <div className="km-today__examPanel" aria-busy="true">
+        <div className="km-today__examMeta">Checking for an exam in progress…</div>
+      </div>
+    );
+  }
+  const open = attempt.data;
+  if (open !== null) {
+    const section = SECTION_LABELS[open.section];
+    return (
+      <div className="km-today__examPanel">
+        <Pill tone="gold">Exam in progress</Pill>
+        <div className="km-today__examTitle">
+          {section.label} mock{' '}
+          <span className="kr km-today__examKr">{section.kr}</span>
+        </div>
+        <div className="km-today__examMeta">
+          {open.answered} answered · picks and timer saved
+        </div>
+        <Button
+          variant="gold"
+          size="sm"
+          onClick={onOpen}
+          trailingIcon={<Icon name="arrow-right" size={14} />}
+        >
+          Resume exam
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="km-today__examPanel">
+      <div className="km-today__examTitle">
+        Mock exams <span className="kr km-today__examKr">모의고사</span>
+      </div>
+      <div className="km-today__examMeta">
+        No exam in progress — take a timed reading or listening mock.
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onOpen}
+        trailingIcon={<Icon name="arrow-right" size={14} />}
+      >
+        Open TOPIK practice
+      </Button>
+    </div>
+  );
 }
 
-/** One carousel page: skill name + latest value + the trend chart. */
-function SkillTrendPanel({
-  skillKey,
-  label,
+// ─────────────────────────────────────────────────────────────
+// Coming-soon placeholder panel (P1.2 — filled in P4)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Designed placeholder for a P4 feature slot — an intentional empty-state
+ * panel (icon + bilingual title + copy + "Coming soon" pill), never a blank
+ * or broken card.
+ */
+function ComingSoonPanel({
+  icon,
+  title,
   kr,
-  series,
+  copy,
 }: {
-  skillKey: keyof AllSkillSeries;
-  label: string;
+  icon: IconName;
+  title: string;
   kr: string;
-  series: SkillSeries;
+  copy: string;
 }): JSX.Element {
   return (
-    // data-skill drives the per-skill chart accent in Today.css (the
-    // validated categorical palette shared with Progress).
-    <div className="km-today__trendPanel" data-skill={skillKey}>
-      <div className="km-today__trendHead">
-        <span className="km-today__trendSkill">
-          {label} <span className="km-today__trendKr">{kr}</span>
+    <div className="km-today__soon">
+      <span className="km-today__soonIcon" aria-hidden="true">
+        <Icon name={icon} size={20} />
+      </span>
+      <span className="km-today__soonMeta">
+        <span className="km-today__soonTitle">
+          {title} <span className="kr km-today__soonKr">{kr}</span>
         </span>
-        <span className="km-today__trendValue">{latestValue(series)}</span>
-      </div>
-      {series.metric === 'none' ? (
-        // `none` is the client-only degraded placeholder: this skill's route
-        // FAILED — say so (F-UP-016a). "No data yet" is reserved for a route
-        // that answered with an empty series (LineChart renders that copy
-        // itself), so a fetch failure is never dressed up as a fresh account.
-        // Never fabricated numbers either way (F-014 gave Writing a real
-        // /writing/series route, so it degrades like every other skill now).
-        <div className="km-today__trendEmpty">Couldn’t load this trend.</div>
-      ) : skillKey === 'writing' && series.points.length === 0 ? (
-        // Writing's route answered but the user has no graded attempts yet —
-        // an invitation to start, not a bare empty chart. Only the empty
-        // REAL series lands here; a failed route reads "No data yet" above.
-        <div className="km-today__trendEmpty">
-          Start writing to see your progress here.
-        </div>
-      ) : (
-        <LineChart
-          points={series.points}
-          unit={series.unit}
-          metricLabel={METRIC_LABELS[series.metric]}
-          ariaLabel={`${label} trend over the last ${String(TREND_WINDOW_DAYS)} days`}
-        />
-      )}
+        <span className="km-today__soonCopy">{copy}</span>
+      </span>
+      <Pill>Coming soon</Pill>
     </div>
   );
 }
@@ -246,51 +245,33 @@ function SkeletonCard(): JSX.Element {
 
 export function Today(): JSX.Element {
   const navigate = useNavigate();
-  // Both fetches are live as of Pass 5: the plan via `GET /plan/today` and the
-  // diagnostic snapshot via `GET /diagnostic/latest`. Each falls back to its
-  // mock loader if the real endpoint rejects (the hook owns that swap), and
-  // each fails independently in the UI.
+  // The plan is live as of Pass 5 (`GET /plan/today`); the open-exam lookup
+  // is the F-007 `GET /topik/attempt`. Each falls back to its mock loader if
+  // the real endpoint rejects in dev (the hook owns that swap), and each
+  // fails independently in the UI.
   const today = useEndpointOrMock<TodayPlan>('today', loadTodayMock, {
     realFn: () => fetchToday(),
   });
-  const diag = useEndpointOrMock<DiagnosticSnapshot>(
-    'today.snapshot',
-    loadDiagnosticSnapshotMock,
-    { realFn: () => fetchLatestSnapshot() },
-  );
-  // F-017 — the per-skill 30-day trends behind the "Progress by skill"
-  // carousel. One fan-out call. Unlike the other two, its realFn never
-  // rejects — a failed route degrades that skill to a "No data yet" panel
-  // (fetchSkillSeries owns that), so this source can't trip the mock
-  // fallback and paint fixture numbers as real progress.
-  const series = useEndpointOrMock<AllSkillSeries>(
-    'today.series',
-    loadSkillSeriesMock,
-    { realFn: () => fetchSkillSeries(TREND_WINDOW_DAYS) },
+  const attempt = useEndpointOrMock<AttemptState | null>(
+    'today.attempt',
+    loadOpenAttemptMock,
+    { realFn: () => fetchAttempt() },
   );
 
   const dateStr = formatDateEyebrow(new Date());
 
   // Retry routes through the hook's `refetch()` rather than a brutal
-  // `window.location.reload()`. Each ErrorCard targets the failing fetch
-  // alone — a diagnostic-snapshot failure no longer reloads the entire
-  // app to recover the today plan. (The series source degrades per skill
-  // and only shows its total-outage ErrorCard when EVERY route failed —
-  // that card retries via `series.refetch`.)
+  // `window.location.reload()` — a plan failure retries the plan alone.
   const retryToday = today.refetch;
-  const retryDiag = diag.refetch;
 
   // MockBadge tracks realFn-backed sources (the unified Pass-3 semantics).
-  // All three fetches are realFn-backed, so any one falling back to its mock
+  // Both fetches are realFn-backed, so either falling back to its mock
   // should trip the dev-only 🅂 badge.
-  const isMock = today.isMock || diag.isMock || series.isMock;
+  const isMock = today.isMock || attempt.isMock;
 
   // Build the visible task tiles. Tasks the server couldn't fill (empty corpus)
   // arrive null and are simply omitted — no faked card. `largestGap` defaults
   // to Listening (the design's emphasis) until the user has a diagnostic run.
-  // Local binding so TS narrowing survives into the panel-mapping closure.
-  const seriesData = series.data;
-
   const gapTag: TodayTask['tag'] = today.data?.largestGap ?? 'Listening';
   const taskTiles: TaskTile[] = [];
   if (today.data) {
@@ -319,87 +300,7 @@ export function Today(): JSX.Element {
         eyebrow={dateStr}
       />
 
-      {/* Skills snapshot ─────────────────────────────────────── */}
-      <section style={{ marginBottom: 16 }}>
-        {diag.loading ? (
-          <SkeletonCard />
-        ) : diag.data && diag.data.dimensions.length > 0 ? (
-          <Card variant="default" style={{ padding: '20px 22px' }}>
-            <SkillsCompare
-              variant="compact"
-              skills={toSkillRows(diag.data)}
-              references={toSkillRefs(diag.data)}
-              defaultRefId={diag.data.defaultRef}
-            />
-          </Card>
-        ) : diag.data ? (
-          // Empty snapshot — no prior diagnostic run. Nudge the user to
-          // take one rather than rendering an empty SkillsCompare shell.
-          <Card variant="flat" style={{ padding: '18px 22px' }}>
-            <div className="km-eyebrow" style={{ marginBottom: 6 }}>
-              진단평가 · Diagnostic
-            </div>
-            <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 12 }}>
-              Take the 12-minute diagnostic to see your skills snapshot.
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                navigate('/diagnostic');
-              }}
-            >
-              Start diagnostic
-            </Button>
-          </Card>
-        ) : (
-          <ErrorCard
-            message="Skills snapshot is unavailable."
-            onRetry={retryDiag}
-          />
-        )}
-      </section>
-
-      {/* Progress by skill (F-017) ───────────────────────────── */}
-      <section style={{ marginBottom: 16 }}>
-        {series.loading ? (
-          <SkeletonCard />
-        ) : seriesData !== null &&
-          SERIES_PANELS.every((p) => seriesData[p.key].metric === 'none') ? (
-          // F-UP-016a — total outage: every series route failed (network
-          // down / server unreachable). Five "couldn't load" panels would be
-          // honest but noisy; one ErrorCard with a real retry is clearer.
-          // Partial failure still renders the carousel with per-panel
-          // "Couldn't load this trend." states.
-          <ErrorCard
-            message="Progress trends couldn’t be loaded."
-            onRetry={series.refetch}
-          />
-        ) : seriesData !== null ? (
-          <Card variant="default" style={{ padding: '20px 22px' }}>
-            <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-              실력 추이 · Progress by skill
-            </div>
-            <SwipeCarousel ariaLabel="Progress by skill">
-              {SERIES_PANELS.map((p) => (
-                <SkillTrendPanel
-                  key={p.key}
-                  skillKey={p.key}
-                  label={p.label}
-                  kr={p.kr}
-                  series={seriesData[p.key]}
-                />
-              ))}
-            </SwipeCarousel>
-          </Card>
-        ) : // Unreachable in practice: the series realFn never rejects (per-
-        // skill degradation) and the mock loader cannot fail, so post-loading
-        // data is always present. `null` (not a dead ErrorCard) satisfies the
-        // type-level narrowing without shipping UI that can never render.
-        null}
-      </section>
-
-      {/* Review queue CTA ────────────────────────────────────── */}
+      {/* Review queue CTA — the lead action ──────────────────── */}
       {today.loading ? (
         <div style={{ marginBottom: 16 }}>
           <SkeletonCard />
@@ -440,26 +341,87 @@ export function Today(): JSX.Element {
         </div>
       )}
 
-      {/* Three task cards ────────────────────────────────────── */}
+      {/* Reading / Listening / Writing carousel ──────────────── */}
       {taskTiles.length > 0 ? (
-        <div className="km-today__grid" role="list" aria-label="Today's tasks">
-          {taskTiles.map((tile) => (
-            <div role="listitem" key={tile.task.tag}>
-              <TaskCard
-                skill={`${tile.skill} · ${tile.task.level}`}
-                krTag={tile.krTag}
-                title={tile.task.title}
-                mins={tile.task.mins}
-                tone={tileTone(tile.task.tag, gapTag)}
-                tag={tileTag(tile.task.tag, gapTag)}
-                onClick={() => {
-                  navigate(tile.nav);
-                }}
-              />
+        <section style={{ marginBottom: 16 }}>
+          <Card variant="default" style={{ padding: '20px 22px' }}>
+            <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+              오늘의 과제 · Today&rsquo;s tasks
             </div>
-          ))}
-        </div>
+            <SwipeCarousel ariaLabel="Today's tasks">
+              {taskTiles.map((tile) => (
+                <div key={tile.task.tag} className="km-today__taskPage">
+                  <TaskCard
+                    skill={`${tile.skill} · ${tile.task.level}`}
+                    krTag={tile.krTag}
+                    title={tile.task.title}
+                    mins={tile.task.mins}
+                    tone={tileTone(tile.task.tag, gapTag)}
+                    tag={tileTag(tile.task.tag, gapTag)}
+                    onClick={() => {
+                      navigate(tile.nav);
+                    }}
+                  />
+                </div>
+              ))}
+            </SwipeCarousel>
+          </Card>
+        </section>
       ) : null}
+
+      {/* Grammar practice — placeholder (backing lands in P4) ── */}
+      <section style={{ marginBottom: 16 }}>
+        <Card variant="default" style={{ padding: '20px 22px' }}>
+          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+            문법 연습 · Grammar practice
+          </div>
+          <ComingSoonPanel
+            icon="grammar"
+            title="Daily grammar drills"
+            kr="문법"
+            copy="Your due grammar patterns will queue up here for a quick daily drill."
+          />
+        </Card>
+      </section>
+
+      {/* TOPIK — open exam + recommendation carousel ─────────── */}
+      <section style={{ marginBottom: 16 }}>
+        <Card variant="default" style={{ padding: '20px 22px' }}>
+          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+            시험 · TOPIK
+          </div>
+          <SwipeCarousel ariaLabel="TOPIK exams">
+            <OpenExamPanel
+              attempt={attempt}
+              onOpen={() => {
+                navigate('/learn/topik');
+              }}
+            />
+            <ComingSoonPanel
+              icon="spark"
+              title="Recommended for you"
+              kr="추천"
+              copy="A mock-exam recommendation based on your recent practice will land here."
+            />
+          </SwipeCarousel>
+        </Card>
+      </section>
+
+      {/* Review shortcut ──────────────────────────────────────── */}
+      <button
+        type="button"
+        className="km-today__shortcut focusring"
+        onClick={() => {
+          navigate('/review/mistakes');
+        }}
+      >
+        <Icon name="history" size={20} />
+        <span className="km-today__shortcutMeta">
+          <span className="km-today__shortcutLabel">Review mistakes</span>
+          <span className="kr km-today__shortcutKr">오답 복습</span>
+        </span>
+        <Icon name="chevron-right" size={16} />
+      </button>
     </section>
   );
 }

@@ -1,67 +1,135 @@
 /*
- * Today (F-017) — page-scoped styles for the "Progress by skill" carousel.
+ * Today — page-scoped styles for the action hub (Overhaul P1.2, Slice A).
+ *
+ * The F-017 per-skill trend styles that used to live here moved to
+ * Progress.css with the "Progress by skill" carousel. What remains styles
+ * the action-hub pieces: the task-carousel pages, the coming-soon
+ * placeholder panels, the open-exam panel, and the review-mistakes shortcut
+ * row. (The review-queue CTA's .km-today__queue* rules stay in
+ * styles/index.css, untouched by this slice.)
  *
  * Colocated with Today.tsx instead of appended to styles/index.css (the
  * global sheet is shared mutable state across parallel feature branches).
  * Same design tokens as the rest of the app, so both themes come free.
- *
- * Per-skill chart accents reuse the categorical palette validated for
- * Progress.css with the dataviz palette validator (all six checks PASS,
- * all-pairs CVD mode; see the rationale there). Color follows the entity:
- * Reading is the same hue here and on the Progress page.
  */
 
-.km-today__trendPanel {
-  padding: 2px 2px 0;
+/* Task carousel page — the TaskCard fills the page width; the small inset
+   keeps its focus ring inside the carousel viewport's overflow clip. */
+.km-today__taskPage {
+  padding: 2px 2px 4px;
 }
 
-.km-today__trendPanel[data-skill='reading'] { --km-chart-accent: #b83a2e; }
-.km-today__trendPanel[data-skill='listening'] { --km-chart-accent: #2e5f94; }
-.km-today__trendPanel[data-skill='vocab'] { --km-chart-accent: #147e5a; }
-.km-today__trendPanel[data-skill='grammar'] { --km-chart-accent: #b07a1f; }
+.km-today__taskPage .km-taskcard {
+  width: 100%;
+}
 
-[data-theme='dark'] .km-today__trendPanel[data-skill='reading'] { --km-chart-accent: #d9594a; }
-[data-theme='dark'] .km-today__trendPanel[data-skill='listening'] { --km-chart-accent: #4e8bc9; }
-[data-theme='dark'] .km-today__trendPanel[data-skill='vocab'] { --km-chart-accent: #35a582; }
-[data-theme='dark'] .km-today__trendPanel[data-skill='grammar'] { --km-chart-accent: #b98a2b; }
-
-.km-today__trendHead {
+/* Coming-soon placeholder panel (grammar practice, TOPIK recommendation).
+   Dashed border matches the app's other intentional empty states (e.g. the
+   trend panels' empty placeholder on Progress). */
+.km-today__soon {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
-  margin-bottom: 8px;
+  min-height: 96px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--paper-mute);
 }
 
-.km-today__trendSkill {
-  font-weight: 600;
+.km-today__soonIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.km-today__soonMeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.km-today__soonTitle {
   font-size: 14px;
+  font-weight: 600;
+  color: var(--paper);
 }
 
-.km-today__trendKr {
+.km-today__soonKr {
+  font-weight: 400;
+  color: var(--paper-mute);
+  margin-left: 2px;
+}
+
+.km-today__soonCopy {
+  font-size: 12.5px;
+}
+
+/* Open-exam panel (TOPIK carousel page 1). Matches the placeholder panel's
+   min-height so the carousel doesn't jump between pages. */
+.km-today__examPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-height: 96px;
+  padding: 2px 2px 4px;
+}
+
+.km-today__examTitle {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.km-today__examKr {
   color: var(--paper-mute);
   font-weight: 400;
   margin-left: 2px;
 }
 
-/* Latest value is the headline number — text ink, never the series color. */
-.km-today__trendValue {
-  font-size: 20px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.km-today__examMeta {
+  font-size: 12.5px;
+  color: var(--paper-mute);
 }
 
-/* Writing placeholder — mirrors LineChart's empty state so the carousel
-   pages read as one family. */
-.km-today__trendEmpty {
+/* Review shortcut row → /review/mistakes. Mirrors the Review library's row
+   shape so the gesture reads the same on both screens. */
+.km-today__shortcut {
   display: flex;
+  width: 100%;
   align-items: center;
-  justify-content: center;
-  min-height: 96px;
-  padding: 0 16px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 8px;
+  gap: 14px;
+  padding: 15px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--paper);
+  font-family: inherit;
+  text-align: left;
+}
+
+.km-today__shortcutMeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.km-today__shortcutLabel {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.km-today__shortcutKr {
+  font-size: 11px;
   color: var(--paper-mute);
-  font-size: 13px;
-  text-align: center;
+  margin-top: 1px;
 }
