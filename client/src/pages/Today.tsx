@@ -39,6 +39,7 @@
  */
 import { useNavigate } from 'react-router-dom';
 import type { JSX } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
@@ -198,19 +199,26 @@ function OpenExamPanel({
 
 /**
  * Designed placeholder for a P4 feature slot — an intentional empty-state
- * panel (icon + bilingual title + copy + "Coming soon" pill), never a blank
- * or broken card.
+ * panel (icon + bilingual title + one terse copy line + "Coming soon" pill),
+ * never a blank or broken card.
+ *
+ * P3b (Batch A owns this component): the title/kr pair and the pill render
+ * through `<Bilingual/>` so the language-display setting applies; `krCopy`
+ * is an ADDITIVE optional prop (existing call sites stay valid) — when
+ * absent the primitive's fallback renders the English copy in ko-mode.
  */
 function ComingSoonPanel({
   icon,
   title,
   kr,
   copy,
+  krCopy,
 }: {
   icon: IconName;
   title: string;
   kr: string;
   copy: string;
+  krCopy?: string;
 }): JSX.Element {
   return (
     <div className="km-today__soon">
@@ -219,11 +227,15 @@ function ComingSoonPanel({
       </span>
       <span className="km-today__soonMeta">
         <span className="km-today__soonTitle">
-          {title} <span className="kr km-today__soonKr">{kr}</span>
+          <Bilingual en={title} kr={kr} />
         </span>
-        <span className="km-today__soonCopy">{copy}</span>
+        <span className="km-today__soonCopy">
+          <Bilingual en={copy} kr={krCopy} />
+        </span>
       </span>
-      <Pill>Coming soon</Pill>
+      <Pill>
+        <Bilingual en="Coming soon" kr="준비 중" />
+      </Pill>
     </div>
   );
 }
@@ -377,11 +389,13 @@ export function Today(): JSX.Element {
           <div className="km-eyebrow" style={{ marginBottom: 10 }}>
             문법 연습 · Grammar practice
           </div>
+          {/* P3b verbage trim — copy cut to one terse line. */}
           <ComingSoonPanel
             icon="grammar"
             title="Daily grammar drills"
             kr="문법"
-            copy="Your due grammar patterns will queue up here for a quick daily drill."
+            copy="Due grammar patterns queue here."
+            krCopy="복습 예정 문형이 여기에 모여요."
           />
         </Card>
       </section>
@@ -399,11 +413,13 @@ export function Today(): JSX.Element {
                 navigate('/learn/topik');
               }}
             />
+            {/* P3b verbage trim — copy cut to one terse line. */}
             <ComingSoonPanel
               icon="spark"
               title="Recommended for you"
               kr="추천"
-              copy="A mock-exam recommendation based on your recent practice will land here."
+              copy="Mock-exam picks based on your practice."
+              krCopy="맞춤 모의시험 추천이 여기에 나와요."
             />
           </SwipeCarousel>
         </Card>

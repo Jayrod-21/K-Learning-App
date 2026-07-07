@@ -260,10 +260,16 @@ describe('Today', () => {
     expect(screen.getByText('Daily grammar drills')).toBeInTheDocument();
     // Real copy, not a blank panel.
     expect(
-      screen.getByText(/due grammar patterns will queue up here/),
+      screen.getByText(/Due grammar patterns queue here/),
     ).toBeInTheDocument();
-    // Both placeholder slots (grammar + TOPIK recommendation) carry the pill.
+    // P3b: the trimmed copy is bilingual (kr via <Bilingual/>).
+    expect(
+      screen.getByText('복습 예정 문형이 여기에 모여요.'),
+    ).toBeInTheDocument();
+    // Both placeholder slots (grammar + TOPIK recommendation) carry the pill,
+    // bilingually (Coming soon · 준비 중).
     expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+    expect(screen.getAllByText('준비 중')).toHaveLength(2);
   });
 
   it('renders the TOPIK-recommendation placeholder inside the exam carousel', () => {
@@ -277,7 +283,10 @@ describe('Today', () => {
       within(region).getByText('Recommended for you'),
     ).toBeInTheDocument();
     expect(
-      within(region).getByText(/recommendation based on your recent practice/),
+      within(region).getByText(/Mock-exam picks based on your practice/),
+    ).toBeInTheDocument();
+    expect(
+      within(region).getByText('맞춤 모의시험 추천이 여기에 나와요.'),
     ).toBeInTheDocument();
   });
 

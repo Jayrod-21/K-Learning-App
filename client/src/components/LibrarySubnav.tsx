@@ -10,10 +10,16 @@
  * on the active section (not `role="tablist"`, which would promise in-page
  * panel switching).
  *
+ * P3b: each section renders its nav-manifest en/kr pair through
+ * `<Bilingual compact/>` — the strip is tight three-across chrome, so
+ * 'both' mode shows the primary language only while the accessible name
+ * keeps both (the primitive's sr-only reading).
+ *
  * Pure navigation — no I/O, no threat surface beyond the router's own.
  */
 import type { JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Bilingual } from './Bilingual';
 import { navItem, type NavItemId } from '../lib/nav';
 
 const SECTION_IDS: ReadonlyArray<NavItemId> = [
@@ -41,7 +47,7 @@ export function LibrarySubnav(): JSX.Element {
               if (!selected) navigate(item.path);
             }}
           >
-            {item.label}
+            <Bilingual en={item.label} kr={item.kr} compact />
           </button>
         );
       })}

@@ -201,6 +201,25 @@ describe('SkillsCompare', () => {
     expect(screen.queryByText('Confidence band')).not.toBeInTheDocument();
   });
 
+  it('P3b: eyebrow + legend render bilingually in default both-mode', () => {
+    render(<SkillsCompare skills={SKILLS} references={REFS} />);
+    // "Compare to" eyebrow.
+    expect(screen.getByText('비교 기준')).toBeInTheDocument();
+    expect(screen.getByText('Compare to')).toBeInTheDocument();
+    // Legend: the active ref's Korean shorthand now flows through
+    // <Bilingual/> (no hand-composed "· kr" span).
+    expect(screen.getByText('4급')).toBeInTheDocument();
+    // At / above → 달성, Below → 미달.
+    expect(screen.getByText('달성')).toBeInTheDocument();
+    expect(screen.getByText('미달')).toBeInTheDocument();
+  });
+
+  it('P3b: the confidence-band legend entry is bilingual', () => {
+    render(<SkillsCompare skills={BANDED_SKILLS} references={REFS} />);
+    expect(screen.getByText('Confidence band')).toBeInTheDocument();
+    expect(screen.getByText('신뢰 구간')).toBeInTheDocument();
+  });
+
   it('fans the bars in with a per-index transition delay (i * 70ms)', () => {
     // A1: SkillsCompare passes `delayMs = i * 70` (within the 70–90ms
     // envelope) so the bars cascade in; SkillBar applies it as the fill's

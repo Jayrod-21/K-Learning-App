@@ -141,6 +141,12 @@ body {
   letter-spacing: -0.02em;
 }
 .kr-display .km-bilingual__sub { color: var(--paper-mute); }
+/* P3b Batch A — components whose pre-P3b hand-composed Korean tag was
+ * paper-mute keep that muted look for the 'both'-mode sub segment
+ * (TaskCard skill eyebrow, SkillBar label row, Today coming-soon title). */
+.km-taskcard__skill .km-bilingual__sub,
+.km-skillbar__label .km-bilingual__sub,
+.km-today__soonTitle .km-bilingual__sub { color: var(--paper-mute); }
 
 /* Hairlines + double-rule + gold-rule (Korean book detail). */
 .hr { height: 1px; background: var(--line); border: none; }

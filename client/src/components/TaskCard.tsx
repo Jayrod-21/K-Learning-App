@@ -4,6 +4,13 @@
  * Skill + Korean tag in the header (e.g. "Listening · L3 → L4" / "듣기"),
  * Korean serif title in the middle, time + arrow in the footer. An optional
  * `Pill` (tone derived from `tone` prop) flags the tile:
+ *
+ * P3b: the skill/krTag header and the minutes footer render through
+ * `<Bilingual/>` INTERNALLY (same props — pages don't change), so the
+ * language-display setting applies. The task `title` is Korean learning
+ * content and stays out of the primitive per the scope rule. The optional
+ * `tag` pill is a page-supplied English string; making it bilingual needs a
+ * prop-shape change, deferred past P3b.
  *   - `gold`    → "Largest gap" (vermilion accent)
  *   - `red`     → "Register drill" (indigo — the design's grammar accent)
  *   - `default` → no accent
@@ -15,6 +22,7 @@
  * surface to enter the task. Inherits `.focusring` for keyboard a11y.
  */
 import type { JSX } from 'react';
+import { Bilingual } from './Bilingual';
 import { Pill } from './Pill';
 import { Icon } from './Icon';
 import { cn } from '../lib/cn';
@@ -58,8 +66,9 @@ export function TaskCard({
     >
       <div className="km-taskcard__head">
         <div className="km-taskcard__heading">
-          <div className="km-taskcard__skill">{skill}</div>
-          <div className="kr km-taskcard__krtag">{krTag}</div>
+          <div className="km-taskcard__skill">
+            <Bilingual en={skill} kr={krTag} />
+          </div>
         </div>
         {tag ? (
           <Pill tone={tone === 'red' ? 'red' : tone === 'gold' ? 'gold' : 'default'}>
@@ -70,7 +79,10 @@ export function TaskCard({
       <div className="kr km-taskcard__title">{title}</div>
       <div className="km-taskcard__foot">
         <span className="km-taskcard__mins">
-          <Icon name="timer" size={13} /> {mins} min
+          {/* compact: the footer is tight chrome — one unit label at a time
+              (the sr-only reading still carries both, per the primitive). */}
+          <Icon name="timer" size={13} />{' '}
+          <Bilingual en={`${String(mins)} min`} kr={`${String(mins)}분`} compact />
         </span>
         <Icon name="arrow-right" size={16} />
       </div>

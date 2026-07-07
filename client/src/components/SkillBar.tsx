@@ -25,6 +25,7 @@
  */
 import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
+import { Bilingual } from './Bilingual';
 import { cn } from '../lib/cn';
 import { SKILL_MAX, clampScore, hasVisibleBand } from '../lib/skillBand';
 
@@ -117,8 +118,11 @@ export function SkillBar({
     <div className={cn('km-skillbar', compact && 'km-skillbar--compact')}>
       <div className="km-skillbar__header">
         <div className="km-skillbar__labels">
-          <span className="km-skillbar__label">{label}</span>
-          <span className="kr km-skillbar__kr">{kr}</span>
+          {/* P3b: the en/kr pair renders through the primitive (same props)
+              so the row follows the language-display setting. */}
+          <span className="km-skillbar__label">
+            <Bilingual en={label} kr={kr} />
+          </span>
         </div>
         <div
           className={cn(

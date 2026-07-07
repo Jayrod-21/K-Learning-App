@@ -90,4 +90,20 @@ describe('nav manifest (P1.1)', () => {
     // (a tab-aware shim in lib/redirects still lands old bookmarks).
     expect(NAV_ITEMS.some((it) => it.path === '/reference')).toBe(false);
   });
+
+  it('P3b: every item carries a bilingual eyebrow pair (en + real Hangul kr)', () => {
+    for (const item of NAV_ITEMS) {
+      expect(item.eyebrow.trim(), `${item.id} eyebrow`).not.toBe('');
+      expect(item.krEyebrow.trim(), `${item.id} krEyebrow`).not.toBe('');
+      // The Korean eyebrow must actually contain Hangul — a copy-pasted
+      // English string would silently defeat the language-display setting.
+      expect(item.krEyebrow, `${item.id} krEyebrow has Hangul`).toMatch(
+        /[가-힣]/,
+      );
+      // Chrome register: bare nouns, no trailing punctuation (glossary rule).
+      expect(item.krEyebrow, `${item.id} krEyebrow punctuation`).not.toMatch(
+        /[.!?…]$/,
+      );
+    }
+  });
 });
