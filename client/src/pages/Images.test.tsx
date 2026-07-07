@@ -30,9 +30,12 @@ const {
         caption_kr: '카페 메뉴판',
         caption_en: 'Café menu',
         blobUrl: '/images/img1/blob',
+        // WIRE FIDELITY: OCR words carry NO id (`ImageWordDTO` is
+        // kr/en/gloss/pos only) — the added-set must key on a derived
+        // position+text key, never a fabricated id.
         words: [
-          { id: 'w1', kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage' },
-          { id: 'w2', kr: '오늘', en: 'today', pos: 'n.', gloss: 'today' },
+          { kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage' },
+          { kr: '오늘', en: 'today', pos: 'n.', gloss: 'today' },
         ],
         capturedAt: '2026-05-28T10:14:00+09:00',
       },
@@ -43,9 +46,7 @@ const {
       caption_kr: '새 캡처',
       caption_en: 'A fresh capture',
       blobUrl: '/images/up9/blob',
-      words: [
-        { id: 'u1', kr: '버스', en: 'bus', pos: 'n.', gloss: 'city bus' },
-      ],
+      words: [{ kr: '버스', en: 'bus', pos: 'n.', gloss: 'city bus' }],
       capturedAt: '2026-05-30T09:00:00+09:00',
     };
     return {
@@ -215,6 +216,39 @@ describe('Images page — capture view (no boxes)', () => {
     expect(mineWordMock.mock.calls[0][0]).not.toHaveProperty('krdictEntryId');
     // Optimistic flip — the row locks to "Added".
     expect(screen.getByRole('button', { name: /Added/ })).toBeInTheDocument();
+  });
+
+  it('banking ONE word marks only THAT word Added (wire sends no word id)', async () => {
+    // Regression: the wire's `image_words` rows carry NO `id`. The old code
+    // keyed the added-set on the non-existent `OcrWord.id` — every word's key
+    // was `undefined`, so banking one word flipped EVERY row to "Added" and
+    // permanently blocked banking the rest of the capture. With the derived
+    // position+text key, the second word must remain bankable.
+    const user = userEvent.setup();
+    renderImages();
+
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+    expect(screen.getAllByRole('button', { name: /^Add$/ })).toHaveLength(2);
+
+    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await waitFor(() => {
+      expect(mineWordMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Exactly ONE row reads "Added"; the other still offers "Add".
+    expect(screen.getAllByRole('button', { name: /Added/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^Add$/ })).toHaveLength(1);
+
+    // And the second word can still be banked (the old bug short-circuited
+    // it as already-added via the shared undefined key).
+    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await waitFor(() => {
+      expect(mineWordMock).toHaveBeenCalledTimes(2);
+    });
+    expect(mineWordMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ lemma: '오늘' }),
+    );
+    expect(screen.getAllByRole('button', { name: /Added/ })).toHaveLength(2);
   });
 
   it('rolls the Added flip back + toasts when the bank fails (FU-NF-33)', async () => {

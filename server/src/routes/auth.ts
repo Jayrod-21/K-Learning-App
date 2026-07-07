@@ -215,23 +215,59 @@ function conditionalRequireAuth(
   void requireAuth(req, res, next);
 }
 
+/** The public user payload — the SAME fields GET /auth/me returns. */
+interface PublicUser {
+  id: number;
+  email: string;
+  display_name: string | null;
+  phone: string | null;
+  version: number;
+}
+
 /**
  * Finalize a successful login: refresh last_login_at, mint a session, set the
  * cookie, and return the public user payload. Shared by the legacy direct-login
  * branch and the post-MFA branches so the session-issue path is identical.
+ *
+ * Returns the FULL public shape (same fields as GET /auth/me): the client's
+ * LoginResponse type declares `display_name`/`phone`/`version`, and returning
+ * only {id,email} left post-login consumers of `.version` with `undefined`
+ * until the next /auth/me probe (client-contracts sweep #16). The row is
+ * re-read (and the soft-delete recheck applied) BEFORE the session is minted,
+ * so an account deleted mid-login cannot receive a fresh session.
  */
 async function finishLogin(
   req: Request,
   res: Response,
   user: { id: number; email: string },
-): Promise<{ id: number; email: string }> {
+): Promise<PublicUser> {
+  const { rows } = await query<{
+    id: string;
+    email: string;
+    display_name: string | null;
+    phone: string | null;
+    version: number;
+  }>(
+    `SELECT id, email::text AS email, display_name, phone, version
+       FROM users
+      WHERE id = $1 AND deleted_at IS NULL
+      LIMIT 1`,
+    [user.id],
+  );
+  const row = rows[0];
+  if (!row) {
+    // Vanished/soft-deleted between the caller's check and here — same
+    // opaque message as a failed credential check (no enumeration signal).
+    throw new UnauthorizedError('invalid credentials');
+  }
   const { raw, record } = await issueSession(user.id, {
     userAgent: req.header('user-agent') ?? undefined,
     ipAddress: req.ip ?? undefined,
   });
   await query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [user.id]);
   setSessionCookie(res, raw, record.expires_at);
-  return { id: user.id, email: user.email };
+  // pg returns BIGINT as a string; the user DTO contract is a JSON number.
+  return { ...row, id: Number(row.id) };
 }
 
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -1010,8 +1046,10 @@ const PatchMeSchema = z
       .optional(),
     // Optimistic-concurrency snapshot. Required: a client that doesn't carry
     // a version is asking for last-writer-wins on the canonical recovery
-    // channel, which the Bar §1 explicitly forbids.
-    expected_version: z.number().int().positive(),
+    // channel, which the Bar §1 explicitly forbids. Bounded to INT4 (the
+    // users.version column type) so an absurd value 400s instead of
+    // overflowing in pg (routes sweep #3).
+    expected_version: z.number().int().positive().max(2_147_483_647),
   })
   .strict()
   .refine(

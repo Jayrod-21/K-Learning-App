@@ -27,7 +27,11 @@ router.get('/', async (req, res) => {
     status: dbOk ? 'ok' : 'degraded',
     service: 'korean-master-api',
     checks: {
-      db: dbOk ? 'ok' : `fail: ${dbError}`,
+      // Fixed string only: /health is unauthenticated + un-rate-limited, and
+      // raw pg connect errors embed internal host/port/db names ("connect
+      // ECONNREFUSED 172.x.x.x:5432") — a topology leak (routes sweep #4).
+      // The real error stays in the log line above.
+      db: dbOk ? 'ok' : 'fail',
     },
   });
 });

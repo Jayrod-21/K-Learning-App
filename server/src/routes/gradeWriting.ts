@@ -83,8 +83,23 @@ router.post(
         const grade = result.result;
         // The grader contract types scores as `number`; the columns are
         // INTEGER. Round here so a fractional score becomes a clean insert
-        // instead of a text-to-int cast error from pg.
-        const maxTotal = Math.round(grade.maxTotal);
+        // instead of a text-to-int cast error from pg. Floor at 1: the schema
+        // only pins maxTotal positive, so a contract-valid 0.4 would round to
+        // 0 and trip ck_writing_attempts_max_total_positive — silently
+        // dropping the attempt from the F-017 series on EVERY such grade
+        // (services sweep #8). Warn when normalization changed the value so
+        // the contract violation is observable.
+        const maxTotal = Math.max(1, Math.round(grade.maxTotal));
+        if (maxTotal !== grade.maxTotal) {
+          getLogger().warn(
+            {
+              correlationId: req.correlationId,
+              rawMaxTotal: grade.maxTotal,
+              persistedMaxTotal: maxTotal,
+            },
+            'grade-writing: grader returned an out-of-contract maxTotal — normalized for persist',
+          );
+        }
         const rawTotalScore = Math.round(grade.totalScore);
         // ck_writing_attempts_total_in_range requires total_score in
         // [0, max_total]. GradeResultSchema only pins totalScore nonnegative —

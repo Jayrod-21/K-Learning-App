@@ -131,6 +131,40 @@ describe('POST /diagnostic — start', () => {
   });
 });
 
+describe('POST /diagnostic — glyph-option items excluded (data sweep D-4)', () => {
+  it('a bare ①②③④ picture-choice item is never served', async () => {
+    // The corpus has 60 picture-choice listening items whose options are bare
+    // ①②③④ glyphs with has_image=true, NO image asset, and NULL image_text —
+    // all four choices render identically, so the item is unanswerable. The
+    // study/mock guard (topik.ts ANSWERABLE_ITEM_SQL) excludes them; the
+    // diagnostic's pickTopikRow must apply the SAME exclusion so an
+    // unanswerable item cannot move θ. Here the ONLY topik row is a glyph
+    // item: the diagnostic must skip the reading dimension entirely rather
+    // than serve it.
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      proficiency: 'L4',
+      answer: 1,
+      options: ['①', '②', '③', '④'],
+      hasImage: true,
+      imageText: null,
+    });
+    // vocab + grammar seeds so the generated dimensions can serve items.
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    // Without the guard, the glyph item is served as reading item #1.
+    expect(start.body.item.section).not.toBe('reading');
+    const served = await pg.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM diagnostic_responses WHERE source_kind = 'topik'`,
+    );
+    expect(served.rows[0]!.n).toBe(0);
+  });
+});
+
 describe('POST /diagnostic — shared reading passage (F4)', () => {
   it('serves the test-shared passage on an item whose own stem is empty', async () => {
     // A reading item whose body lives in the parent test's `passages` JSONB

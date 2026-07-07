@@ -57,6 +57,54 @@ type SectionKr = '읽기' | '듣기' | '쓰기';
 /** proficiency_level enum values, as stored in Postgres. */
 type ProficiencyEnum = 'basic' | 'L3' | 'L4' | 'L5+';
 
+/**
+ * topik_tests.topik_level values (migration 005, CHECK-constrained). Migration
+ * 029 widened the tests natural key to (test_number, topik_level, section)
+ * because TOPIK I and TOPIK II sittings SHARE every test_number — any query that
+ * selects a test by test_number alone merges two different exams (D-1).
+ */
+type TopikLevel = 'TOPIK I' | 'TOPIK II';
+
+/** Level discriminator for the mock/browse wire (optional — see resolveMockTest). */
+const TopikLevelSchema = z.enum(['TOPIK I', 'TOPIK II']);
+
+// Postgres INTEGER (int4) upper bound. Any zod number that binds to an INTEGER
+// column (test_number / source_test / current_idx / remaining_ms) must reject
+// values above this at the boundary (400) rather than let them reach SQL and
+// overflow (pg error 22003 → 500). See the project's grammar-Bank incident: a
+// validation schema looser than the DB constraint behind it turns bad input
+// into a 500. BIGINT id params are capped at Number.MAX_SAFE_INTEGER instead
+// (the gradeWriting pattern) — ids beyond 2^53 can't be represented exactly in
+// a JS number anyway, and MAX_SAFE_INTEGER < int8 max so pg never overflows.
+const INT4_MAX = 2_147_483_647;
+
+// ---------------------------------------------------------------------------
+// Served-but-unanswerable corpus placeholders (data sweep D-2 / D-5).
+//
+// Two confirmed classes of topik_items pass the structural survivor guard
+// (>=2 options, non-null answer) yet are unanswerable because their QUESTION
+// content is a curator placeholder, not real content:
+//   D-2: 28 TOPIK-I listening items whose stem is
+//        "[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]" —
+//        the audio was never transcribed, so the only "question" is a note
+//        saying the content does not exist.
+//   D-5: 8 reading comprehension items whose shared passage (topik_tests.
+//        passages) is the copyright-withholding notice
+//        "[저작권 관련 법령에 따라 본 문항의 지문은 공개하지 않습니다…]" —
+//        the text the question asks about is deliberately not stored.
+// Both prefixes are curator markers (real stems/passages are prose and never
+// start with these bracketed notices), so a startsWith match is safe. D-2 is
+// excluded in SQL (ANSWERABLE_ITEM_SQL — the marker lives in a plain column)
+// so /items total stays exact; D-5 can only be resolved per-item from the
+// passages JSONB range keys, so it is excluded in mapRowToDTO (the same
+// render-time guard that already drops non-int answers). The D-5 residual:
+// GET /topik/items `total` (a pure SQL count) still counts these 8 rows while
+// the page excludes them — the documented residual class for guards SQL cannot
+// express.
+// ---------------------------------------------------------------------------
+const NO_TRANSCRIPT_STEM_PREFIX = '[듣기 지문 없음';
+const WITHHELD_PASSAGE_PREFIX = '[저작권';
+
 const SECTION_ENUM_TO_KR: Record<SectionEnum, SectionKr> = {
   reading: '읽기',
   listening: '듣기',
@@ -236,6 +284,19 @@ function mapRowToDTO(row: TopikItemRow): TopikItemDTO | null {
   const promptText = (row.prompt ?? '').trim();
   const stemText = (row.stem ?? '').trim();
   const shared = (sharedPassageFor(row.test_passages, row.item_number) ?? '').trim();
+
+  // Served-but-unanswerable guards (D-2 / D-5 — see the placeholder constants):
+  //   - a stem that is the no-transcript curator note (D-2; also excluded in
+  //     SQL via ANSWERABLE_ITEM_SQL — this is the render-time belt to that
+  //     suspender, and the only guard on surfaces that fetch by id, like
+  //     /:itemId/answer and /mistakes),
+  //   - a shared passage that is the copyright-withholding notice (D-5; the
+  //     comprehension question asks about text that is deliberately absent).
+  // Either way the item cannot be answered on its merits — drop it exactly
+  // like a structurally ungradeable row.
+  if (stemText.startsWith(NO_TRANSCRIPT_STEM_PREFIX)) return null;
+  if (shared.startsWith(WITHHELD_PASSAGE_PREFIX)) return null;
+
   const passage =
     shared !== '' ? shared : promptText !== '' && stemText !== '' ? stemText : '';
 
@@ -355,10 +416,16 @@ const ITEM_COLUMNS = `i.id::text AS id,
  *     so all four choices render identically and the item is unanswerable
  *     (tester sweep P2-1). 900 answerable listening items remain — plenty for a
  *     mock. Assumes topik_items is aliased `i`.
+ *   - excludes no-transcript listening items (D-2): 28 items whose stem is the
+ *     "[듣기 지문 없음 …]" curator note — real options + answer key, but the
+ *     audio content was never transcribed, so the learner would guess blind.
+ *     coalesce() keeps a NULL stem from failing the NOT LIKE (NULL-propagation
+ *     would silently drop every stem-less row).
  */
 const ANSWERABLE_ITEM_SQL =
   "jsonb_array_length(i.options) >= 2 AND i.answer IS NOT NULL " +
-  "AND i.options->>0 NOT IN ('①','②','③','④')";
+  "AND i.options->>0 NOT IN ('①','②','③','④') " +
+  `AND coalesce(i.stem, '') NOT LIKE '${NO_TRANSCRIPT_STEM_PREFIX}%'`;
 
 // Official TOPIK II section size (F-UP-007): the corpus tests carry MORE items
 // than the real exam, so a mock caps to the first N answerable items per section
@@ -374,7 +441,15 @@ const OFFICIAL_MOCK_SECTION_SIZE = 50;
 const ItemsQuerySchema = z.object({
   section: SectionSchema.optional(),
   level: LevelSchema.optional(),
-  source_test: z.coerce.number().int().positive().optional(),
+  // .max(INT4_MAX): test_number is an INTEGER column — an unbounded coerce lets
+  // 1e20 pass `.int()` (Number.isInteger(1e20) is true) and overflow in pg
+  // (22003 → 500) where a garbage id should 400 at the boundary.
+  source_test: z.coerce.number().int().positive().max(INT4_MAX).optional(),
+  // Optional exam-paper discriminator (D-1): TOPIK I and TOPIK II sittings share
+  // every test_number, so a source_test browse without this spans BOTH papers
+  // (intentional for browse — "everything from sitting N" — with a stable
+  // test_number, topik_level, item_number order); pass it to see one paper.
+  topik_level: TopikLevelSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().nonnegative().default(0),
 });
@@ -420,6 +495,10 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
       filterParams.push(q.source_test);
       filters.push(`t.test_number = $${filterParams.length}`);
     }
+    if (q.topik_level !== undefined) {
+      filterParams.push(q.topik_level);
+      filters.push(`t.topik_level = $${filterParams.length}`);
+    }
     const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
     const countResult = await query<{ total: string }>(
@@ -440,7 +519,7 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
          FROM topik_items i
          JOIN topik_tests t ON t.id = i.topik_test_id
         ${whereClause}
-        ORDER BY t.test_number, i.item_number
+        ORDER BY t.test_number, t.topik_level, i.item_number
         LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
       pageParams,
     );
@@ -625,13 +704,46 @@ router.get(
 
 const AttemptSectionSchema = z.enum(['reading', 'listening']);
 
-// Postgres INTEGER (int4) upper bound. source_test / current_idx / remaining_ms
-// are INTEGER columns, so the zod schema must reject anything above this at the
-// boundary (400) rather than let it reach SQL and overflow (500). See the
-// project's grammar-Bank incident: a validation schema looser than the DB
-// constraint behind it turns bad input into a 500.
-const INT4_MAX = 2_147_483_647;
+// ---------------------------------------------------------------------------
+// Submitted-attempt tombstone (F-UP-014 — the resurrect race).
+//
+// The race: a progress PUT /topik/attempt can still be on the wire when the
+// exam submits. The client aborts it and fires a clearAttempt() mop-up, but the
+// abort is client-side only — a PUT the server processes AFTER both the
+// /mock/submit DELETE and the mop-up DELETE would re-INSERT the row and
+// resurface a resume banner for a graded test.
+//
+// Server-side closure, with NO schema change (topik_attempts has no status
+// column): submitting a mock no longer deletes the attempt row — it UPSERTS a
+// TOMBSTONE (picks = {"__closed__": true}, remaining_ms/current_idx zeroed,
+// the submitted source_test/section kept). Then:
+//   - GET  /topik/attempt treats a tombstone as "no attempt" (returns null),
+//   - PUT  /topik/attempt refuses (silent 204 no-op) to overwrite a FRESH
+//     tombstone for the SAME (source_test, section) — exactly the shape of the
+//     delayed racing save. A save for a DIFFERENT paper (a new mock) always
+//     wins, and after the grace window a retake of the same paper saves
+//     normally again (retakes are never permanently blocked),
+//   - DELETE /topik/attempt preserves a fresh tombstone (the mop-up must not
+//     evict the guard the submit just planted) but still deletes live attempts
+//     (abandon) and stale tombstones (cleanup).
+//
+// The '__closed__' key cannot be forged from the wire: AttemptBodySchema's
+// picks keys are regex-bound to ^\d+$, so no client payload can carry it.
+// Grace window: the racing PUT lands within (milli)seconds of the submit —
+// 15s is generous for a delayed request while keeping an immediate same-paper
+// retake's save-blackout short (each refused save is silently absorbed and the
+// next tick after the window lands; picks are re-sent cumulatively).
+// ---------------------------------------------------------------------------
+const ATTEMPT_TOMBSTONE_KEY = '__closed__';
+const ATTEMPT_TOMBSTONE_GRACE_SECONDS = 15;
 
+/** True when a topik_attempts.picks value is the submitted-attempt tombstone. */
+function isAttemptTombstone(picks: Record<string, string>): boolean {
+  return Object.prototype.hasOwnProperty.call(picks, ATTEMPT_TOMBSTONE_KEY);
+}
+
+// source_test / current_idx / remaining_ms are INTEGER columns — INT4-bounded
+// at the boundary (INT4_MAX, defined with the domain constants above).
 const AttemptBodySchema = z
   .object({
     section: AttemptSectionSchema,
@@ -661,7 +773,9 @@ interface AttemptRow {
  * GET /topik/attempt — the caller's single in-progress mock attempt, or null.
  *
  * User-scoped (`getUserId` — no IDOR); feeds the mock-select screen's resume
- * banner (F-007). Returns `{ attempt: null }` when there is none.
+ * banner (F-007). Returns `{ attempt: null }` when there is none — including
+ * when the stored row is a submitted-attempt tombstone (F-UP-014): a graded
+ * test must never resurface as resumable.
  */
 router.get('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
@@ -675,7 +789,7 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
     );
     const row = rows[0];
     res.status(200).json({
-      attempt: row
+      attempt: row && !isAttemptTombstone(row.picks)
         ? {
             section: row.section,
             sourceTest: row.source_test,
@@ -698,6 +812,13 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
  * ONE row per user (`ON CONFLICT (user_id)`) — advancing/starting a mock replaces
  * any prior in-progress attempt. `user_id` is the SESSION id, never client-
  * supplied. The client calls this as the user answers + on unmount.
+ *
+ * F-UP-014 resurrect guard: the upsert's DO UPDATE carries a WHERE that refuses
+ * to overwrite a FRESH submitted-attempt tombstone for the SAME
+ * (source_test, section) — the exact shape of a racing save the server delayed
+ * past the submit. The refused save is a silent 204 no-op (the attempt it was
+ * saving is already graded; there is nothing to keep). Any other save — a
+ * different paper, or the same paper after the grace window — proceeds.
  */
 router.put(
   '/attempt',
@@ -717,7 +838,12 @@ router.put(
            current_idx  = EXCLUDED.current_idx,
            picks        = EXCLUDED.picks,
            remaining_ms = EXCLUDED.remaining_ms,
-           version      = topik_attempts.version + 1`,
+           version      = topik_attempts.version + 1
+         WHERE NOT (topik_attempts.picks ? '${ATTEMPT_TOMBSTONE_KEY}'
+                    AND topik_attempts.source_test = EXCLUDED.source_test
+                    AND topik_attempts.section = EXCLUDED.section
+                    AND topik_attempts.updated_at >
+                        now() - make_interval(secs => $7))`,
         [
           userId,
           b.section,
@@ -725,6 +851,7 @@ router.put(
           b.currentIdx,
           JSON.stringify(b.picks),
           b.remainingMs,
+          ATTEMPT_TOMBSTONE_GRACE_SECONDS,
         ],
       );
       res.status(204).end();
@@ -738,13 +865,25 @@ router.put(
  * DELETE /topik/attempt — discard the caller's in-progress mock attempt.
  *
  * Used when the user abandons a test / starts fresh. Idempotent (204 whether or
- * not a row existed). Submitting a mock also clears the attempt inside
- * /mock/submit's transaction.
+ * not a row existed). Submitting a mock also closes the attempt inside
+ * /mock/submit's transaction (as a tombstone — F-UP-014).
+ *
+ * A FRESH tombstone is preserved, not deleted: the client fires this as a
+ * mop-up right after submit, and deleting the tombstone would evict the very
+ * guard that keeps a delayed racing save from resurrecting the graded attempt.
+ * Live attempts (abandon) and stale tombstones (cleanup) delete normally, so
+ * abandoning + immediately restarting a test is unaffected.
  */
 router.delete('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
-    await query(`DELETE FROM topik_attempts WHERE user_id = $1`, [userId]);
+    await query(
+      `DELETE FROM topik_attempts
+        WHERE user_id = $1
+          AND NOT (picks ? '${ATTEMPT_TOMBSTONE_KEY}'
+                   AND updated_at > now() - make_interval(secs => $2))`,
+      [userId, ATTEMPT_TOMBSTONE_GRACE_SECONDS],
+    );
     res.status(204).end();
   } catch (err) {
     next(err);
@@ -767,61 +906,103 @@ const MockBodySchema = z
   .object({
     // OPTIONAL — when omitted the server deterministically picks a test for the
     // section (see the route doc). When present it must be a positive int.
-    sourceTest: z.number().int().positive().optional(),
+    // .max(INT4_MAX): binds to the INTEGER test_number column (overflow → 500
+    // without the bound; garbage input must 400 at the boundary).
+    sourceTest: z.number().int().positive().max(INT4_MAX).optional(),
+    // OPTIONAL exam-paper discriminator (D-1). TOPIK I and TOPIK II sittings
+    // share every test_number, so a test_number alone names TWO exams. When
+    // omitted the server resolves ONE deterministically (see resolveMockTest);
+    // the resolved level is echoed in the response so submit/resume can pin it.
+    topikLevel: TopikLevelSchema.optional(),
     section: MockSectionSchema,
   })
   .strict();
 
-/**
- * Resolve the `sourceTest` for a mock: if the client supplied one, use it;
- * otherwise the server PICKS deterministically — the HIGHEST `topik_tests`
- * `test_number` that has at least one gradeable item in the section. "Highest"
- * makes the pick stable and intuitively "the newest test" without the client
- * needing to know test numbers. The same survivor guard the rest of the file
- * uses (`>=2 options AND answer NOT NULL`) restricts the candidates to gradeable
- * items, so the picked test always yields a usable mock. Returns null when no
- * test has a gradeable item in the section (empty corpus for that section).
- */
-async function resolveMockSourceTest(
-  section: SectionEnum,
-  requested: number | undefined,
-): Promise<number | null> {
-  if (requested !== undefined) return requested;
-  const { rows } = await query<{ test_number: number }>(
-    `SELECT t.test_number
-       FROM topik_tests t
-       JOIN topik_items i ON i.topik_test_id = t.id
-      WHERE i.section = $1::topik_section
-        AND ${ANSWERABLE_ITEM_SQL}
-      ORDER BY t.test_number DESC
-      LIMIT 1`,
-    [section],
-  );
-  return rows[0]?.test_number ?? null;
+/** The single exam paper a mock is assembled from / graded against. */
+interface ResolvedMockTest {
+  sourceTest: number;
+  topikLevel: TopikLevel;
 }
 
 /**
- * POST /topik/mock — a section's items for `sourceTest` (server-picked when
- * omitted) in original `item_number` order, ANSWER-STRIPPED for a timed mock.
+ * Resolve the ONE exam paper (test_number + topik_level) a mock draws from.
  *
- * Body: `{ section: 'reading'|'listening' (or 읽기/듣기), sourceTest?: number }`.
- * Returns `{ sourceTest, section, items: TopikMockItemDTO[] }` — `sourceTest` is
- * echoed so `/topik/mock/submit` can reference the same test; `section` is the
+ * TOPIK I and TOPIK II sittings share every `test_number` (migration 029 widened
+ * the natural key to include `topik_level` for exactly this reason), so a mock
+ * selected by test_number alone MERGES two different exams — duplicate item
+ * numbers, mixed difficulty, and a nondeterministic LIMIT-50 cut (D-1). Every
+ * mock surface (assembly AND grading) must therefore resolve to a single
+ * (test_number, topik_level) pair before touching topik_items.
+ *
+ * Resolution is deterministic: among tests with at least one gradeable item in
+ * the section (the same survivor guard the rest of the file uses), constrained
+ * by whichever of `requestedTest` / `requestedLevel` the client supplied, pick
+ * the HIGHEST test_number ("the newest test") and, within it, TOPIK II over
+ * TOPIK I (the level with the L3+ prep audience; 'TOPIK II' > 'TOPIK I'
+ * lexically, so a plain ORDER BY DESC expresses it). Because /mock and
+ * /mock/submit share this resolver, a client that never sends `topikLevel`
+ * still grades EXACTLY the paper it was served — and F-007 resume, which
+ * replays `POST /topik/mock {sourceTest, section}`, re-fetches the identical
+ * paper. Returns null when nothing matches (empty corpus / unknown test).
+ */
+async function resolveMockTest(
+  section: SectionEnum,
+  requestedTest: number | undefined,
+  requestedLevel: TopikLevel | undefined,
+): Promise<ResolvedMockTest | null> {
+  const params: unknown[] = [section];
+  const filters = [`i.section = $1::topik_section`, ANSWERABLE_ITEM_SQL];
+  if (requestedTest !== undefined) {
+    params.push(requestedTest);
+    filters.push(`t.test_number = $${params.length}`);
+  }
+  if (requestedLevel !== undefined) {
+    params.push(requestedLevel);
+    filters.push(`t.topik_level = $${params.length}`);
+  }
+  const { rows } = await query<{ test_number: number; topik_level: TopikLevel }>(
+    `SELECT t.test_number, t.topik_level
+       FROM topik_tests t
+       JOIN topik_items i ON i.topik_test_id = t.id
+      WHERE ${filters.join(' AND ')}
+      ORDER BY t.test_number DESC, t.topik_level DESC
+      LIMIT 1`,
+    params,
+  );
+  const row = rows[0];
+  return row ? { sourceTest: row.test_number, topikLevel: row.topik_level } : null;
+}
+
+/**
+ * POST /topik/mock — a single exam paper's section items for `sourceTest`
+ * (server-picked when omitted) in original `item_number` order, ANSWER-STRIPPED
+ * for a timed mock.
+ *
+ * Body: `{ section: 'reading'|'listening' (or 읽기/듣기), sourceTest?: number,
+ * topikLevel?: 'TOPIK I'|'TOPIK II' }`. Returns `{ sourceTest, topikLevel,
+ * section, items: TopikMockItemDTO[] }` — `sourceTest` + `topikLevel` name the
+ * ONE resolved exam paper (D-1: both levels share every test_number) and are
+ * echoed so `/topik/mock/submit` grades the same paper; `section` is the
  * normalized enum. Items are stripped via `toMockItemDTO` (no `correct`, no
  * `explanation` — type-level, see above + SECURITY.md §14.1).
  *
  * Writing section → 400 (MockSectionSchema; FU-NF-47). An empty result (unknown
- * or empty test/section) is a valid 200 with `items: []` — same posture as the
- * other read routes; the client surfaces "no items".
+ * or empty test/section/level) is a valid 200 with `items: []` — same posture as
+ * the other read routes; the client surfaces "no items".
  */
 router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof MockBodySchema>;
 
-    const sourceTest = await resolveMockSourceTest(body.section, body.sourceTest);
-    if (sourceTest === null) {
-      // No test has a gradeable item in this section — no mock to assemble.
-      res.status(200).json({ sourceTest: null, section: body.section, items: [] });
+    const resolved = await resolveMockTest(body.section, body.sourceTest, body.topikLevel);
+    if (resolved === null) {
+      // No paper has a gradeable item matching the request — no mock to assemble.
+      res.status(200).json({
+        sourceTest: body.sourceTest ?? null,
+        topikLevel: body.topikLevel ?? null,
+        section: body.section,
+        items: [],
+      });
       return;
     }
 
@@ -830,15 +1011,17 @@ router.post('/mock', cheapLimiter(), validateBody(MockBodySchema), async (req, r
          FROM topik_items i
          JOIN topik_tests t ON t.id = i.topik_test_id
         WHERE t.test_number = $1
-          AND i.section = $2::topik_section
+          AND t.topik_level = $2
+          AND i.section = $3::topik_section
           AND ${ANSWERABLE_ITEM_SQL}
         ORDER BY i.item_number
         LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}`,
-      [sourceTest, body.section],
+      [resolved.sourceTest, resolved.topikLevel, body.section],
     );
 
     res.status(200).json({
-      sourceTest,
+      sourceTest: resolved.sourceTest,
+      topikLevel: resolved.topikLevel,
       section: body.section,
       items: mapRows(rows).map(toMockItemDTO),
     });
@@ -857,7 +1040,10 @@ const MAX_MOCK_ANSWERS = 200;
 
 const MockSubmitAnswerSchema = z
   .object({
-    itemId: z.number().int().positive(),
+    // topik_items.id is BIGINT — capped at MAX_SAFE_INTEGER (the gradeWriting
+    // pattern): above 2^53 a JS number can't hold the id exactly anyway, and the
+    // cap keeps any future SQL bind of this value from overflowing int8.
+    itemId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     picked: z.enum(['a', 'b', 'c', 'd']),
     timeMs: z.number().int().nonnegative().max(60 * 60 * 1000).optional(),
   })
@@ -865,7 +1051,10 @@ const MockSubmitAnswerSchema = z
 
 const MockSubmitBodySchema = z
   .object({
-    sourceTest: z.number().int().positive(),
+    // .max(INT4_MAX): binds to the INTEGER test_number column (see MockBodySchema).
+    sourceTest: z.number().int().positive().max(INT4_MAX),
+    // Optional exam-paper discriminator — see MockBodySchema / resolveMockTest.
+    topikLevel: TopikLevelSchema.optional(),
     section: MockSectionSchema,
     // min 0: a timed-out exam with nothing answered still submits — every item
     // is then graded as skipped/incorrect and the result reveals the full answer
@@ -888,9 +1077,11 @@ interface MockRevealDTO {
 /**
  * POST /topik/mock/submit — grade a whole mock section server-side and score it.
  *
- * Body (`.strict()`): `{ sourceTest, section, answers:[{itemId,picked,timeMs?}],
- * durationMs? }`. Loads the section's gradeable items for `sourceTest` (the same
- * assembly `/topik/mock` served) and grades each item against the DB answer —
+ * Body (`.strict()`): `{ sourceTest, topikLevel?, section,
+ * answers:[{itemId,picked,timeMs?}], durationMs? }`. Resolves the ONE exam paper
+ * (test_number + topik_level — D-1) with the same resolver `/topik/mock` used,
+ * loads its gradeable section items (the same assembly `/topik/mock` served)
+ * and grades each item against the DB answer —
  * the client never had the answer (A1), so grading is purely server-side. Items
  * the user did not answer (in the served set but absent from `answers`) count as
  * incorrect/unanswered (`picked: null`).
@@ -899,8 +1090,8 @@ interface MockRevealDTO {
  * answer (mode='mock', `user_id` from the SESSION — never client-supplied,
  * `is_correct` server-computed). Append-only, mirroring the per-item route.
  *
- * Returns `200 { sourceTest, section, totalItems, answered, correct, percentage,
- * band, items: MockRevealDTO[] }`. `percentage` = correct/totalItems*100 (1-dp);
+ * Returns `200 { sourceTest, topikLevel, section, totalItems, answered, correct,
+ * percentage, band, items: MockRevealDTO[] }`. `percentage` = correct/totalItems*100 (1-dp);
  * `band` from `bandForPercentage`. The reveal array carries the correct choice +
  * explanation for EVERY served item (post-exam reveal), in item_number order.
  *
@@ -916,19 +1107,28 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
     const userId = getUserId(req);
     const body = req.body as z.infer<typeof MockSubmitBodySchema>;
 
-    // Load the section's gradeable items for this test — the authoritative set
-    // of items the mock comprised. mapRowToDTO drops ungradeable rows, so the
-    // grading universe is exactly the items `/topik/mock` would have served.
+    // Resolve the ONE exam paper to grade — the SAME resolver /topik/mock used
+    // to assemble it (D-1), so a client that never sends `topikLevel` still
+    // grades exactly the paper it was served, never a merged/other-level set.
+    const resolved = await resolveMockTest(body.section, body.sourceTest, body.topikLevel);
+    if (resolved === null) {
+      throw new NotFoundError('no gradeable mock items for this test and section');
+    }
+
+    // Load the paper's gradeable items — the authoritative set of items the
+    // mock comprised. mapRowToDTO drops ungradeable rows, so the grading
+    // universe is exactly the items `/topik/mock` would have served.
     const { rows } = await query<TopikItemRow>(
       `SELECT ${ITEM_COLUMNS}
          FROM topik_items i
          JOIN topik_tests t ON t.id = i.topik_test_id
         WHERE t.test_number = $1
-          AND i.section = $2::topik_section
+          AND t.topik_level = $2
+          AND i.section = $3::topik_section
           AND ${ANSWERABLE_ITEM_SQL}
         ORDER BY i.item_number
         LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}`,
-      [body.sourceTest, body.section],
+      [resolved.sourceTest, resolved.topikLevel, body.section],
     );
     const items = mapRows(rows);
     if (items.length === 0) {
@@ -979,12 +1179,27 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
           [userId, row.itemId, row.picked, row.isCorrect, row.timeMs],
         );
       }
-      // The section is now submitted — clear the in-progress attempt so the
-      // resume banner doesn't offer to re-take a finished test (F-007). Same tx
-      // as the score write: a graded section and a cleared attempt commit together.
-      await client.query(`DELETE FROM topik_attempts WHERE user_id = $1`, [
-        userId,
-      ]);
+      // The section is now submitted — close the in-progress attempt so the
+      // resume banner doesn't offer to re-take a finished test (F-007). Not a
+      // DELETE but a TOMBSTONE upsert (F-UP-014): the tombstone is what lets
+      // PUT /topik/attempt refuse a delayed racing save for this same paper
+      // (see the tombstone block above); GET already reports it as null. Same
+      // tx as the score write: a graded section and a closed attempt commit
+      // together.
+      await client.query(
+        `INSERT INTO topik_attempts
+           (user_id, section, source_test, current_idx, picks, remaining_ms)
+         VALUES ($1, $2::topik_section, $3, 0,
+                 jsonb_build_object('${ATTEMPT_TOMBSTONE_KEY}', true), 0)
+         ON CONFLICT (user_id) DO UPDATE SET
+           section      = EXCLUDED.section,
+           source_test  = EXCLUDED.source_test,
+           current_idx  = 0,
+           picks        = EXCLUDED.picks,
+           remaining_ms = 0,
+           version      = topik_attempts.version + 1`,
+        [userId, body.section, resolved.sourceTest],
+      );
     });
 
     const totalItems = reveals.length;
@@ -993,7 +1208,8 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
     const percentage = Math.round((correct / totalItems) * 1000) / 10;
 
     res.status(200).json({
-      sourceTest: body.sourceTest,
+      sourceTest: resolved.sourceTest,
+      topikLevel: resolved.topikLevel,
       section: body.section,
       totalItems,
       answered,
@@ -1055,7 +1271,10 @@ router.post('/study', cheapLimiter(), validateBody(StudyBodySchema), async (req,
 });
 
 const AnswerParamsSchema = z.object({
-  itemId: z.coerce.number().int().positive(),
+  // topik_items.id is BIGINT — .max(MAX_SAFE_INTEGER) rejects a garbage id like
+  // 1e20 at the boundary (400) instead of overflowing int8 in pg (22003 → 500).
+  // No real id is affected: ids beyond 2^53 can't round-trip a JS number anyway.
+  itemId: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 
 const AnswerBodySchema = z

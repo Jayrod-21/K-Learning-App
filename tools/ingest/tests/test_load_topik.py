@@ -265,6 +265,59 @@ def test_topik_writing_short_answer_and_char_range(schema):
     assert char_range_53 == "200~300"
 
 
+def test_topik_reingest_preserves_db_only_extra_enrichment(schema):
+    """Regression guard (SWEEP_data_corpus D-6): a re-ingest must NOT wipe
+    DB-only ``extra`` enrichment keys.
+
+    ~1.9k ``extra->'explanation'`` values exist only in the live DB (the source
+    JSONs carry no explanations and ``TopikItemModel`` is strict, so the key
+    cannot ride through a reload). The old upsert's ``extra = EXCLUDED.extra``
+    rebuilt ``extra`` from source and silently destroyed the enrichment on any
+    re-ingest. The fixed upsert merges:
+    ``extra = (topik_items.extra - 'char_range') || EXCLUDED.extra`` — the
+    loader-owned key (``char_range``) stays source-authoritative while every
+    other key survives a reload.
+    """
+    url = schema
+    cfg = LoaderConfig(database_url=url, batch_size=50, force=True)
+
+    async def load_once() -> None:
+        async with AsyncConnectionPool(url, min_size=1, max_size=2, open=False) as pool:
+            await pool.open(wait=True, timeout=15)
+            await load_topik.load(pool, FIXTURE_II_WRITING, cfg)
+
+    asyncio.run(load_once())
+
+    # Simulate the DB-only enrichment pass on item #53 (which also carries the
+    # loader-owned char_range key, so both merge directions are exercised).
+    async def enrich() -> None:
+        async with await psycopg.AsyncConnection.connect(url) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE topik_items i SET extra = jsonb_set(extra, '{explanation}', "
+                    "'\"DB-only enrichment — must survive re-ingest\"') "
+                    "FROM topik_tests t WHERE t.id = i.topik_test_id "
+                    "AND t.test_number = 98 AND t.section = 'writing' AND i.item_number = 53"
+                )
+            await conn.commit()
+
+    asyncio.run(enrich())
+    asyncio.run(load_once())  # re-ingest the same file (force)
+
+    extra_53 = asyncio.run(
+        _scalar(
+            url,
+            "SELECT extra FROM topik_items i JOIN topik_tests t ON t.id = i.topik_test_id "
+            "WHERE t.test_number = 98 AND t.section = 'writing' AND i.item_number = 53",
+        )
+    )
+    extra_53 = json.loads(extra_53) if isinstance(extra_53, str) else extra_53
+    # Enrichment survived the reload...
+    assert extra_53.get("explanation") == "DB-only enrichment — must survive re-ingest"
+    # ...and the loader-owned key was still refreshed from source.
+    assert extra_53.get("char_range") == "200~300"
+
+
 def test_topik_count_mismatch_marks_failed_not_complete(schema):
     """Regression guard (REVIEW_TOPIK_LOAD_B B1): a loaded-vs-source count
     mismatch must mark the source ``failed`` and raise — never ``complete``.

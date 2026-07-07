@@ -75,7 +75,13 @@ describe('streamMessage', () => {
     // The build-time injected default is '' in dev tests; we rely on that.
   });
 
-  it('uses the dedicated /stream suffix by default', async () => {
+  it('always targets the dedicated /stream suffix — the only endpoint that streams', async () => {
+    // Regression guard for the removed `streamPath: 'query'` option: the
+    // `?stream=1` handler is the plain-JSON append route (it ignores unknown
+    // query params). A caller steered there would pay for a full Claude turn
+    // the server persists (version bump included), then throw `stream_parse`
+    // at the content-type gate and 409 on every retry. The option is gone;
+    // the URL must be the /stream suffix, with no query string.
     let capturedUrl = '';
     const spy = vi
       .spyOn(sse, 'streamSse')
@@ -92,26 +98,8 @@ describe('streamMessage', () => {
 
     expect(spy).toHaveBeenCalled();
     expect(capturedUrl).toContain('/conversation/7/messages/stream');
-  });
-
-  it('uses the ?stream=1 query when streamPath="query"', async () => {
-    let capturedUrl = '';
-    vi.spyOn(sse, 'streamSse').mockImplementation(async (url) => {
-      capturedUrl = url;
-    });
-
-    const ctrl = new AbortController();
-    await streamMessage(
-      7,
-      { content: 'hi', expected_version: 1 },
-      {
-        signal: ctrl.signal,
-        onDelta: () => undefined,
-        streamPath: 'query',
-      },
-    );
-
-    expect(capturedUrl).toContain('/conversation/7/messages?stream=1');
+    expect(capturedUrl).not.toContain('stream=1');
+    expect(capturedUrl).not.toContain('?');
   });
 
   it('dispatches on the INNER `.event` of data-only frames (B-010)', async () => {
@@ -295,14 +283,19 @@ describe('streamMessage — server-shaped SSE frames (B-010 regression)', () => 
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it('surfaces an in-band error frame: onError once + rejects with server code', async () => {
+  it('surfaces a persist-fail frame with FIXED copy + the recovered text preserved', async () => {
+    // The persistence_error frame's `message` is server-side error detail
+    // (potentially raw pg prose) — the client must substitute fixed copy,
+    // never echo it. The frame's `recovered_text` is the full assistant
+    // reply the user just watched stream in; dropping it (the old behaviour)
+    // threw away a whole Claude turn.
     sseResponse(
       serverFrames(
         { event: 'delta', text: '부분 답' },
         {
           event: 'error',
           code: 'persistence_error',
-          message: 'persistence failed',
+          message: 'duplicate key value violates unique constraint "x"',
           recovered_text: '부분 답',
         },
       ),
@@ -321,14 +314,20 @@ describe('streamMessage — server-shaped SSE frames (B-010 regression)', () => 
       ),
     ).rejects.toMatchObject({
       code: 'persistence_error',
-      message: 'persistence failed',
+      // Fixed copy — the raw server prose must NOT ride into the UI chip.
+      message: 'The reply streamed but could not be saved. Retry to send it again.',
+      // The streamed assistant text is preserved for recovery.
+      recoveredText: '부분 답',
     });
 
     // Deltas before the error still streamed; the error fired exactly once
     // (no double-fire from the internal abort) and the close was not clean.
     expect(onDelta).toHaveBeenCalledExactlyOnceWith('부분 답');
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0]?.[0]).toBeInstanceOf(ApiError);
+    const surfaced = onError.mock.calls[0]?.[0] as ApiError;
+    expect(surfaced).toBeInstanceOf(ApiError);
+    expect(surfaced.message).not.toContain('duplicate key');
+    expect(surfaced.recoveredText).toBe('부분 답');
     expect(onDone).not.toHaveBeenCalled();
   });
 

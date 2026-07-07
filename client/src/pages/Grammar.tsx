@@ -27,8 +27,10 @@
  *                durably — a tab switch or reload no longer resets the drill to
  *                the first corpus row (the live "always N이다" bug). A failed
  *                generate/submit NEVER blanks the screen — it surfaces an
- *                inline `role="alert"` + Retry. When the generate endpoint is
- *                unreachable the panel falls back to a local mock drill and
+ *                inline `role="alert"` + Retry. In PROD a failed generate
+ *                shows a retryable ErrorCard whose Retry RE-GENERATES (no
+ *                fixture substitution — see the threat model note below); in
+ *                dev/non-PROD the panel falls back to a local mock drill and
  *                shows the 🅂 MockBadge so the dev signal stays honest.
  *
  * Data:
@@ -61,6 +63,12 @@
  *   - The Pass-9 `POST /grammar-drill` endpoint will need a body-size
  *     guard server-side; the Pass-2 `maxLength={500}` on the textarea
  *     stops a runaway paste, but the server is the source of truth.
+ *   - **Fixture-as-real in PROD.** `MockBadge` renders null in production,
+ *     so serving `MOCK_DRILLS` + local pseudo-scoring on a generate failure
+ *     would present a fabricated drill and a fabricated score as REAL —
+ *     the exact failure class `useEndpointOrMock` and MockMode gate. The
+ *     DrillPanel generate fallback is therefore gated to non-PROD builds;
+ *     in prod a generate failure surfaces a retryable error instead.
  */
 import {
   useCallback,
@@ -563,6 +571,12 @@ function Grammar(): JSX.Element {
   const [detail, setDetail] = useState<KgiuEntryDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState<boolean>(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Id of the row whose detail fetch is authoritative — a slow settle for a
+  // previously tapped (or since-closed) row must not paint its detail under
+  // the currently open row's header. Mirrors the stale-guard in
+  // Reference.tsx's GrammarTab.openDetail. Mock/banked rows use negative ids,
+  // real KGIU rows positive — the namespaces never collide.
+  const detailIdRef = useRef<number | null>(null);
 
   const bankedKeys = useMemo<ReadonlySet<string>>(() => {
     const merged = new Set<string>(bankedState.data?.keys() ?? []);
@@ -611,26 +625,37 @@ function Grammar(): JSX.Element {
 
   const openDetail = useCallback(
     async (row: PatternListItem): Promise<void> => {
+      detailIdRef.current = row.id;
       setOpenRow(row);
       setDetail(null);
       setDetailError(null);
-      if (!row.isReal) return; // mock rows render from row data alone
+      if (!row.isReal) {
+        // Mock/banked rows render from row data alone — no fetch. Reset the
+        // loading flag explicitly: a prior real row's in-flight fetch would
+        // otherwise leave it stuck true (its guarded finally below no longer
+        // owns the sheet).
+        setDetailLoading(false);
+        return;
+      }
       setDetailLoading(true);
       try {
         const d = await grammarService.getPattern(row.id);
+        if (detailIdRef.current !== row.id) return; // superseded by a newer tap / close
         setDetail(d);
       } catch (err) {
+        if (detailIdRef.current !== row.id) return;
         setDetailError(
           err instanceof ApiError ? err.message : 'Detail unavailable',
         );
       } finally {
-        setDetailLoading(false);
+        if (detailIdRef.current === row.id) setDetailLoading(false);
       }
     },
     [],
   );
 
   const closeDetail = useCallback((): void => {
+    detailIdRef.current = null;
     setOpenRow(null);
     setDetail(null);
     setDetailError(null);
@@ -1277,21 +1302,26 @@ function rowToSource(row: PatternListItem): DrillSource {
 
 /**
  * Phases of the per-pattern drill lifecycle. There is deliberately NO 'error'
- * phase: failure is failure-SAFE, not a terminal state. A generate failure falls
- * back to a local mock drill (still 'ready', with a 🅂 badge); a submit failure
- * returns to 'ready' with an inline role=alert ErrorCard and the answer preserved
- * for Retry. The screen never blanks, so an unreachable 'error' phase would be a
- * dead union member that a future `switch (phase)` could mishandle.
+ * phase: failure is failure-SAFE, not a terminal state. A generate failure in
+ * dev falls back to a local mock drill (still 'ready', with a 🅂 badge); in
+ * PROD it returns to 'ready' with `genError` set (panel-level ErrorCard whose
+ * Retry re-generates). A submit failure returns to 'ready' with an inline
+ * role=alert ErrorCard and the answer preserved for Retry. The screen never
+ * blanks, so an unreachable 'error' phase would be a dead union member that a
+ * future `switch (phase)` could mishandle.
  */
 type DrillPhase = 'generating' | 'ready' | 'scoring' | 'revealed';
 
 /**
  * Local mock drills — one per type — used as the fall-back when the generate
- * endpoint is unreachable, so a dev / offline session still exercises the full
- * render + submit flow. The panel rotates these by `idx` and shows the 🅂 badge
- * while any of them is in play. They carry the SAME public shape as a real
- * `DrillItemPublic` (no reference model — that's revealed only on submit), so
- * the DrillCard renders them identically to live items.
+ * endpoint is unreachable IN NON-PROD BUILDS ONLY, so a dev / offline session
+ * still exercises the full render + submit flow. The panel rotates these by
+ * `idx` and shows the 🅂 badge while any of them is in play. They carry the
+ * SAME public shape as a real `DrillItemPublic` (no reference model — that's
+ * revealed only on submit), so the DrillCard renders them identically to live
+ * items. In PROD the badge renders null, which is exactly why these fixtures
+ * must never be served there (fabricated drill + fabricated score would read
+ * as real) — the generate catch gates on `import.meta.env.PROD`.
  */
 const MOCK_DRILLS: readonly DrillItemPublic[] = [
   {
@@ -1320,6 +1350,14 @@ const MOCK_DRILLS: readonly DrillItemPublic[] = [
     promptEn: 'How is the new café?',
   },
 ];
+
+/**
+ * Fixed copy for a PROD generate failure. Author-controlled — ErrorCard's
+ * contract forbids echoing untrusted server message text (mirrors the
+ * `Login.messageFor` fixed-lookup rule).
+ */
+const DRILL_GENERATE_ERROR_COPY =
+  "The drill couldn't be generated. Check your connection and try again.";
 
 /**
  * Synthesize a plausible reveal for a mock drill so the offline flow can paint
@@ -1431,9 +1469,15 @@ function DrillPanel({
   // True iff the current item came from the local mock fall-back (the generate
   // endpoint was unreachable). Drives the 🅂 badge + the offline-mock scoring.
   const [isMock, setIsMock] = useState(false);
-  // Monotonic retry tick — bumped by the Retry button to re-run the generate
-  // effect without advancing the pattern (mirrors useEndpointOrMock's `tick`).
-  const [retryTick, setRetryTick] = useState(0);
+  // PROD generate failure: `item` stays null and this holds the fixed error
+  // copy for the panel-level ErrorCard. Distinct from `error` (a SUBMIT
+  // failure rendered inside DrillCard, whose Retry re-submits): a generate
+  // failure has no item to submit against — `submit()`'s `if (!item) return`
+  // would dead-end — so its Retry must RE-GENERATE via `genTick` instead.
+  const [genError, setGenError] = useState<string | null>(null);
+  // Bumped by the generate-failure Retry to re-fire the generate effect for
+  // the SAME pattern (idx/patternKey unchanged).
+  const [genTick, setGenTick] = useState(0);
 
   // FU-NF-42 B3: a deep-link target wins over the rotation. When present we
   // drill exactly that pattern; otherwise we cycle `pool[idx]`. The targeted
@@ -1457,10 +1501,11 @@ function DrillPanel({
     };
   }, []);
 
-  // Generate a drill whenever the active pattern changes (idx → pattern) or a
-  // Retry is requested (`retryTick`). The generate is real-first; on failure it
-  // falls to a local mock drill so the screen never dead-ends. A stale settle
-  // is dropped via the abort signal.
+  // Generate a drill whenever the active pattern changes (idx → pattern) or
+  // the generate-failure Retry bumps `genTick`. The generate is real-first;
+  // on failure the screen never dead-ends — dev falls back to a local mock
+  // drill, PROD surfaces a retryable ErrorCard (never fixture data). A stale
+  // settle is dropped via the abort signal.
   useEffect(() => {
     if (!source) return;
     genCtrlRef.current?.abort();
@@ -1477,6 +1522,7 @@ function DrillPanel({
     setUserInput('');
     setError(null);
     setIsMock(false);
+    setGenError(null);
 
     const mockItem = MOCK_DRILLS[idx % MOCK_DRILLS.length];
 
@@ -1498,8 +1544,18 @@ function DrillPanel({
         if (ctrl.signal.aborted) return;
         // Canceled (navigated away) — let the superseding run own the state.
         if (err instanceof ApiError && err.code === 'canceled') return;
-        // Endpoint unreachable / upstream down → fall back to a local mock
-        // drill rather than blanking the screen. The 🅂 badge flags it.
+        // PROD: no fixture substitution — MockBadge renders null in prod, so
+        // a mock drill + local pseudo-scoring would read as a REAL drill and
+        // a REAL score (the fake-data-as-real class useEndpointOrMock and
+        // MockMode gate). Surface the retryable error; Retry re-generates.
+        if (import.meta.env.PROD) {
+          setGenError(DRILL_GENERATE_ERROR_COPY);
+          setPhase('ready');
+          return;
+        }
+        // DEV failure-safe: endpoint unreachable / upstream down → fall back
+        // to a local mock drill rather than blanking the screen. The 🅂 badge
+        // flags it.
         setItem(mockItem);
         setAttemptId(null);
         setIsMock(true);
@@ -1507,11 +1563,12 @@ function DrillPanel({
       }
     })();
     // `idx` + `patternKey` are the stable triggers (`source` is a fresh object
-    // each render); `retryTick` re-runs on demand. A deep-link target swaps the
-    // `patternKey` (vs. the rotation), so it re-fires the generate cleanly. The
-    // display/meaning are read off the same source, so the minimal deps hold.
+    // each render). A deep-link target swaps the `patternKey` (vs. the
+    // rotation), so it re-fires the generate cleanly. The display/meaning are
+    // read off the same source, so the minimal deps hold. `genTick` re-fires
+    // the SAME pattern after a PROD generate failure (the ErrorCard's Retry).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, patternKey, retryTick]);
+  }, [idx, patternKey, genTick]);
 
   // Move past the current pattern. With a deep-link target active there is no
   // `idx` rotation to advance into, so we drop the target (→ parent clears it)
@@ -1535,8 +1592,12 @@ function DrillPanel({
     writeDrillCursor(idx);
   }, [idx]);
 
+  // Retry for a GENERATE failure: re-fire the generate effect for the same
+  // pattern. This must NOT be `submit` — with `item === null` (the generate
+  // never produced a drill) `submit()`'s `if (!item) return` guard makes the
+  // button a silent no-op. The effect itself clears `genError` on re-run.
   const retryGenerate = useCallback((): void => {
-    setRetryTick((t) => t + 1);
+    setGenTick((t) => t + 1);
   }, []);
 
   const submit = useCallback(async (): Promise<void> => {
@@ -1596,7 +1657,12 @@ function DrillPanel({
   return (
     <>
       {isMock ? <MockBadge /> : null}
-      {phase === 'generating' || !item ? (
+      {genError !== null ? (
+        // PROD generate failure — there is no item (and hence no DrillCard),
+        // so the error renders at panel level with its OWN Retry that
+        // re-generates. Fixed copy, never server prose.
+        <ErrorCard message={genError} onRetry={retryGenerate} />
+      ) : phase === 'generating' || !item ? (
         <Card className="km-grammar__card" aria-busy="true">
           <div className="km-grammar__state" role="status">
             Generating drill…
@@ -1613,7 +1679,16 @@ function DrillPanel({
           onSubmit={() => {
             void submit();
           }}
-          onRetry={retryGenerate}
+          // The only error `DrillCard` ever renders is a SUBMIT failure (a
+          // generate failure never reaches DrillCard: dev falls back to the
+          // local mock drill, prod renders the panel-level ErrorCard above
+          // whose Retry re-generates), and its copy promises "Your answer is
+          // still here — try again". Retry therefore RE-SUBMITS the preserved
+          // answer; wiring it to a regenerate would erase the answer and mint
+          // a fresh drill, contradicting the message.
+          onRetry={() => {
+            void submit();
+          }}
           onSkip={advance}
           onNext={advance}
         />

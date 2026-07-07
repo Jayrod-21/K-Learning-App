@@ -165,6 +165,33 @@ describe('generateGrammarDrill — tool-use parse per type', () => {
       proxy.generateGrammarDrill({ ...GEN_INPUT, drillType: 'cloze' }),
     ).rejects.toBeInstanceOf(ClaudeOutputSchemaError);
   });
+
+  // Regression for SWEEP_server_services #2: generate_grammar_drill ships with
+  // cacheTtl 0 = "do not cache" (config.ts — we deliberately want variety when
+  // re-drilling the same pattern). The pre-fix cache stored ttl-0 writes with
+  // NO expiry, so the identical drill was served forever: this scenario then
+  // saw ONE SDK call and a populated cache.
+  it('ttl-0 route: two identical generate calls both hit the SDK, nothing cached', async () => {
+    const toolResponse = {
+      toolUse: {
+        name: 'submit_drill',
+        input: {
+          ...COMMON_TOOL_FIELDS,
+          type: 'transformation',
+          sourceKr: '음식을 다 먹었어요.',
+          sourceEn: 'I ate all the food.',
+        },
+      },
+    };
+    const { proxy, cache, sdk } = setupProxy([toolResponse, toolResponse]);
+    const input = { ...GEN_INPUT, drillType: 'transformation' as const };
+    const r1 = await proxy.generateGrammarDrill(input);
+    const r2 = await proxy.generateGrammarDrill(input);
+    expect(r1.metadata.cacheHit).toBe(false);
+    expect(r2.metadata.cacheHit).toBe(false);
+    expect(sdk.calls).toHaveLength(2);
+    expect(cache.size()).toBe(0);
+  });
 });
 
 describe('scoreGrammarDrill — tool-use parse', () => {

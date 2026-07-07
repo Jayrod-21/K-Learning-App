@@ -52,6 +52,56 @@ describe('searchEntries', () => {
     expect(spy).toHaveBeenCalledWith('/vocab/entries', { params: {} });
     expect(entries).toHaveLength(1);
   });
+
+  it('trims q and DROPS it when whitespace-only (server 400s an empty q)', async () => {
+    // The server schema is `q: z.string().trim().min(1)` — a single space in
+    // the Reference search box used to 400 the whole request and replace the
+    // Vocabulary tab with an error card. Whitespace-only means "browse".
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [],
+      limit: 20,
+      offset: 0,
+    });
+
+    await searchEntries({ q: '   ', corpus: 'vocab_2000_beginner' });
+
+    expect(spy).toHaveBeenCalledWith('/vocab/entries', {
+      params: { corpus: 'vocab_2000_beginner' },
+    });
+  });
+
+  it('trims surrounding whitespace off a real q before sending', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [],
+      limit: 20,
+      offset: 0,
+    });
+
+    await searchEntries({ q: '  학교 ' });
+
+    expect(spy).toHaveBeenCalledWith('/vocab/entries', {
+      params: { q: '학교' },
+    });
+  });
+
+  it('coerces BIGINT string ids off the wire onto the numeric contract', async () => {
+    // `GET /vocab/entries` returns rows raw — pg serialises the BIGINT `id`
+    // as a JSON STRING. A strict `===` against a genuinely-numeric sibling
+    // id (DueCard.vocab_entry_id, MineWordResult.entryId) silently never
+    // matches without this boundary coercion.
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [
+        { id: '77', corpus: 'x', korean: 'a', english: 'b', proficiency: 'L3', theme: null },
+      ],
+      limit: 20,
+      offset: 0,
+    });
+
+    const entries = await searchEntries();
+
+    expect(entries[0]?.id).toBe(77);
+    expect(typeof entries[0]?.id).toBe('number');
+  });
 });
 
 describe('getEntry', () => {
@@ -340,6 +390,29 @@ describe('lists CRUD', () => {
     expect(lists[0]?.name_kr).toBe('병원 어휘');
   });
 
+  it('listLists coerces the BIGINT string id off the wire to a number', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      lists: [
+        {
+          id: '31',
+          name_kr: '병원 어휘',
+          name_en: null,
+          kind: 'vocab',
+          version: 1,
+          entry_count: 0,
+          created_at: 'x',
+          updated_at: 'y',
+        },
+      ],
+      limit: 50,
+      offset: 0,
+    });
+
+    const lists = await listLists();
+    expect(lists[0]?.id).toBe(31);
+    expect(typeof lists[0]?.id).toBe('number');
+  });
+
   it('createList POSTs /vocab/lists with name_kr and unwraps the envelope', async () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
       list: {
@@ -391,6 +464,24 @@ describe('lists CRUD', () => {
 
     expect(spy).toHaveBeenCalledWith('/vocab/lists/7', undefined);
     expect(res.entry_limit).toBe(100);
+  });
+
+  it('getListDetail coerces the list id AND each joined entry_id (BIGINT strings)', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      list: { id: '7', name_kr: 'x', name_en: null, kind: 'vocab', version: 1, entry_count: 1, created_at: 'x', updated_at: 'y' },
+      entries: [
+        { entry_id: '88', position: 0, added_at: 'x', korean: 'a', english: 'b', proficiency: 'L3' },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+
+    const res = await getListDetail(7);
+
+    expect(res.list.id).toBe(7);
+    expect(typeof res.list.id).toBe('number');
+    expect(res.entries[0]?.entry_id).toBe(88);
+    expect(typeof res.entries[0]?.entry_id).toBe('number');
   });
 
   it('patchList PATCHes /vocab/lists/:id and unwraps the list', async () => {

@@ -30,6 +30,7 @@ import { expensiveLimiter, cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import {
+  AppError,
   ConflictError,
   NotFoundError,
   ValidationError,
@@ -90,12 +91,16 @@ router.post(
 );
 
 const MessageParamsSchema = z.object({
-  conversationId: z.coerce.number().int().positive(),
+  // BIGINT id: bounded so a 20-digit id 400s at the boundary instead of
+  // overflowing int8 in pg (22003 → 500; routes sweep #3).
+  conversationId: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 
 const MessageBodySchema = z.object({
   content: z.string().min(1).max(4_000),
-  expected_version: z.number().int().positive(),
+  // conversations.version is INTEGER — bound to INT4 so an absurd version
+  // 400s instead of overflowing in pg (routes sweep #3).
+  expected_version: z.number().int().positive().max(2_147_483_647),
 });
 
 interface ConversationRow {
@@ -557,7 +562,14 @@ async function streamMessage(
       // (lose the streamed bytes). Surface, with the assistant text in
       // the error frame so the client can render it transiently and offer
       // a manual save / retry button.
-      const message = err instanceof Error ? err.message : 'persistence failed';
+      //
+      // Only AppError messages ride the wire — they are server-authored and
+      // safe (e.g. "stale conversation version"). A raw driver/pg message
+      // would leak schema and constraint names to the client, bypassing the
+      // central errorHandler's opaque-500 rule (routes sweep #5); those go to
+      // the log only.
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = err instanceof AppError ? err.message : 'persistence failed';
       writeSseFrame(res, {
         event: 'error',
         code: 'persistence_error',
@@ -566,7 +578,7 @@ async function streamMessage(
       });
       res.end();
       req.log.error(
-        { err: message, conversationId, userId },
+        { err: detail, conversationId, userId },
         'conversation persistence failed after successful stream',
       );
       return;
@@ -588,15 +600,18 @@ async function streamMessage(
     if (res.headersSent) {
       // SSE already started — push an error frame and close. Don't call
       // next(err): the central error handler writes JSON, which would
-      // corrupt the SSE byte stream.
-      const message = err instanceof Error ? err.message : 'stream failed';
+      // corrupt the SSE byte stream. Same redaction rule as the persistence
+      // catch above: only server-authored AppError messages ride the wire;
+      // raw upstream/driver messages stay in the log (routes sweep #5).
+      const detail = err instanceof Error ? err.message : String(err);
+      const message = err instanceof AppError ? err.message : 'stream failed';
       try {
         writeSseFrame(res, { event: 'error', message });
       } catch {
         /* swallow — connection may already be torn down */
       }
       if (!res.writableEnded) res.end();
-      req.log.warn({ err: message }, 'streaming conversation errored after headers');
+      req.log.warn({ err: detail }, 'streaming conversation errored after headers');
       return;
     }
     next(err);

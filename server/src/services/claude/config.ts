@@ -68,7 +68,9 @@ const EnvSchema = z.object({
   CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(2_000),
   CLAUDE_MAX_INPUT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(4_000),
 
-  // Cache TTLs (seconds). null/0 = no expiry.
+  // Cache TTLs (seconds). 0 = DO NOT cache (the CacheStore skips the write and
+  // every lookup misses). Forever-caching requires the explicit
+  // CACHE_TTL_FOREVER sentinel in cache.ts — no env value can express it.
   CLAUDE_CACHE_TTL_ENRICH_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
   CLAUDE_CACHE_TTL_RECOGNIZE_GRAMMAR_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
   CLAUDE_CACHE_TTL_GRADE_WRITING_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 7),

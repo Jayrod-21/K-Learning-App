@@ -291,7 +291,14 @@ export interface MockSubmitBody {
  * surfaces. `picked` is `null` for an item the user skipped (graded incorrect).
  */
 export interface MockReveal {
-  itemId: number;
+  /**
+   * WIRE TYPE IS STRING: the server projects the item id as `i.id::text`
+   * (routes/topik.ts `MockRevealDTO.itemId: string`), matching
+   * `TopikMockItem.id`. It was previously (wrongly) typed `number`, which made
+   * the results screen index a `Map<number>` with a string key — every lookup
+   * missed and the whole per-item review list rendered blank on real data.
+   */
+  itemId: string;
   picked: ChoiceId | null;
   correctChoiceId: ChoiceId;
   isCorrect: boolean;
@@ -643,14 +650,11 @@ export interface NotifPrefs {
   weekly: boolean;
 }
 
-/** Full Settings shape — `localStorage["km.settings"]` AND `/settings`. */
-export interface Settings {
-  name: string;
-  email: string;
-  phone: string;
-  notif: NotifPrefs;
-  palette: PalettePrefs;
-}
+// NOTE: the old prototype-era `Settings` interface ({name,email,phone,notif,
+// palette} as one `GET /settings` payload) was deleted with its stale mock
+// (`data/mocks/settings.ts`) — no such route/shape exists. Identity lives on
+// `GET /auth/me`; prefs live on `GET /settings/prefs` → `{ notif, palette }`
+// (see `NotifPrefs` / `PalettePrefs` above and `services/settings.ts`).
 
 // ─────────────────────────────────────────────────────────────
 // Server wire shapes (Pass 3)
@@ -1568,9 +1572,16 @@ export interface MfaStatus {
  * overlay. The shape matches the server's `image_words` row projected onto
  * the client (`kr` dictionary form, `en` short gloss, `gloss` fuller gloss,
  * `pos` the POS union).
+ *
+ * NO `id` FIELD: the server's `ImageWordDTO` (routes/images.ts) carries
+ * `kr/en/gloss/pos` only — `image_words` rows are projected WITHOUT an id.
+ * The client previously declared one, keyed React rows and the "added to
+ * bank" set on it, and every real word arrived with `id === undefined`, so
+ * banking one word marked EVERY word "Added". UI code must derive a stable
+ * per-word key from what the wire actually sends (list position + text) —
+ * see `ocrWordKey` in pages/Images.tsx.
  */
 export interface OcrWord {
-  id: string;
   kr: string;
   en: string;
   pos: PartOfSpeech;

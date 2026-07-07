@@ -81,6 +81,30 @@ describe('POST /auth/login — validation rejection', () => {
   });
 });
 
+describe('POST /auth/login — public user payload (client-contracts sweep #16)', () => {
+  it('authenticated response carries the FULL /auth/me user shape, not just {id,email}', async () => {
+    // The client's LoginResponse type declares display_name/phone/version;
+    // returning only {id,email} left post-login consumers of `.version` with
+    // `undefined` until the next /auth/me probe.
+    const agent = request.agent(t.app);
+    await agent.post('/auth/register').send({
+      email: 'shape@b.com',
+      password: 'correct horse battery staple',
+      display_name: 'Jared',
+    });
+    const res = await agent
+      .post('/auth/login')
+      .send({ email: 'shape@b.com', password: 'correct horse battery staple' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('authenticated');
+    expect(typeof res.body.user.id).toBe('number');
+    expect(res.body.user.email).toBe('shape@b.com');
+    expect(res.body.user.display_name).toBe('Jared');
+    expect(res.body.user.phone).toBeNull();
+    expect(res.body.user.version).toBe(1);
+  });
+});
+
 describe('POST /auth/login — rate-limit', () => {
   it('exceeding RATE_LIMIT_AUTH_MAX failed logins from one IP returns 429', async () => {
     await request(t.app)

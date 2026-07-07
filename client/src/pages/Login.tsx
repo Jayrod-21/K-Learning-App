@@ -596,9 +596,22 @@ function RecoveryStep({ codes }: { codes: string[] }): JSX.Element {
           if (finishing) return;
           setFinishing(true);
           // `completeEnrollment` re-probes and flips the gate → the route
-          // redirects into the app. If it somehow fails, the user is still
-          // signed in server-side; a reload reconciles.
-          void completeEnrollment();
+          // redirects into the app. The probe maps ANY failure (network flap,
+          // 5xx) to `guest` and resolves — so on failure this screen stays
+          // mounted. `finishing` MUST reset once the call settles, otherwise
+          // the button reads "One moment…" forever with no retry and the
+          // user's only escape is a reload that loses the displayed codes.
+          // On success the gate flips and this screen unmounts; the late
+          // no-op setState is harmless (React 18 ignores it).
+          void completeEnrollment()
+            .catch(() => {
+              // Defensive: today's contract never rejects (the probe
+              // swallows failures into `guest`); a future rejection must
+              // still fall through to the reset below.
+            })
+            .finally(() => {
+              setFinishing(false);
+            });
         }}
       />
     </>

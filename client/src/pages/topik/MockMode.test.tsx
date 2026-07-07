@@ -77,6 +77,10 @@ const TEST: MockTest = {
   ],
 };
 
+// WIRE FIDELITY: `MockReveal.itemId` is a STRING on the real wire (the server
+// projects `i.id::text`). An earlier numeric fixture here masked a bug where
+// the results screen indexed a Map<number> with the string wire id — every
+// lookup missed and real reviews rendered blank.
 const RESULT: MockResult = {
   sourceTest: 7,
   section: 'reading',
@@ -87,14 +91,14 @@ const RESULT: MockResult = {
   band: 'L3 range',
   items: [
     {
-      itemId: 1001,
+      itemId: '1001',
       picked: 'b',
       correctChoiceId: 'b',
       isCorrect: true,
       explanation: 'B is the consistent summary.',
     },
     {
-      itemId: 1002,
+      itemId: '1002',
       picked: 'a',
       correctChoiceId: 'c',
       isCorrect: false,
@@ -333,6 +337,19 @@ describe('MockMode (Mock test)', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText('C restates the phrase.')).toBeInTheDocument();
 
+    // WIRE-CONTRACT REGRESSION: the reveal's `itemId` is a STRING (the wire
+    // sends `i.id::text`); each row must still resolve its item's prompt and
+    // choice text. The pre-fix Map<number> lookup missed on every string id,
+    // rendering "No. 0", empty prompts, and '—' for both picks.
+    expect(screen.getByText('첫 번째 문제입니다.')).toBeInTheDocument();
+    expect(screen.getByText('두 번째 문제입니다.')).toBeInTheDocument();
+    expect(screen.getByText('No. 1')).toBeInTheDocument();
+    expect(screen.getByText('No. 2')).toBeInTheDocument();
+    // The miss row shows the resolved picked + correct choice text, not '—'.
+    expect(screen.getByText('하나')).toBeInTheDocument();
+    expect(screen.getByText('셋')).toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
+
     // F-020: every review row offers the "Ask about this" Chat handoff.
     expect(
       screen.getAllByRole('button', { name: 'Ask about this' }),
@@ -379,7 +396,7 @@ describe('MockMode (Mock test)', () => {
       band: 'On track for L5+',
       items: [
         {
-          itemId: 1001,
+          itemId: '1001',
           picked: 'b',
           correctChoiceId: 'b',
           isCorrect: true,
@@ -466,7 +483,7 @@ describe('MockMode (Mock test)', () => {
       band: 'L3 range',
       items: [
         {
-          itemId: 1001,
+          itemId: '1001',
           picked: null,
           correctChoiceId: 'b',
           isCorrect: false,
@@ -649,6 +666,157 @@ describe('MockMode (Mock test)', () => {
         expect.anything(),
         777,
       );
+    });
+  });
+
+  it('F-UP-015: a failed resume re-fetch shows a "couldn\'t resume" notice instead of silently dropping the banner', async () => {
+    const user = userEvent.setup();
+    svc.fetchAttempt.mockResolvedValue({
+      section: 'reading',
+      sourceTest: 777,
+      currentIdx: 2,
+      picks: { '1001': 'b' },
+      remainingMs: 1_800_000,
+      answered: 1,
+      updatedAt: '2026-07-06T10:00:00.000Z',
+    });
+    // The exact exam can no longer be served (e.g. the source test was
+    // re-ingested) — the resume fetch rejects.
+    svc.fetchMockTest.mockRejectedValueOnce(new Error('gone'));
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(await screen.findByRole('button', { name: /^Resume$/ }));
+
+    // The banner is gone AND the user is told why (pre-fix: silent vanish).
+    const notice = await screen.findByText(/Couldn't resume your saved test/i);
+    expect(notice).toBeInTheDocument();
+    // The banner (with its Resume button) is gone.
+    expect(
+      screen.queryByRole('button', { name: /^Resume$/ }),
+    ).not.toBeInTheDocument();
+    // Still on the select screen, sections startable.
+    const reading = screen.getByRole('button', {
+      name: /Start Reading mock test/i,
+    });
+    expect(reading).toBeEnabled();
+
+    // Starting a fresh section clears the notice.
+    await user.click(reading);
+    await waitFor(() => {
+      expect(screen.getByRole('timer')).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/Couldn't resume your saved test/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clamps a per-item timeMs above the server cap (1h) so the submit body stays valid', async () => {
+    // A laptop sleep / suspended tab freezes the countdown's setInterval but
+    // not the wall clock. Pre-fix, one raw >1h delta 400'd the WHOLE submit
+    // (server zod `timeMs.max(3600000)`), and the latched submittedRef made
+    // the exam ungradeable. Fake timers drive both the interval and
+    // Date.now(), so expiring the 70-min budget yields a >1h on-item delta.
+    vi.useFakeTimers();
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      fireEvent.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Answer item 1, then let the full 4200s budget elapse → auto-submit.
+      fireEvent.click(screen.getByRole('radio', { name: /나/ }));
+      await act(async () => {
+        vi.advanceTimersByTime(4200 * 1000 + 1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(svc.submitMockTest).toHaveBeenCalledTimes(1);
+    const body = svc.submitMockTest.mock.calls[0]?.[0] as {
+      answers: { itemId: number; timeMs?: number }[];
+    };
+    const answer = body.answers.find((a) => a.itemId === 1001);
+    expect(answer).toBeDefined();
+    // ~70 min elapsed on the item, clamped to the server's 1h cap exactly.
+    expect(answer?.timeMs).toBe(3_600_000);
+  });
+
+  describe('PROD posture — no fixture substitution for real failures', () => {
+    // In production the MockBadge renders null, so a fixture fallback would
+    // paint a fabricated exam / fabricated grades indistinguishable from real
+    // data. These stub `import.meta.env.PROD` and assert the honest error
+    // path fires instead (same policy as useEndpointOrMock).
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('a failed exam fetch surfaces the error card, never the offline fixture', async () => {
+      vi.stubEnv('PROD', true);
+      const { loadTopikMockTest } = await import('../../data/mocks/topik');
+      svc.fetchMockTest.mockRejectedValueOnce(
+        new Error('km-api unreachable'),
+      );
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+
+      await user.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument();
+      });
+      // The fixture loader was never consulted — prod shows the error, it
+      // does not open a fabricated exam.
+      expect(loadTopikMockTest).not.toHaveBeenCalled();
+      expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    });
+
+    it('a failed submit surfaces a retryable error, never the offline pseudo-grader', async () => {
+      vi.stubEnv('PROD', true);
+      const { submitTopikMockTestMock } = await import(
+        '../../data/mocks/topik'
+      );
+      svc.submitMockTest.mockRejectedValueOnce(new Error('km-api blip'));
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+
+      await user.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole('radio', { name: /나/ }));
+      await user.click(screen.getByRole('button', { name: /Submit test/i }));
+      await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+
+      // No fabricated results screen — the pseudo-grader must not run.
+      const alert = await screen.findByRole('alert');
+      expect(alert).toBeInTheDocument();
+      expect(submitTopikMockTestMock).not.toHaveBeenCalled();
+      expect(screen.queryByText('L3 range')).not.toBeInTheDocument();
+
+      // The retry re-sends the SAME picks and reaches results on success.
+      svc.submitMockTest.mockResolvedValueOnce(RESULT);
+      await user.click(screen.getByRole('button', { name: /Retry submit/i }));
+      await waitFor(() => {
+        expect(screen.getByText('L3 range')).toBeInTheDocument();
+      });
+      expect(svc.submitMockTest).toHaveBeenCalledTimes(2);
+      const [first, second] = svc.submitMockTest.mock.calls as [
+        [{ answers: unknown[] }],
+        [{ answers: unknown[] }],
+      ];
+      expect(second[0].answers).toEqual(first[0].answers);
     });
   });
 });

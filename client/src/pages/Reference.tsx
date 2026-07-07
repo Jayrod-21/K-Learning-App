@@ -623,7 +623,13 @@ function VocabularyTab(): JSX.Element {
         <div className="km-grammar__state" role="status">
           Loading vocabulary…
         </div>
-      ) : error && rows.length === 0 ? (
+      ) : error ? (
+        // Render the error whenever the LAST fetch failed — even when stale
+        // rows from a previous page/filter are still in state. Gating this on
+        // `rows.length === 0` silently swallowed pagination/filter failures:
+        // the old rows kept rendering under the NEW pager range (offset had
+        // already advanced), with no error and no retry surface. Mirrors
+        // DictionaryTab, which always renders its error branch.
         <ErrorCard message={error} onRetry={refetch} />
       ) : rows.length === 0 ? (
         <p className="km-reference__empty">
@@ -997,14 +1003,22 @@ function GrammarTab(): JSX.Element {
         value={level}
         onChange={setLevel}
       />
-      <div className="km-reference__count">
-        {rows.length} pattern{rows.length === 1 ? '' : 's'}
-      </div>
+      {/* Hidden while the last fetch errored — the count would otherwise
+          describe the STALE row set under the new filter/search. */}
+      {error === null ? (
+        <div className="km-reference__count">
+          {rows.length} pattern{rows.length === 1 ? '' : 's'}
+        </div>
+      ) : null}
       {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">
           Loading patterns…
         </div>
-      ) : error && rows.length === 0 ? (
+      ) : error ? (
+        // Always surface a failed fetch — a filter/search change that errors
+        // must not leave the previous rows rendering as if they matched the
+        // new filter (the row-count caption would describe the stale set).
+        // Mirrors DictionaryTab's unconditional error branch.
         <ErrorCard message={error} onRetry={load} />
       ) : rows.length === 0 ? (
         <p className="km-reference__empty">No patterns match.</p>

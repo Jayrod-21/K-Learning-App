@@ -77,6 +77,11 @@ export async function lemmatize(
       if (!isTransient(err)) throw err;
     }
   }
+  // Retries exhausted. If the upstream was REACHABLE but kept 5xx-ing, the
+  // recorded UpstreamError ('kiwi 500', payload) is the accurate story —
+  // rethrow it as-is. Labeling it 'unreachable' would misdirect debugging
+  // toward the network when the service is up and failing.
+  if (lastErr instanceof UpstreamError) throw lastErr;
   throw new UpstreamError('kiwi unreachable', serializeErr(lastErr));
 }
 

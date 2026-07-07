@@ -3,7 +3,7 @@
  *
  * Health must be UNAUTH, UN-RATE-LIMITED, and resilient to DB failure:
  * - happy path: 200 + db=ok
- * - DB failure: 503 + db=fail:<msg>, NEVER 500
+ * - DB failure: 503 + db=fail (fixed string, no internal detail), NEVER 500
  * - never requires auth
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -63,7 +63,15 @@ describe('GET /health — DB error', () => {
       const res = await request(broken.app).get('/health');
       expect(res.status).toBe(503);
       expect(res.body.status).toBe('degraded');
-      expect(res.body.checks.db).toMatch(/^fail:/);
+      // Fixed string only (routes sweep #4): /health is unauthenticated and
+      // raw pg connect errors embed internal host/port/database names
+      // ("connect ECONNREFUSED 127.0.0.1:1") — the detail must stay in the
+      // server log, never on the wire.
+      expect(res.body.checks.db).toBe('fail');
+      const wire = JSON.stringify(res.body);
+      expect(wire).not.toContain('ECONNREFUSED');
+      expect(wire).not.toContain('127.0.0.1');
+      expect(wire).not.toContain('no_such_db');
     } finally {
       await teardownTestApp(broken);
       // Re-attach the real pool to the module-scoped `t` so subsequent tests

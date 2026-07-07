@@ -311,6 +311,12 @@ export default function Settings(): JSX.Element {
     }));
   }, [meQuery.loading, meQuery.isMock, meQuery.data]);
 
+  // Stable handle on the /auth/me query's refetch, so `flushSave` can rebase
+  // the version snapshot after a 409 (see the catch below) without taking a
+  // dep on the whole `meQuery` result object (whose identity changes every
+  // settle and would churn the callback chain).
+  const refetchMe = meQuery.refetch;
+
   // Debounced auto-save. Tracks the latest pending timer + the latest
   // in-flight controller so unmount / next-keystroke cancels cleanly.
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -396,15 +402,20 @@ export default function Settings(): JSX.Element {
         });
         // On 409 (stale version), the canonical retry path is: refetch
         // /auth/me to rebase the version snapshot, then let the user redo
-        // the save. We trigger the refresh here; the buffer is already
-        // rolled back so the next sync effect will pick up the fresh
-        // server state.
+        // the save. `refresh()` alone is NOT enough — it only re-probes the
+        // AuthProvider's context `user`, while this screen's `serverVersion`
+        // syncs exclusively from `meQuery.data` (see the sync effect above).
+        // Without `refetchMe()` the stale snapshot would 409 every
+        // subsequent save until the user left and re-entered Settings.
+        // The buffer is already rolled back, so the next sync effect picks
+        // up the fresh server state (profile + version) cleanly.
         if (apiErr.status === 409) {
+          refetchMe();
           await refresh();
         }
       }
     },
-    [refresh],
+    [refresh, refetchMe],
   );
 
   const scheduleSave = useCallback(

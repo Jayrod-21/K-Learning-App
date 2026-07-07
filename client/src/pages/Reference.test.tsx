@@ -520,6 +520,95 @@ describe('Resources — Vocabulary tab filters (F-003)', () => {
   });
 });
 
+describe('Resources — browse fetch failures are surfaced, never swallowed (stale-rows fix)', () => {
+  it('Vocabulary: a failed Next-page fetch shows an ErrorCard + Retry instead of stale rows under the new pager range', async () => {
+    const user = userEvent.setup();
+    const PAGE_2: VocabEntry[] = [
+      {
+        id: 3,
+        corpus: 'vocab_2000_intermediate',
+        korean: '사회',
+        english: 'society',
+        proficiency: 'L3',
+        theme: null,
+      },
+    ];
+    vocabSvc.searchEntriesPage
+      .mockResolvedValueOnce({
+        entries: VOCAB_ROWS,
+        total: 3131,
+        limit: 30,
+        offset: 0,
+      })
+      .mockRejectedValueOnce(
+        new ApiError('vocab page failed', { status: 500, code: 'server' }),
+      )
+      .mockResolvedValue({
+        entries: PAGE_2,
+        total: 3131,
+        limit: 30,
+        offset: 30,
+      });
+
+    renderResources();
+    await screen.findByText('영향');
+    expect(screen.getByText(/1–30 of 3131/)).toBeInTheDocument();
+
+    // The Next-page fetch fails. Pre-fix the error branch was gated on
+    // `rows.length === 0`, so the page-1 rows kept rendering while the pager
+    // (offset had already advanced) read "31–60 of 3131" — no error, no
+    // retry surface. The failure must be surfaced instead.
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('vocab page failed')).toBeInTheDocument();
+    expect(screen.queryByText('영향')).not.toBeInTheDocument();
+    expect(screen.queryByText(/31–60/)).not.toBeInTheDocument();
+
+    // Retry re-runs the failed page fetch and renders the real page 2.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('사회')).toBeInTheDocument();
+    expect(screen.getByText(/31–60 of 3131/)).toBeInTheDocument();
+  });
+
+  it('Grammar: a failed level-filter fetch shows an ErrorCard instead of the stale rows + stale count', async () => {
+    const user = userEvent.setup();
+    grammarSvc.listPatterns
+      .mockResolvedValueOnce(SUGGEST_GRAMMAR) // tab mount ('All')
+      .mockRejectedValueOnce(
+        new ApiError('grammar filter failed', { status: 500, code: 'server' }),
+      )
+      .mockResolvedValue(SUGGEST_GRAMMAR); // Retry
+
+    renderResources();
+    await screen.findByText('영향');
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+
+    // Switch the level filter during a blip → the fetch fails. Pre-fix the
+    // 'All' rows kept rendering as if they matched 'Advanced' and the count
+    // caption described the stale set, with no error surfaced at all.
+    const levelGroup = screen.getByRole('group', {
+      name: 'Filter grammar by level',
+    });
+    await user.click(
+      within(levelGroup).getByRole('button', { name: 'Advanced' }),
+    );
+    expect(
+      await screen.findByText('grammar filter failed'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '-는 반면에 whereas' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/1 pattern/)).not.toBeInTheDocument();
+
+    // Retry re-runs the filtered fetch and restores the list + count.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '-는 반면에 whereas' }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('Resources — My Lists tab', () => {
   it('creates a list and opens it to show entries', async () => {
     const user = userEvent.setup();

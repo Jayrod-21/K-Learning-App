@@ -16,7 +16,7 @@
  *     — and that a raw server `message` is NEVER echoed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ApiError } from '../services/api';
 import type { AuthContextValue } from '../hooks/auth-context';
@@ -354,6 +354,61 @@ describe('Login — enroll step (enrollment_required)', () => {
     expect(enter).not.toBeDisabled();
     await user.click(enter);
     expect(completeEnrollment).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-enables the acknowledge button when the entry probe settles without flipping the gate (no permanent "One moment…")', async () => {
+    // completeEnrollment resolves only when we release it — and it resolves
+    // WITHOUT authenticating (the provider's probe maps any network flap /
+    // 5xx to `guest` and never rejects), so the recovery screen stays up.
+    let settleProbe!: () => void;
+    const completeEnrollment = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settleProbe = resolve;
+        }),
+    );
+    mocks.authValue = makeAuth({
+      pending: { kind: 'enroll', challengeToken: 'tok', expiresIn: 300 },
+      enroll: vi.fn(async () => ({ otpauthUri: 'otpauth://x', secret: 'SEED' })),
+      confirmEnroll: vi.fn(async () => ({ recoveryCodes: ['AAAAA-BBBBB'] })),
+      completeEnrollment,
+    });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await waitFor(() => {
+      expect(screen.getByLabelText('Authentication code')).not.toBeDisabled();
+    });
+    await user.type(screen.getByLabelText('Authentication code'), '654321');
+    await user.click(screen.getByRole('button', { name: 'Confirm & continue' }));
+    await screen.findByText('AAAAA-BBBBB');
+
+    await user.click(
+      screen.getByLabelText(/saved these codes somewhere safe/),
+    );
+    await user.click(screen.getByRole('button', { name: /I saved them/ }));
+    expect(completeEnrollment).toHaveBeenCalledTimes(1);
+    // While the probe is in flight the button reads the busy label.
+    expect(
+      screen.getByRole('button', { name: 'One moment…' }),
+    ).toBeInTheDocument();
+
+    // The probe settles as a failure-shaped no-op (state stays guest, screen
+    // stays mounted). Pre-fix `finishing` was never reset, so the button
+    // stayed "One moment…" forever with no retry — only a reload (losing the
+    // one-time codes) recovered.
+    await act(async () => {
+      settleProbe();
+    });
+    expect(
+      await screen.findByRole('button', { name: 'I saved them — enter' }),
+    ).toBeInTheDocument();
+
+    // …and the restored button actually retries the probe.
+    await user.click(
+      screen.getByRole('button', { name: 'I saved them — enter' }),
+    );
+    expect(completeEnrollment).toHaveBeenCalledTimes(2);
   });
 
   it('falls back to the manual key when the QR fails to render', async () => {

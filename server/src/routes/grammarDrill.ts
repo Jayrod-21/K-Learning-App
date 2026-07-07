@@ -140,7 +140,9 @@ const GenBodySchema = z
   .strict();
 
 const SubmitParamsSchema = z.object({
-  attemptId: z.coerce.number().int().positive(),
+  // BIGINT id: bounded so a 20-digit id 400s at the boundary instead of
+  // overflowing int8 in pg (22003 → 500; routes sweep #3).
+  attemptId: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 
 const SubmitBodySchema = z
@@ -317,6 +319,14 @@ router.post(
       // schedule itself depends on the card's CURRENT state, resolved in-tx below.
       const rating = ratingFromVerdict(scored.verdict, scored.usesPattern);
 
+      // The score column is INTEGER but the scorer contract types score as
+      // `number` in [0,100] — a contract-valid fractional 87.5 would fail the
+      // int cast in pg and roll back the WHOLE submit tx (score + auto-bank +
+      // FSRS advance) AFTER the paid Claude call (services sweep #3). Round +
+      // clamp before persisting, mirroring gradeWriting.ts; the response echoes
+      // the persisted value so the UI and history can never disagree.
+      const score = Math.min(100, Math.max(0, Math.round(scored.score)));
+
       const txOut = await withTransaction(async (client) => {
         // 4a. Single-shot scoring UPDATE gated on `scored_at IS NULL`. A single
         //     UPDATE … WHERE scored_at IS NULL is itself atomic: Postgres
@@ -338,7 +348,7 @@ router.post(
                   feedback    = $6::jsonb,
                   scored_at   = now()
             WHERE id = $1 AND user_id = $2 AND scored_at IS NULL`,
-          [attemptId, userId, answer, scored.score, scored.verdict, JSON.stringify(feedback)],
+          [attemptId, userId, answer, score, scored.verdict, JSON.stringify(feedback)],
         );
         if (upd.rowCount !== 1) {
           // A concurrent submit won the race and flipped scored_at first (or the
@@ -493,7 +503,7 @@ router.post(
       //    derived schedule so the client can show "next review in N days"
       //    (~10 min when again/scheduledDays 0). Existing fields are unchanged.
       res.status(200).json({
-        score: scored.score,
+        score,
         verdict: scored.verdict,
         usesPattern: scored.usesPattern,
         summary: scored.summary,

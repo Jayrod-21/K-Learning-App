@@ -57,16 +57,17 @@
  * param is kept on all three for symmetry and future direct callers.
  */
 import type { AxiosRequestConfig } from 'axios';
-import { api } from './api';
+import { api, getApiBaseUrl } from './api';
 import type { ImageCapture, OcrWord } from '../types/domain';
 
 /**
- * Raw single-word row as the server projects it. Matches `OcrWord`
+ * Raw single-word row as the server projects it (`ImageWordDTO` in
+ * routes/images.ts): `kr/en/gloss/pos` ONLY — there is NO `id` on the wire
+ * (`image_words` rows are projected without one). Matches `OcrWord`
  * field-for-field today; kept as a distinct wire interface so a future
  * server-side field rename is absorbed here, not leaked to the screen.
  */
 interface ImageWordWire {
-  id: string;
   kr: string;
   en: string;
   pos: OcrWord['pos'];
@@ -104,12 +105,21 @@ interface ImageCaptureEnvelope {
 }
 
 /**
- * Build the relative URL to a capture's image bytes. Same-origin, so the
- * session cookie rides automatically on the `<img>` request. `id` originates
- * from the server (digits), so this is injection-free.
+ * Build the URL to a capture's image bytes, joined onto the API base like
+ * `ttmik.ts` does for audio (`buildAudioSrc`). In prod the base is '' →
+ * same-origin relative path, so the session cookie rides automatically on
+ * the `<img>` request. In dev (`VITE_API_URL=http://localhost:4000`, Vite on
+ * :5173, no dev proxy) a bare relative path would resolve against :5173 and
+ * the Vite SPA fallback would return HTML — every capture image broken — so
+ * the API base MUST be joined here. `id` originates from the server
+ * (digits), so this is injection-free.
+ *
+ * `base` is injectable for tests (mirrors `ttmik.ts` `buildAudioSrc`);
+ * production callers use the default.
  */
-function blobUrlFor(id: string): string {
-  return `/images/${id}/blob`;
+export function blobUrlFor(id: string, base: string = getApiBaseUrl()): string {
+  const path = `/images/${id}/blob`;
+  return base === '' ? path : `${base}${path}`;
 }
 
 /** Map a full single-capture wire body (with words) onto the domain type. */
@@ -120,8 +130,8 @@ function toImageCapture(wire: ImageCaptureWire): ImageCapture {
     caption_kr: wire.caption_kr,
     caption_en: wire.caption_en,
     blobUrl: blobUrlFor(wire.id),
+    // No `id` is mapped — the wire doesn't send one (see ImageWordWire).
     words: wire.words.map((w) => ({
-      id: w.id,
       kr: w.kr,
       en: w.en,
       pos: w.pos,

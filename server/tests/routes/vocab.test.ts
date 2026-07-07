@@ -984,6 +984,38 @@ describe('POST /vocab/mine — tap anything → bank it (FU-NF-33)', () => {
     expect(rb.body.card.id).not.toBe(ra.body.card.id);
   });
 
+  it('a re-mine cannot overwrite an existing shared gloss; it only fills a missing one (routes sweep #6)', async () => {
+    // vocab_entries rows are SHARED across users (keyed by corpus/source_id).
+    // A second mine with a different `english` must NOT clobber the gloss
+    // everyone else's cards display — existing gloss wins; NULL is fillable.
+    const lemma = uniqueLemma();
+    const { agent: a } = await registerUser(t.app, pg.pool);
+    const { agent: b } = await registerUser(t.app, pg.pool);
+
+    const ra = await a.post('/vocab/mine').send({ lemma, english: 'correct meaning' });
+    expect(ra.status).toBe(201);
+    const rb = await b.post('/vocab/mine').send({ lemma, english: 'vandalized meaning' });
+    expect(rb.status).toBe(201);
+    expect(rb.body.entryId).toBe(ra.body.entryId);
+    const kept = await pg.pool.query<{ english: string | null }>(
+      `SELECT english FROM vocab_entries WHERE id = $1`,
+      [ra.body.entryId],
+    );
+    expect(kept.rows[0]!.english).toBe('correct meaning');
+
+    // A NULL gloss is still fillable by a later mine.
+    const lemma2 = uniqueLemma();
+    const r1 = await a.post('/vocab/mine').send({ lemma: lemma2 });
+    expect(r1.status).toBe(201);
+    const r2 = await b.post('/vocab/mine').send({ lemma: lemma2, english: 'filled in' });
+    expect(r2.status).toBe(201);
+    const filled = await pg.pool.query<{ english: string | null }>(
+      `SELECT english FROM vocab_entries WHERE id = $1`,
+      [r1.body.entryId],
+    );
+    expect(filled.rows[0]!.english).toBe('filled in');
+  });
+
   it('krdictEntryId keys the entry by krdict-<id> (homographs stay distinct)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const lemma = uniqueLemma();

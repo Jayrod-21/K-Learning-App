@@ -152,6 +152,67 @@ describe('POST /progress/study-log — success + validation', () => {
   });
 });
 
+describe('POST /progress/study-log — real-calendar date validation (routes sweep #2)', () => {
+  // A regex-only check admits impossible dates that survive to the `::date`
+  // cast in SQL and 500 with a pg "date/time field value out of range" where
+  // a 400 belongs.
+  it.each([
+    ['impossible day', '2026-02-30'],
+    ['impossible month', '2026-13-01'],
+    ['year zero', '0000-01-01'],
+    ['non-leap Feb 29', '2025-02-29'],
+  ])('%s (%s) → 400, not 500', async (_name, date) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/progress/study-log')
+      .send({ minutes: 10, activity: 'reading', date });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('a real leap day (2024-02-29) → 201', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/progress/study-log')
+      .send({ minutes: 10, activity: 'reading', date: '2024-02-29' });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe('POST /progress/study-log — accumulator saturation (routes sweep #1)', () => {
+  it('a day near the NUMERIC(6,2) cap saturates at 9999.99 instead of 500ing every later log', async () => {
+    // The per-request cap is 1440, but the upsert ACCUMULATES: 7 max-size logs
+    // (7 × 1440 = 10080) exceed the column max 9999.99. Without the clamp the
+    // 7th write 500s — and so does EVERY further study-log that day.
+    const { agent } = await registerUser(t.app, pg.pool);
+    const date = '2026-03-01';
+    let last: { status: number; body: { minutes_studied: string } } | null = null;
+    for (let i = 0; i < 7; i += 1) {
+      const res = await agent
+        .post('/progress/study-log')
+        .send({ minutes: 1440, activity: 'reading', date });
+      expect(res.status).toBe(201);
+      last = res;
+    }
+    // Saturated at the column max, not overflowed.
+    expect(Number(last!.body.minutes_studied)).toBe(9999.99);
+
+    // The poisoned-day failure mode is gone: further logs that day still work.
+    const after = await agent
+      .post('/progress/study-log')
+      .send({ minutes: 30, activity: 'listening', date });
+    expect(after.status).toBe(201);
+    expect(Number(after.body.minutes_studied)).toBe(9999.99);
+
+    // The activities history keeps appending even while minutes saturate.
+    const { rows } = await pg.pool.query<{ activities: unknown[] }>(
+      `SELECT activities FROM study_log WHERE study_date = $1::date`,
+      [date],
+    );
+    expect(rows[0]!.activities).toHaveLength(8);
+  });
+});
+
 describe('progress — IDOR defense', () => {
   it('study-log with another user_id in body → 403', async () => {
     const { agent } = await registerUser(t.app, pg.pool);

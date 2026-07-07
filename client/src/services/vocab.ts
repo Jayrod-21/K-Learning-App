@@ -59,17 +59,41 @@ export interface SearchEntriesOptions {
   offset?: number;
 }
 
+/**
+ * Normalise the `q` filter at the service boundary: the server schema is
+ * `z.string().trim().min(1)`, so a whitespace-only `q` trims to `''`
+ * server-side and 400s the WHOLE request (a single space in the Reference
+ * search box replaced the Vocabulary tab with an error card). Trim here and
+ * drop an empty result entirely — an all-whitespace query means "browse",
+ * not "error". Callers that already trim (Review.tsx) are unaffected.
+ */
+function normalizeSearchOpts(opts: SearchEntriesOptions): SearchEntriesOptions {
+  if (opts.q === undefined) return opts;
+  const q = opts.q.trim();
+  const rest: SearchEntriesOptions = { ...opts };
+  delete rest.q;
+  return q === '' ? rest : { ...rest, q };
+}
+
+/** Coerce a wire id onto the numeric type the client contract declares —
+ *  `vocab_entries.id` / `vocab_lists.id` are BIGINT, which node-postgres
+ *  serialises as a JSON **string** (no int8 parser in db/pool.ts). Every
+ *  sibling route's client mapping coerces; these were missed. */
+function numericId<T extends { id: number }>(row: T): T {
+  return { ...row, id: Number(row.id) };
+}
+
 /** GET /vocab/entries?q=… — returns just the rows (existing callers). */
 export async function searchEntries(
   opts: SearchEntriesOptions = {},
   signal?: AbortSignal,
 ): Promise<VocabEntry[]> {
-  const params = stripUndef({ ...opts });
+  const params = stripUndef({ ...normalizeSearchOpts(opts) });
   const res = await api.get<VocabEntriesPage>('/vocab/entries', {
     params,
     ...(signal !== undefined ? { signal } : {}),
   });
-  return res.entries;
+  return res.entries.map(numericId);
 }
 
 /**
@@ -83,11 +107,12 @@ export async function searchEntriesPage(
   opts: SearchEntriesOptions = {},
   signal?: AbortSignal,
 ): Promise<VocabEntriesPage> {
-  const params = stripUndef({ ...opts });
-  return api.get<VocabEntriesPage>('/vocab/entries', {
+  const params = stripUndef({ ...normalizeSearchOpts(opts) });
+  const res = await api.get<VocabEntriesPage>('/vocab/entries', {
     params,
     ...(signal !== undefined ? { signal } : {}),
   });
+  return { ...res, entries: res.entries.map(numericId) };
 }
 
 /** GET /vocab/entries/:entryId */
@@ -272,7 +297,8 @@ export async function mineWord(
 /** GET /vocab/lists — the user's lists (soft-deleted excluded server-side). */
 export async function listLists(): Promise<ServerVocabList[]> {
   const res = await api.get<ListListsResponse>('/vocab/lists');
-  return res.lists;
+  // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
+  return res.lists.map(numericId);
 }
 
 /** POST /vocab/lists — create a list. Returns the row + seed-append count. */
@@ -294,10 +320,18 @@ export async function getListDetail(
   id: number,
   signal?: AbortSignal,
 ): Promise<VocabListDetailResponse> {
-  return api.get<VocabListDetailResponse>(
+  const res = await api.get<VocabListDetailResponse>(
     `/vocab/lists/${String(id)}`,
     signal !== undefined ? { signal } : undefined,
   );
+  // BIGINT ids (list `id`, joined `entry_id`) arrive as JSON strings —
+  // coerce onto the numeric client contract so strict `===` cross-refs
+  // against genuinely-numeric sibling ids can't silently miss.
+  return {
+    ...res,
+    list: numericId(res.list),
+    entries: res.entries.map((e) => ({ ...e, entry_id: Number(e.entry_id) })),
+  };
 }
 
 /** PATCH /vocab/lists/:id — rename / re-caption / re-kind. */

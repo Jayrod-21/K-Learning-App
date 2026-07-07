@@ -73,7 +73,9 @@ const SearchQuerySchema = z.object({
   // `q` is present (search spans the whole dictionary).
   initial: z.enum(INITIALS).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  // OFFSET binds to int8 in pg — unbounded, a 20-digit offset overflows
+  // (22003 → 500) instead of 400ing at the boundary (routes sweep #3).
+  offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
 });
 
 interface KrdictSearchRow {

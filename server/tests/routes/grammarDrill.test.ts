@@ -173,6 +173,61 @@ describe('POST /grammar-drill — generate + persist + answer-strip', () => {
   });
 });
 
+describe('POST /grammar-drill/:attemptId/submit — fractional score (services sweep #3)', () => {
+  it('a contract-valid fractional score (87.5) is rounded — 200 + persisted, not a 500 rollback', async () => {
+    // GrammarDrillScoreSchema allows any number in [0,100], but the score
+    // column is INTEGER. Without rounding, pg rejects '87.5' and the WHOLE
+    // submit tx (score + auto-bank + FSRS advance) rolls back AFTER the paid
+    // Claude call — and the attempt can never be scored with that answer.
+    const fracApp = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        scoreGrammarDrill: async () => ({
+          result: {
+            score: 87.5,
+            verdict: 'good' as const,
+            usesPattern: true,
+            summary: 'fractional score summary',
+            corrections: [],
+          },
+          metadata: {
+            requestId: 'test-fractional-score',
+            model: 'claude-sonnet-4-6' as const,
+            cacheHit: false,
+            latencyMs: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costEstimateUsd: 0,
+          },
+        }),
+      },
+    });
+    try {
+      const { agent } = await registerUser(fracApp.app, pg.pool);
+      const gen = await agent.post('/grammar-drill').send(GEN_BODY).expect(201);
+      const attemptId = gen.body.attemptId as number;
+
+      const res = await agent
+        .post(`/grammar-drill/${attemptId}/submit`)
+        .send({ answer: '다 먹어 버렸어요.' });
+      expect(res.status).toBe(200);
+      // Response echoes the PERSISTED (rounded) value.
+      expect(res.body.score).toBe(88);
+
+      const { rows } = await pg.pool.query<{ score: number; scored_at: Date | null }>(
+        `SELECT score, scored_at FROM grammar_drill_attempts WHERE id = $1`,
+        [attemptId],
+      );
+      expect(rows[0]!.score).toBe(88);
+      expect(rows[0]!.scored_at).not.toBeNull();
+    } finally {
+      await teardownTestApp(fracApp);
+    }
+  });
+});
+
 describe('POST /grammar-drill/:attemptId/submit — score + reveal', () => {
   it('scores the attempt, updates the row, and reveals the reference model', async () => {
     const { agent } = await registerUser(t.app, pg.pool);

@@ -624,6 +624,17 @@ class ClaudeProxyImpl implements ClaudeProxy {
           req,
           ctx.signal,
         );
+        // Observe sdkFinal immediately (SWEEP_server_services #1). When the
+        // stream drops mid-flight (network reset, upstream overloaded_error,
+        // client abort), the SDK rejects BOTH the event iterator and the
+        // final-message promise. The for-await below then throws straight to
+        // the catch block WITHOUT ever awaiting sdkFinal, leaving its
+        // rejection unobserved — which escalates to the process-level
+        // unhandledRejection handler and kills the whole server. This no-op
+        // catch marks the rejection as handled; it derives a new promise, so
+        // the happy-path `await sdkFinal` below still sees the original
+        // value or rejection unchanged.
+        void sdkFinal.catch(() => undefined);
         queue.push({ type: 'start', register: cleaned.registerTarget });
         for await (const ev of sdkEvents) {
           if (ev.kind === 'delta' && typeof ev.text === 'string' && ev.text.length > 0) {

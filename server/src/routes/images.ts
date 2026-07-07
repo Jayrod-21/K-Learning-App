@@ -406,9 +406,11 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
 
 /** :id is a positive integer (BIGINT identity). Coerced + validated so a
  *  garbage id is a 400 (not a SQL cast error) and never reaches the cap query
- *  as text. */
+ *  as text. Upper-bounded because Number.isInteger(1e20) is true — an
+ *  unbounded 20-digit id passes Zod and overflows int8 in pg (22003 → 500
+ *  where the contract is 400/404; routes sweep #3). */
 const IdParamsSchema = z.object({
-  id: z.coerce.number().int().positive(),
+  id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 
 router.get(

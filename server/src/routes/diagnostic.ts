@@ -188,6 +188,12 @@ interface TopikRow {
  * Band → proficiency mapping: we filter on the row's `proficiency` enum, but
  * because the corpus tagging is sparse, an unmatched band falls through to "any
  * proficiency" rather than returning nothing.
+ *
+ * Answerable-item guard mirrors topik.ts ANSWERABLE_ITEM_SQL: >= 2 options,
+ * non-null answer, AND not a picture-choice item whose options are bare
+ * ①②③④ glyphs (tester sweep P2-1 / data sweep D-4) — those render four
+ * identical choices with no image asset, so the item is unanswerable and must
+ * not move θ.
  */
 async function pickTopikRow(
   section: 'reading' | 'listening',
@@ -215,7 +221,8 @@ async function pickTopikRow(
                 WHERE i.section = $1::topik_section
                   AND i.options IS NOT NULL
                   AND jsonb_array_length(i.options) >= 2
-                  AND i.answer IS NOT NULL`;
+                  AND i.answer IS NOT NULL
+                  AND i.options->>0 NOT IN ('①','②','③','④')`;
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
@@ -824,11 +831,13 @@ function buildSnapshotDTO(
 // ---------------------------------------------------------------------------
 
 const EmptyBodySchema = z.object({}).strict();
+// BIGINT ids: bounded so a 20-digit id 400s at the boundary instead of
+// overflowing int8 in pg (22003 → 500; routes sweep #3).
 const RunParamsSchema = z.object({
-  runId: z.coerce.number().int().positive(),
+  runId: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER),
 });
 const AnswerBodySchema = z.object({
-  responseId: z.number().int().positive(),
+  responseId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   picked: z.union([z.enum(['a', 'b', 'c', 'd']), z.null()]),
   timeMs: z.number().int().nonnegative().max(60 * 60 * 1000).optional(),
 });
