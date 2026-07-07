@@ -1,5 +1,5 @@
 /**
- * Legacy redirect shims (Overhaul P1.1) — old flat paths → new namespaced
+ * Legacy redirect shims (Overhaul P1.1/P1.2) — old paths → new namespaced
  * paths, so pre-overhaul links, bookmarks, and any missed call site keep
  * working after the /learn + /review re-home.
  *
@@ -14,6 +14,11 @@
  *     Read screen was retired); it now points at the same content's new
  *     home, `/learn/listen`. The NEW Reading placeholder lives at
  *     `/learn/reading` — never reuse `/reading` for it.
+ *   - `/reference` (P1.2): the Reference page dissolved into the Review
+ *     library. Its shim is TAB-AWARE — the P1.1 library index linked into
+ *     it via `?tab=vocab|dictionary|grammar|lists`, so each old deep link
+ *     lands on the matching library route (see `referenceTarget`). The
+ *     table's `to` is the tab-less fallback.
  *   - There is deliberately NO `/review` shim: `/review` is a live route
  *     again (the library index). The old flashcards intent moved to
  *     `/learn/vocab`.
@@ -21,6 +26,7 @@
  */
 import type { JSX } from 'react';
 import { Navigate, Route } from 'react-router-dom';
+import { ReferenceRedirect } from '../components/ReferenceRedirect';
 
 export interface LegacyRedirect {
   /** Old path, relative to the Shell layout route (no leading slash). */
@@ -37,6 +43,9 @@ export const LEGACY_REDIRECTS: ReadonlyArray<LegacyRedirect> = [
   { from: 'writing', to: '/learn/writing' },
   { from: 'hanja', to: '/learn/hanja' },
   { from: 'mistakes', to: '/review/mistakes' },
+  // Tab-less fallback; the mounted element is the tab-aware
+  // <ReferenceRedirect/> below.
+  { from: 'reference', to: '/review/vocab' },
 ];
 
 /**
@@ -46,6 +55,16 @@ export const LEGACY_REDIRECTS: ReadonlyArray<LegacyRedirect> = [
  */
 export function legacyRedirectRoutes(): ReadonlyArray<JSX.Element> {
   return LEGACY_REDIRECTS.map((r) => (
-    <Route key={r.from} path={r.from} element={<Navigate to={r.to} replace />} />
+    <Route
+      key={r.from}
+      path={r.from}
+      element={
+        r.from === 'reference' ? (
+          <ReferenceRedirect />
+        ) : (
+          <Navigate to={r.to} replace />
+        )
+      }
+    />
   ));
 }

@@ -26,7 +26,6 @@ import {
 } from 'react-router-dom';
 import type {
   DueCard,
-  ServerVocabList,
   Vocab,
   VocabEntry,
   VocabListBundle,
@@ -164,8 +163,24 @@ function GrammarStub(): JSX.Element {
 }
 
 /**
+ * Sibling stub for the Review-library vocab page — the P1.2 My-Lists dedup
+ * moved custom-list management to `/review/vocab?tab=lists`, and the Lists
+ * tab links there. The probe renders the landing location for assertion.
+ */
+function LibraryVocabStub(): JSX.Element {
+  const loc = useLocation();
+  return (
+    <div data-testid="library-vocab-stub">
+      LIBRARY VOCAB
+      <span data-testid="library-vocab-search">{loc.search}</span>
+    </div>
+  );
+}
+
+/**
  * Render `<Review />` (the FSRS flashcards page — at `/learn/vocab` since
- * Overhaul P1.1) with a `/learn/grammar` deep-link target.
+ * Overhaul P1.1) with a `/learn/grammar` deep-link target and the
+ * `/review/vocab` library stub.
  */
 function renderReview(): ReturnType<typeof render> {
   return render(
@@ -173,6 +188,7 @@ function renderReview(): ReturnType<typeof render> {
       <Routes>
         <Route path="/learn/vocab" element={<Review />} />
         <Route path="/learn/grammar" element={<GrammarStub />} />
+        <Route path="/review/vocab" element={<LibraryVocabStub />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -255,22 +271,28 @@ const BUNDLE: VocabListBundle = {
   sources: [],
 };
 
-const SERVER_LIST: ServerVocabList = {
-  id: 7,
-  name_kr: '병원 어휘',
-  name_en: 'Hospital words',
-  kind: 'vocab',
-  version: 1,
-  entry_count: 5,
-  created_at: '2025-01-01T00:00:00Z',
-  updated_at: '2025-01-01T00:00:00Z',
-};
-
-const SERVER_LIST_DETAIL = {
-  list: SERVER_LIST,
-  entries: [],
-  entry_limit: 100,
-  entry_offset: 0,
+/** BUNDLE + a textbook source group — the only rows that still open the
+ *  ListDetailSheet on this page after the P1.2 My-Lists dedup. */
+const BUNDLE_WITH_SOURCE: VocabListBundle = {
+  ...BUNDLE,
+  sources: [
+    {
+      source: 'TOPIK 어휘 30일',
+      publisher: '다락원',
+      cover: '한',
+      kind: 'vocab',
+      lists: [
+        {
+          id: 's1',
+          name: '11일 · 정치',
+          en: 'Politics',
+          count: 24,
+          level: 'L4',
+          added: 0,
+        },
+      ],
+    },
+  ],
 };
 
 const SERVER_ENTRIES: VocabEntry[] = [
@@ -476,8 +498,7 @@ describe('Review', () => {
     expect(ui[0]).toMatchObject({ id: 'd:300', kr: 'cloze', en: '', ex_kr: '', ex_en: '' });
   });
 
-  it('switches to Lists tab and opens ListDetailSheet via getListDetail', async () => {
-    vi.mocked(vocabService.getListDetail).mockResolvedValue(SERVER_LIST_DETAIL);
+  it('Lists tab renders NO duplicate My-Lists surface — it links to the library instead (P1.2 dedup)', async () => {
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
 
@@ -485,13 +506,26 @@ describe('Review', () => {
     renderReview();
 
     await user.click(screen.getByRole('tab', { name: 'Lists' }));
-    expect(screen.getByText('My lists')).toBeInTheDocument();
-    // The custom list row is a button labelled by its KR name.
-    await user.click(screen.getByRole('button', { name: /병원 어휘/ }));
+    // The link card is present…
+    expect(screen.getByText('내 단어장 · My lists')).toBeInTheDocument();
+    // …but the old duplicate surface is GONE: no create affordance and no
+    // custom-list row (the bundle's 병원 어휘 must not render as a row).
+    expect(
+      screen.queryByRole('button', { name: /New list/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /병원 어휘/ }),
+    ).not.toBeInTheDocument();
+    // No list detail fetch happens from this page anymore.
+    expect(vocabService.getListDetail).not.toHaveBeenCalled();
 
-    await waitFor(() => {
-      expect(vocabService.getListDetail).toHaveBeenCalledWith(7);
-    });
+    // The manage link deep-links into the canonical surface: the library's
+    // vocab page with its lists view preselected.
+    await user.click(screen.getByRole('button', { name: 'Manage my lists' }));
+    expect(await screen.findByTestId('library-vocab-stub')).toBeInTheDocument();
+    expect(screen.getByTestId('library-vocab-search')).toHaveTextContent(
+      '?tab=lists',
+    );
   });
 
   it('Add to review seeds both corpora and refetches the due queue (B-013)', async () => {
@@ -659,19 +693,22 @@ describe('Review', () => {
   });
 
   it('spacebar is ignored while a Sheet is open (D-B3 sheet-open guard)', async () => {
-    vi.mocked(vocabService.getListDetail).mockResolvedValue(SERVER_LIST_DETAIL);
     hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+    // Post-P1.2 only SOURCE lists open the sheet from this page (custom-list
+    // management moved to the library) — give the bundle a source group.
+    hoisted.lists.state = {
+      kind: 'data',
+      data: BUNDLE_WITH_SOURCE,
+      isMock: false,
+    };
 
     const user = userEvent.setup();
     renderReview();
 
-    // Open ListDetailSheet by switching to Lists and tapping the active row.
+    // Open ListDetailSheet by switching to Lists and tapping a source row.
     await user.click(screen.getByRole('tab', { name: 'Lists' }));
-    await user.click(screen.getByRole('button', { name: /병원 어휘/ }));
-    await waitFor(() => {
-      expect(vocabService.getListDetail).toHaveBeenCalledWith(7);
-    });
+    await user.click(screen.getByRole('button', { name: /11일 · 정치/ }));
+    expect(await screen.findByText(/Preview ·/)).toBeInTheDocument();
 
     // Back to the Session tab so the flashcard is rendered behind the open
     // sheet. The session-tab effect re-mounts the spacebar listener but the

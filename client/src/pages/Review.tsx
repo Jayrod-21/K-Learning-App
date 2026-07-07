@@ -4,8 +4,13 @@
  * Sub-tabs (per design README §5):
  *   - `session` — Active-list strip, progress bar, Flashcard with flip,
  *                 4 FSRS rating buttons. Spacebar reveals.
- *   - `lists`   — My lists (custom) + From sources (textbook). Opens
- *                 ListDetailSheet on row tap; New list opens CreateListSheet.
+ *   - `lists`   — the B-013 "Add to review" seed action + From sources
+ *                 (textbook) + a link into the canonical My-Lists surface.
+ *                 Overhaul P1.2 DEDUP: this page and Reference.tsx both
+ *                 implemented a My-Lists UI over `vocabService.listLists()`;
+ *                 the unified surface is components/MyVocabLists, mounted in
+ *                 the Review library at `/review/vocab?tab=lists` — this tab
+ *                 LINKS there instead of rendering a duplicate.
  *   - `all`     — Searchable flat list of every banked vocab item.
  *
  * Data (Pass 3 wired):
@@ -57,7 +62,6 @@ import {
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Topbar } from '../components/Topbar';
@@ -83,8 +87,6 @@ import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
 import { errorMessageFor } from '../lib/errorCopy';
 import type {
-  CreateListBody,
-  CreateListResponse,
   CustomVocabList,
   DefineExample,
   DueCard,
@@ -96,7 +98,6 @@ import type {
   VocabCorpus,
   VocabEntry,
   VocabListBundle,
-  VocabListKind,
 } from '../types/domain';
 
 type Tab = 'session' | 'lists' | 'all';
@@ -443,7 +444,6 @@ export function Review(): JSX.Element {
   const [flipped, setFlipped] = useState<boolean>(false);
   const [drawer, setDrawer] = useState<boolean>(false);
   const [openListId, setOpenListId] = useState<string | null>(null);
-  const [creating, setCreating] = useState<boolean>(false);
   // Two-tier search state. `searchInput` mirrors the live <input>; `searchQ`
   // is the 200ms-debounced value that drives the keyed network fetch.
   const [searchInput, setSearchInput] = useState<string>('');
@@ -489,7 +489,7 @@ export function Review(): JSX.Element {
   // card is loaded. Listener scoped to window; ignored when an input/textarea
   // has focus AND when any Sheet is open (the Sheet's modal trap shouldn't
   // bleed reveal keystrokes back to the underlying card).
-  const anySheetOpen = openListId !== null || creating;
+  const anySheetOpen = openListId !== null;
   useEffect(() => {
     if (tab !== 'session' || !card || anySheetOpen) return;
     const onKey = (e: KeyboardEvent): void => {
@@ -619,7 +619,6 @@ export function Review(): JSX.Element {
     lists.refetch();
   }, [vocab, lists]);
 
-  const refetchLists = lists.refetch;
   const refetchDue = vocab.refetch;
 
   // B-013 "Add to review": seed recognition cards from every known vocab
@@ -764,8 +763,11 @@ export function Review(): JSX.Element {
           onOpenList={(id) => {
             setOpenListId(id);
           }}
-          onCreate={() => {
-            setCreating(true);
+          onManageLists={() => {
+            // P1.2 dedup: custom-list management (create / rename / delete /
+            // entries) lives on the canonical My-Lists surface in the
+            // Review library.
+            navigate('/review/vocab?tab=lists');
           }}
           onRetry={retry}
           onSeedReview={seedReview}
@@ -789,21 +791,6 @@ export function Review(): JSX.Element {
         bundle={lists.data}
         onClose={() => {
           setOpenListId(null);
-        }}
-        onDeleted={() => {
-          setOpenListId(null);
-          refetchLists();
-        }}
-        onRenamed={refetchLists}
-      />
-      <CreateListSheet
-        open={creating}
-        onClose={() => {
-          setCreating(false);
-        }}
-        onCreated={() => {
-          setCreating(false);
-          refetchLists();
         }}
       />
     </section>
@@ -1191,7 +1178,8 @@ interface ListsPanelProps {
   loading: boolean;
   bundle: VocabListBundle | null;
   onOpenList: (id: string) => void;
-  onCreate: () => void;
+  /** P1.2 dedup: navigate to the canonical My-Lists surface in the library. */
+  onManageLists: () => void;
   onRetry: () => void;
   /** B-013: seed recognition cards from the loaded vocab corpus. */
   onSeedReview: () => void;
@@ -1205,7 +1193,7 @@ function ListsPanel({
   loading,
   bundle,
   onOpenList,
-  onCreate,
+  onManageLists,
   onRetry,
   onSeedReview,
   seeding,
@@ -1263,34 +1251,31 @@ function ListsPanel({
         </Card>
       </section>
 
-      {/* My lists */}
-      <section>
-        <header className="km-review__listsHead">
-          <div>
-            <div className="km-eyebrow">내 단어장</div>
-            <div className="km-review__sectionTitle">My lists</div>
+      {/* My lists — P1.2 dedup: the canonical surface (create / rename /
+          delete / entries) is components/MyVocabLists in the Review library;
+          this panel links there instead of rendering a second copy. */}
+      <section aria-labelledby="review-mylists-head">
+        <Card variant="flat">
+          <div
+            className="km-eyebrow"
+            id="review-mylists-head"
+            style={{ marginBottom: 4 }}
+          >
+            내 단어장 · My lists
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
+            Your custom lists live in the Review library — create, rename,
+            and edit them there.
           </div>
           <Button
             variant="gold"
-            size="sm"
-            onClick={onCreate}
-            leadingIcon={<Icon name="plus" size={14} />}
+            size="md"
+            onClick={onManageLists}
+            trailingIcon={<Icon name="chevron-right" size={14} />}
           >
-            New list
+            Manage my lists
           </Button>
-        </header>
-        <div className="km-review__listsCol">
-          {bundle.custom.map((l) => (
-            <CustomListRow
-              key={l.id}
-              list={l}
-              active={bundle.active === l.id}
-              onOpen={() => {
-                onOpenList(l.id);
-              }}
-            />
-          ))}
-        </div>
+        </Card>
       </section>
 
       {/* From sources */}
@@ -1311,55 +1296,6 @@ function ListsPanel({
         </div>
       </section>
     </div>
-  );
-}
-
-function CustomListRow({
-  list,
-  active,
-  onOpen,
-}: {
-  list: CustomVocabList;
-  active: boolean;
-  onOpen: () => void;
-}): JSX.Element {
-  const pctMature = list.count > 0 ? Math.round((list.mature / list.count) * 100) : 0;
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`km-review__listRow km-card km-card--default focusring${active ? ' km-review__listRow--active' : ''}`}
-    >
-      <div
-        className={`km-review__thumb${active ? ' km-review__thumb--active' : ''}`}
-        aria-hidden="true"
-      >
-        {list.name.charAt(0)}
-      </div>
-      <div className="km-review__listBody">
-        <div className="km-review__listHead">
-          <span className="kr km-review__listName">{list.name}</span>
-          {active ? <Pill tone="gold">Active</Pill> : null}
-        </div>
-        <div className="km-review__listMeta">
-          {list.en} · {list.lastStudied}
-        </div>
-        <div className="km-review__listStats">
-          <span>
-            {list.count} ·{' '}
-            <span className="km-review__due">{list.due} due</span>
-          </span>
-          <div className="km-review__maturityBar">
-            <div
-              className="km-review__maturityFill"
-              style={{ width: `${String(pctMature)}%` }}
-            />
-          </div>
-          <span className="km-review__pct">{pctMature}%</span>
-        </div>
-      </div>
-      <Icon name="chevron-right" size={16} />
-    </button>
   );
 }
 
@@ -1618,195 +1554,57 @@ interface ListDetailSheetProps {
   listId: string | null;
   bundle: VocabListBundle | null;
   onClose: () => void;
-  /** Parent-side hook to refetch the lists collection after a delete. */
-  onDeleted: () => void;
-  /** Parent-side hook to refetch the lists collection after a rename. */
-  onRenamed: () => void;
 }
 
+/**
+ * Source-list detail sheet. P1.2 dedup note: custom-list detail (server
+ * entries, rename, delete) moved to the canonical My-Lists surface
+ * (components/MyVocabLists, in the Review library) — the only rows that
+ * open THIS sheet are the textbook source lists, which render from bundle
+ * fixture data alone (no server detail endpoint yet; Pass 4+).
+ */
 function ListDetailSheet({
   open,
   listId,
   bundle,
   onClose,
-  onDeleted,
-  onRenamed,
 }: ListDetailSheetProps): JSX.Element {
-  // Local "details fetched from server" state, in addition to the cached
-  // bundle row. The bundle covers row metadata; getList() returns the same
-  // shape (for now) but lets us refresh stale entry_count after a mutation.
-  const [detail, setDetail] = useState<ServerVocabList | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<'rename' | 'delete' | null>(null);
-  const [renaming, setRenaming] = useState<boolean>(false);
-  const [renameValue, setRenameValue] = useState<string>('');
-  const ctrlRef = useRef<AbortController | null>(null);
-
-  // Resolve the bundle row for header fallback when the network detail
-  // hasn't landed yet.
+  // Resolve the bundle row for the header + preview.
   let bundleList: CustomVocabList | SourceVocabListItem | null = null;
   let bundleSource: SourceVocabGroup | null = null;
   if (bundle && listId) {
-    const custom = bundle.custom.find((l) => l.id === listId);
-    if (custom) bundleList = custom;
-    else {
-      for (const s of bundle.sources) {
-        const found = s.lists.find((l) => l.id === listId);
-        if (found) {
-          bundleList = found;
-          bundleSource = s;
-          break;
-        }
+    for (const s of bundle.sources) {
+      const found = s.lists.find((l) => l.id === listId);
+      if (found) {
+        bundleList = found;
+        bundleSource = s;
+        break;
       }
+    }
+    // Defensive fallback — a custom id shouldn't reach here post-dedup, but
+    // rendering its name beats a blank sheet if one ever does.
+    if (!bundleList) {
+      bundleList = bundle.custom.find((l) => l.id === listId) ?? null;
     }
   }
 
-  const numericId = listId ? decodeId(listId) : null;
-  // Only fetch detail for user-mutable (custom) lists. Source lists come
-  // from textbook fixtures and have no server detail endpoint yet (Pass 4+).
-  const isCustom = bundleList !== null && bundleSource === null;
-
-  // Fetch detail on open. Aborts in-flight on close/unmount.
-  // Sync-to-external-system case — same exception the hook uses.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (!open || numericId === null || !isCustom) {
-      setDetail(null);
-      setError(null);
-      return;
-    }
-    const ctrl = new AbortController();
-    ctrlRef.current?.abort();
-    ctrlRef.current = ctrl;
-    setLoading(true);
-    setError(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
-    vocabService
-      .getListDetail(numericId)
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setDetail(res.list);
-        setRenameValue(res.list.name_kr);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (ctrl.signal.aborted) return;
-        setLoading(false);
-        setError(
-          errorMessageFor(err, 'Could not load list.'),
-        );
-      });
-    return () => {
-      ctrl.abort();
-    };
-  }, [open, numericId, isCustom]);
-
-  // Reset transient UI state on close so the next open is fresh.
-  const handleClose = useCallback((): void => {
-    ctrlRef.current?.abort();
-    setDetail(null);
-    setError(null);
-    setBusy(null);
-    setRenaming(false);
-    setRenameValue('');
-    onClose();
-  }, [onClose]);
-
-  const handleRenameSubmit = useCallback((): void => {
-    if (numericId === null) return;
-    const next = renameValue.trim();
-    if (!next || next === detail?.name_kr) {
-      setRenaming(false);
-      return;
-    }
-    setBusy('rename');
-    setError(null);
-    vocabService
-      .patchList(numericId, { name_kr: next })
-      .then((res) => {
-        setDetail(res.list);
-        setRenameValue(res.list.name_kr);
-        setBusy(null);
-        setRenaming(false);
-        onRenamed();
-      })
-      .catch((err: unknown) => {
-        setBusy(null);
-        setError(
-          errorMessageFor(err, 'Rename failed.'),
-        );
-      });
-  }, [numericId, renameValue, detail, onRenamed]);
-
-  const handleDelete = useCallback((): void => {
-    if (numericId === null) return;
-    // Window.confirm is the cheapest "are you sure?" — a richer modal lands
-    // in Pass 5 with the toast layer. Skipping confirmation entirely is the
-    // wrong default for a destructive op.
-    const ok =
-      typeof window !== 'undefined'
-        ? window.confirm('Delete this list? This cannot be undone.')
-        : true;
-    if (!ok) return;
-    setBusy('delete');
-    setError(null);
-    vocabService
-      .deleteList(numericId)
-      .then(() => {
-        setBusy(null);
-        onDeleted();
-      })
-      .catch((err: unknown) => {
-        setBusy(null);
-        setError(
-          errorMessageFor(err, 'Delete failed.'),
-        );
-      });
-  }, [numericId, onDeleted]);
-
-  // Header preview — server detail wins, bundle row falls back.
-  const displayName = detail?.name_kr ?? bundleList?.name ?? 'List';
-  const displayEn =
-    detail?.name_en ?? (bundleList && 'en' in bundleList ? bundleList.en : '');
-  const total = detail?.entry_count ?? bundleList?.count ?? 0;
+  const displayName = bundleList?.name ?? 'List';
+  const displayEn = bundleList && 'en' in bundleList ? bundleList.en : '';
+  const total = bundleList?.count ?? 0;
   const preview =
     bundleList && 'preview' in bundleList ? bundleList.preview : [];
 
   return (
-    <Sheet open={open} onClose={handleClose} ariaLabel="List detail">
+    <Sheet open={open} onClose={onClose} ariaLabel="List detail">
       <div className="km-review__sheetBody">
         {bundleSource ? (
           <div className="km-eyebrow">{bundleSource.source}</div>
         ) : null}
         <div className="km-review__sheetHead">
           <div>
-            {renaming ? (
-              <input
-                className="kr-display km-review__input"
-                value={renameValue}
-                onChange={(e) => {
-                  setRenameValue(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleRenameSubmit();
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setRenaming(false);
-                    setRenameValue(detail?.name_kr ?? '');
-                  }
-                }}
-                aria-label="List name"
-                disabled={busy === 'rename'}
-              />
-            ) : (
-              <div className="kr-display km-review__sheetTitle">
-                {displayName}
-              </div>
-            )}
+            <div className="kr-display km-review__sheetTitle">
+              {displayName}
+            </div>
             <div className="km-review__sheetMeta">
               {displayEn ? `${displayEn} · ` : ''}
               {total} items
@@ -1818,19 +1616,12 @@ function ListDetailSheet({
           <Button
             variant="ghost"
             size="sm"
-            onClick={handleClose}
+            onClick={onClose}
             aria-label="Close list detail"
           >
             <Icon name="close" size={14} />
           </Button>
         </div>
-
-        {loading ? <SkeletonCard height={80} /> : null}
-        {error ? (
-          <div role="alert" className="km-review__rateError">
-            {error}
-          </div>
-        ) : null}
 
         <div className="km-review__sheetActions">
           {/* Per-list seeding isn't wired yet: `/vocab/cards/init` seeds by
@@ -1846,51 +1637,15 @@ function ListDetailSheet({
           >
             Study this list
           </Button>
-          {bundleSource ? (
-            <Button
-              variant="ghost"
-              size="md"
-              leadingIcon={<Icon name="plus" size={14} />}
-              disabled
-              title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
-            >
-              Add all to my bank
-            </Button>
-          ) : isCustom ? (
-            <>
-              {renaming ? (
-                <Button
-                  variant="ghost"
-                  size="md"
-                  onClick={handleRenameSubmit}
-                  disabled={busy === 'rename'}
-                >
-                  Save name
-                </Button>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="md"
-                  leadingIcon={<Icon name="pen" size={14} />}
-                  onClick={() => {
-                    setRenameValue(detail?.name_kr ?? bundleList?.name ?? '');
-                    setRenaming(true);
-                  }}
-                  disabled={detail === null}
-                >
-                  Rename
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="md"
-                onClick={handleDelete}
-                disabled={busy !== null}
-              >
-                Delete
-              </Button>
-            </>
-          ) : null}
+          <Button
+            variant="ghost"
+            size="md"
+            leadingIcon={<Icon name="plus" size={14} />}
+            disabled
+            title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
+          >
+            Add all to my bank
+          </Button>
         </div>
 
         <hr className="hr-double km-review__sheetRule" />
@@ -1913,204 +1668,6 @@ function ListDetailSheet({
               + {total - preview.length} more
             </div>
           ) : null}
-        </div>
-      </div>
-    </Sheet>
-  );
-}
-
-interface CreateListSheetProps {
-  open: boolean;
-  onClose: () => void;
-  /** Fires after the server returns 201; parent refetches the lists collection. */
-  onCreated: (created: CreateListResponse) => void;
-}
-
-const KIND_OPTIONS: ReadonlyArray<VocabListKind> = [
-  'vocab',
-  'grammar',
-  'hanja',
-  'mixed',
-];
-
-function CreateListSheet({
-  open,
-  onClose,
-  onCreated,
-}: CreateListSheetProps): JSX.Element {
-  const [name, setName] = useState<string>('');
-  const [en, setEn] = useState<string>('');
-  const [kind, setKind] = useState<VocabListKind>('vocab');
-  const [seed, setSeed] = useState<string>('');
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const ctrlRef = useRef<AbortController | null>(null);
-
-  // Reset form on close — without this, reopening shows stale partial input.
-  const resetAndClose = useCallback((): void => {
-    ctrlRef.current?.abort();
-    setName('');
-    setEn('');
-    setKind('vocab');
-    setSeed('');
-    setSubmitting(false);
-    setError(null);
-    onClose();
-  }, [onClose]);
-
-  // Abort any in-flight create when the sheet closes (parent flips `open`).
-  useEffect(() => {
-    if (!open) {
-      ctrlRef.current?.abort();
-    }
-  }, [open]);
-
-  const handleCreate = useCallback((): void => {
-    const trimmed = name.trim();
-    if (!trimmed || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    const ctrl = new AbortController();
-    ctrlRef.current?.abort();
-    ctrlRef.current = ctrl;
-    const body: CreateListBody = {
-      name_kr: trimmed,
-      kind,
-    };
-    const trimmedEn = en.trim();
-    if (trimmedEn) body.name_en = trimmedEn;
-    // NOTE: `seed` words are captured in the UI but not wired into the
-    // create call — `CreateListBody` doesn't accept seed entry ids. Pass 4+
-    // adds a "lookup-then-addListEntries" two-step here so the user's seed
-    // lines actually populate the list.
-    vocabService
-      .createList(body)
-      .then((created) => {
-        if (ctrl.signal.aborted) return;
-        setSubmitting(false);
-        // Reset locally before bubbling — `onCreated` will close the sheet
-        // upstream, and we don't want a frame of stale fields visible mid-
-        // close animation.
-        setName('');
-        setEn('');
-        setKind('vocab');
-        setSeed('');
-        onCreated(created);
-      })
-      .catch((err: unknown) => {
-        if (ctrl.signal.aborted) return;
-        setSubmitting(false);
-        setError(
-          errorMessageFor(err, 'Could not create list.'),
-        );
-      });
-  }, [name, en, kind, submitting, onCreated]);
-
-  // Submit-on-Enter is fine for the name field — the textarea (seed) keeps
-  // newline semantics because Enter inside <textarea> doesn't bubble here.
-  const onEnterFromName = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter' && name.trim() && !submitting) {
-      e.preventDefault();
-      handleCreate();
-    }
-  };
-
-  return (
-    <Sheet open={open} onClose={resetAndClose} ariaLabel="Create custom list">
-      <div className="km-review__sheetBody">
-        <div className="km-eyebrow">새 단어장 · New list</div>
-        <div className="kr-display km-review__sheetTitle">
-          Create a custom list
-        </div>
-        <div className="km-review__sheetMeta">
-          Group words by topic, source, or drama. Add as you mine.
-        </div>
-
-        <div className="km-review__formCol">
-          <label className="km-review__field">
-            <span className="km-eyebrow">List name · 이름</span>
-            <input
-              className="kr focusring km-review__input"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-              }}
-              onKeyDown={onEnterFromName}
-              placeholder="병원 어휘"
-              aria-label="List name"
-              disabled={submitting}
-            />
-          </label>
-          <label className="km-review__field">
-            <span className="km-eyebrow">English label · optional</span>
-            <input
-              className="focusring km-review__input"
-              value={en}
-              onChange={(e) => {
-                setEn(e.target.value);
-              }}
-              placeholder="Hospital vocabulary"
-              aria-label="English label"
-              disabled={submitting}
-            />
-          </label>
-          <fieldset className="km-review__field km-review__kindRow">
-            <legend className="km-eyebrow">Kind</legend>
-            <div role="radiogroup" aria-label="List kind" className="km-review__kindOpts">
-              {KIND_OPTIONS.map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  role="radio"
-                  aria-checked={kind === k}
-                  onClick={() => {
-                    setKind(k);
-                  }}
-                  className={`km-review__kindOpt focusring${kind === k ? ' km-review__kindOpt--on' : ''}`}
-                  disabled={submitting}
-                >
-                  {k}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-          <label className="km-review__field">
-            <span className="km-eyebrow">Seed words · one per line, optional</span>
-            <textarea
-              className="kr focusring km-review__textarea"
-              value={seed}
-              onChange={(e) => {
-                setSeed(e.target.value);
-              }}
-              placeholder={'진료\n처방전\n증상'}
-              aria-label="Seed words"
-              disabled={submitting}
-            />
-          </label>
-          {error ? (
-            <div role="alert" className="km-review__rateError">
-              {error}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="km-review__sheetFoot">
-          <Button
-            variant="ghost"
-            size="md"
-            onClick={resetAndClose}
-            disabled={submitting}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="gold"
-            size="md"
-            disabled={!name.trim() || submitting}
-            onClick={handleCreate}
-          >
-            {submitting ? 'Creating…' : 'Create list'}
-          </Button>
         </div>
       </div>
     </Sheet>

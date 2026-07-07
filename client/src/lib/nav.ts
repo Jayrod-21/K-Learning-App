@@ -13,7 +13,11 @@
  *      itself is NOT a NavItem — it has no route; `BottomNav` renders it
  *      as a button that toggles `LearnMenu`.
  *   3. SECONDARY_IDS — routed screens reachable from tabs/pages but not
- *      from the bar (mistakes, reference, diagnostic, images, chat).
+ *      from the bar: the Review-library sub-pages (mistakes, review-vocab,
+ *      review-dictionary, review-grammar — the P1.2 dissolution of the old
+ *      Reference page, decisions D2/D3) plus diagnostic, images, chat.
+ *      `/reference` itself is retired — a redirect shim in lib/redirects
+ *      maps it (tab-aware) onto the library routes.
  *
  * Hard contract: `chat` stays at `/chat` — `AskAboutThisButton` pins
  * `CHAT_PATH = '/chat'` and F-020 seed state rides router state to it.
@@ -51,7 +55,9 @@ export type NavItemId =
   | 'reading'
   // Secondary routed screens.
   | 'mistakes'
-  | 'reference'
+  | 'review-vocab'
+  | 'review-dictionary'
+  | 'review-grammar'
   | 'diagnostic'
   | 'images'
   | 'chat';
@@ -177,15 +183,37 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'history',
   },
   {
-    // KEEP for P1.1 — the Reference page dissolves into the Review library
-    // in P1.2. The library index deep-links into its tabs via `?tab=`.
-    id: 'reference',
-    path: '/reference',
-    label: 'Reference',
-    kr: '참고',
-    eyebrow: 'Lookup',
-    headerTitle: '참고 · Reference',
+    // P1.2 — the old Reference **Vocabulary** tab, now a first-class library
+    // page (curated corpus browse + the canonical My-Lists surface).
+    id: 'review-vocab',
+    path: '/review/vocab',
+    label: 'Vocabulary',
+    kr: '단어',
+    eyebrow: 'Corpus · my lists',
+    headerTitle: '단어 · Vocabulary',
+    icon: 'cards',
+  },
+  {
+    // P1.2, decision D2 — the KRDICT dictionary stays its OWN page (a
+    // lookup corpus, not merged into the vocabulary browse).
+    id: 'review-dictionary',
+    path: '/review/dictionary',
+    label: 'Dictionary',
+    kr: '사전',
+    eyebrow: 'KRDICT · 54k entries',
+    headerTitle: '사전 · Dictionary',
     icon: 'search',
+  },
+  {
+    // P1.2, decision D3 — the SINGLE grammar browse (the old Reference
+    // Grammar tab + the LEARN Grammar screen's retired list tab).
+    id: 'review-grammar',
+    path: '/review/grammar',
+    label: 'Grammar',
+    kr: '문법',
+    eyebrow: 'KGIU patterns',
+    headerTitle: '문법 · Grammar',
+    icon: 'grammar',
   },
   {
     id: 'diagnostic',
@@ -244,7 +272,9 @@ export const LEARN_SUBPAGE_IDS = [
 /** Routed screens reachable from tabs/pages, not from the bar. */
 export const SECONDARY_IDS = [
   'mistakes',
-  'reference',
+  'review-vocab',
+  'review-dictionary',
+  'review-grammar',
   'diagnostic',
   'images',
   'chat',

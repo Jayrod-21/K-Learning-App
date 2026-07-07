@@ -725,8 +725,28 @@ body {
   border: 2px solid var(--ink-2);
 }
 
-/* Review library index (P1.1 placeholder) ─────────────────────────────── */
+/* Review library index ────────────────────────────────────────────────── */
 .km-library { padding: 0 22px 32px; }
+/* Quick-launch hot-buttons into the LEARN flow (P1.2; fuller look = P4). */
+.km-library__quick {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.km-library__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
 .km-library__list {
   display: flex;
   flex-direction: column;

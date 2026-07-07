@@ -1,0 +1,18 @@
+# gitleaks config for Korean Master.
+#
+# IMPORTANT: `useDefault = true` KEEPS the full built-in gitleaks ruleset — this
+# file only ADDS an allowlist. Without it, a custom config REPLACES the defaults
+# and disables all secret scanning. Do not remove that line.
+[extend]
+useDefault = true
+
+# Allowlist: grammar pattern keys are corpus identifiers, not secrets.
+# The app keys every grammar pattern as `GR-<book>-<slug>` (e.g. GR-kgiu-beginner-002,
+# GR-kgiu-int-009). When one appears in a `patternKey: '...'`-shaped test fixture the
+# default `generic-api-key` rule false-positives on it. These are public, deterministic
+# identifiers derived from the KGIU corpus — safe to allowlist by their fixed prefix.
+[allowlist]
+description = "Grammar pattern keys (GR-...) are corpus identifiers, not secrets"
+regexes = [
+  '''GR-[a-z0-9]+-[a-z0-9-]+''',
+]
