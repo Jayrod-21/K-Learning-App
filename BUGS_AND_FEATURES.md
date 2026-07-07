@@ -97,7 +97,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-015 | Feature | 🔴 | P2 | DATA (BACKEND, UI) | Hanja — finish + populate (route/tests exist; data missing, UI incomplete) |
 | F-016 | Feature | 🔴 | P2 | UI (BACKEND) | Rework "More" tab → rename Ask/Chat/AI → Chat, with an in-chat dictionary function |
 | F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel (per-skill mastery/reviewed graphs, finger-slide) |
-| F-018 | Feature | 🔴 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules in the detail Sheet (now explanation+unit only) |
+| F-018 | Feature | 🟢 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules in the detail Sheet (now explanation+unit only) |
 | F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations — 0/2,088 topik_items have one; pilot done (in-session, no API) |
 | F-020 | Feature | 🟢 | P2 | UI (BACKEND) | "Ask about this" — push a question + its explanation into Chat for AI follow-up Q&A |
 | F-021 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Wrong-answer review log — revisit past missed questions + explanations across sessions (30-day window) |
@@ -570,7 +570,18 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Build a touch-swipeable carousel (or layered rotating stack) of per-skill charts on Today; back each panel with a per-skill time series. Pairs with F-010 (history data) and F-013 (mastery); confirm which skills actually have series data before promising all five.
 
 ### F-018 · Rich grammar detail — render examples/dialogues/formation_rules
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P3 · **Category:** BACKEND (UI)
+- **Resolution (2026-07-06):** the fields already arrived from the server (SELECTed +
+  spread) but were typed `unknown` and never rendered. Now typed (formation_rules string[],
+  examples {korean,english}[], dialogues typed per the migration) + rendered via a new
+  shared `KgiuDetailBody` used by BOTH the Grammar `DetailSheet` + Reference
+  `GrammarDetailSheet` (so they can't drift); each section shows only when non-empty, with
+  element-shape guards so a malformed corpus row degrades instead of crashing. The /fixpass
+  also caught + fixed a REAL pre-existing prod bug: the detail SELECT omitted `unit` → footer
+  showed "Unit · —" for every real pattern (masked by unit-carrying mocks — the grammar-Bank
+  fixture class); now on the wire + pinned by a server test. Deleted dead `ScreenStub.tsx`.
+  **Data note:** `dialogues` is empty in all 294 corpus rows today → the Dialogues section is
+  coded but invisible until a corpus load populates it (F-UP-019). client 735 / server 56. PR #57.
 - **Where:** Grammar detail Sheet — both the Reference Grammar tab (F-004, shipped) and the standalone `Grammar.tsx`.
 - **State:** `GET /grammar/kgiu/:id` returns `explanation`, `unit`, plus `formation_rules` / `examples` / `dialogues` / `tips` as untyped `jsonb`. The detail Sheet (both screens) renders only explanation + unit and DISCARDS the richer fields — a real usability gap for a language-reference feature (you can't see example sentences for a pattern). Flagged in the Track A /fixpass (F-004 review) as an acceptable v1 cut, now tracked.
 - **Key files:** `client/src/pages/Reference.tsx` (GrammarDetailSheet), `client/src/pages/Grammar.tsx` (DetailSheet), `client/src/types/domain.ts` (type the jsonb), `server/src/routes/grammar.ts` (`GET /grammar/kgiu/:id`)

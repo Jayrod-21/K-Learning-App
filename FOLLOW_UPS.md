@@ -181,6 +181,15 @@ robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scopin
 mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
 Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
 
+### F-UP-019 · F-018 data + cleanup residuals (2026-07-06, P3)
+- **Grammar `dialogues` empty in all 294 corpus rows**: F-018 renders the Dialogues section
+  defensively but it's invisible because no row has dialogue data. If the Darakwon KGIU source
+  carries dialogues, extend the loader/parser to populate `kgiu_entries.dialogues` (shape
+  `{context, lines:[{speaker,korean,english}], alternatives?}`) — then the section lights up
+  with no client change. Also `register` is fetched-but-not-carried on the detail wire (optional).
+- **Dead-code candidate**: `client/src/data/mocks/reference.ts` has zero importers — deleting it
+  would also orphan the `ReferenceEntry` type in `domain.ts`. A deliberate cleanup, not urgent.
+
 ### F-UP-018 · Bug-sweep residuals (2026-07-06, all P3 unless noted)
 Deferred items from the intense bug sweep (findings in `db/docs/SWEEP_*.md`; fixes in
 `FIX_sweep_*.md`; re-reviews in `REVIEW_SWEEP_*.md`). The sweep fixed ~40 defects incl. a
