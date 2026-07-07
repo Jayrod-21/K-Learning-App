@@ -95,7 +95,7 @@ Launch one focused session per group; cross-cutting items noted.
 | F-013 | Feature | 🟢 | P2 | UI (BACKEND) | Word mastery view — surface per-word FSRS mastery (progress tab or word detail) |
 | F-014 | Feature | 🟢 | P2 | UI (BACKEND) | Today "Writing" tab rework — audit + identify changes (relates to F-001) |
 | F-015 | Feature | 🔴 | P2 | DATA (BACKEND, UI) | Hanja — finish + populate (route/tests exist; data missing, UI incomplete) |
-| F-016 | Feature | 🔴 | P2 | UI (BACKEND) | Rework "More" tab → rename Ask/Chat/AI → Chat, with an in-chat dictionary function |
+| F-016 | Feature | 🟡 | P2 | UI (BACKEND) | Rework "More" tab → rename Ask/Chat/AI → Chat, with an in-chat dictionary function |
 | F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel (per-skill mastery/reviewed graphs, finger-slide) |
 | F-018 | Feature | 🟢 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules in the detail Sheet (now explanation+unit only) |
 | F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations — 0/2,088 topik_items have one; pilot done (in-session, no API) |
@@ -556,7 +556,20 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Audit what the hanja route already returns, acquire/load a hanja dataset (character, meaning, reading, example words), and build/finish the hanja UI. Confirm the exact gaps before scoping.
 
 ### F-016 · Rework the "More" tab → Ask/Chat/AI, with an in-chat dictionary
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Status:** 🟡 dictionary done (2026-07-07, deployed); nav rework deferred to the app overhaul · **Priority:** P2 · **Category:** UI (BACKEND)
+- **Resolution (2026-07-07):** split into its two halves. **(1) In-chat dictionary — DONE + deployed:**
+  a book-icon lookup by the Chat composer → `defineEntry(word)` → `buildWordPopover` → the existing
+  `WordPopover` (KR headword, POS, gloss, example, More-examples drawer, Add-to-bank). Client-only —
+  reuses the KRDICT `/define` endpoint + `WordPopover` as-is. All states handled with fixed copy
+  (empty/loading/no-entry/`krdict_unavailable`/network/abort); no fabricated or sentinel gloss can
+  reach the UI or the bank; raw server prose never rendered (`errorMessageFor`). Add-to-bank mirrors
+  Ttmik (optimistic flip + rollback + toast). Full /fixpass (PASS, 0 blockers) + 7 mutation-verified
+  hardening tests (abort-safety, newer-lookup-abort, bank-rollback, sentinel-filter). Chat.test.tsx
+  32 tests. PR #60. **(2) Nav rework (promote Chat out of the 'More' sheet) — DEFERRED to the app
+  overhaul** (product call 2026-07-07): the nav label is already "Chat"; the real ask is an
+  information-architecture change (Chat is buried 7th-of-10 in the More sheet), which overlaps the
+  overhaul's nav reorganization. `/chat` route + F-020's seed-navigation are untouched, so the
+  promotion is a clean future change.
 - **Where:** Bottom nav "More" tab.
 - **What:** Repurpose "More" — rename it to something like **Ask / Chat / AI** and have it route to the conversation/chat screen. That chat should also gain a **dictionary function** (look a word up inline from chat), tying the AI tutor and the dictionary into one place.
 - **State / relationships:** Chat exists (`Chat.tsx`, working after B-010). The dictionary depends on KRDICT data (**B-011** — currently empty), so the in-chat lookup needs B-011 to return results.

@@ -3171,6 +3171,30 @@ body {
 }
 .km-chat__hint:hover { border-color: var(--vermilion); color: var(--vermilion); }
 
+/* Dictionary lookup field (F-016) — compact single-word row revealed by
+   the book toggle in the composer row. Input mirrors the textarea's skin
+   without its resize/min-height. */
+.km-chat__dictRow { display: flex; flex-direction: column; gap: 6px; }
+.km-chat__dictInputRow { display: flex; gap: 8px; align-items: center; }
+.km-chat__dictInput {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 3px;
+  background: var(--ink-1);
+  border: 1px solid var(--line-strong);
+  color: var(--paper);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 15px;
+  outline: none;
+}
+.km-chat__dictInput:focus-visible {
+  border-color: var(--vermilion);
+  background: var(--ink-3);
+}
+.km-chat__dictNotice { font-size: 13px; color: var(--paper-mute); }
+.km-chat__dictNotice--error { color: var(--vermilion); }
+
 /* ─────────────────────────────────────────────────────────────
    Pass 2 — Hanja / Images / Reference / Settings screens
    ───────────────────────────────────────────────────────────── */

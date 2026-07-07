@@ -23,6 +23,20 @@
  *     optimistic user-turn into a `failed → retry` chip and surfaces an
  *     inline error message under the composer.
  *
+ * Dictionary lookup (F-016):
+ *   A book icon next to the composer reveals a compact single-word lookup
+ *   field. Submitting it calls `GET /define` directly (`defineEntry`) — the
+ *   user typed the headword themselves, so the tap-chain's lemmatize +
+ *   enrich steps are skipped — and the result renders in the shared
+ *   `WordPopover` via `buildWordPopover(word, result, null)`. States:
+ *   empty input is a no-op; the popover opens immediately with its
+ *   `isLoading` stub; a lookup with no entries closes the stub and shows a
+ *   fixed "no entry" notice under the field; a 503 `krdict_unavailable` /
+ *   network failure shows fixed error copy (never server prose — F-UP-018);
+ *   unmount / a newer lookup aborts the in-flight request. "Add to bank"
+ *   inside the popover mines via `mineWord`, mirroring Ttmik's optimistic
+ *   flip + rollback + fixed-copy toast contract.
+ *
  * "Ask about this" seeding (F-020):
  *   A review surface (Mistakes / TOPIK mock / TOPIK study / Diagnostic) can
  *   navigate here with a `ChatSeedState` in router state. The seed text
@@ -83,11 +97,21 @@ import { Toggle } from '../components/Toggle';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
+import { WordPopover } from '../components/WordPopover';
+import type { WordPopoverData } from '../components/WordPopover';
+import { useToast } from '../components/useToast';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { loadConversationMock } from '../data/mocks/chat';
 import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
+import {
+  buildWordPopover,
+  GLOSS_DICTIONARY_ENTRY,
+  GLOSS_UNAVAILABLE,
+} from '../lib/tapChain';
 import * as conversationService from '../services/conversation';
+import { defineEntry } from '../services/define';
+import { mineWord } from '../services/vocab';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
 import type {
@@ -114,6 +138,25 @@ const FALLBACK_OPENER: ConversationMessage = {
 
 /** Server start mode — kept here (one screen, one mode) to avoid a config dep. */
 const DEFAULT_START_MODE = 'casual' as const;
+
+/** Fixed copy for a lookup that resolved but matched no KRDICT entry (F-016).
+ *  Author-controlled — the server's 404/empty body is never echoed. */
+const DICT_NO_ENTRY_COPY = 'No dictionary entry found for that word.';
+
+/** Fixed copy for the 503 `krdict_unavailable` path (F-UP-018 contract —
+ *  the server's own prose never reaches the DOM). */
+const DICT_UNAVAILABLE_COPY =
+  'The dictionary is unavailable right now. Try again later.';
+
+/** Fallback fixed copy for any other lookup failure. */
+const DICT_FAILED_COPY = 'Could not look that word up. Try again.';
+
+/** Inline notice under the dictionary field — friendly status ("no entry")
+ *  vs. error (lookup failed) picks the a11y role and the colour. */
+interface DictNotice {
+  tone: 'status' | 'error';
+  text: string;
+}
 
 /** Skeleton placeholder during load. */
 function SkeletonCard(): JSX.Element {
@@ -179,6 +222,7 @@ interface ThreadRow extends ConversationMessage {
 
 export function Chat(): JSX.Element {
   const { settings } = useSettings();
+  const { toast } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -584,6 +628,170 @@ export function Chat(): JSX.Element {
     }
   };
 
+  // ── Dictionary lookup (F-016) ──────────────────────────────────────
+  // Book button toggles a compact single-word field under the composer;
+  // submitting it runs `defineEntry` → `buildWordPopover` → WordPopover.
+  const [dictOpen, setDictOpen] = useState<boolean>(false);
+  const [dictInput, setDictInput] = useState<string>('');
+  const [dictPop, setDictPop] = useState<WordPopoverData | null>(null);
+  const [dictLoading, setDictLoading] = useState<boolean>(false);
+  const [dictNotice, setDictNotice] = useState<DictNotice | null>(null);
+  // Session-scoped set of banked headwords — re-looking one up shows the
+  // "already banked" pill (same convention as Ttmik's minedIds).
+  const [dictMined, setDictMined] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  // Lookup-scoped controller — aborted on a newer lookup, popover close,
+  // or unmount, so a late resolve can never set state on a dead tree.
+  const dictCtrlRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => {
+      dictCtrlRef.current?.abort();
+    };
+  }, []);
+
+  const toggleDict = useCallback((): void => {
+    // Toggling always clears the notice — a stale "no entry" line must not
+    // survive a close/reopen. The typed word is kept (cheap undo). The two
+    // set calls stay side by side (never one inside the other's updater —
+    // updaters must be pure).
+    setDictNotice(null);
+    setDictOpen((open) => !open);
+  }, []);
+
+  /**
+   * Run one lookup. The popover opens immediately with its `isLoading`
+   * stub (same gesture as Ttmik's tap path); a no-entry result or a
+   * failure closes the stub and surfaces fixed copy under the field
+   * instead — WordPopover has no error body, and an inline line next to
+   * where the user just typed reads better than a near-empty dialog.
+   */
+  const lookupWord = useCallback((): void => {
+    const word = dictInput.trim();
+    if (!word) return;
+    dictCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    dictCtrlRef.current = ctrl;
+
+    setDictNotice(null);
+    setDictLoading(true);
+    setDictPop({
+      kr: word,
+      en: '',
+      pos: 'word',
+      ex_kr: '',
+      ex_en: '',
+      mined: dictMined.has(word),
+    });
+
+    void defineEntry(word, ctrl.signal).then(
+      (result) => {
+        if (ctrl.signal.aborted) return;
+        if (result.entries.length === 0) {
+          // 200-with-empty-entries — the "typo / not in KRDICT" path.
+          setDictPop(null);
+          setDictLoading(false);
+          setDictNotice({ tone: 'status', text: DICT_NO_ENTRY_COPY });
+          return;
+        }
+        // Direct typed lookup: the user supplied the headword, so the
+        // define result alone is the popover (no lemmatize/enrich pass).
+        const popover = buildWordPopover(word, result, null);
+        popover.mined = dictMined.has(popover.kr);
+        setDictPop(popover);
+        setDictLoading(false);
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setDictPop(null);
+        setDictLoading(false);
+        if (err instanceof ApiError && err.status === 404) {
+          // Older server contract surfaced "no entry" as a 404 — same
+          // friendly copy, never the server body.
+          setDictNotice({ tone: 'status', text: DICT_NO_ENTRY_COPY });
+          return;
+        }
+        const text =
+          err instanceof ApiError && err.code === 'krdict_unavailable'
+            ? DICT_UNAVAILABLE_COPY
+            : errorMessageFor(err, DICT_FAILED_COPY);
+        setDictNotice({ tone: 'error', text });
+      },
+    );
+  }, [dictInput, dictMined]);
+
+  /** Close the popover and abort any still-pending lookup. */
+  const closeDictPopover = useCallback((): void => {
+    dictCtrlRef.current?.abort();
+    dictCtrlRef.current = null;
+    setDictPop(null);
+    setDictLoading(false);
+  }, []);
+
+  const onDictKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Mirror the search button's disabled state exactly: Enter must not
+      // restart an in-flight lookup (it would abort + refire behind a
+      // visibly disabled button) and must not submit whitespace.
+      if (dictLoading || !dictInput.trim()) return;
+      lookupWord();
+    }
+  };
+
+  /**
+   * Add-to-bank (FU-NF-33) — Ttmik's contract verbatim: optimistic flip,
+   * rollback + fixed-copy toast on a real failure, a close-aborted request
+   * swallowed. Sentinel glosses are never persisted as the word's English.
+   */
+  const handleDictAdd = useCallback(
+    (d: WordPopoverData): void | Promise<void> => {
+      const lemma = d.kr;
+      setDictMined((prev) => {
+        const next = new Set(prev);
+        next.add(lemma);
+        return next;
+      });
+
+      // Reuse the lookup-scoped controller so a popover close cancels the
+      // bank too; fall back to a fresh one if it was already cleared.
+      const ctrl = dictCtrlRef.current ?? new AbortController();
+      dictCtrlRef.current = ctrl;
+
+      return mineWord(
+        {
+          lemma,
+          ...(d.en &&
+          d.en !== GLOSS_DICTIONARY_ENTRY &&
+          d.en !== GLOSS_UNAVAILABLE
+            ? { english: d.en }
+            : {}),
+          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
+          ...(d.krdictEntryId !== undefined
+            ? { krdictEntryId: d.krdictEntryId }
+            : {}),
+        },
+        ctrl.signal,
+      ).then(
+        () => undefined,
+        (err: unknown) => {
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setDictMined((prev) => {
+            if (!prev.has(lemma)) return prev;
+            const next = new Set(prev);
+            next.delete(lemma);
+            return next;
+          });
+          toast({ message: "Couldn't bank — try again", tone: 'error' });
+          // Re-throw so WordPopover rolls its "Added" button back too.
+          throw err instanceof Error ? err : new Error('bank failed');
+        },
+      );
+    },
+    [toast],
+  );
+
   // Empty-state condition: we have no data AND we're not loading. With the
   // realFn flipped on, the hook may resolve with an empty `conversations`
   // array — that's not an error, that's "new user, no thread yet". The old
@@ -671,7 +879,64 @@ export function Chat(): JSX.Element {
               >
                 <Icon name="send" size={16} />
               </Button>
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={toggleDict}
+                aria-label="Dictionary lookup"
+                aria-expanded={dictOpen}
+                aria-controls="chat-dict-row"
+              >
+                <Icon name="book" size={16} />
+              </Button>
             </div>
+            {dictOpen ? (
+              <div id="chat-dict-row" className="km-chat__dictRow">
+                <label
+                  className="km-chat__composerLabel"
+                  htmlFor="chat-dict-input"
+                >
+                  <span className="km-eyebrow">Dictionary · 사전</span>
+                </label>
+                <div className="km-chat__dictInputRow">
+                  <input
+                    id="chat-dict-input"
+                    type="text"
+                    className="kr focusring km-chat__dictInput"
+                    value={dictInput}
+                    onChange={(e) => {
+                      setDictInput(e.target.value);
+                    }}
+                    onKeyDown={onDictKeyDown}
+                    placeholder="Korean word — e.g. 사전"
+                    aria-label="Dictionary word"
+                    autoComplete="off"
+                  />
+                  <Button
+                    variant="gold"
+                    size="md"
+                    onClick={lookupWord}
+                    disabled={!dictInput.trim() || dictLoading}
+                    aria-label="Look up word"
+                    aria-busy={dictLoading ? 'true' : 'false'}
+                  >
+                    <Icon name="search" size={16} />
+                  </Button>
+                </div>
+                {dictNotice ? (
+                  <div
+                    role={dictNotice.tone === 'error' ? 'alert' : 'status'}
+                    className={`km-chat__dictNotice${
+                      dictNotice.tone === 'error'
+                        ? ' km-chat__dictNotice--error'
+                        : ''
+                    }`}
+                  >
+                    {dictNotice.text}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {sendError ? (
               <div
                 role="alert"
@@ -708,6 +973,15 @@ export function Chat(): JSX.Element {
           </div>
         </>
       )}
+
+      {dictPop ? (
+        <WordPopover
+          data={dictPop}
+          onClose={closeDictPopover}
+          onAdd={handleDictAdd}
+          isLoading={dictLoading}
+        />
+      ) : null}
     </section>
   );
 }
