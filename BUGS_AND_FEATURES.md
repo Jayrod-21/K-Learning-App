@@ -11,26 +11,34 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
-## Status snapshot (2026-07-05)
+## Status snapshot (2026-07-06 — post feature-roadmap + intense bug sweep)
 
-**Bugs: 16 of 17 resolved.** B-001–B-011, B-013–B-016 are all 🟢 done (mix of the
-#19 Track-A wiring, the Read→Listen consolidation, the KRDICT dictionary load, and
-the 2026-07-05 bug pass — see `db/docs/BUG_RETRIAGE_2026-07-05.md` and the
-`REVIEW_*.md` trail). Only **B-012** remains (🟡 — the loaded count is fine at
-100%; only an OCR-completeness spot-check is left).
+**Bugs: all 17 resolved / reclassified.** B-001–B-011, B-013–B-016 🟢 done; **B-016**
+genuinely closed 2026-07-06 (via F-014 — it had been mis-marked). **B-012** is NOT a
+loader bug (the loader is faithful) — it's an upstream corpus *extraction* gap (~400
+words/level short of nominal 2,000) → tracked in FOLLOW_UPS, not a code fix.
 
-**Features: 9 done, ~12 open.** 🟢 done: F-001, F-003, F-004, F-005, F-008, F-009,
-F-010, F-012, F-013. 🟡 in progress: F-019 (wrong-answer explanations, ~1920/2088).
-🔴 open: F-002, F-006, F-007, F-011, F-014, F-015, F-016, F-017, F-018, F-020,
-F-021.
+**Features: 17 done, 4 open.** 🟢 done: F-001, F-003, F-004, F-005, **F-007, F-008,
+F-009, F-010, F-011, F-012, F-013, F-014, F-015, F-017, F-019, F-020, F-021** (the
+2026-07-06 roadmap: Hanja → Mistakes/explanations → Resume TOPIK → stats carousel →
+Writing rework → Ask-about-this → diagnostic hardening, PRs #49–#55). 🔴 open (→ the
+app overhaul phase): **F-002** (TOPIK L1/L2 diagnostic), **F-006** (email notifications),
+**F-016** (More-tab → Chat rework + in-chat dictionary), **F-018** (rich grammar detail).
 
-**Not in this doc — surfaced by the CI test gate + reviews (see `FOLLOW_UPS.md`):**
-F-UP-002 (strategy_c min-3 fragment filter drops legit 2-syllable patterns),
-F-UP-003 (3 ingest tests need generated output), F-UP-004/005 (rate-limit
-`retry_after` precision + coverage).
+**Intense bug sweep (2026-07-06):** 5 Fable finders swept the whole codebase → ~40 real
+defects fixed across 6 batches + a CRITICAL, each mutation-tested + independently
+re-reviewed (server SHIP / client PASS). Headliners: a dropped chat stream crashed the
+whole server (`process.exit`); `POST /topik/mock` merged TOPIK I+II sittings (scores
+against a mixed/truncated exam); a TTL-0 cache served wrong OCR; `useEndpointOrMock`
+painted fixture data as real in prod on a live-call failure; and a full audit of 1,926
+explanations nulled 42 wrong/placeholder + repaired 3. **No security holes found.**
+Trail: `db/docs/{SWEEP,FIX_sweep,REVIEW_SWEEP}_*.md`. Residuals → FOLLOW_UPS F-UP-018.
 
-> Triage done via read-only code scan on 2026-07-02. Path:line refs are pointers
-> for the coding session, not guaranteed exact after future edits.
+**Not in this doc — see `FOLLOW_UPS.md`:** F-UP-013…018 (answer-key data, resurrect-race
+hardening, resume-fail UX, carousel/Writing nits, and the bug-sweep residuals).
+
+> Snapshot refreshed 2026-07-06 after the sweep. Per-item detailed entries below are the
+> source of truth; path:line refs are pointers, not guaranteed exact after edits.
 
 ---
 
@@ -67,32 +75,32 @@ Launch one focused session per group; cross-cutting items noted.
 | B-009 | Bug | 🔴 | P1 | BACKEND (UI, DATABASE) | Review card: due query never joins vocab; UI hardcodes empty en/ex/source |
 | B-010 | Bug | 🔴 | P1 | UI (BACKEND) | Chat empty "TUTOR" box — SSE event discriminator mismatch, NOT the API key |
 | B-011 | Bug | 🔴 | P2 | DATA | Dictionary empty — KRDICT data never loaded (no code fix) |
-| B-012 | Bug | 🔴 | P3 | DATA | Verify vocab-2000 completeness — 3,188 words loaded vs nominal ~4,000 (spot-check covered pages) |
+| B-012 | Bug | ⚪ | P3 | DATA | Verify vocab-2000 completeness — 3,188 words loaded vs nominal ~4,000 (spot-check covered pages) |
 | B-013 | Bug | 🔴 | P2 | UI (BACKEND) | "Add to review" is inert — no UI to seed vocab review cards; `POST /cards/init` exists but unwired |
 | B-014 | Bug | 🔴 | P2 | UI | Review: rating a card flashes the NEXT card's English before it advances (flip not reset) |
 | B-015 | Bug | 🔴 | P2 | UI | Reference "This Week": vocab+grammar need to be tabs; grammar overflows off-screen horizontally |
-| B-016 | Bug | 🔴 | P3 | BACKEND (UI) | `expensiveLimiter` 429 never sends `retry_after` → Writing's "retry in N s" copy is dead code |
+| B-016 | Bug | 🟢 | P3 | BACKEND (UI) | `expensiveLimiter` 429 never sends `retry_after` → Writing's "retry in N s" copy is dead code |
 | F-001 | Feature | 🔴 | P2 | UI (BACKEND) | Writing tile → Grammar; `/grade-writing` backend exists but is orphaned |
 | F-002 | Feature | 🔴 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK L1 & L2 to diagnostic (enum + band math + tagged content) |
 | F-003 | Feature | 🔴 | P3 | BACKEND (UI) | Vocab genre+difficulty filters — columns exist, just not wired |
 | F-004 | Feature | 🔴 | P2 | UI | Grammar detail view — endpoint + `getPattern` exist; Reference rows not clickable |
 | F-005 | Feature | 🔴 | P3 | BACKEND (UI) | Grammar difficulty+genre filters — columns exist, just not wired |
 | F-006 | Feature | 🔴 | P3 | BACKEND (CONFIG) | Email notifications — no mail infra anywhere; net-new build |
-| F-007 | Feature | 🔴 | P2 | DATABASE (BACKEND, UI) | Resume in-progress TOPIK test — no attempt persistence today |
-| F-008 | Feature | 🔴 | P2 | UI (BACKEND) | TOPIK results/grade screen — already built in Mock; needs Study-mode parity |
-| F-009 | Feature | 🔴 | P2 | UI (DATA) | Wrong-answer explanations — wired in Mock; gate to incorrect-only + data coverage |
-| F-010 | Feature | 🔴 | P2 | UI (BACKEND) | Progress/diagnostic history page with graph comparison across attempts |
-| F-011 | Feature | 🟡 | P2 | BACKEND (DATA, DATABASE) | Diagnostic hardening — cheap heuristic pass **spec'd** → `BRIEF_F011_diagnostic_hardening.md` |
+| F-007 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Resume in-progress TOPIK test — no attempt persistence today |
+| F-008 | Feature | 🟢 | P2 | UI (BACKEND) | TOPIK results/grade screen — already built in Mock; needs Study-mode parity |
+| F-009 | Feature | 🟢 | P2 | UI (DATA) | Wrong-answer explanations — wired in Mock; gate to incorrect-only + data coverage |
+| F-010 | Feature | 🟢 | P2 | UI (BACKEND) | Progress/diagnostic history page with graph comparison across attempts |
+| F-011 | Feature | 🟢 | P2 | BACKEND (DATA, DATABASE) | Diagnostic hardening — cheap heuristic pass **spec'd** → `BRIEF_F011_diagnostic_hardening.md` |
 | F-012 | Feature | 🔴 | P2 | BACKEND (DATABASE, DATA, UI) | TTMIK tab — play Iyagi podcasts + TTMIK lessons with real audio + read-along script |
-| F-013 | Feature | 🔴 | P2 | UI (BACKEND) | Word mastery view — surface per-word FSRS mastery (progress tab or word detail) |
-| F-014 | Feature | 🔴 | P2 | UI (BACKEND) | Today "Writing" tab rework — audit + identify changes (relates to F-001) |
+| F-013 | Feature | 🟢 | P2 | UI (BACKEND) | Word mastery view — surface per-word FSRS mastery (progress tab or word detail) |
+| F-014 | Feature | 🟢 | P2 | UI (BACKEND) | Today "Writing" tab rework — audit + identify changes (relates to F-001) |
 | F-015 | Feature | 🔴 | P2 | DATA (BACKEND, UI) | Hanja — finish + populate (route/tests exist; data missing, UI incomplete) |
 | F-016 | Feature | 🔴 | P2 | UI (BACKEND) | Rework "More" tab → rename Ask/Chat/AI → Chat, with an in-chat dictionary function |
-| F-017 | Feature | 🔴 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel (per-skill mastery/reviewed graphs, finger-slide) |
+| F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel (per-skill mastery/reviewed graphs, finger-slide) |
 | F-018 | Feature | 🔴 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules in the detail Sheet (now explanation+unit only) |
-| F-019 | Feature | 🟡 | P2 | DATA | Generate wrong-answer explanations — 0/2,088 topik_items have one; pilot done (in-session, no API) |
-| F-020 | Feature | 🔴 | P2 | UI (BACKEND) | "Ask about this" — push a question + its explanation into Chat for AI follow-up Q&A |
-| F-021 | Feature | 🔴 | P2 | DATABASE (BACKEND, UI) | Wrong-answer review log — revisit past missed questions + explanations across sessions (30-day window) |
+| F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations — 0/2,088 topik_items have one; pilot done (in-session, no API) |
+| F-020 | Feature | 🟢 | P2 | UI (BACKEND) | "Ask about this" — push a question + its explanation into Chat for AI follow-up Q&A |
+| F-021 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Wrong-answer review log — revisit past missed questions + explanations across sessions (30-day window) |
 
 ---
 
