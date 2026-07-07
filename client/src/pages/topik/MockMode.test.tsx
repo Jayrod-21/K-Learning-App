@@ -4,7 +4,10 @@
  * Covers the phase machine (select → exam → results), that the exam renders
  * answer-stripped items (no `correct` flag present), answering + submit +
  * results render with score + reveals, the countdown timer auto-submitting at
- * 0 (fake timers), palette jump, and the disabled Writing card.
+ * 0 (fake timers), that the countdown tracks the wall-clock deadline rather
+ * than interval ticks (throttled-tab regression) — including a resumed exam
+ * budgeting only its saved remaining (F-007) — the timer's aria-live="off" +
+ * coarse sr-only announcements, palette jump, and the disabled Writing card.
  *
  * `services/topik` is mocked so `fetchMockTest` / `submitMockTest` are
  * controllable without a server. `data/mocks/topik` is mocked so the offline
@@ -280,6 +283,135 @@ describe('MockMode (Mock test)', () => {
     }
   });
 
+  it('derives remaining from the wall-clock deadline, not a tick count (throttled tab)', async () => {
+    // The countdown must track a fixed deadline: a backgrounded/throttled tab
+    // whose interval fired far FEWER times than seconds actually elapsed must
+    // still show the true remaining, never bank the skipped seconds as extra
+    // exam time. Fake ONLY the interval and stub `Date.now`, so we can advance
+    // the wall clock 10 minutes while the interval fires exactly ONCE — the one
+    // case a tick counter gets wrong.
+    const T0 = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0);
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      fireEvent.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const timer = screen.getByRole('timer');
+      expect(timer).toHaveTextContent('1:10:00');
+
+      // 10 real minutes elapse, but the throttled interval fires only once.
+      nowSpy.mockReturnValue(T0 + 10 * 60 * 1000);
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      // Deadline-based → 70 − 10 = 1:00:00. A tick counter would read 1:09:59
+      // (a single decrement), silently granting ~10 extra minutes.
+      expect(timer).toHaveTextContent('1:00:00');
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('F-007: a RESUMED exam budgets only the saved remaining on the wall-clock deadline', async () => {
+    // Resuming with 10 minutes saved must set a deadline ~600s out — NOT the
+    // full 70-minute section budget. As above, only the interval is faked and
+    // `Date.now` is stubbed, so the assertion is on the wall-clock deadline
+    // itself (a tick counter — or a full-budget deadline — both fail it).
+    const T0 = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0);
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    svc.fetchAttempt.mockResolvedValue({
+      section: 'reading',
+      sourceTest: 7,
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 600_000,
+      answered: 0,
+      updatedAt: '2026-07-06T10:00:00.000Z',
+    });
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      // Flush the mount-time fetchAttempt so the resume banner appears.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /^Resume$/ }));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const timer = screen.getByRole('timer');
+      // Seeded from the saved remaining: 600 s → 10:00 (mm:ss, not 1:10:00).
+      expect(timer).toHaveTextContent(/^10:00$/);
+
+      // 5 wall-clock minutes pass; the (throttled) interval fires once. A
+      // correct resumed deadline (T0 + 600s) shows 05:00 — a full-budget
+      // deadline would show 1:05:00, a tick counter 09:59.
+      nowSpy.mockReturnValue(T0 + 5 * 60 * 1000);
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(timer).toHaveTextContent(/^05:00$/);
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('does not announce the countdown on every tick (timer aria-live is off)', async () => {
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('timer')).toBeInTheDocument();
+    });
+    // The visible per-second clock must not flood assistive tech: aria-live off.
+    expect(screen.getByRole('timer')).toHaveAttribute('aria-live', 'off');
+  });
+
+  it('announces only coarse time marks (a one-minute boundary), not every second', async () => {
+    const T0 = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0);
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      fireEvent.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Move the wall clock to exactly the 60-seconds-remaining mark; fire once.
+      nowSpy.mockReturnValue(T0 + (4200 - 60) * 1000);
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      // The polite sr-only region carries the coarse minute cue — a per-second
+      // announcer would instead read "59", "58", … one number every second.
+      expect(screen.getByText('1 minute remaining.')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+  });
+
   it('answers items, submits with confirm, and shows results with reveals', async () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
@@ -527,8 +659,9 @@ describe('MockMode (Mock test)', () => {
       });
       expect(screen.getByRole('timer')).toBeInTheDocument();
 
-      // Reading budget = 70 min = 4200 s. Advance past expiry; the faked
-      // interval decrements once/sec and the auto-submit effect fires at 0.
+      // Reading budget = 70 min = 4200 s. Advance past expiry (fake timers move
+      // Date.now in lockstep, so the wall-clock deadline is reached); the
+      // auto-submit effect fires when the derived remaining hits 0.
       await act(async () => {
         vi.advanceTimersByTime(4200 * 1000 + 1000);
       });

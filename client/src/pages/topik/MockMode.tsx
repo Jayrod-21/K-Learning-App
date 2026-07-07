@@ -6,8 +6,10 @@
  *   select  → section cards (Reading 50/~70min, Listening 50/~60min; Writing
  *             disabled "coming soon" → FU-NF-47). Tapping a section fetches an
  *             answer-stripped exam (`fetchMockTest`) and enters `exam`.
- *   exam    → a countdown timer (from the section's allotted minutes, ticking
- *             once/sec; auto-submits at 0), one item at a time with a question
+ *   exam    → a wall-clock countdown (deadline = start + the section's allotted
+ *             minutes, or + the saved remaining when resuming (F-007); a ~1s
+ *             interval only re-samples the clock; auto-submits at 0), one item
+ *             at a time with a question
  *             palette, Prev/Next, hidden-answer choices, picks held in a Map.
  *             "Submit test" (confirm) grades server-side and enters `results`.
  *   results → percentage + band headline, correct/total, a per-item review
@@ -35,15 +37,20 @@
  * inline retry that re-sends the SAME in-memory picks rather than dropping the
  * user's work. Neither path can blank the screen.
  *
- * React-19 discipline: the timer is an interval owned by an effect with
- * cleanup (cleared on unmount, exit, and submit); no `Date.now()`/`Math.random()`
- * runs in render; per-item time is stamped in handlers/effects into a ref and
- * read only in a handler. The network flow manages its own AbortController and
- * aborts on unmount.
+ * React-19 discipline: the countdown is driven by a wall-clock DEADLINE, not a
+ * decrementing tick counter — a backgrounded/throttled tab (browsers clamp
+ * `setInterval` in inactive tabs, and it drifts over a 70-min run) can neither
+ * drift nor be handed extra exam time, because the interval only samples
+ * `Date.now()` against the fixed deadline and is a render trigger, not the
+ * source of truth. The interval is owned by an effect with cleanup (cleared on
+ * unmount, exit, and submit); `Date.now()`/`Math.random()` run only in
+ * effects/handlers, never in render; per-item time is stamped into a ref. The
+ * network flow manages its own AbortController and aborts on unmount.
  */
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type JSX,
@@ -691,13 +698,24 @@ function ExamRunner({
   const accumMsRef = useRef<Map<number, number>>(new Map());
   // Wall-clock stamp of when the exam started, for the best-effort durationMs.
   const examStartRef = useRef<number>(0);
+  // Absolute wall-clock instant the exam must auto-submit at. The countdown is
+  // derived from this (deadline − now), never from counting interval ticks, so
+  // a throttled/backgrounded tab can't drift or gain extra time. 0 until the
+  // mount effect below establishes it.
+  const deadlineRef = useRef<number>(0);
 
-  // Stamp the start time once, on mount.
+  // Stamp the start time + the auto-submit deadline once, on mount. A RESUMED
+  // exam (F-007) budgets only its saved remaining seconds, not the full section
+  // allotment — and since `remaining` is re-derived from this deadline, the
+  // persisted value the 15s save loop writes is the true wall-clock remaining,
+  // so a resume can no longer inherit interval drift from the previous session.
   useEffect(() => {
     const now = Date.now();
     examStartRef.current = now;
     itemShownAtRef.current = now;
-  }, []);
+    deadlineRef.current =
+      now + (initial?.remainingSec ?? SECTION_MINUTES[test.section] * 60) * 1000;
+  }, [initial, test.section]);
 
   // Flush the time spent on the item we're leaving into the accumulator, then
   // stamp the freshly-shown item. Called from the navigation handlers (NOT in
@@ -713,9 +731,10 @@ function ExamRunner({
   }, []);
 
   // ── Countdown timer ────────────────────────────────────────────────────
-  // Remaining seconds in render state, decremented by an interval owned by an
-  // effect with cleanup. Initialised from the section's allotted minutes. The
-  // interval is the ONLY ticker; render never reads the clock.
+  // Remaining whole seconds in render state, RE-DERIVED from the wall-clock
+  // deadline by the interval below (not decremented). Seeded from the resumed
+  // remaining (F-007) or the section budget so the very first paint (before the
+  // first interval fire) is correct; render itself never reads the clock.
   const [remaining, setRemaining] = useState<number>(
     () => initial?.remainingSec ?? SECTION_MINUTES[test.section] * 60,
   );
@@ -759,14 +778,23 @@ function ExamRunner({
     onSubmit(buildBody());
   }, [buildBody, onSubmit]);
 
-  // The countdown interval. Ticks once/sec, decrementing `remaining` in state.
-  // The updater only touches the clock (no side effects, no parent set-state)
-  // — the auto-submit is a separate effect keyed on `remaining` reaching 0, so
-  // we never call a state-setting callback from inside another setter. Cleared
-  // on unmount/leave via the effect cleanup.
+  // The countdown interval. Once/sec it RE-SAMPLES the wall clock and derives
+  // `remaining` from `deadline − now` (ceil to whole seconds, floored at 0) —
+  // it is a render trigger, not the source of truth. A tab that was throttled
+  // or suspended and skipped fires still lands on the correct remaining the next
+  // time it ticks, and can never be handed extra exam time by a drifting tick
+  // counter. No side effects / no parent set-state here — the auto-submit is a
+  // separate effect keyed on `remaining` reaching 0 — and the setState lives
+  // only in the interval callback (never synchronously in the effect body).
+  // Cleared on unmount/leave via the effect cleanup.
   useEffect(() => {
     const id = setInterval(() => {
-      setRemaining((r) => (r <= 0 ? 0 : r - 1));
+      // Guard the window before the mount effect established the deadline, so a
+      // stray early fire can't read 0 and auto-submit the exam instantly.
+      if (deadlineRef.current === 0) return;
+      setRemaining(
+        Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000)),
+      );
     }, 1000);
     return () => {
       clearInterval(id);
@@ -845,6 +873,24 @@ function ExamRunner({
     };
   }, [saveProgress]);
 
+  // Coarse screen-reader cue — deliberately NOT per-second. A `role="timer"`
+  // whose text changes every second, in a live region, narrates near-
+  // continuously; so the visible clock is aria-live="off" and spoken cues come
+  // only at meaningful marks (each of the final five one-minute boundaries, a
+  // 30-second warning, and time-up) via the separate polite sr-only region in
+  // the exam head. Between marks this is '' so nothing is queued (no per-tick
+  // announcement spam). Declared before the early return below so the hook
+  // order is unconditional (Rules of Hooks).
+  const timerAnnouncement = useMemo<string>(() => {
+    if (remaining <= 0) return 'Time is up. Submitting your test.';
+    if (remaining === 30) return '30 seconds remaining.';
+    if (remaining <= 300 && remaining % 60 === 0) {
+      const mins = remaining / 60;
+      return `${String(mins)} ${mins === 1 ? 'minute' : 'minutes'} remaining.`;
+    }
+    return '';
+  }, [remaining]);
+
   if (current === undefined) {
     // Defensive: an empty exam can't be taken. Offer a way out rather than
     // blanking. (The select path won't reach here for a non-empty section.)
@@ -877,13 +923,18 @@ function ExamRunner({
         <span
           className="km-mock__timer"
           role="timer"
-          // Polite (not assertive): announce the remaining time without
-          // interrupting the user mid-keystroke every second.
-          aria-live="polite"
+          // aria-live OFF on the ticking value: a role="timer" whose text
+          // changes every second queues a screen-reader announcement per tick
+          // (polite still enqueues — it only defers). Coarse spoken cues come
+          // from the sr-only polite region below instead.
+          aria-live="off"
           aria-label={`Time remaining ${formatClock(remaining)}`}
         >
           <Icon name="timer" size={16} />
           <span className="km-mock__timer-val">{formatClock(remaining)}</span>
+        </span>
+        <span className="km-sr-only" aria-live="polite">
+          {timerAnnouncement}
         </span>
       </div>
 
