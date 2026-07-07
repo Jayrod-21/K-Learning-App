@@ -81,7 +81,7 @@ Launch one focused session per group; cross-cutting items noted.
 | B-015 | Bug | 🔴 | P2 | UI | Reference "This Week": vocab+grammar need to be tabs; grammar overflows off-screen horizontally |
 | B-016 | Bug | 🟢 | P3 | BACKEND (UI) | `expensiveLimiter` 429 never sends `retry_after` → Writing's "retry in N s" copy is dead code |
 | F-001 | Feature | 🔴 | P2 | UI (BACKEND) | Writing tile → Grammar; `/grade-writing` backend exists but is orphaned |
-| F-002 | Feature | 🔴 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK L1 & L2 to diagnostic (enum + band math + tagged content) |
+| F-002 | Feature | 🟢 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK L1 & L2 to diagnostic (enum + band math + tagged content) |
 | F-003 | Feature | 🔴 | P3 | BACKEND (UI) | Vocab genre+difficulty filters — columns exist, just not wired |
 | F-004 | Feature | 🔴 | P2 | UI | Grammar detail view — endpoint + `getPattern` exist; Reference rows not clickable |
 | F-005 | Feature | 🔴 | P3 | BACKEND (UI) | Grammar difficulty+genre filters — columns exist, just not wired |
@@ -317,7 +317,20 @@ Launch one focused session per group; cross-cutting items noted.
 - **Fix hint:** Build a Writing screen that prompts the user and POSTs to `/grade-writing`; point the tile at it. (Or, if you only want the quick fix, rename the tile to "Grammar.")
 
 ### F-002 · Add TOPIK Level 1 & 2 to the diagnostic
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE (DATA, BACKEND)
+- **Status:** 🟢 done (2026-07-07, deployed) · **Priority:** P3 · **Category:** DATABASE (DATA, BACKEND)
+- **Resolution (2026-07-07):** the diagnostic used to collapse everything below L3 into
+  'basic'; now it resolves true beginners into TOPIK 1 / TOPIK 2. **Code-only** — the scout
+  confirmed the content already exists (on `topik_level`, not `proficiency`). Migration 039
+  adds L1/L2 to the `proficiency_level` enum. `cat.ts`: THETA_MIN 2.0→1.0, 5-band cuts
+  (θ<1.5→L1…), no 'basic' band. `scoring.ts`: low score anchors {1→10, 2→25} (on the existing
+  line — zero historical score change), RUBRIC_VERSION v1.2.0. **All 4 dimensions genuinely
+  target the level**: reading/listening prefer `topik_level='TOPIK I'` (the ~776 answerable
+  beginner items); vocab/grammar gen seeds from `basic`-tagged content (the fixpass caught a
+  BLOCKER where the seed targeted the dead 'L1'/'L2' tag). Symmetric TOPIK II preference added
+  for L3+ (fixed a pre-existing asymmetry). Server REFERENCES + client both ship TOPIK 1/2
+  rungs. Verified by hand: a beginner reaches θ=1.0 (L1) in 4 answers. Full /fixpass (R1 math
+  PASS + R2 BLOCK → fix → re-review PASS, all mutation-proven). server 840 / client 751. PR #59.
+  Deferred: lowering SEED_THETA (middle-bias, separate work); real proficiency backfill (not needed).
 - **Where:** Diagnostic.
 - **State:** Moderate-to-hard. Levels are coupled across the DB enum
   `proficiency_level = (basic,L3,L4,L5+)` (no L1/L2), the CAT band math (anchors,
