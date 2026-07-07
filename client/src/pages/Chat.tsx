@@ -808,7 +808,9 @@ export function Chat(): JSX.Element {
       {isMock ? <MockBadge /> : null}
 
       <Topbar
-        krTitle={<span id="chat-title">대화 · Chat</span>}
+        krTitle="대화"
+        title="Chat"
+        titleId="chat-title"
         eyebrow="Tutor conversation"
         right={
           <Toggle

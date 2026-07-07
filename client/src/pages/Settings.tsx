@@ -124,9 +124,21 @@ import {
   PAPER_PRESETS,
   WRONG_PRESETS,
 } from '../lib/palette-presets';
-import { loadSettings } from '../lib/settings';
+import {
+  clampSubScale,
+  DEFAULT_SETTINGS,
+  LANG_SUB_SCALE_MAX,
+  LANG_SUB_SCALE_MIN,
+  loadSettings,
+} from '../lib/settings';
+import { Bilingual } from '../components/Bilingual';
 import type { IconName } from '../components/Icon';
-import type { PatchAuthMeBody } from '../types/domain';
+import type {
+  BilingualLanguage,
+  LanguageDisplayMode,
+  LanguageDisplayPrefs,
+  PatchAuthMeBody,
+} from '../types/domain';
 
 /**
  * Mock fallback for the `/settings/prefs` query. Returns the user's CURRENT
@@ -145,6 +157,7 @@ async function loadPrefsMock(): Promise<Prefs> {
   return {
     notif: local.notif,
     palette: local.palette as PalettePrefs,
+    languageDisplay: local.languageDisplay,
   };
 }
 
@@ -222,6 +235,15 @@ function paletteEqual(a: PalettePrefs, b: PalettePrefs): boolean {
     a.accent === b.accent &&
     a.correct === b.correct &&
     a.wrong === b.wrong
+  );
+}
+
+function languageDisplayEqual(
+  a: LanguageDisplayPrefs,
+  b: LanguageDisplayPrefs,
+): boolean {
+  return (
+    a.mode === b.mode && a.primary === b.primary && a.subScale === b.subScale
   );
 }
 
@@ -538,6 +560,7 @@ export default function Settings(): JSX.Element {
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
     palette: settings.palette as PalettePrefs,
+    languageDisplay: settings.languageDisplay,
   });
 
   const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -611,18 +634,29 @@ export default function Settings(): JSX.Element {
     const fresh = prefsQuery.data;
     if (!fresh) return;
     prefsHydratedRef.current = true;
+    // P3a: `languageDisplay` is guaranteed by a P3a+ server (its schema
+    // defaults the field), but guard anyway so a client deployed ahead of the
+    // server during a rolling deploy hydrates the default instead of writing
+    // `undefined` into the provider.
+    const freshLanguageDisplay =
+      fresh.languageDisplay ?? DEFAULT_SETTINGS.languageDisplay;
     // Record what the server holds BEFORE writing it into the provider, so the
     // change-driven effect below sees no diff and skips the echo PUT.
-    lastSyncedPrefsRef.current = fresh;
+    lastSyncedPrefsRef.current = { ...fresh, languageDisplay: freshLanguageDisplay };
     const local = settingsRef.current;
     const samePrefs =
       notifEqual(fresh.notif, local.notif) &&
-      paletteEqual(fresh.palette, local.palette as PalettePrefs);
+      paletteEqual(fresh.palette, local.palette as PalettePrefs) &&
+      languageDisplayEqual(freshLanguageDisplay, local.languageDisplay);
     if (samePrefs) return;
     // Sync-to-external-system case — driven by the query resolution, not by our
     // own state, so the rule's bad-loop heuristic doesn't apply. `updateSettings`
     // is the provider's setter, not a local setState, so the rule stays quiet.
-    updateSettings({ notif: fresh.notif, palette: fresh.palette });
+    updateSettings({
+      notif: fresh.notif,
+      palette: fresh.palette,
+      languageDisplay: freshLanguageDisplay,
+    });
   }, [prefsQuery.loading, prefsQuery.isMock, prefsQuery.data, updateSettings]);
 
   // Debounced PUT on any notif/palette change. Compares against the last
@@ -633,9 +667,14 @@ export default function Settings(): JSX.Element {
     const current: Prefs = {
       notif: settings.notif,
       palette: settings.palette as PalettePrefs,
+      languageDisplay: settings.languageDisplay,
     };
     const last = lastSyncedPrefsRef.current;
-    if (notifEqual(current.notif, last.notif) && paletteEqual(current.palette, last.palette)) {
+    if (
+      notifEqual(current.notif, last.notif) &&
+      paletteEqual(current.palette, last.palette) &&
+      languageDisplayEqual(current.languageDisplay, last.languageDisplay)
+    ) {
       return;
     }
     // Mark synced eagerly: the body we're about to PUT becomes the new
@@ -649,7 +688,7 @@ export default function Settings(): JSX.Element {
     }, PREFS_DEBOUNCE_MS);
     // `flushPrefs` is stable (no deps); the effect keys on the settings slices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.notif, settings.palette]);
+  }, [settings.notif, settings.palette, settings.languageDisplay]);
 
   return (
     <section
@@ -659,11 +698,9 @@ export default function Settings(): JSX.Element {
     >
       {meQuery.isMock || prefsQuery.isMock ? <MockBadge /> : null}
       <Topbar
-        krTitle={
-          <>
-            설정 <span className="km-topbar__title-en">· Settings</span>
-          </>
-        }
+        krTitle="설정"
+        title="Settings"
+        titleId="km-settings-title"
         eyebrow="Profile · notifications · appearance"
       />
 
@@ -824,6 +861,12 @@ export default function Settings(): JSX.Element {
         mock={prefsQuery.isMock}
       >
         <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
+        <LanguageDisplayControl
+          value={settings.languageDisplay}
+          onChange={(next) => {
+            updateSettings((prev) => ({ ...prev, languageDisplay: next }));
+          }}
+        />
         <SwatchPicker
           label="Paper"
           hint="Background."
@@ -1510,6 +1553,234 @@ function ThemeModeControl({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Generic 3-or-fewer-option segmented radiogroup (P3a) — the exact APG
+ * roving-tabindex/selection-follows-focus contract `ThemeModeControl`
+ * implements, extracted so the language-display control's two radiogroups
+ * (mode + orientation) don't triplicate the keyboard handling. Reuses the
+ * thememode CSS classes — they style a generic segment row, nothing
+ * theme-specific. (`ThemeModeControl` itself is deliberately left untouched
+ * in P3a to keep this change additive; folding it onto this is P3b cleanup.)
+ */
+function SegmentedRadioGroup<T extends string>({
+  options,
+  value,
+  onSelect,
+  ariaLabel,
+}: {
+  options: ReadonlyArray<{ id: T; label: string }>;
+  value: T;
+  onSelect: (next: T) => void;
+  ariaLabel: string;
+}): JSX.Element {
+  // Refs by id (not index) so focus management survives an option reorder.
+  const optRefs = useRef<Map<T, HTMLButtonElement>>(new Map());
+  const selectedIndex = options.findIndex((o) => o.id === value);
+
+  const moveTo = useCallback(
+    (nextIndex: number): void => {
+      const wrapped = (nextIndex + options.length) % options.length;
+      const next = options[wrapped];
+      if (!next) return;
+      if (next.id !== value) onSelect(next.id);
+      optRefs.current.get(next.id)?.focus();
+    },
+    [options, value, onSelect],
+  );
+
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLDivElement>): void => {
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'ArrowDown':
+          e.preventDefault();
+          moveTo(selectedIndex + 1);
+          break;
+        case 'ArrowLeft':
+        case 'ArrowUp':
+          e.preventDefault();
+          moveTo(selectedIndex - 1);
+          break;
+        case 'Home':
+          e.preventDefault();
+          moveTo(0);
+          break;
+        case 'End':
+          e.preventDefault();
+          moveTo(options.length - 1);
+          break;
+        default:
+          break;
+      }
+    },
+    [moveTo, selectedIndex, options.length],
+  );
+
+  return (
+    <div
+      className="km-settings__thememode-row"
+      role="radiogroup"
+      aria-label={ariaLabel}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+    >
+      {options.map((o) => {
+        const selected = o.id === value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
+            ref={(el) => {
+              if (el) optRefs.current.set(o.id, el);
+              else optRefs.current.delete(o.id);
+            }}
+            onClick={() => {
+              if (!selected) onSelect(o.id);
+            }}
+            className={
+              'km-settings__thememode-opt focusring' +
+              (selected ? ' km-settings__thememode-opt--active' : '')
+            }
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Language-display control (Overhaul P3a) — how bilingual UI CHROME renders.
+ *
+ * A 3-option segmented radiogroup (English · Korean · Both). Selecting
+ * **Both** reveals two sub-controls:
+ *   - orientation — which language leads (`primary`);
+ *   - a native `<input type="range">` sizing the secondary language
+ *     (`subScale`, 0.4–1.0 in 0.05 steps) with a live sample label that
+ *     resizes as you drag (the provider projects the value to
+ *     `--lang-sub-scale` on every state change — no debounce on the visual).
+ *
+ * Persistence rides the same debounced `/settings/prefs` PUT as the palette
+ * (the parent passes changes through `updateSettings`; the screen-level
+ * change-effect syncs). Scope note in the hint: learning MATERIAL never
+ * follows this — it is chrome-only by design.
+ */
+const LANGUAGE_MODE_OPTIONS: ReadonlyArray<{
+  id: LanguageDisplayMode;
+  label: string;
+}> = [
+  { id: 'en', label: 'English' },
+  { id: 'ko', label: 'Korean' },
+  { id: 'both', label: 'Both' },
+];
+
+const LANGUAGE_ORDER_OPTIONS: ReadonlyArray<{
+  id: BilingualLanguage;
+  label: string;
+}> = [
+  { id: 'ko', label: 'Korean first' },
+  { id: 'en', label: 'English first' },
+];
+
+/** Slider granularity — coarse enough to feel like discrete steps, fine
+ *  enough that the jump is never jarring. Mirrored in the server schema only
+ *  as the [min, max] bounds; the step is a UX choice, not a contract. */
+const LANG_SUB_SCALE_STEP = 0.05;
+
+function LanguageDisplayControl({
+  value,
+  onChange,
+}: {
+  value: LanguageDisplayPrefs;
+  onChange: (next: LanguageDisplayPrefs) => void;
+}): JSX.Element {
+  const sliderId = useId();
+  const isBoth = value.mode === 'both';
+  const pct = `${String(Math.round(value.subScale * 100))}%`;
+
+  return (
+    <div className="km-settings__langdisplay">
+      <div className="km-settings__row-head">
+        <span className="km-settings__row-label">Language display</span>
+        <span className="km-settings__row-hint">
+          How menus and titles show Korean and English. Study material always
+          stays Korean.
+        </span>
+      </div>
+      <SegmentedRadioGroup
+        ariaLabel="Language display"
+        options={LANGUAGE_MODE_OPTIONS}
+        value={value.mode}
+        onSelect={(mode) => {
+          onChange({ ...value, mode });
+        }}
+      />
+
+      {isBoth ? (
+        <>
+          <div className="km-settings__row-head km-settings__langsub-head">
+            <span className="km-settings__row-label">Order</span>
+            <span className="km-settings__row-hint">
+              Which language leads.
+            </span>
+          </div>
+          <SegmentedRadioGroup
+            ariaLabel="Bilingual order"
+            options={LANGUAGE_ORDER_OPTIONS}
+            value={value.primary}
+            onSelect={(primary) => {
+              onChange({ ...value, primary });
+            }}
+          />
+
+          <div className="km-settings__row-head km-settings__langsub-head">
+            <label htmlFor={sliderId} className="km-settings__row-label">
+              Second language size
+            </label>
+            <span className="km-settings__row-hint">
+              Relative to the first language.
+            </span>
+          </div>
+          <div className="km-settings__langslider">
+            <input
+              id={sliderId}
+              type="range"
+              min={LANG_SUB_SCALE_MIN}
+              max={LANG_SUB_SCALE_MAX}
+              step={LANG_SUB_SCALE_STEP}
+              value={value.subScale}
+              aria-valuetext={pct}
+              className="focusring km-settings__slider"
+              onChange={(e) => {
+                onChange({
+                  ...value,
+                  subScale: clampSubScale(Number(e.target.value)),
+                });
+              }}
+            />
+            <span className="km-settings__slider-value" aria-hidden="true">
+              {pct}
+            </span>
+          </div>
+          {/* Live sample — a real <Bilingual/> so it tracks mode, order AND
+              the CSS var as they change. Decorative duplicate of chrome text,
+              hence aria-hidden. */}
+          <div className="km-settings__langpreview" aria-hidden="true">
+            <span className="km-settings__langpreview-caption">Preview</span>
+            <span className="km-settings__langpreview-sample kr-display">
+              <Bilingual kr="오늘" en="Today" />
+            </span>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

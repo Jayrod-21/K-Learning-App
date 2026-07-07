@@ -297,7 +297,9 @@ describe('Chat', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     renderChat();
-    expect(screen.getByText('대화 · Chat')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '대화 · Chat' }),
+    ).toBeInTheDocument();
     // The fallback opener (formal greeting) is shown until the first real
     // tutor reply lands.
     expect(

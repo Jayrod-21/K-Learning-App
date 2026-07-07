@@ -296,7 +296,9 @@ export function Today(): JSX.Element {
       {isMock ? <MockBadge /> : null}
 
       <Topbar
-        krTitle={<span id="today-title">오늘 · Today</span>}
+        krTitle="오늘"
+        title="Today"
+        titleId="today-title"
         eyebrow={dateStr}
       />
 

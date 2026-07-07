@@ -137,7 +137,9 @@ describe('Today', () => {
     loadDefaults();
     renderTodayAt();
 
-    expect(screen.getByText('오늘 · Today')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '오늘 · Today' }),
+    ).toBeInTheDocument();
     expect(screen.getByText('24 cards due')).toBeInTheDocument();
 
     // The three tasks are now carousel pages (reshaped from the old grid).

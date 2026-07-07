@@ -22,6 +22,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   act,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -126,6 +127,7 @@ const DEFAULT_PREFS = {
     weekly: true,
   },
   palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
 };
 
 beforeEach(() => {
@@ -757,6 +759,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       releaseHydration({
         notif: DEFAULT_PREFS.notif,
         palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
+        languageDisplay: DEFAULT_PREFS.languageDisplay,
       });
     });
 
@@ -985,5 +988,193 @@ describe('Settings — Two-Factor Authentication', () => {
       code: '654321',
     });
     expect(await screen.findByText('RE111-RE222')).toBeInTheDocument();
+  });
+});
+
+// ─── Language display control (Overhaul P3a) ─────────────────────────
+
+describe('Settings — language display control', () => {
+  /**
+   * Let the /settings/prefs hydration fully SETTLE (fetch resolve + the
+   * hydration effect's commit) before interacting. Merely waiting for
+   * `fetchPrefs` to have been CALLED leaves a race: server-wins-on-load can
+   * land after a click and clobber the just-made change (that semantic has
+   * its own dedicated palette test above; these tests are about the control).
+   */
+  async function flushHydration(): Promise<void> {
+    await waitFor(() => {
+      expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  }
+
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('renders in the Appearance group with Both selected by default, revealing order + slider', () => {
+    meOk();
+    renderSettings();
+    const group = screen.getByRole('radiogroup', { name: 'Language display' });
+    const both = within(group).getByRole('radio', { name: 'Both' });
+    expect(both).toHaveAttribute('aria-checked', 'true');
+    expect(within(group).getByRole('radio', { name: 'English' })).toHaveAttribute('aria-checked', 'false');
+    expect(within(group).getByRole('radio', { name: 'Korean' })).toHaveAttribute('aria-checked', 'false');
+    // Both-only sub-controls are visible.
+    expect(screen.getByRole('radiogroup', { name: 'Bilingual order' })).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: 'Second language size' })).toBeInTheDocument();
+  });
+
+  it('selecting English hides the Both-only controls and persists mode=en', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+    renderSettings();
+    await flushHydration();
+
+    const english = screen.getByRole('radio', { name: 'English' });
+    await user.click(english);
+    expect(english).toHaveAttribute('aria-checked', 'true');
+
+    // Orientation + slider are hidden when mode ≠ both.
+    expect(
+      screen.queryByRole('radiogroup', { name: 'Bilingual order' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('slider', { name: 'Second language size' }),
+    ).not.toBeInTheDocument();
+
+    // Debounced full-object PUT carries the new mode.
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      languageDisplay: { mode: string; primary: string; subScale: number };
+    };
+    expect(body.languageDisplay.mode).toBe('en');
+    // ...and the localStorage cache holds it too (provider is the cache).
+    const stored = JSON.parse(
+      window.localStorage.getItem('km.settings') ?? '{}',
+    ) as { languageDisplay?: { mode?: string } };
+    expect(stored.languageDisplay?.mode).toBe('en');
+  });
+
+  it('selecting Korean persists mode=ko and re-selecting Both restores the sub-controls', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+    renderSettings();
+    await flushHydration();
+
+    await user.click(screen.getByRole('radio', { name: 'Korean' }));
+    expect(
+      screen.queryByRole('slider', { name: 'Second language size' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Both' }));
+    expect(
+      screen.getByRole('slider', { name: 'Second language size' }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalled();
+    });
+    const last = mocks.putPrefs.mock.calls.at(-1)?.[0] as {
+      languageDisplay: { mode: string };
+    };
+    expect(last.languageDisplay.mode).toBe('both');
+  });
+
+  it('changing the orientation persists primary=en', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+    renderSettings();
+    await flushHydration();
+
+    const order = screen.getByRole('radiogroup', { name: 'Bilingual order' });
+    const englishFirst = within(order).getByRole('radio', {
+      name: 'English first',
+    });
+    expect(englishFirst).toHaveAttribute('aria-checked', 'false');
+    await user.click(englishFirst);
+    expect(englishFirst).toHaveAttribute('aria-checked', 'true');
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      languageDisplay: { primary: string };
+    };
+    expect(body.languageDisplay.primary).toBe('en');
+  });
+
+  it('dragging the slider updates subScale, the CSS var, and persists', async () => {
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
+    renderSettings();
+    await flushHydration();
+
+    const slider = screen.getByRole('slider', {
+      name: 'Second language size',
+    }) as HTMLInputElement;
+    expect(slider.value).toBe('0.7');
+
+    // fireEvent.change is the canonical way to move a range input in tests
+    // (userEvent has no slider-drag primitive).
+    fireEvent.change(slider, { target: { value: '0.5' } });
+    expect(slider.value).toBe('0.5');
+
+    // The provider projects the new scale onto <html> immediately (live
+    // preview path — no debounce on the visual).
+    expect(
+      document.documentElement.style.getPropertyValue('--lang-sub-scale'),
+    ).toBe('0.5');
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      languageDisplay: { subScale: number };
+    };
+    expect(body.languageDisplay.subScale).toBe(0.5);
+  });
+
+  it('server hydration applies a stored language display over the local default', async () => {
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      languageDisplay: { mode: 'en', primary: 'en', subScale: 0.6 },
+    });
+    renderSettings();
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('radio', { name: 'English' }),
+      ).toHaveAttribute('aria-checked', 'true');
+    });
+    // Hydration must not echo straight back as a PUT.
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
   });
 });

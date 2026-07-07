@@ -44,7 +44,9 @@ function renderLibrary(): void {
 describe('ReviewLibrary (P1.2 index)', () => {
   it('renders the library title and all seven rows', () => {
     renderLibrary();
-    expect(screen.getByText('복습 · Review')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '복습 · Review' }),
+    ).toBeInTheDocument();
     const list = screen.getByRole('list', { name: 'Review library' });
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
   });

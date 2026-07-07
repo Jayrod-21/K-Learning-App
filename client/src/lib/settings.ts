@@ -28,9 +28,52 @@ import {
   CORRECT_PRESETS,
   WRONG_PRESETS,
 } from './palette-presets';
+import type {
+  BilingualLanguage,
+  LanguageDisplayMode,
+  LanguageDisplayPrefs,
+} from '../types/domain';
 
 /** localStorage key. Stable across releases — bump only on shape break. */
 export const SETTINGS_STORAGE_KEY = 'km.settings';
+
+// ─── Language display (Overhaul P3a) ────────────────────────────────────
+// Bounds mirror the server's LanguageDisplayPrefsSchema exactly — the client
+// clamps BEFORE persisting so a PUT can never carry an out-of-range subScale
+// (which the server would 400).
+
+export const LANG_SUB_SCALE_MIN = 0.4;
+export const LANG_SUB_SCALE_MAX = 1.0;
+export const LANG_SUB_SCALE_DEFAULT = 0.7;
+
+/** CSS custom property (on `<html>`) the sub text sizes itself from —
+ *  `.km-bilingual__sub { font-size: calc(1em * var(--lang-sub-scale)) }`. */
+export const LANG_SUB_SCALE_CSS_VAR = '--lang-sub-scale';
+
+/** Clamp an arbitrary value into the legal subScale range. Non-numeric /
+ *  non-finite input falls back to the default rather than NaN-poisoning the
+ *  CSS var. */
+export function clampSubScale(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) {
+    return LANG_SUB_SCALE_DEFAULT;
+  }
+  return Math.min(LANG_SUB_SCALE_MAX, Math.max(LANG_SUB_SCALE_MIN, v));
+}
+
+const LANGUAGE_DISPLAY_MODES: ReadonlyArray<LanguageDisplayMode> = [
+  'en',
+  'ko',
+  'both',
+];
+const BILINGUAL_LANGUAGES: ReadonlyArray<BilingualLanguage> = ['en', 'ko'];
+
+function isLanguageDisplayMode(v: unknown): v is LanguageDisplayMode {
+  return LANGUAGE_DISPLAY_MODES.includes(v as LanguageDisplayMode);
+}
+
+function isBilingualLanguage(v: unknown): v is BilingualLanguage {
+  return BILINGUAL_LANGUAGES.includes(v as BilingualLanguage);
+}
 
 export interface NotifChannelSettings {
   email: boolean;
@@ -61,6 +104,9 @@ export interface Settings {
   phone: string;
   notif: NotifSettings;
   palette: PaletteSettings;
+  /** Bilingual-chrome rendering (P3a). Typed straight off the domain shape —
+   *  unlike `palette` there is no preset-registry indirection to keep loose. */
+  languageDisplay: LanguageDisplayPrefs;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -78,6 +124,13 @@ export const DEFAULT_SETTINGS: Settings = {
     accent: 'vermilion',
     correct: 'moss',
     wrong: 'vermilion',
+  },
+  // 'both' + Korean-first matches today's baked "kr · en" chrome exactly, so
+  // an existing user sees zero visual change until they touch the control.
+  languageDisplay: {
+    mode: 'both',
+    primary: 'ko',
+    subScale: LANG_SUB_SCALE_DEFAULT,
   },
 };
 
@@ -107,6 +160,7 @@ function mergeSettings(raw: unknown): Settings {
   const notifRaw = isRecord(raw.notif) ? raw.notif : {};
   const channelRaw = isRecord(notifRaw.channel) ? notifRaw.channel : {};
   const paletteRaw = isRecord(raw.palette) ? raw.palette : {};
+  const langRaw = isRecord(raw.languageDisplay) ? raw.languageDisplay : {};
   return {
     name: pickString(raw.name, DEFAULT_SETTINGS.name),
     email: pickString(raw.email, DEFAULT_SETTINGS.email),
@@ -125,6 +179,23 @@ function mergeSettings(raw: unknown): Settings {
       accent: pickString(paletteRaw.accent, DEFAULT_SETTINGS.palette.accent),
       correct: pickString(paletteRaw.correct, DEFAULT_SETTINGS.palette.correct),
       wrong: pickString(paletteRaw.wrong, DEFAULT_SETTINGS.palette.wrong),
+    },
+    // P3a: a pre-P3a snapshot has no `languageDisplay` at all — every field
+    // falls back to the default independently (deep-merge, not all-or-nothing),
+    // and subScale additionally clamps so a hand-edited blob can't push the
+    // CSS var out of range.
+    languageDisplay: {
+      mode: isLanguageDisplayMode(langRaw.mode)
+        ? langRaw.mode
+        : DEFAULT_SETTINGS.languageDisplay.mode,
+      primary: isBilingualLanguage(langRaw.primary)
+        ? langRaw.primary
+        : DEFAULT_SETTINGS.languageDisplay.primary,
+      subScale: clampSubScale(
+        typeof langRaw.subScale === 'number'
+          ? langRaw.subScale
+          : DEFAULT_SETTINGS.languageDisplay.subScale,
+      ),
     },
   };
 }

@@ -598,7 +598,9 @@ function Grammar(): JSX.Element {
     >
       {showMockBadge ? <MockBadge /> : null}
       <Topbar
-        krTitle={<span id="grammar-title">문법 · Grammar</span>}
+        krTitle="문법"
+        title="Grammar"
+        titleId="grammar-title"
         eyebrow={tab === 'drill' ? 'Production drill' : 'Banked patterns'}
       />
 

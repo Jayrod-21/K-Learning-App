@@ -638,6 +638,26 @@ export interface NotifPrefs {
   weekly: boolean;
 }
 
+/** Which language(s) bilingual UI CHROME shows (Overhaul P3a).
+ *  Learning content (vocab/grammar/TOPIK/dictionary/Hanja material) NEVER
+ *  follows this — it is a chrome-only presentation setting. */
+export type LanguageDisplayMode = 'en' | 'ko' | 'both';
+
+/** One of the two chrome languages — the `primary` (main-text) choice. */
+export type BilingualLanguage = 'en' | 'ko';
+
+/** Language-display preferences — server-synced via `/settings/prefs`
+ *  (mirrors the server `LanguageDisplayPrefsSchema` exactly). */
+export interface LanguageDisplayPrefs {
+  /** 'en' → English-only chrome · 'ko' → Korean-only · 'both' → bilingual. */
+  mode: LanguageDisplayMode;
+  /** In 'both' mode: which language renders as the MAIN (larger) text. */
+  primary: BilingualLanguage;
+  /** In 'both' mode: the sub text's font-size scale relative to the main.
+   *  Clamped to [0.4, 1.0]; default 0.7. */
+  subScale: number;
+}
+
 // NOTE: the old prototype-era `Settings` interface ({name,email,phone,notif,
 // palette} as one `GET /settings` payload) was deleted with its stale mock
 // (`data/mocks/settings.ts`) — no such route/shape exists. Identity lives on

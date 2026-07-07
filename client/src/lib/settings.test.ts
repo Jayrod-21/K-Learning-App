@@ -9,7 +9,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  clampSubScale,
   DEFAULT_SETTINGS,
+  LANG_SUB_SCALE_MAX,
+  LANG_SUB_SCALE_MIN,
   SETTINGS_STORAGE_KEY,
   loadSettings,
   paletteVars,
@@ -76,6 +79,73 @@ describe('loadSettings', () => {
     expect(got.notif.channel.email).toBe(
       DEFAULT_SETTINGS.notif.channel.email,
     );
+  });
+});
+
+describe('loadSettings — languageDisplay (P3a)', () => {
+  it('defaults languageDisplay when a pre-P3a blob lacks it entirely', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ name: 'Jared', palette: { paper: 'linen' } }),
+    );
+    const got = loadSettings();
+    expect(got.languageDisplay).toEqual({ mode: 'both', primary: 'ko', subScale: 0.7 });
+    // ...and the pre-P3a fields still merged normally.
+    expect(got.palette.paper).toBe('linen');
+  });
+
+  it('deep-merges a partial languageDisplay (field-by-field, not all-or-nothing)', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ languageDisplay: { mode: 'en' } }),
+    );
+    const got = loadSettings();
+    expect(got.languageDisplay).toEqual({ mode: 'en', primary: 'ko', subScale: 0.7 });
+  });
+
+  it('clamps an out-of-range subScale into [0.4, 1.0]', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ languageDisplay: { mode: 'both', primary: 'en', subScale: 3 } }),
+    );
+    expect(loadSettings().languageDisplay).toEqual({
+      mode: 'both',
+      primary: 'en',
+      subScale: 1.0,
+    });
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ languageDisplay: { subScale: 0.1 } }),
+    );
+    expect(loadSettings().languageDisplay.subScale).toBe(0.4);
+  });
+
+  it('rejects bad enums / non-numeric subScale and substitutes defaults', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        languageDisplay: { mode: 'fr', primary: 42, subScale: 'huge' },
+      }),
+    );
+    expect(loadSettings().languageDisplay).toEqual(
+      DEFAULT_SETTINGS.languageDisplay,
+    );
+  });
+});
+
+describe('clampSubScale', () => {
+  it('passes through in-range values', () => {
+    expect(clampSubScale(0.55)).toBe(0.55);
+  });
+  it('clamps below/above the bounds', () => {
+    expect(clampSubScale(0)).toBe(LANG_SUB_SCALE_MIN);
+    expect(clampSubScale(99)).toBe(LANG_SUB_SCALE_MAX);
+  });
+  it('falls back to the default on non-finite / non-numeric input', () => {
+    expect(clampSubScale(Number.NaN)).toBe(0.7);
+    expect(clampSubScale(Infinity)).toBe(0.7);
+    expect(clampSubScale('0.5')).toBe(0.7);
+    expect(clampSubScale(undefined)).toBe(0.7);
   });
 });
 

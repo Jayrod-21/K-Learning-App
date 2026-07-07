@@ -45,8 +45,11 @@ describe('LearnMenu (P1.1)', () => {
       const it_ = navItem(id);
       expect(screen.getByText(it_.label)).toBeInTheDocument();
       // kr sublabels can repeat across the app but must be inside the menu.
+      // (P3a: rows render through <Bilingual/> — the Korean half carries
+      // .km-bilingual__kr; in the default 'both' Korean-first mode it is
+      // the MAIN segment.)
       expect(
-        Array.from(dialog.querySelectorAll('.km-learnmenu__rowkr')).map(
+        Array.from(dialog.querySelectorAll('.km-bilingual__kr')).map(
           (el) => el.textContent,
         ),
       ).toContain(it_.kr);

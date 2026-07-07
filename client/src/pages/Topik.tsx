@@ -84,7 +84,9 @@ function Topik(): JSX.Element {
   return (
     <section className="screen km-topik" aria-labelledby="topik-title">
       <Topbar
-        krTitle={<span id="topik-title">학습 · TOPIK</span>}
+        krTitle="학습"
+        title="TOPIK"
+        titleId="topik-title"
         eyebrow={mode === 'mock' ? 'Mock test · timed' : 'Study mode'}
       />
 

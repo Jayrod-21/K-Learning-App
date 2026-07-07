@@ -2,11 +2,14 @@
  * BottomNav (P1.1) — 5 slots (4 tabs + the LEARN hexagon), active-tab
  * longest-prefix matching on the new paths, hexagon toggle semantics.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { BottomNav } from './BottomNav';
+import { SettingsProvider } from '../hooks/SettingsProvider';
+import { SETTINGS_STORAGE_KEY } from '../lib/settings';
+import type { LanguageDisplayPrefs } from '../types/domain';
 
 function renderNavAt(
   path: string,
@@ -105,5 +108,96 @@ describe('BottomNav (P1.1)', () => {
   it('there is no "More" opener any more (retired with MoreSheet)', () => {
     renderNavAt('/');
     expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
+  });
+});
+
+// ─── P3a: labels follow the language-display setting ───────────────────
+
+/** Render the nav under a SettingsProvider seeded with a language setting. */
+function renderNavWithLang(languageDisplay: LanguageDisplayPrefs): void {
+  window.localStorage.setItem(
+    SETTINGS_STORAGE_KEY,
+    JSON.stringify({ languageDisplay }),
+  );
+  render(
+    <SettingsProvider>
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route
+            path="*"
+            element={
+              <BottomNav
+                learnOpen={false}
+                onToggleLearn={vi.fn()}
+                learnMenuId="learn-menu-test"
+              />
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </SettingsProvider>,
+  );
+}
+
+/** Visible text of an element, excluding sr-only duplicates. */
+function visibleText(el: Element): string {
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll('.km-sr-only').forEach((n) => {
+    n.remove();
+  });
+  return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+describe('BottomNav — language display (P3a)', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("'en' mode: tab labels show English only; aria-labels keep both", () => {
+    renderNavWithLang({ mode: 'en', primary: 'ko', subScale: 0.7 });
+    const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    const label = today.querySelector('.km-bottomnav__label');
+    expect(label).not.toBeNull();
+    expect(visibleText(label as Element)).toBe('Today');
+  });
+
+  it("'ko' mode: tab labels show Korean only", () => {
+    renderNavWithLang({ mode: 'ko', primary: 'ko', subScale: 0.7 });
+    const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    expect(
+      visibleText(today.querySelector('.km-bottomnav__label') as Element),
+    ).toBe('오늘');
+  });
+
+  it("'both' Korean-first: label shows both, Korean leading", () => {
+    renderNavWithLang({ mode: 'both', primary: 'ko', subScale: 0.7 });
+    const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    expect(
+      visibleText(today.querySelector('.km-bottomnav__label') as Element),
+    ).toBe('오늘 · Today');
+  });
+
+  it("'both' English-first: label shows both, English leading", () => {
+    renderNavWithLang({ mode: 'both', primary: 'en', subScale: 0.7 });
+    const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    expect(
+      visibleText(today.querySelector('.km-bottomnav__label') as Element),
+    ).toBe('Today · 오늘');
+  });
+
+  it("hexagon (compact): 'both' shows only the primary; 'en'/'ko' follow the mode", () => {
+    renderNavWithLang({ mode: 'both', primary: 'ko', subScale: 0.7 });
+    const hex = screen.getByRole('button', { name: 'Learn · 배움' });
+    expect(
+      visibleText(hex.querySelector('.km-bottomnav__hexlabel') as Element),
+    ).toBe('배움');
+  });
+
+  it("hexagon in 'en' mode shows LEARN", () => {
+    renderNavWithLang({ mode: 'en', primary: 'ko', subScale: 0.7 });
+    const hex = screen.getByRole('button', { name: 'Learn · 배움' });
+    expect(
+      visibleText(hex.querySelector('.km-bottomnav__hexlabel') as Element),
+    ).toBe('LEARN');
   });
 });

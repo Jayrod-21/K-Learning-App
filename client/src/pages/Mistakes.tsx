@@ -118,11 +118,9 @@ export default function Mistakes(): JSX.Element {
     <section className="screen km-mistakes" aria-labelledby="km-mistakes-title">
       {isMock ? <MockBadge /> : null}
       <Topbar
-        krTitle={
-          <>
-            틀린 문제 <span className="km-topbar__title-en">· Mistakes</span>
-          </>
-        }
+        krTitle="틀린 문제"
+        title="Mistakes"
+        titleId="km-mistakes-title"
         eyebrow="what you missed, in one place"
       />
 

@@ -83,7 +83,9 @@ function ReviewLibrary(): JSX.Element {
   return (
     <section className="screen km-library" aria-labelledby="review-title">
       <Topbar
-        krTitle={<span id="review-title">복습 · Review</span>}
+        krTitle="복습"
+        title="Review"
+        titleId="review-title"
         eyebrow="Library · 자료실"
       />
 

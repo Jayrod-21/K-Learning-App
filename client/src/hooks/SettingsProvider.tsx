@@ -1,7 +1,8 @@
 /**
  * SettingsProvider — owns the user-preferences state (profile, notif,
- * palette), persists to `localStorage["km.settings"]`, and projects the
- * selected palette presets into CSS custom properties on `<html>`.
+ * palette, languageDisplay), persists to `localStorage["km.settings"]`, and
+ * projects the selected palette presets + the language-display sub-text
+ * scale (`--lang-sub-scale`, P3a) into CSS custom properties on `<html>`.
  *
  * Mounted alongside `<ThemeProvider/>` (light/dark) under the app shell.
  * The two are independent: theme flips `data-theme` (which the CSS token
@@ -38,7 +39,9 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  clampSubScale,
   DEFAULT_SETTINGS,
+  LANG_SUB_SCALE_CSS_VAR,
   loadSettings,
   paletteVars,
   saveSettings,
@@ -179,6 +182,20 @@ export function SettingsProvider({
   useEffect(() => {
     applyPaletteVars(paletteVars(settings.palette));
   }, [settings.palette]);
+
+  // Project the language-display sub-text scale into a CSS custom property on
+  // `<html>` (P3a) — the same inline-style projection the palette uses, but
+  // kept OUT of `applyPaletteVars`: that function clears any key the current
+  // call doesn't declare, so routing this var through it would let a
+  // palette-only update erase the scale. One fixed, self-owned key needs no
+  // allowlist bookkeeping. `clampSubScale` re-clamps defensively so a stale
+  // out-of-range localStorage value can never reach the cascade.
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      LANG_SUB_SCALE_CSS_VAR,
+      String(clampSubScale(settings.languageDisplay.subScale)),
+    );
+  }, [settings.languageDisplay.subScale]);
 
   const updateSettings = useCallback((patch: SettingsPatch): void => {
     setSettings((prev) => {

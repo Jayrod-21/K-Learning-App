@@ -308,7 +308,9 @@ function Writing(): JSX.Element {
       style={{ position: 'relative' }}
     >
       <Topbar
-        krTitle={<span id="writing-title">쓰기 · Writing</span>}
+        krTitle="쓰기"
+        title="Writing"
+        titleId="writing-title"
         eyebrow="TOPIK writing grader"
       />
 
