@@ -95,7 +95,7 @@ export function BottomNav({
         aria-label="Learn · 배움"
         onClick={onToggleLearn}
       >
-        <Icon name="learn" size={22} />
+        <Icon name="learn" size={28} />
         <span className="km-bottomnav__hexlabel">LEARN</span>
       </button>
     </div>,
