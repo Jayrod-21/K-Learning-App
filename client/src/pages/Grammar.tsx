@@ -102,6 +102,7 @@ import {
   type DrillScore,
 } from '../services/grammarDrill';
 import { ApiError } from '../services/api';
+import { errorMessageFor } from '../lib/errorCopy';
 import type {
   BankGrammarBody,
   DrillItemPublic,
@@ -646,7 +647,7 @@ function Grammar(): JSX.Element {
       } catch (err) {
         if (detailIdRef.current !== row.id) return;
         setDetailError(
-          err instanceof ApiError ? err.message : 'Detail unavailable',
+          errorMessageFor(err, 'Detail unavailable'),
         );
       } finally {
         if (detailIdRef.current === row.id) setDetailLoading(false);

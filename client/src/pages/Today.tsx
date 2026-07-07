@@ -18,8 +18,10 @@
  * (`/plan/today` vs `/diagnostic/latest` vs the `/…/series` fan-out) and
  * lets each fail independently in the UI. The series fan-out itself degrades
  * per skill (`fetchSkillSeries` never rejects on a route failure — a failed
- * skill becomes an honest "No data yet" panel, never fixture numbers), so
- * the carousel card has no error state of its own.
+ * skill becomes an honest "Couldn't load this trend." panel, never fixture
+ * numbers). When EVERY route failed (total outage) the whole card collapses
+ * to a single ErrorCard with a retry (F-UP-016a) — a failure is never
+ * dressed up as five fresh-account "No data yet" panels.
  *
  * F-017 adds the "Progress by skill" card below the snapshot: a SwipeCarousel
  * of five panels (Reading / Listening / Vocab / Grammar / Writing), each a
@@ -202,10 +204,12 @@ function SkillTrendPanel({
       </div>
       {series.metric === 'none' ? (
         // `none` is the client-only degraded placeholder: this skill's route
-        // failed, so its panel honestly reads "No data yet" — never
-        // fabricated numbers (F-014 gave Writing a real /writing/series
-        // route, so it degrades like every other skill now).
-        <div className="km-today__trendEmpty">No data yet</div>
+        // FAILED — say so (F-UP-016a). "No data yet" is reserved for a route
+        // that answered with an empty series (LineChart renders that copy
+        // itself), so a fetch failure is never dressed up as a fresh account.
+        // Never fabricated numbers either way (F-014 gave Writing a real
+        // /writing/series route, so it degrades like every other skill now).
+        <div className="km-today__trendEmpty">Couldn’t load this trend.</div>
       ) : skillKey === 'writing' && series.points.length === 0 ? (
         // Writing's route answered but the user has no graded attempts yet —
         // an invitation to start, not a bare empty chart. Only the empty
@@ -270,8 +274,9 @@ export function Today(): JSX.Element {
   // Retry routes through the hook's `refetch()` rather than a brutal
   // `window.location.reload()`. Each ErrorCard targets the failing fetch
   // alone — a diagnostic-snapshot failure no longer reloads the entire
-  // app to recover the today plan. (The series source has no ErrorCard:
-  // its realFn never rejects — per-skill degradation instead.)
+  // app to recover the today plan. (The series source degrades per skill
+  // and only shows its total-outage ErrorCard when EVERY route failed —
+  // that card retries via `series.refetch`.)
   const retryToday = today.refetch;
   const retryDiag = diag.refetch;
 
@@ -357,6 +362,17 @@ export function Today(): JSX.Element {
       <section style={{ marginBottom: 16 }}>
         {series.loading ? (
           <SkeletonCard />
+        ) : seriesData !== null &&
+          SERIES_PANELS.every((p) => seriesData[p.key].metric === 'none') ? (
+          // F-UP-016a — total outage: every series route failed (network
+          // down / server unreachable). Five "couldn't load" panels would be
+          // honest but noisy; one ErrorCard with a real retry is clearer.
+          // Partial failure still renders the carousel with per-panel
+          // "Couldn't load this trend." states.
+          <ErrorCard
+            message="Progress trends couldn’t be loaded."
+            onRetry={series.refetch}
+          />
         ) : seriesData !== null ? (
           <Card variant="default" style={{ padding: '20px 22px' }}>
             <div className="km-eyebrow" style={{ marginBottom: 10 }}>

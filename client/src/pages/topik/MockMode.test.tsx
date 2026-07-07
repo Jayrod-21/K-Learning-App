@@ -16,6 +16,7 @@ import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
+import { ApiError } from '../../services/api';
 import type { MockResult, MockTest } from '../../types/domain';
 
 const svc = vi.hoisted(() => ({
@@ -639,6 +640,67 @@ describe('MockMode (Mock test)', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
     });
+  });
+
+  it('F-UP-018: a failed exam fetch renders fixed copy, never the raw ApiError prose', async () => {
+    // The server rejection carries prose (constraint/relation detail) on
+    // ApiError.message. The ErrorCard must show the call site's fixed
+    // fallback — the pre-fix `err instanceof ApiError ? err.message : …`
+    // echoed the prose verbatim into the DOM.
+    svc.fetchMockTest.mockRejectedValueOnce(
+      new ApiError('relation "topik_mock_items" does not exist', {
+        status: 500,
+        code: 'server_error',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+
+    // Fixed copy, not the server prose.
+    expect(
+      await screen.findByText(/could not load the mock test/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/topik_mock_items/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('F-UP-018: a failed submit renders fixed copy, never the raw ApiError prose', async () => {
+    // Same contract on the grading path: the submit ErrorCard shows the
+    // fixed "Could not submit the test." fallback, never the server's
+    // ApiError.message prose — and the retry stays wired.
+    svc.submitMockTest.mockRejectedValueOnce(
+      new ApiError(
+        'insert or update on table "mock_results" violates foreign key constraint',
+        { status: 500, code: 'server_error' },
+      ),
+    );
+    const user = userEvent.setup();
+    render(<MockMode />, { wrapper: MemoryRouter });
+
+    await user.click(
+      screen.getByRole('button', { name: /Start Reading mock test/i }),
+    );
+    await waitFor(() => {
+      expect(screen.getByRole('timer')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('radio', { name: /나/ }));
+    await user.click(screen.getByRole('button', { name: /Submit test/i }));
+    await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+
+    // Fixed copy, not the server prose.
+    expect(
+      await screen.findByText(/could not submit the test/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/mock_results/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/foreign key/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Retry submit/i }),
+    ).toBeInTheDocument();
   });
   it('shows a resume banner for a saved attempt, and Resume re-fetches the same exam by source_test (F-007)', async () => {
     const user = userEvent.setup();

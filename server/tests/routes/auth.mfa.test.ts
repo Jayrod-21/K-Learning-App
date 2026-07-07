@@ -303,15 +303,24 @@ describe('concurrency (no double-spend / no recovery-set desync)', () => {
       request(t.app).post('/auth/mfa/confirm').send({ challenge_token: challengeToken, code }),
     ]);
 
-    // Exactly one winner (authenticated + recovery codes); the loser 401s and
-    // shows NO codes.
-    const statuses = [resA.status, resB.status].sort();
-    expect(statuses).toEqual([200, 401]);
+    // Exactly one winner (authenticated + recovery codes); the loser is rejected
+    // with NO session and NO codes. The race is legitimately non-deterministic
+    // about WHICH rejection the loser hits — both are correct and leak nothing:
+    //   - 401 challenge_invalid: it saw the pending row but lost the
+    //     `confirmed_at IS NULL` UPDATE flip (auth.ts:~597).
+    //   - 400 no_pending_enrollment: its SELECT ran AFTER the winner flipped
+    //     `confirmed_at`, so it never saw a pending row (auth.ts:814).
+    // Assert the invariant (one 200 winner, one rejected loser with no codes),
+    // not one specific loser status — pinning a single code makes this flaky.
     const winner = resA.status === 200 ? resA : resB;
     const loser = resA.status === 200 ? resB : resA;
+    expect(winner.status).toBe(200);
+    expect([400, 401]).toContain(loser.status);
     expect(winner.body.status).toBe('authenticated');
     expect(Array.isArray(winner.body.recovery_codes)).toBe(true);
-    expect(loser.body.error.code).toBe('challenge_invalid');
+    expect(['challenge_invalid', 'no_pending_enrollment']).toContain(
+      loser.body.error.code,
+    );
     expect(loser.body.recovery_codes).toBeUndefined();
 
     // The codes SHOWN to the winner are exactly the codes STORED — log in with

@@ -397,4 +397,50 @@ describe('Writing', () => {
     ).toHaveValue('');
     expect(fetchPromptsMock).toHaveBeenCalledTimes(1);
   });
+
+  it('disables "New prompt" when the rubric pool has exactly one prompt (F-UP-017)', async () => {
+    // With a single-prompt pool the rotate cursor wraps to the SAME prompt —
+    // pre-fix the button was a destructive no-op that only wiped the draft.
+    fetchPromptsMock.mockImplementation(() =>
+      Promise.resolve([Q53_PROMPTS[0]!]),
+    );
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    const newPrompt = screen.getByRole('button', { name: 'New prompt' });
+    expect(newPrompt).toBeDisabled();
+
+    // The draft survives — clicking a disabled button must not clear it.
+    const textarea = screen.getByRole('textbox', {
+      name: /Your writing in Korean/,
+    });
+    await user.type(textarea, '안녕하세요');
+    await user.click(newPrompt);
+    expect(textarea).toHaveValue('안녕하세요');
+    // Still the same (only) prompt on screen.
+    expect(screen.getByText(/스트레스 해소 방법/)).toBeInTheDocument();
+  });
+
+  it('keeps "New prompt" disabled on the graded footer at pool size one', async () => {
+    fetchPromptsMock.mockImplementation(() =>
+      Promise.resolve([Q53_PROMPTS[0]!]),
+    );
+    gradeWritingMock.mockResolvedValueOnce(RESPONSE);
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.type(
+      screen.getByRole('textbox', { name: /Your writing in Korean/ }),
+      '안녕하세요',
+    );
+    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await screen.findByText('63');
+
+    // Same contract post-grade: "New prompt" cannot deliver a new prompt, so
+    // it stays disabled; "Revise & regrade" remains the way back to editing.
+    expect(screen.getByRole('button', { name: 'New prompt' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Revise & regrade' }),
+    ).toBeEnabled();
+  });
 });

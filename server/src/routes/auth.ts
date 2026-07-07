@@ -979,7 +979,12 @@ router.get('/mfa/status', authLimiter(), requireAuth, async (req, res, next) => 
   }
 });
 
-router.post('/logout', requireAuth, async (req, res, next) => {
+// F-UP-018 (rate-limit ordering): /logout and /me previously mounted NO
+// limiter, so an unauthenticated flood (bogus session cookies → one session
+// lookup each) was unbounded. authLimiter counts only FAILED requests
+// (skipSuccessfulRequests), so legitimate authenticated traffic is never
+// throttled; it runs BEFORE requireAuth, matching the /mfa/status pattern.
+router.post('/logout', authLimiter(), requireAuth, async (req, res, next) => {
   try {
     if (req.session) {
       await revokeSessionById(req.session.id, 'user_logout');
@@ -999,7 +1004,7 @@ router.post('/logout', requireAuth, async (req, res, next) => {
  * existing shape (`{ user: { id, email } }`) is preserved as a strict
  * superset — clients that ignored extra fields continue to work.
  */
-router.get('/me', requireAuth, async (req, res, next) => {
+router.get('/me', authLimiter(), requireAuth, async (req, res, next) => {
   try {
     if (!req.user) {
       // Defensive — requireAuth would have errored, but TS doesn't know that.

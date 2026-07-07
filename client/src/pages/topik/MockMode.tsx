@@ -62,7 +62,7 @@ import { TopikPassage } from '../../components/TopikPassage';
 import { cn } from '../../lib/cn';
 import { splitImageItem } from '../../lib/topikImage';
 import { useModalA11y } from '../../hooks/useModalA11y';
-import { ApiError } from '../../services/api';
+import { errorMessageFor } from '../../lib/errorCopy';
 import {
   fetchMockTest,
   submitMockTest,
@@ -122,8 +122,14 @@ const SECTION_MINUTES: Record<MockSection, number> = {
  */
 const MAX_ITEM_TIME_MS = 3_600_000;
 
+/**
+ * Normalise a thrown value to user-facing FIXED copy (F-UP-018). Previously
+ * echoed `ApiError.message` — server prose — into the ErrorCard; now
+ * delegates to the app-wide fixed-copy lookup, so only author-controlled
+ * text (plus the structured retry_after number) ever renders.
+ */
 function toMessage(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? err.message : fallback;
+  return errorMessageFor(err, fallback);
 }
 
 /** Phase of the in-flight network call (orthogonal to the exam phase machine). */

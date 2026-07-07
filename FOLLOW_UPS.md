@@ -155,7 +155,7 @@ are `--ignore`d in that job; both are tracked here.
   end-to-end `strategy_c_claude` test through the real gate. See
   `db/docs/FIX_REPORT_FUP010.md` + `REVIEW_FUP010_FULL.md`.
 
-### F-UP-013 · 4 topik_items with answer keys that contradict their own content (P3, DATA)
+### F-UP-013 · 4 topik_items with answer keys that contradict their own content (P3, DATA) — ✅ RESOLVED 2026-07-06
 Surfaced by the F-019 explanation pass (the generator skipped them rather than ship a
 contradictory explanation). Each has enough accessible content to check, and the keyed
 `answer` looks WRONG against it:
@@ -169,7 +169,7 @@ Likely source-bank answer-key alignment bugs, not un-explainable items. Manually
 each `answer` against its stem/passage; if wrong, correct in the corpus + DB (these items
 are served in study/mock, so a wrong key mis-grades a learner). Low volume (4 of 2,088).
 
-### F-UP-014 · topik_attempts resurrect-race — mitigated, not fully closed (P3, F-007)
+### F-UP-014 · topik_attempts resurrect-race — mitigated, not fully closed (P3, F-007) — ✅ RESOLVED 2026-07-06
 The mock-resume save race (a progress `PUT /topik/attempt` in flight when the exam
 submits) is mitigated but not eliminated. `doSubmit` aborts the in-flight save and
 `runSubmit` fires a `clearAttempt()` mop-up on real-submit success — but the abort is
@@ -181,7 +181,7 @@ robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scopin
 mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
 Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
 
-### F-UP-019 · F-018 data + cleanup residuals (2026-07-06, P3)
+### F-UP-019 · F-018 data + cleanup residuals (2026-07-06, P3) — ⚠️ reference.ts cleanup done; dialogues data DEFERRED (source lacks it)
 - **Grammar `dialogues` empty in all 294 corpus rows**: F-018 renders the Dialogues section
   defensively but it's invisible because no row has dialogue data. If the Darakwon KGIU source
   carries dialogues, extend the loader/parser to populate `kgiu_entries.dialogues` (shape
@@ -190,7 +190,7 @@ Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded r
 - **Dead-code candidate**: `client/src/data/mocks/reference.ts` has zero importers — deleting it
   would also orphan the `ReferenceEntry` type in `domain.ts`. A deliberate cleanup, not urgent.
 
-### F-UP-018 · Bug-sweep residuals (2026-07-06, all P3 unless noted)
+### F-UP-018 · Bug-sweep residuals (2026-07-06, all P3 unless noted) — ⚠️ mostly resolved 2026-07-06 (explanation tail closed; polish done; DEFERRED: blanket rate-limit, topik_level persist pre-level-picker, Claude-spend monitoring, B-012 upstream)
 Deferred items from the intense bug sweep (findings in `db/docs/SWEEP_*.md`; fixes in
 `FIX_sweep_*.md`; re-reviews in `REVIEW_SWEEP_*.md`). The sweep fixed ~40 defects incl. a
 CRITICAL server crash + the TOPIK-mock level merge; these are the honest leftovers:
@@ -213,7 +213,7 @@ CRITICAL server crash + the TOPIK-mock level merge; these are the honest leftove
 - **B-012 (vocab-2000)**: NOT a loader bug — the loader is faithful; the corpus *extraction* is
   ~400 words/level short of nominal 2,000. Needs re-extraction upstream, not a code fix.
 
-### F-UP-017 · F-014 Writing rework — NITs from the /fixpass (P3)
+### F-UP-017 · F-014 Writing rework — NITs from the /fixpass (P3) — ✅ RESOLVED 2026-07-06
 Non-blocking NITs from the three F-014 reviews (full lists in
 `db/docs/REVIEW_F014_{backend,ratelimit,frontend}.md`; re-review PASSed). Notables:
 - **"New prompt" no-op when a rubric's server pool has exactly one prompt** — the
@@ -223,7 +223,7 @@ Non-blocking NITs from the three F-014 reviews (full lists in
 - Rate-limit nits (2): 429 test/doc tidy-ups.
 None affect correctness; batch them into a Writing polish pass or the app overhaul.
 
-### F-UP-016 · F-017 stats carousel — 3 cosmetic NITs from the re-review (P3)
+### F-UP-016 · F-017 stats carousel — 3 cosmetic NITs from the re-review (P3) — ✅ RESOLVED 2026-07-06
 Left by the F-017 /fixpass re-review (verdict PASS; see `db/docs/REVIEW_FIXES_F017.md`), none
 shippable-blocking:
 - **Total-outage silence**: with `Promise.allSettled`, if ALL 3 series routes fail (network
@@ -235,7 +235,7 @@ shippable-blocking:
 - **Cosmetic 'cards' residue** in a generic `LineChart` test fixture (harmless label, not the
   vocab wire unit which is now correctly `reviews`).
 
-### F-UP-015 · Resume-fetch failure is silent (P3, F-007, UX)
+### F-UP-015 · Resume-fetch failure is silent (P3, F-007, UX) — ✅ RESOLVED 2026-07-06
 On the resume banner's "Resume", if `fetchMockTest(section, …, sourceTest)` fails, the
 banner just disappears with no user feedback (`resumeAttempt`'s catch clears `resumable`
 + resets net to idle). Rare, but a brief "couldn't resume — start fresh" notice would be

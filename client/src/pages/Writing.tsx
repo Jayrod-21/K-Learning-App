@@ -17,7 +17,10 @@
  *      전개구조 / 언어사용) with evidence + improvement notes, the total, an
  *      estimated TOPIK II level, and the overall comment.
  *   4. "Revise & regrade" returns to composing with the text preserved;
- *      "New prompt" advances the rotation and clears the sheet.
+ *      "New prompt" advances the rotation and clears the sheet. When the
+ *      rubric's pool holds exactly ONE prompt, "New prompt" is disabled
+ *      (F-UP-017): rotating would wrap to the same task, so its only effect
+ *      would be silently destroying the learner's draft.
  *
  * Failure is failure-SAFE, never a dead end (mirrors the Grammar drill): a
  * grade failure keeps the learner's text, surfaces a fixed-string inline
@@ -292,6 +295,11 @@ function Writing(): JSX.Element {
   const grading = phase === 'grading';
   const graded = phase === 'graded' && grade !== null;
   const canSubmit = !grading && sample.trim().length > 0 && task !== null;
+  // F-UP-017: with exactly one prompt in the rubric's pool, "rotate" wraps to
+  // the SAME prompt — the button's only effect would be silently clearing the
+  // learner's draft. Disable it instead of lying; the pool size is server
+  // truth, so this re-enables by itself the moment a second prompt exists.
+  const canRotatePrompt = prompts !== null && prompts.length > 1;
 
   return (
     <section
@@ -401,7 +409,16 @@ function Writing(): JSX.Element {
             <div className="km-grammar__footer">
               {!graded ? (
                 <>
-                  <Button variant="ghost" onClick={nextPrompt} disabled={grading}>
+                  <Button
+                    variant="ghost"
+                    onClick={nextPrompt}
+                    disabled={grading || !canRotatePrompt}
+                    title={
+                      canRotatePrompt
+                        ? undefined
+                        : 'Only one task is available for this section right now.'
+                    }
+                  >
                     New prompt
                   </Button>
                   <Button variant="gold" onClick={() => void submit()} disabled={!canSubmit}>
@@ -413,7 +430,16 @@ function Writing(): JSX.Element {
                   <Button variant="ghost" onClick={revise}>
                     Revise &amp; regrade
                   </Button>
-                  <Button variant="gold" onClick={nextPrompt}>
+                  <Button
+                    variant="gold"
+                    onClick={nextPrompt}
+                    disabled={!canRotatePrompt}
+                    title={
+                      canRotatePrompt
+                        ? undefined
+                        : 'Only one task is available for this section right now.'
+                    }
+                  >
                     New prompt
                   </Button>
                 </>

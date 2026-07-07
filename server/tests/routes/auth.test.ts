@@ -125,6 +125,53 @@ describe('POST /auth/login — rate-limit', () => {
   });
 });
 
+describe('GET /auth/me + POST /auth/logout — unauthenticated flood is limited (F-UP-018)', () => {
+  it('unauthenticated /me attempts count toward the auth bucket → 429', async () => {
+    // Pre-fix /me mounted NO limiter: bogus-cookie floods (one session-table
+    // lookup each) were unbounded. authLimiter now runs before requireAuth;
+    // RATE_LIMIT_AUTH_MAX is 5 in the test env, so the flood must trip 429.
+    let got429 = false;
+    for (let i = 0; i < 25; i++) {
+      const res = await request(t.app)
+        .get('/auth/me')
+        .set('Cookie', 'km_sid=bogus-flood-token');
+      expect([401, 429]).toContain(res.status);
+      if (res.status === 429) {
+        expect(res.body.error.code).toBe('rate_limited');
+        got429 = true;
+        break;
+      }
+    }
+    expect(got429).toBe(true);
+  });
+
+  it('unauthenticated /logout attempts count toward the auth bucket → 429', async () => {
+    let got429 = false;
+    for (let i = 0; i < 25; i++) {
+      const res = await request(t.app).post('/auth/logout');
+      expect([401, 429]).toContain(res.status);
+      if (res.status === 429) {
+        got429 = true;
+        break;
+      }
+    }
+    expect(got429).toBe(true);
+  });
+
+  it('successful authenticated /me calls are never throttled (skipSuccessfulRequests)', async () => {
+    // The auth bucket counts FAILURES only — a legitimate session polling /me
+    // well past RATE_LIMIT_AUTH_MAX (5) must keep getting 200s.
+    const agent = request.agent(t.app);
+    await agent
+      .post('/auth/register')
+      .send({ email: 'me-flood@example.com', password: 'correct horse battery staple' });
+    for (let i = 0; i < 10; i++) {
+      const res = await agent.get('/auth/me');
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
 describe('POST /auth/logout — auth required', () => {
   it('unauthenticated → 401', async () => {
     const res = await request(t.app).post('/auth/logout');

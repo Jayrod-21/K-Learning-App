@@ -53,6 +53,7 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
 import { Card } from '../components/Card';
 import { CornerMark } from '../components/CornerMark';
+import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
 import { HanjaCell } from '../components/HanjaCell';
@@ -221,7 +222,9 @@ export default function Hanja(): JSX.Element {
     charsResult.loading || progressResult.loading || todayResult.loading;
   // The list + progress are required to paint anything; `today` is not — a null
   // featured character (empty corpus) is a valid state the Today view handles
-  // on its own, so `todayResult.error` is intentionally excluded here.
+  // on its own, so `todayResult.error` is intentionally excluded here. A FAILED
+  // featured fetch renders its own scoped ErrorCard inside the Today view
+  // (F-UP-018) — never the "no hanja yet" empty state.
   const fatal =
     !loading && (!chars || !progress) && (charsResult.error ?? progressResult.error);
 
@@ -264,6 +267,16 @@ export default function Hanja(): JSX.Element {
                 onOpen={() => {
                   setOpenId(featured.id);
                 }}
+              />
+            ) : todayResult.error !== null ? (
+              // F-UP-018: the featured fetch FAILED — say so. Pre-fix this
+              // fell through to the "No featured 한자 yet" empty state (a
+              // data statement), indistinguishable from a genuinely-empty
+              // corpus. Fixed copy + a retry scoped to the today source
+              // only (list/progress rendered fine above).
+              <ErrorCard
+                message="Couldn’t load today’s featured 한자."
+                onRetry={todayResult.refetch}
               />
             ) : (
               <Card className="km-hanja__empty">

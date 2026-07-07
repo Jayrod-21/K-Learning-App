@@ -89,6 +89,7 @@ import { loadConversationMock } from '../data/mocks/chat';
 import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
 import * as conversationService from '../services/conversation';
 import { ApiError } from '../services/api';
+import { errorMessageFor } from '../lib/errorCopy';
 import type {
   Conversation,
   ConversationMessage,
@@ -429,7 +430,7 @@ export function Chat(): JSX.Element {
           return;
         }
         const message =
-          err instanceof Error ? err.message : 'Stream failed. Please retry.';
+          errorMessageFor(err, 'Stream failed. Please retry.');
         // Roll back: drop the partial tutor row, mark the user row as
         // `failed` so the user can hit Retry without retyping.
         setMsgs((prev) => {
@@ -513,7 +514,7 @@ export function Chat(): JSX.Element {
         // Failure to start the conversation (lazy-start path). Mark the
         // user turn as failed and surface the error.
         const message =
-          err instanceof Error ? err.message : 'Could not start conversation.';
+          errorMessageFor(err, 'Could not start conversation.');
         setMsgs((prev) => {
           const out: ThreadRow[] = [];
           let marked = false;
@@ -566,7 +567,7 @@ export function Chat(): JSX.Element {
           await runStream({ convId, content, requestId });
         } catch (err) {
           const message =
-            err instanceof Error ? err.message : 'Retry failed.';
+            errorMessageFor(err, 'Retry failed.');
           setSendError(message);
         }
       })();

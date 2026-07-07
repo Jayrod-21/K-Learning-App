@@ -86,6 +86,7 @@ import {
   tokeniseKorean,
 } from '../lib/tapChain';
 import { ApiError } from '../services/api';
+import { errorMessageFor } from '../lib/errorCopy';
 import {
   buildAudioSrc,
   getIyagiEpisode,
@@ -309,7 +310,7 @@ function TtmikLessonsTab({
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load the lessons.',
+          errorMessageFor(err, 'Could not load the lessons.'),
         );
         setLoading(false);
       });
@@ -427,9 +428,7 @@ function IyagiEpisodesTab({
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError
-            ? err.message
-            : 'Could not load the episodes.',
+          errorMessageFor(err, 'Could not load the episodes.'),
         );
         setLoading(false);
       });
@@ -584,9 +583,7 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError
-            ? err.message
-            : 'Could not load the transcript.',
+          errorMessageFor(err, 'Could not load the transcript.'),
         );
         setLoading(false);
       });

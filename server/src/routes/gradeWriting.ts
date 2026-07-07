@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { expensiveLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody } from '../middleware/validate.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import { UpstreamError } from '../middleware/errors.js';
@@ -54,6 +54,12 @@ const GradeSchema = z
 
 router.post(
   '/',
+  // F-UP-018 (rate-limit ordering): `expensiveLimiter` keys per-USER when
+  // authenticated (fair share behind NAT — see rateLimits.ts), so it MUST
+  // stay after requireAuth. The per-IP cheap limiter in front bounds
+  // unauthenticated floods (each request costs a session lookup when a
+  // cookie is presented) that previously bypassed rate limiting entirely.
+  cheapLimiter(),
   requireAuth,
   expensiveLimiter(),
   validateBody(GradeSchema),

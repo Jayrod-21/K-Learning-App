@@ -57,6 +57,7 @@ import { loadTopikStudyMock } from '../data/mocks/topik';
 import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
+import { errorMessageFor } from '../lib/errorCopy';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 import {
   MockMode,
@@ -418,7 +419,8 @@ function StudyMode(): JSX.Element {
 
       {!loading && error && draw.length === 0 ? (
         <div className="km-topik__state km-topik__state--error" role="alert">
-          Couldn’t load study items. {error.message}
+          Couldn’t load study items.{' '}
+          {errorMessageFor(error, 'Try again in a moment.')}
           <div className="km-topik__footer">
             <Button variant="gold" onClick={startNewSet}>
               Try again

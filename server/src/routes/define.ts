@@ -174,8 +174,12 @@ export function isUndefinedTableError(err: unknown): boolean {
 
 router.get(
   '/',
-  requireAuth,
+  // F-UP-018 (rate-limit ordering): the per-IP cheap limiter runs BEFORE
+  // requireAuth so an unauthenticated flood (each request = a session-table
+  // lookup when a cookie is presented) is rate-limited too. Keying is per-IP
+  // either way (`ipKey`), so authed behavior is unchanged.
   cheapLimiter(),
+  requireAuth,
   validateQuery(DefineQuerySchema),
   async (req, res, next) => {
     try {

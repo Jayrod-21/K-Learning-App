@@ -383,6 +383,40 @@ describe('generateConversation — streaming', () => {
   // for-await throws before `sdkFinal` is awaited; without an eager handler
   // on sdkFinal, its rejection escaped as an unhandledRejection and the
   // process-level handler in src/index.ts killed the whole server.
+  // F-UP-018 (SSE redaction, services scope): the route forwards this event
+  // frame verbatim to the client, so the services layer must never put raw
+  // upstream/SDK prose on the queue — fixed message on the wire, detail in
+  // the log only. Reverting index.ts to `message: e.message` fails this.
+  it('redacts the raw upstream message from the stream error event (F-UP-018)', async () => {
+    const boom = sdkError(500, 'upstream detail: x-api-key rejected by gateway');
+    const { proxy } = setupProxy([{ text: '안녕하십니까', streamError: boom }]);
+    const { events, final } = proxy.generateConversation({
+      scenario: 'first business meeting',
+      registerTarget: '합쇼체',
+      vocabFocus: [],
+      mode: 'business',
+      history: [],
+      maxTokens: 200,
+    });
+    void final.catch(() => undefined);
+
+    let errEvent: { type: string; code?: string; message?: string } | null = null;
+    for await (const ev of events) {
+      if (ev.type === 'error') errEvent = ev;
+    }
+
+    expect(errEvent).not.toBeNull();
+    // Fixed, server-authored copy — never the upstream prose.
+    expect(errEvent?.message).toBe('conversation stream failed');
+    expect(errEvent?.message).not.toContain('x-api-key');
+    // The structured code still rides the wire for client-side branching.
+    expect(typeof errEvent?.code).toBe('string');
+    expect(errEvent?.code?.length).toBeGreaterThan(0);
+    // The ORIGINAL error (full detail) still reaches the final-promise
+    // consumer for logging — redaction is wire-only, not information loss.
+    await expect(final).rejects.toThrow('x-api-key rejected by gateway');
+  });
+
   it('mid-stream failure surfaces as a handled stream error — no unhandled rejection', async () => {
     const boom = sdkError(529, 'simulated mid-stream connection drop');
     const escaped: unknown[] = [];

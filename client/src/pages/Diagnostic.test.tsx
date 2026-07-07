@@ -34,7 +34,7 @@ import type {
 interface HookResult<T> {
   data: T | null;
   loading: boolean;
-  error: null;
+  error: ApiError | null;
   isMock: boolean;
   refetch?: () => void;
 }
@@ -769,6 +769,44 @@ describe('Diagnostic', () => {
       screen.queryByText(/could not submit your answer/i),
     ).not.toBeInTheDocument();
     expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
+  });
+
+  it('renders the fatal snapshot failure as fixed copy with a live Retry (F-UP-018)', async () => {
+    // The PROD gate made this branch reachable in prod. It must follow the
+    // ErrorCard contract: author-controlled copy (never the server prose on
+    // ApiError.message) + a Retry wired to the snapshot refetch — and the
+    // IntroBlock still offers "Begin" so the page is never a dead end.
+    refetchSpy.mockClear();
+    hookState.snapshot = {
+      data: null,
+      loading: false,
+      error: new ApiError(
+        'relation "diagnostic_snapshots" does not exist',
+        { status: 500, code: 'server_error' },
+      ),
+      isMock: false,
+      refetch: refetchSpy,
+    };
+
+    const user = userEvent.setup();
+    renderWithRouter();
+
+    // Fixed copy, not the server prose.
+    expect(
+      await screen.findByText(/couldn.t load your diagnostic results/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/diagnostic_snapshots/),
+    ).not.toBeInTheDocument();
+
+    // Retry actually re-runs the snapshot fetch.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(refetchSpy).toHaveBeenCalledTimes(1);
+
+    // Not stranded: the intro's Begin control still renders below the card.
+    expect(
+      screen.getByRole('button', { name: /begin test/i }),
+    ).toBeInTheDocument();
   });
 
   it('surfaces an ErrorCard when starting the run fails', async () => {

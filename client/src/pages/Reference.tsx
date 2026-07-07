@@ -65,6 +65,7 @@ import {
 } from '../services/suggestions';
 import { ApiError } from '../services/api';
 import { grammarKey } from '../lib/grammarKey';
+import { errorMessageFor } from '../lib/errorCopy';
 import type {
   BookLevel,
   ContentDomain,
@@ -588,7 +589,7 @@ function VocabularyTab(): JSX.Element {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load vocabulary.',
+          errorMessageFor(err, 'Could not load vocabulary.'),
         );
         setLoading(false);
       });
@@ -807,11 +808,12 @@ function DictionaryTab(): JSX.Element {
         setError(
           err instanceof ApiError && err.status === 503
             ? 'The dictionary isn’t available yet.'
-            : err instanceof ApiError
-              ? err.message
-              : browsing
-                ? 'Could not load the dictionary.'
-                : 'Could not search the dictionary.',
+            : errorMessageFor(
+                err,
+                browsing
+                  ? 'Could not load the dictionary.'
+                  : 'Could not search the dictionary.',
+              ),
         );
         setLoading(false);
       });
@@ -937,7 +939,7 @@ function GrammarTab(): JSX.Element {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load grammar.',
+          errorMessageFor(err, 'Could not load grammar.'),
         );
         setLoading(false);
       });
@@ -970,7 +972,7 @@ function GrammarTab(): JSX.Element {
     } catch (err) {
       if (detailIdRef.current !== row.id) return;
       setDetailError(
-        err instanceof ApiError ? err.message : 'Detail unavailable',
+        errorMessageFor(err, 'Detail unavailable'),
       );
     } finally {
       if (detailIdRef.current === row.id) setDetailLoading(false);
@@ -1154,7 +1156,7 @@ function ListsTab(): JSX.Element {
       })
       .catch((err: unknown) => {
         setError(
-          err instanceof ApiError ? err.message : 'Could not load lists.',
+          errorMessageFor(err, 'Could not load lists.'),
         );
         setLoading(false);
       });
@@ -1176,7 +1178,7 @@ function ListsTab(): JSX.Element {
       load();
     } catch (err) {
       setCreateError(
-        err instanceof ApiError ? err.message : 'Could not create the list.',
+        errorMessageFor(err, 'Could not create the list.'),
       );
     } finally {
       setCreating(false);
@@ -1195,7 +1197,7 @@ function ListsTab(): JSX.Element {
         load();
       } catch (err) {
         setError(
-          err instanceof ApiError ? err.message : 'Could not delete the list.',
+          errorMessageFor(err, 'Could not delete the list.'),
         );
       }
     },
@@ -1341,7 +1343,7 @@ function ListDetailSheet({
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load the list.',
+          errorMessageFor(err, 'Could not load the list.'),
         );
         setLoading(false);
       });
@@ -1374,7 +1376,7 @@ function ListDetailSheet({
       } catch (err) {
         setEntries(prev);
         setError(
-          err instanceof ApiError ? err.message : 'Could not remove the word.',
+          errorMessageFor(err, 'Could not remove the word.'),
         );
       } finally {
         setRemovingId(null);
@@ -1490,7 +1492,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
       .catch((err: unknown) => {
         if (ctrl.signal.aborted) return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load your lists.',
+          errorMessageFor(err, 'Could not load your lists.'),
         );
         setLoading(false);
       });
@@ -1523,7 +1525,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
           return;
         }
         setError(
-          err instanceof ApiError ? err.message : 'Could not add the word.',
+          errorMessageFor(err, 'Could not add the word.'),
         );
       } finally {
         setPendingId(null);
