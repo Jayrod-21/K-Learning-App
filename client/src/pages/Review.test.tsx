@@ -150,7 +150,7 @@ import { defineEntry } from '../services/define';
 /**
  * Captures the most recent navigation target + router state so the FU-NF-42
  * deep-link test can assert that activating a grammar production card routes to
- * `/grammar` with the right `drillTarget`. A sibling route under the same
+ * `/learn/grammar` with the right `drillTarget`. A sibling route under the same
  * MemoryRouter renders its own location into the DOM for inspection.
  */
 function GrammarStub(): JSX.Element {
@@ -163,13 +163,16 @@ function GrammarStub(): JSX.Element {
   );
 }
 
-/** Render `<Review />` inside a MemoryRouter with a `/grammar` deep-link target. */
+/**
+ * Render `<Review />` (the FSRS flashcards page — at `/learn/vocab` since
+ * Overhaul P1.1) with a `/learn/grammar` deep-link target.
+ */
 function renderReview(): ReturnType<typeof render> {
   return render(
-    <MemoryRouter initialEntries={['/review']}>
+    <MemoryRouter initialEntries={['/learn/vocab']}>
       <Routes>
-        <Route path="/review" element={<Review />} />
-        <Route path="/grammar" element={<GrammarStub />} />
+        <Route path="/learn/vocab" element={<Review />} />
+        <Route path="/learn/grammar" element={<GrammarStub />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -759,7 +762,8 @@ describe('Review', () => {
 
     await user.click(screen.getByRole('button', { name: /Drill -더라도/ }));
 
-    // The deep-link landed on /grammar carrying the drillTarget in router state.
+    // The deep-link landed on /learn/grammar carrying the drillTarget in
+    // router state.
     expect(await screen.findByTestId('grammar-stub')).toBeInTheDocument();
     const state = JSON.parse(
       screen.getByTestId('grammar-state').textContent ?? 'null',

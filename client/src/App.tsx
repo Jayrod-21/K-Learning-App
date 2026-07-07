@@ -8,9 +8,15 @@
  *         <BrowserRouter>
  *           <Routes>...
  *
- * Routing model:
+ * Routing model (Overhaul P1.1 — namespaced paths):
  *   - `/login` is the only public route. `<RequireAuth/>` gates everything
  *     else and pushes guests to `/login`.
+ *   - Primary tabs: `/` (Today), `/progress`, `/review` (library index),
+ *     `/settings`. LEARN sub-pages live under `/learn/*`; Mistakes lives
+ *     under the library at `/review/mistakes`.
+ *   - `/chat` NEVER moves — hard contract (AskAboutThisButton.CHAT_PATH).
+ *   - Legacy flat paths (`/topik`, `/ttmik`, `/grammar`, …) render redirect
+ *     shims from `lib/redirects.tsx` so old links keep landing.
  *   - Each in-app screen renders its real body; routes are registered here
  *     and the nav model lives in `lib/nav.ts` (kept in sync with these paths).
  *   - Unknown paths redirect to `/`. We could 404 instead, but a soft
@@ -34,10 +40,13 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { InstallPrompt } from './components/InstallPrompt';
 import { PwaUpdatePrompt } from './components/PwaUpdatePrompt';
 import { Shell } from './components/Shell';
+import { legacyRedirectRoutes } from './lib/redirects';
 import Login from './pages/Login';
 import Today from './pages/Today';
 import Topik from './pages/Topik';
 import Review from './pages/Review';
+import ReviewLibrary from './pages/ReviewLibrary';
+import Reading from './pages/Reading';
 import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
 import Writing from './pages/Writing';
@@ -80,27 +89,31 @@ export default function App(): JSX.Element {
                       </RequireAuth>
                     }
                   >
+                    {/* Primary tabs. */}
                     <Route index element={<Today />} />
-                    <Route path="topik" element={<Topik />} />
-                    {/* Read is retired — its content lives in Listen (/ttmik),
-                        which does TTMIK + Iyagi with audio + transcripts. Keep
-                        the path as a redirect so old links/tiles still land. */}
-                    <Route
-                      path="reading"
-                      element={<Navigate to="/ttmik" replace />}
-                    />
-                    <Route path="review" element={<Review />} />
+                    <Route path="progress" element={<Progress />} />
+                    {/* `/review` is the LIBRARY index (P1.1 placeholder) —
+                        the FSRS flashcards that used to live here are now
+                        `/learn/vocab`. */}
+                    <Route path="review" element={<ReviewLibrary />} />
+                    <Route path="review/mistakes" element={<Mistakes />} />
+                    <Route path="settings" element={<Settings />} />
+                    {/* LEARN sub-pages (hexagon launcher). Pure re-homes,
+                        except Reading — a new placeholder until P6. */}
+                    <Route path="learn/topik" element={<Topik />} />
+                    <Route path="learn/listen" element={<Ttmik />} />
+                    <Route path="learn/vocab" element={<Review />} />
+                    <Route path="learn/grammar" element={<Grammar />} />
+                    <Route path="learn/writing" element={<Writing />} />
+                    <Route path="learn/hanja" element={<Hanja />} />
+                    <Route path="learn/reading" element={<Reading />} />
+                    {/* Secondary routed screens. `/chat` never moves. */}
                     <Route path="diagnostic" element={<Diagnostic />} />
-                    <Route path="grammar" element={<Grammar />} />
-                    <Route path="writing" element={<Writing />} />
-                    <Route path="hanja" element={<Hanja />} />
-                    <Route path="mistakes" element={<Mistakes />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
                     <Route path="reference" element={<Reference />} />
-                    <Route path="settings" element={<Settings />} />
-                    <Route path="progress" element={<Progress />} />
-                    <Route path="ttmik" element={<Ttmik />} />
+                    {/* Legacy flat paths → new namespaced homes. */}
+                    {legacyRedirectRoutes()}
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

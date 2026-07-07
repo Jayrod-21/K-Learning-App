@@ -563,94 +563,206 @@ body {
   text-transform: uppercase;
 }
 
-/* MoreSheet ──────────────────────────────────────────────────────────── */
-.km-moresheet {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
+/* LEARN hexagon (BottomNav center slot) ──────────────────────────────
+ * The launcher is elevated above the bar and clipped to a hexagon. Two
+ * clip-path consequences drive the styling choices:
+ *   - box-shadow is clipped away → elevation uses filter: drop-shadow()
+ *     (applied AFTER clipping).
+ *   - a rectangular focus outline reads broken on a clipped shape → the
+ *     :focus-visible state uses a stronger drop-shadow ring instead of
+ *     `.focusring`. */
+.km-bottomnav__hexslot { position: relative; }
+.km-bottomnav__hex {
+  position: absolute;
+  left: 50%;
+  top: -24px;
+  transform: translateX(-50%);
+  width: 58px;
+  height: 64px;
+  border: none;
+  cursor: pointer;
+  background: var(--vermilion);
+  color: var(--on-vermilion);
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  font-family: inherit;
+  filter: drop-shadow(0 6px 14px rgba(27, 24, 19, 0.30));
+  transition: transform 180ms ease, filter 180ms ease;
+}
+[data-theme="dark"] .km-bottomnav__hex {
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55));
+}
+.km-bottomnav__hex--current,
+.km-bottomnav__hex:focus-visible {
+  filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0))
+    drop-shadow(0 0 6px var(--vermilion));
+}
+/* Mockup interaction: the hexagon rotates while the menu is open. */
+.km-bottomnav__hex--open {
+  transform: translateX(-50%) rotate(90deg);
+}
+.km-bottomnav__hexlabel {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* LearnMenu — upward-expanding study menu over the nav ───────────────── */
+.km-learnmenu {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
   pointer-events: none;
 }
-.km-moresheet > * { pointer-events: auto; }
-.km-moresheet__backdrop {
-  flex: 1;
+.km-learnmenu > * { pointer-events: auto; }
+/* The scrim stops ABOVE the BottomNav so the bar (and the hexagon) stays
+ * tappable while the menu is open — re-tapping the hexagon toggles it
+ * closed, and a tab tap navigates (route-change closes the menu). */
+.km-learnmenu__scrim {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--shell-bottomnav-h) + env(safe-area-inset-bottom));
   background: rgba(6, 8, 12, 0.55);
   backdrop-filter: blur(4px);
   border: none;
   cursor: pointer;
   animation: fade 160ms ease-out;
 }
-.km-moresheet__panel {
-  max-width: var(--shell-max-width);
-  width: 100%;
-  margin: 0 auto;
-  background: var(--ink-1);
-  border-radius: 6px 6px 0 0;
-  border-top: 1px solid var(--line-strong);
-  padding: 14px 20px max(32px, env(safe-area-inset-bottom));
-  box-shadow: 0 -20px 50px rgba(27, 24, 19, 0.18);
-  animation: sheetUp 240ms cubic-bezier(.2, .7, .2, 1);
-}
-.km-moresheet__handle {
-  display: block;
-  width: 36px;
-  height: 4px;
-  background: var(--ink-3);
-  border-radius: 2px;
-  margin: 0 auto 14px;
-}
-.km-moresheet__title { margin: 0 0 12px; }
-.km-moresheet__list {
+.km-learnmenu__panel {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--shell-bottomnav-h) + 34px + env(safe-area-inset-bottom));
+  width: min(100% - 32px, calc(var(--shell-max-width) - 32px));
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
 }
-.km-moresheet__row {
+.km-learnmenu__title {
+  align-self: center;
+  color: #F3ECD5; /* sits on the scrim, not on paper — theme-invariant */
+  margin-bottom: 2px;
+  animation: fade 200ms ease-out both;
+}
+.km-learnmenu__row {
   display: flex;
   align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--paper);
+  font-family: inherit;
+  text-align: left;
+  box-shadow: 0 10px 30px rgba(27, 24, 19, 0.22);
+  /* Staggered upward reveal — per-row animation-delay is set inline
+     (bottom row first). The global prefers-reduced-motion block zeroes
+     the duration AND the delay, so the list lands instantly. */
+  animation: rise 240ms cubic-bezier(.2, .8, .3, 1) both;
+}
+[data-theme="dark"] .km-learnmenu__row {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.km-learnmenu__row[aria-current="page"] { color: var(--vermilion); }
+.km-learnmenu__rowlabel {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.km-learnmenu__rowkr {
+  font-size: 11px;
+  color: var(--paper-mute);
+}
+
+/* ChatFab — floating chat dot, ~1/5 up the right edge ─────────────────
+ * Absolutely positioned inside .km-shell (which is the fixed-height
+ * viewport column), so it hugs the shell's edge on desktop rather than
+ * the window's. z-index 40: above page content, below the LearnMenu
+ * scrim (60) and toasts (80). */
+.km-chatfab {
+  position: absolute;
+  right: 14px;
+  bottom: 20%;
+  z-index: 40;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  color: var(--vermilion);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.22);
+  animation: fade 160ms ease-out;
+}
+[data-theme="dark"] .km-chatfab {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+/* Presence dot — the celadon accent from the mockup maps to moss. */
+.km-chatfab::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--moss);
+  border: 2px solid var(--ink-2);
+}
+
+/* Review library index (P1.1 placeholder) ─────────────────────────────── */
+.km-library { padding: 0 22px 32px; }
+.km-library__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.km-library__row {
+  display: flex;
+  width: 100%;
+  align-items: center;
   gap: 14px;
-  padding: 14px 12px;
-  background: transparent;
-  border: none;
+  padding: 15px 14px;
+  background: var(--ink-1);
+  border: 1px solid var(--line);
   border-radius: 6px;
   cursor: pointer;
   color: var(--paper);
   font-family: inherit;
   text-align: left;
 }
-.km-moresheet__row--active {
-  background: var(--ink-2);
-  color: var(--vermilion);
+.km-library__row--soon {
+  cursor: default;
+  color: var(--paper-mute);
+  background: transparent;
 }
-.km-moresheet__rowmeta { flex: 1; }
-.km-moresheet__rowlabel {
+.km-library__rowmeta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.km-library__rowlabel {
   font-size: 15px;
   font-weight: 500;
   letter-spacing: -0.005em;
 }
-.km-moresheet__rowkr {
+.km-library__rowkr {
   font-size: 11px;
   color: var(--paper-mute);
   margin-top: 1px;
 }
-.km-moresheet__divider { margin: 14px 0; }
-.km-moresheet__theme {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--paper-dim);
-  font-family: inherit;
-  text-align: left;
-  font-size: 14px;
-}
-.km-moresheet__theme:hover { background: var(--ink-2); }
 
 /* Login ──────────────────────────────────────────────────────────────── */
 .km-login {

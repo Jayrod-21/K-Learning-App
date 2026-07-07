@@ -143,9 +143,9 @@ function ChatSeedProbe(): JSX.Element {
 /** Render Topik with a `/chat` probe route so seed navigations land. */
 function renderWithChatProbe(): void {
   render(
-    <MemoryRouter initialEntries={['/topik']}>
+    <MemoryRouter initialEntries={['/learn/topik']}>
       <Routes>
-        <Route path="/topik" element={<Topik />} />
+        <Route path="/learn/topik" element={<Topik />} />
         <Route path="/chat" element={<ChatSeedProbe />} />
       </Routes>
     </MemoryRouter>,

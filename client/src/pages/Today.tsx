@@ -295,9 +295,11 @@ export function Today(): JSX.Element {
   const taskTiles: TaskTile[] = [];
   if (today.data) {
     const candidates: Array<{ task: TodayTask | null } & Omit<TaskTile, 'task'>> = [
-      { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/reading' },
-      { task: today.data.listening, krTag: '듣기', skill: 'Listening', nav: '/reading' },
-      { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/writing' },
+      // Reading + Listening tiles both land on Listen (`/learn/listen`) —
+      // the retired Read screen's content lives there (TTMIK + Iyagi).
+      { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/learn/listen' },
+      { task: today.data.listening, krTag: '듣기', skill: 'Listening', nav: '/learn/listen' },
+      { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/learn/writing' },
     ];
     for (const c of candidates) {
       if (c.task) taskTiles.push({ task: c.task, krTag: c.krTag, skill: c.skill, nav: c.nav });
@@ -406,7 +408,9 @@ export function Today(): JSX.Element {
         <button
           type="button"
           onClick={() => {
-            navigate('/review');
+            // Vocab-flashcards intent — the FSRS review queue moved to
+            // /learn/vocab in P1.1 (/review is the library index now).
+            navigate('/learn/vocab');
           }}
           className="km-today__queue focusring"
           aria-label={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}

@@ -9,7 +9,8 @@
  * assertions hold regardless of which resolved. `services/stats` is also
  * mocked so the realFn closure can never touch the network.
  *
- * Interaction: clicking the Review queue card navigates to /review.
+ * Interaction: clicking the Review queue card navigates to /learn/vocab
+ * (the FSRS flashcards page — re-homed from /review in Overhaul P1.1).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -195,8 +196,10 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/" element={<Today />} />
-        <Route path="/review" element={<div>REVIEW PAGE</div>} />
-        <Route path="/writing" element={<div>WRITING PAGE</div>} />
+        {/* Overhaul P1.1 targets: the review-queue CTA lands on the
+            re-homed flashcards page; task tiles land on /learn/*. */}
+        <Route path="/learn/vocab" element={<div>FLASHCARDS PAGE</div>} />
+        <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -246,7 +249,7 @@ describe('Today', () => {
     expect(screen.queryByText('1 cards due')).not.toBeInTheDocument();
   });
 
-  it('navigates to /review when the review queue card is clicked', async () => {
+  it('navigates to /learn/vocab (flashcards) when the review queue card is clicked', async () => {
     hoisted.today.state = { kind: 'data', data: PLAN };
     hoisted.diag.state = { kind: 'data', data: SNAP };
 
@@ -258,10 +261,10 @@ describe('Today', () => {
     });
     await user.click(cta);
 
-    expect(screen.getByText('REVIEW PAGE')).toBeInTheDocument();
+    expect(screen.getByText('FLASHCARDS PAGE')).toBeInTheDocument();
   });
 
-  it('navigates to /writing when the Writing task tile is clicked (F-001)', async () => {
+  it('navigates to /learn/writing when the Writing task tile is clicked (F-001)', async () => {
     hoisted.today.state = { kind: 'data', data: PLAN };
     hoisted.diag.state = { kind: 'data', data: SNAP };
 

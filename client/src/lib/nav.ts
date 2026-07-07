@@ -1,14 +1,27 @@
 /**
- * Navigation manifest — the single source of truth for the app's screens and
- * how they appear in the bottom nav and More sheet.
+ * Navigation manifest — the single source of truth for the app's screens.
  *
- * `path` is the React Router route. `kr` is the Korean label that appears as
- * a sublabel on the More sheet rows. `icon` is a key into the `<Icon/>`
- * registry. `headerTitle` is the serif Korean title shown by `Topbar` — it
- * includes the English suffix per design header pattern (e.g.
- * `복습 · Review`).
+ * Overhaul P1.1 model — three buckets:
  *
- * Order in `NAV_ITEMS` is the rendering order in the More sheet.
+ *   1. PRIMARY_TAB_IDS — the 4 routed bottom-nav tabs
+ *      (today `/` · progress `/progress` · review `/review` · settings
+ *      `/settings`). `review` is the LIBRARY index (repurposed — the old
+ *      FSRS flashcards page that lived at `/review` is now `flashcards`
+ *      at `/learn/vocab`).
+ *   2. LEARN_SUBPAGE_IDS — the 7 study pages behind the center hexagon
+ *      LEARN launcher, all namespaced under `/learn/*`. The launcher
+ *      itself is NOT a NavItem — it has no route; `BottomNav` renders it
+ *      as a button that toggles `LearnMenu`.
+ *   3. SECONDARY_IDS — routed screens reachable from tabs/pages but not
+ *      from the bar (mistakes, reference, diagnostic, images, chat).
+ *
+ * Hard contract: `chat` stays at `/chat` — `AskAboutThisButton` pins
+ * `CHAT_PATH = '/chat'` and F-020 seed state rides router state to it.
+ * Never move it.
+ *
+ * `path` is the React Router route. `kr` is the Korean sublabel (LearnMenu
+ * rows, a11y labels). `icon` is a key into the `<Icon/>` registry.
+ * `headerTitle` is the serif Korean title pattern (e.g. `복습 · Review`).
  */
 import type { IconName } from '../components/Icon';
 
@@ -23,22 +36,28 @@ export interface NavItem {
 }
 
 export type NavItemId =
+  // Primary tabs.
   | 'today'
-  | 'topik'
+  | 'progress'
   | 'review'
-  | 'diagnostic'
+  | 'settings'
+  // LEARN sub-pages.
+  | 'topik'
+  | 'ttmik'
+  | 'flashcards'
   | 'grammar'
   | 'writing'
   | 'hanja'
-  | 'images'
-  | 'chat'
-  | 'reference'
-  | 'settings'
-  | 'progress'
+  | 'reading'
+  // Secondary routed screens.
   | 'mistakes'
-  | 'ttmik';
+  | 'reference'
+  | 'diagnostic'
+  | 'images'
+  | 'chat';
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
+  // ── Primary tabs ────────────────────────────────────────────────────
   {
     id: 'today',
     path: '/',
@@ -49,8 +68,39 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'home',
   },
   {
+    id: 'progress',
+    path: '/progress',
+    label: 'Progress',
+    kr: '성장',
+    eyebrow: 'Diagnostic history',
+    headerTitle: '성장 · Progress',
+    icon: 'history',
+  },
+  {
+    // REPURPOSED id (P1.1): `review` is now the library index at `/review`.
+    // The FSRS vocab-flashcards page that used to own this id/path is
+    // `flashcards` at `/learn/vocab` below.
+    id: 'review',
+    path: '/review',
+    label: 'Review',
+    kr: '복습',
+    eyebrow: 'Library',
+    headerTitle: '복습 · Review',
+    icon: 'folder',
+  },
+  {
+    id: 'settings',
+    path: '/settings',
+    label: 'Settings',
+    kr: '설정',
+    eyebrow: 'Profile · notifications · appearance',
+    headerTitle: '설정 · Settings',
+    icon: 'settings',
+  },
+  // ── LEARN sub-pages (hexagon launcher menu, /learn/*) ───────────────
+  {
     id: 'topik',
-    path: '/topik',
+    path: '/learn/topik',
     label: 'TOPIK',
     kr: '모의',
     eyebrow: 'Mock test',
@@ -58,13 +108,84 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'spark',
   },
   {
-    id: 'review',
-    path: '/review',
-    label: 'Review',
-    kr: '복습',
+    // Keeps id `ttmik` (the page component / services keep their names);
+    // the user-facing label stays "Listen".
+    id: 'ttmik',
+    path: '/learn/listen',
+    label: 'Listen',
+    kr: '듣기',
+    eyebrow: 'TTMIK · Iyagi audio',
+    headerTitle: '듣기 · Listen',
+    icon: 'headphones',
+  },
+  {
+    // NEW id (P1.1) — the old `review` FSRS flashcards page, re-homed.
+    id: 'flashcards',
+    path: '/learn/vocab',
+    label: 'Vocab flashcards',
+    kr: '단어 카드',
     eyebrow: 'Flashcards',
-    headerTitle: '복습 · Review',
+    headerTitle: '단어 카드 · Vocab',
     icon: 'cards',
+  },
+  {
+    id: 'grammar',
+    path: '/learn/grammar',
+    label: 'Grammar practice',
+    kr: '문법',
+    eyebrow: 'Production drill',
+    headerTitle: '문법 · Grammar',
+    icon: 'grammar',
+  },
+  {
+    id: 'writing',
+    path: '/learn/writing',
+    label: 'Writing',
+    kr: '쓰기',
+    eyebrow: 'TOPIK writing grader',
+    headerTitle: '쓰기 · Writing',
+    icon: 'pen',
+  },
+  {
+    id: 'hanja',
+    path: '/learn/hanja',
+    label: 'Hanja',
+    kr: '한자',
+    eyebrow: 'The bones inside the words',
+    headerTitle: '한자 · Hanja',
+    icon: 'hanja',
+  },
+  {
+    // NEW (P1.1) — placeholder page until the book scans land (P6). NOT at
+    // `/reading`: that legacy path is a live redirect to `/learn/listen`.
+    id: 'reading',
+    path: '/learn/reading',
+    label: 'Reading',
+    kr: '읽기',
+    eyebrow: 'Coming soon',
+    headerTitle: '읽기 · Reading',
+    icon: 'book',
+  },
+  // ── Secondary routed screens ─────────────────────────────────────────
+  {
+    id: 'mistakes',
+    path: '/review/mistakes',
+    label: 'Mistakes',
+    kr: '틀린 문제',
+    eyebrow: 'What you missed, in one place',
+    headerTitle: '틀린 문제 · Mistakes',
+    icon: 'history',
+  },
+  {
+    // KEEP for P1.1 — the Reference page dissolves into the Review library
+    // in P1.2. The library index deep-links into its tabs via `?tab=`.
+    id: 'reference',
+    path: '/reference',
+    label: 'Reference',
+    kr: '참고',
+    eyebrow: 'Lookup',
+    headerTitle: '참고 · Reference',
+    icon: 'search',
   },
   {
     id: 'diagnostic',
@@ -76,42 +197,6 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'compass',
   },
   {
-    id: 'grammar',
-    path: '/grammar',
-    label: 'Grammar',
-    kr: '문법',
-    eyebrow: 'Production drill',
-    headerTitle: '문법 · Grammar',
-    icon: 'grammar',
-  },
-  {
-    id: 'writing',
-    path: '/writing',
-    label: 'Writing',
-    kr: '쓰기',
-    eyebrow: 'TOPIK writing grader',
-    headerTitle: '쓰기 · Writing',
-    icon: 'pen',
-  },
-  {
-    id: 'hanja',
-    path: '/hanja',
-    label: 'Hanja',
-    kr: '한자',
-    eyebrow: 'The bones inside the words',
-    headerTitle: '한자 · Hanja',
-    icon: 'hanja',
-  },
-  {
-    id: 'mistakes',
-    path: '/mistakes',
-    label: 'Mistakes',
-    kr: '틀린 문제',
-    eyebrow: 'What you missed, in one place',
-    headerTitle: '틀린 문제 · Mistakes',
-    icon: 'history',
-  },
-  {
     id: 'images',
     path: '/images',
     label: 'Images',
@@ -121,6 +206,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'image',
   },
   {
+    // HARD CONTRACT — `/chat` never moves (AskAboutThisButton CHAT_PATH).
     id: 'chat',
     path: '/chat',
     label: 'Chat',
@@ -129,94 +215,77 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     headerTitle: '대화 · Chat',
     icon: 'chat',
   },
-  {
-    id: 'reference',
-    path: '/reference',
-    label: 'Reference',
-    kr: '참고',
-    eyebrow: 'Lookup',
-    headerTitle: '참고 · Reference',
-    icon: 'search',
-  },
-  {
-    id: 'settings',
-    path: '/settings',
-    label: 'Settings',
-    kr: '설정',
-    eyebrow: 'Profile · notifications · appearance',
-    headerTitle: '설정 · Settings',
-    icon: 'settings',
-  },
-  // F-010: appended at the end (not slotted next to Diagnostic) so the
-  // change stays a pure append — parallel work also touches this manifest.
-  {
-    id: 'progress',
-    path: '/progress',
-    label: 'Progress',
-    kr: '성장',
-    eyebrow: 'Diagnostic history',
-    headerTitle: '성장 · Progress',
-    icon: 'history',
-  },
-  // F-012: appended at the end (same pure-append convention as F-010) —
-  // parallel work also touches this manifest.
-  {
-    id: 'ttmik',
-    path: '/ttmik',
-    label: 'Listen',
-    kr: '듣기',
-    eyebrow: 'TTMIK · Iyagi audio',
-    headerTitle: '듣기 · Listen',
-    icon: 'headphones',
-  },
 ];
 
 // Note: the `as const` is load-bearing — it narrows `typeof X[number]` to a
 // literal-string union so the exhaustiveness check below can compare the
 // arrays to `NavItemId`. A `ReadonlyArray<NavItemId>` annotation would widen
 // the array element type back to `NavItemId` and defeat the check.
+
+/** The 4 routed bottom-nav tabs, in bar order (hexagon sits between 2 and 3). */
 export const PRIMARY_TAB_IDS = [
   'today',
-  'topik',
-  'ttmik',
+  'progress',
   'review',
+  'settings',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
-export const MORE_TAB_IDS = [
-  'mistakes',
-  'hanja',
-  'images',
-  'diagnostic',
+/** The 7 LEARN sub-pages, in LearnMenu top-to-bottom order (mockup order). */
+export const LEARN_SUBPAGE_IDS = [
+  'topik',
+  'ttmik',
+  'flashcards',
   'grammar',
   'writing',
-  'chat',
+  'hanja',
+  'reading',
+] as const satisfies ReadonlyArray<NavItemId>;
+
+/** Routed screens reachable from tabs/pages, not from the bar. */
+export const SECONDARY_IDS = [
+  'mistakes',
   'reference',
-  'settings',
-  'progress',
+  'diagnostic',
+  'images',
+  'chat',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 /**
- * Compile-time guarantee: every `NavItemId` is in exactly one of the two
- * arrays above. If a future engineer adds a new union member and forgets
- * to place it, `_MissingFromTabs` widens past `never` and the `extends
+ * Compile-time guarantee: every `NavItemId` is in exactly one of the three
+ * buckets above. If a future engineer adds a new union member and forgets
+ * to place it, `_MissingFromBuckets` widens past `never` and the `extends
  * never ? true : never` const below resolves to `never` — tsc fails the
  * build with a useful error pointing here. Symmetrically, an id that
- * exists in an array but not the union flags via `_ExtraInTabs`.
+ * exists in a bucket but not the union flags via `_ExtraInBuckets`, and an
+ * id placed in two buckets flags via the pairwise `_Overlap*` checks.
  *
- * The check is structural-only — erased at runtime under
+ * The checks are structural-only — erased at runtime under
  * `erasableSyntaxOnly`. The `void` references keep `noUnusedLocals` happy.
  */
-type _PrimaryOrMoreId =
-  | (typeof PRIMARY_TAB_IDS)[number]
-  | (typeof MORE_TAB_IDS)[number];
-type _MissingFromTabs = Exclude<NavItemId, _PrimaryOrMoreId>;
-type _ExtraInTabs = Exclude<_PrimaryOrMoreId, NavItemId>;
-const _navIdExhaustivenessMissing: _MissingFromTabs extends never ? true : never =
+type _PrimaryId = (typeof PRIMARY_TAB_IDS)[number];
+type _LearnId = (typeof LEARN_SUBPAGE_IDS)[number];
+type _SecondaryId = (typeof SECONDARY_IDS)[number];
+type _BucketedId = _PrimaryId | _LearnId | _SecondaryId;
+type _MissingFromBuckets = Exclude<NavItemId, _BucketedId>;
+type _ExtraInBuckets = Exclude<_BucketedId, NavItemId>;
+type _OverlapPrimaryLearn = Extract<_PrimaryId, _LearnId>;
+type _OverlapPrimarySecondary = Extract<_PrimaryId, _SecondaryId>;
+type _OverlapLearnSecondary = Extract<_LearnId, _SecondaryId>;
+const _navIdExhaustivenessMissing: _MissingFromBuckets extends never
+  ? true
+  : never = true;
+const _navIdExhaustivenessExtra: _ExtraInBuckets extends never ? true : never =
   true;
-const _navIdExhaustivenessExtra: _ExtraInTabs extends never ? true : never =
+const _navIdOverlapPL: _OverlapPrimaryLearn extends never ? true : never = true;
+const _navIdOverlapPS: _OverlapPrimarySecondary extends never ? true : never =
+  true;
+const _navIdOverlapLS: _OverlapLearnSecondary extends never ? true : never =
   true;
 void _navIdExhaustivenessMissing;
 void _navIdExhaustivenessExtra;
+void _navIdOverlapPL;
+void _navIdOverlapPS;
+void _navIdOverlapLS;
 
 const ITEM_BY_ID = new Map<NavItemId, NavItem>(
   NAV_ITEMS.map((it) => [it.id, it]),

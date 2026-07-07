@@ -599,7 +599,7 @@ export function Review(): JSX.Element {
   // which drops it from this queue on the next fetch. No self-rate UX here.
   const drillGrammarCard = useCallback(
     (gc: GrammarProductionCard): void => {
-      navigate('/grammar', {
+      navigate('/learn/grammar', {
         state: {
           drillTarget: {
             patternKey: gc.patternKey,
