@@ -694,7 +694,14 @@ body {
    * from the edge; on desktop it hugs 14px inside the centered shell column. */
   position: fixed;
   right: max(14px, calc((100vw - var(--shell-max-width)) / 2 + 14px));
-  bottom: 22%;
+  /* ~1/5 up the edge, CLAMPED so the dot always clears the BottomNav: on
+   * very short viewports (landscape phones, <~290px tall) a bare 22% lands
+   * inside the fixed-height bar. Same nav+12px+safe-area offset the other
+   * above-nav fixtures use. */
+  bottom: max(
+    22%,
+    calc(var(--shell-bottomnav-h) + 12px + env(safe-area-inset-bottom))
+  );
   z-index: 40;
   width: 46px;
   height: 46px;

@@ -33,6 +33,7 @@ import { ErrorCard } from './ErrorCard';
 import { Eyebrow } from './Eyebrow';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
+import { useToast } from './useToast';
 import * as vocabService from '../services/vocab';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -50,6 +51,7 @@ const KIND_OPTIONS: ReadonlyArray<VocabListKind> = [
 ];
 
 export function MyVocabLists(): JSX.Element {
+  const { toast } = useToast();
   const [lists, setLists] = useState<ServerVocabList[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -113,10 +115,18 @@ export function MyVocabLists(): JSX.Element {
         await vocabService.deleteList(list.id);
         load();
       } catch (err) {
-        setError(errorMessageFor(err, 'Could not delete the list.'));
+        // A failed delete happens while rows are still on screen, where the
+        // load-error card never renders (it's the empty-state branch) — so a
+        // toast is the feedback, not `setError`. Fixed copy via
+        // errorMessageFor; server prose is never echoed. The rows are left
+        // untouched (nothing was deleted), so the view stays honest.
+        toast({
+          message: errorMessageFor(err, 'Could not delete the list.'),
+          tone: 'error',
+        });
       }
     },
-    [load],
+    [load, toast],
   );
 
   return (
@@ -200,46 +210,62 @@ export function MyVocabLists(): JSX.Element {
           No lists yet. Create one above, then add words from the Browse view.
         </p>
       ) : (
-        <Card className="km-reference__list" variant="flat">
-          <ul>
-            {lists.map((list) => (
-              <li key={`list:${String(list.id)}`} className="km-reference__row">
-                <div className="km-resources__list-row">
-                  <button
-                    type="button"
-                    className="km-resources__list-open focusring"
-                    onClick={() => {
-                      setOpenList(list);
-                    }}
-                    aria-label={`Open ${list.name_kr}`}
-                  >
-                    <span className="kr km-reference__row-kr">
-                      {list.name_kr}
-                    </span>
-                    {list.name_en ? (
-                      <span className="km-reference__row-en">
-                        {list.name_en}
+        <>
+          {/* A refresh that failed while rows are on screen (e.g. the
+              background reload after create/rename/delete) must not be
+              silent — the rows below may be stale. Mirrors the
+              WordMasterySection stale-banner pattern. */}
+          {error ? (
+            <ErrorCard
+              message="Couldn't refresh your lists — showing the last loaded set."
+              onRetry={load}
+            />
+          ) : null}
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {lists.map((list) => (
+                <li
+                  key={`list:${String(list.id)}`}
+                  className="km-reference__row"
+                >
+                  <div className="km-resources__list-row">
+                    <button
+                      type="button"
+                      className="km-resources__list-open focusring"
+                      onClick={() => {
+                        setOpenList(list);
+                      }}
+                      aria-label={`Open ${list.name_kr}`}
+                    >
+                      <span className="kr km-reference__row-kr">
+                        {list.name_kr}
                       </span>
-                    ) : null}
-                    <span className="km-pill km-pill--default">
-                      {list.entry_count} {list.entry_count === 1 ? 'word' : 'words'}
-                    </span>
-                  </button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      void remove(list);
-                    }}
-                    aria-label={`Delete ${list.name_kr}`}
-                  >
-                    <Icon name="close" size={14} />
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Card>
+                      {list.name_en ? (
+                        <span className="km-reference__row-en">
+                          {list.name_en}
+                        </span>
+                      ) : null}
+                      <span className="km-pill km-pill--default">
+                        {list.entry_count}{' '}
+                        {list.entry_count === 1 ? 'word' : 'words'}
+                      </span>
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void remove(list);
+                      }}
+                      aria-label={`Delete ${list.name_kr}`}
+                    >
+                      <Icon name="close" size={14} />
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </>
       )}
 
       <ListDetailSheet

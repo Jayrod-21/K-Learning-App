@@ -8,6 +8,8 @@
  *   - Vocabulary          → /review/vocab       (corpus browse + My Lists)
  *   - Dictionary          → /review/dictionary  (KRDICT, D2: separate page)
  *   - Grammar             → /review/grammar     (single browse, D3)
+ *   - Scan images         → /images             (OCR mining; INTERIM home
+ *                            until the P4 IA decision — see ROWS note)
  *   - Past TOPIK exams    → coming soon (designed placeholder; P4)
  *   - Uploads             → coming soon (designed placeholder; P4/P6)
  *
@@ -55,6 +57,11 @@ const ROWS: ReadonlyArray<LibraryRow> = [
   rowFor('review-vocab'),
   rowFor('review-dictionary'),
   rowFor('review-grammar'),
+  // INTERIM home for `/images` (photo/OCR vocab mining) — the page lost its
+  // entry point when the More sheet retired in P1.1. Sits with the
+  // bring-your-own-material rows (Uploads); its FINAL home is a P4 decision
+  // (fold into uploads vs. the chat image feature — OVERHAUL_DESIGN.md).
+  { ...rowFor('images'), label: 'Scan images', kr: '이미지 스캔' },
   // Designed "coming soon" placeholders — routes + endpoints land in P4/P6.
   { key: 'exams', label: 'Past TOPIK exams', kr: '기출 시험', icon: 'spark' },
   { key: 'uploads', label: 'Uploads', kr: '자료 업로드', icon: 'upload' },

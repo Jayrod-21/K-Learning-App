@@ -42,11 +42,11 @@ function renderLibrary(): void {
 }
 
 describe('ReviewLibrary (P1.2 index)', () => {
-  it('renders the library title and all six rows', () => {
+  it('renders the library title and all seven rows', () => {
     renderLibrary();
     expect(screen.getByText('복습 · Review')).toBeInTheDocument();
     const list = screen.getByRole('list', { name: 'Review library' });
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(6);
+    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
   });
 
   it('links Mistakes to its re-homed /review/mistakes path', async () => {
@@ -74,6 +74,19 @@ describe('ReviewLibrary (P1.2 index)', () => {
       expect(screen.getByTestId('location')).toHaveTextContent(target);
     },
   );
+
+  it('gives /images its interim entry point — "Scan images" navigates there (QA O-1/B-1)', async () => {
+    // The page was orphaned when the More sheet retired; this row is the
+    // reachability fix until the P4 IA decision. If the row is removed
+    // without a replacement entry point, this test must fail.
+    const user = userEvent.setup();
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Review library' });
+    const row = within(list).getByRole('button', { name: /Scan images/ });
+    expect(row).toHaveTextContent('이미지 스캔');
+    await user.click(row);
+    expect(screen.getByTestId('location')).toHaveTextContent('/images');
+  });
 
   it.each([
     ['Vocab flashcards', '/learn/vocab'],

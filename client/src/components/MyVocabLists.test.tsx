@@ -11,10 +11,14 @@
  *     lies about what the server holds)
  *   - rename via patchList (the capability ported from the old Review sheet
  *     that Reference's ListsTab lacked)
+ *   - action failures are NEVER silent while rows are on screen (P2 fix for
+ *     QA RISK-1): a failed delete toasts fixed copy; a failed background
+ *     refresh shows a stale banner above the still-rendered rows
  *
  * `vocabService` is module-mocked; the component's own state and effects
  * run for real so the optimistic flip and rollback participate in the
- * assertions.
+ * assertions. Renders sit inside a real `<ToastProvider>` because the
+ * component toasts failures.
  */
 import {
   afterEach,
@@ -41,6 +45,16 @@ const vocabSvc = vi.hoisted(() => ({
 vi.mock('../services/vocab', () => vocabSvc);
 
 import { MyVocabLists } from './MyVocabLists';
+import { ToastProvider } from './ToastProvider';
+
+/** The component calls `useToast`, so every render needs the provider. */
+function renderLists(): void {
+  render(
+    <ToastProvider>
+      <MyVocabLists />
+    </ToastProvider>,
+  );
+}
 
 const SERVER_LIST: ServerVocabList = {
   id: 7,
@@ -97,7 +111,7 @@ afterEach(() => {
 describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
   it('creates a list from the Korean name alone (kind defaults, name_en omitted)', async () => {
     const user = userEvent.setup();
-    render(<MyVocabLists />);
+    renderLists();
     await screen.findByText('병원 어휘');
 
     const nameInput = screen.getByRole('textbox', { name: 'New list name' });
@@ -120,7 +134,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
 
   it('sends the optional English label and the chosen kind in the create body', async () => {
     const user = userEvent.setup();
-    render(<MyVocabLists />);
+    renderLists();
     await screen.findByText('병원 어휘');
 
     await user.type(
@@ -149,7 +163,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     vi.stubGlobal('confirm', confirmFn);
     try {
       const user = userEvent.setup();
-      render(<MyVocabLists />);
+      renderLists();
       await screen.findByText('병원 어휘');
 
       // First tap: the user cancels the dialog → nothing is deleted.
@@ -173,7 +187,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
 
   it('opens a list and shows its REAL entries via getListDetail', async () => {
     const user = userEvent.setup();
-    render(<MyVocabLists />);
+    renderLists();
 
     await user.click(
       await screen.findByRole('button', { name: 'Open 병원 어휘' }),
@@ -198,7 +212,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
         }),
     );
     const user = userEvent.setup();
-    render(<MyVocabLists />);
+    renderLists();
 
     await user.click(
       await screen.findByRole('button', { name: 'Open 병원 어휘' }),
@@ -225,7 +239,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
 
   it('renames the list from the detail sheet (the capability kept from Review)', async () => {
     const user = userEvent.setup();
-    render(<MyVocabLists />);
+    renderLists();
 
     await user.click(
       await screen.findByRole('button', { name: 'Open 병원 어휘' }),
@@ -252,9 +266,74 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     });
   });
 
+  it('surfaces a failed delete via toast while rows are still on screen (QA RISK-1)', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    try {
+      vocabSvc.deleteList.mockRejectedValue(
+        new Error('fk_list_entries constraint violated'),
+      );
+      const user = userEvent.setup();
+      renderLists();
+      await screen.findByText('병원 어휘');
+
+      await user.click(screen.getByRole('button', { name: 'Delete 병원 어휘' }));
+
+      // FIXED copy, never the server prose. The feedback must appear even
+      // though a list is rendered — the old `error && lists.length === 0`
+      // error-card gate could never show it (this assertion fails against
+      // that gate, so a revert to it is caught here).
+      expect(
+        await screen.findByText('Could not delete the list.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/constraint/)).not.toBeInTheDocument();
+      // The row survives (nothing was deleted server-side) and no refresh
+      // fired on the failure path.
+      expect(screen.getByText('병원 어휘')).toBeInTheDocument();
+      expect(vocabSvc.listLists).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('flags a failed background refresh instead of silently rendering stale rows', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    try {
+      // Initial load succeeds; the post-delete reload fails; Retry recovers.
+      vocabSvc.listLists
+        .mockResolvedValueOnce([SERVER_LIST])
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue([]);
+      const user = userEvent.setup();
+      renderLists();
+      await screen.findByText('병원 어휘');
+
+      await user.click(screen.getByRole('button', { name: 'Delete 병원 어휘' }));
+
+      // The delete succeeded but the refresh did not — the rows on screen
+      // may be stale, so the component must say so (not render silently).
+      expect(
+        await screen.findByText(
+          "Couldn't refresh your lists — showing the last loaded set.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText('병원 어휘')).toBeInTheDocument();
+
+      // Retry re-runs the load; the recovered state clears the banner.
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(
+        await screen.findByText(/No lists yet\. Create one above/),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/Couldn't refresh your lists/),
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('shows the honest empty invitation when there are no lists yet', async () => {
     vocabSvc.listLists.mockResolvedValue([]);
-    render(<MyVocabLists />);
+    renderLists();
 
     expect(
       await screen.findByText(/No lists yet\. Create one above/),
