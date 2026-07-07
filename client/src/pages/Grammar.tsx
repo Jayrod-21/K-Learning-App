@@ -88,6 +88,7 @@ import { GoldRule } from '../components/GoldRule';
 import { MockBadge } from '../components/MockBadge';
 import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
+import { KgiuDetailBody } from '../components/KgiuDetailBody';
 import {
   useEndpointOrMock,
   type UseEndpointOrMockResult,
@@ -2006,21 +2007,7 @@ function DetailSheet({
         {error ? (
           <ErrorCard message={error} />
         ) : null}
-        {detail && !loading ? (
-          <>
-            {detail.explanation ? (
-              <>
-                <Eyebrow>Explanation</Eyebrow>
-                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-                  {detail.explanation}
-                </p>
-              </>
-            ) : null}
-            <div className="km-eyebrow" style={{ marginTop: 16 }}>
-              Unit · {detail.unit ?? '—'}
-            </div>
-          </>
-        ) : null}
+        {detail && !loading ? <KgiuDetailBody detail={detail} /> : null}
         {!loading && !detail && !error && row && !row.isReal ? (
           <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
             Mock pattern — detail loads when the real KGIU corpus is wired.

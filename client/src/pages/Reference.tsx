@@ -12,8 +12,10 @@
  *     to scroll, so it is SEARCH-FIRST: an empty state prompts the user to
  *     type; results are paginated.
  *   - Grammar — every KGIU pattern (the full set, not the 20-row default).
- *     Each row opens a detail Sheet (`GET /grammar/kgiu/:id` — explanation +
- *     unit, the same detail surface pages/Grammar.tsx renders; F-004), and the
+ *     Each row opens a detail Sheet (`GET /grammar/kgiu/:id` — explanation,
+ *     formation rules, examples, dialogues + unit via the shared
+ *     `KgiuDetailBody`, the same detail surface pages/Grammar.tsx renders;
+ *     F-004/F-018), and the
  *     list narrows by topic (`domain`) and level (`book_level`) filters that
  *     map 1:1 onto the endpoint's query params (F-005). The Vocabulary tab
  *     carries the same two filters against `GET /vocab/entries` (F-003).
@@ -51,6 +53,7 @@ import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { Topbar } from '../components/Topbar';
 import { Sheet } from '../components/Sheet';
+import { KgiuDetailBody } from '../components/KgiuDetailBody';
 import { ErrorCard } from '../components/ErrorCard';
 import { useToast } from '../components/useToast';
 import * as vocabService from '../services/vocab';
@@ -1075,10 +1078,11 @@ interface GrammarDetailSheetProps {
 
 /**
  * Pattern-detail Sheet for the Grammar tab (F-004) — the same detail surface
- * the Grammar screen's DetailSheet renders (explanation + unit from
- * `GET /grammar/kgiu/:id`), minus the bank action that screen owns. All
- * strings render through React text children — a hostile corpus row cannot
- * escape into the DOM.
+ * the Grammar screen's DetailSheet renders (shared `KgiuDetailBody`:
+ * explanation, formation rules, examples, dialogues, unit from
+ * `GET /grammar/kgiu/:id` — F-018), minus the bank action that screen owns.
+ * All strings render through React text children — a hostile corpus row
+ * cannot escape into the DOM.
  */
 function GrammarDetailSheet({
   row,
@@ -1120,21 +1124,7 @@ function GrammarDetailSheet({
           </div>
         ) : null}
         {error ? <ErrorCard message={error} onRetry={onRetry} /> : null}
-        {detail && !loading ? (
-          <>
-            {detail.explanation ? (
-              <>
-                <Eyebrow>Explanation</Eyebrow>
-                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-                  {detail.explanation}
-                </p>
-              </>
-            ) : null}
-            <div className="km-eyebrow" style={{ marginTop: 16 }}>
-              Unit · {detail.unit ?? '—'}
-            </div>
-          </>
-        ) : null}
+        {detail && !loading ? <KgiuDetailBody detail={detail} /> : null}
       </div>
     </Sheet>
   );
