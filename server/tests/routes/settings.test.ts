@@ -27,14 +27,18 @@ import { resetLimiters } from '../../src/middleware/rateLimits.js';
 let pg: PgHandle;
 let t: TestApp;
 
+const DEFAULT_LANGUAGE_DISPLAY = { mode: 'both', primary: 'ko', subScale: 0.7 };
+
 const DEFAULT_PREFS = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
   palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
 };
 
 const CUSTOM_PREFS = {
   notif: { channel: { email: false, sms: true }, reviewsDue: false, daily: true, weekly: false },
   palette: { paper: 'sumi', accent: 'indigo', correct: 'pine', wrong: 'amber' },
+  languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
 };
 
 beforeAll(async () => {
@@ -128,6 +132,78 @@ describe('PUT /settings/prefs', () => {
     await agent.put('/settings/prefs').send(DEFAULT_PREFS).expect(200);
     const res = await agent.get('/settings/prefs');
     expect(res.body).toEqual(DEFAULT_PREFS);
+  });
+});
+
+describe('languageDisplay (Overhaul P3a)', () => {
+  it('GET fills the default languageDisplay into a pre-P3a stored blob WITHOUT clobbering the stored palette', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // A blob written before the field existed — notif + palette only.
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify({ notif: CUSTOM_PREFS.notif, palette: CUSTOM_PREFS.palette }),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // The user's stored choices survive; only the missing field defaults.
+    expect(res.body).toEqual({
+      notif: CUSTOM_PREFS.notif,
+      palette: CUSTOM_PREFS.palette,
+      languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
+    });
+  });
+
+  it('PUT round-trips a custom languageDisplay (echo + GET)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const custom = { ...DEFAULT_PREFS, languageDisplay: { mode: 'ko', primary: 'ko', subScale: 0.4 } };
+    const put = await agent.put('/settings/prefs').send(custom);
+    expect(put.status).toBe(200);
+    expect(put.body).toEqual(custom);
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual(custom);
+  });
+
+  it('PUT from a pre-P3a client (no languageDisplay) is accepted and stores the defaults', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const legacyBody = { notif: CUSTOM_PREFS.notif, palette: CUSTOM_PREFS.palette };
+    const res = await agent.put('/settings/prefs').send(legacyBody);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...legacyBody, languageDisplay: DEFAULT_LANGUAGE_DISPLAY });
+    const get = await agent.get('/settings/prefs');
+    expect(get.body.languageDisplay).toEqual(DEFAULT_LANGUAGE_DISPLAY);
+  });
+
+  it('PUT applies inner-field defaults to a partial languageDisplay', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/settings/prefs')
+      .send({ ...DEFAULT_PREFS, languageDisplay: { mode: 'en' } });
+    expect(res.status).toBe(200);
+    expect(res.body.languageDisplay).toEqual({ mode: 'en', primary: 'ko', subScale: 0.7 });
+  });
+
+  it('rejects a bad mode enum → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/settings/prefs')
+      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, mode: 'fr' } });
+    expect(res.status).toBe(400);
+  });
+
+  it.each([[1.5], [0.2], [-1]])('rejects out-of-range subScale %s → 400', async (subScale) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/settings/prefs')
+      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, subScale } });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an unknown key inside languageDisplay (strict) → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .put('/settings/prefs')
+      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, extra: true } });
+    expect(res.status).toBe(400);
   });
 });
 

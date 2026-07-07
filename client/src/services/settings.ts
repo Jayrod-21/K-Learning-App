@@ -25,16 +25,27 @@
  *     loses the user's preference. This module simply surfaces `ApiError`.
  */
 import { api } from './api';
-import type { NotifPrefs, PalettePrefs } from '../types/domain';
+import type {
+  LanguageDisplayPrefs,
+  NotifPrefs,
+  PalettePrefs,
+} from '../types/domain';
 
 /**
  * Preference blob persisted to `users.preferences`. Reuses the domain's
- * `NotifPrefs` / `PalettePrefs` so the wire shape and the in-app Settings shape
- * stay in lockstep — the server's `PrefsSchema` mirrors these exactly.
+ * `NotifPrefs` / `PalettePrefs` / `LanguageDisplayPrefs` so the wire shape and
+ * the in-app Settings shape stay in lockstep — the server's `PrefsSchema`
+ * mirrors these exactly.
+ *
+ * `languageDisplay` is present on every response from a P3a+ server (its Zod
+ * schema defaults the field when a pre-P3a stored blob lacks it), but the
+ * hydration path still guards with a client-side default in case the client
+ * ships ahead of the server during a rolling deploy.
  */
 export interface Prefs {
   notif: NotifPrefs;
   palette: PalettePrefs;
+  languageDisplay: LanguageDisplayPrefs;
 }
 
 /** GET /settings/prefs → the user's stored prefs (or server defaults). */

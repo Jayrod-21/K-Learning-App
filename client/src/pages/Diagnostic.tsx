@@ -58,6 +58,7 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
+import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Pill } from '../components/Pill';
@@ -293,7 +294,8 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
         items
       </Eyebrow>
       <h1 id="dg-intro-h" className="kr-display km-diagnostic__display">
-        진단평가
+        {/* P3a: page-title chrome follows the language-display setting. */}
+        <Bilingual kr="진단평가" en="Diagnostic" />
       </h1>
 
       <Card className="km-diagnostic__sections">
@@ -1062,7 +1064,7 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
           (a rough estimate with per-skill confidence bands). */}
       <Eyebrow>Quick placement estimate</Eyebrow>
       <h1 id="dg-results-h" className="kr-display km-diagnostic__results-title">
-        Diagnostic
+        <Bilingual kr="진단평가" en="Diagnostic" />
       </h1>
       <p className="km-diagnostic__results-sub">
         A short adaptive quiz — a rough placement estimate, not an official

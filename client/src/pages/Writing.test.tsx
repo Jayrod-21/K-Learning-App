@@ -124,7 +124,9 @@ describe('Writing', () => {
   it('fetches the rubric prompts and renders the first task + compose surface', async () => {
     await renderLoaded();
 
-    expect(screen.getByText('쓰기 · Writing')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '쓰기 · Writing' }),
+    ).toBeInTheDocument();
     // Default rubric is Q53 — the tab's prompts were fetched, not hardcoded.
     expect(fetchPromptsMock).toHaveBeenCalledWith(
       'topik_ii_53',

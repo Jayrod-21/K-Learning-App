@@ -27,6 +27,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import type { JSX } from 'react';
 import { cn } from '../lib/cn';
 import { navItem, PRIMARY_TAB_IDS, type NavItemId } from '../lib/nav';
+import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
 
 export interface BottomNavProps {
@@ -72,7 +73,15 @@ export function BottomNav({
         }}
       >
         <Icon name={it.icon} size={22} />
-        <span className="km-bottomnav__label">{it.label}</span>
+        {/* P3a: the visible label follows the language-display setting.
+            `compact` — a 10px tab cell can't legibly fit two scripts (the
+            sub would render at ~7px and the longest pair risks ellipsis on
+            360px viewports), so in 'both' mode only the primary language
+            shows, like the hexagon. The button's aria-label above keeps
+            BOTH languages in every mode. */}
+        <span className="km-bottomnav__label">
+          <Bilingual en={it.label} kr={it.kr} compact />
+        </span>
       </button>
     );
   });
@@ -96,7 +105,11 @@ export function BottomNav({
         onClick={onToggleLearn}
       >
         <Icon name="learn" size={28} />
-        <span className="km-bottomnav__hexlabel">LEARN</span>
+        {/* `compact`: the clipped hexagon can't fit two scripts — in 'both'
+            mode only the primary language shows; aria-label keeps both. */}
+        <span className="km-bottomnav__hexlabel">
+          <Bilingual en="LEARN" kr="배움" compact />
+        </span>
       </button>
     </div>,
   );

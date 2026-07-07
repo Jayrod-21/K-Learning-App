@@ -120,6 +120,28 @@ body {
 }
 .hanja { font-family: 'Noto Serif KR', 'Nanum Myeongjo', serif; }
 
+/* Bilingual chrome primitive (Overhaul P3a) ──────────────────────
+ * `<Bilingual en kr />` — mode/order come from the language-display
+ * setting; ONLY the sizing + context styling live here. The sub text
+ * scales off --lang-sub-scale, which SettingsProvider projects onto
+ * <html> from the server-synced prefs (default 0.7). */
+.km-bilingual__sub {
+  font-size: calc(1em * var(--lang-sub-scale, 0.7));
+}
+/* Inside serif display titles (Topbar h1, Progress/Diagnostic h1):
+ *   - Korean keeps the container's display serif (the segment's generic
+ *     `.kr` sans class must not demote the title face);
+ *   - English renders in Inter (the old .km-topbar__title-en look),
+ *     whether it is the main or the sub;
+ *   - the sub (either language) is muted like the old English suffix. */
+.kr-display .km-bilingual__kr { font-family: inherit; }
+.kr-display .km-bilingual__en {
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.kr-display .km-bilingual__sub { color: var(--paper-mute); }
+
 /* Hairlines + double-rule + gold-rule (Korean book detail). */
 .hr { height: 1px; background: var(--line); border: none; }
 .hr-double {
@@ -561,6 +583,13 @@ body {
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  /* P3a: in 'both' language mode the label carries two scripts — keep it on
+     one line; the cell is a flex column so a long pair truncates visually
+     rather than reflowing the bar. */
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* LEARN hexagon (BottomNav center slot) ──────────────────────────────
@@ -672,16 +701,14 @@ body {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 .km-learnmenu__row[aria-current="page"] { color: var(--vermilion); }
-.km-learnmenu__rowlabel {
+.km-learnmenu__rowtext {
   flex: 1;
+  text-align: left;
   font-size: 15px;
   font-weight: 500;
   letter-spacing: -0.005em;
 }
-.km-learnmenu__rowkr {
-  font-size: 11px;
-  color: var(--paper-mute);
-}
+.km-learnmenu__row .km-bilingual__sub { color: var(--paper-mute); }
 
 /* ChatFab — floating chat dot, ~1/5 up the right edge ─────────────────
  * Absolutely positioned inside .km-shell (which is the fixed-height
@@ -694,7 +721,14 @@ body {
    * from the edge; on desktop it hugs 14px inside the centered shell column. */
   position: fixed;
   right: max(14px, calc((100vw - var(--shell-max-width)) / 2 + 14px));
-  bottom: 22%;
+  /* ~1/5 up the edge, CLAMPED so the dot always clears the BottomNav: on
+   * very short viewports (landscape phones, <~290px tall) a bare 22% lands
+   * inside the fixed-height bar. Same nav+12px+safe-area offset the other
+   * above-nav fixtures use. */
+  bottom: max(
+    22%,
+    calc(var(--shell-bottomnav-h) + 12px + env(safe-area-inset-bottom))
+  );
   z-index: 40;
   width: 46px;
   height: 46px;
@@ -1845,13 +1879,6 @@ body {
   line-height: 1.1;
   color: var(--paper);
   letter-spacing: -0.02em;
-}
-.km-topbar__subtitle {
-  font-size: 12px;
-  color: var(--paper-mute);
-  margin-top: 4px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 .km-topbar__right { flex-shrink: 0; }
 
@@ -4261,6 +4288,51 @@ body {
   background: var(--vermilion-soft);
   color: var(--vermilion);
 }
+
+/* Language-display control (Overhaul P3a) ────────────────────────────
+ * Shares the segmented-option classes above; only the slider + preview
+ * pieces are new. */
+.km-settings__langdisplay {
+  padding-bottom: 16px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.km-settings__langsub-head { margin-top: 14px; }
+.km-settings__langslider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.km-settings__slider {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--vermilion);
+}
+.km-settings__slider-value {
+  min-width: 38px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper-dim);
+}
+.km-settings__langpreview {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 3px;
+}
+.km-settings__langpreview-caption {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-mute);
+}
+.km-settings__langpreview-sample { font-size: 20px; }
 
 .km-settings__toggle-row {
   display: flex;

@@ -17,6 +17,7 @@ const PREFS: Prefs = {
     weekly: true,
   },
   palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
 };
 
 describe('fetchPrefs', () => {

@@ -22,8 +22,8 @@
  *     never a 500 — the user's own bad data must not break their Settings screen.
  *   - Cost: no Claude, no external I/O — the standard cheap limiter is sufficient.
  *   - No secrets here: profile name/email/phone live in their own columns (edited
- *     via PATCH /auth/me); this blob is notif + palette only, so there is nothing
- *     sensitive to leak.
+ *     via PATCH /auth/me); this blob is notif + palette + languageDisplay only,
+ *     so there is nothing sensitive to leak.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -66,9 +66,59 @@ const NotifPrefsSchema = z
   })
   .strict();
 
+// ---------------------------------------------------------------------------
+// Language display (Overhaul P3a) — how bilingual UI CHROME renders:
+//   mode     'en' | 'ko' | 'both' — which language(s) the chrome shows.
+//   primary  'en' | 'ko'          — in 'both', which language is the MAIN text.
+//   subScale number [0.4, 1.0]    — in 'both', the sub text's size relative to
+//                                   the main (projected to a CSS var client-side).
+//
+// Every field carries a `.default(...)` and the whole object defaults too, so a
+// stored blob written BEFORE this field existed (`{ notif, palette }`) still
+// passes the GET-side safeParse and comes back with `languageDisplay` filled in
+// — WITHOUT falling back to DEFAULT_PREFS and clobbering the user's stored
+// palette. This is the JSONB-blob equivalent of a deep merge; no migration.
+//
+// Trade-off (accepted): a stale pre-P3a client PUTting `{ notif, palette }`
+// passes validation and the defaults are persisted — the user's languageDisplay
+// resets to 'both'. Consistent with the route's last-writer-wins posture.
+// ---------------------------------------------------------------------------
+
+const LanguageDisplayMode = z.enum(['en', 'ko', 'both']);
+const BilingualLanguage = z.enum(['en', 'ko']);
+
+export const LANG_SUB_SCALE_MIN = 0.4;
+export const LANG_SUB_SCALE_MAX = 1.0;
+export const LANG_SUB_SCALE_DEFAULT = 0.7;
+
+const LanguageDisplayPrefsSchema = z
+  .object({
+    mode: LanguageDisplayMode.default('both'),
+    primary: BilingualLanguage.default('ko'),
+    // Out-of-range is a 400 on PUT (matches the palette-enum posture: reject a
+    // tampered value rather than silently coerce). The client clamps before it
+    // ever sends, so a rejection here means a bug or a crafted request.
+    subScale: z
+      .number()
+      .min(LANG_SUB_SCALE_MIN)
+      .max(LANG_SUB_SCALE_MAX)
+      .default(LANG_SUB_SCALE_DEFAULT),
+  })
+  .strict();
+
+const DEFAULT_LANGUAGE_DISPLAY: z.infer<typeof LanguageDisplayPrefsSchema> = {
+  mode: 'both',
+  primary: 'ko',
+  subScale: LANG_SUB_SCALE_DEFAULT,
+};
+
 /** The full prefs object. `.strict()` at every level — an unknown key is a 400. */
 export const PrefsSchema = z
-  .object({ notif: NotifPrefsSchema, palette: PalettePrefsSchema })
+  .object({
+    notif: NotifPrefsSchema,
+    palette: PalettePrefsSchema,
+    languageDisplay: LanguageDisplayPrefsSchema.default(DEFAULT_LANGUAGE_DISPLAY),
+  })
   .strict();
 export type Prefs = z.infer<typeof PrefsSchema>;
 
@@ -82,6 +132,7 @@ export type Prefs = z.infer<typeof PrefsSchema>;
 const DEFAULT_PREFS: Prefs = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
   palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
 };
 
 // ---------------------------------------------------------------------------

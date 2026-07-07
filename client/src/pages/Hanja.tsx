@@ -236,12 +236,9 @@ export default function Hanja(): JSX.Element {
     >
       {isMock ? <MockBadge /> : null}
       <Topbar
-        krTitle={
-          <>
-            한자{' '}
-            <span className="km-topbar__title-en">· Hanja</span>
-          </>
-        }
+        krTitle="한자"
+        title="Hanja"
+        titleId="km-hanja-title"
         eyebrow="the bones inside the words"
       />
 

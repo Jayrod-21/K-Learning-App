@@ -59,6 +59,7 @@
  */
 import { useEffect, useState, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Eyebrow } from '../components/Eyebrow';
@@ -434,7 +435,8 @@ function Progress(): JSX.Element {
 
       <Eyebrow>Diagnostic history · 진단 기록</Eyebrow>
       <h1 id="progress-title" className="kr-display km-progress__title">
-        Progress
+        {/* P3a: page-title chrome follows the language-display setting. */}
+        <Bilingual kr="성장" en="Progress" />
       </h1>
 
       {hist.loading ? (

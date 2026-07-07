@@ -28,6 +28,7 @@ import { useCallback, useId, useRef, type JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { LEARN_SUBPAGE_IDS, navItem } from '../lib/nav';
+import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
 
 /** Per-row reveal stagger (ms) — bottom row first, like the mockup. */
@@ -88,7 +89,10 @@ export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
         aria-labelledby={labelId}
       >
         <div id={labelId} className="km-eyebrow km-learnmenu__title">
-          배움 · Learn
+          {/* P3a: menu-title chrome follows the language-display setting; in
+              single-language modes the dialog's accessible name (via this
+              labelledby target) still carries both languages. */}
+          <Bilingual kr="배움" en="Learn" />
         </div>
         {LEARN_SUBPAGE_IDS.map((navId, idx) => {
           const it = navItem(navId);
@@ -117,8 +121,14 @@ export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
               }}
             >
               <Icon name={it.icon} size={20} />
-              <span className="km-learnmenu__rowlabel">{it.label}</span>
-              <span className="kr km-learnmenu__rowkr">{it.kr}</span>
+              {/* P3a: the row label follows the language-display setting —
+                  the old fixed EN-main + KR-sub pair is now the mode/
+                  orientation the user picked. */}
+              <Bilingual
+                className="km-learnmenu__rowtext"
+                en={it.label}
+                kr={it.kr}
+              />
             </button>
           );
         })}
