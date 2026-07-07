@@ -432,6 +432,48 @@ describe('Progress page — per-skill trends carousel (F-017, moved from Today)'
     expect(panels[2]).toHaveTextContent('35 reviews');
   });
 
+  it('renders the Grammar page with the score metric (score/pts wire shape)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    // Grammar is page 4. Its series is `metric: 'score'` + `unit: 'pts'` on
+    // the real wire — this pins the score render path (headline "N pts" +
+    // a real chart), which the count metric (Vocab) does not exercise.
+    await user.click(within(region).getByRole('tab', { name: 'Page 4 of 5' }));
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[3]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[3]).toHaveTextContent('Grammar');
+    expect(panels[3]).toHaveTextContent('52 pts');
+    expect(
+      screen.getByRole('img', { name: 'Grammar trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the Writing page as a real chart when it has points (F-014)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    // Writing is page 5. Its series is `metric: 'score'` + `unit: '%'` on
+    // the real wire — the headline formats as a percent and a REAL chart
+    // renders: no invitation, no placeholder. This is the POSITIVE F-014
+    // path; the empty/failed negatives below don't cover it.
+    await user.click(within(region).getByRole('tab', { name: 'Page 5 of 5' }));
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[4]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[4]).toHaveTextContent('Writing');
+    expect(panels[4]).toHaveTextContent('72%');
+    expect(
+      screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Start writing to see your progress here.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps the invitation only when the writing series is EMPTY', () => {
     seriesOverride.current = {
       data: {
@@ -504,6 +546,41 @@ describe('Progress page — per-skill trends carousel (F-017, moved from Today)'
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(seriesRefetchSpy).toHaveBeenCalledTimes(1);
     expect(refetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders every panel honestly for a fresh user (all series empty)', () => {
+    // The COMMON real state for this app's audience: every series route
+    // responds fine with zero activity. Every headline is an em dash; the
+    // four charted skills say "No data yet"; writing keeps its invitation.
+    // All-empty must NEVER read as the total-outage ErrorCard (that state
+    // is `metric: 'none'`) — genuinely empty and failed are different.
+    seriesOverride.current = {
+      data: {
+        reading: { metric: 'accuracy', unit: '%', points: [] },
+        listening: { metric: 'accuracy', unit: '%', points: [] },
+        vocab: { metric: 'count', unit: 'reviews', points: [] },
+        grammar: { metric: 'score', unit: 'pts', points: [] },
+        writing: { metric: 'score', unit: '%', points: [] },
+      } satisfies AllSkillSeries,
+    };
+    renderPage();
+
+    // (Scoped to the carousel region — the rest of the Progress page has
+    // its own em dashes and copy.)
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(within(region).getAllByText('—')).toHaveLength(5);
+    expect(within(region).getAllByText('No data yet')).toHaveLength(4);
+    expect(
+      within(region).getByText('Start writing to see your progress here.'),
+    ).toBeInTheDocument();
+    // Not the outage path, no chart images, no NaN/undefined leakage.
+    expect(
+      screen.queryByText('Progress trends couldn’t be loaded.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: /trend over/ }),
+    ).not.toBeInTheDocument();
+    expect(region.textContent).not.toMatch(/NaN|undefined/);
   });
 
   it('renders the trends carousel even with an empty diagnostic history', () => {
