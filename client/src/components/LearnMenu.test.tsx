@@ -89,4 +89,18 @@ describe('LearnMenu (P1.1)', () => {
       screen.getByRole('button', { name: /TOPIK/ }),
     );
   });
+
+  it('gives the initially-focused row a zero entrance delay (visible on focus)', () => {
+    renderMenu();
+    const focused = document.activeElement as HTMLElement;
+    // The focused row must not sit invisible behind a stagger delay…
+    expect(focused.style.animationDelay).toBe('0ms');
+    // …while the bottom-up stagger stays intact for the other rows
+    // (second row from the top carries a real delay).
+    const dialog = screen.getByRole('dialog', { name: '배움 · Learn' });
+    const rows = Array.from(
+      dialog.querySelectorAll<HTMLElement>('.km-learnmenu__row'),
+    );
+    expect(rows[1]?.style.animationDelay).not.toBe('0ms');
+  });
 });

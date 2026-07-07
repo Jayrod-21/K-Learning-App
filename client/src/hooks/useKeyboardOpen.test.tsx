@@ -2,10 +2,11 @@
  * useKeyboardOpen — visualViewport heuristic.
  *
  * happy-dom has no real soft keyboard, so the tests install a controllable
- * fake `window.visualViewport` (an EventTarget with a mutable height) and
- * assert the hook's contract: closed above the 75% ratio, open below it,
- * reactive to viewport resize events, `false` when the API is missing,
- * and listeners removed on unmount.
+ * fake `window.visualViewport` (an EventTarget with mutable height + scale)
+ * and assert the hook's contract: closed above the 75% ratio, open below
+ * it, reactive to viewport resize AND scroll events, scale-normalized so
+ * pinch-zoom is NOT mistaken for a keyboard, `false` when the API is
+ * missing, and listeners removed on unmount.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -13,12 +14,15 @@ import { useKeyboardOpen } from './useKeyboardOpen';
 
 class FakeVisualViewport extends EventTarget {
   height: number;
-  constructor(height: number) {
+  scale: number;
+  constructor(height: number, scale = 1) {
     super();
     this.height = height;
+    this.scale = scale;
   }
-  resize(to: number): void {
+  resize(to: number, scale = this.scale): void {
     this.height = to;
+    this.scale = scale;
     this.dispatchEvent(new Event('resize'));
   }
 }
@@ -84,6 +88,51 @@ describe('useKeyboardOpen', () => {
       vv.resize(680);
     });
     expect(result.current).toBe(false);
+  });
+
+  it('does NOT report open for pinch-zoom (shrunk height, raised scale)', () => {
+    // Pinch-zoomed 2×, no keyboard: the visual viewport reports half the
+    // layout height, but scale carries the truth — height*scale ≈ layout.
+    // A height-only compare (400 < 800*0.75) would wrongly report open.
+    installViewport(new FakeVisualViewport(400, 2));
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(false);
+  });
+
+  it('still reports open when the keyboard rises while pinch-zoomed', () => {
+    const vv = new FakeVisualViewport(400, 2);
+    installViewport(vv);
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(false);
+
+    // Keyboard up on top of the 2× zoom: 250 * 2 = 500 < 800 * 0.75.
+    act(() => {
+      vv.resize(250);
+    });
+    expect(result.current).toBe(true);
+  });
+
+  it('reports open at scale=1 with a genuinely shrunk viewport (real keyboard)', () => {
+    // Pins the non-zoomed contract explicitly next to the pinch tests:
+    // scale 1 must not mask a real keyboard shrink.
+    installViewport(new FakeVisualViewport(420, 1));
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(true);
+  });
+
+  it('reacts to viewport scroll events too (iOS keyboard transitions)', () => {
+    const vv = new FakeVisualViewport(800);
+    installViewport(vv);
+    const { result } = renderHook(() => useKeyboardOpen());
+    expect(result.current).toBe(false);
+
+    // iOS sometimes moves the visual viewport without a resize event —
+    // mutate silently, then fire only `scroll`.
+    act(() => {
+      vv.height = 420;
+      vv.dispatchEvent(new Event('scroll'));
+    });
+    expect(result.current).toBe(true);
   });
 
   it('degrades to false when visualViewport is unavailable', () => {

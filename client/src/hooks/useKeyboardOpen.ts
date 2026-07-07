@@ -9,6 +9,14 @@
  * layout height (`KEYBOARD_HEIGHT_RATIO`). Split-screen and browser-chrome
  * changes stay under that; every mainstream soft keyboard is well over it.
  *
+ * Pinch-zoom guard: `visualViewport.height` is measured in *visual*
+ * viewport CSS px, so it also shrinks when the user pinch-zooms IN — at
+ * zoom ≳1.33× a bare height compare would report "keyboard open" with no
+ * keyboard. Multiplying by `visualViewport.scale` normalizes back to
+ * layout px: a zoomed-but-keyboard-less viewport keeps
+ * `height * scale ≈ innerHeight` and stays "closed", while a real
+ * keyboard still drops the product well below the threshold.
+ *
  * Implementation notes:
  *   - `useSyncExternalStore` keeps subscribe/snapshot tear-free and gives a
  *     server snapshot for free — SSR-safe (`false`: no keyboard concept).
@@ -44,7 +52,12 @@ function subscribe(onStoreChange: () => void): () => void {
 function getSnapshot(): boolean {
   const vv = window.visualViewport;
   if (!vv || window.innerHeight <= 0) return false;
-  return vv.height < window.innerHeight * KEYBOARD_HEIGHT_RATIO;
+  // Normalize the visual height to layout px so pinch-zoom (which shrinks
+  // `height` but raises `scale` proportionally) doesn't read as a
+  // keyboard. Defensive: treat a non-finite / non-positive scale (seen
+  // transiently on some engines) as 1 — a plain height compare.
+  const scale = Number.isFinite(vv.scale) && vv.scale > 0 ? vv.scale : 1;
+  return vv.height * scale < window.innerHeight * KEYBOARD_HEIGHT_RATIO;
 }
 
 function getServerSnapshot(): boolean {

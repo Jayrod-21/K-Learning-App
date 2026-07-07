@@ -64,15 +64,21 @@ describe('ChatFab (P1.1)', () => {
     },
   );
 
-  it.each(['/chat', '/settings', '/chat/123', '/settings/security'])(
-    'is hidden on %s',
-    (path) => {
-      renderFabAt(path);
-      expect(
-        screen.queryByRole('button', { name: FAB_NAME }),
-      ).not.toBeInTheDocument();
-    },
-  );
+  // `/Chat` + `/Settings`: React Router matches routes case-insensitively,
+  // so those casings render the real screens — the hide check must agree.
+  it.each([
+    '/chat',
+    '/settings',
+    '/chat/123',
+    '/settings/security',
+    '/Chat',
+    '/Settings',
+  ])('is hidden on %s', (path) => {
+    renderFabAt(path);
+    expect(
+      screen.queryByRole('button', { name: FAB_NAME }),
+    ).not.toBeInTheDocument();
+  });
 
   it('is hidden while a mock exam is active', () => {
     renderFabAt('/learn/topik', true);

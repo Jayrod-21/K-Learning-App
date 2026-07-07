@@ -27,8 +27,13 @@ import { Icon } from './Icon';
 const HIDDEN_PATH_PREFIXES = ['/chat', '/settings'] as const;
 
 function isHiddenPath(pathname: string): boolean {
+  // React Router matches routes case-insensitively, so a hand-typed
+  // `/Chat` still renders the chat screen — lowercase before comparing so
+  // the hide check agrees with the router (prefixes are lowercase by
+  // construction).
+  const path = pathname.toLowerCase();
   return HIDDEN_PATH_PREFIXES.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
+    (p) => path === p || path.startsWith(`${p}/`),
   );
 }
 

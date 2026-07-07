@@ -4,9 +4,11 @@
  *
  * A scrim + a stacked column of the 7 LEARN sub-pages (icon + label + kr)
  * that rises from just above the BottomNav. Rows reveal with a small
- * bottom-up stagger (the row nearest the hexagon lands first); the global
- * `prefers-reduced-motion` block zeroes both durations AND delays, so
- * reduced-motion users get an instant, complete list.
+ * bottom-up stagger (the row nearest the hexagon lands first) — except the
+ * top row, which starts its reveal immediately because it receives initial
+ * keyboard focus (an invisible focus target is an a11y foot-gun); the
+ * global `prefers-reduced-motion` block zeroes both durations AND delays,
+ * so reduced-motion users get an instant, complete list.
  *
  * Close paths: scrim tap, Esc (via `useModalA11y`), row activation
  * (navigate + close), hexagon re-tap (the scrim stops ABOVE the nav so the
@@ -98,9 +100,17 @@ export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
               type="button"
               className="km-learnmenu__row focusring"
               // Bottom-up stagger: the row nearest the hexagon reveals
-              // first. Zeroed wholesale under prefers-reduced-motion by the
+              // first. EXCEPT the first row — it receives initial keyboard
+              // focus (useModalA11y), and with the full stagger delay the
+              // focus would sit on a still-invisible element for ~0.4s; a
+              // zero delay starts its reveal the instant it is focused.
+              // Zeroed wholesale under prefers-reduced-motion by the
               // global CSS block (duration AND delay).
-              style={{ animationDelay: `${(count - 1 - idx) * ROW_STAGGER_MS}ms` }}
+              style={{
+                animationDelay: `${
+                  idx === 0 ? 0 : (count - 1 - idx) * ROW_STAGGER_MS
+                }ms`,
+              }}
               aria-current={active ? 'page' : undefined}
               onClick={() => {
                 goto(it.path);
