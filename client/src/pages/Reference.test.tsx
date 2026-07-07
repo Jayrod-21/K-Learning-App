@@ -466,9 +466,13 @@ describe('Resources — Grammar tab', () => {
     );
 
     const dialog = await screen.findByRole('dialog');
+    // Fixed copy (F-UP-018) — the 404's server prose must not render.
     expect(
-      await within(dialog).findByText('kgiu entry not found'),
+      await within(dialog).findByText('Detail unavailable'),
     ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText('kgiu entry not found'),
+    ).not.toBeInTheDocument();
   });
 
   it('domain + level filters refetch with the matching query params (F-005)', async () => {
@@ -593,7 +597,11 @@ describe('Resources — browse fetch failures are surfaced, never swallowed (sta
     // (offset had already advanced) read "31–60 of 3131" — no error, no
     // retry surface. The failure must be surfaced instead.
     await user.click(screen.getByRole('button', { name: 'Next' }));
-    expect(await screen.findByText('vocab page failed')).toBeInTheDocument();
+    // Fixed copy (F-UP-018) — never the server prose on ApiError.message.
+    expect(
+      await screen.findByText('Could not load vocabulary.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('vocab page failed')).not.toBeInTheDocument();
     expect(screen.queryByText('영향')).not.toBeInTheDocument();
     expect(screen.queryByText(/31–60/)).not.toBeInTheDocument();
 
@@ -626,9 +634,13 @@ describe('Resources — browse fetch failures are surfaced, never swallowed (sta
     await user.click(
       within(levelGroup).getByRole('button', { name: 'Advanced' }),
     );
+    // Fixed copy (F-UP-018) — never the server prose on ApiError.message.
     expect(
-      await screen.findByText('grammar filter failed'),
+      await screen.findByText('Could not load grammar.'),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText('grammar filter failed'),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: '-는 반면에 whereas' }),
     ).not.toBeInTheDocument();

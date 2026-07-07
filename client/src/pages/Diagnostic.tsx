@@ -89,6 +89,7 @@ import type {
   DiagnosticSnapshot,
 } from '../types/domain';
 import { cn } from '../lib/cn';
+import { errorMessageFor } from '../lib/errorCopy';
 
 type Mode = 'intro' | 'taking' | 'done' | 'results';
 
@@ -117,9 +118,14 @@ const INTRO_TOTAL_MINS = 20;
 const INTRO_TOTAL_ITEMS = 16;
 const INTRO_PER_SECTION = 4;
 
-/** Normalise a thrown value to a user-facing message, defaulting to `fallback`. */
+/**
+ * Normalise a thrown value to user-facing FIXED copy (F-UP-018). Previously
+ * echoed `ApiError.message` — server prose — into the taking-flow alerts;
+ * now delegates to the app-wide fixed-copy lookup, so only author-controlled
+ * text (plus the structured retry_after number) ever renders.
+ */
 function toMessage(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? err.message : fallback;
+  return errorMessageFor(err, fallback);
 }
 
 function Diagnostic(): JSX.Element {
@@ -185,12 +191,19 @@ function Diagnostic(): JSX.Element {
       ) : null}
 
       {fatalError && !loading ? (
-        <div
-          className="km-diagnostic__state km-diagnostic__state--error"
-          role="alert"
-        >
-          Couldn’t load diagnostic. {fatalError.message}
-        </div>
+        // F-UP-018: fixed copy + a real retry. This branch is reachable in
+        // prod (the PROD gate stopped the mock fallback from papering over
+        // it), so it follows the ErrorCard contract — author-controlled
+        // text keyed off the structured error, never echoed server prose —
+        // and Retry re-runs the snapshot fetch instead of stranding the
+        // user (IntroBlock's "Begin" below stays available regardless).
+        <ErrorCard
+          message={errorMessageFor(
+            fatalError,
+            'Couldn’t load your diagnostic results. Retry, or begin a new diagnostic below.',
+          )}
+          onRetry={snap.refetch}
+        />
       ) : null}
 
       {!loading && mode === 'intro' ? (

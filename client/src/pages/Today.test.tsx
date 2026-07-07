@@ -31,7 +31,12 @@ const hoisted = vi.hoisted(() => {
   return {
     today: { state: { kind: 'loading' } as HookState },
     diag: { state: { kind: 'loading' } as HookState },
-    series: { state: { kind: 'loading' } as HookState },
+    series: {
+      state: { kind: 'loading' } as HookState,
+      // Observable refetch handle so tests can assert a retry actually
+      // routes back to this source (F-UP-016a total-outage ErrorCard).
+      refetch: undefined as (() => void) | undefined,
+    },
   };
 });
 
@@ -43,13 +48,17 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
         : key === 'today.snapshot'
           ? hoisted.diag.state
           : hoisted.series.state;
+    const refetch =
+      key === 'today.series'
+        ? (hoisted.series.refetch ?? (() => undefined))
+        : () => undefined;
     if (s.kind === 'loading') {
       return {
         data: null,
         loading: true,
         error: null,
         isMock: false,
-        refetch: () => undefined,
+        refetch,
       };
     }
     return {
@@ -57,7 +66,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       loading: false,
       error: null,
       isMock: true,
-      refetch: () => undefined,
+      refetch,
     };
   },
 }));
@@ -199,6 +208,7 @@ describe('Today', () => {
     hoisted.today.state = { kind: 'loading' };
     hoisted.diag.state = { kind: 'loading' };
     hoisted.series.state = { kind: 'loading' };
+    hoisted.series.refetch = undefined;
   });
 
   it('renders loading skeletons while the three fetches are pending', () => {
@@ -369,10 +379,11 @@ describe('Today', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('degrades the Writing panel to "No data yet" when its route failed', () => {
+  it('marks the Writing panel "Couldn’t load this trend." when its route failed', () => {
     // fetchSkillSeries degrades a failed /writing/series to the metric:'none'
-    // placeholder — the panel must read as unavailable, NOT invite the user
-    // as if they had never written (and never fabricate points).
+    // placeholder — the panel must read as a FAILED FETCH (F-UP-016a), never
+    // as the fresh-account "No data yet" empty state, never an invitation as
+    // if the user had never written, and never fabricated points.
     hoisted.today.state = { kind: 'data', data: PLAN };
     hoisted.diag.state = { kind: 'data', data: SNAP };
     hoisted.series.state = {
@@ -382,10 +393,54 @@ describe('Today', () => {
 
     renderTodayAt();
 
-    expect(screen.getByText('No data yet')).toBeInTheDocument();
+    expect(screen.getByText('Couldn’t load this trend.')).toBeInTheDocument();
+    // A failed panel must NOT masquerade as a genuinely-empty series.
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
     expect(
       screen.queryByText('Start writing to see your progress here.'),
     ).not.toBeInTheDocument();
+  });
+
+  it('collapses the carousel to an ErrorCard with a live retry on a total outage', async () => {
+    // F-UP-016a — with Promise.allSettled, ALL routes failing used to render
+    // five encouraging "No data yet" panels with no couldn't-load signal.
+    // All-unavailable now reads as one honest ErrorCard wired to refetch.
+    hoisted.today.state = { kind: 'data', data: PLAN };
+    hoisted.diag.state = { kind: 'data', data: SNAP };
+    const down = { metric: 'none', unit: '', points: [] } as const;
+    hoisted.series.state = {
+      kind: 'data',
+      data: {
+        reading: down,
+        listening: down,
+        vocab: down,
+        grammar: down,
+        writing: down,
+      },
+    };
+    const refetch = vi.fn();
+    hoisted.series.refetch = refetch;
+
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    expect(
+      screen.getByText('Progress trends couldn’t be loaded.'),
+    ).toBeInTheDocument();
+    // No empty-state copy, no per-panel failure copy, no carousel — a total
+    // outage is one error, not a fresh account or five broken panels.
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Couldn’t load this trend.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('tablist', { name: 'Progress by skill' }),
+    ).not.toBeInTheDocument();
+
+    // Retry is real: it fires the series source's refetch (the plan/snapshot
+    // sources rendered fine, so this is the only Retry on screen).
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 
   it('navigates carousel pages via the dots (Vocab shows its count)', async () => {

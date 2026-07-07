@@ -42,9 +42,6 @@ export type CardState = 'new' | 'practicing' | 'banked' | 'produced';
 /** Hanja study state — same 3 states as the index filter chips. */
 export type HanjaState = 'new' | 'practicing' | 'banked';
 
-/** Reference index entry kind. */
-export type ReferenceKind = 'vocab' | 'grammar' | 'hanja';
-
 /** Vocab list kind — what the list contains. */
 export type VocabListKind = 'vocab' | 'grammar' | 'hanja' | 'mixed';
 
@@ -516,20 +513,6 @@ export interface ConversationMessage {
 
 /** Whole chat thread the screen renders. */
 export type Conversation = ConversationMessage[];
-
-// ─────────────────────────────────────────────────────────────
-// Reference
-// ─────────────────────────────────────────────────────────────
-
-/** One row in the global reference index. */
-export interface ReferenceEntry {
-  kind: ReferenceKind;
-  kr: string;
-  en: string;
-  level: LevelLabel;
-  /** True for beginner items grouped under "Basics". */
-  basics?: boolean;
-}
 
 // ─────────────────────────────────────────────────────────────
 // Vocab lists

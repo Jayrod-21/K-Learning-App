@@ -347,8 +347,12 @@ describe('Chat', () => {
 
     // User turn is preserved.
     expect(screen.getByText('실패')).toBeInTheDocument();
-    // Inline error chip is present.
-    expect(screen.getByRole('alert')).toHaveTextContent('upstream down');
+    // Inline error chip shows FIXED copy (F-UP-018) — never the server
+    // prose riding on ApiError.message.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Stream failed. Please retry.',
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent('upstream down');
     // Retry control is rendered on the failed row.
     expect(
       screen.getByRole('button', { name: 'Retry sending message' }),

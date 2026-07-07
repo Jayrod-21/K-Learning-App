@@ -342,7 +342,12 @@ describe('Images page — upload', () => {
     await pickFile();
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('daily limit reached');
+    // Fixed 429 copy (F-UP-018) — the server prose on ApiError.message
+    // ("daily limit reached") must not render.
+    expect(alert).toHaveTextContent(
+      "You've hit today's image limit. Try again tomorrow.",
+    );
+    expect(alert).not.toHaveTextContent('daily limit reached');
     // The list view is still rendered (upload card present) — not broken.
     expect(screen.getByText('Capture or upload')).toBeInTheDocument();
 

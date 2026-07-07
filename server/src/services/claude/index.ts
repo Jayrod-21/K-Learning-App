@@ -689,8 +689,18 @@ class ClaudeProxyImpl implements ClaudeProxy {
       } catch (e) {
         const proxyErr = e as ClaudeProxyError;
         const code = typeof proxyErr?.code === 'string' ? proxyErr.code : 'UnknownError';
-        const message = e instanceof Error ? e.message : String(e);
-        queue.push({ type: 'error', code, message });
+        // F-UP-018 (SSE redaction, services scope): the raw message may carry
+        // upstream SDK/driver detail (API error bodies, schema diffs, header
+        // names). The route forwards this event frame verbatim to the client,
+        // so only a FIXED message rides the queue; the raw detail goes to the
+        // log here — the route's `final.catch` sink logs at debug only, so
+        // without this line the detail would be lost on the event path.
+        const detail = e instanceof Error ? e.message : String(e);
+        this.logger.error(
+          { route, requestId, code, errMsg: detail },
+          'conversation stream failed',
+        );
+        queue.push({ type: 'error', code, message: 'conversation stream failed' });
         queue.end();
         outcomeResolver({ ok: false, error: e });
       }

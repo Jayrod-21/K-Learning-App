@@ -81,6 +81,7 @@ import * as progressService from '../services/progress';
 import { defineEntry } from '../services/define';
 import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
+import { errorMessageFor } from '../lib/errorCopy';
 import type {
   CreateListBody,
   CreateListResponse,
@@ -574,9 +575,7 @@ export function Review(): JSX.Element {
         .submitReview(numericId, payload)
         .catch((err: unknown) => {
           const msg =
-            err instanceof ApiError
-              ? err.message
-              : 'Could not save the rating. Try again.';
+            errorMessageFor(err, 'Could not save the rating. Try again.');
           setRateError(msg);
           // Only roll back if no rating has landed for a later card since.
           // The simplest detector: the most-recent rating in the Map is
@@ -658,9 +657,7 @@ export function Review(): JSX.Element {
         setSeedStatus({
           kind: 'error',
           text:
-            err instanceof ApiError
-              ? err.message
-              : 'Could not add cards to review. Try again.',
+            errorMessageFor(err, 'Could not add cards to review. Try again.'),
         });
       } finally {
         setSeeding(false);
@@ -1697,7 +1694,7 @@ function ListDetailSheet({
         if (ctrl.signal.aborted) return;
         setLoading(false);
         setError(
-          err instanceof ApiError ? err.message : 'Could not load list.',
+          errorMessageFor(err, 'Could not load list.'),
         );
       });
     return () => {
@@ -1737,7 +1734,7 @@ function ListDetailSheet({
       .catch((err: unknown) => {
         setBusy(null);
         setError(
-          err instanceof ApiError ? err.message : 'Rename failed.',
+          errorMessageFor(err, 'Rename failed.'),
         );
       });
   }, [numericId, renameValue, detail, onRenamed]);
@@ -1763,7 +1760,7 @@ function ListDetailSheet({
       .catch((err: unknown) => {
         setBusy(null);
         setError(
-          err instanceof ApiError ? err.message : 'Delete failed.',
+          errorMessageFor(err, 'Delete failed.'),
         );
       });
   }, [numericId, onDeleted]);
@@ -2004,7 +2001,7 @@ function CreateListSheet({
         if (ctrl.signal.aborted) return;
         setSubmitting(false);
         setError(
-          err instanceof ApiError ? err.message : 'Could not create list.',
+          errorMessageFor(err, 'Could not create list.'),
         );
       });
   }, [name, en, kind, submitting, onCreated]);

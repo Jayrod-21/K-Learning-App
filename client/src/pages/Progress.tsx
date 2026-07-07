@@ -46,6 +46,7 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { getHistory } from '../services/diagnostic';
 import { fetchMastery } from '../services/vocab';
 import { ApiError } from '../services/api';
+import { errorMessageFor } from '../lib/errorCopy';
 import { mockDelay } from '../data/mocks/_delay';
 import type {
   DiagnosticHistoryResponse,
@@ -211,7 +212,13 @@ function Progress(): JSX.Element {
       ) : null}
 
       {!hist.loading && fatalError !== null ? (
-        <ErrorCard message={fatalError.message} onRetry={hist.refetch} />
+        <ErrorCard
+          message={errorMessageFor(
+            fatalError,
+            'Could not load your progress history.',
+          )}
+          onRetry={hist.refetch}
+        />
       ) : null}
 
       {!hist.loading && fatalError === null && snapshots !== null ? (
@@ -800,7 +807,7 @@ function WordMasterySection(): JSX.Element {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setError(
-          err instanceof ApiError ? err.message : 'Could not load word mastery.',
+          errorMessageFor(err, 'Could not load word mastery.'),
         );
         setLoading(false);
       });

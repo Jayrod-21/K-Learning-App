@@ -310,8 +310,15 @@ describe('Progress page — empty / sparse / loading / error states', () => {
     };
     renderPage();
 
-    // The empty mock fallback must NOT masquerade as "no history yet".
-    expect(screen.getByRole('alert')).toHaveTextContent(/history unavailable/);
+    // The empty mock fallback must NOT masquerade as "no history yet", and
+    // the card shows FIXED copy (F-UP-018) — never the server prose on
+    // ApiError.message.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /Could not load your progress history\./,
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent(
+      /history unavailable/,
+    );
     expect(
       screen.queryByRole('button', { name: /Take the diagnostic/ }),
     ).not.toBeInTheDocument();

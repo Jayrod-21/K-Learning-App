@@ -269,6 +269,34 @@ describe('Hanja page', () => {
     expect(screen.getByText(/No featured 한자 yet/)).toBeInTheDocument();
   });
 
+  it('renders an error card (not the empty state) when the featured fetch fails (F-UP-018)', async () => {
+    // Pre-fix a failed hanja:today fetch fell through to "No featured 한자
+    // yet" — a data statement indistinguishable from an empty corpus. A
+    // failure must read as a failure, with a retry scoped to that source.
+    hookOverrides['hanja:today'] = {
+      data: null,
+      error: new ApiError('relation "hanja_daily" does not exist', {
+        status: 500,
+        code: 'server_error',
+      }),
+    };
+    const user = userEvent.setup();
+    render(<Hanja />);
+
+    expect(
+      screen.getByText(/Couldn’t load today’s featured 한자/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No featured 한자 yet/)).not.toBeInTheDocument();
+    // Fixed copy — the server prose never renders.
+    expect(screen.queryByText(/hanja_daily/)).not.toBeInTheDocument();
+
+    // Retry re-runs ONLY the featured source.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(refetchSpies.today).toHaveBeenCalledTimes(1);
+    expect(refetchSpies.list).not.toHaveBeenCalled();
+    expect(refetchSpies.progress).not.toHaveBeenCalled();
+  });
+
   it('shows the fatal error card when the list fails to load', () => {
     hookOverrides['hanja:list'] = {
       data: null,

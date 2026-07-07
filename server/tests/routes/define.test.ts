@@ -13,6 +13,7 @@ import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedKrdictEntry, seedKrdictSense } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { resetKrdictReadyCache } from '../../src/routes/define.js';
+import { _setConfigForTesting } from '../../src/config/index.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -215,6 +216,32 @@ describe('GET /define — DB error', () => {
         'ALTER TABLE krdict_entries_hidden RENAME TO krdict_entries',
       );
       // `beforeEach` clears the cache before the next test runs.
+    }
+  });
+});
+
+describe('GET /define — rate limit runs BEFORE auth (F-UP-018)', () => {
+  it('an unauthenticated flood draws 429, not endless free 401s', async () => {
+    // Pre-fix the cheap limiter ran AFTER requireAuth, so unauthenticated
+    // requests short-circuited at 401 without ever being counted — an
+    // unauthenticated flood was never rate-limited. Shrink the bucket so the
+    // probe stays fast, then restore the suite's config.
+    _setConfigForTesting({ RATE_LIMIT_CHEAP_MAX: 3 });
+    resetLimiters();
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 6; i++) {
+        const res = await request(t.app).get('/define?word=먹다');
+        statuses.push(res.status);
+      }
+      // Under the cap: still the normal 401. Over the cap: 429 — the limiter
+      // saw and counted the unauthenticated attempts.
+      expect(statuses[0]).toBe(401);
+      expect(statuses).toContain(429);
+      expect(statuses.at(-1)).toBe(429);
+    } finally {
+      _setConfigForTesting({});
+      resetLimiters();
     }
   });
 });

@@ -560,8 +560,12 @@ describe('Review', () => {
     await user.click(seedButton);
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('rate limited');
+      // Fixed 429 copy (F-UP-018) — never the raw server prose.
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Rate-limited right now. Wait a moment and try again.',
+      );
     });
+    expect(screen.getByRole('alert')).not.toHaveTextContent('rate limited');
     expect(seedButton).not.toBeDisabled();
     // The second corpus call never fires — the loop bails on the first
     // rejection rather than silently swallowing it and moving on.

@@ -205,7 +205,11 @@ describe('Ttmik page — browse', () => {
       .mockResolvedValueOnce(LESSONS);
     renderPage();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/server error/);
+    // F-UP-018 fixed-copy contract: the ErrorCard shows author-controlled
+    // copy, never the server prose riding on ApiError.message.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not load the lessons\./);
+    expect(alert).not.toHaveTextContent(/server error/);
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Level 1')).toBeInTheDocument();
@@ -456,7 +460,10 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
       screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
     );
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/not found/);
+    // Fixed copy — the 404's server prose ("not found") must not render.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not load the transcript\./);
+    expect(alert).not.toHaveTextContent(/not found/);
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Level 1 · Lesson 1')).toBeInTheDocument();

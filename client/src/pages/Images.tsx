@@ -300,27 +300,21 @@ export default function Images(): JSX.Element {
 }
 
 /**
- * Map an `ApiError` (or unknown throw) from the upload onto a user-facing
- * message. The server's domain message rides through for known shapes; we
- * special-case the status codes the upload path produces so the copy is
- * actionable even when the server message is terse.
+ * Map an `ApiError` (or unknown throw) from the upload onto FIXED user-facing
+ * copy keyed on the structured status/code (F-UP-018). Server prose on
+ * `err.message` is never echoed — same contract as `lib/errorCopy` and the
+ * Login/Writing messageFor lookups.
  */
 function messageForUploadError(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 429) {
-      return (
-        err.message ||
-        "You've hit today's image limit. Try again tomorrow."
-      );
+      return "You've hit today's image limit. Try again tomorrow.";
     }
     if (err.status === 413) {
       return 'That image is too large. Pick one under 8 MB.';
     }
     if (err.status === 400) {
-      return (
-        err.message ||
-        'That file isn’t a supported image. Use a JPEG, PNG, or WebP.'
-      );
+      return 'That file isn’t a supported image. Use a JPEG, PNG, or WebP.';
     }
     if (err.status === 502) {
       return 'OCR is temporarily unavailable. Try again shortly.';
@@ -328,7 +322,7 @@ function messageForUploadError(err: unknown): string {
     if (err.code === 'network') {
       return 'Network unreachable. Check your connection and try again.';
     }
-    return err.message || 'Upload failed. Try again.';
+    return 'Upload failed. Try again.';
   }
   return 'Upload failed. Try again.';
 }
