@@ -415,6 +415,15 @@
   margin-left: 2px;
 }
 
+/* P3b Batch B — mute the secondary language of bilingual chrome on this
+   page (card titles + trend-panel skill heads). .km-progress__trendKr above
+   is orphaned by the <Bilingual/> rewiring; left for the dead-rule sweep. */
+.km-progress__card-title .km-bilingual__sub,
+.km-progress__trendSkill .km-bilingual__sub {
+  color: var(--paper-mute);
+  font-weight: 400;
+}
+
 /* Latest value is the headline number — text ink, never the series color. */
 .km-progress__trendValue {
   font-size: 20px;
@@ -443,6 +452,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 10px;
+}
+
+/* P3b — the head row hosts the card title (the redundant eyebrow was cut);
+   the title's own bottom margin would skew the pill's centering. */
+.km-progress__soonhead .km-progress__card-title {
+  margin: 0;
 }
 
 .km-progress__soonbody {

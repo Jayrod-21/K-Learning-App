@@ -287,9 +287,9 @@ async function driveToReveal(
   await screen.findByText(item.prompt);
   if (pickIndex !== null) {
     await user.click(screen.getAllByRole('radio')[pickIndex]!);
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
   } else {
-    await user.click(screen.getByRole('button', { name: /^skip$/i }));
+    await user.click(screen.getByRole('button', { name: /skip/i }));
   }
   await screen.findByRole('button', { name: 'Ask about this' });
 }
@@ -355,6 +355,34 @@ describe('Diagnostic', () => {
     expect(screen.queryByText(/12 min/)).not.toBeInTheDocument();
   });
 
+  it('P3b: the intro renders bilingual chrome — section labels, counts, no doubled title', () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    renderWithRouter();
+
+    // INTRO_SECTIONS render both language segments via <Bilingual/> (the
+    // baked "kr · en" span pair is gone).
+    for (const kr of ['읽기', '듣기', '어휘', '문법']) {
+      expect(screen.getByText(kr)).toBeInTheDocument();
+    }
+    for (const en of ['Reading', 'Listening', 'Vocabulary', 'Grammar']) {
+      expect(screen.getByText(en)).toBeInTheDocument();
+    }
+    // The per-section count carries Korean too. The counts render compact
+    // (one language visually), so each row holds the Korean twice: the
+    // visible primary + the sr-only bilingual reading → 4 rows × 2.
+    expect(screen.getAllByText('4문항')).toHaveLength(8);
+    // Verbage trim: the eyebrow no longer repeats the title's 진단평가 —
+    // it appears exactly once, in the h1.
+    expect(screen.getAllByText('진단평가')).toHaveLength(1);
+    // The bilingual CTA carries its Korean half.
+    expect(screen.getByText('시험 시작')).toBeInTheDocument();
+  });
+
   it('lands on Results when the snapshot has prior dimensions', () => {
     hookState.snapshot = {
       data: POPULATED_SNAPSHOT,
@@ -364,6 +392,9 @@ describe('Diagnostic', () => {
     };
     renderWithRouter();
     expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
+    // P3b: the results chrome is bilingual (Korean segments present).
+    expect(screen.getByText('실력 요약')).toBeInTheDocument();
+    expect(screen.getByText('다음 단계')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /begin today/i }),
     ).toBeInTheDocument();
@@ -442,9 +473,9 @@ describe('Diagnostic', () => {
 
     // Grade + advance: item 2 arrives at the L2 band.
     await user.click(screen.getAllByRole('radio')[0]!);
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
     await screen.findByText('Correct');
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
     await screen.findByText(ITEM_L2.prompt);
     expect(screen.getByText('L2')).toBeInTheDocument();
   });
@@ -544,7 +575,7 @@ describe('Diagnostic', () => {
     // no answer key. Pick choice a and submit.
     const item1Choices = screen.getAllByRole('radio');
     await user.click(item1Choices[0]); // 'a'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
 
     // ── reveal · item 1 (from the server's `result`, not client grading) ──
     expect(await screen.findByText('Correct')).toBeInTheDocument();
@@ -558,7 +589,7 @@ describe('Diagnostic', () => {
     expect(nextDiagnostic).toHaveBeenCalledWith(7);
 
     // ── advance → item 2 ──
-    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
     expect(
       await screen.findByText('비가 ( ) 우산을 가지고 가세요.'),
     ).toBeInTheDocument();
@@ -566,7 +597,7 @@ describe('Diagnostic', () => {
     // Pick the wrong choice; the reveal still comes from the server.
     const item2Choices = screen.getAllByRole('radio');
     await user.click(item2Choices[0]); // 'a' — server says correct is 'b'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
     expect(await screen.findByText('Not quite')).toBeInTheDocument();
 
     // F-020: the reveal carries the "Ask about this" Chat handoff.
@@ -581,6 +612,12 @@ describe('Diagnostic', () => {
     await user.click(screen.getByRole('button', { name: /see results/i }));
     expect(finishDiagnostic).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Diagnostic complete')).toBeInTheDocument();
+    // P3b trim: the done view's Korean lives on the bilingual title itself —
+    // exactly once (the redundant eyebrow twin is gone).
+    expect(screen.getAllByText('진단평가 완료')).toHaveLength(1);
+    // The stale hard-coded "TOPIK II L4" done-hint must never come back —
+    // results pick their reference dynamically (a beginner run defaults to L2).
+    expect(screen.queryByText(/Comparing against/)).not.toBeInTheDocument();
 
     // ── done → results (renders the server-returned snapshot) ──
     await user.click(screen.getByRole('button', { name: /see gap map/i }));
@@ -617,7 +654,7 @@ describe('Diagnostic', () => {
     await user.click(screen.getByRole('button', { name: /begin test/i }));
     await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
 
-    await user.click(screen.getByRole('button', { name: /^skip$/i }));
+    await user.click(screen.getByRole('button', { name: /skip/i }));
 
     await waitFor(() => {
       expect(answerDiagnostic).toHaveBeenCalledWith(9, {
@@ -753,7 +790,7 @@ describe('Diagnostic', () => {
 
     // Pick + submit → the first answer call rejects → inline error + Retry.
     await user.click(screen.getAllByRole('radio')[0]); // 'a'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/could not submit your answer/i);
 
@@ -803,7 +840,7 @@ describe('Diagnostic', () => {
     await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
 
     await user.click(screen.getAllByRole('radio')[0]); // 'a'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
 
     // The reveal is on screen although the next item hasn't been generated.
     expect(await screen.findByText('Correct')).toBeInTheDocument();
@@ -857,7 +894,7 @@ describe('Diagnostic', () => {
     await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
 
     await user.click(screen.getAllByRole('radio')[0]); // 'a'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
     expect(await screen.findByText('Correct')).toBeInTheDocument();
 
     // The resolved null prefetch flips the footer to the last-item state.
@@ -897,7 +934,7 @@ describe('Diagnostic', () => {
     await screen.findByText('회사에서 새로운 정책을 ( ) 했다.');
 
     await user.click(screen.getAllByRole('radio')[0]); // 'a'
-    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await user.click(screen.getByRole('button', { name: /submit/i }));
 
     // Resync: the latest-snapshot refetch fires, the Taking flow leaves for the
     // results view (a prior snapshot existed), and the toast announces it. There

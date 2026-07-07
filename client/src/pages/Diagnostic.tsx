@@ -187,7 +187,7 @@ function Diagnostic(): JSX.Element {
 
       {loading || mode === null ? (
         <div className="km-diagnostic__state" role="status">
-          Loading diagnostic…
+          <Bilingual en="Loading diagnostic…" kr="진단 불러오는 중…" />
         </div>
       ) : null}
 
@@ -289,9 +289,13 @@ interface IntroProps {
 function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
   return (
     <section aria-labelledby="dg-intro-h" className="km-diagnostic__intro">
+      {/* P3b trim — the old "진단평가 · …" eyebrow prefix repeated the title
+          right below it; the eyebrow keeps only the test-shape meta. */}
       <Eyebrow>
-        진단평가 · {String(INTRO_TOTAL_MINS)} min · {String(INTRO_TOTAL_ITEMS)}{' '}
-        items
+        <Bilingual
+          en={`${String(INTRO_TOTAL_MINS)} min · ${String(INTRO_TOTAL_ITEMS)} items`}
+          kr={`${String(INTRO_TOTAL_MINS)}분 · ${String(INTRO_TOTAL_ITEMS)}문항`}
+        />
       </Eyebrow>
       <h1 id="dg-intro-h" className="kr-display km-diagnostic__display">
         {/* P3a: page-title chrome follows the language-display setting. */}
@@ -299,7 +303,9 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
       </h1>
 
       <Card className="km-diagnostic__sections">
-        <Eyebrow>Sections</Eyebrow>
+        <Eyebrow>
+          <Bilingual en="Sections" kr="영역" />
+        </Eyebrow>
         <ol className="km-diagnostic__section-list">
           {INTRO_SECTIONS.map((s, i) => (
             <li key={s.id} className="km-diagnostic__section-row">
@@ -307,11 +313,16 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
                 0{String(i + 1)}
               </span>
               <span className="km-diagnostic__section-label">
-                <span className="kr km-diagnostic__section-kr">{s.kr}</span>
-                <span className="km-diagnostic__section-en">· {s.label}</span>
+                {/* Section labels are chrome (the skill-domain WORD, not the
+                    skill's learning content) — bilingual per the scope rule. */}
+                <Bilingual en={s.label} kr={s.kr} />
               </span>
               <span className="km-diagnostic__section-count">
-                {String(INTRO_PER_SECTION)} items
+                <Bilingual
+                  en={`${String(INTRO_PER_SECTION)} items`}
+                  kr={`${String(INTRO_PER_SECTION)}문항`}
+                  compact
+                />
               </span>
             </li>
           ))}
@@ -321,8 +332,10 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
       <DoubleRule accent className="km-diagnostic__rule" />
 
       <p className="km-diagnostic__hint">
-        Multiple choice. Adaptive — questions track your level. Answer honestly
-        — skips count as unsure.
+        <Bilingual
+          en="Multiple choice. Adaptive — questions track your level. Answer honestly — skips count as unsure."
+          kr="객관식이에요. 난이도가 실력에 맞춰 조정돼요. 솔직하게 답하세요 — 건너뛰면 모른다고 기록돼요."
+        />
       </p>
 
       <div className="km-diagnostic__cta-row">
@@ -331,10 +344,10 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
           onClick={onBegin}
           trailingIcon={<Icon name="arrow-right" size={16} />}
         >
-          Begin test
+          <Bilingual en="Begin test" kr="시험 시작" />
         </Button>
         <Button variant="ghost" onClick={onCancel}>
-          Cancel
+          <Bilingual en="Cancel" kr="취소" />
         </Button>
       </div>
     </section>
@@ -651,7 +664,7 @@ function TakingBlock({
           Diagnostic test starting
         </h2>
         <div className="km-diagnostic__state" role="status" aria-busy="true">
-          Preparing your diagnostic…
+          <Bilingual en="Preparing your diagnostic…" kr="진단 준비 중…" />
         </div>
       </section>
     );
@@ -672,7 +685,7 @@ function TakingBlock({
         />
         <div className="km-diagnostic__footer">
           <Button variant="ghost" onClick={onExit}>
-            Exit
+            <Bilingual en="Exit" kr="나가기" />
           </Button>
         </div>
       </section>
@@ -690,7 +703,7 @@ function TakingBlock({
           Diagnostic test in progress
         </h2>
         <div className="km-diagnostic__state" role="status" aria-busy="true">
-          Loading the next question…
+          <Bilingual en="Loading the next question…" kr="다음 문제 불러오는 중…" />
         </div>
       </section>
     );
@@ -699,6 +712,7 @@ function TakingBlock({
   const revealed = reveal !== null;
   const isLast = revealed && lastReveal;
   const revealBlockId = `dg-reveal-${String(item.responseId)}`;
+  const section = sectionLabel(item.section);
   // Progress is derived from the CURRENT item's 1-based ordinal (served
   // ordinals may skip empty-pool slots, so the item is the truth). The total
   // comes from the server. Before the reveal, `ordinal-1` items are done;
@@ -721,7 +735,7 @@ function TakingBlock({
           onClick={onExit}
           leadingIcon={<Icon name="close" size={12} />}
         >
-          Exit
+          <Bilingual en="Exit" kr="나가기" />
         </Button>
         <Eyebrow className="km-diagnostic__progress-label">
           {String(item.ordinal)} / {String(total)}
@@ -743,7 +757,9 @@ function TakingBlock({
       </div>
 
       <div className="km-diagnostic__pills">
-        <Pill tone="gold">{sectionLabel(item.section)}</Pill>
+        <Pill tone="gold">
+          <Bilingual en={section.en} kr={section.kr} />
+        </Pill>
         <Pill>{item.level}</Pill>
       </div>
 
@@ -779,7 +795,13 @@ function TakingBlock({
           className="km-diagnostic__reveal"
           id={revealBlockId}
         >
-          <Eyebrow>{reveal.correct ? 'Correct' : 'Not quite'}</Eyebrow>
+          <Eyebrow>
+            {reveal.correct ? (
+              <Bilingual en="Correct" kr="정답" />
+            ) : (
+              <Bilingual en="Not quite" kr="아쉬워요" />
+            )}
+          </Eyebrow>
           <p className="km-diagnostic__explain">{reveal.explain}</p>
           {/* F-020: hand the graded item to the Chat tutor. The stem lives on
               `item`, the key + explanation on the server's `reveal` — the
@@ -816,7 +838,7 @@ function TakingBlock({
               `retry` callback's mid-run branches reachable (they were dead when
               the only Retry control lived on the failed-start ErrorCard). */}
           <Button variant="ghost" size="sm" onClick={retry}>
-            Try again
+            <Bilingual en="Try again" kr="다시 시도" />
           </Button>
         </div>
       ) : null}
@@ -824,11 +846,15 @@ function TakingBlock({
       <div className="km-diagnostic__footer">
         {!revealed ? (
           <Button variant="ghost" onClick={skip} disabled={inFlight}>
-            Skip
+            <Bilingual en="Skip" kr="건너뛰기" />
           </Button>
         ) : (
           <span className="km-diagnostic__count">
-            {isLast ? 'Last item' : 'Reviewing your answer'}
+            {isLast ? (
+              <Bilingual en="Last item" kr="마지막 문항" />
+            ) : (
+              <Bilingual en="Reviewing your answer" kr="정답 확인 중" />
+            )}
           </span>
         )}
         {!revealed ? (
@@ -838,7 +864,11 @@ function TakingBlock({
             aria-busy={phase === 'answering'}
             onClick={submit}
           >
-            {phase === 'answering' ? 'Sending…' : 'Submit'}
+            {phase === 'answering' ? (
+              <Bilingual en="Sending…" kr="보내는 중…" />
+            ) : (
+              <Bilingual en="Submit" kr="제출" />
+            )}
           </Button>
         ) : (
           <Button
@@ -848,13 +878,15 @@ function TakingBlock({
             aria-busy={phase === 'finishing' || phase === 'advancing'}
             trailingIcon={<Icon name="arrow-right" size={14} />}
           >
-            {phase === 'finishing'
-              ? 'Scoring…'
-              : phase === 'advancing'
-                ? 'Loading…'
-                : isLast
-                  ? 'See results'
-                  : 'Next'}
+            {phase === 'finishing' ? (
+              <Bilingual en="Scoring…" kr="채점 중…" />
+            ) : phase === 'advancing' ? (
+              <Bilingual en="Loading…" kr="불러오는 중…" />
+            ) : isLast ? (
+              <Bilingual en="See results" kr="결과 보기" />
+            ) : (
+              <Bilingual en="Next" kr="다음" />
+            )}
           </Button>
         )}
       </div>
@@ -862,17 +894,20 @@ function TakingBlock({
   );
 }
 
-/** Human-readable section label for the in-test Pill. */
-function sectionLabel(section: DiagnosticLiveItem['section']): string {
+/** Human-readable section label pair for the in-test Pill — rendered through
+ *  `<Bilingual/>` (P3b: never hand-compose "kr · en" strings). */
+function sectionLabel(
+  section: DiagnosticLiveItem['section'],
+): { en: string; kr: string } {
   switch (section) {
     case 'reading':
-      return '읽기 · Reading';
+      return { en: 'Reading', kr: '읽기' };
     case 'listening':
-      return '듣기 · Listening';
+      return { en: 'Listening', kr: '듣기' };
     case 'vocab':
-      return '어휘 · Vocabulary';
+      return { en: 'Vocabulary', kr: '어휘' };
     case 'grammar':
-      return '문법 · Grammar';
+      return { en: 'Grammar', kr: '문법' };
     default: {
       // Exhaustiveness guard — a new section must update this switch.
       const _never: never = section;
@@ -1005,19 +1040,23 @@ function DoneBlock({ onContinue }: DoneProps): JSX.Element {
   return (
     <section aria-labelledby="dg-done-h" className="km-diagnostic__done">
       <SealStamp char="完" size="lg" />
-      <Eyebrow className="km-diagnostic__done-eyebrow">진단평가 완료</Eyebrow>
+      {/* P3b trim — the "진단평가 완료" eyebrow was the title's Korean twin;
+          one bilingual title now carries both. */}
       <h2 id="dg-done-h" className="kr-display km-diagnostic__done-title">
-        Diagnostic complete
+        <Bilingual kr="진단평가 완료" en="Diagnostic complete" />
       </h2>
       <p className="km-diagnostic__done-hint">
-        Comparing against TOPIK II L4 reference.
+        {/* P3b: the old "Comparing against TOPIK II L4 reference." hard-coded
+            a reference the results pick dynamically (a beginner run defaults
+            to L2) — the same dishonest-literal class B-007 cut from Results. */}
+        <Bilingual en="Your results are ready." kr="결과가 준비됐어요." />
       </p>
       <Button
         variant="gold"
         onClick={onContinue}
         trailingIcon={<Icon name="arrow-right" size={14} />}
       >
-        See gap map
+        <Bilingual en="See gap map" kr="결과 보기" />
       </Button>
     </section>
   );
@@ -1062,18 +1101,26 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
           hard-coded "Against TOPIK II Level 4" implied an official placement
           the quiz can't deliver; the sub-line now says what this actually is
           (a rough estimate with per-skill confidence bands). */}
-      <Eyebrow>Quick placement estimate</Eyebrow>
+      <Eyebrow>
+        <Bilingual en="Quick placement estimate" kr="간단 실력 추정" />
+      </Eyebrow>
       <h1 id="dg-results-h" className="kr-display km-diagnostic__results-title">
         <Bilingual kr="진단평가" en="Diagnostic" />
       </h1>
       <p className="km-diagnostic__results-sub">
-        A short adaptive quiz — a rough placement estimate, not an official
-        TOPIK score. Bands show how confident each result is.
+        <Bilingual
+          en="A short adaptive quiz — a rough placement estimate, not an official TOPIK score. Bands show how confident each result is."
+          kr="짧은 적응형 퀴즈예요 — 공식 TOPIK 점수가 아닌 대략적인 추정이에요. 띠는 각 결과의 신뢰도를 보여 줘요."
+        />
       </p>
 
       <Card className="km-diagnostic__skills-card">
-        <Eyebrow>Where you are</Eyebrow>
-        <div className="km-diagnostic__skills-title">Skills snapshot</div>
+        <Eyebrow>
+          <Bilingual en="Where you are" kr="현재 위치" />
+        </Eyebrow>
+        <div className="km-diagnostic__skills-title">
+          <Bilingual en="Skills snapshot" kr="실력 요약" />
+        </div>
         <SkillsCompare
           skills={skills}
           references={references}
@@ -1083,8 +1130,14 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
       </Card>
 
       <Card className="km-diagnostic__goals-card">
-        <Eyebrow>Goals · derived from your gaps</Eyebrow>
-        <div className="km-diagnostic__skills-title">Next steps</div>
+        {/* P3b trim — "Goals" was the title's twin; the eyebrow keeps only
+            the provenance meta. */}
+        <Eyebrow>
+          <Bilingual en="Derived from your gaps" kr="약점 기반" />
+        </Eyebrow>
+        <div className="km-diagnostic__skills-title">
+          <Bilingual en="Next steps" kr="다음 단계" />
+        </div>
         <ol className="km-diagnostic__goals">
           {snapshot.goals.map((g, i) => (
             <li key={`goal-${String(i)}`} className="km-diagnostic__goal-row">
@@ -1103,10 +1156,10 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
           }}
           trailingIcon={<Icon name="arrow-right" size={16} />}
         >
-          Begin today’s plan
+          <Bilingual en="Begin today’s plan" kr="오늘의 계획 시작" />
         </Button>
         <Button variant="ghost" onClick={onRetest}>
-          Re-test diagnostic
+          <Bilingual en="Re-test diagnostic" kr="진단 다시 하기" />
         </Button>
       </div>
     </section>

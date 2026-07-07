@@ -262,15 +262,17 @@ describe('Progress page — trend', () => {
     ).toBeInTheDocument();
 
     // Legend names every series — identity never rides on color alone.
+    // P3b: each entry is a <Bilingual/> pair (Korean-first in the default
+    // both-mode), so assert on the composed text content.
     const legend = screen.getByRole('list', { name: 'Chart series' });
-    for (const label of [
-      /Reading · 읽기/,
-      /Listening · 듣기/,
-      /Vocabulary · 어휘/,
-      /Grammar · 문법/,
-      /Overall · 전체/,
+    for (const pair of [
+      '읽기 · Reading',
+      '듣기 · Listening',
+      '어휘 · Vocabulary',
+      '문법 · Grammar',
+      '전체 · Overall',
     ]) {
-      expect(within(legend).getByText(label)).toBeInTheDocument();
+      expect(legend).toHaveTextContent(pair);
     }
 
     // The table twin carries every plotted value, oldest first.
@@ -373,7 +375,8 @@ describe('Progress page — compare surface (P1.2 reconciliation)', () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'From' }), '0');
+    // P3b: the label is bilingual — the accessible name carries both halves.
+    await user.selectOptions(screen.getByRole('combobox', { name: /From/ }), '0');
 
     const table = screen.getByRole('table', {
       name: /Score change from attempt 1 to attempt 3/,
@@ -766,7 +769,8 @@ describe('Progress page — word mastery (F-013)', () => {
     renderPage();
     await screen.findByText('가');
 
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    // P3b: the pager buttons are bilingual — match the English half.
+    await user.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => {
       expect(masterySvc.fetchMastery).toHaveBeenCalledWith(
         expect.objectContaining({ offset: 30 }),
@@ -805,8 +809,61 @@ describe('Progress page — grammar mastery placeholder (P1.2, filled in P4)', (
     // never a blank panel).
     expect(screen.getByText('Grammar mastery')).toBeInTheDocument();
     expect(screen.getByText('Coming soon')).toBeInTheDocument();
+    // P3b verbage trim — the three-clause sentence became one terse
+    // bilingual line.
     expect(
-      screen.getByText(/Pattern-by-pattern mastery/),
+      screen.getByText('Per-pattern grammar mastery will chart here.'),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText('문형별 숙달도가 여기에 표시될 거예요.'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — P3b bilingual chrome + verbage trims', () => {
+  it('renders the page eyebrow and compare-card chrome bilingually (both-mode)', () => {
+    renderPage();
+
+    // Page eyebrow comes from nav.ts's en/kr pair.
+    expect(screen.getByText('Diagnostic history')).toBeInTheDocument();
+    expect(screen.getByText('진단 기록')).toBeInTheDocument();
+    // Compare-card chrome: each label is a TRUE en/kr pair now (the old
+    // eyebrow glued two unrelated halves together).
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+    expect(screen.getByText('현재 실력')).toBeInTheDocument();
+    expect(screen.getByText('Attempt vs attempt')).toBeInTheDocument();
+    expect(screen.getByText('회차 비교')).toBeInTheDocument();
+  });
+
+  it('trims the eyebrow/title redundancy: one bilingual label per card', () => {
+    renderPage();
+
+    // Word mastery — the "Vocabulary · 단어 숙달" eyebrow is gone; the
+    // Korean lives ONCE, on the title itself.
+    expect(screen.getAllByText('단어 숙달')).toHaveLength(1);
+    expect(
+      screen.getByText('단어 숙달').closest('.km-progress__card-title'),
+    ).not.toBeNull();
+
+    // Grammar mastery — same trim.
+    expect(screen.getAllByText('문법 숙달')).toHaveLength(1);
+    expect(
+      screen.getByText('문법 숙달').closest('.km-progress__card-title'),
+    ).not.toBeNull();
+
+    // Progress by skill — the eyebrow keeps only the window meta; "실력
+    // 추이" is the title's Korean, once.
+    expect(screen.getAllByText('실력 추이')).toHaveLength(1);
+    expect(
+      screen.getByText('실력 추이').closest('.km-progress__card-title'),
+    ).not.toBeNull();
+    expect(screen.getByText('Last 30 days')).toBeInTheDocument();
+    expect(screen.getByText('최근 30일')).toBeInTheDocument();
+
+    // All attempts — "Every attempt" no longer duplicates the title.
+    expect(screen.queryByText(/Every attempt/)).not.toBeInTheDocument();
+    expect(screen.getByText('All attempts')).toBeInTheDocument();
+    expect(screen.getByText('전체 회차')).toBeInTheDocument();
+    expect(screen.getByText('Oldest first')).toBeInTheDocument();
   });
 });

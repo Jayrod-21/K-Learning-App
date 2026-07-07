@@ -73,6 +73,7 @@ import type { SkillReference, SkillRow } from '../components/SkillsCompare';
 import { SwipeCarousel } from '../components/SwipeCarousel';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
+import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
 import { fetchSkillSeries } from '../services/stats';
 import { fetchMastery } from '../services/vocab';
@@ -95,6 +96,9 @@ import './Progress.css';
 // ─────────────────────────────────────────────────────────────
 // Series manifest + score helpers
 // ─────────────────────────────────────────────────────────────
+
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const PROGRESS_NAV = navItem('progress');
 
 type DimensionKey = 'reading' | 'listening' | 'vocab' | 'grammar';
 type SeriesKey = DimensionKey | 'overall';
@@ -242,7 +246,7 @@ function SkillTrendPanel({
     <div className="km-progress__trendPanel" data-skill={skillKey}>
       <div className="km-progress__trendHead">
         <span className="km-progress__trendSkill">
-          {label} <span className="km-progress__trendKr">{kr}</span>
+          <Bilingual en={label} kr={kr} />
         </span>
         <span className="km-progress__trendValue">{latestValue(series)}</span>
       </div>
@@ -253,13 +257,18 @@ function SkillTrendPanel({
         // itself), so a fetch failure is never dressed up as a fresh account.
         // Never fabricated numbers either way (F-014 gave Writing a real
         // /writing/series route, so it degrades like every other skill now).
-        <div className="km-progress__trendEmpty">Couldn’t load this trend.</div>
+        <div className="km-progress__trendEmpty">
+          <Bilingual en="Couldn’t load this trend." kr="추이를 불러오지 못했어요." />
+        </div>
       ) : skillKey === 'writing' && series.points.length === 0 ? (
         // Writing's route answered but the user has no graded attempts yet —
         // an invitation to start, not a bare empty chart. Only the empty
         // REAL series lands here; a failed route reads "No data yet" above.
         <div className="km-progress__trendEmpty">
-          Start writing to see your progress here.
+          <Bilingual
+            en="Start writing to see your progress here."
+            kr="성장을 보려면 쓰기를 시작하세요."
+          />
         </div>
       ) : (
         <LineChart
@@ -289,7 +298,7 @@ function SkillTrendsCard({
     return (
       <Card className="km-progress__card" aria-busy="true">
         <div className="km-progress__state" role="status">
-          Loading skill trends…
+          <Bilingual en="Loading skill trends…" kr="불러오는 중…" />
         </div>
       </Card>
     );
@@ -317,8 +326,17 @@ function SkillTrendsCard({
   }
   return (
     <Card className="km-progress__card">
-      <Eyebrow>{`Last ${String(TREND_WINDOW_DAYS)} days · 실력 추이`}</Eyebrow>
-      <div className="km-progress__card-title">Progress by skill</div>
+      {/* P3b trim — "실력 추이" repeated the title's meaning; the eyebrow
+          keeps only the window meta, the title carries the bilingual name. */}
+      <Eyebrow>
+        <Bilingual
+          en={`Last ${String(TREND_WINDOW_DAYS)} days`}
+          kr={`최근 ${String(TREND_WINDOW_DAYS)}일`}
+        />
+      </Eyebrow>
+      <div className="km-progress__card-title">
+        <Bilingual en="Progress by skill" kr="실력 추이" />
+      </div>
       <SwipeCarousel ariaLabel="Progress by skill">
         {SERIES_PANELS.map((p) => (
           <SkillTrendPanel
@@ -433,7 +451,10 @@ function Progress(): JSX.Element {
         <MockBadge />
       ) : null}
 
-      <Eyebrow>Diagnostic history · 진단 기록</Eyebrow>
+      <Eyebrow>
+        {/* P3b: the page eyebrow renders nav.ts's en/kr pair bilingually. */}
+        <Bilingual en={PROGRESS_NAV.eyebrow} kr={PROGRESS_NAV.krEyebrow} />
+      </Eyebrow>
       <h1 id="progress-title" className="kr-display km-progress__title">
         {/* P3a: page-title chrome follows the language-display setting. */}
         <Bilingual kr="성장" en="Progress" />
@@ -441,7 +462,7 @@ function Progress(): JSX.Element {
 
       {hist.loading ? (
         <div className="km-progress__state" role="status">
-          Loading progress…
+          <Bilingual en="Loading progress…" kr="불러오는 중…" />
         </div>
       ) : null}
 
@@ -476,11 +497,17 @@ function EmptyBlock(): JSX.Element {
   const navigate = useNavigate();
   return (
     <Card className="km-progress__card">
-      <Eyebrow>No attempts yet</Eyebrow>
-      <div className="km-progress__card-title">Your trend starts here</div>
+      <Eyebrow>
+        <Bilingual en="No attempts yet" kr="아직 기록 없음" />
+      </Eyebrow>
+      <div className="km-progress__card-title">
+        <Bilingual en="Your trend starts here" kr="여기서 성장이 시작돼요" />
+      </div>
       <p className="km-progress__note">
-        Finish a diagnostic and every attempt lands on this page — take a
-        second one and the trend lines appear.
+        <Bilingual
+          en="Finish a diagnostic and every attempt lands on this page — take a second one and the trend lines appear."
+          kr="진단을 마치면 모든 회차가 이 페이지에 쌓여요 — 두 번째부터 추이 선이 나타나요."
+        />
       </p>
       <Button
         variant="gold"
@@ -489,7 +516,7 @@ function EmptyBlock(): JSX.Element {
         }}
         trailingIcon={<Icon name="arrow-right" size={14} />}
       >
-        Take the diagnostic
+        <Bilingual en="Take the diagnostic" kr="진단 시작" />
       </Button>
     </Card>
   );
@@ -510,20 +537,32 @@ function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
       <CompareCard snapshots={snapshots} />
 
       <Card className="km-progress__card">
-        <Eyebrow>Score over attempts · 0–100</Eyebrow>
-        <div className="km-progress__card-title">Trend</div>
+        <Eyebrow>
+          <Bilingual en="Score over attempts · 0–100" kr="회차별 점수 · 0–100" />
+        </Eyebrow>
+        <div className="km-progress__card-title">
+          <Bilingual en="Trend" kr="추이" />
+        </div>
         <TrendChart snapshots={snapshots} />
         {n === 1 ? (
           <p className="km-progress__note">
-            One attempt so far — retake the diagnostic and the trend lines
-            appear.
+            <Bilingual
+              en="One attempt so far — retake the diagnostic and the trend lines appear."
+              kr="아직 한 번뿐이에요 — 진단을 다시 하면 추이 선이 나타나요."
+            />
           </p>
         ) : null}
       </Card>
 
       <Card className="km-progress__card">
-        <Eyebrow>Every attempt · oldest first</Eyebrow>
-        <div className="km-progress__card-title">All attempts</div>
+        {/* P3b trim — "Every attempt" repeated the title; the eyebrow keeps
+            only the ordering meta. */}
+        <Eyebrow>
+          <Bilingual en="Oldest first" kr="오래된 순" />
+        </Eyebrow>
+        <div className="km-progress__card-title">
+          <Bilingual en="All attempts" kr="전체 회차" />
+        </div>
         <AttemptsTable snapshots={snapshots} />
       </Card>
     </>
@@ -551,8 +590,14 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
   }
   return (
     <Card className="km-progress__card">
-      <Eyebrow>Latest attempt · 실력 비교</Eyebrow>
-      <div className="km-progress__card-title">Where you stand</div>
+      {/* P3b: the old eyebrow paired two UNRELATED halves ("Latest attempt" /
+          "실력 비교") — each label now carries its own true translation. */}
+      <Eyebrow>
+        <Bilingual en="Latest attempt" kr="최신 회차" />
+      </Eyebrow>
+      <div className="km-progress__card-title">
+        <Bilingual en="Where you stand" kr="현재 실력" />
+      </div>
       <SkillsCompare
         variant="full"
         skills={toSkillRows(latest)}
@@ -568,7 +613,7 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
           }}
           trailingIcon={<Icon name="arrow-right" size={14} />}
         >
-          Retake diagnostic
+          <Bilingual en="Retake diagnostic" kr="진단 다시 하기" />
         </Button>
       </div>
       {snapshots.length >= 2 ? <AttemptCompare snapshots={snapshots} /> : null}
@@ -597,11 +642,13 @@ function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
 
   return (
     <div className="km-progress__attemptcompare">
-      <Eyebrow>Attempt vs attempt</Eyebrow>
+      <Eyebrow>
+        <Bilingual en="Attempt vs attempt" kr="회차 비교" />
+      </Eyebrow>
 
       <div className="km-progress__selects">
         <label className="km-progress__select-label">
-          From
+          <Bilingual en="From" kr="시작" />
           <select
             className="km-progress__select focusring"
             value={fromIdx}
@@ -617,7 +664,7 @@ function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
           </select>
         </label>
         <label className="km-progress__select-label">
-          To
+          <Bilingual en="To" kr="끝" />
           <select
             className="km-progress__select focusring"
             value={toIdx}
@@ -637,19 +684,34 @@ function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
       <div className="km-progress__tablewrap">
         <table className="km-progress__table">
           <caption>
-            Score change from attempt {fromIdx + 1} to attempt {toIdx + 1}
+            {/* Visually hidden (AT-only) — the en half keeps the table's
+                accessible name stable for existing queries. */}
+            <Bilingual
+              en={`Score change from attempt ${String(fromIdx + 1)} to attempt ${String(toIdx + 1)}`}
+              kr={`${String(fromIdx + 1)}회차에서 ${String(toIdx + 1)}회차까지의 점수 변화`}
+            />
           </caption>
           <thead>
             <tr>
-              <th scope="col">Skill</th>
-              <th scope="col" className="km-progress__num">
-                Attempt {fromIdx + 1}
+              <th scope="col">
+                <Bilingual en="Skill" kr="영역" compact />
               </th>
               <th scope="col" className="km-progress__num">
-                Attempt {toIdx + 1}
+                <Bilingual
+                  en={`Attempt ${String(fromIdx + 1)}`}
+                  kr={`${String(fromIdx + 1)}회차`}
+                  compact
+                />
               </th>
               <th scope="col" className="km-progress__num">
-                Change
+                <Bilingual
+                  en={`Attempt ${String(toIdx + 1)}`}
+                  kr={`${String(toIdx + 1)}회차`}
+                  compact
+                />
+              </th>
+              <th scope="col" className="km-progress__num">
+                <Bilingual en="Change" kr="변화" compact />
               </th>
             </tr>
           </thead>
@@ -664,7 +726,7 @@ function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
                       className={`km-progress__key km-progress__key--${series.key}`}
                       aria-hidden="true"
                     />
-                    {series.label}
+                    <Bilingual en={series.label} kr={series.kr} compact />
                   </th>
                   <td className="km-progress__num">{a ?? '—'}</td>
                   <td className="km-progress__num">{b ?? '—'}</td>
@@ -877,8 +939,17 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
           accessible handle distinct from the comparison pickers' options. */}
       <div className="km-progress__readout" role="status">
         <span>
-          Attempt {readoutIdx + 1}
-          {readoutSnap !== undefined ? ` · ${formatDay(readoutSnap.capturedAt)}` : ''}
+          {/* compact: the readout is tight chrome — one language visually,
+              both in the accessible reading (the primitive's sr-only). */}
+          <Bilingual
+            en={`Attempt ${String(readoutIdx + 1)}${
+              readoutSnap !== undefined ? ` · ${formatDay(readoutSnap.capturedAt)}` : ''
+            }`}
+            kr={`${String(readoutIdx + 1)}회차${
+              readoutSnap !== undefined ? ` · ${formatDay(readoutSnap.capturedAt)}` : ''
+            }`}
+            compact
+          />
         </span>
         {readoutSnap !== undefined
           ? SERIES.map((series) => {
@@ -892,7 +963,7 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
                   <span className="km-progress__readout-value">
                     {score !== null ? score : '—'}
                   </span>{' '}
-                  {series.label}
+                  <Bilingual en={series.label} kr={series.kr} compact />
                 </span>
               );
             })
@@ -906,7 +977,7 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
               className={`km-progress__key km-progress__key--${series.key}`}
               aria-hidden="true"
             />
-            {series.label} · {series.kr}
+            <Bilingual en={series.label} kr={series.kr} />
           </li>
         ))}
       </ul>
@@ -941,14 +1012,21 @@ function AttemptsTable({ snapshots }: HistoryProps): JSX.Element {
   return (
     <div className="km-progress__tablewrap">
       <table className="km-progress__table">
-        <caption>All diagnostic attempts, oldest first</caption>
+        <caption>
+          <Bilingual
+            en="All diagnostic attempts, oldest first"
+            kr="전체 진단 회차, 오래된 순"
+          />
+        </caption>
         <thead>
           <tr>
             <th scope="col">#</th>
-            <th scope="col">Date</th>
+            <th scope="col">
+              <Bilingual en="Date" kr="날짜" compact />
+            </th>
             {SERIES.map((series) => (
               <th scope="col" key={series.key} className="km-progress__num">
-                {series.label}
+                <Bilingual en={series.label} kr={series.kr} compact />
               </th>
             ))}
           </tr>
@@ -977,11 +1055,16 @@ function AttemptsTable({ snapshots }: HistoryProps): JSX.Element {
 
 const MASTERY_PAGE = 30;
 
-const BUCKET_META: Record<MasteryBucket, { label: string; cls: string }> = {
-  new: { label: 'New', cls: 'is-new' },
-  learning: { label: 'Learning', cls: 'is-learning' },
-  reviewing: { label: 'Reviewing', cls: 'is-reviewing' },
-  mastered: { label: 'Mastered', cls: 'is-mastered' },
+/** Bucket chrome labels (P3b: en/kr pairs — the FSRS bucket NAME is chrome;
+ *  the words inside the buckets are content and never touched). */
+const BUCKET_META: Record<
+  MasteryBucket,
+  { label: string; kr: string; cls: string }
+> = {
+  new: { label: 'New', kr: '신규', cls: 'is-new' },
+  learning: { label: 'Learning', kr: '학습 중', cls: 'is-learning' },
+  reviewing: { label: 'Reviewing', kr: '복습 중', cls: 'is-reviewing' },
+  mastered: { label: 'Mastered', kr: '숙달', cls: 'is-mastered' },
 };
 const BUCKET_ORDER: readonly MasteryBucket[] = [
   'new',
@@ -1036,7 +1119,12 @@ function MasteryBar({
             }}
           >
             <span className="km-mastery__dot" aria-hidden="true" />
-            {BUCKET_META[b].label} <b>{summary[b]}</b>
+            <Bilingual
+              en={BUCKET_META[b].label}
+              kr={BUCKET_META[b].kr}
+              compact
+            />{' '}
+            <b>{summary[b]}</b>
           </button>
         ))}
       </div>
@@ -1099,31 +1187,42 @@ function WordMasterySection(): JSX.Element {
 
   return (
     <Card className="km-progress__card">
-      <Eyebrow>Vocabulary · 단어 숙달</Eyebrow>
-      <div className="km-progress__card-title">Word mastery</div>
+      {/* P3b trim — the "Vocabulary · 단어 숙달" eyebrow repeated the title;
+          the Korean lives on the title itself now. */}
+      <div className="km-progress__card-title">
+        <Bilingual en="Word mastery" kr="단어 숙달" />
+      </div>
 
       {page === null ? (
         loading ? (
-          <div className="km-progress__state">Loading word mastery…</div>
+          <div className="km-progress__state">
+            <Bilingual en="Loading word mastery…" kr="불러오는 중…" />
+          </div>
         ) : error !== null ? (
           <ErrorCard message={error} onRetry={retry} />
         ) : null
       ) : page.summary.total === 0 ? (
         <p className="km-progress__note">
-          No vocab cards yet — tap a word in Listen and add it to your review
-          deck, and its mastery shows up here.
+          {/* P3b verbage trim — was a two-clause tour of the add-word flow. */}
+          <Bilingual
+            en="No vocab cards yet — add words from Listen and their mastery shows here."
+            kr="아직 단어 카드가 없어요 — 듣기에서 단어를 추가하면 숙달도가 여기에 나와요."
+          />
         </p>
       ) : (
         <>
           {error !== null ? (
             <p className="km-mastery__stale" role="alert">
-              Couldn’t refresh — showing the last loaded mastery.{' '}
+              <Bilingual
+                en="Couldn’t refresh — showing the last loaded mastery."
+                kr="새로고침하지 못했어요 — 마지막으로 불러온 내용이에요."
+              />{' '}
               <button
                 type="button"
                 className="km-mastery__retry"
                 onClick={retry}
               >
-                Retry
+                <Bilingual en="Retry" kr="다시 시도" compact />
               </button>
             </p>
           ) : null}
@@ -1133,7 +1232,12 @@ function WordMasterySection(): JSX.Element {
             onSelect={selectBucket}
           />
           {page.words.length === 0 ? (
-            <p className="km-progress__note">No words in this group.</p>
+            <p className="km-progress__note">
+              <Bilingual
+                en="No words in this group."
+                kr="이 그룹에는 단어가 없어요."
+              />
+            </p>
           ) : (
             <ul className="km-mastery__list">
               {page.words.map((w) => (
@@ -1143,7 +1247,11 @@ function WordMasterySection(): JSX.Element {
                   <span
                     className={`km-mastery__badge ${BUCKET_META[w.bucket].cls}`}
                   >
-                    {BUCKET_META[w.bucket].label}
+                    <Bilingual
+                      en={BUCKET_META[w.bucket].label}
+                      kr={BUCKET_META[w.bucket].kr}
+                      compact
+                    />
                   </span>
                   <span className="km-mastery__stab">
                     {w.bucket === 'new'
@@ -1163,12 +1271,18 @@ function WordMasterySection(): JSX.Element {
                   setOffset((o) => Math.max(0, o - MASTERY_PAGE));
                 }}
               >
-                Prev
+                <Bilingual en="Prev" kr="이전" compact />
               </Button>
               <span className="km-mastery__pageinfo">
-                {String(offset + 1)}–
-                {String(Math.min(offset + MASTERY_PAGE, page.total))} of{' '}
-                {String(page.total)}
+                <Bilingual
+                  en={`${String(offset + 1)}–${String(
+                    Math.min(offset + MASTERY_PAGE, page.total),
+                  )} of ${String(page.total)}`}
+                  kr={`${String(page.total)}개 중 ${String(offset + 1)}–${String(
+                    Math.min(offset + MASTERY_PAGE, page.total),
+                  )}`}
+                  compact
+                />
               </span>
               <Button
                 variant="ghost"
@@ -1177,7 +1291,7 @@ function WordMasterySection(): JSX.Element {
                   setOffset((o) => o + MASTERY_PAGE);
                 }}
               >
-                Next
+                <Bilingual en="Next" kr="다음" compact />
               </Button>
             </div>
           ) : null}
@@ -1201,18 +1315,26 @@ function WordMasterySection(): JSX.Element {
 function GrammarMasterySection(): JSX.Element {
   return (
     <Card className="km-progress__card">
+      {/* P3b trim — the "Grammar · 문법 숙달" eyebrow repeated the title; the
+          head row now pairs the bilingual title with the coming-soon pill. */}
       <div className="km-progress__soonhead">
-        <Eyebrow>Grammar · 문법 숙달</Eyebrow>
-        <Pill>Coming soon</Pill>
+        <div className="km-progress__card-title">
+          <Bilingual en="Grammar mastery" kr="문법 숙달" />
+        </div>
+        <Pill>
+          <Bilingual en="Coming soon" kr="준비 중" />
+        </Pill>
       </div>
-      <div className="km-progress__card-title">Grammar mastery</div>
       <div className="km-progress__soonbody">
         <span className="km-progress__soonicon" aria-hidden="true">
           <Icon name="grammar" size={18} />
         </span>
         <p className="km-progress__note">
-          Pattern-by-pattern mastery — how well you command each grammar
-          point you practice — will chart here, right next to your words.
+          {/* P3b verbage trim — one terse line, was a three-clause sentence. */}
+          <Bilingual
+            en="Per-pattern grammar mastery will chart here."
+            kr="문형별 숙달도가 여기에 표시될 거예요."
+          />
         </p>
       </div>
     </Card>

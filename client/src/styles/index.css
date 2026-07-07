@@ -147,6 +147,16 @@ body {
 .km-taskcard__skill .km-bilingual__sub,
 .km-skillbar__label .km-bilingual__sub,
 .km-today__soonTitle .km-bilingual__sub { color: var(--paper-mute); }
+/* P3b Batch B — Diagnostic page chrome (its styles live in this sheet, not a
+ * page css). The intro section rows keep the old prominent-Korean look on
+ * whichever language leads; the results card titles mute their sub. */
+.km-diagnostic__section-label .km-bilingual__main {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--paper);
+}
+.km-diagnostic__section-label .km-bilingual__sub,
+.km-diagnostic__skills-title .km-bilingual__sub { color: var(--paper-mute); }
 
 /* Hairlines + double-rule + gold-rule (Korean book detail). */
 .hr { height: 1px; background: var(--line); border: none; }
