@@ -31,6 +31,7 @@ import {
   seedVocabEntry,
   seedKgiuEntry,
   seedDiagnosticSnapshot,
+  type RegisteredAgent,
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
@@ -76,6 +77,33 @@ async function seedFullPool(): Promise<void> {
   await seedVocabEntry(pg.pool, { proficiency: 'L3', korean: '낱말' });
   await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
   await seedKgiuEntry(pg.pool, { proficiency: 'L3', pattern: '-기 마련이다' });
+}
+
+/**
+ * Drive a run to completion skipping every item. A skip (picked: null) is
+ * ALWAYS graded incorrect, which keeps the θ trajectory deterministic even for
+ * generated items (whose correct choice is shuffled to a random position):
+ * 4.0 → 3.0 → 2.1 → 1.3 → 1.0 (clamped) → stays. Returns the runId.
+ */
+async function runAllSkip(agent: RegisteredAgent['agent']): Promise<number> {
+  const start = await agent.post('/diagnostic').send({});
+  expect(start.status).toBe(201);
+  const runId = start.body.runId as number;
+  let current: { responseId: number } | null = start.body.item;
+  while (current !== null) {
+    const ans = await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: current.responseId, picked: null });
+    expect(ans.status).toBe(200);
+    if (ans.body.done === true) {
+      current = null;
+      continue;
+    }
+    const nxt = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(nxt.status).toBe(200);
+    current = nxt.body.next;
+  }
+  return runId;
 }
 
 describe('diagnostic — auth required', () => {
@@ -1211,6 +1239,179 @@ describe('F-002 — L1/L2 in the diagnostic', () => {
     // Ordinals 9/13: TOPIK I exhausted → band→any fallback served TOPIK II.
     expect(served.rows.find((r) => r.ordinal === 9)?.topik_level).toBe('TOPIK II');
     expect(served.rows.find((r) => r.ordinal === 13)?.topik_level).toBe('TOPIK II');
+  });
+
+  it('L1/L2 vocab/grammar items seed from basic-tagged content, not a random any-level row (fixpass B-1)', async () => {
+    // Reading/listening pools so the run stays whole.
+    for (let i = 0; i < 5; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+    }
+    // ONE basic seed vs NINE L3 seeds per section. With the band→'basic'
+    // mapping, every L1/L2 slot's targeted attempt matches exactly the basic
+    // row (deterministic despite ORDER BY random()); without it, the targeted
+    // attempt matched zero rows and the any-level fallback picked uniformly —
+    // the odds all 8 slots land on basic by chance are (1/10)^8.
+    const basicVocabId = await seedVocabEntry(pg.pool, { proficiency: 'basic', korean: '사과' });
+    const basicKgiuId = await seedKgiuEntry(pg.pool, { proficiency: 'basic', pattern: '-아/어요' });
+    for (let i = 0; i < 9; i += 1) {
+      await seedVocabEntry(pg.pool, { proficiency: 'L3', korean: `낱말${i}` });
+      await seedKgiuEntry(pg.pool, { proficiency: 'L3', pattern: `-기 마련이다${i}` });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // All-skip staircase: vocab slots (ordinals 3,7,11,15) serve at bands
+    // L2,L1,L1,L1; grammar slots (4,8,12,16) at L1×4 — ALL beginner-band.
+    const runId = await runAllSkip(agent);
+
+    const seeds = await pg.pool.query<{ section: string; source_ref: string; difficulty: string }>(
+      `SELECT section::text AS section, source_ref, difficulty::text AS difficulty
+         FROM diagnostic_responses
+        WHERE run_id = $1 AND source_kind = 'generated'
+        ORDER BY ordinal`,
+      [runId],
+    );
+    expect(seeds.rows).toHaveLength(8);
+    for (const row of seeds.rows) {
+      // Every beginner-band generated item was seeded from the basic pool…
+      expect(row.source_ref).toBe(
+        row.section === 'vocab' ? String(basicVocabId) : String(basicKgiuId),
+      );
+      // …and recorded at the beginner difficulty it was targeted at (1 or 2),
+      // never an intermediate seed masquerading as L1/L2.
+      expect(Number(row.difficulty)).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it('L1/L2 seed picking falls back to any level when no basic content exists (fixpass B-1)', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'reading', proficiency: 'L4', answer: 1 });
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: 'L4', answer: 1 });
+    }
+    // NO basic rows anywhere — the targeted attempt is empty, the fallback
+    // must still supply a seed so the run never shrinks.
+    const l3VocabId = await seedVocabEntry(pg.pool, { proficiency: 'L3', korean: '낱말' });
+    const l3KgiuId = await seedKgiuEntry(pg.pool, { proficiency: 'L3', pattern: '-기 마련이다' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const runId = await runAllSkip(agent);
+
+    const seeds = await pg.pool.query<{ section: string; source_ref: string }>(
+      `SELECT section::text AS section, source_ref
+         FROM diagnostic_responses
+        WHERE run_id = $1 AND source_kind = 'generated'
+        ORDER BY ordinal`,
+      [runId],
+    );
+    // All 8 generated slots served — the empty basic pool never starved a slot.
+    expect(seeds.rows).toHaveLength(8);
+    for (const row of seeds.rows) {
+      expect(row.source_ref).toBe(
+        row.section === 'vocab' ? String(l3VocabId) : String(l3KgiuId),
+      );
+    }
+  });
+
+  it('snapshot references include the L1/L2 ladder, lowest-first (fixpass SF-1)', async () => {
+    // The live REFERENCES const must carry the same TOPIK 1/2 rungs the client
+    // fixture promises — a beginner scoring 10/25 needs reference lines below
+    // TOPIK 3 = 40. /latest (empty) emits the shared const; /finish and
+    // /history reuse it, so pinning it here pins all three.
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/diagnostic/latest');
+    expect(res.status).toBe(200);
+    const refs = res.body.references as Array<{
+      id: string;
+      label: string;
+      kr: string;
+      value: number;
+    }>;
+    expect(refs.map((r) => r.id)).toEqual(['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'native']);
+    expect(refs[0]).toEqual({ id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 });
+    expect(refs[1]).toEqual({ id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 });
+    // Lowest-first and strictly increasing — the chart renders them as rungs.
+    for (let i = 1; i < refs.length; i += 1) {
+      expect(refs[i]!.value).toBeGreaterThan(refs[i - 1]!.value);
+    }
+  });
+
+  it('pickTopikRow prefers TOPIK II items for L3+ bands and falls back to any when TOPIK II runs short (fixpass SF-2)', async () => {
+    // Reading pool, ALL proficiency-untagged (the real corpus shape): ONE
+    // TOPIK II item + nine TOPIK I items. Ordinal 1 serves at band L4
+    // (SEED_THETA) — the paper-targeted attempt matches exactly the TOPIK II
+    // row (deterministic despite ORDER BY random()); without the symmetric
+    // preference the "any" pool picked uniformly (1/10 chance of TOPIK II).
+    const topik2Id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      topikLevel: 'TOPIK II',
+      proficiency: null,
+      answer: 1,
+    });
+    for (let i = 0; i < 9; i += 1) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        topikLevel: 'TOPIK I',
+        proficiency: null,
+        answer: 1,
+      });
+    }
+    for (let i = 0; i < 5; i += 1) {
+      await seedTopikItem(pg.pool, { section: 'listening', proficiency: null, answer: 1 });
+    }
+    await seedVocabEntry(pg.pool, { proficiency: 'L4', korean: '단어' });
+    await seedKgiuEntry(pg.pool, { proficiency: 'L4', pattern: '-는 바람에' });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const runId = await runAllSkip(agent);
+
+    const served = await pg.pool.query<{
+      ordinal: number;
+      source_ref: string;
+      topik_level: string;
+    }>(
+      `SELECT r.ordinal, r.source_ref, t.topik_level
+         FROM diagnostic_responses r
+         JOIN topik_items i ON i.id::text = r.source_ref
+         JOIN topik_tests t ON t.id = i.topik_test_id
+        WHERE r.run_id = $1 AND r.section = 'reading' AND r.source_kind = 'topik'
+        ORDER BY r.ordinal`,
+      [runId],
+    );
+    expect(served.rows.map((r) => r.ordinal)).toEqual([1, 5, 9, 13]);
+    // Ordinal 1 — the L4-band slot — is THE TOPIK II item, not a random draw
+    // from a 90%-TOPIK I pool.
+    const atOrd1 = served.rows.find((r) => r.ordinal === 1);
+    expect(atOrd1?.source_ref).toBe(String(topik2Id));
+    expect(atOrd1?.topik_level).toBe('TOPIK II');
+    // Later reading slots (θ at the 1.0 floor → band L1) prefer TOPIK I.
+    expect(served.rows.find((r) => r.ordinal === 5)?.topik_level).toBe('TOPIK I');
+  });
+
+  it('an L3+ band with NO TOPIK II items still serves (paper preference falls back to any) (fixpass SF-2)', async () => {
+    // Only TOPIK I, untagged — both targeted attempts at band L4 are empty;
+    // the final "any" attempt must keep the run whole.
+    for (let i = 0; i < 2; i += 1) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        topikLevel: 'TOPIK I',
+        proficiency: null,
+        answer: 1,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const start = await agent.post('/diagnostic').send({});
+    expect(start.status).toBe(201);
+    expect(start.body.item.section).toBe('reading');
+    const served = await pg.pool.query<{ topik_level: string }>(
+      `SELECT t.topik_level
+         FROM diagnostic_responses r
+         JOIN topik_items i ON i.id::text = r.source_ref
+         JOIN topik_tests t ON t.id = i.topik_test_id
+        WHERE r.run_id = $1 AND r.ordinal = 1`,
+      [start.body.runId],
+    );
+    expect(served.rows[0]?.topik_level).toBe('TOPIK I');
   });
 
   it('an old v1.1.0 snapshot still loads after the RUBRIC_VERSION bump (band intact, no throw)', async () => {

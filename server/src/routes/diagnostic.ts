@@ -180,20 +180,37 @@ interface TopikRow {
   test_passages: Record<string, unknown> | null;
 }
 
+/** The two TOPIK papers, as stored in `topik_tests.topik_level` (TEXT with a
+ *  CHECK `IN ('TOPIK I','TOPIK II')`, migration 005). Named so a typo cannot
+ *  silently become an always-empty filter (review N-2). */
+type TopikPaper = 'TOPIK I' | 'TOPIK II';
+const TOPIK_PAPER_I: TopikPaper = 'TOPIK I';
+const TOPIK_PAPER_II: TopikPaper = 'TOPIK II';
+
+/** The paper a band's targeted attempt prefers: beginners (L1/L2) draw from
+ *  the TOPIK I paper, everyone else (L3/L4/L5+) from TOPIK II. One mapping so
+ *  both halves of the band targeting stay symmetric (F-002 fixpass SF-2). */
+function paperForBand(band: DiagnosticBand): TopikPaper {
+  return band === 'L1' || band === 'L2' ? TOPIK_PAPER_I : TOPIK_PAPER_II;
+}
+
 /**
  * Pick one topik_items row for `section` near `band`, excluding ids already
  * served in this run. Widens band → any band if the targeted band is empty.
  * Returns null only when the section pool is genuinely empty.
  *
- * Band targeting (2 attempts, band-targeted → any):
- *   - L3/L4/L5+ filter on the row's `proficiency` enum; because the corpus
- *     tagging is sparse, an unmatched band falls through to "any" rather than
- *     returning nothing.
- *   - L1/L2 (F-002) filter on the parent test's paper instead —
- *     `topik_tests.topik_level = 'TOPIK I'` — because no topik_items rows are
- *     proficiency-tagged L1/L2 (migration 039 adds the enum values with no
- *     backfill) and the ~776 answerable TOPIK I reading/listening items ARE
- *     the beginner pool. Falls through to "any" when TOPIK I runs short.
+ * Band targeting (band-targeted attempts → any):
+ *   - Every band prefers its paper (`paperForBand`): L1/L2 → TOPIK I (the
+ *     ~776 answerable beginner items ARE the beginner pool), L3/L4/L5+ →
+ *     TOPIK II — otherwise advanced users draw ~40% beginner TOPIK I items
+ *     from the "any" pool (F-002 fixpass SF-2).
+ *   - L3/L4/L5+ additionally try the row's `proficiency` enum first; the live
+ *     corpus has NULL proficiency everywhere, so in production that attempt
+ *     falls through to the paper-only attempt. L1/L2 skip it entirely — no
+ *     topik_items rows are proficiency-tagged L1/L2 (migration 039 adds the
+ *     enum values with no backfill).
+ *   - The final attempt is unfiltered ("any"), so an exhausted paper never
+ *     starves the run.
  *
  * Answerable-item guard mirrors topik.ts ANSWERABLE_ITEM_SQL: >= 2 options,
  * non-null answer, AND not a picture-choice item whose options are bare
@@ -206,20 +223,19 @@ async function pickTopikRow(
   band: DiagnosticBand,
   excludeIds: readonly string[],
 ): Promise<TopikRow | null> {
-  // 1) Try the targeted band, then 2) any band. Each excludes already-served ids.
+  // Attempts, most→least targeted; each excludes already-served ids.
+  const paper = paperForBand(band);
+  const bandProficiency = band === 'L1' || band === 'L2' ? null : band;
   const attempts: ReadonlyArray<{
     readonly proficiency: string | null;
     readonly topikLevel: string | null;
-  }> =
-    band === 'L1' || band === 'L2'
-      ? [
-          { proficiency: null, topikLevel: 'TOPIK I' },
-          { proficiency: null, topikLevel: null },
-        ]
-      : [
-          { proficiency: band, topikLevel: null },
-          { proficiency: null, topikLevel: null },
-        ];
+  }> = [
+    ...(bandProficiency !== null
+      ? [{ proficiency: bandProficiency, topikLevel: paper }]
+      : []),
+    { proficiency: null, topikLevel: paper },
+    { proficiency: null, topikLevel: null },
+  ];
   for (const attempt of attempts) {
     const params: unknown[] = [section];
     // JOIN topik_tests to carry the test's `passages` JSONB (shared reading
@@ -355,9 +371,24 @@ interface GenSeed {
   readonly seedGloss?: string;
 }
 
-/** Pick a vocab_entries seed near the target band. Falls back to any band. */
+/**
+ * The content tag the generator's seed query should match for a target band.
+ *
+ * No corpus rows are proficiency-tagged 'L1'/'L2' (migration 039 adds the enum
+ * values with no backfill) — the beginner content is tagged 'basic' (1716
+ * vocab + 114 kgiu rows). Without this mapping the L1/L2 targeted attempt is
+ * an always-empty query and every beginner vocab/grammar item is silently
+ * seeded from a uniform-random ANY-level row (~46% L3) while being recorded at
+ * difficulty 1/2 (F-002 fixpass B-1). L3/L4/L5+ pass through unchanged.
+ */
+function seedProficiencyForTarget(target: DiagnosticTargetLevel): ProficiencyLevel {
+  return target === 'L1' || target === 'L2' ? 'basic' : target;
+}
+
+/** Pick a vocab_entries seed near the target band (via
+ *  `seedProficiencyForTarget`). Falls back to any band. */
 async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
-  for (const proficiency of [target, null] as const) {
+  for (const proficiency of [seedProficiencyForTarget(target), null] as const) {
     const params: unknown[] = [];
     let sql = `SELECT id::text AS id, korean, english
                  FROM vocab_entries
@@ -380,9 +411,10 @@ async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | n
   return null;
 }
 
-/** Pick a kgiu_entries grammar seed near the target band. Falls back to any. */
+/** Pick a kgiu_entries grammar seed near the target band (via
+ *  `seedProficiencyForTarget`). Falls back to any. */
 async function pickGrammarSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
-  for (const proficiency of [target, null] as const) {
+  for (const proficiency of [seedProficiencyForTarget(target), null] as const) {
     const params: unknown[] = [];
     let sql = `SELECT id::text AS id, pattern, title_en, explanation
                  FROM kgiu_entries
@@ -719,7 +751,14 @@ const DIMENSION_LABELS: Record<DiagnosticDimensionKey, { label: string; kr: stri
   grammar: { label: 'Grammar', kr: '문법' },
 };
 
+/** Reference lines for the snapshot chart, lowest-first. F-002 fixpass SF-1:
+ *  L1/L2 join the ladder (values 10/25 per the scoring anchor table
+ *  {1→10, 2→25, 3→40, …}) so a beginner placing at score 10/25 has real
+ *  reference lines instead of floating below TOPIK 3 = 40. Must stay in sync
+ *  with the client's DIAGNOSTIC_SNAPSHOT_FIXTURE references. */
 const REFERENCES: SnapshotDTO['references'] = [
+  { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+  { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
   { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
   { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
   { id: 'L5', label: 'TOPIK 5', kr: '5급', value: 70 },
