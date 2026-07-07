@@ -73,10 +73,14 @@ export function BottomNav({
         }}
       >
         <Icon name={it.icon} size={22} />
-        {/* P3a: the visible label follows the language-display setting; the
-            button's aria-label above keeps BOTH languages in every mode. */}
+        {/* P3a: the visible label follows the language-display setting.
+            `compact` — a 10px tab cell can't legibly fit two scripts (the
+            sub would render at ~7px and the longest pair risks ellipsis on
+            360px viewports), so in 'both' mode only the primary language
+            shows, like the hexagon. The button's aria-label above keeps
+            BOTH languages in every mode. */}
         <span className="km-bottomnav__label">
-          <Bilingual en={it.label} kr={it.kr} />
+          <Bilingual en={it.label} kr={it.kr} compact />
         </span>
       </button>
     );

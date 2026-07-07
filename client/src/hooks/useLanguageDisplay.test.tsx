@@ -9,6 +9,8 @@
  *   - re-clamps an out-of-range subScale;
  *   - SettingsProvider projects subScale onto `<html>` as --lang-sub-scale
  *     (and keeps it live across updates);
+ *   - a palette-only update can never erase --lang-sub-scale (the
+ *     ALLOWED_VARS / applyPaletteVars separation invariant);
  *   - degrades to the defaults WITHOUT a provider (deliberate — see the
  *     hook's doc-comment: display primitives must never crash the tree).
  */
@@ -89,6 +91,35 @@ describe('SettingsProvider — --lang-sub-scale projection', () => {
     expect(
       document.documentElement.style.getPropertyValue(LANG_SUB_SCALE_CSS_VAR),
     ).toBe('0.7');
+  });
+
+  it('a palette-only settings update leaves --lang-sub-scale intact', () => {
+    // Regression pin for the ALLOWED_VARS invariant: `applyPaletteVars`
+    // clears every var it previously wrote that the new preset doesn't
+    // declare, so if --lang-sub-scale ever entered the palette path (e.g.
+    // someone adds it to ALLOWED_VARS or routes it through paletteVars), a
+    // palette swap would erase it. This test fails the moment that happens.
+    seed({ mode: 'both', primary: 'ko', subScale: 0.55 });
+    const { result } = renderHook(() => useSettings(), { wrapper });
+    expect(
+      document.documentElement.style.getPropertyValue(LANG_SUB_SCALE_CSS_VAR),
+    ).toBe('0.55');
+
+    act(() => {
+      result.current.updateSettings((prev) => ({
+        ...prev,
+        palette: { ...prev.palette, accent: 'indigo' },
+      }));
+    });
+
+    // The palette projection ran (accent vars rewritten)…
+    expect(
+      document.documentElement.style.getPropertyValue('--vermilion'),
+    ).toBe('#2E4F70');
+    // …and the language-display scale survived untouched.
+    expect(
+      document.documentElement.style.getPropertyValue(LANG_SUB_SCALE_CSS_VAR),
+    ).toBe('0.55');
   });
 
   it('tracks a live subScale change through updateSettings', () => {

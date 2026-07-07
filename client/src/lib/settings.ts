@@ -125,8 +125,11 @@ export const DEFAULT_SETTINGS: Settings = {
     correct: 'moss',
     wrong: 'vermilion',
   },
-  // 'both' + Korean-first matches today's baked "kr · en" chrome exactly, so
-  // an existing user sees zero visual change until they touch the control.
+  // 'both' + Korean-first matches the previously-baked "kr · en" titles
+  // exactly, so headings look unchanged at the default. BottomNav is the
+  // deliberate exception: its tab labels (formerly English-only) and the
+  // hexagon (formerly hardcoded "LEARN") render `compact` — primary-only —
+  // so they show Korean at this default. Intended per the P3a spec.
   languageDisplay: {
     mode: 'both',
     primary: 'ko',

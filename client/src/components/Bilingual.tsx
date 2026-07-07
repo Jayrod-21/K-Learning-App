@@ -139,8 +139,14 @@ export function Bilingual({
           sub={false}
         />
       </span>
+      {/* The sr-only reading is composed from lang-tagged spans (not a flat
+          template) so the Korean half keeps its screen-reader voice switch —
+          accessible-name computation concatenates child text, so the computed
+          name is still exactly "visible · other". */}
       <span className="km-sr-only">
-        {visibleIsEn ? `${en} · ${kr}` : `${kr} · ${en}`}
+        <span lang={visibleIsEn ? 'en' : 'ko'}>{visibleIsEn ? en : kr}</span>
+        {' · '}
+        <span lang={visibleIsEn ? 'ko' : 'en'}>{visibleIsEn ? kr : en}</span>
       </span>
     </span>
   );

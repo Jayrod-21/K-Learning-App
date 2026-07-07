@@ -178,6 +178,30 @@ describe('Bilingual — language tagging', () => {
     expect(en?.getAttribute('lang')).toBe('en');
   });
 
+  it("sr-only reading lang-tags each half — Korean keeps its SR voice switch (mode 'en')", () => {
+    const root = renderBilingual(
+      { en: 'Settings', kr: '설정' },
+      { mode: 'en', primary: 'ko', subScale: 0.7 },
+    );
+    const sr = root.querySelector('.km-sr-only');
+    // Computed name content is unchanged — both languages, once each…
+    expect(sr?.textContent).toBe('Settings · 설정');
+    // …but the Korean half is now inside a lang="ko" span so AT switches voice.
+    expect(sr?.querySelector('span[lang="ko"]')?.textContent).toBe('설정');
+    expect(sr?.querySelector('span[lang="en"]')?.textContent).toBe('Settings');
+  });
+
+  it("sr-only lang tags follow the visible-first ordering (compact 'both', Korean-first)", () => {
+    const root = renderBilingual(
+      { en: 'LEARN', kr: '배움', compact: true },
+      { mode: 'both', primary: 'ko', subScale: 0.7 },
+    );
+    const sr = root.querySelector('.km-sr-only');
+    expect(sr?.textContent).toBe('배움 · LEARN');
+    expect(sr?.querySelector('span[lang="ko"]')?.textContent).toBe('배움');
+    expect(sr?.querySelector('span[lang="en"]')?.textContent).toBe('LEARN');
+  });
+
   it('the separator stays in the text flow (accessible name = visible "kr · en")', () => {
     const root = renderBilingual(
       { en: 'Settings', kr: '설정' },

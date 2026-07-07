@@ -1031,6 +1031,69 @@ describe('Settings — language display control', () => {
     expect(screen.getByRole('slider', { name: 'Second language size' })).toBeInTheDocument();
   });
 
+  it('SegmentedRadioGroup keyboard contract: roving tabindex, arrows wrap, Home/End, selection follows focus', async () => {
+    // DIRECT coverage of the extracted SegmentedRadioGroup (not the separate
+    // ThemeModeControl copy) via the "Language display" radiogroup it backs.
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    renderSettings();
+    await flushHydration();
+
+    const group = screen.getByRole('radiogroup', { name: 'Language display' });
+    const english = within(group).getByRole('radio', { name: 'English' });
+    const korean = within(group).getByRole('radio', { name: 'Korean' });
+    const both = within(group).getByRole('radio', { name: 'Both' });
+
+    // Roving tabindex: only the selected option (Both, the default) is a
+    // Tab stop; the rest are removed from the Tab order.
+    expect(both).toHaveAttribute('tabindex', '0');
+    expect(english).toHaveAttribute('tabindex', '-1');
+    expect(korean).toHaveAttribute('tabindex', '-1');
+
+    both.focus();
+    expect(both).toHaveFocus();
+
+    // ArrowRight WRAPS from the last option (Both) to the first (English),
+    // committing selection AND moving focus (selection follows focus). The
+    // roving Tab stop moves with it.
+    await user.keyboard('{ArrowRight}');
+    expect(english).toHaveAttribute('aria-checked', 'true');
+    expect(both).toHaveAttribute('aria-checked', 'false');
+    expect(english).toHaveFocus();
+    expect(english).toHaveAttribute('tabindex', '0');
+    expect(both).toHaveAttribute('tabindex', '-1');
+
+    // ArrowRight advances English → Korean.
+    await user.keyboard('{ArrowRight}');
+    expect(korean).toHaveAttribute('aria-checked', 'true');
+    expect(korean).toHaveFocus();
+
+    // ArrowLeft steps back Korean → English…
+    await user.keyboard('{ArrowLeft}');
+    expect(english).toHaveAttribute('aria-checked', 'true');
+    expect(english).toHaveFocus();
+
+    // …and WRAPS backwards from the first option (English) to the last (Both).
+    await user.keyboard('{ArrowLeft}');
+    expect(both).toHaveAttribute('aria-checked', 'true');
+    expect(both).toHaveFocus();
+
+    // Home jumps to the first option, End to the last.
+    await user.keyboard('{Home}');
+    expect(english).toHaveAttribute('aria-checked', 'true');
+    expect(english).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(both).toHaveAttribute('aria-checked', 'true');
+    expect(both).toHaveFocus();
+
+    // Exactly one option is ever checked (radiogroup invariant).
+    expect(
+      within(group)
+        .getAllByRole('radio')
+        .filter((r) => r.getAttribute('aria-checked') === 'true'),
+    ).toHaveLength(1);
+  });
+
   it('selecting English hides the Both-only controls and persists mode=en', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     meOk();
@@ -1134,11 +1197,16 @@ describe('Settings — language display control', () => {
       name: 'Second language size',
     }) as HTMLInputElement;
     expect(slider.value).toBe('0.7');
+    // aria-valuetext is the ONLY percent surface for AT (the visible "%"
+    // span is aria-hidden), so pin it at the default…
+    expect(slider).toHaveAttribute('aria-valuetext', '70%');
 
     // fireEvent.change is the canonical way to move a range input in tests
     // (userEvent has no slider-drag primitive).
     fireEvent.change(slider, { target: { value: '0.5' } });
     expect(slider.value).toBe('0.5');
+    // …and confirm it tracks the drag.
+    expect(slider).toHaveAttribute('aria-valuetext', '50%');
 
     // The provider projects the new scale onto <html> immediately (live
     // preview path — no debounce on the visual).

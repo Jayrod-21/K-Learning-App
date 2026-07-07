@@ -169,20 +169,24 @@ describe('BottomNav — language display (P3a)', () => {
     ).toBe('오늘');
   });
 
-  it("'both' Korean-first: label shows both, Korean leading", () => {
+  it("'both' Korean-first: tab shows the PRIMARY only (compact — tabs are too small for two scripts); aria-label keeps both", () => {
     renderNavWithLang({ mode: 'both', primary: 'ko', subScale: 0.7 });
+    // getByRole by accessible name proves the aria-label still carries both
+    // languages even though only one is visible.
     const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    expect(today).toHaveAttribute('aria-label', 'Today · 오늘');
     expect(
       visibleText(today.querySelector('.km-bottomnav__label') as Element),
-    ).toBe('오늘 · Today');
+    ).toBe('오늘');
   });
 
-  it("'both' English-first: label shows both, English leading", () => {
+  it("'both' English-first: tab shows English only; aria-label keeps both", () => {
     renderNavWithLang({ mode: 'both', primary: 'en', subScale: 0.7 });
     const today = screen.getByRole('button', { name: 'Today · 오늘' });
+    expect(today).toHaveAttribute('aria-label', 'Today · 오늘');
     expect(
       visibleText(today.querySelector('.km-bottomnav__label') as Element),
-    ).toBe('Today · 오늘');
+    ).toBe('Today');
   });
 
   it("hexagon (compact): 'both' shows only the primary; 'en'/'ko' follow the mode", () => {
