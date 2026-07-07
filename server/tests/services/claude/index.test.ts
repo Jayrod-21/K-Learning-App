@@ -376,4 +376,59 @@ describe('generateConversation — streaming', () => {
     expect(sdk.calls).toHaveLength(1); // only the first call hit the SDK
     expect(evs.some((e) => e.type === 'complete')).toBe(true);
   });
+
+  // Regression for SWEEP_server_services #1 (CRITICAL): a mid-stream SDK
+  // failure (network reset, upstream overloaded_error, client abort) rejects
+  // BOTH the event iterator and the final-message promise. The worker's
+  // for-await throws before `sdkFinal` is awaited; without an eager handler
+  // on sdkFinal, its rejection escaped as an unhandledRejection and the
+  // process-level handler in src/index.ts killed the whole server.
+  it('mid-stream failure surfaces as a handled stream error — no unhandled rejection', async () => {
+    const boom = sdkError(529, 'simulated mid-stream connection drop');
+    const escaped: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      escaped.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { proxy } = setupProxy([
+        // Two deltas' worth of text, then the iterator rejects mid-stream
+        // and finalMessage() rejects with the same error (real SDK shape).
+        { text: '안녕하십니까. 반갑', streamError: boom },
+      ]);
+      const { events, final } = proxy.generateConversation({
+        scenario: 'first business meeting',
+        registerTarget: '합쇼체',
+        vocabFocus: [],
+        mode: 'business',
+        history: [],
+        maxTokens: 200,
+      });
+
+      // (a) The error is delivered to the consumer as a normal, terminal
+      // stream event — the route's SSE loop sees it and closes cleanly.
+      const collected: Array<{ type: string }> = [];
+      for await (const ev of events) {
+        collected.push({ type: ev.type });
+      }
+      expect(collected[0]).toEqual({ type: 'start' });
+      expect(collected.some((e) => e.type === 'delta')).toBe(true);
+      expect(collected.at(-1)).toEqual({ type: 'error' });
+
+      // ...and the final promise rejects with the original error, which the
+      // route already handles (routes/conversation.ts final.catch).
+      await expect(final).rejects.toThrow('simulated mid-stream connection drop');
+
+      // (b) NO unhandled rejection escapes. Node emits 'unhandledRejection'
+      // once the microtask queue drains with a rejected promise still
+      // unobserved — give it two full macrotask turns to fire, then assert
+      // silence. Without the sdkFinal fix, `boom` lands in `escaped` here
+      // and the production process would have exited.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });

@@ -35,7 +35,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedTopikItem, seedTopikResponse } from '../helpers/seed.js';
+import {
+  ensureCorpusSource,
+  registerUser,
+  seedTopikItem,
+  seedTopikResponse,
+} from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
@@ -59,6 +64,71 @@ beforeEach(async () => {
   await pg.pool.query('TRUNCATE TABLE topik_items, topik_tests CASCADE');
   resetLimiters();
 });
+
+/**
+ * Seed one topik_items row under a (test_number, topik_level, section) paper —
+ * the LEVEL-AWARE cousin of the shared seedTopikItem (which hardcodes
+ * 'TOPIK II' and reuses tests by (test_number, section) alone, so it cannot
+ * assemble the two-papers-one-sitting state migration 029 exists to enable).
+ * Raw SQL on purpose: the shared helper is owned by another surface.
+ */
+async function seedTopikItemAtLevel(
+  level: 'TOPIK I' | 'TOPIK II',
+  opts: {
+    section?: 'reading' | 'listening';
+    testNumber: number;
+    itemNumber: number;
+    options?: string[];
+    answer?: number;
+    stem?: string | null;
+    prompt?: string | null;
+    extra?: Record<string, unknown>;
+  },
+): Promise<number> {
+  const section = opts.section ?? 'reading';
+  const corpusSourceId = await ensureCorpusSource(pg.pool, 'topik', 'intermediate');
+  const existing = await pg.pool.query<{ id: string }>(
+    `SELECT id FROM topik_tests
+      WHERE test_number = $1 AND topik_level = $2 AND section = $3::topik_section`,
+    [opts.testNumber, level, section],
+  );
+  let testId: number;
+  if (existing.rows[0]) {
+    testId = Number(existing.rows[0].id);
+  } else {
+    const created = await pg.pool.query<{ id: string }>(
+      `INSERT INTO topik_tests (corpus_source_id, corpus, test_number, topik_level, section)
+       VALUES ($1, 'topik'::corpus, $2, $3, $4::topik_section)
+       RETURNING id`,
+      [corpusSourceId, opts.testNumber, level, section],
+    );
+    testId = Number(created.rows[0]!.id);
+  }
+  const sourceId = `topik-${level === 'TOPIK I' ? 'I' : 'II'}-${opts.testNumber}-${opts.itemNumber}-${Math.random().toString(36).slice(2, 8)}`;
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO topik_items (
+        topik_test_id, corpus_source_id, corpus, source_id, item_number,
+        section, item_type, proficiency, stem, prompt, underline,
+        options, answer, extra, has_image, image_text)
+     VALUES ($1, $2, 'topik'::corpus, $3, $4, $5::topik_section,
+             'multiple_choice'::topik_item_type, 'L4'::proficiency_level,
+             $6, $7, NULL, $8::jsonb, $9::jsonb, $10::jsonb, false, NULL)
+     RETURNING id`,
+    [
+      testId,
+      corpusSourceId,
+      sourceId,
+      opts.itemNumber,
+      section,
+      opts.stem === undefined ? '다음 글을 읽고 물음에 답하십시오.' : opts.stem,
+      opts.prompt === undefined ? '알맞은 것을 고르십시오.' : opts.prompt,
+      JSON.stringify(opts.options ?? ['보기 1', '보기 2', '보기 3', '보기 4']),
+      JSON.stringify(opts.answer ?? 1),
+      JSON.stringify(opts.extra ?? {}),
+    ],
+  );
+  return Number(rows[0]!.id);
+}
 
 describe('topik — auth required', () => {
   it.each([
@@ -1348,5 +1418,432 @@ describe('section Korean ↔ enum normalization', () => {
     expect(byKr.body.total).toBe(1);
     expect(byKr.body.items[0].id).toBe(byEnum.body.items[0].id);
     expect(byKr.body.items[0].section).toBe('읽기');
+  });
+});
+
+describe('D-1 — a mock is ONE exam paper, never a TOPIK I + TOPIK II merge (migration 029)', () => {
+  /**
+   * The exact live-verified failure state: both a TOPIK-I and a TOPIK-II paper
+   * of the SAME sitting (test_number) in the same section — 029 widened the
+   * natural key precisely to allow this. A test-number-only mock merges them.
+   */
+  async function seedTwoPapers(testNumber: number): Promise<{
+    topikI: number[];
+    topikII: number[];
+  }> {
+    const topikI = [
+      await seedTopikItemAtLevel('TOPIK I', { testNumber, itemNumber: 1, answer: 1 }),
+      await seedTopikItemAtLevel('TOPIK I', { testNumber, itemNumber: 2, answer: 2 }),
+    ];
+    const topikII = [
+      await seedTopikItemAtLevel('TOPIK II', { testNumber, itemNumber: 1, answer: 3 }),
+      await seedTopikItemAtLevel('TOPIK II', { testNumber, itemNumber: 2, answer: 4 }),
+    ];
+    return { topikI, topikII };
+  }
+
+  it('POST /mock with an explicit sourceTest serves ONE paper (no duplicate item numbers)', async () => {
+    const { topikII } = await seedTwoPapers(2100);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ sourceTest: 2100, section: 'reading' });
+    expect(res.status).toBe(200);
+    // 2 items, not the 4-item TOPIK I/II chimera — and each item_number once.
+    expect(res.body.items.length).toBe(2);
+    expect(res.body.items.map((i: { number: number }) => i.number)).toEqual([1, 2]);
+    // The deterministic default paper is TOPIK II, echoed on the wire.
+    expect(res.body.topikLevel).toBe('TOPIK II');
+    expect(res.body.sourceTest).toBe(2100);
+    expect((res.body.items as Array<{ id: string }>).map((i) => i.id).sort()).toEqual(
+      topikII.map(String).sort(),
+    );
+  });
+
+  it('an explicit topikLevel selects that paper', async () => {
+    const { topikI } = await seedTwoPapers(2101);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 2101, section: 'reading', topikLevel: 'TOPIK I' });
+    expect(res.status).toBe(200);
+    expect(res.body.topikLevel).toBe('TOPIK I');
+    expect((res.body.items as Array<{ id: string }>).map((i) => i.id).sort()).toEqual(
+      topikI.map(String).sort(),
+    );
+  });
+
+  it('/mock/submit grades EXACTLY the paper /mock served (shared resolver, level omitted)', async () => {
+    const { topikI, topikII } = await seedTwoPapers(2102);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Same body shape an old client sends: no topikLevel. Grading universe must
+    // be the served (TOPIK II) paper — 2 items, not 4, and never TOPIK I rows.
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2102,
+      section: 'reading',
+      answers: [{ itemId: topikII[0], picked: 'c' }], // answer=3 → correct
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.topikLevel).toBe('TOPIK II');
+    expect(res.body.totalItems).toBe(2);
+    expect(res.body.correct).toBe(1);
+    const revealIds = (res.body.items as Array<{ itemId: string }>).map((r) => r.itemId).sort();
+    expect(revealIds).toEqual(topikII.map(String).sort());
+    for (const id of topikI) expect(revealIds).not.toContain(String(id));
+  });
+
+  it('/mock/submit honors an explicit topikLevel (TOPIK I paper graded)', async () => {
+    const { topikI } = await seedTwoPapers(2103);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2103,
+      section: 'reading',
+      topikLevel: 'TOPIK I',
+      answers: [{ itemId: topikI[0], picked: 'a' }], // answer=1 → correct
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.topikLevel).toBe('TOPIK I');
+    expect(res.body.totalItems).toBe(2);
+    expect(res.body.correct).toBe(1);
+    expect((res.body.items as Array<{ itemId: string }>).map((r) => r.itemId).sort()).toEqual(
+      topikI.map(String).sort(),
+    );
+  });
+
+  it('server-picked default (sourceTest omitted) resolves one paper deterministically', async () => {
+    await seedTwoPapers(2104);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.post('/topik/mock').send({ section: 'reading' });
+    expect(res.status).toBe(200);
+    expect(res.body.sourceTest).toBe(2104);
+    expect(res.body.topikLevel).toBe('TOPIK II'); // highest test, TOPIK II preferred
+    expect(res.body.items.length).toBe(2);
+  });
+
+  it('GET /items narrows to one paper via topik_level (and spans both without it — browse)', async () => {
+    const { topikI } = await seedTwoPapers(2105);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Browse without the discriminator deliberately spans the sitting's papers.
+    const merged = await agent.get('/topik/items').query({ source_test: 2105 });
+    expect(merged.status).toBe(200);
+    expect(merged.body.total).toBe(4);
+
+    const onePaper = await agent
+      .get('/topik/items')
+      .query({ source_test: 2105, topik_level: 'TOPIK I' });
+    expect(onePaper.status).toBe(200);
+    expect(onePaper.body.total).toBe(2);
+    expect((onePaper.body.items as Array<{ id: string }>).map((i) => i.id).sort()).toEqual(
+      topikI.map(String).sort(),
+    );
+  });
+});
+
+describe('numeric-bound validation — garbage ids 400 at the boundary, never 500', () => {
+  // Without .max() bounds, these coerce to numbers Postgres cannot hold
+  // (INT4/INT8 overflow, pg error 22003) and surface as 500s where every other
+  // garbage id in the API contract is a 400/404.
+  const HUGE = '99999999999999999999'; // 1e20 — Number.isInteger() still true
+  const OVER_INT4 = 3_000_000_000; // > 2^31-1, fits int8 but not INTEGER
+
+  it('GET /topik/items?source_test=<1e20> → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/items').query({ source_test: HUGE });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /topik/mock with sourceTest above INT4 → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/topik/mock')
+      .send({ section: 'reading', sourceTest: OVER_INT4 });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /topik/mock/submit with sourceTest above INT4 → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/topik/mock/submit')
+      .send({ sourceTest: OVER_INT4, section: 'reading', answers: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /topik/mock/submit with an answer itemId beyond MAX_SAFE_INTEGER → 400', async () => {
+    await seedTopikItem(pg.pool, { section: 'reading', testNumber: 2200, itemNumber: 1 });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2200,
+      section: 'reading',
+      answers: [{ itemId: Number(HUGE), picked: 'a' }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /topik/<1e20>/answer → 400 (BIGINT id, not a 500)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post(`/topik/${HUGE}/answer`).send({ picked: 'a' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('served-but-unanswerable exclusions (data sweep D-2 / D-5)', () => {
+  const NO_TRANSCRIPT_STEM =
+    '[듣기 지문 없음 — 대화/담화가 오디오로만 제공됨(전사 파일 없음)]';
+  const WITHHELD_PASSAGE =
+    '[저작권 관련 법령에 따라 본 문항의 지문은 공개하지 않습니다. 지문 내용은 원저작자의 요청으로 제공되지 않습니다.]';
+
+  it('D-2: no-transcript listening items never reach study/mock/browse and 404 on /answer', async () => {
+    const normal = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 2300,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    // Real options + a real answer key, but the only "question" is the curator
+    // note that the audio was never transcribed — the D-2 class.
+    const noTranscript = await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 2300,
+      itemNumber: 2,
+      stem: NO_TRANSCRIPT_STEM,
+      prompt: null,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const study = await agent.post('/topik/study').send({ section: 'listening', limit: 50 });
+    expect(study.status).toBe(200);
+    const studyIds = (study.body.items as Array<{ id: string }>).map((i) => i.id);
+    expect(studyIds).toContain(String(normal));
+    expect(studyIds).not.toContain(String(noTranscript));
+
+    const mock = await agent
+      .post('/topik/mock')
+      .send({ sourceTest: 2300, section: 'listening' });
+    expect(mock.status).toBe(200);
+    expect((mock.body.items as Array<{ id: string }>).map((i) => i.id)).toEqual([
+      String(normal),
+    ]);
+
+    // Browse: excluded from BOTH the page and total (the guard is in SQL).
+    const browse = await agent.get('/topik/items').query({ source_test: 2300 });
+    expect(browse.status).toBe(200);
+    expect(browse.body.total).toBe(1);
+    expect((browse.body.items as Array<{ id: string }>).map((i) => i.id)).toEqual([
+      String(normal),
+    ]);
+
+    // Direct answer-by-id: the render-time guard 404s and logs nothing.
+    const answer = await agent.post(`/topik/${noTranscript}/answer`).send({ picked: 'a' });
+    expect(answer.status).toBe(404);
+    const log = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM topik_responses`,
+    );
+    expect(log.rows[0]?.n).toBe('0');
+  });
+
+  it('D-5: items whose shared passage is the copyright-withholding notice are excluded from serve AND grading', async () => {
+    const normal = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 2301,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    // Two comprehension items asking about a passage the corpus deliberately
+    // withholds — the "passage" is a notice that the passage is not disclosed.
+    const withheldA = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 2301,
+      itemNumber: 23,
+      stem: '밑줄 친 부분에 나타난 나의 심정으로 가장 알맞은 것을 고르십시오.',
+      prompt: null,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const withheldB = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 2301,
+      itemNumber: 24,
+      stem: '윗글의 내용과 같은 것을 고르십시오.',
+      prompt: null,
+      options: ['가', '나', '다', '라'],
+      answer: 4,
+    });
+    await pg.pool.query(
+      `UPDATE topik_tests SET passages = $1::jsonb WHERE test_number = $2`,
+      [JSON.stringify({ '23-24': WITHHELD_PASSAGE }), 2301],
+    );
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    // Mock serve: only the answerable item.
+    const mock = await agent.post('/topik/mock').send({ sourceTest: 2301, section: 'reading' });
+    expect(mock.status).toBe(200);
+    expect((mock.body.items as Array<{ id: string }>).map((i) => i.id)).toEqual([
+      String(normal),
+    ]);
+
+    // Grading universe agrees with the served set (mock ↔ submit coherence).
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2301,
+      section: 'reading',
+      answers: [{ itemId: normal, picked: 'b' }],
+    });
+    expect(submit.status).toBe(200);
+    expect(submit.body.totalItems).toBe(1);
+    expect(submit.body.correct).toBe(1);
+
+    // Study draw excludes them too.
+    const study = await agent.post('/topik/study').send({ section: 'reading', limit: 50 });
+    const studyIds = (study.body.items as Array<{ id: string }>).map((i) => i.id);
+    expect(studyIds).not.toContain(String(withheldA));
+    expect(studyIds).not.toContain(String(withheldB));
+
+    // Browse page excludes them. Documented residual: `total` is a pure SQL
+    // count and cannot resolve passage-range keys, so it still counts the two
+    // withheld rows (3) while the page serves only the answerable one.
+    const browse = await agent.get('/topik/items').query({ source_test: 2301 });
+    expect((browse.body.items as Array<{ id: string }>).map((i) => i.id)).toEqual([
+      String(normal),
+    ]);
+    expect(browse.body.total).toBe(3);
+  });
+});
+
+describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tombstone)', () => {
+  /** Seed a 1-item reading paper + save an in-progress attempt for it. */
+  async function seedAndSave(
+    agent: Awaited<ReturnType<typeof registerUser>>['agent'],
+    testNumber: number,
+  ): Promise<number> {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    const save = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: testNumber,
+      currentIdx: 0,
+      picks: { [String(id)]: 'b' },
+      remainingMs: 999_000,
+    });
+    expect(save.status).toBe(204);
+    return id;
+  }
+
+  it('the resurrect race: submit → mop-up DELETE → delayed same-paper PUT → still no resumable attempt', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 2400);
+
+    // Submit the exam (grades + closes the attempt in one tx).
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2400,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+    expect(submit.status).toBe(200);
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+
+    // The client's clearAttempt() mop-up — must NOT evict the tombstone guard.
+    expect((await agent.delete('/topik/attempt')).status).toBe(204);
+
+    // The racing save the server processed AFTER both deletes (the F-UP-014
+    // window): same paper, pre-submit progress. It must be absorbed, not
+    // resurrect a resume banner for a graded test.
+    const delayed = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 2400,
+      currentIdx: 0,
+      picks: { [String(itemId)]: 'b' },
+      remainingMs: 998_000,
+    });
+    expect(delayed.status).toBe(204); // silently absorbed
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull(); // NOT resurrected
+  });
+
+  it('a save for a DIFFERENT paper right after submit wins (new mocks are never blocked)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 2401);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 2401,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+
+    // Immediately start a different test — its save must overwrite the tombstone.
+    const save = await agent.put('/topik/attempt').send({
+      section: 'listening',
+      sourceTest: 2402,
+      currentIdx: 1,
+      picks: {},
+      remainingMs: 1_800_000,
+    });
+    expect(save.status).toBe(204);
+    expect((await agent.get('/topik/attempt')).body.attempt).toMatchObject({
+      section: 'listening',
+      sourceTest: 2402,
+    });
+  });
+
+  it('a STALE tombstone yields — retaking the same paper later saves normally', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 2403);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 2403,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+
+    // Age the tombstone past the grace window. The updated_at trigger would
+    // stamp now() on any UPDATE, so it is disabled around the backdate.
+    await pg.pool.query(
+      `ALTER TABLE topik_attempts DISABLE TRIGGER trg_topik_attempts_updated_at`,
+    );
+    try {
+      await pg.pool.query(
+        `UPDATE topik_attempts SET updated_at = now() - interval '60 seconds'
+          WHERE user_id = $1`,
+        [userId],
+      );
+    } finally {
+      await pg.pool.query(
+        `ALTER TABLE topik_attempts ENABLE TRIGGER trg_topik_attempts_updated_at`,
+      );
+    }
+
+    // A later retake of the SAME paper saves + resumes normally.
+    const save = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 2403,
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 3_600_000,
+    });
+    expect(save.status).toBe(204);
+    expect((await agent.get('/topik/attempt')).body.attempt).toMatchObject({
+      section: 'reading',
+      sourceTest: 2403,
+    });
+  });
+
+  it('the tombstone key cannot be forged from the wire (picks keys are numeric-only)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 1,
+      currentIdx: 0,
+      picks: { __closed__: 'a' },
+      remainingMs: 1,
+    });
+    expect(res.status).toBe(400);
   });
 });

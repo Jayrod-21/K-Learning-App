@@ -15,7 +15,7 @@
  * `act()` wraps every state-changing await so React 19's strict updater
  * batching doesn't surface warnings under the suite.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { useEndpointOrMock } from './useEndpointOrMock';
 import { ApiError } from '../services/api';
@@ -68,7 +68,7 @@ describe('useEndpointOrMock', () => {
     expect(mockFn).not.toHaveBeenCalled();
   });
 
-  it('falls back to mockFn when realFn rejects, and surfaces the real error', async () => {
+  it('falls back to mockFn when realFn rejects IN DEV, and surfaces the real error', async () => {
     const realError = new ApiError('server down', {
       status: 500,
       code: 'server_error',
@@ -175,6 +175,95 @@ describe('useEndpointOrMock', () => {
     expect(result.current.data).toEqual({ greeting: 'B' });
     expect(result.current.isMock).toBe(true);
     expect(mockFn).toHaveBeenCalledTimes(2);
+  });
+
+  describe('PROD posture — a real failure must surface, never resolve fixture data', () => {
+    // MockBadge renders null in prod, so a prod mock fallback would paint
+    // fabricated data indistinguishable from real (expired session → fixture
+    // "24 reviews due", no error, no badge). These stub `import.meta.env.PROD`
+    // and assert the error propagates instead.
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('realFn rejection in PROD surfaces the error with data null — mockFn is NEVER called', async () => {
+      vi.stubEnv('PROD', true);
+      const realError = new ApiError('session expired', {
+        status: 401,
+        code: 'unauthorized',
+      });
+      const realFn = vi.fn(async () => {
+        throw realError;
+      });
+      const mockFn = vi.fn(async () => ({ greeting: 'fixture' }));
+
+      const { result } = renderHook(() =>
+        useEndpointOrMock('k-prod-fail', mockFn, { realFn }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      // The page gets its error state, not fabricated data.
+      expect(result.current.data).toBeNull();
+      expect(result.current.isMock).toBe(false);
+      expect(result.current.error).toBe(realError);
+      // The fixture loader must not even run — prod never consults it for a
+      // realFn-backed source.
+      expect(mockFn).not.toHaveBeenCalled();
+    });
+
+    it('a mock-ONLY source (no realFn) still resolves its fixture in PROD', async () => {
+      // No realFn is an explicit "this screen has no endpoint yet" choice,
+      // not a silent substitution — the fallback gate must not break it.
+      vi.stubEnv('PROD', true);
+      const mockFn = vi.fn(async () => ({ greeting: 'mock-only' }));
+
+      const { result } = renderHook(() =>
+        useEndpointOrMock('k-prod-mockonly', mockFn),
+      );
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.data).toEqual({ greeting: 'mock-only' });
+      expect(result.current.isMock).toBe(true);
+      expect(result.current.error).toBeNull();
+    });
+
+    it('refetch() after a PROD real failure re-runs realFn (retry path works)', async () => {
+      vi.stubEnv('PROD', true);
+      let fail = true;
+      const realFn = vi.fn(async () => {
+        if (fail) {
+          throw new ApiError('down', { status: 503, code: 'server_error' });
+        }
+        return { greeting: 'recovered' };
+      });
+      const mockFn = vi.fn(async () => ({ greeting: 'fixture' }));
+
+      const { result } = renderHook(() =>
+        useEndpointOrMock('k-prod-retry', mockFn, { realFn }),
+      );
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.error).not.toBeNull();
+      expect(result.current.data).toBeNull();
+
+      fail = false;
+      await act(async () => {
+        result.current.refetch();
+      });
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.data).toEqual({ greeting: 'recovered' });
+      expect(result.current.error).toBeNull();
+      expect(result.current.isMock).toBe(false);
+      expect(mockFn).not.toHaveBeenCalled();
+    });
   });
 
   it('refetch() re-runs the loader without changing the key', async () => {

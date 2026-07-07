@@ -41,6 +41,14 @@ const WEEKLY_SUGGESTION_LIMIT = 15;
 /** Non-empty, trimmed text — mirrors the convention in services/claude/models.ts. */
 const NonEmptyText = z.string().trim().min(1);
 
+// Ids/offsets bind to BIGINT/int8 in pg. Without an upper bound a 20-digit
+// value passes `int().positive()` (Number.isInteger(1e20) is true) and
+// overflows in pg (22003 → 500) where the contract is 400/404 for a garbage
+// id (routes sweep #3). MAX_SAFE_INTEGER ≪ int8 max, so bounded values are safe.
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+/** Upper bound for values that bind to INTEGER (int4) columns. */
+const INT4_MAX = 2_147_483_647;
+
 /* ---------- Corpus lookup (vocab_entries from migration 002) ---------- */
 
 const VocabSearchQuerySchema = z.object({
@@ -64,7 +72,7 @@ const VocabSearchQuerySchema = z.object({
   // Resources tab pages the full 3,131-row curated corpus. 200 mirrors
   // /vocab/cards/due; the client paginates with offset + the `total` count.
   limit: z.coerce.number().int().min(1).max(200).default(20),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
 });
 
 router.get(
@@ -253,7 +261,7 @@ router.get(
 );
 
 const ReviewParamsSchema = z.object({
-  cardId: z.coerce.number().int().positive(),
+  cardId: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 /**
@@ -275,8 +283,10 @@ const ReviewParamsSchema = z.object({
 // defeat the strip. (Contrast MineBodySchema below, which IS .strict().)
 const ReviewBodySchema = z.object({
   rating: z.enum(['again', 'hard', 'good', 'easy']),
-  duration_ms: z.number().int().nonnegative().optional(),
-  expected_version: z.number().int().positive(),
+  // duration_ms / version are INTEGER columns — bound to INT4 so an absurd
+  // value 400s instead of overflowing in pg (routes sweep #3).
+  duration_ms: z.number().int().nonnegative().max(INT4_MAX).optional(),
+  expected_version: z.number().int().positive().max(INT4_MAX),
 });
 
 router.post(
@@ -489,7 +499,7 @@ router.post(
 );
 
 const VocabIdParamsSchema = z.object({
-  entryId: z.coerce.number().int().positive(),
+  entryId: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 router.get(
@@ -608,7 +618,7 @@ const MineBodySchema = z
     pos: z.string().trim().max(50).optional(),
     // The /define entries[0].id — gives a stable dedup key so homographs stay
     // distinct (krdict-<id>) rather than colliding on the surface form.
-    krdictEntryId: z.number().int().positive().optional(),
+    krdictEntryId: z.number().int().positive().max(MAX_ID).optional(),
   })
   .strict();
 
@@ -691,7 +701,12 @@ router.post(
                     'word'::vocab_entry_type, 'user-mined', $3, $4,
                     'L3'::proficiency_level, 'general'::content_domain)
             ON CONFLICT (corpus, source_id) DO UPDATE
-               SET english = COALESCE(EXCLUDED.english, vocab_entries.english),
+               -- Existing gloss WINS: vocab_entries rows are SHARED across
+               -- users (keyed by corpus/source_id, not user), so letting a
+               -- re-mine overwrite a non-null english would let any user
+               -- clobber the gloss everyone else's cards display (routes
+               -- sweep #6). A re-mine only FILLS a missing gloss.
+               SET english = COALESCE(vocab_entries.english, EXCLUDED.english),
                    version = vocab_entries.version + 1
             RETURNING id`,
           [corpusSourceId, sourceId, body.lemma, body.english ?? null],
@@ -808,7 +823,7 @@ const MASTERY_MATURE_DAYS = 21;
 const MasteryQuerySchema = z.object({
   bucket: z.enum(['new', 'learning', 'reviewing', 'mastered']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
 });
 
 // Card → bucket, kept byte-identical between the summary counts and the per-word

@@ -63,16 +63,31 @@ export class ApiError extends Error {
    * server prose — so surfacing it does not violate the fixed-error-string rule.
    */
   public readonly retryAfter?: number;
+  /**
+   * Assistant text recovered from a stream whose persistence failed AFTER the
+   * reply fully streamed (the server's `persistence_error` SSE frame carries
+   * it as `recovered_text` — see services/conversation.ts). Present ONLY on
+   * that failure; consumers can offer the recovered reply instead of
+   * discarding a full Claude turn. This is model output the user already
+   * watched stream in, not server error prose.
+   */
+  public readonly recoveredText?: string;
 
   public constructor(
     message: string,
-    opts: { status: number; code: string; retryAfter?: number },
+    opts: {
+      status: number;
+      code: string;
+      retryAfter?: number;
+      recoveredText?: string;
+    },
   ) {
     super(message);
     this.name = 'ApiError';
     this.status = opts.status;
     this.code = opts.code;
     this.retryAfter = opts.retryAfter;
+    this.recoveredText = opts.recoveredText;
   }
 }
 

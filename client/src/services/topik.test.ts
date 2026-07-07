@@ -226,6 +226,9 @@ const SUBMIT_BODY: MockSubmitBody = {
   durationMs: 90000,
 };
 
+// WIRE FIDELITY: the reveal's `itemId` is a STRING (`i.id::text` server-side)
+// even though the submit BODY's `itemId` is a number (zod z.number()). The
+// asymmetry is real — fixtures must mirror it or they mask lookup bugs.
 const MOCK_RESULT: MockResult = {
   sourceTest: 7,
   section: 'reading',
@@ -236,14 +239,14 @@ const MOCK_RESULT: MockResult = {
   band: 'L3 range',
   items: [
     {
-      itemId: 1001,
+      itemId: '1001',
       picked: 'b',
       correctChoiceId: 'b',
       isCorrect: true,
       explanation: 'B is the only consistent summary.',
     },
     {
-      itemId: 1002,
+      itemId: '1002',
       picked: 'a',
       correctChoiceId: 'c',
       isCorrect: false,

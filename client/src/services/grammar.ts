@@ -51,7 +51,10 @@ export async function listPatterns(
     params,
     ...(signal !== undefined ? { signal } : {}),
   });
-  return res.entries;
+  // BIGINT `id` rides the wire as a JSON string (no int8 parser server-side,
+  // and the list route returns rows raw) — coerce onto the declared numeric
+  // type so a strict `===` against a converted detail id can't silently miss.
+  return res.entries.map((e) => ({ ...e, id: Number(e.id) }));
 }
 
 /** GET /grammar/kgiu/:id — single KGIU pattern. */
@@ -81,10 +84,13 @@ export async function bankPattern(
 export async function listBanked(
   signal?: AbortSignal,
 ): Promise<BankedGrammarList> {
-  return api.get<BankedGrammarList>(
+  const res = await api.get<BankedGrammarList>(
     '/grammar/bank',
     signal !== undefined ? { signal } : undefined,
   );
+  // Same BIGINT-as-string wire leak as `listPatterns` — coerce `id` so it
+  // matches the numeric ids the graduate/readmit envelopes carry.
+  return { ...res, entries: res.entries.map((e) => ({ ...e, id: Number(e.id) })) };
 }
 
 /**

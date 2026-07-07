@@ -38,6 +38,29 @@ beforeEach(async () => {
   resetLimiters();
 });
 
+describe('vocab lists — overflowing ids → 400, not a pg 500 (routes sweep #3)', () => {
+  // Number.isInteger(1e20) is true, so without an upper bound a 20-digit id
+  // passes Zod and overflows BIGINT in pg (22003) → 500 where the contract is
+  // 400/404 for a garbage id.
+  it('GET /vocab/lists/99999999999999999999 → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/lists/99999999999999999999');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('POST /vocab/lists/:id/entries with an overflowing entry id → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: '목록' });
+    expect(create.status).toBe(201);
+    const res = await agent
+      .post(`/vocab/lists/${create.body.list.id}/entries`)
+      .send({ entry_ids: [1e20] });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+});
+
 describe('vocab lists — auth required', () => {
   it.each([
     ['GET', '/vocab/lists'],

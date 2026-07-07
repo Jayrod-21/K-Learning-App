@@ -130,6 +130,18 @@ export async function withTransaction<T>(
 ): Promise<T> {
   const pool = getPool();
   const client = await pool.connect();
+  // `release()` returns the client to the pool; `release(err)` DESTROYS it.
+  // Guarded so exactly one of the two runs (pg throws on double-release).
+  let released = false;
+  const releaseOnce = (destroyErr?: Error): void => {
+    if (released) return;
+    released = true;
+    if (destroyErr !== undefined) {
+      client.release(destroyErr);
+    } else {
+      client.release();
+    }
+  };
   try {
     await client.query('BEGIN');
     const result = await fn(client);
@@ -138,13 +150,23 @@ export async function withTransaction<T>(
   } catch (err) {
     try {
       await client.query('ROLLBACK');
+      // ROLLBACK succeeded → the connection demonstrably works; safe to
+      // return it to the pool (the plain release in `finally`).
     } catch (rollbackErr) {
       // Surface but don't mask the original error.
-      getLogger().error({ err: serializeError(rollbackErr) }, 'rollback failed');
+      getLogger().error(
+        { err: serializeError(rollbackErr) },
+        'rollback failed; destroying connection',
+      );
+      // ROLLBACK failing means the connection itself is suspect (socket
+      // death mid-transaction, backend restart). Destroy it instead of
+      // re-pooling — a returned dead client would hand the next innocent
+      // caller a connection error (SWEEP_server_services #5).
+      releaseOnce(err instanceof Error ? err : new Error(String(err)));
     }
     throw err;
   } finally {
-    client.release();
+    releaseOnce();
   }
 }
 

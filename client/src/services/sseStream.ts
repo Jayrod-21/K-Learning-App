@@ -145,9 +145,16 @@ export async function streamSse(
   }
 
   if (!response.ok || !response.body) {
-    // Try to surface the server's `{ error: { code, message } }` envelope.
+    // Try to surface the server's `{ error: { code, message, retry_after } }`
+    // envelope. `retry_after` matters here: the streaming chat route sits
+    // behind the expensive limiter, so a 429 with a structured retry window
+    // is the LIKELIEST error body this path sees — dropping it (the old
+    // behaviour) broke the documented `ApiError.retryAfter` contract on
+    // exactly the route most likely to 429 (the axios path preserves it, see
+    // services/api.ts `normaliseError`).
     let code = 'http_error';
     let message = `stream failed: ${String(response.status)}`;
+    let retryAfter: number | undefined;
     try {
       const text = await response.text();
       const parsed: unknown = text ? JSON.parse(text) : null;
@@ -158,15 +165,31 @@ export async function streamSse(
         typeof (parsed as { error?: unknown }).error === 'object' &&
         (parsed as { error?: unknown }).error !== null
       ) {
-        const e = (parsed as { error: { code?: unknown; message?: unknown } })
-          .error;
+        const e = (
+          parsed as {
+            error: { code?: unknown; message?: unknown; retry_after?: unknown };
+          }
+        ).error;
         if (typeof e.code === 'string') code = e.code;
         if (typeof e.message === 'string') message = e.message;
+        // Same finite-positive guard as the axios path — a structured
+        // numeric field, never echoed server prose.
+        if (
+          typeof e.retry_after === 'number' &&
+          Number.isFinite(e.retry_after) &&
+          e.retry_after > 0
+        ) {
+          retryAfter = e.retry_after;
+        }
       }
     } catch {
       // Body wasn't JSON — keep the generic message.
     }
-    const apiErr = new ApiError(message, { status: response.status, code });
+    const apiErr = new ApiError(message, {
+      status: response.status,
+      code,
+      ...(retryAfter !== undefined ? { retryAfter } : {}),
+    });
     handlers.onError?.(apiErr);
     throw apiErr;
   }

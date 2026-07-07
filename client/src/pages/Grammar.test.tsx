@@ -20,7 +20,7 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
@@ -578,6 +578,73 @@ describe('Grammar — detail Sheet', () => {
       await screen.findByText(/Strong concessive/),
     ).toBeInTheDocument();
   });
+
+  it('drops a late detail settle for a previously opened row (stale-guard)', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    const DETAIL_2: KgiuEntryDetail = {
+      ...ROW_2,
+      explanation: 'Causal — because of doing X, a (bad) result followed.',
+      formation_rules: null,
+      examples: null,
+      dialogues: null,
+      vocabulary: null,
+      tips: null,
+      compare_with: null,
+      exercises: null,
+      cultural_notes: null,
+    };
+
+    // Row A's detail hangs until released; row B's resolves immediately —
+    // the fast-row-switch race from the sweep finding.
+    let releaseA!: (d: KgiuEntryDetail) => void;
+    services.getPattern.mockImplementation(async (id: number) => {
+      if (id === ROW.id) {
+        return new Promise<KgiuEntryDetail>((resolve) => {
+          releaseA = resolve;
+        });
+      }
+      return DETAIL_2;
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    // Open A — its detail fetch stays in flight.
+    await user.click(
+      await screen.findByRole('button', {
+        name: '-더라도 even if / even though',
+      }),
+    );
+    await waitFor(() => {
+      expect(services.getPattern).toHaveBeenCalledWith(42);
+    });
+
+    // Close it, then open B, whose detail lands right away.
+    await user.click(
+      screen.getByRole('button', { name: 'Close pattern detail' }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: '-느라고 because of doing X' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText(/Causal — because of doing X/),
+    ).toBeInTheDocument();
+
+    // A's stale settle lands late. Pre-fix it unconditionally setDetail()'d,
+    // painting A's explanation under B's header. It must be dropped.
+    await act(async () => {
+      releaseA(DETAIL);
+    });
+    expect(
+      within(dialog).getByText(/Causal — because of doing X/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText(/Strong concessive/),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('Grammar — drill tab (live generate → submit → reveal)', () => {
@@ -747,6 +814,169 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     ).toBe('비가 오더라도 갈 거예요.');
     // Submit button is back (not stuck on a spinner).
     expect(screen.getByRole('button', { name: /^submit$/i })).toBeInTheDocument();
+  });
+
+  it("the error card's Retry RE-SUBMITS the preserved answer — it must not regenerate the drill and wipe it", async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill
+      .mockRejectedValueOnce(
+        new ApiError('upstream', { status: 502, code: 'upstream' }),
+      )
+      .mockResolvedValue(SCORE);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+    const textarea = await screen.findByPlaceholderText(
+      /Write your answer using/i,
+    );
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Submit failed — the error promises the answer is preserved.
+    expect(
+      await screen.findByText(/Scoring your answer failed/i),
+    ).toBeInTheDocument();
+
+    // The Retry button INSIDE that error must re-submit the same answer.
+    // Pre-fix it was wired to the generate path: it bumped the retry tick,
+    // regenerated the drill, and cleared the user's answer — contradicting
+    // the message sitting right above it.
+    await user.click(screen.getByRole('button', { name: /^Retry$/i }));
+    await waitFor(() => {
+      expect(drillServices.submitDrill).toHaveBeenCalledTimes(2);
+    });
+    expect(drillServices.submitDrill.mock.calls[1]).toEqual([
+      7,
+      '비가 오더라도 갈 거예요.',
+      expect.anything(),
+    ]);
+    // No regenerate happened (the drill — and the answer — survived).
+    expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    // The retried submit succeeds and reveals the score.
+    expect(await screen.findByText('82')).toBeInTheDocument();
+  });
+
+  // ── PROD posture — no fixture substitution for a failed generate ────────
+  //
+  // In production MockBadge renders null, so serving MOCK_DRILLS + the local
+  // pseudo-scorer on a generate failure would present a fabricated drill and
+  // a fabricated score as REAL — the same fake-data-as-real class the sweep
+  // gated in useEndpointOrMock and MockMode. These stub `import.meta.env.PROD`
+  // and pin the honest error path, its regenerate-Retry, and that the
+  // dev-only fallback survives on the non-PROD side of the gate.
+
+  describe('PROD posture — generate failure must error, never fabricate', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('a PROD generate failure shows a retryable error — not a mock drill — and its Retry RE-GENERATES', async () => {
+      vi.stubEnv('PROD', true);
+      services.listPatterns.mockResolvedValue([ROW]);
+      services.listBanked.mockResolvedValue(EMPTY_BANK);
+      drillServices.generateDrill
+        .mockRejectedValueOnce(
+          new ApiError('network unreachable', { status: 0, code: 'network' }),
+        )
+        .mockResolvedValue(GEN_TRANSFORM);
+
+      const user = userEvent.setup();
+      renderGrammar();
+      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+      // The honest error state renders (fixed copy, role=alert via ErrorCard)…
+      expect(
+        await screen.findByText(/The drill couldn't be generated/i),
+      ).toBeInTheDocument();
+      // …and NO fabricated drill: no answer box to be locally "scored", and
+      // no 🅂 badge pretending the fixture is flagged.
+      expect(
+        screen.queryByPlaceholderText(/Write your answer using/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
+
+      // Retry must RE-GENERATE. Pre-fix wiring pointed error retries at
+      // submit(), whose `if (!item) return` guard makes the button a silent
+      // dead-end when the generate failure left item === null.
+      await user.click(screen.getByRole('button', { name: /^Retry$/i }));
+      await waitFor(() => {
+        expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+      });
+      expect(drillServices.submitDrill).not.toHaveBeenCalled();
+      // The retried generate succeeds and the REAL drill renders.
+      expect(
+        await screen.findByPlaceholderText(/Write your answer using/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/The drill couldn't be generated/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it('a PROD submit failure still retries the SUBMIT with the preserved answer (no dead-end, no regenerate)', async () => {
+      vi.stubEnv('PROD', true);
+      services.listPatterns.mockResolvedValue([ROW]);
+      services.listBanked.mockResolvedValue(EMPTY_BANK);
+      drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+      drillServices.submitDrill
+        .mockRejectedValueOnce(
+          new ApiError('upstream', { status: 502, code: 'upstream' }),
+        )
+        .mockResolvedValue(SCORE);
+
+      const user = userEvent.setup();
+      renderGrammar();
+      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+      const textarea = await screen.findByPlaceholderText(
+        /Write your answer using/i,
+      );
+      await user.type(textarea, '비가 오더라도 갈 거예요.');
+      await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+      expect(
+        await screen.findByText(/Scoring your answer failed/i),
+      ).toBeInTheDocument();
+
+      // The submit-failure Retry re-submits the SAME preserved answer — it
+      // must not have been rewired to the generate path by the gating.
+      await user.click(screen.getByRole('button', { name: /^Retry$/i }));
+      await waitFor(() => {
+        expect(drillServices.submitDrill).toHaveBeenCalledTimes(2);
+      });
+      expect(drillServices.submitDrill.mock.calls[1]).toEqual([
+        7,
+        '비가 오더라도 갈 거예요.',
+        expect.anything(),
+      ]);
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+      expect(await screen.findByText('82')).toBeInTheDocument();
+    });
+
+    it('non-PROD keeps the failure-safe fallback: a generate failure serves the mock drill + 🅂 badge, no error card', async () => {
+      vi.stubEnv('PROD', false);
+      services.listPatterns.mockResolvedValue([ROW]);
+      services.listBanked.mockResolvedValue(EMPTY_BANK);
+      drillServices.generateDrill.mockRejectedValue(
+        new ApiError('network unreachable', { status: 0, code: 'network' }),
+      );
+
+      const user = userEvent.setup();
+      renderGrammar();
+      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+
+      // Dev/offline still exercises the full flow — badge flags the fixture.
+      expect(await screen.findByTestId('mock-badge')).toBeInTheDocument();
+      expect(
+        await screen.findByPlaceholderText(/Write your answer using/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(/The drill couldn't be generated/i),
+      ).not.toBeInTheDocument();
+    });
   });
 
   // ── FU-NF-42 B2: reveal shows the server-derived schedule line ──────────

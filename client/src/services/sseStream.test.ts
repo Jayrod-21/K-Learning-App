@@ -177,6 +177,55 @@ describe('streamSse — error paths', () => {
     expect(onError).toHaveBeenCalledWith(expect.any(ApiError));
   });
 
+  it('preserves a structured retry_after from a 429 body (expensive-bucket contract)', async () => {
+    // The streaming chat route sits behind the expensive limiter, so a 429
+    // with `retry_after` is the LIKELIEST error body this path sees. The old
+    // parser extracted only code/message and dropped it — the UI could never
+    // render "wait N s" (the pattern Writing.tsx relies on), breaking the
+    // documented ApiError contract on the route most likely to 429.
+    mockFetchResponse(
+      429,
+      JSON.stringify({
+        error: { code: 'rate_limited', message: 'slow down', retry_after: 42 },
+      }),
+    );
+
+    const onError = vi.fn();
+    const ctrl = new AbortController();
+
+    await expect(
+      streamSse(
+        'http://example.test/stream',
+        { onEvent: () => undefined, onError },
+        { signal: ctrl.signal },
+      ),
+    ).rejects.toMatchObject({
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 42,
+    });
+    const surfaced = onError.mock.calls[0]?.[0] as ApiError;
+    expect(surfaced.retryAfter).toBe(42);
+  });
+
+  it('drops a malformed retry_after (same finite-positive guard as the axios path)', async () => {
+    mockFetchResponse(
+      429,
+      JSON.stringify({
+        error: { code: 'rate_limited', message: 'slow down', retry_after: -5 },
+      }),
+    );
+
+    const ctrl = new AbortController();
+    await expect(
+      streamSse(
+        'http://example.test/stream',
+        { onEvent: () => undefined },
+        { signal: ctrl.signal },
+      ),
+    ).rejects.toMatchObject({ retryAfter: undefined });
+  });
+
   it('rejects with ApiError(stream_parse) on buffer overflow', async () => {
     // Emit a single giant chunk with NO blank-line boundary.
     const giant = 'a'.repeat(2_000_001);

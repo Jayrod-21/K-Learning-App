@@ -35,6 +35,20 @@ describe('listPatterns', () => {
 
     expect(spy).toHaveBeenCalledWith('/grammar/kgiu', { params: {} });
   });
+
+  it('coerces the BIGINT string id off the wire to the declared number', async () => {
+    // The list route returns rows raw — pg serialises BIGINT `id` as a JSON
+    // STRING; sibling routes Number() it. Without boundary coercion a strict
+    // `===` against a converted detail id silently never matches.
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [{ id: '12', corpus: 'x', source_id: null, pattern: '은/는', title_en: null, category: null, proficiency: null, unit: null, source_pages: null }],
+    });
+
+    const out = await listPatterns();
+
+    expect(out[0]?.id).toBe(12);
+    expect(typeof out[0]?.id).toBe('number');
+  });
 });
 
 describe('getPattern', () => {
@@ -89,6 +103,30 @@ describe('listBanked', () => {
 
     expect(spy).toHaveBeenCalledWith('/grammar/bank', undefined);
     expect(out.entries).toEqual([]);
+  });
+
+  it('coerces each banked row BIGINT string id to the declared number', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      entries: [
+        {
+          id: '44',
+          pattern_key: 'GR-x',
+          pattern_display: 'x',
+          summary_en: 'x',
+          proficiency: 'L3',
+          category: 'x',
+          register: null,
+          discovered_via: 'reading',
+          created_at: 'x',
+          graduated_at: null,
+        },
+      ],
+    });
+
+    const out = await listBanked();
+
+    expect(out.entries[0]?.id).toBe(44);
+    expect(typeof out.entries[0]?.id).toBe('number');
   });
 });
 

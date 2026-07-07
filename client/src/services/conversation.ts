@@ -17,11 +17,15 @@
  *     Dropping the controller without abort holds the TCP connection open
  *     until server EOF; a leaky tab is a resource hog.
  *
- * P3A note: `streamMessage` targets the streaming endpoint that lands with
- * P3A — either `/conversation/:id/messages/stream` or
- * `/conversation/:id/messages?stream=1` (P3A picks one). Default is the
- * dedicated `/stream` path; pass `streamPath: 'query'` to use the query
- * flag instead.
+ * P3A note: `streamMessage` targets the dedicated
+ * `/conversation/:id/messages/stream` endpoint — the ONLY route that
+ * streams. (An earlier `streamPath: 'query'` option pointed at
+ * `POST /messages?stream=1`, but that handler ignores unknown query params
+ * and answers plain JSON: the server would run + persist a full Claude turn
+ * and bump `version`, then the client's content-type gate would throw
+ * `stream_parse` and roll the bubble back — leaving every retry to 409 on
+ * the stale version. The option was removed as a live trap; no caller ever
+ * passed it.)
  */
 import { ApiError, api, getApiBaseUrl } from './api';
 import { streamSse, type SseEvent } from './sseStream';
@@ -80,11 +84,6 @@ export interface StreamMessageOptions {
    */
   onError?: (err: ApiError) => void;
   /**
-   * Which streaming endpoint shape the server exposes. Defaults to a
-   * dedicated `/stream` suffix; pass `'query'` to use `?stream=1` instead.
-   */
-  streamPath?: 'suffix' | 'query';
-  /**
    * Optional caller-generated id (UUID) forwarded as `X-Request-Id`. Lets
    * the server short-circuit a retried streaming turn back to the already-
    * persisted assistant reply instead of running a second Claude call (see
@@ -121,10 +120,9 @@ export async function streamMessage(
   body: AppendMessageBody,
   opts: StreamMessageOptions,
 ): Promise<void> {
-  const path =
-    opts.streamPath === 'query'
-      ? `/conversation/${String(conversationId)}/messages?stream=1`
-      : `/conversation/${String(conversationId)}/messages/stream`;
+  // The dedicated /stream suffix is the only endpoint that streams — see the
+  // header note on the removed `streamPath: 'query'` trap.
+  const path = `/conversation/${String(conversationId)}/messages/stream`;
 
   // Single source of truth — see `services/api.ts` for the cross-origin
   // tripwire that fires on `VITE_API_URL` misconfiguration.
@@ -208,14 +206,42 @@ export async function streamMessage(
             case 'error': {
               // Terminal in-band error. Carry the server's code/message
               // through so the UI can render an actionable failure.
-              const message =
-                typeof frame.message === 'string' && frame.message !== ''
-                  ? frame.message
-                  : 'stream error';
               const code =
                 typeof frame.code === 'string' && frame.code !== ''
                   ? frame.code
                   : 'stream_error';
+              // `persistence_error` (persist failed AFTER a complete stream)
+              // is special-cased twice:
+              //   1. Its `message` is the RAW server-side error (e.g. a pg
+              //      "duplicate key value violates…" string) — never render
+              //      server prose; substitute fixed copy (the app-wide
+              //      fixed-error-string rule).
+              //   2. The frame ships `recovered_text` — the full assistant
+              //      reply the user just watched stream in. Preserve it on
+              //      the ApiError so consumers can offer it instead of
+              //      discarding a whole Claude turn.
+              if (code === 'persistence_error') {
+                const recoveredText =
+                  typeof frame.recovered_text === 'string' &&
+                  frame.recovered_text !== ''
+                    ? frame.recovered_text
+                    : undefined;
+                failStream(
+                  new ApiError(
+                    'The reply streamed but could not be saved. Retry to send it again.',
+                    {
+                      status: 0,
+                      code,
+                      ...(recoveredText !== undefined ? { recoveredText } : {}),
+                    },
+                  ),
+                );
+                return;
+              }
+              const message =
+                typeof frame.message === 'string' && frame.message !== ''
+                  ? frame.message
+                  : 'stream error';
               failStream(new ApiError(message, { status: 0, code }));
               return;
             }

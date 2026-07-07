@@ -310,6 +310,92 @@ describe('Settings — debounced PATCH /auth/me', () => {
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });
 
+  it('rebases the version snapshot after a 409 so the NEXT save succeeds (409-stranding fix)', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    // Mount hydrates version 1. The post-409 rebase refetch returns the
+    // server's bumped version 2 (someone edited the profile on another
+    // device) — with a changed display_name so the rebase is observable.
+    mocks.fetchMe
+      .mockResolvedValueOnce({
+        id: 1,
+        email: 'jay@example.com',
+        display_name: 'Jay',
+        version: 1,
+      } satisfies User)
+      .mockResolvedValue({
+        id: 1,
+        email: 'jay@example.com',
+        display_name: 'Jay v2',
+        version: 2,
+      } satisfies User);
+    // First save carries the stale version and 409s; the redo succeeds.
+    mocks.patchMe
+      .mockRejectedValueOnce(
+        new ApiError('stale version', { status: 409, code: 'version_conflict' }),
+      )
+      .mockResolvedValue({
+        id: 1,
+        email: 'jay@example.com',
+        display_name: 'Jared',
+        version: 3,
+      } satisfies User);
+
+    renderSettings();
+    const name = screen.getByLabelText('Name') as HTMLInputElement;
+    await waitFor(() => {
+      expect(name.value).toBe('Jay');
+    });
+
+    await user.clear(name);
+    await user.type(name, 'Jared');
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+
+    // First PATCH carried the hydrated version 1 and 409'd → rollback + error.
+    await waitFor(() => {
+      expect(mocks.patchMe).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      (mocks.patchMe.mock.calls[0][0] as { expected_version: number })
+        .expected_version,
+    ).toBe(1);
+    expect(
+      await screen.findByText(/Saving that change failed/i),
+    ).toBeInTheDocument();
+
+    // The 409 must trigger a REAL /auth/me refetch (the meQuery this screen's
+    // serverVersion syncs from) — `refresh()` alone only re-probes the auth
+    // context. Pre-fix, fetchMe was never called again and every subsequent
+    // save re-sent expected_version 1 and 409'd until the user left Settings.
+    await waitFor(() => {
+      expect(mocks.fetchMe).toHaveBeenCalledTimes(2);
+    });
+    // The rebased server truth lands in the (rolled-back) buffer.
+    await waitFor(() => {
+      expect(name.value).toBe('Jay v2');
+    });
+
+    // Redo the edit — the retry PATCH must carry the REBASED version 2.
+    await user.clear(name);
+    await user.type(name, 'Jared');
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+
+    await waitFor(() => {
+      expect(mocks.patchMe).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      (mocks.patchMe.mock.calls[1][0] as { expected_version: number })
+        .expected_version,
+    ).toBe(2);
+    // The retry succeeded — the new value sticks (no rollback this time).
+    await waitFor(() => {
+      expect(name.value).toBe('Jared');
+    });
+  });
+
   it('honours a deliberately cleared field — no clobber from a subsequent server sync (F-S1)', async () => {
     // Hydrate /auth/me with all three fields populated + version 1.
     mocks.fetchMe.mockResolvedValue({

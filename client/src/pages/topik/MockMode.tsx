@@ -111,6 +111,17 @@ const SECTION_MINUTES: Record<MockSection, number> = {
   listening: 60,
 };
 
+/**
+ * Server-side cap on per-item `timeMs` (`routes/topik.ts`
+ * `MockSubmitAnswerSchema.timeMs.max(3600000)`). Per-item time here is raw
+ * wall-clock deltas — a laptop sleep / suspended tab mid-exam can exceed an
+ * hour on one item, and ONE over-cap value 400s the WHOLE submit body (zod
+ * `.strict()`), leaving the exam ungradeable (`submittedRef` is latched, no
+ * retry). Clamp at the boundary: the timing is best-effort analytics, the
+ * grade must never be hostage to it.
+ */
+const MAX_ITEM_TIME_MS = 3_600_000;
+
 function toMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
@@ -141,6 +152,10 @@ export function MockMode(): JSX.Element {
   // banner on the select screen), and the state to hydrate ExamRunner with when
   // resuming. Both null in the fresh-start path.
   const [resumable, setResumable] = useState<AttemptState | null>(null);
+  // F-UP-015: a resume attempt whose exam re-fetch failed. Drives a brief
+  // "couldn't resume" notice on the select screen instead of the banner just
+  // vanishing silently. Cleared when a fresh section starts.
+  const [resumeFailed, setResumeFailed] = useState(false);
   const [initialExam, setInitialExam] = useState<{
     idx: number;
     picks: Map<number, ChoiceId>;
@@ -214,6 +229,7 @@ export function MockMode(): JSX.Element {
       setNet('loading');
       setErrorMsg(null);
       setResult(null);
+      setResumeFailed(false);
       fetchMockTest(attempt.section, ctrl.signal, attempt.sourceTest)
         .then((real) => {
           if (ctrl.signal.aborted) return;
@@ -233,10 +249,13 @@ export function MockMode(): JSX.Element {
           setPhase('exam');
         })
         .catch(() => {
-          // The exact exam couldn't be re-fetched — drop the (now stale) banner
-          // and stay on select rather than block. The attempt row is harmless.
+          // The exact exam couldn't be re-fetched — drop the (now stale)
+          // banner and stay on select rather than block. The attempt row is
+          // harmless. F-UP-015: tell the user WHY the banner vanished — the
+          // old code dropped it silently.
           if (ctrl.signal.aborted) return;
           setResumable(null);
+          setResumeFailed(true);
           setNet('idle');
         });
     },
@@ -251,10 +270,11 @@ export function MockMode(): JSX.Element {
       setNet('loading');
       setErrorMsg(null);
       setResult(null);
-      // Fresh start: no hydration, and dismiss any resume banner. The exam's
-      // first save will upsert-replace any prior in-progress attempt.
+      // Fresh start: no hydration, and dismiss any resume banner/notice. The
+      // exam's first save will upsert-replace any prior in-progress attempt.
       setInitialExam(null);
       setResumable(null);
+      setResumeFailed(false);
       fetchMockTest(section, ctrl.signal)
         .then((real) => {
           if (ctrl.signal.aborted) return;
@@ -265,8 +285,19 @@ export function MockMode(): JSX.Element {
         })
         .catch((realErr: unknown) => {
           if (ctrl.signal.aborted) return;
-          // Failure-safe: fall back to the offline fixture rather than blank
-          // the screen. The 🅂 badge fires so a dev sees it's not the server.
+          // PROD: no fixture substitution — an exam of fabricated items with
+          // MockBadge suppressed would read as a real mock test (the same
+          // fake-data-as-real failure mode useEndpointOrMock guards). Show
+          // the retryable error instead.
+          if (import.meta.env.PROD) {
+            setErrorKind('fetch');
+            setErrorMsg(toMessage(realErr, 'Could not load the mock test.'));
+            setNet('error');
+            return;
+          }
+          // DEV failure-safe: fall back to the offline fixture rather than
+          // blank the screen. The 🅂 badge fires so a dev sees it's not the
+          // server.
           loadTopikMockTest(section)
             .then((mock) => {
               if (ctrl.signal.aborted) return;
@@ -315,6 +346,17 @@ export function MockMode(): JSX.Element {
         })
         .catch((realErr: unknown) => {
           if (ctrl.signal.aborted) return;
+          // PROD: never substitute the offline pseudo-grader ('b' is always
+          // "correct") for a failed real submit — the user would read a
+          // fabricated score as their result, with the 🅂 badge suppressed.
+          // Surface the retryable error; pendingSubmitRef re-sends the SAME
+          // picks, so no work is lost.
+          if (import.meta.env.PROD) {
+            setErrorKind('submit');
+            setErrorMsg(toMessage(realErr, 'Could not submit the test.'));
+            setNet('error');
+            return;
+          }
           submitTopikMockTestMock(body)
             .then((mock) => {
               if (ctrl.signal.aborted) return;
@@ -349,9 +391,10 @@ export function MockMode(): JSX.Element {
     setIsMock(false);
     setNet('idle');
     // The just-finished section's attempt was cleared server-side on submit; a
-    // fresh select shows no resume banner.
+    // fresh select shows no resume banner (and no stale resume-fail notice).
     setInitialExam(null);
     setResumable(null);
+    setResumeFailed(false);
     setPhase('select');
   }, []);
 
@@ -395,6 +438,19 @@ export function MockMode(): JSX.Element {
                     setResumable(null);
                   }}
                 />
+              ) : null}
+              {resumeFailed ? (
+                // F-UP-015: the resume re-fetch failed — say so briefly
+                // instead of silently dropping the banner. Fixed copy, no
+                // server prose. role="status" so it's announced politely.
+                <p
+                  className="km-mock__resume-failed"
+                  role="status"
+                  style={{ marginBottom: 16, color: 'var(--paper-mute)' }}
+                >
+                  Couldn&apos;t resume your saved test — start a fresh one
+                  below.
+                </p>
               ) : null}
               <SectionSelect onStart={startSection} />
             </>
@@ -666,7 +722,13 @@ function ExamRunner({
     if (current !== undefined) flushItemTime(Number(current.id));
     const answers: MockSubmitAnswer[] = [];
     for (const [itemId, picked] of picks.entries()) {
-      const timeMs = accumMsRef.current.get(itemId);
+      const rawTimeMs = accumMsRef.current.get(itemId);
+      // Clamp to the server's schema cap — an unclamped sleep-gap delta
+      // would 400 the entire submit (see MAX_ITEM_TIME_MS).
+      const timeMs =
+        rawTimeMs !== undefined
+          ? Math.min(rawTimeMs, MAX_ITEM_TIME_MS)
+          : undefined;
       answers.push(
         timeMs !== undefined ? { itemId, picked, timeMs } : { itemId, picked },
       );
@@ -1307,11 +1369,12 @@ function buildMockResultsSummary(
   result: MockResult,
   items: TopikMockItem[],
 ): ResultsSummary {
-  // Index the items by their numeric id so each reveal can show its prompt +
-  // the picked/correct choice text.
-  const byId = new Map<number, TopikMockItem>(
-    items.map((it) => [Number(it.id), it]),
-  );
+  // Index the items by their WIRE id (a string — the server projects
+  // `i.id::text`, and `MockReveal.itemId` is the same string). The old code
+  // built a Map<number> via Number(it.id) and looked it up with the string
+  // reveal id — every lookup missed, so real mock reviews rendered number 0,
+  // an empty prompt, and '—' for both picks.
+  const byId = new Map<string, TopikMockItem>(items.map((it) => [it.id, it]));
 
   const choiceText = (
     item: TopikMockItem | undefined,

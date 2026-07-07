@@ -9,9 +9,20 @@
  * Behaviour:
  *   - `realFn` provided → call it first. On success, `data` is the real value
  *     and `isMock` stays false.
- *   - `realFn` omitted OR `realFn` rejects → fall back to `mockFn`. `isMock`
- *     flips true on the mock resolve.
- *   - `error` reflects the **real** call's failure, even when we then fall
+ *   - `realFn` omitted → fall back to `mockFn` (an explicit mock-only source;
+ *     the screen was never wired to a real endpoint). `isMock` flips true on
+ *     the mock resolve.
+ *   - `realFn` rejects in DEV → fall back to `mockFn` (the 🅂 badge shows, so
+ *     a developer can't mistake fixture data for real). `error` still
+ *     reflects the real call's failure so error paths get exercised.
+ *   - `realFn` rejects in PROD → **NO mock fallback.** `data` stays null and
+ *     `error` carries the failure, so the consuming screen shows its error
+ *     state. The old behaviour silently resolved the fixture — and because
+ *     `MockBadge` renders null in prod, the page painted fabricated data
+ *     indistinguishable from real (expired session → "24 reviews due" from a
+ *     fixture, no error, no badge). Fabricated-data-as-real is the worst
+ *     available failure mode; an honest error card is strictly better.
+ *   - `error` reflects the **real** call's failure, even when DEV then falls
  *     back to the mock — the screen still renders something, but the toast
  *     layer (Pass 3) gets to surface the original failure.
  *   - On unmount, an `AbortController` cancels any in-flight call. StrictMode
@@ -48,6 +59,13 @@
  *   - **`isMock` lying in PROD.** `MockBadge` is gated on `import.meta.env.PROD`
  *     so a stuck `isMock=true` never reaches end-users. The internal value
  *     can still mislead a dev; the eager reset on key change closes that gap.
+ *   - **Fixture-as-real in PROD.** Because the badge is dev-only, a prod
+ *     real-call failure that fell back to the fixture would paint fabricated
+ *     data with no visible tell. The real-failure mock fallback is therefore
+ *     gated to non-PROD builds (see `run` below); in prod a real failure
+ *     surfaces as `error` + `data: null` and the screen's error/retry path
+ *     takes over. Mock-only sources (no `realFn`) are unaffected — they are
+ *     an explicit choice, not a silent substitution.
  *   - **Error-shape divergence between mock and real.** The mock loaders
  *     resolve happy paths only. `realFn` may reject with an `ApiError`
  *     bearing a `code`/`status` the mock branch never sees. The hook's
@@ -214,10 +232,22 @@ export function useEndpointOrMock<T>(
           // Don't surface a `canceled` from a stale unmount as an error —
           // but here we are guaranteed not aborted (guarded above), so any
           // `canceled` is real (e.g. caller aborted internally). Preserve.
+
+          // PROD: a real-endpoint failure must SURFACE, never be papered
+          // over with fixture data. MockBadge is dev-only, so a prod mock
+          // fallback would render fabricated data indistinguishable from
+          // real (see threat model above). Propagate the error; the screen
+          // renders its error state + retry.
+          if (import.meta.env.PROD) {
+            safeSet({ data: null, isMock: false, error: realError });
+            if (!ctrl.signal.aborted) setLoading(false);
+            return;
+          }
         }
       }
 
-      // Either no realFn was provided, or realFn rejected. Fall back to mock.
+      // Either no realFn was provided (explicit mock-only source), or realFn
+      // rejected in a NON-PROD build (badge visible). Fall back to mock.
       try {
         const mocked = await raceAgainstAbort(mockFn(), ctrl.signal);
         safeSet({ data: mocked, isMock: true, error: realError });

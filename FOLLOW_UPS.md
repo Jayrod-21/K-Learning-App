@@ -181,6 +181,29 @@ robust fix (server-side `version`/tombstone guard on `topik_attempts`, or scopin
 mop-up to a returned attempt id) should be done BEFORE any multi-device or public use.
 Verified + accepted in `db/docs/REVIEW_FIXES_F007.md` (PASS with this recorded residual).
 
+### F-UP-018 · Bug-sweep residuals (2026-07-06, all P3 unless noted)
+Deferred items from the intense bug sweep (findings in `db/docs/SWEEP_*.md`; fixes in
+`FIX_sweep_*.md`; re-reviews in `REVIEW_SWEEP_*.md`). The sweep fixed ~40 defects incl. a
+CRITICAL server crash + the TOPIK-mock level merge; these are the honest leftovers:
+- **Residual bad explanations (~2–5, max ~10)**: batch F audited all 1,926 enriched rows +
+  fixed 45, but ~289 paraphrase-only explanations are heuristic-blind (sampled clean).
+  A follow-up **LLM re-verification pass** over that bucket would close the tail. A `topik_items_explanation_bak_20260706` backup table holds the 45 pre-fix rows.
+- **topik_level not persisted in `topik_attempts` (P2 — do BEFORE any level picker)**: the mock
+  level-merge fix resolves deterministically today (client never sends `topikLevel`), but if a
+  client-side level selector ships, F-007 resume + a split mock/submit level could mis-target.
+  Persist `topik_level` on the attempt row + echo on submit first.
+- **SSE redaction (services layer)**: the conversation proxy stream `error` events still forward
+  raw `ev.message` from the services layer (route-level catches are redacted). Small services-scope fix.
+- **Claude spend**: the 4 formerly-poison-cached routes (diagnostic_item, image_ocr, grammar-drill
+  gen/score) are now genuinely uncached — watch the usage dashboard. `CLAUDE_CACHE_TTL_*_S=0` now means "uncached", not "forever".
+- **UI error-state polish**: Diagnostic's now-reachable fatal branch echoes server prose with no
+  retry; Hanja's featured-item failure renders as an empty "no hanja yet" state; the app-wide
+  "echo ApiError.message into ErrorCard" contract-drift note (XSS-safe) across ~5 pages.
+- **Rate-limit ordering**: some limiters run after `requireAuth` (middleware/rateLimits.ts) — review
+  whether unauthenticated attempts should be limited first.
+- **B-012 (vocab-2000)**: NOT a loader bug — the loader is faithful; the corpus *extraction* is
+  ~400 words/level short of nominal 2,000. Needs re-extraction upstream, not a code fix.
+
 ### F-UP-017 · F-014 Writing rework — NITs from the /fixpass (P3)
 Non-blocking NITs from the three F-014 reviews (full lists in
 `db/docs/REVIEW_F014_{backend,ratelimit,frontend}.md`; re-review PASSed). Notables:

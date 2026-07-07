@@ -5,13 +5,16 @@
  * style.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchImage, fetchImages, uploadImage } from './images';
+import { blobUrlFor, fetchImage, fetchImages, uploadImage } from './images';
 import { api, ApiError } from './api';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// WIRE FIDELITY: the server's `ImageWordDTO` carries kr/en/gloss/pos ONLY —
+// no `id` (routes/images.ts). Earlier fixtures invented `id:'w1'…`, which
+// masked the added-set-keyed-on-undefined bug in the Images page.
 const CAPTURE_WIRE = {
   id: '42',
   name: '카페 메뉴판',
@@ -19,8 +22,8 @@ const CAPTURE_WIRE = {
   caption_en: 'Café menu',
   createdAt: '2026-05-28T10:14:00+09:00',
   words: [
-    { id: 'w1', kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage, drink' },
-    { id: 'w2', kr: '라떼', en: 'latte', pos: 'n.', gloss: 'caffè latte' },
+    { kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage, drink' },
+    { kr: '라떼', en: 'latte', pos: 'n.', gloss: 'caffè latte' },
   ],
 };
 
@@ -69,13 +72,15 @@ describe('uploadImage', () => {
     expect(cap.capturedAt).toBe('2026-05-28T10:14:00+09:00');
     expect(cap.blobUrl).toBe('/images/42/blob');
     expect(cap.words).toHaveLength(2);
+    // Field-for-field wire mapping — and NO fabricated `id`: the wire sends
+    // none, and inventing one here previously masked a real keying bug.
     expect(cap.words[0]).toEqual({
-      id: 'w1',
       kr: '음료',
       en: 'beverage',
       pos: 'n.',
       gloss: 'beverage, drink',
     });
+    expect(cap.words[0]).not.toHaveProperty('id');
     // No bounding box leaks through.
     expect(cap.words[0]).not.toHaveProperty('box');
   });
@@ -179,5 +184,21 @@ describe('fetchImage', () => {
     );
 
     await expect(fetchImage('99')).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('blobUrlFor', () => {
+  it('stays a relative same-origin path when the API base is empty (prod)', () => {
+    expect(blobUrlFor('42', '')).toBe('/images/42/blob');
+  });
+
+  it('joins the API base in dev so the <img> hits the API, not the Vite SPA fallback', () => {
+    // Regression: dev posture is VITE_API_URL=http://localhost:4000 with the
+    // SPA on :5173 and NO dev proxy — a bare relative path resolved against
+    // :5173, where the SPA fallback returns HTML → every capture image broke
+    // in dev. Same base-join contract as ttmik's buildAudioSrc.
+    expect(blobUrlFor('42', 'http://localhost:4000')).toBe(
+      'http://localhost:4000/images/42/blob',
+    );
   });
 });

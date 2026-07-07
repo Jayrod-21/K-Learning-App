@@ -26,6 +26,12 @@ const ISO_WEEK_SQL = `to_char((now() AT TIME ZONE 'Asia/Seoul'), 'IYYY-IW')`;
 /** How many grammar picks the weekly-suggestion endpoint returns. */
 const WEEKLY_SUGGESTION_LIMIT = 15;
 
+// Ids/offsets bind to BIGINT/int8 in pg. Without an upper bound a 20-digit
+// value passes `int().positive()` (Number.isInteger(1e20) is true) and
+// overflows in pg (22003 → 500) where the contract is 400/404 for a garbage
+// id (routes sweep #3). MAX_SAFE_INTEGER ≪ int8 max, so bounded values are safe.
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+
 /* ---------- KGIU corpus (read-only) ---------- */
 
 const KgiuSearchQuerySchema = z.object({
@@ -44,7 +50,7 @@ const KgiuSearchQuerySchema = z.object({
   // = 400) to list the whole corpus without a pager; the reference data is ~370
   // pattern rows, so 400 covers it. Ceiling raised from 100 → 400 to admit that.
   limit: z.coerce.number().int().min(1).max(400).default(20),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
 });
 
 router.get(
@@ -92,7 +98,7 @@ router.get(
 );
 
 const KgiuIdParamsSchema = z.object({
-  id: z.coerce.number().int().positive(),
+  id: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 router.get(
@@ -214,7 +220,7 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
 /* ---------- Graduate / re-admit a banked pattern (migration 033) ---------- */
 
 const BankIdParamsSchema = z.object({
-  id: z.coerce.number().int().positive(),
+  id: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 /**

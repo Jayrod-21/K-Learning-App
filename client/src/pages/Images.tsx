@@ -64,6 +64,20 @@ import type { ImageCapture, OcrWord } from '../types/domain';
 
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
+/**
+ * Stable per-word key inside ONE capture's word list. The wire sends NO word
+ * id (`ImageWordDTO` is `kr/en/gloss/pos` only — see services/images.ts), so
+ * the key is derived from what the wire actually sends: the word's position
+ * in the capture's list plus its text. A capture's word list is immutable
+ * once fetched, so `index:kr` is stable across re-renders and unique even
+ * when the same word is detected twice in one photo. Keying on a non-existent
+ * `id` (the old code) collapsed every word onto `undefined` — banking one
+ * word marked ALL of them "Added" and blocked further banking.
+ */
+function ocrWordKey(word: OcrWord, index: number): string {
+  return `${String(index)}:${word.kr}`;
+}
+
 export default function Images(): JSX.Element {
   const result = useEndpointOrMock<ImageCapture[]>('images', loadImagesMock, {
     realFn: () => fetchImages(),
@@ -81,7 +95,8 @@ export default function Images(): JSX.Element {
   const [wordsById, setWordsById] = useState<Record<string, OcrWord[]>>({});
   // One added-set per capture — keying by capture id keeps state honest when
   // the learner ping-pongs between captures. Each value is a Set<string> of
-  // OCR word ids added to the bank in the current session.
+  // derived per-word keys (`ocrWordKey`) added to the bank this session —
+  // the wire sends no word id to key on.
   const [addedByCapture, setAddedByCapture] = useState<
     Record<string, Set<string>>
   >({});
@@ -157,16 +172,16 @@ export default function Images(): JSX.Element {
    * side, mirroring the server's idempotent mine). Server error text is never
    * echoed; the toast copy is fixed here.
    */
-  const addWord = (capId: string, word: OcrWord): void => {
+  const addWord = (capId: string, word: OcrWord, wordKey: string): void => {
     let alreadyAdded = false;
     setAddedByCapture((prev) => {
       const existing = prev[capId] ?? new Set<string>();
-      if (existing.has(word.id)) {
+      if (existing.has(wordKey)) {
         alreadyAdded = true;
         return prev;
       }
       const next = new Set(existing);
-      next.add(word.id);
+      next.add(wordKey);
       return { ...prev, [capId]: next };
     });
     if (alreadyAdded) return;
@@ -180,9 +195,9 @@ export default function Images(): JSX.Element {
       // surface a fixed, non-blocking failure notice (no server text).
       setAddedByCapture((prev) => {
         const existing = prev[capId];
-        if (!existing?.has(word.id)) return prev;
+        if (!existing?.has(wordKey)) return prev;
         const next = new Set(existing);
-        next.delete(word.id);
+        next.delete(wordKey);
         return { ...prev, [capId]: next };
       });
       toast({ message: "Couldn't bank — try again", tone: 'error' });
@@ -242,12 +257,12 @@ export default function Images(): JSX.Element {
           onOpenWord={(w) => {
             setPopData(wordToPopover(w));
           }}
-          onAddOne={(w) => {
-            addWord(cap.id, w);
+          onAddOne={(w, wordKey) => {
+            addWord(cap.id, w, wordKey);
           }}
           onAddAll={() => {
-            cap.words.forEach((w) => {
-              addWord(cap.id, w);
+            cap.words.forEach((w, i) => {
+              addWord(cap.id, w, ocrWordKey(w, i));
             });
           }}
         />
@@ -564,7 +579,7 @@ function CaptureView({
   added: ReadonlySet<string>;
   onBack: () => void;
   onOpenWord: (w: OcrWord) => void;
-  onAddOne: (word: OcrWord) => void;
+  onAddOne: (word: OcrWord, wordKey: string) => void;
   onAddAll: () => void;
 }): JSX.Element {
   return (
@@ -647,7 +662,9 @@ function CaptureView({
         ) : (
           <ul className="km-images__detected-list">
             {cap.words.map((w, i) => {
-              const isAdded = added.has(w.id);
+              // Derived key — the wire sends no word id (see ocrWordKey).
+              const wordKey = ocrWordKey(w, i);
+              const isAdded = added.has(wordKey);
               // A1 OCR-entrance adaptation: cascade rows in 100ms apart. Cap
               // the stagger at 12 rows so a long detection list doesn't make
               // the tail rows wait (>1.2s) before appearing — past the cap
@@ -656,7 +673,7 @@ function CaptureView({
               const enterDelayMs = Math.min(i, 12) * 100;
               return (
                 <li
-                  key={w.id}
+                  key={wordKey}
                   className="km-images__detected-row km-images__detected-row--enter"
                   style={{ animationDelay: `${String(enterDelayMs)}ms` }}
                 >
@@ -677,7 +694,7 @@ function CaptureView({
                   <button
                     type="button"
                     onClick={() => {
-                      if (!isAdded) onAddOne(w);
+                      if (!isAdded) onAddOne(w, wordKey);
                     }}
                     disabled={isAdded}
                     aria-pressed={isAdded}

@@ -92,11 +92,44 @@ router.put(
   },
 );
 
+/**
+ * True only for a real calendar date (shape pre-checked by the regex below).
+ * A regex alone admits 2026-02-30 / 2026-13-01 / 0000-01-01, which survive to
+ * the `$2::date` cast in SQL and turn into a pg "date/time field value out of
+ * range" 500 where a 400 belongs (routes sweep #2). Date.UTC round-trips the
+ * components, so any overflow (month 13, Feb 30) changes them and is rejected.
+ * Years < 100 are rejected too (Date.UTC maps them to 19xx, failing the
+ * round-trip) — no legitimate study log predates 100 AD.
+ */
+function isRealCalendarDate(value: string): boolean {
+  const [y, m, d] = value.split('-').map(Number) as [number, number, number];
+  if (y < 1 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d
+  );
+}
+
 const StudyLogBodySchema = z.object({
   minutes: z.number().nonnegative().max(24 * 60),
   activity: z.union([z.string().min(1).max(64), z.record(z.string(), z.unknown())]),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine(isRealCalendarDate, { message: 'not a real calendar date' })
+    .optional(),
 });
+
+/**
+ * study_log.minutes_studied is NUMERIC(6,2) (migration 001) → hard column max
+ * 9999.99. The per-request Zod cap (≤ 1440) bounds one write, but the upsert
+ * ACCUMULATES — 7 max-size (or many retried) logs on one day overflow the
+ * column, and once a day's row is near the cap every further legit study-log
+ * that day 500s until midnight (routes sweep #1). Saturate at the column max
+ * instead: 9999.99 minutes (~167 h) in one day is unreachable legitimately, so
+ * clamping loses nothing real and keeps the row writable.
+ */
+const MINUTES_STUDIED_MAX = 9999.99;
 
 router.post(
   '/study-log',
@@ -121,11 +154,19 @@ router.post(
           `INSERT INTO study_log (user_id, study_date, minutes_studied, activities)
            VALUES ($1, COALESCE($2::date, current_date), $3, jsonb_build_array($4::jsonb))
            ON CONFLICT (user_id, study_date) DO UPDATE
-             SET minutes_studied = study_log.minutes_studied + EXCLUDED.minutes_studied,
+             SET minutes_studied = LEAST(
+                                     study_log.minutes_studied + EXCLUDED.minutes_studied,
+                                     $5::numeric),
                  activities      = study_log.activities || EXCLUDED.activities,
                  version         = study_log.version + 1
            RETURNING id, minutes_studied`,
-          [userId, body.date ?? null, body.minutes, JSON.stringify(activityEntry)],
+          [
+            userId,
+            body.date ?? null,
+            body.minutes,
+            JSON.stringify(activityEntry),
+            MINUTES_STUDIED_MAX,
+          ],
         );
         return rows[0];
       });

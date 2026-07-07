@@ -15,6 +15,12 @@
  * Real wiring (Pass 8): `POST /images/ocr` (upload + Claude Vision),
  * `GET /images` (history), `GET /images/:id` (single capture) — see
  * `services/images.ts`.
+ *
+ * WIRE FIDELITY: detected words carry NO `id` — the server's `ImageWordDTO`
+ * sends `kr/en/gloss/pos` only. Earlier fixtures invented `id:'w1'…`, a field
+ * the wire never sends, which masked a real bug (the added-to-bank set was
+ * keyed on the non-existent id, so banking one real word marked every word
+ * "Added"). Keep these fixtures shaped exactly like the wire.
  */
 import type { ImageCapture } from '../../types/domain';
 import { mockDelay } from './_delay';
@@ -36,16 +42,15 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
       { text: '녹차 ₩4,800', x: 12, y: 68, size: 16 },
     ],
     words: [
-      { id: 'w1', kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage, drink' },
+      { kr: '음료', en: 'beverage', pos: 'n.', gloss: 'beverage, drink' },
       {
-        id: 'w2',
         kr: '아메리카노',
         en: 'americano',
         pos: 'n.',
         gloss: 'americano coffee',
       },
-      { id: 'w3', kr: '라떼', en: 'latte', pos: 'n.', gloss: 'caffè latte' },
-      { id: 'w4', kr: '녹차', en: 'green tea', pos: 'n.', gloss: 'green tea' },
+      { kr: '라떼', en: 'latte', pos: 'n.', gloss: 'caffè latte' },
+      { kr: '녹차', en: 'green tea', pos: 'n.', gloss: 'green tea' },
     ],
     capturedAt: '2026-05-28T10:14:00+09:00',
   },
@@ -63,14 +68,12 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
     ],
     words: [
       {
-        id: 'w5',
         kr: '강남역',
         en: 'Gangnam Station',
         pos: 'pn.',
         gloss: 'Gangnam subway station',
       },
       {
-        id: 'w6',
         kr: '출구',
         en: 'exit',
         pos: 'n.',
@@ -94,27 +97,24 @@ export const IMAGE_CAPTURES_FIXTURE: ImageCapture[] = [
     ],
     words: [
       {
-        id: 'w7',
         kr: '식당',
         en: 'restaurant',
         pos: 'n.',
         gloss: 'restaurant, eatery',
       },
       {
-        id: 'w8',
         kr: '비빔밥',
         en: 'bibimbap',
         pos: 'n.',
         gloss: 'bibimbap (mixed rice dish)',
       },
       {
-        id: 'w9',
         kr: '김치찌개',
         en: 'kimchi stew',
         pos: 'n.',
         gloss: 'kimchi jjigae (stew)',
       },
-      { id: 'w10', kr: '합계', en: 'total', pos: 'n.', gloss: 'sum, total amount' },
+      { kr: '합계', en: 'total', pos: 'n.', gloss: 'sum, total amount' },
     ],
     capturedAt: '2026-05-26T20:48:00+09:00',
   },

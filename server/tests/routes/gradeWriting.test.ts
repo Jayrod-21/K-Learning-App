@@ -255,6 +255,58 @@ describe('POST /grade-writing — attempt persistence (F-014)', () => {
       await teardownTestApp(overGrader);
     }
   });
+
+  it('a near-zero maxTotal (0.4) is floored to 1 — the attempt persists instead of being dropped (services sweep #8)', async () => {
+    // GradeResultSchema pins maxTotal only to positive(), so a contract-valid
+    // 0.4 rounds to 0 and trips ck_writing_attempts_max_total_positive — the
+    // best-effort catch then silently drops EVERY such attempt from the F-017
+    // series. The persist site must floor the denominator at 1.
+    const tinyGrader = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        gradeWriting: async (input) => ({
+          result: {
+            rubric: input.rubric,
+            content: { score: 0.2, maxScore: 0.4, evidence: ['e'], improvements: ['i'] },
+            organization: { score: 0.1, maxScore: 0.4, evidence: ['e'], improvements: ['i'] },
+            languageUse: { score: 0.1, maxScore: 0.4, evidence: ['e'], improvements: ['i'] },
+            totalScore: 0.2,
+            maxTotal: 0.4, // rounds to 0 → would trip the CHECK without the floor
+            estimatedLevel: 'below_L3' as const,
+            overallComment: 'mock tiny grade',
+          },
+          metadata: {
+            model: 'claude-sonnet-4-6' as const,
+            cacheHit: false,
+            latencyMs: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            costEstimateUsd: 0,
+            requestId: randomUUID(),
+          },
+        }),
+      },
+    });
+    try {
+      const { agent, userId } = await registerUser(tinyGrader.app, pg.pool);
+      const res = await agent
+        .post('/grade-writing')
+        .send({ prompt: 'topic', sample: 'my essay body' });
+      // The grade response is untouched (raw grader output)…
+      expect(res.status).toBe(200);
+      expect((res.body as { result: { maxTotal: number } }).result.maxTotal).toBe(0.4);
+      // …and the row persists with the normalized denominator instead of
+      // being silently dropped by the CHECK constraint.
+      const rows = await attemptsFor(userId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.max_total).toBe(1);
+      expect(rows[0]!.total_score).toBe(0); // round(0.2) → 0, clamped into [0, 1]
+    } finally {
+      await teardownTestApp(tinyGrader);
+    }
+  });
 });
 
 describe('POST /grade-writing — downstream error', () => {

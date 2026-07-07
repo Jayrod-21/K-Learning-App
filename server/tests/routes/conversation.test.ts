@@ -257,6 +257,47 @@ describe('POST /conversation/:id/messages/stream — SSE (Pass 3, FU-NF-4)', () 
       .send({ content: 'hi', expected_version: 1 });
     expect(res.status).toBe(401);
   });
+
+  it('persistence failure after a successful stream sends a REDACTED error frame (routes sweep #5)', async () => {
+    // A raw pg error message on the SSE wire would leak schema/constraint
+    // names, bypassing the central errorHandler's opaque-500 rule. Force the
+    // persist UPDATE to fail with a distinctive message via a trigger and
+    // assert the frame carries a fixed message — while recovered_text still
+    // lets the client offer a manual retry.
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/conversation').send({ mode: 'casual' });
+    const id = start.body.conversation.id;
+    await pg.pool.query(
+      `CREATE OR REPLACE FUNCTION test_conv_persist_bomb() RETURNS trigger AS $fn$
+       BEGIN
+         RAISE EXCEPTION 'SECRET_INTERNAL_DETAIL: relation conversations, constraint ck_x';
+       END;
+       $fn$ LANGUAGE plpgsql`,
+    );
+    await pg.pool.query(
+      `CREATE TRIGGER trg_test_conv_persist_bomb
+         BEFORE UPDATE ON conversations
+         FOR EACH ROW EXECUTE FUNCTION test_conv_persist_bomb()`,
+    );
+    try {
+      const res = await agent
+        .post(`/conversation/${id}/messages/stream`)
+        .send({ content: '안녕하세요', expected_version: 1 });
+      // Headers were already sent when persistence failed → 200 + error frame.
+      expect(res.status).toBe(200);
+      const body = res.text as string;
+      expect(body).toMatch(/"event":"error"/);
+      expect(body).toMatch(/"code":"persistence_error"/);
+      expect(body).toMatch(/"message":"persistence failed"/);
+      expect(body).toMatch(/"recovered_text"/);
+      expect(body).not.toContain('SECRET_INTERNAL_DETAIL');
+    } finally {
+      await pg.pool.query(
+        'DROP TRIGGER IF EXISTS trg_test_conv_persist_bomb ON conversations',
+      );
+      await pg.pool.query('DROP FUNCTION IF EXISTS test_conv_persist_bomb()');
+    }
+  });
 });
 
 describe('conversation — DB error', () => {

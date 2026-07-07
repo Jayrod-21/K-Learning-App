@@ -35,6 +35,14 @@ export interface StubResponseSpec {
     cache_creation_input_tokens?: number;
   };
   stopReason?: string;
+  /**
+   * Streaming only: emit `text` as delta events, then make the event
+   * iterator REJECT with this error mid-stream (instead of completing),
+   * and reject `finalMessage()` with the same error. Models the real SDK's
+   * behavior on a mid-stream network reset / upstream error / abort, where
+   * both the iterator and the final-message promise reject.
+   */
+  streamError?: unknown;
 }
 
 export interface StubSdk {
@@ -109,9 +117,28 @@ export function makeStubSdk(
         calls.push({ method: 'stream', req });
         const r = next();
         const events: unknown[] = [];
+        let midStreamError: unknown;
         let final: unknown;
         if ('error' in r) {
           final = Promise.reject(r.error);
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises
+          (final as Promise<unknown>).catch(() => undefined);
+        } else if (r.streamError !== undefined) {
+          // Mid-stream failure: deltas first, then the iterator itself
+          // rejects and finalMessage() rejects with the same error — exactly
+          // what the Anthropic SDK does when the connection drops mid-stream.
+          if (r.text) {
+            for (const c of chunkString(r.text, 8)) {
+              events.push({ type: 'content_block_delta', delta: { type: 'text_delta', text: c } });
+            }
+          }
+          midStreamError = r.streamError;
+          final = Promise.reject(r.streamError);
+          // Pre-observe the stub's inner promise so the STUB never produces
+          // an unhandled rejection of its own. This does not mask the bug
+          // under test: client.ts derives a NEW promise from it via
+          // `.then(normalizeResponse)`, and it is THAT derived promise whose
+          // observation the regression test asserts.
           // eslint-disable-next-line @typescript-eslint/no-floating-promises
           (final as Promise<unknown>).catch(() => undefined);
         } else {
@@ -132,6 +159,9 @@ export function makeStubSdk(
             return {
               next(): Promise<IteratorResult<unknown>> {
                 if (k >= events.length) {
+                  if (midStreamError !== undefined) {
+                    return Promise.reject(midStreamError);
+                  }
                   return Promise.resolve({ value: undefined, done: true });
                 }
                 const value = events[k]!;

@@ -394,7 +394,10 @@ async def _insert_item_batch(
                 %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
                 %s, %s, %s::jsonb)
             ON CONFLICT (corpus, source_id) DO UPDATE
-              SET item_number       = EXCLUDED.item_number,
+              SET topik_test_id     = EXCLUDED.topik_test_id,
+                  corpus_source_id  = EXCLUDED.corpus_source_id,
+                  section           = EXCLUDED.section,
+                  item_number       = EXCLUDED.item_number,
                   instruction_group = EXCLUDED.instruction_group,
                   instruction       = EXCLUDED.instruction,
                   skill_tag         = EXCLUDED.skill_tag,
@@ -409,7 +412,16 @@ async def _insert_item_batch(
                   model_answer      = EXCLUDED.model_answer,
                   has_image         = EXCLUDED.has_image,
                   image_text        = EXCLUDED.image_text,
-                  extra             = EXCLUDED.extra,
+                  -- MERGE, don't replace (SWEEP_data_corpus D-6): `extra` holds
+                  -- DB-only enrichment (~1.9k `explanation` values live only in
+                  -- the DB), while the loader itself only ever writes
+                  -- `char_range`. `extra = EXCLUDED.extra` therefore wiped every
+                  -- enrichment key on re-ingest. Semantics here: loader-owned
+                  -- keys (char_range) are fully source-authoritative — removed
+                  -- from the old value first so the source can also DELETE them
+                  -- — then the fresh source extra is overlaid; every other
+                  -- (enrichment) key survives untouched.
+                  extra             = (topik_items.extra - 'char_range') || EXCLUDED.extra,
                   item_type         = EXCLUDED.item_type,
                   version           = topik_items.version + 1
             """,

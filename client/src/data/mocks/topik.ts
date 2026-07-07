@@ -305,9 +305,15 @@ export async function submitTopikMockTestMock(
   const totalItems = TOPIK_MOCK_ITEMS_FIXTURE.length;
   const pickedById = new Map(body.answers.map((a) => [a.itemId, a.picked]));
   const items = TOPIK_MOCK_ITEMS_FIXTURE.map((it) => {
+    // The submit BODY carries numeric itemIds (server schema z.number());
+    // the reveal echoes the item's WIRE id, which is a STRING (`i.id::text`).
     const picked = pickedById.get(Number(it.id)) ?? null;
     return {
-      itemId: Number(it.id),
+      // WIRE FIDELITY: `MockReveal.itemId` is a string on the real wire. The
+      // old fixture returned `Number(it.id)`, which masked the results
+      // screen's string-vs-number Map lookup bug — real reviews rendered
+      // blank while the mock path looked fine.
+      itemId: it.id,
       picked,
       correctChoiceId: PSEUDO_KEY,
       isCorrect: picked === PSEUDO_KEY,

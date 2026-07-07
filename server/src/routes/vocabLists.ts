@@ -52,20 +52,27 @@ router.use(requireAuth);
 
 const LIST_KIND = z.enum(['vocab', 'grammar', 'hanja', 'mixed']);
 
+// Ids (and OFFSETs) bind to BIGINT/int8 in pg. Without an upper bound,
+// `Number.isInteger(1e20)` is true, so a 20-digit id passes Zod and overflows
+// in pg (22003 → 500) where the contract everywhere else is 400/404 for a
+// garbage id (routes sweep #3). MAX_SAFE_INTEGER is the largest value a JS
+// number can even represent faithfully, and is far below the int8 max.
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+
 const ListIdParamsSchema = z.object({
-  id: z.coerce.number().int().positive(),
+  id: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 const ListEntryParamsSchema = z.object({
-  id: z.coerce.number().int().positive(),
-  entryId: z.coerce.number().int().positive(),
+  id: z.coerce.number().int().positive().max(MAX_ID),
+  entryId: z.coerce.number().int().positive().max(MAX_ID),
 });
 
 /* ---------- GET /vocab/lists — index ---------- */
 
 const IndexQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  offset: z.coerce.number().int().nonnegative().default(0),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
   kind: LIST_KIND.optional(),
 });
 
@@ -134,7 +141,7 @@ const CreateBodySchema = z
     // from selection" UI flow is one round-trip. Cap at the same ceiling we
     // accept on /entries POST to keep the surface uniform.
     seed_entry_ids: z
-      .array(z.coerce.number().int().positive())
+      .array(z.coerce.number().int().positive().max(MAX_ID))
       .max(200)
       .optional(),
   })
@@ -216,7 +223,7 @@ router.post(
 
 const DetailQuerySchema = z.object({
   entry_limit: z.coerce.number().int().min(0).max(500).default(100),
-  entry_offset: z.coerce.number().int().nonnegative().default(0),
+  entry_offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
 });
 
 router.get(
@@ -395,7 +402,7 @@ router.delete(
 const AppendBodySchema = z
   .object({
     entry_ids: z
-      .array(z.coerce.number().int().positive())
+      .array(z.coerce.number().int().positive().max(MAX_ID))
       .min(1)
       .max(200),
   })
