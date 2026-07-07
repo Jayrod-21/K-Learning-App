@@ -1,12 +1,20 @@
 /**
- * Progress page — trend chart + comparison behaviour over a mocked
- * `useEndpointOrMock` (same harness style as Hanja/Diagnostic page tests).
+ * Progress page (the P1.2 stats hub) — compare surface + trend chart +
+ * per-skill trends carousel + mastery over a mocked `useEndpointOrMock`
+ * (same harness style as Hanja/Diagnostic page tests).
  *
- * The hook is mocked so each test controls the `diagnostic.history` read
- * directly; the page's chart geometry is not asserted pixel-by-pixel —
- * behaviour is asserted through the accessible surfaces (chart aria-label,
- * legend, readout, comparison + attempts tables), which is also what makes
- * the chart usable without a pointer.
+ * The hook is mocked with a per-key dispatch so each test controls the
+ * `diagnostic.history` and `progress.series` reads directly; the page's
+ * chart geometry is not asserted pixel-by-pixel — behaviour is asserted
+ * through the accessible surfaces (chart aria-label, legend, readout,
+ * comparison + attempts tables, carousel tabs/panels), which is also what
+ * makes the charts usable without a pointer.
+ *
+ * P1.2 contract pinned here: Progress DOES render the moved F-017 "Progress
+ * by skill" carousel and the SkillsCompare `full` headline compare (both
+ * moved off Today), the retake-diagnostic button in the POPULATED state, and
+ * the grammar-mastery placeholder beside Word mastery. The attempt-vs-attempt
+ * delta table is folded into the single compare card, not a second card.
  *
  * Fixtures pass through `vi.hoisted` so the Vitest-hoisted `vi.mock` factory
  * can reference them.
@@ -14,10 +22,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { ApiError } from '../services/api';
 import type {
+  AllSkillSeries,
   DiagnosticDimension,
   DiagnosticHistoryResponse,
   DiagnosticHistorySnapshot,
@@ -89,7 +98,59 @@ const { HISTORY_3 } = vi.hoisted(() => {
   return { HISTORY_3: history };
 });
 
+// F-017 skill-series fixture (moved with the carousel from Today.test.tsx).
+// Real wire shapes: TOPIK skills are accuracy/%, vocab counts REVIEWS,
+// grammar is score/pts, writing is score/% (F-014 normalized grade score) —
+// together they exercise all three wire metrics in render.
+const { SKILL_SERIES } = vi.hoisted(() => {
+  const series: AllSkillSeries = {
+    reading: {
+      metric: 'accuracy',
+      unit: '%',
+      points: [
+        { date: '2026-06-08', value: 58 },
+        { date: '2026-06-15', value: 66 },
+        { date: '2026-06-30', value: 74 },
+      ],
+    },
+    listening: {
+      metric: 'accuracy',
+      unit: '%',
+      points: [
+        { date: '2026-06-09', value: 42 },
+        { date: '2026-06-30', value: 58 },
+      ],
+    },
+    vocab: {
+      metric: 'count',
+      unit: 'reviews',
+      points: [
+        { date: '2026-06-08', value: 12 },
+        { date: '2026-06-29', value: 35 },
+      ],
+    },
+    grammar: {
+      metric: 'score',
+      unit: 'pts',
+      points: [
+        { date: '2026-06-10', value: 39 },
+        { date: '2026-06-30', value: 52 },
+      ],
+    },
+    writing: {
+      metric: 'score',
+      unit: '%',
+      points: [
+        { date: '2026-06-16', value: 60 },
+        { date: '2026-06-30', value: 72 },
+      ],
+    },
+  };
+  return { SKILL_SERIES: series };
+});
+
 const refetchSpy = vi.hoisted(() => vi.fn());
+const seriesRefetchSpy = vi.hoisted(() => vi.fn());
 
 // The Word Mastery section fetches directly (not via useEndpointOrMock).
 const masterySvc = vi.hoisted(() => ({ fetchMastery: vi.fn() }));
@@ -122,9 +183,10 @@ const { MASTERY_DEFAULT } = vi.hoisted(() => ({
   },
 }));
 
-// Per-test override for the single hook key — `{}` means "use the default".
+// Per-test overrides, one per hook key — `{}` means "use the default".
 type HookResult = UseEndpointOrMockResult<unknown>;
 const hookOverride = vi.hoisted(() => ({ current: {} as Partial<HookResult> }));
+const seriesOverride = vi.hoisted(() => ({ current: {} as Partial<HookResult> }));
 
 function hookResult(): HookResult {
   const base: HookResult = {
@@ -137,10 +199,29 @@ function hookResult(): HookResult {
   return { ...base, ...hookOverride.current };
 }
 
+function seriesResult(): HookResult {
+  const base: HookResult = {
+    data: SKILL_SERIES,
+    loading: false,
+    error: null,
+    isMock: false,
+    refetch: seriesRefetchSpy,
+  };
+  return { ...base, ...seriesOverride.current };
+}
+
 vi.mock('../hooks/useEndpointOrMock', () => ({
-  useEndpointOrMock: vi.fn(() => hookResult()),
+  useEndpointOrMock: vi.fn((key: string) =>
+    key === 'progress.series' ? seriesResult() : hookResult(),
+  ),
 }));
 vi.mock('../services/vocab', () => masterySvc);
+// The page imports `fetchSkillSeries` for its realFn; with the hook mocked
+// it is never invoked, but mock the module anyway so no test path can reach
+// the real axios layer.
+vi.mock('../services/stats', () => ({
+  fetchSkillSeries: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
+}));
 
 // Import after the mock so it is in place.
 import Progress from './Progress';
@@ -152,14 +233,20 @@ function historyOf(count: number): DiagnosticHistoryResponse {
 function renderPage(): void {
   render(
     <MemoryRouter>
-      <Progress />
+      <Routes>
+        <Route path="/" element={<Progress />} />
+        {/* Retake-diagnostic target (P1.2 populated-state CTA). */}
+        <Route path="/diagnostic" element={<div>DIAGNOSTIC PAGE</div>} />
+      </Routes>
     </MemoryRouter>,
   );
 }
 
 beforeEach(() => {
   refetchSpy.mockClear();
+  seriesRefetchSpy.mockClear();
   hookOverride.current = {};
+  seriesOverride.current = {};
   masterySvc.fetchMastery.mockReset();
   masterySvc.fetchMastery.mockResolvedValue(MASTERY_DEFAULT);
 });
@@ -201,14 +288,18 @@ describe('Progress page — trend', () => {
     renderPage();
 
     // Without any pointer, the latest attempt's values are already visible.
-    // (Scoped to the readout live region — the comparison pickers' options
-    // render the same "Attempt N · date" text.)
-    const readout = screen.getByRole('status');
-    expect(within(readout).getByText(/Attempt 3 · 6\/1/)).toBeInTheDocument();
+    // (Scoped to the TREND readout live region — the comparison pickers'
+    // options render the same "Attempt N · date" text, and the carousel's
+    // active LineChart carries its own role="status" readout.)
+    const readout = screen
+      .getAllByRole('status')
+      .find((el) => /Attempt \d/.test(el.textContent ?? ''));
+    expect(readout).toBeDefined();
+    expect(within(readout!).getByText(/Attempt 3 · 6\/1/)).toBeInTheDocument();
 
     // Hovering an attempt's hit column moves the readout to that attempt.
     await user.hover(screen.getByRole('button', { name: /^Attempt 1, 5\/1/ }));
-    expect(within(readout).getByText(/Attempt 1 · 5\/1/)).toBeInTheDocument();
+    expect(within(readout!).getByText(/Attempt 1 · 5\/1/)).toBeInTheDocument();
 
     // The hit column's accessible name carries the same values as the hover.
     expect(
@@ -235,10 +326,38 @@ describe('Progress page — trend', () => {
   });
 });
 
-describe('Progress page — comparison', () => {
-  it('defaults to previous vs latest and shows signed per-dimension deltas', () => {
+describe('Progress page — compare surface (P1.2 reconciliation)', () => {
+  it('renders ONE compare card: SkillsCompare full headline over the latest attempt', () => {
     renderPage();
 
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+
+    // The moved TOPIK-level display: full-variant SkillsCompare with the
+    // reference picker (TOPIK levels through the Native ceiling)…
+    const picker = screen.getByRole('radiogroup', { name: 'Reference level' });
+    expect(within(picker).getByRole('radio', { name: 'TOPIK 3' })).toBeInTheDocument();
+    expect(within(picker).getByRole('radio', { name: 'TOPIK 4' })).toBeInTheDocument();
+    expect(within(picker).getByRole('radio', { name: 'Native' })).toBeInTheDocument();
+    // …and exactly ONE such picker — one compare surface, not two widgets.
+    expect(screen.getAllByRole('radiogroup')).toHaveLength(1);
+
+    // The bars carry the LATEST attempt's scores (70/62/75/61).
+    const reading = screen.getByRole('progressbar', { name: 'Reading skill' });
+    expect(reading).toHaveAttribute('aria-valuenow', '70');
+    expect(
+      screen.getByRole('progressbar', { name: 'Grammar skill' }),
+    ).toHaveAttribute('aria-valuenow', '61');
+
+    // Full mode (not the old Today compact): the legend explains the marks.
+    expect(screen.getByText('At / above')).toBeInTheDocument();
+  });
+
+  it('folds attempt-vs-attempt into the compare card with signed per-dimension deltas', () => {
+    renderPage();
+
+    // The sub-block lives under the headline compare, defaulting to
+    // previous vs latest.
+    expect(screen.getByText('Attempt vs attempt')).toBeInTheDocument();
     const table = screen.getByRole('table', {
       name: /Score change from attempt 2 to attempt 3/,
     });
@@ -262,6 +381,222 @@ describe('Progress page — comparison', () => {
     // Reading 40 → 70.
     expect(within(table).getByText('▲ +30')).toBeInTheDocument();
   });
+
+  it('shows the retake-diagnostic button in the POPULATED state and navigates', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      screen.getByRole('button', { name: /Retake diagnostic/ }),
+    );
+    expect(screen.getByText('DIAGNOSTIC PAGE')).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — per-skill trends carousel (F-017, moved from Today)', () => {
+  it('renders the Progress by skill carousel card with the series data', () => {
+    renderPage();
+
+    expect(screen.getByText('Progress by skill')).toBeInTheDocument();
+
+    // The carousel region is present with one dot per skill (5 pages).
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(region).getAllByRole('tab')).toHaveLength(5);
+
+    // First panel (Reading) is the active page and shows its latest value.
+    const firstPanel = within(region).getAllByRole('tabpanel', {
+      hidden: true,
+    })[0];
+    expect(firstPanel).toHaveAttribute('aria-hidden', 'false');
+    expect(firstPanel).toHaveTextContent('Reading');
+    expect(firstPanel).toHaveTextContent('74%');
+    expect(
+      screen.getByRole('img', { name: 'Reading trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('navigates carousel pages via the dots (Vocab shows its count)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    // Page order is Reading, Listening, Vocab, Grammar, Writing → Vocab = 3.
+    await user.click(
+      within(region).getByRole('tab', { name: 'Page 3 of 5' }),
+    );
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[2]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[2]).toHaveTextContent('Vocab');
+    expect(panels[2]).toHaveTextContent('35 reviews');
+  });
+
+  it('renders the Grammar page with the score metric (score/pts wire shape)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    // Grammar is page 4. Its series is `metric: 'score'` + `unit: 'pts'` on
+    // the real wire — this pins the score render path (headline "N pts" +
+    // a real chart), which the count metric (Vocab) does not exercise.
+    await user.click(within(region).getByRole('tab', { name: 'Page 4 of 5' }));
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[3]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[3]).toHaveTextContent('Grammar');
+    expect(panels[3]).toHaveTextContent('52 pts');
+    expect(
+      screen.getByRole('img', { name: 'Grammar trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the Writing page as a real chart when it has points (F-014)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    // Writing is page 5. Its series is `metric: 'score'` + `unit: '%'` on
+    // the real wire — the headline formats as a percent and a REAL chart
+    // renders: no invitation, no placeholder. This is the POSITIVE F-014
+    // path; the empty/failed negatives below don't cover it.
+    await user.click(within(region).getByRole('tab', { name: 'Page 5 of 5' }));
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[4]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[4]).toHaveTextContent('Writing');
+    expect(panels[4]).toHaveTextContent('72%');
+    expect(
+      screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Start writing to see your progress here.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the invitation only when the writing series is EMPTY', () => {
+    seriesOverride.current = {
+      data: {
+        ...SKILL_SERIES,
+        writing: { metric: 'score', unit: '%', points: [] },
+      },
+    };
+    renderPage();
+
+    expect(
+      screen.getByText('Start writing to see your progress here.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('marks the Writing panel "Couldn’t load this trend." when its route failed', () => {
+    // fetchSkillSeries degrades a failed /writing/series to the metric:'none'
+    // placeholder — the panel must read as a FAILED FETCH (F-UP-016a), never
+    // as the fresh-account "No data yet" empty state, never an invitation as
+    // if the user had never written, and never fabricated points.
+    seriesOverride.current = {
+      data: {
+        ...SKILL_SERIES,
+        writing: { metric: 'none', unit: '', points: [] },
+      },
+    };
+    renderPage();
+
+    expect(screen.getByText('Couldn’t load this trend.')).toBeInTheDocument();
+    // A failed panel must NOT masquerade as a genuinely-empty series.
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Start writing to see your progress here.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('collapses the carousel to an ErrorCard with a live retry on a total outage', async () => {
+    // F-UP-016a — ALL series routes failing must read as one honest
+    // ErrorCard wired to the series refetch, not five "No data yet" panels.
+    const down = { metric: 'none', unit: '', points: [] } as const;
+    seriesOverride.current = {
+      data: {
+        reading: down,
+        listening: down,
+        vocab: down,
+        grammar: down,
+        writing: down,
+      },
+    };
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      screen.getByText('Progress trends couldn’t be loaded.'),
+    ).toBeInTheDocument();
+    // No empty-state copy, no per-panel failure copy, no carousel — a total
+    // outage is one error, not a fresh account or five broken panels.
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Couldn’t load this trend.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('tablist', { name: 'Progress by skill pages' }),
+    ).not.toBeInTheDocument();
+
+    // Retry is real: it fires the series source's refetch — not the
+    // history's (which rendered fine, so this is the only Retry on screen).
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(seriesRefetchSpy).toHaveBeenCalledTimes(1);
+    expect(refetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders every panel honestly for a fresh user (all series empty)', () => {
+    // The COMMON real state for this app's audience: every series route
+    // responds fine with zero activity. Every headline is an em dash; the
+    // four charted skills say "No data yet"; writing keeps its invitation.
+    // All-empty must NEVER read as the total-outage ErrorCard (that state
+    // is `metric: 'none'`) — genuinely empty and failed are different.
+    seriesOverride.current = {
+      data: {
+        reading: { metric: 'accuracy', unit: '%', points: [] },
+        listening: { metric: 'accuracy', unit: '%', points: [] },
+        vocab: { metric: 'count', unit: 'reviews', points: [] },
+        grammar: { metric: 'score', unit: 'pts', points: [] },
+        writing: { metric: 'score', unit: '%', points: [] },
+      } satisfies AllSkillSeries,
+    };
+    renderPage();
+
+    // (Scoped to the carousel region — the rest of the Progress page has
+    // its own em dashes and copy.)
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(within(region).getAllByText('—')).toHaveLength(5);
+    expect(within(region).getAllByText('No data yet')).toHaveLength(4);
+    expect(
+      within(region).getByText('Start writing to see your progress here.'),
+    ).toBeInTheDocument();
+    // Not the outage path, no chart images, no NaN/undefined leakage.
+    expect(
+      screen.queryByText('Progress trends couldn’t be loaded.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: /trend over/ }),
+    ).not.toBeInTheDocument();
+    expect(region.textContent).not.toMatch(/NaN|undefined/);
+  });
+
+  it('renders the trends carousel even with an empty diagnostic history', () => {
+    // The carousel is fed by its own fetch — a user with practice activity
+    // but zero diagnostic runs still sees their trends (zero regression vs
+    // the carousel's old home on Today, which had no history dependency).
+    hookOverride.current = { data: { snapshots: [] } };
+    renderPage();
+
+    expect(
+      screen.getByRole('button', { name: /Take the diagnostic/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Progress by skill' }),
+    ).toBeInTheDocument();
+  });
 });
 
 describe('Progress page — empty / sparse / loading / error states', () => {
@@ -272,10 +607,13 @@ describe('Progress page — empty / sparse / loading / error states', () => {
     expect(
       screen.getByRole('button', { name: /Take the diagnostic/ }),
     ).toBeInTheDocument();
+    // No history-fed surfaces: neither the attempts/delta tables nor the
+    // compare card render without an attempt.
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByText('Where you stand')).not.toBeInTheDocument();
   });
 
-  it('renders a single attempt (markers only) with a retake note', () => {
+  it('renders a single attempt (markers only) with a retake note and no attempt-vs-attempt', () => {
     hookOverride.current = { data: historyOf(1) };
     renderPage();
 
@@ -285,8 +623,13 @@ describe('Progress page — empty / sparse / loading / error states', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText(/One attempt so far/)).toBeInTheDocument();
-    // No comparison card with a single attempt.
-    expect(screen.queryByText('Comparison')).not.toBeInTheDocument();
+    // The compare card still renders (headline + retake CTA)…
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Retake diagnostic/ }),
+    ).toBeInTheDocument();
+    // …but the attempt-vs-attempt sub-block needs two attempts.
+    expect(screen.queryByText('Attempt vs attempt')).not.toBeInTheDocument();
     // The attempts table still lists the one attempt.
     const table = screen.getByRole('table', { name: /All diagnostic attempts/ });
     expect(within(table).getAllByRole('row')).toHaveLength(2);
@@ -296,7 +639,12 @@ describe('Progress page — empty / sparse / loading / error states', () => {
     hookOverride.current = { data: null, loading: true };
     renderPage();
 
-    expect(screen.getByRole('status')).toHaveTextContent(/Loading progress/);
+    // Several polite live regions exist on the page (the carousel's active
+    // LineChart readout is one); the history loading state must be among them.
+    const statuses = screen.getAllByRole('status');
+    expect(
+      statuses.some((el) => /Loading progress/.test(el.textContent ?? '')),
+    ).toBe(true);
   });
 
   it('surfaces a fetch failure as an error card with a working retry', async () => {
@@ -444,5 +792,21 @@ describe('Progress page — word mastery (F-013)', () => {
       await screen.findByText(/showing the last loaded mastery/),
     ).toBeInTheDocument();
     expect(screen.getByText('사랑')).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — grammar mastery placeholder (P1.2, filled in P4)', () => {
+  it('renders a designed coming-soon card beside Word mastery', async () => {
+    renderPage();
+
+    // Both mastery sections co-exist: the real vocab one…
+    expect(await screen.findByText('Word mastery')).toBeInTheDocument();
+    // …and the intentional grammar placeholder (title + pill + real copy,
+    // never a blank panel).
+    expect(screen.getByText('Grammar mastery')).toBeInTheDocument();
+    expect(screen.getByText('Coming soon')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Pattern-by-pattern mastery/),
+    ).toBeInTheDocument();
   });
 });

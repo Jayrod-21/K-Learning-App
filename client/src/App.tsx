@@ -8,15 +8,18 @@
  *         <BrowserRouter>
  *           <Routes>...
  *
- * Routing model (Overhaul P1.1 — namespaced paths):
+ * Routing model (Overhaul P1.1/P1.2 — namespaced paths):
  *   - `/login` is the only public route. `<RequireAuth/>` gates everything
  *     else and pushes guests to `/login`.
  *   - Primary tabs: `/` (Today), `/progress`, `/review` (library index),
- *     `/settings`. LEARN sub-pages live under `/learn/*`; Mistakes lives
- *     under the library at `/review/mistakes`.
+ *     `/settings`. LEARN sub-pages live under `/learn/*`; the library's
+ *     sub-pages live under `/review/*` (mistakes, vocab, dictionary,
+ *     grammar — P1.2 dissolved the old Reference page into the latter
+ *     three; decisions D2/D3).
  *   - `/chat` NEVER moves — hard contract (AskAboutThisButton.CHAT_PATH).
- *   - Legacy flat paths (`/topik`, `/ttmik`, `/grammar`, …) render redirect
- *     shims from `lib/redirects.tsx` so old links keep landing.
+ *   - Legacy paths (`/topik`, `/ttmik`, `/grammar`, `/reference?tab=`, …)
+ *     render redirect shims from `lib/redirects.tsx` so old links keep
+ *     landing.
  *   - Each in-app screen renders its real body; routes are registered here
  *     and the nav model lives in `lib/nav.ts` (kept in sync with these paths).
  *   - Unknown paths redirect to `/`. We could 404 instead, but a soft
@@ -46,6 +49,9 @@ import Today from './pages/Today';
 import Topik from './pages/Topik';
 import Review from './pages/Review';
 import ReviewLibrary from './pages/ReviewLibrary';
+import ReviewVocab from './pages/review/ReviewVocab';
+import ReviewDictionary from './pages/review/ReviewDictionary';
+import ReviewGrammar from './pages/review/ReviewGrammar';
 import Reading from './pages/Reading';
 import Diagnostic from './pages/Diagnostic';
 import Grammar from './pages/Grammar';
@@ -54,7 +60,6 @@ import Hanja from './pages/Hanja';
 import Mistakes from './pages/Mistakes';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
-import Reference from './pages/Reference';
 import Settings from './pages/Settings';
 import Progress from './pages/Progress';
 import Ttmik from './pages/Ttmik';
@@ -92,11 +97,21 @@ export default function App(): JSX.Element {
                     {/* Primary tabs. */}
                     <Route index element={<Today />} />
                     <Route path="progress" element={<Progress />} />
-                    {/* `/review` is the LIBRARY index (P1.1 placeholder) —
-                        the FSRS flashcards that used to live here are now
-                        `/learn/vocab`. */}
+                    {/* `/review` is the LIBRARY index — the FSRS flashcards
+                        that used to live here are now `/learn/vocab`. The
+                        library sub-pages below re-home the dissolved
+                        Reference tabs (P1.2, D2/D3). */}
                     <Route path="review" element={<ReviewLibrary />} />
                     <Route path="review/mistakes" element={<Mistakes />} />
+                    <Route path="review/vocab" element={<ReviewVocab />} />
+                    <Route
+                      path="review/dictionary"
+                      element={<ReviewDictionary />}
+                    />
+                    <Route
+                      path="review/grammar"
+                      element={<ReviewGrammar />}
+                    />
                     <Route path="settings" element={<Settings />} />
                     {/* LEARN sub-pages (hexagon launcher). Pure re-homes,
                         except Reading — a new placeholder until P6. */}
@@ -111,8 +126,8 @@ export default function App(): JSX.Element {
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
-                    <Route path="reference" element={<Reference />} />
-                    {/* Legacy flat paths → new namespaced homes. */}
+                    {/* Legacy paths → new namespaced homes (includes the
+                        tab-aware /reference shim — the page is retired). */}
                     {legacyRedirectRoutes()}
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />

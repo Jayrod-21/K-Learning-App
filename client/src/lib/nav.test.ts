@@ -77,4 +77,17 @@ describe('nav manifest (P1.1)', () => {
     // (that path is a live redirect to /learn/listen).
     expect(navItem('reading').path).toBe('/learn/reading');
   });
+
+  it('homes the dissolved Reference tabs under /review/* (P1.2, D2/D3)', () => {
+    expect(navItem('review-vocab').path).toBe('/review/vocab');
+    expect(navItem('review-dictionary').path).toBe('/review/dictionary');
+    expect(navItem('review-grammar').path).toBe('/review/grammar');
+    // All three are SECONDARY screens (reachable from the library index).
+    expect(SECONDARY_IDS).toContain('review-vocab');
+    expect(SECONDARY_IDS).toContain('review-dictionary');
+    expect(SECONDARY_IDS).toContain('review-grammar');
+    // The standalone Reference page is retired — no NavItem points at it
+    // (a tab-aware shim in lib/redirects still lands old bookmarks).
+    expect(NAV_ITEMS.some((it) => it.path === '/reference')).toBe(false);
+  });
 });

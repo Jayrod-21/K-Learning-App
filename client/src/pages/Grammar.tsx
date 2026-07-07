@@ -1,13 +1,15 @@
 /**
- * Grammar screen — Pass-3 list/bank wiring on top of the Pass-2 drill UI.
+ * Grammar screen — the LEARN grammar-practice page (drill + bank management).
  *
- * Three tabs:
- *   - `list`   — every KGIU pattern (the full corpus — `limit` is pinned to the
- *                endpoint's 400 ceiling, which covers all 285 listable rows),
- *                with a beginner/intermediate/advanced level filter that maps to
- *                the endpoint's `corpus` query param. Tap row to open detail
- *                Sheet; Bank button per row → `POST /grammar/bank` (idempotent
- *                server side). 🅂 badge OFF (real `listPatterns` + `listBanked`).
+ * Overhaul P1.2, decision D3: the old `list` browse tab is GONE — the single
+ * grammar browse (search, F-005 filters, detail Sheet, per-row Bank) lives in
+ * the Review library at `/review/grammar` (pages/review/ReviewGrammar.tsx).
+ * This screen focuses on practising what's banked. The full KGIU corpus is
+ * still fetched here (one wide page — the endpoint's 400 ceiling covers all
+ * 285 listable rows) because the drill's fallback pool and the Banked tab's
+ * rich detail fetch both draw on it.
+ *
+ * Two tabs:
  *   - `banked` — the subset the user has already banked, split into an
  *                Active | Known segmented view. Active rows carry a
  *                **Graduate** action (`POST /grammar/bank/:id/graduate`) that
@@ -39,21 +41,14 @@
  *   useEndpointOrMock('grammar:bank', () => Promise.resolve([]),
  *     { realFn: services.grammar.listBanked })             → Set<pattern_key>
  *   services.grammar.getPattern(id)                         → detail Sheet
- *   services.grammar.bankPattern(body)                      → optimistic add
  *
  * Threat model:
  *   - **graduatePattern / readmitPattern** mutate only a boolean-ish flag on
  *     a row the server verifies the user owns (404 otherwise); both are
  *     idempotent, id comes from the server's own bank list (never user text),
  *     and failures rewind the optimistic move with an inline error.
- *   - **bankPattern** is the other state-mutating call. Server is idempotent
- *     on `(user_id, pattern_key)` (see grammar.ts:51 + grammar.test.ts:67)
- *     — a double-tap or a stale optimistic add re-issuing the same body
- *     returns 200 not 409 (well, the test in services-land does surface
- *     409 if the route ever changes; we treat 409 as success here too,
- *     since the post-condition holds either way). CSRF defended by the
- *     cookie's `SameSite=Strict`. We do NOT echo any server message text;
- *     row strings come from our own KGIU rows.
+ *     (The `bankPattern` POST moved to the library browse with the list tab
+ *     — see pages/review/ReviewGrammar.tsx + lib/grammarBank.ts.)
  *   - **getPattern** is a GET — no CSRF surface. A failed detail load
  *     leaves the row tappable and surfaces an inline ErrorCard inside
  *     the Sheet; the rest of the list keeps working.
@@ -89,12 +84,10 @@ import { MockBadge } from '../components/MockBadge';
 import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
 import { KgiuDetailBody } from '../components/KgiuDetailBody';
-import {
-  useEndpointOrMock,
-  type UseEndpointOrMockResult,
-} from '../hooks/useEndpointOrMock';
+import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadGrammarMock } from '../data/mocks/grammar';
 import { grammarKey } from '../lib/grammarKey';
+import { toServerProficiency } from '../lib/grammarBank';
 import * as grammarService from '../services/grammar';
 import {
   generateDrill,
@@ -104,18 +97,16 @@ import {
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
 import type {
-  BankGrammarBody,
   DrillItemPublic,
   DrillSchedule,
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
-  RegisterLevel,
   ServerProficiency,
 } from '../types/domain';
 import { useLocation, useNavigate } from 'react-router-dom';
 
-type Tab = 'list' | 'banked' | 'drill';
+type Tab = 'banked' | 'drill';
 
 /**
  * Deep-link payload the Review screen hands to the Drill tab (FU-NF-42 B3).
@@ -153,56 +144,29 @@ function readDrillTarget(state: unknown): DrillTarget | null {
 }
 
 const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
-  { id: 'list', label: 'List' },
   { id: 'banked', label: 'Banked' },
   { id: 'drill', label: 'Drill' },
 ];
 
 /**
- * List-tab level filter. Maps 1:1 onto the `corpus` query param the server's
- * `GET /grammar/kgiu` already validates (`kgiu_beginner | kgiu_intermediate |
- * kgiu_advanced` — see KgiuSearchQuerySchema in server/src/routes/grammar.ts);
- * 'all' omits the param so the endpoint returns every corpus.
- */
-type LevelFilter = 'all' | 'beginner' | 'intermediate' | 'advanced';
-
-const LEVEL_FILTERS: ReadonlyArray<{ id: LevelFilter; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'beginner', label: 'Beginner' },
-  { id: 'intermediate', label: 'Intermediate' },
-  { id: 'advanced', label: 'Advanced' },
-];
-
-/** LevelFilter → the server's `corpus` enum value ('all' → no filter). */
-const LEVEL_TO_CORPUS: Record<
-  Exclude<LevelFilter, 'all'>,
-  NonNullable<grammarService.ListPatternsOptions['corpus']>
-> = {
-  beginner: 'kgiu_beginner',
-  intermediate: 'kgiu_intermediate',
-  advanced: 'kgiu_advanced',
-};
-
-/**
- * One wide page for the whole (level-filtered) corpus — the endpoint's `limit`
- * ceiling. The default server `limit` is 20, which is why the List previously
- * showed only the first 20 of the 285 listable patterns; 400 covers the full
- * set (285 total: 108 beginner / 93 intermediate / 84 advanced) with headroom.
- * Mirrors GRAMMAR_PAGE_SIZE in Reference.tsx.
+ * One wide page for the whole corpus — the endpoint's `limit` ceiling. The
+ * default server `limit` is 20; 400 covers the full set (285 listable rows:
+ * 108 beginner / 93 intermediate / 84 advanced) with headroom. Mirrors
+ * GRAMMAR_PAGE_SIZE in lib/libraryFilters.ts (the library browse).
  */
 const KGIU_LIST_LIMIT = 400;
 
 /**
- * Normalised row shape the list + banked tabs render. Both the real KGIU
- * summary and the mock GrammarPattern fixture flatten into this — the UI
- * stays single-shape, the per-source quirks live in the adapters below.
+ * Normalised row shape the banked tab + drill pool render. Both the real
+ * KGIU summary and the mock GrammarPattern fixture flatten into this — the
+ * UI stays single-shape, the per-source quirks live in the adapters below.
  */
 interface PatternListItem {
   /** Stable id for keys + detail fetch. Real rows use the BIGINT KGIU id;
    *  mock rows synthesise a negative integer so the two namespaces never
-   *  collide and the optimistic bank set stays consistent. */
+   *  collide. */
   id: number;
-  /** Server-side dedup key for `POST /grammar/bank`. */
+  /** Server-side dedup key (matches the library browse's bank key). */
   patternKey: string;
   /** Korean pattern display ("-더라도"). */
   pattern: string;
@@ -210,37 +174,15 @@ interface PatternListItem {
   title: string;
   /** Proficiency tag rendered on the row pill. */
   proficiency: ServerProficiency;
-  /** Category sent in the bank body. */
+  /** Category from the source row (display metadata post-P1.2). */
   category: string;
-  /** RAW corpus register string ("해요체", but often composite like
-   *  "해요체 / 하십시오체"). Kept raw here; `buildBankBody` sanitizes it
-   *  against the server's closed RegisterLevel set before any POST. */
+  /** RAW corpus register string ("해요체", often composite). Kept raw;
+   *  lib/grammarBank sanitizes before any POST (done in the library now). */
   register: string | null;
-  /** True iff this row came from the real `listPatterns` endpoint. Drives
-   *  the bank-body discriminator AND lets the detail Sheet know whether
-   *  it can call `getPattern(id)` (real) or must render the mock detail. */
+  /** True iff this row came from the real `listPatterns` endpoint — lets
+   *  the detail Sheet know whether it can call `getPattern(id)` (real) or
+   *  must render from row data alone (mock/bank-row fallback). */
   isReal: boolean;
-}
-
-/**
- * Bucket KGIU `proficiency` strings into the server's closed set.
- *
- * The corpus uses values like `beginner`/`intermediate`/`advanced`; the
- * `POST /grammar/bank` body requires `'basic' | 'L3' | 'L4' | 'L5+'`.
- * Unknown strings fall back to `L3` so the call never 400s on a corpus
- * vocabulary drift — better to bank with a mild miscategorisation than
- * to refuse the user's gesture.
- */
-function toServerProficiency(raw: string | null | undefined): ServerProficiency {
-  if (!raw) return 'L3';
-  const norm = raw.toLowerCase();
-  if (norm === 'basic' || norm === 'beginner' || norm.startsWith('l1') || norm.startsWith('l2')) {
-    return 'basic';
-  }
-  if (norm === 'l3' || norm.includes('intermediate-low') || norm === 'l3-4') return 'L3';
-  if (norm === 'l4' || norm === 'intermediate' || norm.includes('intermediate')) return 'L4';
-  if (norm === 'l5+' || norm === 'l5' || norm === 'l6' || norm === 'advanced') return 'L5+';
-  return 'L3';
 }
 
 /** Adapt a real KGIU summary into the normalised row shape. */
@@ -250,9 +192,9 @@ function fromKgiu(row: KgiuEntrySummary): PatternListItem {
     // `grammarKey` derives the GR-shaped dedup key the server's
     // BankBodySchema regex (`^GR-[a-z0-9_-]{1,64}$`) requires. The previous
     // raw fallback (`source_id ?? pattern`) produced keys like
-    // "kgiu-beginner-002" — no GR- prefix — so EVERY bank from this screen
-    // 400'd. It also matches the key Reference.tsx banks with, so the
-    // "Banked" pill reconciles across both screens.
+    // "kgiu-beginner-002" — no GR- prefix — so EVERY bank once 400'd. It
+    // also matches the key the library browse (ReviewGrammar) banks with,
+    // so the bank state reconciles across both screens.
     patternKey: grammarKey(row),
     pattern: row.pattern,
     title: row.title_en ?? row.pattern,
@@ -273,78 +215,11 @@ function fromMockPattern(row: GrammarPattern, index: number): PatternListItem {
     patternKey: `mock:${row.id}`,
     pattern: row.pattern,
     title: row.title,
-    // The design fixtures don't carry proficiency — L4 matches the level
-    // chip the Reference screen already paints for these rows.
+    // The design fixtures don't carry proficiency — default to L4.
     proficiency: 'L4',
     category: 'pattern',
     register: null,
     isReal: false,
-  };
-}
-
-/**
- * The server's closed register vocabulary — mirrors `BankBodySchema` in
- * server/src/routes/grammar.ts. The KGIU corpus stores register as FREE TEXT,
- * frequently composite ("해요체 / 하십시오체", "formal/written", "literary"),
- * and the server hard-400s any value outside this set.
- */
-const SERVER_REGISTER_LEVELS: ReadonlySet<string> = new Set<RegisterLevel>([
-  '반말',
-  '해요체',
-  '합쇼체',
-  '문어체',
-  '하오체',
-  '하게체',
-]);
-
-/** Sanitize a raw corpus register: exact member of the server set (after a
- *  trim) or nothing. Composite values are dropped, never guessed at —
- *  `register` is optional metadata and must not fail the whole bank. */
-function toServerRegister(
-  raw: string | null | undefined,
-): RegisterLevel | undefined {
-  if (!raw) return undefined;
-  const trimmed = raw.trim();
-  return SERVER_REGISTER_LEVELS.has(trimmed)
-    ? (trimmed as RegisterLevel)
-    : undefined;
-}
-
-/**
- * Build a schema-valid `POST /grammar/bank` body from a list row.
- *
- * The server's `BankBodySchema` is strict (min/max lengths, closed register
- * enum) and corpus data is messy — this is the single choke point where the
- * row is coerced into something the server will accept, so a data quirk can
- * never turn the user's Bank tap into a 400:
- *   - `register`  — included only when it exactly matches the server enum;
- *                   composite corpus values are OMITTED (field is optional).
- *   - `category`  — never empty (min 1): falls back to 'uncategorized';
- *                   clamped to the 40-char ceiling.
- *   - `summary_en`— never empty (min 1): falls back to the Korean pattern,
- *                   then the key; clamped to the 240-char ceiling.
- *   - `pattern_display` — clamped to 120; falls back to the key if blank.
- *   - `pattern_key` — NOT rewritten here; `grammarKey()` already derives a
- *                   regex-valid key in the adapters above.
- *
- * Covered by Grammar.test.tsx through the UI: Bank tap → mocked
- * `services.grammar.bankPattern` → assert the outgoing body. (Not exported —
- * react-refresh/only-export-components keeps page files component-only.)
- */
-function buildBankBody(row: PatternListItem): BankGrammarBody {
-  const display = row.pattern.trim().slice(0, 120) || row.patternKey;
-  const summary =
-    (row.title.trim() || row.pattern.trim() || row.patternKey).slice(0, 240);
-  const category = (row.category.trim() || 'uncategorized').slice(0, 40);
-  const register = toServerRegister(row.register);
-  return {
-    pattern_key: row.patternKey,
-    pattern_display: display,
-    summary_en: summary,
-    proficiency: row.proficiency,
-    category,
-    ...(register !== undefined ? { register } : {}),
-    discovered_via: 'manual',
   };
 }
 
@@ -355,32 +230,14 @@ async function loadMockListItems(): Promise<PatternListItem[]> {
   return rows.map(fromMockPattern);
 }
 
-/** Loader: real /grammar/kgiu → PatternListItem[] for one level filter.
- *  Always requests the full-corpus page size — the bare `listPatterns()`
- *  call this replaces inherited the server's default `limit` of 20. */
-async function loadRealListItems(
-  level: LevelFilter,
-): Promise<PatternListItem[]> {
-  const rows = await grammarService.listPatterns({
-    limit: KGIU_LIST_LIMIT,
-    ...(level === 'all' ? {} : { corpus: LEVEL_TO_CORPUS[level] }),
-  });
+/** Loader: real /grammar/kgiu → PatternListItem[] (the whole corpus in one
+ *  wide page — a bare `listPatterns()` call would inherit the server's
+ *  default `limit` of 20). Module scope keeps the identity stable per the
+ *  useEndpointOrMock stable-fn convention. */
+async function loadRealListItems(): Promise<PatternListItem[]> {
+  const rows = await grammarService.listPatterns({ limit: KGIU_LIST_LIMIT });
   return rows.map(fromKgiu);
 }
-
-/**
- * Per-level real loaders, memoised at module scope so the stable-fn convention
- * `useEndpointOrMock` documents holds (the hook reads loaders through refs, but
- * module scope keeps identities stable and intent obvious). The hook's `key`
- * carries the level, so switching the filter triggers a genuine refetch.
- */
-const REAL_LIST_LOADERS: Record<LevelFilter, () => Promise<PatternListItem[]>> =
-  {
-    all: () => loadRealListItems('all'),
-    beginner: () => loadRealListItems('beginner'),
-    intermediate: () => loadRealListItems('intermediate'),
-    advanced: () => loadRealListItems('advanced'),
-  };
 
 /**
  * Server-side bank metadata a banked row needs. Carries BOTH the action id
@@ -472,8 +329,12 @@ function Grammar(): JSX.Element {
   const [drillTarget, setDrillTarget] = useState<DrillTarget | null>(() =>
     readDrillTarget(location.state),
   );
+  // Default tab is `banked` (the browse `list` tab moved to the library in
+  // P1.2/D3); a Review deep-link still opens straight onto the Drill tab.
+  // NOT `drill` by default: DrillPanel generates a drill on mount (a Claude
+  // round-trip), which shouldn't fire just because the page was opened.
   const [tab, setTab] = useState<Tab>(() =>
-    readDrillTarget(location.state) ? 'drill' : 'list',
+    readDrillTarget(location.state) ? 'drill' : 'banked',
   );
 
   // Scrub the consumed target out of the history entry so a Back navigation or
@@ -496,21 +357,14 @@ function Grammar(): JSX.Element {
     setDrillTarget(null);
   }, []);
 
-  // List-tab level filter. Lives here (not in ListPanel) because it feeds the
-  // fetch key below — switching level refetches the corpus with the matching
-  // `corpus` query param. It scopes ONLY the List browse view: the Banked tab
-  // and the drill pool source their patterns from the user's bank list
-  // (`bankedItems`, below), which is independent of this filter (B-SF-1).
-  const [level, setLevel] = useState<LevelFilter>('all');
-
   // Pattern list — real first, mock fallback. The hook's `isMock` flips
   // false on a real resolve; that's how the 🅂 badge stays off here. The
-  // level is part of the key, so a filter change aborts any in-flight fetch
-  // and re-runs the loader for the newly selected corpus.
+  // whole corpus loads in one wide page: it feeds the drill's fallback pool
+  // and upgrades Banked rows to their richer KGIU rows (full detail fetch).
   const listState = useEndpointOrMock<PatternListItem[]>(
-    `grammar:list:${level}`,
+    'grammar:list',
     loadMockListItems,
-    { realFn: REAL_LIST_LOADERS[level] },
+    { realFn: loadRealListItems },
   );
 
   // Banked map — separate fetch so a failure on one doesn't black out
@@ -523,49 +377,6 @@ function Grammar(): JSX.Element {
     { realFn: loadRealBankedMeta },
   );
 
-  // Optimistic overlay — keyed by patternKey so it survives a refetch
-  // that returns a stale snapshot. The prune effect below clears entries
-  // that have been reconciled with the server's `bankedState.data` so
-  // the set doesn't accumulate indefinitely across a long session.
-  const [optimisticBanked, setOptimisticBanked] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-
-  // E-SF-1 fix: prune the optimistic overlay against the server's bank
-  // settle. Any pattern_key now present in `bankedState.data` has been
-  // reconciled — it can leave the overlay without changing the merged
-  // `bankedKeys` view. We also bound the overlay at 50 entries as a
-  // defensive cap: a healthy session keeps the overlay small (one entry
-  // per in-flight bank request), and runaway growth would indicate a bug
-  // elsewhere (e.g. the server's bank refetch returning a stale snapshot
-  // that doesn't include the just-banked rows). The cap drops the OLDEST
-  // overlay entries first (Set iteration order = insertion order), which
-  // matches the "stale because the user banked it long ago" hypothesis.
-  useEffect(() => {
-    if (!bankedState.data) return;
-    const settled = bankedState.data;
-    setOptimisticBanked((prev) => {
-      if (prev.size === 0) return prev;
-      const next = new Set<string>();
-      for (const k of prev) {
-        if (!settled.has(k)) next.add(k);
-      }
-      if (next.size > 50) {
-        // Drop the oldest entries — keep the most recent 50.
-        const keep = Array.from(next).slice(-50);
-        return new Set(keep);
-      }
-      // Preserve identity when no entries were pruned, so consumers of
-      // `optimisticBanked` (the memo below) don't re-run on no-op settles.
-      return next.size === prev.size ? prev : next;
-    });
-  }, [bankedState.data]);
-
-  // Per-row bank submit-in-flight + last-error so the row UI can disable
-  // its button and surface a localised error without blocking the list.
-  const [pendingKey, setPendingKey] = useState<string | null>(null);
-  const [bankError, setBankError] = useState<string | null>(null);
-
   // Detail Sheet state. We keep the row context alongside the fetch
   // result so the Sheet header can paint immediately while the detail
   // load resolves underneath.
@@ -575,16 +386,10 @@ function Grammar(): JSX.Element {
   const [detailError, setDetailError] = useState<string | null>(null);
   // Id of the row whose detail fetch is authoritative — a slow settle for a
   // previously tapped (or since-closed) row must not paint its detail under
-  // the currently open row's header. Mirrors the stale-guard in
-  // Reference.tsx's GrammarTab.openDetail. Mock/banked rows use negative ids,
-  // real KGIU rows positive — the namespaces never collide.
+  // the currently open row's header. Mirrors the stale-guard in the library
+  // browse's openDetail (pages/review/ReviewGrammar.tsx). Mock/banked rows
+  // use negative ids, real KGIU rows positive — the namespaces never collide.
   const detailIdRef = useRef<number | null>(null);
-
-  const bankedKeys = useMemo<ReadonlySet<string>>(() => {
-    const merged = new Set<string>(bankedState.data?.keys() ?? []);
-    for (const k of optimisticBanked) merged.add(k);
-    return merged;
-  }, [bankedState.data, optimisticBanked]);
 
   // Optimistic graduation overlay — patternKey → desired graduated state
   // (true = graduate in flight/settling, false = re-admit). Mirrors the
@@ -664,50 +469,7 @@ function Grammar(): JSX.Element {
     setDetailLoading(false);
   }, []);
 
-  const bank = useCallback(
-    async (row: PatternListItem): Promise<void> => {
-      if (bankedKeys.has(row.patternKey)) return;
-      setPendingKey(row.patternKey);
-      setBankError(null);
-      // Optimistic add — flip the chip immediately. If the call fails
-      // non-idempotently we rewind below; a 409 conflict means it was
-      // already banked, so the optimistic add stays.
-      setOptimisticBanked((prev) => {
-        const next = new Set(prev);
-        next.add(row.patternKey);
-        return next;
-      });
-      const body: BankGrammarBody = buildBankBody(row);
-      try {
-        await grammarService.bankPattern(body);
-        // Re-fetch the banked set so the server view becomes the source
-        // of truth on the next render.
-        bankedState.refetch();
-      } catch (err) {
-        const apiErr = err instanceof ApiError ? err : null;
-        // 409 → already banked. Post-condition holds; keep the optimistic
-        // add and refetch to pull the row the server already has.
-        if (apiErr && apiErr.status === 409) {
-          bankedState.refetch();
-        } else {
-          // Real failure — rewind the optimistic add and surface the
-          // error so the user can retry. Don't echo server text.
-          setOptimisticBanked((prev) => {
-            const next = new Set(prev);
-            next.delete(row.patternKey);
-            return next;
-          });
-          setBankError("Couldn't bank that pattern. Try again.");
-        }
-      } finally {
-        setPendingKey(null);
-      }
-    },
-    [bankedKeys, bankedState],
-  );
-
-  // Per-row graduation submit-in-flight + last-error, separate from the
-  // bank action's so a Graduate failure never disables a Bank button.
+  // Per-row graduation submit-in-flight + last-error.
   const [graduationPendingKey, setGraduationPendingKey] = useState<
     string | null
   >(null);
@@ -777,13 +539,12 @@ function Grammar(): JSX.Element {
   }, [items]);
 
   // Banked patterns sourced from the user's ACTUAL bank list (GET /grammar/bank
-  // via `bankedState`), INDEPENDENT of the level-filtered KGIU list. A List-tab
-  // level filter must only reshape the List browse view — never hide banked
-  // patterns of other levels, skew the Active/Known counts, or repoint the drill
-  // pool (SHOULD-FIX B-SF-1). We prefer the KGIU list row when the pattern's
-  // level is loaded (full detail-fetch fidelity), else fall back to the bank
-  // row's own stored fields via `bankedMetaToItem`. Insertion order follows the
-  // server's `created_at DESC`, so the Banked tab ordering is stable.
+  // via `bankedState`), INDEPENDENT of the KGIU list fetch (B-SF-1): a bank
+  // row whose pattern is missing from the fetched corpus still renders from
+  // its own stored fields. We prefer the KGIU list row when the pattern IS
+  // loaded (full detail-fetch fidelity), else fall back via
+  // `bankedMetaToItem`. Insertion order follows the server's
+  // `created_at DESC`, so the Banked tab ordering is stable.
   const bankedItems = useMemo<readonly PatternListItem[]>(() => {
     const map = bankedState.data;
     if (!map) return [];
@@ -804,12 +565,11 @@ function Grammar(): JSX.Element {
     [bankedItems, isGraduated],
   );
   // The drill's PRIMARY pool is the user's active banked patterns
-  // (`activeBankedItems`, level-independent — see B-SF-1). `drillableItems` is
-  // only the fallback for an account with NOTHING banked, where there are no
-  // banked patterns to protect, so drilling the currently-browsed corpus is
-  // acceptable. The filter still excludes graduated rows — the drill must never
-  // serve a graduated pattern even via this fallback (the corpus list contains
-  // graduated rows too).
+  // (`activeBankedItems` — see B-SF-1). `drillableItems` is only the fallback
+  // for an account with NOTHING banked, where there are no banked patterns to
+  // protect, so drilling the fetched corpus is acceptable. The filter still
+  // excludes graduated rows — the drill must never serve a graduated pattern
+  // even via this fallback (the corpus list contains graduated rows too).
   const drillableItems = useMemo<readonly PatternListItem[]>(
     () => items.filter((it) => !isGraduated(it.patternKey)),
     [items, isGraduated],
@@ -821,12 +581,12 @@ function Grammar(): JSX.Element {
     [bankedState.data],
   );
 
-  // 🅂 badge for the list/banked tabs when BOTH wired fetches fell back to
-  // the mock. The drill tab now hits a REAL endpoint (Pass 9), so its mock
-  // signal is owned by `DrillPanel` itself (which renders its own MockBadge
-  // only when the generate endpoint is unreachable and it falls to a local
-  // mock drill). We suppress the list/banked badge while on the drill tab so
-  // the two signals don't fight over the same corner.
+  // 🅂 badge for the Banked tab when BOTH wired fetches fell back to the
+  // mock. The drill tab hits a REAL endpoint (Pass 9), so its mock signal is
+  // owned by `DrillPanel` itself (which renders its own MockBadge only when
+  // the generate endpoint is unreachable and it falls to a local mock
+  // drill). We suppress the banked badge while on the drill tab so the two
+  // signals don't fight over the same corner.
   const showMockBadge =
     tab !== 'drill' && listState.isMock && bankedState.isMock;
 
@@ -839,7 +599,7 @@ function Grammar(): JSX.Element {
       {showMockBadge ? <MockBadge /> : null}
       <Topbar
         krTitle={<span id="grammar-title">문법 · Grammar</span>}
-        eyebrow={tab === 'drill' ? 'Production drill' : 'Patterns + bank'}
+        eyebrow={tab === 'drill' ? 'Production drill' : 'Banked patterns'}
       />
 
       <div className="km-review__tabs" role="tablist" aria-label="Grammar section">
@@ -862,46 +622,6 @@ function Grammar(): JSX.Element {
         })}
       </div>
 
-      {tab === 'list' ? (
-        <>
-          <div
-            className="km-review__tabs"
-            role="group"
-            aria-label="Level filter"
-          >
-            {LEVEL_FILTERS.map((f) => {
-              const selected = level === f.id;
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  aria-pressed={selected}
-                  className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-                  onClick={() => {
-                    setLevel(f.id);
-                  }}
-                >
-                  {f.label}
-                </button>
-              );
-            })}
-          </div>
-          <ListPanel
-            state={listState}
-            items={items}
-            bankedKeys={bankedKeys}
-            pendingKey={pendingKey}
-            bankError={bankError}
-            onOpen={(row) => {
-              void openDetail(row);
-            }}
-            onBank={(row) => {
-              void bank(row);
-            }}
-          />
-        </>
-      ) : null}
-
       {tab === 'banked' ? (
         <BankedPanel
           loading={listState.loading || bankedState.loading}
@@ -922,6 +642,10 @@ function Grammar(): JSX.Element {
           }}
           onReadmit={(row) => {
             void setKnown(row, false);
+          }}
+          onBrowse={() => {
+            // D3: the single grammar browse (+ Bank) lives in the library.
+            navigate('/review/grammar');
           }}
           onRetry={() => {
             listState.refetch();
@@ -946,127 +670,9 @@ function Grammar(): JSX.Element {
         detail={detail}
         loading={detailLoading}
         error={detailError}
-        banked={openRow ? bankedKeys.has(openRow.patternKey) : false}
-        pending={openRow ? pendingKey === openRow.patternKey : false}
-        onBank={() => {
-          if (openRow) void bank(openRow);
-        }}
         onClose={closeDetail}
       />
     </section>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// List panel
-// ─────────────────────────────────────────────────────────────
-
-interface ListPanelProps {
-  state: UseEndpointOrMockResult<PatternListItem[]>;
-  items: readonly PatternListItem[];
-  bankedKeys: ReadonlySet<string>;
-  pendingKey: string | null;
-  bankError: string | null;
-  onOpen: (row: PatternListItem) => void;
-  onBank: (row: PatternListItem) => void;
-}
-
-function ListPanel({
-  state,
-  items,
-  bankedKeys,
-  pendingKey,
-  bankError,
-  onOpen,
-  onBank,
-}: ListPanelProps): JSX.Element {
-  if (state.loading) {
-    return (
-      <div className="km-grammar__state" role="status">
-        Loading patterns…
-      </div>
-    );
-  }
-  if (state.error && items.length === 0) {
-    return (
-      <ErrorCard
-        message="The grammar patterns couldn't be loaded."
-        onRetry={state.refetch}
-      />
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <div className="km-grammar__state" role="status">
-        No grammar patterns available.
-      </div>
-    );
-  }
-  return (
-    <>
-      {bankError ? (
-        <ErrorCard message={bankError} />
-      ) : null}
-      <ul className="km-grammar__list">
-        {items.map((row) => (
-          <PatternRow
-            key={row.patternKey}
-            row={row}
-            banked={bankedKeys.has(row.patternKey)}
-            pending={pendingKey === row.patternKey}
-            onOpen={() => {
-              onOpen(row);
-            }}
-            onBank={() => {
-              onBank(row);
-            }}
-          />
-        ))}
-      </ul>
-    </>
-  );
-}
-
-interface PatternRowProps {
-  row: PatternListItem;
-  banked: boolean;
-  pending: boolean;
-  onOpen: () => void;
-  onBank: () => void;
-}
-
-function PatternRow({
-  row,
-  banked,
-  pending,
-  onOpen,
-  onBank,
-}: PatternRowProps): JSX.Element {
-  return (
-    <li className="km-grammar__row">
-      <button
-        type="button"
-        onClick={onOpen}
-        className="km-grammar__row-btn focusring"
-        aria-label={`${row.pattern} ${row.title}`}
-      >
-        <span className="kr km-grammar__row-kr">{row.pattern}</span>
-        <span className="km-grammar__row-title">{row.title}</span>
-        <span className="km-pill km-pill--default km-grammar__row-level">
-          {row.proficiency}
-        </span>
-      </button>
-      <Button
-        variant={banked ? 'ghost' : 'gold'}
-        size="sm"
-        onClick={onBank}
-        disabled={banked || pending}
-        aria-pressed={banked}
-        aria-label={banked ? 'Already banked' : `Bank ${row.pattern}`}
-      >
-        {banked ? 'Banked' : pending ? 'Banking…' : 'Bank'}
-      </Button>
-    </li>
   );
 }
 
@@ -1102,6 +708,8 @@ interface BankedPanelProps {
   onOpen: (row: PatternListItem) => void;
   onGraduate: (row: PatternListItem) => void;
   onReadmit: (row: PatternListItem) => void;
+  /** Navigate to the library's grammar browse (the single browse, D3). */
+  onBrowse: () => void;
   onRetry: () => void;
 }
 
@@ -1116,6 +724,7 @@ function BankedPanel({
   onOpen,
   onGraduate,
   onReadmit,
+  onBrowse,
   onRetry,
 }: BankedPanelProps): JSX.Element {
   // Local view toggle — pure presentation, feeds no fetch key, so it lives
@@ -1172,8 +781,18 @@ function BankedPanel({
               <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
                 {knownItems.length > 0
                   ? 'Everything you banked is marked as known. Re-admit a pattern from the Known view to study it again.'
-                  : 'Tap Bank on any pattern in the List tab to add it here.'}
+                  : 'Bank patterns from the grammar library to add them here.'}
               </p>
+              {knownItems.length === 0 ? (
+                <Button
+                  variant="gold"
+                  size="md"
+                  onClick={onBrowse}
+                  trailingIcon={<Icon name="arrow-right" size={14} />}
+                >
+                  Browse all patterns
+                </Button>
+              ) : null}
             </>
           ) : (
             <>
@@ -1240,6 +859,18 @@ function BankedPanel({
           })}
         </ul>
       )}
+
+      {/* D3: banking new patterns happens in the library's single browse. */}
+      {items.length > 0 ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBrowse}
+          trailingIcon={<Icon name="arrow-right" size={12} />}
+        >
+          Browse all patterns
+        </Button>
+      ) : null}
     </>
   );
 }
@@ -1651,7 +1282,8 @@ function DrillPanel({
   if (items.length === 0 && !target) {
     return (
       <div className="km-grammar__state" role="status">
-        No grammar patterns to drill yet. Bank or browse patterns first.
+        No grammar patterns to drill yet. Bank patterns from the grammar
+        library (Review → Grammar) first.
       </div>
     );
   }
@@ -1944,21 +1576,21 @@ interface DetailSheetProps {
   detail: KgiuEntryDetail | null;
   loading: boolean;
   error: string | null;
-  banked: boolean;
-  pending: boolean;
-  onBank: () => void;
   onClose: () => void;
 }
 
+/**
+ * Pattern-detail Sheet. Post-P1.2 every row that opens this sheet comes from
+ * the Banked tab (the browse tab moved to the library), so the old Bank
+ * action is gone — a static "Banked" pill states the row's standing instead.
+ * Banking new patterns happens on /review/grammar.
+ */
 function DetailSheet({
   open,
   row,
   detail,
   loading,
   error,
-  banked,
-  pending,
-  onBank,
   onClose,
 }: DetailSheetProps): JSX.Element {
   return (
@@ -1986,16 +1618,7 @@ function DetailSheet({
         </div>
 
         <div className="km-review__sheetActions">
-          <Button
-            variant={banked ? 'ghost' : 'gold'}
-            size="md"
-            onClick={onBank}
-            disabled={banked || pending || row === null}
-            aria-pressed={banked}
-            leadingIcon={<Icon name="plus" size={14} />}
-          >
-            {banked ? 'Already banked' : pending ? 'Banking…' : 'Bank pattern'}
-          </Button>
+          <Pill tone="gold">Banked</Pill>
         </div>
 
         <hr className="hr-double km-review__sheetRule" />

@@ -4,9 +4,9 @@
  * Renders the rich pedagogical fields of `GET /grammar/kgiu/:id`:
  * explanation prose, "Formation" conjugation bullets, "Examples"
  * (Korean + English gloss), speaker-labelled "Dialogues", and the unit
- * footer. Used by both pages/Grammar.tsx (`DetailSheet`) and
- * pages/Reference.tsx (`GrammarDetailSheet`) so the two detail surfaces
- * cannot drift apart.
+ * footer. Used by both pages/Grammar.tsx (`DetailSheet`) and the library
+ * browse pages/review/ReviewGrammar.tsx (`GrammarDetailSheet`) so the two
+ * detail surfaces cannot drift apart.
  *
  * Each rich section renders ONLY when its array is non-empty — the corpus
  * legitimately ships empty arrays (e.g. `dialogues` is empty on every row

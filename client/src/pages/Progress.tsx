@@ -1,38 +1,61 @@
 /**
- * Progress — diagnostic history: per-dimension trend + attempt comparison.
+ * Progress — the stats hub (Overhaul P1.2, Slice A).
  *
- * Reads `GET /diagnostic/history` (every snapshot, oldest→newest) through
- * `useEndpointOrMock('diagnostic.history', …)` and renders three blocks:
+ * P1.2 rebalanced Today/Progress: Today is now the ACTION hub, and every
+ * "where am I" surface lives here. The page renders, top to bottom:
  *
- *   1. **Trend chart** — an inline SVG line chart (no charting dependency;
- *      the codebase charts with hand-rolled SVG/CSS, e.g. SkillsCompare).
- *      One 2px line per dimension (reading/listening/vocab/grammar) plus a
- *      neutral Overall line (mean of the attempt's present dimensions),
- *      y = 0–100 score, x = attempt. Series colors are palette-validated
- *      chart tokens (see Progress.css) so the chart reads in both themes and
- *      under color-vision deficiency; a legend + per-attempt readout +
- *      history table mean no value is ever color- or hover-gated.
- *   2. **Attempt vs attempt** — two pickers (defaulting to previous vs
- *      latest) and a per-dimension delta table with signed ▲/▼ arrows, so
- *      direction never rides on color alone.
+ *   1. **Where you stand** — `SkillsCompare` (variant `full`) over the LATEST
+ *      diagnostic attempt, with the TOPIK-1→Native reference picker. This is
+ *      the single headline compare surface (moved off Today, where it was the
+ *      `compact` snapshot). The old standalone "Comparison" card was folded in
+ *      here as the **Attempt vs attempt** sub-block (two pickers + a signed
+ *      delta table, shown when ≥ 2 attempts) so there is ONE compare card,
+ *      not two competing ones. A **Retake diagnostic** button lives in this
+ *      populated card (previously the CTA existed only in the empty state).
+ *   2. **Trend** — the inline-SVG line chart of diagnostic scores across
+ *      attempts (one 2px line per dimension + a neutral Overall line),
+ *      with its keyboard-reachable hover readout.
  *   3. **All attempts table** — the chart's accessible twin; every plotted
  *      value is readable without a pointer.
+ *   4. **Progress by skill** (F-017, moved from Today) — a `SwipeCarousel`
+ *      of five `SkillTrendPanel` pages (Reading / Listening / Vocab /
+ *      Grammar / Writing), each a `LineChart` of that skill's 30-day series.
+ *      Independent of the diagnostic history — it renders (or errors) on its
+ *      own fetch, so a user with practice activity but no diagnostic still
+ *      sees their trends.
+ *   5. **Word mastery** (F-013) — per-word FSRS buckets, filterable list.
+ *   6. **Grammar mastery** — a designed "coming soon" placeholder (the real
+ *      route + section land in P4).
+ *
+ * Data:
+ *   useEndpointOrMock('diagnostic.history', …, { realFn: getHistory })       → DiagnosticHistoryResponse
+ *   useEndpointOrMock('progress.series', …, { realFn: fetchSkillSeries })    → AllSkillSeries (F-017)
+ *
+ * The series fan-out degrades per skill (`fetchSkillSeries` never rejects on
+ * a route failure — a failed skill becomes an honest "Couldn't load this
+ * trend." panel, never fixture numbers). When EVERY route failed (total
+ * outage) the whole card collapses to a single ErrorCard with a retry
+ * (F-UP-016a) — a failure is never dressed up as five fresh-account
+ * "No data yet" panels.
  *
  * Empty states: 0 snapshots → invitation card linking to /diagnostic;
  * 1 snapshot → markers only (a one-point "trend" draws no line) + a note,
- * comparison hidden. Neither crashes — geometry guards `n === 1` division.
+ * attempt-vs-attempt hidden. Neither crashes — geometry guards `n === 1`.
  *
  * Threat model:
- *   - **Rendered text is escaped.** Every server string (labels, kr, goals)
- *     renders as React children — a malicious payload becomes literal text.
- *     No `dangerouslySetInnerHTML`; SVG text nodes are React children too.
- *   - **Read-only surface.** The page issues a single authenticated GET; no
+ *   - **Rendered text is escaped.** Every server string (labels, kr, goals,
+ *     series units) renders as React children — a malicious payload becomes
+ *     literal text. No `dangerouslySetInnerHTML`; SVG text nodes are React
+ *     children too.
+ *   - **Read-only surface.** The page issues authenticated GETs only; no
  *     mutation, no client-supplied identifiers (no IDOR surface). Server
- *     scopes the query to the session user.
- *   - **Mock fallback honesty.** The mock loader resolves an EMPTY history
- *     (mirroring the Diagnostic screen's empty fixture) so a real-endpoint
- *     failure can never paint fabricated progress; when the real call fails
- *     and the fallback is empty we show the error card, not a fake state.
+ *     scopes every query to the session user.
+ *   - **Mock fallback honesty.** The history mock loader resolves an EMPTY
+ *     history (mirroring the Diagnostic screen's empty fixture) so a
+ *     real-endpoint failure can never paint fabricated progress; when the
+ *     real call fails and the fallback is empty we show the error card, not
+ *     a fake state. The series source can't trip the mock fallback at all —
+ *     its realFn never rejects (per-skill degradation).
  */
 import { useEffect, useState, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -42,18 +65,29 @@ import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
+import { LineChart } from '../components/LineChart';
+import { Pill } from '../components/Pill';
+import { SkillsCompare } from '../components/SkillsCompare';
+import type { SkillReference, SkillRow } from '../components/SkillsCompare';
+import { SwipeCarousel } from '../components/SwipeCarousel';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { getHistory } from '../services/diagnostic';
+import { fetchSkillSeries } from '../services/stats';
 import { fetchMastery } from '../services/vocab';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
 import { mockDelay } from '../data/mocks/_delay';
+import { loadSkillSeriesMock } from '../data/mocks/stats';
 import type {
+  AllSkillSeries,
   DiagnosticHistoryResponse,
   DiagnosticHistorySnapshot,
+  DiagnosticSnapshot,
   MasteryBucket,
   MasteryPage,
   MasterySummary,
+  SkillSeries,
 } from '../types/domain';
 import './Progress.css';
 
@@ -112,6 +146,191 @@ function formatDay(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
   return `${String(d.getUTCMonth() + 1)}/${String(d.getUTCDate())}`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// SkillsCompare mappers (moved from Today with the compare surface)
+// ─────────────────────────────────────────────────────────────
+
+/** Map a domain snapshot to the SkillsCompare props shape. Unlike Today's old
+ *  compact tile, the `full` variant renders the F-011 confidence band and the
+ *  per-bar gap notes, so both pass through here. */
+function toSkillRows(snap: DiagnosticSnapshot): ReadonlyArray<SkillRow> {
+  return snap.dimensions.map((d) => ({
+    key: d.key,
+    label: d.label,
+    kr: d.kr,
+    score: d.score,
+    scoreLow: d.scoreLow,
+    scoreHigh: d.scoreHigh,
+    note: d.note,
+  }));
+}
+function toSkillRefs(snap: DiagnosticSnapshot): ReadonlyArray<SkillReference> {
+  return snap.references.map((r) => ({
+    id: r.id,
+    label: r.label,
+    kr: r.kr,
+    value: r.value,
+    // `native` is the ceiling — design paints its tick indigo, not vermilion.
+    isCeiling: r.id === 'native',
+  }));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Progress-by-skill carousel (F-017 — moved from Today in P1.2)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Trend window (days) — the single source for both the fetch and the chart
+ * aria-labels, so the labels can never drift from the data window.
+ */
+const TREND_WINDOW_DAYS = 30;
+
+/** Carousel page order — fixed by the feature spec (F-017). */
+const SERIES_PANELS: ReadonlyArray<{
+  key: keyof AllSkillSeries;
+  label: string;
+  kr: string;
+}> = [
+  { key: 'reading', label: 'Reading', kr: '읽기' },
+  { key: 'listening', label: 'Listening', kr: '듣기' },
+  { key: 'vocab', label: 'Vocab', kr: '어휘' },
+  { key: 'grammar', label: 'Grammar', kr: '문법' },
+  { key: 'writing', label: 'Writing', kr: '쓰기' },
+];
+
+/** Chart caption per metric — `none` never reaches the chart (placeholder). */
+const METRIC_LABELS: Record<SkillSeries['metric'], string> = {
+  accuracy: 'Accuracy',
+  count: 'Count',
+  score: 'Score',
+  none: '',
+};
+
+/**
+ * Latest-value headline for a panel: "74%" for percent series (TOPIK
+ * accuracy, Writing's normalized score), "35 reviews" / "52 pts" for the
+ * rest, an em dash when the series has no points yet. Keyed on the unit —
+ * not the metric — so it matches the LineChart readout's own `%` formatting.
+ */
+function latestValue(series: SkillSeries): string {
+  const last = series.points[series.points.length - 1];
+  if (last === undefined) return '—';
+  if (series.unit === '%') return `${String(Math.round(last.value))}%`;
+  const unitSuffix = series.unit !== '' ? ` ${series.unit}` : '';
+  return `${String(last.value)}${unitSuffix}`;
+}
+
+/** One carousel page: skill name + latest value + the trend chart. */
+function SkillTrendPanel({
+  skillKey,
+  label,
+  kr,
+  series,
+}: {
+  skillKey: keyof AllSkillSeries;
+  label: string;
+  kr: string;
+  series: SkillSeries;
+}): JSX.Element {
+  return (
+    // data-skill drives the per-skill chart accent in Progress.css (the same
+    // validated categorical --kmp-* palette the diagnostic trend chart uses,
+    // so color follows the entity across the page).
+    <div className="km-progress__trendPanel" data-skill={skillKey}>
+      <div className="km-progress__trendHead">
+        <span className="km-progress__trendSkill">
+          {label} <span className="km-progress__trendKr">{kr}</span>
+        </span>
+        <span className="km-progress__trendValue">{latestValue(series)}</span>
+      </div>
+      {series.metric === 'none' ? (
+        // `none` is the client-only degraded placeholder: this skill's route
+        // FAILED — say so (F-UP-016a). "No data yet" is reserved for a route
+        // that answered with an empty series (LineChart renders that copy
+        // itself), so a fetch failure is never dressed up as a fresh account.
+        // Never fabricated numbers either way (F-014 gave Writing a real
+        // /writing/series route, so it degrades like every other skill now).
+        <div className="km-progress__trendEmpty">Couldn’t load this trend.</div>
+      ) : skillKey === 'writing' && series.points.length === 0 ? (
+        // Writing's route answered but the user has no graded attempts yet —
+        // an invitation to start, not a bare empty chart. Only the empty
+        // REAL series lands here; a failed route reads "No data yet" above.
+        <div className="km-progress__trendEmpty">
+          Start writing to see your progress here.
+        </div>
+      ) : (
+        <LineChart
+          points={series.points}
+          unit={series.unit}
+          metricLabel={METRIC_LABELS[series.metric]}
+          ariaLabel={`${label} trend over the last ${String(TREND_WINDOW_DAYS)} days`}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The "Progress by skill" card — carousel of per-skill 30-day trends.
+ * Renders independently of the diagnostic history (its own fetch), so a
+ * user with practice activity but zero diagnostic runs still sees trends.
+ */
+function SkillTrendsCard({
+  series,
+}: {
+  series: UseEndpointOrMockResult<AllSkillSeries>;
+}): JSX.Element | null {
+  const seriesData = series.data;
+
+  if (series.loading) {
+    return (
+      <Card className="km-progress__card" aria-busy="true">
+        <div className="km-progress__state" role="status">
+          Loading skill trends…
+        </div>
+      </Card>
+    );
+  }
+  if (seriesData === null) {
+    // Unreachable in practice: the series realFn never rejects (per-skill
+    // degradation) and the mock loader cannot fail, so post-loading data is
+    // always present. `null` (not a dead ErrorCard) satisfies the type-level
+    // narrowing without shipping UI that can never render.
+    return null;
+  }
+  if (SERIES_PANELS.every((p) => seriesData[p.key].metric === 'none')) {
+    // F-UP-016a — total outage: every series route failed (network down /
+    // server unreachable). Five "couldn't load" panels would be honest but
+    // noisy; one ErrorCard with a real retry is clearer. Partial failure
+    // still renders the carousel with per-panel "Couldn't load" states.
+    return (
+      <div className="km-progress__card">
+        <ErrorCard
+          message="Progress trends couldn’t be loaded."
+          onRetry={series.refetch}
+        />
+      </div>
+    );
+  }
+  return (
+    <Card className="km-progress__card">
+      <Eyebrow>{`Last ${String(TREND_WINDOW_DAYS)} days · 실력 추이`}</Eyebrow>
+      <div className="km-progress__card-title">Progress by skill</div>
+      <SwipeCarousel ariaLabel="Progress by skill">
+        {SERIES_PANELS.map((p) => (
+          <SkillTrendPanel
+            key={p.key}
+            skillKey={p.key}
+            label={p.label}
+            kr={p.kr}
+            series={seriesData[p.key]}
+          />
+        ))}
+      </SwipeCarousel>
+    </Card>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -183,6 +402,17 @@ function Progress(): JSX.Element {
     loadProgressHistoryMock,
     { realFn },
   );
+  // F-017 — the per-skill 30-day trends behind the "Progress by skill"
+  // carousel (moved here from Today in P1.2). One fan-out call. Unlike the
+  // history read, its realFn never rejects — a failed route degrades that
+  // skill to a placeholder panel (fetchSkillSeries owns that), so this
+  // source can't trip the mock fallback and paint fixture numbers as real
+  // progress.
+  const series = useEndpointOrMock<AllSkillSeries>(
+    'progress.series',
+    loadSkillSeriesMock,
+    { realFn: () => fetchSkillSeries(TREND_WINDOW_DAYS) },
+  );
 
   const snapshots = hist.data?.snapshots ?? null;
   // The mock fallback is empty, so "error + nothing to show" is the honest
@@ -198,7 +428,9 @@ function Progress(): JSX.Element {
       aria-labelledby="progress-title"
       style={{ position: 'relative' }}
     >
-      {hist.isMock && fatalError === null ? <MockBadge /> : null}
+      {(hist.isMock || series.isMock) && fatalError === null ? (
+        <MockBadge />
+      ) : null}
 
       <Eyebrow>Diagnostic history · 진단 기록</Eyebrow>
       <h1 id="progress-title" className="kr-display km-progress__title">
@@ -229,7 +461,11 @@ function Progress(): JSX.Element {
         )
       ) : null}
 
+      <SkillTrendsCard series={series} />
+
       <WordMasterySection />
+
+      <GrammarMasterySection />
     </section>
   );
 }
@@ -269,6 +505,8 @@ function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
   const n = snapshots.length;
   return (
     <>
+      <CompareCard snapshots={snapshots} />
+
       <Card className="km-progress__card">
         <Eyebrow>Score over attempts · 0–100</Eyebrow>
         <div className="km-progress__card-title">Trend</div>
@@ -281,14 +519,179 @@ function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
         ) : null}
       </Card>
 
-      {n >= 2 ? <CompareBlock snapshots={snapshots} /> : null}
-
       <Card className="km-progress__card">
         <Eyebrow>Every attempt · oldest first</Eyebrow>
         <div className="km-progress__card-title">All attempts</div>
         <AttemptsTable snapshots={snapshots} />
       </Card>
     </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Compare card — the ONE compare surface (P1.2 reconciliation)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * "Where you stand" — the headline compare. `SkillsCompare full` over the
+ * LATEST attempt (the TOPIK-level snapshot moved off Today), the retake CTA,
+ * and — with ≥ 2 attempts — the attempt-vs-attempt delta table folded in as
+ * a sub-block. One card answers both compare questions ("vs TOPIK levels
+ * now" and "vs my earlier attempts") instead of two competing widgets.
+ */
+function CompareCard({ snapshots }: HistoryProps): JSX.Element {
+  const navigate = useNavigate();
+  const latest = snapshots[snapshots.length - 1];
+  if (latest === undefined) {
+    // Unreachable: the caller renders HistoryBlocks only when n >= 1.
+    // Guarded for noUncheckedIndexedAccess.
+    return <></>;
+  }
+  return (
+    <Card className="km-progress__card">
+      <Eyebrow>Latest attempt · 실력 비교</Eyebrow>
+      <div className="km-progress__card-title">Where you stand</div>
+      <SkillsCompare
+        variant="full"
+        skills={toSkillRows(latest)}
+        references={toSkillRefs(latest)}
+        defaultRefId={latest.defaultRef}
+      />
+      <div className="km-progress__retake">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            navigate('/diagnostic');
+          }}
+          trailingIcon={<Icon name="arrow-right" size={14} />}
+        >
+          Retake diagnostic
+        </Button>
+      </div>
+      {snapshots.length >= 2 ? <AttemptCompare snapshots={snapshots} /> : null}
+    </Card>
+  );
+}
+
+/** The attempt-vs-attempt pickers + signed delta table (previously its own
+ *  "Comparison" card; now a sub-block of the single compare surface). */
+function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
+  const n = snapshots.length;
+  // Stored selection may outlive a history refetch; clamp during render
+  // instead of syncing state in an effect. null = "default" (prev vs latest).
+  const [fromSel, setFromSel] = useState<number | null>(null);
+  const [toSel, setToSel] = useState<number | null>(null);
+  const fromIdx = Math.min(fromSel ?? n - 2, n - 1);
+  const toIdx = Math.min(toSel ?? n - 1, n - 1);
+  const from = snapshots[fromIdx];
+  const to = snapshots[toIdx];
+
+  if (from === undefined || to === undefined) {
+    // Unreachable: the caller renders AttemptCompare only when n >= 2 and both
+    // indices are clamped to [0, n-1]. Guarded for noUncheckedIndexedAccess.
+    return <></>;
+  }
+
+  return (
+    <div className="km-progress__attemptcompare">
+      <Eyebrow>Attempt vs attempt</Eyebrow>
+
+      <div className="km-progress__selects">
+        <label className="km-progress__select-label">
+          From
+          <select
+            className="km-progress__select focusring"
+            value={fromIdx}
+            onChange={(e) => {
+              setFromSel(Number(e.target.value));
+            }}
+          >
+            {snapshots.map((s, i) => (
+              <option key={s.capturedAt} value={i}>
+                Attempt {i + 1} · {formatDay(s.capturedAt)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="km-progress__select-label">
+          To
+          <select
+            className="km-progress__select focusring"
+            value={toIdx}
+            onChange={(e) => {
+              setToSel(Number(e.target.value));
+            }}
+          >
+            {snapshots.map((s, i) => (
+              <option key={s.capturedAt} value={i}>
+                Attempt {i + 1} · {formatDay(s.capturedAt)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="km-progress__tablewrap">
+        <table className="km-progress__table">
+          <caption>
+            Score change from attempt {fromIdx + 1} to attempt {toIdx + 1}
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Skill</th>
+              <th scope="col" className="km-progress__num">
+                Attempt {fromIdx + 1}
+              </th>
+              <th scope="col" className="km-progress__num">
+                Attempt {toIdx + 1}
+              </th>
+              <th scope="col" className="km-progress__num">
+                Change
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {SERIES.map((series) => {
+              const a = seriesScore(from, series.key);
+              const b = seriesScore(to, series.key);
+              return (
+                <tr key={series.key}>
+                  <th scope="row">
+                    <span
+                      className={`km-progress__key km-progress__key--${series.key}`}
+                      aria-hidden="true"
+                    />
+                    {series.label}
+                  </th>
+                  <td className="km-progress__num">{a ?? '—'}</td>
+                  <td className="km-progress__num">{b ?? '—'}</td>
+                  <td className="km-progress__num">
+                    <DeltaCell from={a} to={b} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Signed delta with an arrow so direction never rides on color alone. */
+function DeltaCell({ from, to }: { from: number | null; to: number | null }): JSX.Element {
+  if (from === null || to === null) return <span>—</span>;
+  const delta = to - from;
+  if (delta === 0) return <span>= 0</span>;
+  const up = delta > 0;
+  return (
+    <span
+      className={up ? 'km-progress__delta--up' : 'km-progress__delta--down'}
+    >
+      {up ? '▲' : '▼'} {up ? '+' : ''}
+      {delta}
+    </span>
   );
 }
 
@@ -526,130 +929,6 @@ function attemptSummary(snap: DiagnosticHistorySnapshot, i: number): string {
     return `${series.label} ${score !== null ? String(score) : 'not scored'}`;
   });
   return `Attempt ${String(i + 1)}, ${formatDay(snap.capturedAt)}: ${parts.join(', ')}`;
-}
-
-// ─────────────────────────────────────────────────────────────
-// Attempt vs attempt
-// ─────────────────────────────────────────────────────────────
-
-function CompareBlock({ snapshots }: HistoryProps): JSX.Element {
-  const n = snapshots.length;
-  // Stored selection may outlive a history refetch; clamp during render
-  // instead of syncing state in an effect. null = "default" (prev vs latest).
-  const [fromSel, setFromSel] = useState<number | null>(null);
-  const [toSel, setToSel] = useState<number | null>(null);
-  const fromIdx = Math.min(fromSel ?? n - 2, n - 1);
-  const toIdx = Math.min(toSel ?? n - 1, n - 1);
-  const from = snapshots[fromIdx];
-  const to = snapshots[toIdx];
-
-  if (from === undefined || to === undefined) {
-    // Unreachable: the caller renders CompareBlock only when n >= 2 and both
-    // indices are clamped to [0, n-1]. Guarded for noUncheckedIndexedAccess.
-    return <></>;
-  }
-
-  return (
-    <Card className="km-progress__card">
-      <Eyebrow>Attempt vs attempt</Eyebrow>
-      <div className="km-progress__card-title">Comparison</div>
-
-      <div className="km-progress__selects">
-        <label className="km-progress__select-label">
-          From
-          <select
-            className="km-progress__select focusring"
-            value={fromIdx}
-            onChange={(e) => {
-              setFromSel(Number(e.target.value));
-            }}
-          >
-            {snapshots.map((s, i) => (
-              <option key={s.capturedAt} value={i}>
-                Attempt {i + 1} · {formatDay(s.capturedAt)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="km-progress__select-label">
-          To
-          <select
-            className="km-progress__select focusring"
-            value={toIdx}
-            onChange={(e) => {
-              setToSel(Number(e.target.value));
-            }}
-          >
-            {snapshots.map((s, i) => (
-              <option key={s.capturedAt} value={i}>
-                Attempt {i + 1} · {formatDay(s.capturedAt)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="km-progress__tablewrap">
-        <table className="km-progress__table">
-          <caption>
-            Score change from attempt {fromIdx + 1} to attempt {toIdx + 1}
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">Skill</th>
-              <th scope="col" className="km-progress__num">
-                Attempt {fromIdx + 1}
-              </th>
-              <th scope="col" className="km-progress__num">
-                Attempt {toIdx + 1}
-              </th>
-              <th scope="col" className="km-progress__num">
-                Change
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {SERIES.map((series) => {
-              const a = seriesScore(from, series.key);
-              const b = seriesScore(to, series.key);
-              return (
-                <tr key={series.key}>
-                  <th scope="row">
-                    <span
-                      className={`km-progress__key km-progress__key--${series.key}`}
-                      aria-hidden="true"
-                    />
-                    {series.label}
-                  </th>
-                  <td className="km-progress__num">{a ?? '—'}</td>
-                  <td className="km-progress__num">{b ?? '—'}</td>
-                  <td className="km-progress__num">
-                    <DeltaCell from={a} to={b} />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-}
-
-/** Signed delta with an arrow so direction never rides on color alone. */
-function DeltaCell({ from, to }: { from: number | null; to: number | null }): JSX.Element {
-  if (from === null || to === null) return <span>—</span>;
-  const delta = to - from;
-  if (delta === 0) return <span>= 0</span>;
-  const up = delta > 0;
-  return (
-    <span
-      className={up ? 'km-progress__delta--up' : 'km-progress__delta--down'}
-    >
-      {up ? '▲' : '▼'} {up ? '+' : ''}
-      {delta}
-    </span>
-  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -902,6 +1181,38 @@ function WordMasterySection(): JSX.Element {
           ) : null}
         </>
       )}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Grammar mastery — designed placeholder (real section lands in P4)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Grammar mastery placeholder — sits beside Word mastery so the page's
+ * mastery area already reads as "vocab + grammar". The backing read route
+ * (mirroring `/vocab/mastery` over the grammar production-card FSRS state)
+ * is a P4 feature; until then this is an intentional coming-soon card,
+ * never a blank or broken panel.
+ */
+function GrammarMasterySection(): JSX.Element {
+  return (
+    <Card className="km-progress__card">
+      <div className="km-progress__soonhead">
+        <Eyebrow>Grammar · 문법 숙달</Eyebrow>
+        <Pill>Coming soon</Pill>
+      </div>
+      <div className="km-progress__card-title">Grammar mastery</div>
+      <div className="km-progress__soonbody">
+        <span className="km-progress__soonicon" aria-hidden="true">
+          <Icon name="grammar" size={18} />
+        </span>
+        <p className="km-progress__note">
+          Pattern-by-pattern mastery — how well you command each grammar
+          point you practice — will chart here, right next to your words.
+        </p>
+      </div>
     </Card>
   );
 }

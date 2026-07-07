@@ -1,26 +1,26 @@
 /**
- * Today — loading + rendered + interaction.
+ * Today — the action hub (Overhaul P1.2, Slice A): loading + rendered +
+ * interaction.
  *
- * We mock `useEndpointOrMock` to control the data the screen reads. All
- * three fetches (today plan + diagnostic snapshot + F-017 skill series)
- * share the same hook, so we dispatch on the `key` arg. All are
- * realFn-backed (`/plan/today`, `/diagnostic/latest`, the `/…/series`
- * fan-out); the hook mock here stands in for any source, so the screen
- * assertions hold regardless of which resolved. `services/stats` is also
- * mocked so the realFn closure can never touch the network.
+ * We mock `useEndpointOrMock` to control the data the screen reads. Both
+ * fetches (today plan + the F-007 open-exam lookup) share the same hook, so
+ * we dispatch on the `key` arg. Both are realFn-backed (`/plan/today`,
+ * `/topik/attempt`); the hook mock here stands in for any source, so the
+ * screen assertions hold regardless of which resolved. `services/topik` is
+ * also mocked so the realFn closure can never touch the network.
  *
- * Interaction: clicking the Review queue card navigates to /learn/vocab
- * (the FSRS flashcards page — re-homed from /review in Overhaul P1.1).
+ * P1.2 contract pinned here: Today NO LONGER renders the F-017 stats
+ * carousel or the compact SkillsCompare TOPIK-level snapshot (both moved to
+ * Progress — see Progress.test.tsx); it DOES render the R/L/W task carousel,
+ * the grammar-practice + TOPIK-recommendation placeholders, the open-exam
+ * panel, and the review-mistakes shortcut.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type {
-  AllSkillSeries,
-  TodayPlan,
-  DiagnosticSnapshot,
-} from '../types/domain';
+import type { TodayPlan } from '../types/domain';
+import type { AttemptState } from '../services/topik';
 
 // Hook mock — control loading + data per key. `vi.hoisted` is necessary
 // because `vi.mock` is hoisted above imports; sharing mutable state requires
@@ -31,35 +31,20 @@ const hoisted = vi.hoisted(() => {
     | { kind: 'data'; data: unknown };
   return {
     today: { state: { kind: 'loading' } as HookState },
-    diag: { state: { kind: 'loading' } as HookState },
-    series: {
-      state: { kind: 'loading' } as HookState,
-      // Observable refetch handle so tests can assert a retry actually
-      // routes back to this source (F-UP-016a total-outage ErrorCard).
-      refetch: undefined as (() => void) | undefined,
-    },
+    attempt: { state: { kind: 'loading' } as HookState },
   };
 });
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: (key: string) => {
-    const s =
-      key === 'today'
-        ? hoisted.today.state
-        : key === 'today.snapshot'
-          ? hoisted.diag.state
-          : hoisted.series.state;
-    const refetch =
-      key === 'today.series'
-        ? (hoisted.series.refetch ?? (() => undefined))
-        : () => undefined;
+    const s = key === 'today' ? hoisted.today.state : hoisted.attempt.state;
     if (s.kind === 'loading') {
       return {
         data: null,
         loading: true,
         error: null,
         isMock: false,
-        refetch,
+        refetch: () => undefined,
       };
     }
     return {
@@ -67,16 +52,16 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       loading: false,
       error: null,
       isMock: true,
-      refetch,
+      refetch: () => undefined,
     };
   },
 }));
 
-// The screen imports `fetchSkillSeries` for its realFn; with the hook mocked
-// it is never invoked, but mock the module anyway so no test path can reach
-// the real axios layer.
-vi.mock('../services/stats', () => ({
-  fetchSkillSeries: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
+// The screen imports `fetchAttempt` for its realFn; with the hook mocked it
+// is never invoked, but mock the module anyway so no test path can reach the
+// real axios layer.
+vi.mock('../services/topik', () => ({
+  fetchAttempt: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
 
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
@@ -100,95 +85,15 @@ const PLAN: TodayPlan = {
   largestGap: 'Listening',
 };
 
-const SERIES: AllSkillSeries = {
-  reading: {
-    metric: 'accuracy',
-    unit: '%',
-    points: [
-      { date: '2026-06-08', value: 58 },
-      { date: '2026-06-15', value: 66 },
-      { date: '2026-06-30', value: 74 },
-    ],
-  },
-  listening: {
-    metric: 'accuracy',
-    unit: '%',
-    points: [
-      { date: '2026-06-09', value: 42 },
-      { date: '2026-06-30', value: 58 },
-    ],
-  },
-  // Real wire shapes (grammar is score/pts, vocab counts REVIEWS — never
-  // accuracy/% or cards): together with reading/listening this fixture
-  // exercises all three wire metrics (accuracy, count, score) in render.
-  vocab: {
-    metric: 'count',
-    unit: 'reviews',
-    points: [
-      { date: '2026-06-08', value: 12 },
-      { date: '2026-06-29', value: 35 },
-    ],
-  },
-  grammar: {
-    metric: 'score',
-    unit: 'pts',
-    points: [
-      { date: '2026-06-10', value: 39 },
-      { date: '2026-06-30', value: 52 },
-    ],
-  },
-  // Real /writing/series wire shape (F-014): per-day average grade score
-  // normalized to percent-of-max (score/%, never accuracy).
-  writing: {
-    metric: 'score',
-    unit: '%',
-    points: [
-      { date: '2026-06-16', value: 60 },
-      { date: '2026-06-30', value: 72 },
-    ],
-  },
-};
-
-/** A brand-new user: every skill exists, none has any activity yet. */
-const EMPTY_SERIES: AllSkillSeries = {
-  reading: { metric: 'accuracy', unit: '%', points: [] },
-  listening: { metric: 'accuracy', unit: '%', points: [] },
-  vocab: { metric: 'count', unit: 'reviews', points: [] },
-  grammar: { metric: 'score', unit: 'pts', points: [] },
-  writing: { metric: 'score', unit: '%', points: [] },
-};
-
-const SNAP: DiagnosticSnapshot = {
-  // F-011 made scoreLow/scoreHigh required on the dimension; Today's compact
-  // tile doesn't render the band, so the degenerate low == score == high
-  // shape keeps this fixture honest without implying a band on-screen.
-  dimensions: [
-    {
-      key: 'reading',
-      label: 'Reading',
-      kr: '읽기',
-      score: 62,
-      scoreLow: 62,
-      scoreHigh: 62,
-      note: 'n',
-    },
-    // Pass 5 adds grammar to the dimension union; the snapshot card renders it
-    // generically (SkillsCompare keys on the string `key`), so it must survive.
-    {
-      key: 'grammar',
-      label: 'Grammar',
-      kr: '문법',
-      score: 48,
-      scoreLow: 48,
-      scoreHigh: 48,
-      note: 'g',
-    },
-  ],
-  references: [
-    { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
-  ],
-  defaultRef: 'L4',
-  goals: [],
+/** A saved F-007 mock attempt, as GET /topik/attempt returns it. */
+const ATTEMPT: AttemptState = {
+  section: 'listening',
+  sourceTest: 60,
+  currentIdx: 12,
+  picks: { '101': 'a', '102': 'c' },
+  remainingMs: 1_260_000,
+  answered: 12,
+  updatedAt: '2026-07-01T09:00:00.000Z',
 };
 
 function renderTodayAt(path = '/'): ReturnType<typeof render> {
@@ -196,42 +101,53 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/" element={<Today />} />
-        {/* Overhaul P1.1 targets: the review-queue CTA lands on the
-            re-homed flashcards page; task tiles land on /learn/*. */}
+        {/* Overhaul targets: the review-queue CTA lands on the re-homed
+            flashcards page; task tiles land on /learn/*; the exam panel on
+            /learn/topik; the shortcut row on /review/mistakes. */}
         <Route path="/learn/vocab" element={<div>FLASHCARDS PAGE</div>} />
         <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
+        <Route path="/learn/topik" element={<div>TOPIK PAGE</div>} />
+        <Route path="/review/mistakes" element={<div>MISTAKES PAGE</div>} />
       </Routes>
     </MemoryRouter>,
   );
+}
+
+/** Load both sources with the happy-path fixtures (no saved attempt). */
+function loadDefaults(): void {
+  hoisted.today.state = { kind: 'data', data: PLAN };
+  hoisted.attempt.state = { kind: 'data', data: null };
 }
 
 describe('Today', () => {
   beforeEach(() => {
     // Every fetch starts pending; each test opts specific keys into data.
     hoisted.today.state = { kind: 'loading' };
-    hoisted.diag.state = { kind: 'loading' };
-    hoisted.series.state = { kind: 'loading' };
-    hoisted.series.refetch = undefined;
+    hoisted.attempt.state = { kind: 'loading' };
   });
 
-  it('renders loading skeletons while the three fetches are pending', () => {
-    hoisted.today.state = { kind: 'loading' };
-    hoisted.diag.state = { kind: 'loading' };
-
+  it('renders loading skeletons while the fetches are pending', () => {
     renderTodayAt();
-    // Skeleton cards announce aria-busy="true".
+    // Skeleton cards + the exam panel's pending state announce aria-busy.
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
   });
 
-  it('renders the Korean title, review queue, and three task cards when loaded', () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-
+  it('renders the title, review queue lead, and the R/L/W task carousel when loaded', () => {
+    loadDefaults();
     renderTodayAt();
 
     expect(screen.getByText('오늘 · Today')).toBeInTheDocument();
     expect(screen.getByText('24 cards due')).toBeInTheDocument();
+
+    // The three tasks are now carousel pages (reshaped from the old grid).
+    const region = screen.getByRole('region', { name: "Today's tasks" });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(
+      within(region).getAllByRole('tab'),
+    ).toHaveLength(3);
+
+    // All three task titles exist in the DOM (off-screen pages included).
     expect(screen.getByText('도시화와 환경')).toBeInTheDocument();
     expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
     expect(screen.getByText(/Paragraph in/)).toBeInTheDocument();
@@ -241,18 +157,39 @@ describe('Today', () => {
     expect(screen.getByText('Register drill')).toBeInTheDocument();
   });
 
+  it('no longer renders the stats carousel or the TOPIK-level snapshot (moved to Progress)', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    // F-017 "Progress by skill" carousel — moved to the Progress page.
+    expect(
+      screen.queryByRole('region', { name: 'Progress by skill' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Progress by skill/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: /trend over the last/ }),
+    ).not.toBeInTheDocument();
+
+    // Compact SkillsCompare snapshot — its reference radiogroup and skill
+    // progressbars must be gone from Today.
+    expect(
+      screen.queryByRole('radiogroup', { name: 'Reference level' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
   it('singularises the due count at 1 ("1 card due", not "cards")', () => {
+    loadDefaults();
     hoisted.today.state = { kind: 'data', data: { ...PLAN, reviewCount: 1 } };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
     renderTodayAt();
     expect(screen.getByText('1 card due')).toBeInTheDocument();
     expect(screen.queryByText('1 cards due')).not.toBeInTheDocument();
   });
 
   it('navigates to /learn/vocab (flashcards) when the review queue card is clicked', async () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-
+    loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
@@ -264,16 +201,17 @@ describe('Today', () => {
     expect(screen.getByText('FLASHCARDS PAGE')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/writing when the Writing task tile is clicked (F-001)', async () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-
+  it('navigates to /learn/writing when the Writing task page is clicked (F-001)', async () => {
+    loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    // The tile is one big <button>; its accessible name includes the task
-    // title. Previously this tile pointed at /grammar (no Writing screen
-    // existed) — it must now land on the real /writing grader.
+    // Writing is carousel page 3 — bring it on-screen via its dot first
+    // (off-screen pages are aria-hidden + inert), then tap the tile.
+    const region = screen.getByRole('region', { name: "Today's tasks" });
+    await user.click(
+      within(region).getByRole('tab', { name: 'Page 3 of 3' }),
+    );
     const tile = screen.getByRole('button', { name: /Paragraph in/ });
     await user.click(tile);
 
@@ -283,241 +221,107 @@ describe('Today', () => {
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {
     // Writing is the weakest skill today → its tile wears "Largest gap" and the
     // "Register drill" copy is suppressed (gap precedence over the default).
+    loadDefaults();
     hoisted.today.state = {
       kind: 'data',
       data: { ...PLAN, largestGap: 'Writing' },
     };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-
     renderTodayAt();
 
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
     expect(screen.queryByText('Register drill')).not.toBeInTheDocument();
   });
 
-  it('omits a task tile whose server task is null (empty corpus)', () => {
+  it('omits a task page whose server task is null (empty corpus)', () => {
+    loadDefaults();
     hoisted.today.state = {
       kind: 'data',
       data: { ...PLAN, reading: null },
     };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-
     renderTodayAt();
 
-    // Reading tile gone; listening + writing still render.
+    // Reading page gone (2 dots, not 3); listening + writing still render.
     expect(screen.queryByText('도시화와 환경')).not.toBeInTheDocument();
     expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
     expect(screen.getByText(/Paragraph in/)).toBeInTheDocument();
+    const region = screen.getByRole('region', { name: "Today's tasks" });
+    expect(within(region).getAllByRole('tab')).toHaveLength(2);
   });
 
-  // ── Progress-by-skill carousel (F-017) ─────────────────────
+  // ── Placeholders (P1.2 — real backing lands in P4) ─────────
 
-  it('renders the Progress by skill carousel card with the series data', () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: SERIES };
-
+  it('renders the grammar-practice placeholder as a designed coming-soon panel', () => {
+    loadDefaults();
     renderTodayAt();
 
-    // Bilingual card heading, consistent with the page's other sections.
+    expect(screen.getByText('문법 연습 · Grammar practice')).toBeInTheDocument();
+    expect(screen.getByText('Daily grammar drills')).toBeInTheDocument();
+    // Real copy, not a blank panel.
     expect(
-      screen.getByText('실력 추이 · Progress by skill'),
+      screen.getByText(/due grammar patterns will queue up here/),
     ).toBeInTheDocument();
+    // Both placeholder slots (grammar + TOPIK recommendation) carry the pill.
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+  });
 
-    // The carousel region is present with one dot per skill (5 pages).
-    const region = screen.getByRole('region', { name: 'Progress by skill' });
+  it('renders the TOPIK-recommendation placeholder inside the exam carousel', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'TOPIK exams' });
     expect(region).toHaveAttribute('aria-roledescription', 'carousel');
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
-
-    // First panel (Reading) is the active page and shows its latest value.
-    const firstPanel = screen.getAllByRole('tabpanel', { hidden: true })[0];
-    expect(firstPanel).toHaveAttribute('aria-hidden', 'false');
-    expect(firstPanel).toHaveTextContent('Reading');
-    expect(firstPanel).toHaveTextContent('74%');
+    expect(within(region).getAllByRole('tab')).toHaveLength(2);
     expect(
-      screen.getByRole('img', { name: 'Reading trend over the last 30 days' }),
+      within(region).getByText('Recommended for you'),
+    ).toBeInTheDocument();
+    expect(
+      within(region).getByText(/recommendation based on your recent practice/),
     ).toBeInTheDocument();
   });
 
-  it('renders the Writing page as a real chart when it has points (F-014)', async () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: SERIES };
+  // ── Open exam (F-007 attempt surfaced) ─────────────────────
 
+  it('surfaces a saved mock attempt as a Resume exam CTA that opens /learn/topik', async () => {
+    loadDefaults();
+    hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
     const user = userEvent.setup();
     renderTodayAt();
 
-    // Writing is page 5. Its series is `metric: 'score'` + `unit: '%'` on the
-    // real wire — headline formats as a percent, and a real chart renders
-    // (no invitation, no placeholder).
-    await user.click(screen.getByRole('tab', { name: 'Page 5 of 5' }));
+    expect(screen.getByText('Exam in progress')).toBeInTheDocument();
+    expect(screen.getByText(/Listening mock/)).toBeInTheDocument();
+    expect(screen.getByText(/12 answered/)).toBeInTheDocument();
 
-    const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    expect(panels[4]).toHaveAttribute('aria-hidden', 'false');
-    expect(panels[4]).toHaveTextContent('Writing');
-    expect(panels[4]).toHaveTextContent('72%');
-    expect(
-      screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText('Start writing to see your progress here.'),
-    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Resume exam/ }));
+    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
   });
 
-  it('keeps the invitation only when the writing series is EMPTY', () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = {
-      kind: 'data',
-      data: { ...SERIES, writing: { metric: 'score', unit: '%', points: [] } },
-    };
-
-    renderTodayAt();
-
-    expect(
-      screen.getByText('Start writing to see your progress here.'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('img', { name: 'Writing trend over the last 30 days' }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('marks the Writing panel "Couldn’t load this trend." when its route failed', () => {
-    // fetchSkillSeries degrades a failed /writing/series to the metric:'none'
-    // placeholder — the panel must read as a FAILED FETCH (F-UP-016a), never
-    // as the fresh-account "No data yet" empty state, never an invitation as
-    // if the user had never written, and never fabricated points.
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = {
-      kind: 'data',
-      data: { ...SERIES, writing: { metric: 'none', unit: '', points: [] } },
-    };
-
-    renderTodayAt();
-
-    expect(screen.getByText('Couldn’t load this trend.')).toBeInTheDocument();
-    // A failed panel must NOT masquerade as a genuinely-empty series.
-    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Start writing to see your progress here.'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('collapses the carousel to an ErrorCard with a live retry on a total outage', async () => {
-    // F-UP-016a — with Promise.allSettled, ALL routes failing used to render
-    // five encouraging "No data yet" panels with no couldn't-load signal.
-    // All-unavailable now reads as one honest ErrorCard wired to refetch.
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    const down = { metric: 'none', unit: '', points: [] } as const;
-    hoisted.series.state = {
-      kind: 'data',
-      data: {
-        reading: down,
-        listening: down,
-        vocab: down,
-        grammar: down,
-        writing: down,
-      },
-    };
-    const refetch = vi.fn();
-    hoisted.series.refetch = refetch;
-
+  it('offers the TOPIK page directly when no attempt is saved (honest empty state)', async () => {
+    loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
+    // No fabricated resume: the null attempt reads as "no exam in progress".
+    expect(screen.getByText(/No exam in progress/)).toBeInTheDocument();
     expect(
-      screen.getByText('Progress trends couldn’t be loaded.'),
-    ).toBeInTheDocument();
-    // No empty-state copy, no per-panel failure copy, no carousel — a total
-    // outage is one error, not a fresh account or five broken panels.
-    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Couldn’t load this trend.'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('tablist', { name: 'Progress by skill' }),
+      screen.queryByRole('button', { name: /Resume exam/ }),
     ).not.toBeInTheDocument();
 
-    // Retry is real: it fires the series source's refetch (the plan/snapshot
-    // sources rendered fine, so this is the only Retry on screen).
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(refetch).toHaveBeenCalledTimes(1);
+    await user.click(
+      screen.getByRole('button', { name: /Open TOPIK practice/ }),
+    );
+    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
   });
 
-  it('navigates carousel pages via the dots (Vocab shows its count)', async () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: SERIES };
+  // ── Review shortcut ────────────────────────────────────────
 
+  it('navigates to /review/mistakes from the review shortcut row', async () => {
+    loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    // Page order is Reading, Listening, Vocab, Grammar, Writing → Vocab = 3.
-    await user.click(screen.getByRole('tab', { name: 'Page 3 of 5' }));
-
-    const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    expect(panels[2]).toHaveAttribute('aria-hidden', 'false');
-    expect(panels[2]).toHaveTextContent('Vocab');
-    expect(panels[2]).toHaveTextContent('35 reviews');
-  });
-
-  it('renders the Grammar page with the score metric (score/pts wire shape)', async () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: SERIES };
-
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    // Grammar is page 4. Its series is `metric: 'score'` on the real wire —
-    // this pins the score render path (headline "N pts" + a real chart).
-    await user.click(screen.getByRole('tab', { name: 'Page 4 of 5' }));
-
-    const panels = screen.getAllByRole('tabpanel', { hidden: true });
-    expect(panels[3]).toHaveAttribute('aria-hidden', 'false');
-    expect(panels[3]).toHaveTextContent('Grammar');
-    expect(panels[3]).toHaveTextContent('52 pts');
-    expect(
-      screen.getByRole('img', { name: 'Grammar trend over the last 30 days' }),
-    ).toBeInTheDocument();
-  });
-
-  it('renders every panel honestly for a fresh user (all series empty)', () => {
-    // The COMMON real state for this app's audience: routes respond fine,
-    // zero activity anywhere. Every headline is an em dash; the four charted
-    // skills say "No data yet"; writing keeps its invitation.
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: EMPTY_SERIES };
-
-    renderTodayAt();
-
-    expect(screen.getAllByText('—')).toHaveLength(5);
-    expect(screen.getAllByText('No data yet')).toHaveLength(4);
-    expect(
-      screen.getByText('Start writing to see your progress here.'),
-    ).toBeInTheDocument();
-    // No chart images and no NaN/undefined leakage anywhere.
-    expect(screen.queryByRole('img', { name: /trend over/ })).not.toBeInTheDocument();
-    expect(document.body.textContent).not.toMatch(/NaN|undefined/);
-  });
-
-  it('keeps the SkillsCompare snapshot card alongside the carousel', () => {
-    hoisted.today.state = { kind: 'data', data: PLAN };
-    hoisted.diag.state = { kind: 'data', data: SNAP };
-    hoisted.series.state = { kind: 'data', data: SERIES };
-
-    renderTodayAt();
-
-    // The snapshot card (complementary, not replaced) still renders its
-    // dimensions while the carousel card renders below it.
-    expect(
-      screen.getByRole('progressbar', { name: 'Grammar skill' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('실력 추이 · Progress by skill'),
-    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: /Review mistakes/ }),
+    );
+    expect(screen.getByText('MISTAKES PAGE')).toBeInTheDocument();
   });
 });

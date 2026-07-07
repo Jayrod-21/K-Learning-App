@@ -1,15 +1,17 @@
 /**
- * Grammar — Pass-3 list/bank wiring tests.
+ * Grammar — the LEARN grammar-practice page (banked + drill, post-P1.2/D3).
+ *
+ * The old `list` browse tab (and its Bank action) moved to the library at
+ * /review/grammar — those flows are pinned by
+ * pages/review/ReviewGrammar.test.tsx + lib/grammarBank.test.ts. Here we
+ * pin what stayed: the Banked tab (graduate / re-admit, independence from
+ * the corpus fetch), the detail Sheet opened from banked rows, the drill
+ * lifecycle, and the handoff link to the library browse.
  *
  * Services (grammar) are mocked at module level so the page sees
- * predictable resolves/rejects. The mock fixture loader is mocked too
- * for the ErrorCard branch where BOTH the real fetch AND the fallback
- * must fail (otherwise the hook falls back to the mock data and renders
- * the list as usual).
- *
- * `useEndpointOrMock` is **not** mocked — we let it call through to the
- * real implementation against the mocked services, so the realFn-first
- * + fallback + abort paths participate in the assertion.
+ * predictable resolves/rejects. `useEndpointOrMock` is **not** mocked — we
+ * let it call through to the real implementation against the mocked
+ * services, so the realFn-first + fallback + abort paths participate.
  */
 import {
   afterEach,
@@ -24,7 +26,6 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
-  BankGrammarBody,
   BankedGrammarList,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -75,6 +76,11 @@ function renderGrammar(drillTarget?: DrillTarget): ReturnType<typeof render> {
     >
       <Routes>
         <Route path="/learn/grammar" element={<Grammar />} />
+        {/* D3 handoff target — the library's single grammar browse. */}
+        <Route
+          path="/review/grammar"
+          element={<div data-testid="library-grammar-stub">LIBRARY GRAMMAR</div>}
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -231,144 +237,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Grammar — list tab', () => {
-  it('renders patterns from the real listPatterns service', async () => {
-    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
-
-    renderGrammar();
-
-    expect(await screen.findByText('-더라도')).toBeInTheDocument();
-    expect(screen.getByText('-느라고')).toBeInTheDocument();
-    expect(services.listPatterns).toHaveBeenCalled();
-  });
-
-  it('calls bankPattern with the row body on Bank tap', async () => {
+describe('Grammar — post-D3 shape (banked default, browse in the library)', () => {
+  it('defaults to the Banked tab and offers NO list/browse tab', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
-    services.bankPattern.mockResolvedValue({ id: 1 });
-
-    const user = userEvent.setup();
-    renderGrammar();
-
-    const bankBtn = await screen.findByRole('button', { name: /^Bank -더라도$/ });
-    await user.click(bankBtn);
-
-    await waitFor(() => {
-      expect(services.bankPattern).toHaveBeenCalledTimes(1);
-    });
-    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
-    // grammarKey() derives the GR-shaped dedup key the server's
-    // `^GR-[a-z0-9_-]{1,64}$` regex requires (raw source_id would 400).
-    expect(body.pattern_key).toBe('GR-kgiu-int-007');
-    expect(body.pattern_display).toBe('-더라도');
-    expect(body.summary_en).toBe('even if / even though');
-    // No register on the row → the optional field is omitted, not nulled.
-    expect('register' in body).toBe(false);
-    // Optimistic chip flip — the button label moves to "Banked".
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /Already banked/i }),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it('sanitizes the bank body: composite register dropped, empty category and summary defaulted', async () => {
-    // Live-corpus shaped row that used to 400 the bank POST: source_id is not
-    // GR-shaped, register is a composite value outside the server enum, and
-    // category/title_en are empty strings (min-1 fields server-side).
-    const messyRow: KgiuEntrySummary = {
-      id: 77,
-      corpus: 'kgiu_beginner',
-      source_id: 'kgiu-beginner-002',
-      pattern: 'N이다',
-      title_en: '',
-      category: '',
-      proficiency: 'beginner',
-      unit: 'Unit 1',
-      source_pages: null,
-      register: '해요체/합쇼체',
-    };
-    services.listPatterns.mockResolvedValue([messyRow]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
-    services.bankPattern.mockResolvedValue({ id: 2 });
-
-    const user = userEvent.setup();
-    renderGrammar();
-
-    const bankBtn = await screen.findByRole('button', { name: /^Bank N이다$/ });
-    await user.click(bankBtn);
-
-    await waitFor(() => {
-      expect(services.bankPattern).toHaveBeenCalledTimes(1);
-    });
-    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
-    // Schema-valid key (BankBodySchema regex in server/src/routes/grammar.ts).
-    expect(body.pattern_key).toMatch(/^GR-[a-z0-9_-]{1,64}$/);
-    expect(body.pattern_key).toBe('GR-kgiu-beginner-002');
-    // Composite register is OMITTED entirely — not sent as an invalid value.
-    expect('register' in body).toBe(false);
-    // min(1) fields never go out empty.
-    expect(body.category).toBe('uncategorized');
-    expect(body.summary_en).toBe('N이다'); // falls back to the pattern
-    expect(body.pattern_display).toBe('N이다');
-    expect(body.proficiency).toBe('basic');
-  });
-
-  it('passes an exact-match register through to the bank body', async () => {
-    const rowWithRegister: KgiuEntrySummary = {
-      ...ROW,
-      register: '해요체',
-    };
-    services.listPatterns.mockResolvedValue([rowWithRegister]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
-    services.bankPattern.mockResolvedValue({ id: 3 });
-
-    const user = userEvent.setup();
-    renderGrammar();
-
-    const bankBtn = await screen.findByRole('button', { name: /^Bank -더라도$/ });
-    await user.click(bankBtn);
-
-    await waitFor(() => {
-      expect(services.bankPattern).toHaveBeenCalledTimes(1);
-    });
-    const body = services.bankPattern.mock.calls[0][0] as BankGrammarBody;
-    expect(body.register).toBe('해요체');
-  });
-
-  it('shows an ErrorCard with Retry when BOTH real and mock fail', async () => {
-    services.listPatterns.mockRejectedValue(
-      new ApiError('boom', { status: 500, code: 'server' }),
-    );
-    services.listBanked.mockRejectedValue(
-      new ApiError('boom', { status: 500, code: 'server' }),
-    );
-    mocks.loadGrammarMock.mockRejectedValue(new Error('mock boom'));
 
     renderGrammar();
 
     expect(
-      await screen.findByText(/The grammar patterns couldn't be loaded/i),
-    ).toBeInTheDocument();
+      await screen.findByRole('tab', { name: 'Banked' }),
+    ).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Drill' })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'List' })).not.toBeInTheDocument();
+    // No per-row Bank affordance on this page anymore — banking moved to
+    // the library browse (/review/grammar).
     expect(
-      screen.getByRole('button', { name: /^Retry$/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /^Bank / }),
+    ).not.toBeInTheDocument();
   });
-});
 
-describe('Grammar — list level filter', () => {
-  it('fetches the FULL corpus page by default (limit 400, no corpus filter)', async () => {
+  it('still fetches the FULL corpus page on mount (limit 400, no corpus filter) for the drill pool', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
     renderGrammar();
 
-    expect(await screen.findByText('-더라도')).toBeInTheDocument();
-    // The bare listPatterns() call this replaces inherited the server default
-    // limit of 20 — only the first 20 of 285 patterns ever showed. The List
-    // must request one full-corpus page.
-    expect(services.listPatterns).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(services.listPatterns).toHaveBeenCalledTimes(1);
+    });
     const opts = services.listPatterns.mock.calls[0][0] as {
       limit?: number;
       corpus?: string;
@@ -377,68 +273,46 @@ describe('Grammar — list level filter', () => {
     expect(opts.corpus).toBeUndefined();
   });
 
-  it('passes the corpus param for a level and refetches when the level changes', async () => {
-    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+  it('the empty Banked state hands off to the library browse', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
     const user = userEvent.setup();
     renderGrammar();
-    await screen.findByText('-더라도');
 
-    await user.click(screen.getByRole('button', { name: 'Intermediate' }));
-    await waitFor(() => {
-      expect(services.listPatterns).toHaveBeenCalledTimes(2);
-    });
-    expect(services.listPatterns.mock.calls[1][0]).toMatchObject({
-      corpus: 'kgiu_intermediate',
-      limit: 400,
-    });
-
-    await user.click(screen.getByRole('button', { name: 'Beginner' }));
-    await waitFor(() => {
-      expect(services.listPatterns).toHaveBeenCalledTimes(3);
-    });
-    expect(services.listPatterns.mock.calls[2][0]).toMatchObject({
-      corpus: 'kgiu_beginner',
-      limit: 400,
-    });
-
-    // Back to All → the corpus filter is OMITTED, not sent as a bogus value.
-    await user.click(screen.getByRole('button', { name: 'All' }));
-    await waitFor(() => {
-      expect(services.listPatterns).toHaveBeenCalledTimes(4);
-    });
-    const allOpts = services.listPatterns.mock.calls[3][0] as {
-      limit?: number;
-      corpus?: string;
-    };
-    expect(allOpts.limit).toBe(400);
-    expect(allOpts.corpus).toBeUndefined();
-
-    // The selected level is reflected as a pressed state for AT users.
     expect(
-      screen.getByRole('button', { name: 'All' }),
-    ).toHaveAttribute('aria-pressed', 'true');
+      await screen.findByText(/Bank patterns from the grammar library/i),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Browse all patterns' }),
+    );
     expect(
-      screen.getByRole('button', { name: 'Intermediate' }),
-    ).toHaveAttribute('aria-pressed', 'false');
+      await screen.findByTestId('library-grammar-stub'),
+    ).toBeInTheDocument();
+  });
+
+  it('a populated Banked list still links to the library browse', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    expect(
+      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Browse all patterns' }),
+    );
+    expect(
+      await screen.findByTestId('library-grammar-stub'),
+    ).toBeInTheDocument();
   });
 });
 
-describe('Grammar — banked tab + drill pool independent of level filter (B-SF-1)', () => {
-  /** listPatterns stub that answers per requested corpus, like the real KGIU
-   *  endpoint: 'all' (no corpus) returns every level; a corpus filter narrows
-   *  the List to that level only. */
-  function corpusScopedList(): void {
-    services.listPatterns.mockImplementation(
-      async (opts?: { corpus?: string }) => {
-        if (opts?.corpus === 'kgiu_beginner') return [BEGINNER_ROW];
-        if (opts?.corpus === 'kgiu_intermediate') return [ROW];
-        return [ROW, BEGINNER_ROW]; // 'all'
-      },
-    );
-  }
-
+describe('Grammar — banked tab + drill pool independent of the corpus fetch (B-SF-1)', () => {
   /** generateDrill stub that echoes the request pattern (scoped to this block —
    *  the drill describe has its own copy). */
   function echoGenerate(): void {
@@ -457,48 +331,28 @@ describe('Grammar — banked tab + drill pool independent of level filter (B-SF-
     );
   }
 
-  it('keeps a banked intermediate pattern visible in the Banked tab when the List is filtered to Beginner', async () => {
-    corpusScopedList();
-    // The user has banked an INTERMEDIATE pattern (ROW → GR-kgiu-int-007).
+  it('shows a banked pattern that is MISSING from the corpus fetch (rendered from its bank-row fields)', async () => {
+    // The corpus fetch returns only the beginner row — the banked
+    // intermediate pattern (ROW → GR-kgiu-int-007) is NOT in it. The Banked
+    // tab must render it anyway, from the bank row's own stored fields.
+    services.listPatterns.mockResolvedValue([BEGINNER_ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
     } satisfies BankedGrammarList);
 
-    const user = userEvent.setup();
     renderGrammar();
-    await screen.findByText('-이다'); // list loaded (level 'all')
 
-    // Banked tab shows the intermediate pattern.
-    await user.click(screen.getByRole('tab', { name: 'Banked' }));
     expect(
       await screen.findByRole('button', { name: 'Graduate -더라도' }),
     ).toBeInTheDocument();
-
-    // Now filter the List to BEGINNER — the banked intermediate pattern is not
-    // in that corpus fetch. Pre-fix, the Banked tab derived from the filtered
-    // list and would LOSE the pattern.
-    await user.click(screen.getByRole('tab', { name: 'List' }));
-    await user.click(screen.getByRole('button', { name: 'Beginner' }));
-    await waitFor(() => {
-      // The List now shows only the beginner row…
-      expect(screen.getByText('-이다')).toBeInTheDocument();
-    });
-    expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
-
-    // …but the Banked tab STILL shows the intermediate banked pattern, sourced
-    // from the user's bank list rather than the level-filtered corpus.
-    await user.click(screen.getByRole('tab', { name: 'Banked' }));
-    expect(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
-    ).toBeInTheDocument();
-    // Active count reflects the banked pattern, not the filtered-out list.
+    // Active count reflects the bank list, not the corpus fetch.
     expect(
       screen.getByRole('button', { name: /^Active \(1\)/ }),
     ).toBeInTheDocument();
   });
 
-  it('drills the banked pattern even when the List is filtered to a level that excludes it', async () => {
-    corpusScopedList();
+  it('drills the banked pattern even when the corpus fetch excludes it', async () => {
+    services.listPatterns.mockResolvedValue([BEGINNER_ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
     } satisfies BankedGrammarList);
@@ -506,16 +360,11 @@ describe('Grammar — banked tab + drill pool independent of level filter (B-SF-
 
     const user = userEvent.setup();
     renderGrammar();
-    await screen.findByText('-이다');
+    await screen.findByRole('button', { name: 'Graduate -더라도' });
 
-    // Filter the List to Beginner (excludes the banked intermediate pattern).
-    await user.click(screen.getByRole('button', { name: 'Beginner' }));
-    await waitFor(() => {
-      expect(screen.queryByText('-더라도')).not.toBeInTheDocument();
-    });
-
-    // The drill pool is the banked patterns, independent of the List filter:
-    // it drills the banked intermediate pattern, NOT the filtered beginner row.
+    // The drill pool is the banked patterns, independent of the corpus
+    // fetch: it drills the banked intermediate pattern, NOT the fetched
+    // beginner row.
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
@@ -527,73 +376,15 @@ describe('Grammar — banked tab + drill pool independent of level filter (B-SF-
   });
 });
 
-describe('Grammar — optimisticBanked overlay prune (E-SF-1)', () => {
-  it('drops a reconciled overlay entry so a pattern the server later drops reverts to bankable', async () => {
-    // TEETH: this test must FAIL if the prune effect (Grammar.tsx `useEffect`
-    // pruning `optimisticBanked` against `bankedState.data`) is removed. The
-    // toothless prior version asserted only "Already banked", which holds
-    // whether or not the overlay is pruned (the server settle alone renders it).
-    //
-    // The observable state that ONLY the prune produces: after row A is
-    // optimistically banked and reconciled (its key enters the server bank
-    // list), the overlay entry for A is dropped. So when a LATER server settle
-    // no longer reports A as banked (A removed elsewhere / never truly
-    // persisted), the merged `bankedKeys` view no longer contains A and row A's
-    // button reverts to "Bank". WITHOUT the prune, the stale overlay entry for A
-    // survives forever, so A would still read "Already banked" — the exact
-    // unbounded-overlay bug the prune exists to prevent.
-    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    services.listBanked
-      // Initial mount: nothing banked.
-      .mockResolvedValueOnce(EMPTY_BANK)
-      // After banking A: the server confirms A (the reconciliation signal the
-      // prune keys on — A leaves the overlay here).
-      .mockResolvedValueOnce({ entries: [BANKED_ROW] } satisfies BankedGrammarList)
-      // After banking B: the server reports ONLY B. A is no longer banked
-      // server-side, so with a pruned overlay row A must revert to bankable.
-      .mockResolvedValue({ entries: [BANKED_ROW_2] } satisfies BankedGrammarList);
-    services.bankPattern.mockResolvedValue({ id: 1 });
-
-    const user = userEvent.setup();
-    renderGrammar();
-
-    // Bank A → wait for the server settle to confirm it ("Already banked").
-    await user.click(
-      await screen.findByRole('button', { name: /^Bank -더라도$/ }),
-    );
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: 'Already banked' }),
-      ).toBeInTheDocument();
-    });
-
-    // Bank B → its refetch (call 3) returns a server list WITHOUT A.
-    await user.click(
-      await screen.findByRole('button', { name: /^Bank -느라고$/ }),
-    );
-    await waitFor(() => {
-      expect(services.listBanked.mock.calls.length).toBeGreaterThanOrEqual(3);
-    });
-
-    // Row A reverts to bankable — only possible because the prune dropped A
-    // from the overlay at its reconciliation, so the B-settle's server list
-    // (which omits A) governs. A surviving overlay entry would keep A banked.
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: 'Bank -더라도' }),
-      ).toBeInTheDocument();
-    });
-    // Sanity: B is banked from server truth.
-    expect(
-      screen.getByRole('button', { name: 'Already banked' }),
-    ).toBeInTheDocument();
-  });
-});
-
-describe('Grammar — detail Sheet', () => {
-  it('opens detail Sheet and calls getPattern on row tap', async () => {
+describe('Grammar — detail Sheet (opened from banked rows post-D3)', () => {
+  // Post-P1.2 the only rows on this page live in the Banked tab (the default
+  // tab). A banked pattern whose KGIU row IS in the corpus fetch upgrades to
+  // the richer row, so the real getPattern detail fetch still runs.
+  it('opens detail Sheet and calls getPattern on a banked row tap', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
     services.getPattern.mockResolvedValue(DETAIL);
 
     const user = userEvent.setup();
@@ -614,7 +405,9 @@ describe('Grammar — detail Sheet', () => {
 
   it('renders Formation bullets, Examples, and Dialogue lines when populated (F-018)', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
     services.getPattern.mockResolvedValue(DETAIL_RICH);
 
     const user = userEvent.setup();
@@ -662,7 +455,9 @@ describe('Grammar — detail Sheet', () => {
 
   it('renders no rich-section headers when the arrays are empty (F-018)', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
     services.getPattern.mockResolvedValue(DETAIL); // all three arrays empty
 
     const user = userEvent.setup();
@@ -688,7 +483,9 @@ describe('Grammar — detail Sheet', () => {
 
   it('drops a late detail settle for a previously opened row (stale-guard)', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
 
     const DETAIL_2: KgiuEntryDetail = {
       ...ROW_2,
@@ -1269,7 +1066,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
 
     // …then leave the Drill tab (unmounts DrillPanel) and come back.
-    await user.click(screen.getByRole('tab', { name: 'List' }));
+    await user.click(screen.getByRole('tab', { name: 'Banked' }));
     await user.click(screen.getByRole('tab', { name: 'Drill' }));
 
     await waitFor(() => {
