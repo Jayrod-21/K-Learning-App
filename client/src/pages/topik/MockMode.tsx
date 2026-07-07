@@ -710,6 +710,11 @@ function ExamRunner({
   // persisted value the 15s save loop writes is the true wall-clock remaining,
   // so a resume can no longer inherit interval drift from the previous session.
   useEffect(() => {
+    // One-shot by construction: once the deadline is armed, never restamp it.
+    // The deps are referentially stable for the life of an exam today, but if a
+    // future parent change ever re-created `initial` per render, a restamp here
+    // would silently hand out a fresh time budget mid-exam.
+    if (deadlineRef.current !== 0) return;
     const now = Date.now();
     examStartRef.current = now;
     itemShownAtRef.current = now;
@@ -855,7 +860,18 @@ function ExamRunner({
     saveCtrlRef.current?.abort();
     const ctrl = new AbortController();
     saveCtrlRef.current = ctrl;
-    onSave(stateRef.current, ctrl.signal);
+    // Persist a FRESH deadline sample, not the interval-derived `remainingSec`
+    // state: in a heavily throttled background tab the countdown interval can
+    // go ~a minute between fires, so the state can be that much stale-generous
+    // and a save→resume from such a tab would inherit the surplus. Before the
+    // mount effect arms the deadline (=== 0) fall back to the seeded state.
+    // This is a handler/interval context, so reading the clock here keeps the
+    // no-`Date.now()`-in-render discipline intact.
+    const remainingSec =
+      deadlineRef.current === 0
+        ? stateRef.current.remainingSec
+        : Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
+    onSave({ ...stateRef.current, remainingSec }, ctrl.signal);
   }, [onSave]);
 
   // Save on each pick / navigation (captures every answer) + once on mount.

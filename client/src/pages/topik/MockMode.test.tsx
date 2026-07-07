@@ -370,6 +370,61 @@ describe('MockMode (Mock test)', () => {
     }
   });
 
+  it('persists the FRESH deadline-derived remaining on save, not the stale interval state (throttled tab)', async () => {
+    // The countdown interval only re-derives the `remaining` STATE when it
+    // fires; under intensive background-tab throttling it can go ~a minute
+    // between fires, so at the moment a save runs the state can be up to that
+    // much more generous than the wall clock. `saveProgress` must therefore
+    // re-sample the deadline itself. Here the throttling is taken to its
+    // limit: the faked interval NEVER fires while the wall clock advances 20
+    // minutes, then a save is triggered via a pick — the exact `saveProgress`
+    // callback the 15s persistence loop and the unmount flush also call.
+    // Code that persists the stale state saves the seeded 1:10:00
+    // (4_200_000 ms); the deadline-sampled save writes the true 50:00.
+    const T0 = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0);
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      fireEvent.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Sanity: exam mounted at the full budget; the interval has not fired.
+      expect(screen.getByRole('timer')).toHaveTextContent('1:10:00');
+
+      // 20 wall-clock minutes elapse with zero interval fires — the
+      // `remaining` state is still the stale 4200 s seed.
+      nowSpy.mockReturnValue(T0 + 20 * 60 * 1000);
+      // Fire a save WITHOUT advancing the interval: a pick runs the same
+      // saveProgress as the 15 s loop.
+      fireEvent.click(screen.getByRole('radio', { name: /나/ }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const lastSave = svc.saveAttempt.mock.calls.at(-1)?.[0] as {
+        picks: Record<string, string>;
+        remainingMs: number;
+      };
+      // The pick is in the body — this IS the post-advance save, not the
+      // mount-time one.
+      expect(lastSave.picks).toMatchObject({ '1001': 'b' });
+      // Fresh deadline sample: 70 min − 20 min = 50:00. A stale-state save
+      // would persist 4_200_000 (1:10:00), and a resume would inherit the
+      // whole throttle gap as extra exam time.
+      expect(lastSave.remainingMs).toBe(50 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+  });
+
   it('does not announce the countdown on every tick (timer aria-live is off)', async () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
