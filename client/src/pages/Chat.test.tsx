@@ -17,16 +17,20 @@
  * at will and inspect the screen's reaction. No real SSE.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import type {
   AppendMessageBody,
   ConversationsList,
+  DefineResult,
+  MineWordInput,
+  MineWordResult,
 } from '../types/domain';
 import type { ChatSeedState } from '../lib/askSeed';
 import { ApiError } from '../services/api';
+import { ToastProvider } from '../components/ToastProvider';
 
 // ── Hoisted shared state — mocks read fresh values per test ─────────────
 const hoisted = vi.hoisted(() => {
@@ -45,6 +49,14 @@ const hoisted = vi.hoisted(() => {
     /** Reject the promise from the test. */
     reject: (err: Error) => void;
   }
+  interface CapturedDefineCall {
+    word: string;
+    signal: AbortSignal | undefined;
+    /** Resolve the lookup from the test. */
+    resolve: (result: DefineResult) => void;
+    /** Reject the lookup from the test. */
+    reject: (err: Error) => void;
+  }
   interface EndpointState {
     kind: 'loading' | 'data' | 'mock';
     data: ConversationsList | null;
@@ -55,6 +67,8 @@ const hoisted = vi.hoisted(() => {
       streamCalls: [] as CapturedStreamCall[],
       startCalls: [] as Array<{ mode: string }>,
       startResult: { conversation: { id: 9001 } } as { conversation: { id: number } },
+      defineCalls: [] as CapturedDefineCall[],
+      mineCalls: [] as MineWordInput[],
     },
   };
 });
@@ -150,12 +164,43 @@ vi.mock('../services/conversation', () => ({
   ),
 }));
 
+// ── services/define mock — controlled promise per lookup (F-016) ────────
+vi.mock('../services/define', () => ({
+  defineEntry: vi.fn(
+    (word: string, signal?: AbortSignal): Promise<DefineResult> => {
+      let resolveFn: (result: DefineResult) => void = () => undefined;
+      let rejectFn: (err: Error) => void = () => undefined;
+      const promise = new Promise<DefineResult>((resolve, reject) => {
+        resolveFn = resolve;
+        rejectFn = reject;
+      });
+      hoisted.ref.defineCalls.push({
+        word,
+        signal,
+        resolve: resolveFn,
+        reject: rejectFn,
+      });
+      return promise;
+    },
+  ),
+}));
+
+// ── services/vocab mock — Chat only imports mineWord (F-016 add-to-bank) ─
+vi.mock('../services/vocab', () => ({
+  mineWord: vi.fn(async (input: MineWordInput): Promise<MineWordResult> => {
+    hoisted.ref.mineCalls.push(input);
+    return { entryId: 1, card: { id: 1, version: 1 } };
+  }),
+}));
+
 import { Chat } from './Chat';
 
 /**
  * Chat now reads `useLocation`/`useNavigate` (F-020 seeding), so every render
  * needs a router. `seedState`, when given, rides in as the `/chat` entry's
- * router state — exactly how `AskAboutThisButton` delivers it.
+ * router state — exactly how `AskAboutThisButton` delivers it. Chat also
+ * calls `useToast` (F-016 add-to-bank failure toast), so every render needs
+ * a `ToastProvider` too.
  */
 function renderChat(seedState?: ChatSeedState): ReturnType<typeof render> {
   return render(
@@ -166,8 +211,10 @@ function renderChat(seedState?: ChatSeedState): ReturnType<typeof render> {
           : ['/chat']
       }
     >
-      <Chat />
-      <LocationStateProbe />
+      <ToastProvider>
+        <Chat />
+        <LocationStateProbe />
+      </ToastProvider>
     </MemoryRouter>,
   );
 }
@@ -200,6 +247,8 @@ function resetState(): void {
   hoisted.ref.streamCalls = [];
   hoisted.ref.startCalls = [];
   hoisted.ref.startResult = { conversation: { id: 9001 } };
+  hoisted.ref.defineCalls = [];
+  hoisted.ref.mineCalls = [];
 }
 
 const LIST: ConversationsList = {
@@ -472,8 +521,10 @@ describe('Chat seed (F-020)', () => {
           },
         ]}
       >
-        <Chat />
-        <LocationStateProbe />
+        <ToastProvider>
+          <Chat />
+          <LocationStateProbe />
+        </ToastProvider>
       </MemoryRouter>,
     );
 
@@ -526,7 +577,9 @@ describe('Chat seed (F-020)', () => {
           { pathname: '/chat', state: { seedText: 42, mode: 'topik_prep' } },
         ]}
       >
-        <Chat />
+        <ToastProvider>
+          <Chat />
+        </ToastProvider>
       </MemoryRouter>,
     );
     const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
@@ -540,5 +593,252 @@ describe('Chat seed (F-020)', () => {
     const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
     expect(input.value).toBe('');
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+});
+
+// ── Dictionary lookup (F-016) ────────────────────────────────────────────
+describe('Chat dictionary lookup (F-016)', () => {
+  const ENTRY_RESULT: DefineResult = {
+    word: '사전',
+    entries: [
+      {
+        id: 77,
+        headword: '사전',
+        part_of_speech: 'noun',
+        definition_korean: null,
+        definition_english: 'dictionary',
+        examples: [
+          {
+            korean: '사전을 찾아보세요.',
+            english: 'Look it up in the dictionary.',
+          },
+        ],
+      },
+    ],
+  };
+
+  /** Open the lookup field via the book toggle and type a word into it. */
+  async function openDictAndType(
+    user: ReturnType<typeof userEvent.setup>,
+    word: string,
+  ): Promise<void> {
+    await user.click(
+      screen.getByRole('button', { name: 'Dictionary lookup' }),
+    );
+    await user.type(screen.getByLabelText('Dictionary word'), word);
+  }
+
+  it('looks up a word — calls defineEntry and renders the popover with headword + gloss', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    // The service was called with the trimmed word…
+    expect(hoisted.ref.defineCalls.length).toBe(1);
+    expect(hoisted.ref.defineCalls[0]?.word).toBe('사전');
+    // …and the popover opened immediately in its loading state.
+    expect(screen.getByTestId('word-popover-loading')).toBeInTheDocument();
+
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+    });
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('사전')).toBeInTheDocument();
+    expect(within(dialog).getByText('dictionary')).toBeInTheDocument();
+    expect(within(dialog).getByText('noun')).toBeInTheDocument();
+    expect(within(dialog).getByText('사전을 찾아보세요.')).toBeInTheDocument();
+    // Loading stub gone once resolved.
+    expect(
+      screen.queryByTestId('word-popover-loading'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('Enter in the lookup field submits the lookup', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.keyboard('{Enter}');
+
+    expect(hoisted.ref.defineCalls.length).toBe(1);
+    expect(hoisted.ref.defineCalls[0]?.word).toBe('사전');
+  });
+
+  it('shows the friendly no-entry notice when the lookup matches nothing', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '없는말');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve({ word: '없는말', entries: [] });
+    });
+
+    // No dialog, no crash — a fixed friendly line under the field instead.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'No dictionary entry found for that word.',
+    );
+  });
+
+  it('shows fixed error copy on krdict_unavailable — never the server prose', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.reject(
+        new ApiError('KRDICT tables missing in this deploy', {
+          status: 503,
+          code: 'krdict_unavailable',
+        }),
+      );
+    });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(
+      'The dictionary is unavailable right now. Try again later.',
+    );
+    expect(alert).not.toHaveTextContent('KRDICT tables missing');
+  });
+
+  it('shows the shared fixed network copy on a network failure', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.reject(
+        new ApiError('connect ECONNREFUSED 127.0.0.1:3000', {
+          status: 0,
+          code: 'network',
+        }),
+      );
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Network unreachable. Check your connection and try again.',
+    );
+    expect(alert).not.toHaveTextContent('ECONNREFUSED');
+  });
+
+  it('empty / whitespace input is a no-op', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Dictionary lookup' }),
+    );
+    const lookupBtn = screen.getByRole('button', { name: 'Look up word' });
+    expect(lookupBtn).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Dictionary word'), '   ');
+    expect(lookupBtn).toBeDisabled();
+    await user.keyboard('{Enter}');
+    expect(hoisted.ref.defineCalls.length).toBe(0);
+  });
+
+  it('aborts an in-flight lookup on unmount', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    const { unmount } = renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    const call = hoisted.ref.defineCalls[0];
+    if (!call) throw new Error('no captured define call');
+    expect(call.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(call.signal?.aborted).toBe(true);
+  });
+
+  it('closing the popover aborts the pending lookup', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+
+    // Loading stub is a dialog with a Close button.
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
+  });
+
+  it('Add to bank mines the looked-up word with its KRDICT entry id', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    await openDictAndType(user, '사전');
+    await user.click(screen.getByRole('button', { name: 'Look up word' }));
+    await act(async () => {
+      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
+    });
+
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: /Add to vocab/ }),
+    );
+
+    await waitFor(() => {
+      expect(hoisted.ref.mineCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.mineCalls[0]).toEqual({
+      lemma: '사전',
+      english: 'dictionary',
+      pos: 'noun',
+      krdictEntryId: 77,
+    });
+    // Button locked to its added state.
+    expect(
+      within(dialog).getByRole('button', { name: /Added to vocab/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('leaves the send flow untouched — composer send still streams', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+
+    // Open the dictionary field, then use the normal composer anyway.
+    await user.click(
+      screen.getByRole('button', { name: 'Dictionary lookup' }),
+    );
+    await user.type(screen.getByLabelText('Reply input'), '감사합니다');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(hoisted.ref.streamCalls.length).toBe(1);
+    expect(hoisted.ref.streamCalls[0]?.body.content).toBe('감사합니다');
+    // The dictionary lookup never fired.
+    expect(hoisted.ref.defineCalls.length).toBe(0);
   });
 });
