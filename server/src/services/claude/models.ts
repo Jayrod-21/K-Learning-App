@@ -31,8 +31,10 @@ export const RegisterSchema = z.enum([
 ]);
 export type Register = z.infer<typeof RegisterSchema>;
 
-/** Proficiency tags. Matches the Postgres `proficiency_level` enum. */
-export const ProficiencyLevelSchema = z.enum(['basic', 'L3', 'L4', 'L5+']);
+/** Proficiency tags. Matches the Postgres `proficiency_level` enum ('L1'/'L2'
+ *  added by migration 039, F-002 — the diagnostic ladder's beginner levels;
+ *  'basic' remains the legacy corpus content tag). */
+export const ProficiencyLevelSchema = z.enum(['basic', 'L1', 'L2', 'L3', 'L4', 'L5+']);
 export type ProficiencyLevel = z.infer<typeof ProficiencyLevelSchema>;
 
 /** Domain tags. Matches the DESIGN_SPEC content-tagging model. */
@@ -199,8 +201,9 @@ export const DiagnosticGenSectionSchema = z.enum(['vocab', 'grammar']);
 export type DiagnosticGenSection = z.infer<typeof DiagnosticGenSectionSchema>;
 
 /** Target proficiency band the item should be written at. Subset of
- *  ProficiencyLevel that the CAT band() function can land on. */
-export const DiagnosticTargetLevelSchema = z.enum(['L3', 'L4', 'L5+']);
+ *  ProficiencyLevel that the CAT band() function can land on ('L1'/'L2'
+ *  added by F-002 — never 'basic', which is a content tag, not a band). */
+export const DiagnosticTargetLevelSchema = z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']);
 export type DiagnosticTargetLevel = z.infer<typeof DiagnosticTargetLevelSchema>;
 
 /** Item kinds the generator may emit. vocab → synonym|cloze; grammar →

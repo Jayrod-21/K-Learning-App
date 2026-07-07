@@ -400,18 +400,26 @@ export async function seedTopikItem(
     testNumber?: number;
     /** Pin the item's `item_number` (the mock-order key). Defaults to 1. */
     itemNumber?: number;
+    /**
+     * The parent test's paper ('TOPIK I' beginner / 'TOPIK II' the default).
+     * F-002: the diagnostic's L1/L2 bands prefer items from 'TOPIK I' tests.
+     */
+    topikLevel?: 'TOPIK I' | 'TOPIK II';
   } = {},
 ): Promise<number> {
   const section = opts.section ?? 'reading';
+  const topikLevel = opts.topikLevel ?? 'TOPIK II';
   const corpusSourceId = await ensureCorpusSource(pool, 'topik', 'intermediate');
   // Unique test_number per call by default (natural key is (test_number,
-  // section)); callers building a multi-item test pin it via opts.testNumber.
+  // topik_level, section) since migration 029); callers building a multi-item
+  // test pin it via opts.testNumber.
   const testNumber = opts.testNumber ?? Math.floor(Math.random() * 2_000_000) + 1;
-  // A (test_number, section) is the test's natural key — reuse the existing test
-  // when the caller pins testNumber so multiple items land under one test.
+  // Reuse the existing test when the caller pins testNumber so multiple items
+  // land under one test.
   const existingTest = await pool.query<{ id: string }>(
-    `SELECT id FROM topik_tests WHERE test_number = $1 AND section = $2::topik_section`,
-    [testNumber, section],
+    `SELECT id FROM topik_tests
+      WHERE test_number = $1 AND topik_level = $2 AND section = $3::topik_section`,
+    [testNumber, topikLevel, section],
   );
   let testId: number;
   if (existingTest.rows[0]) {
@@ -419,9 +427,9 @@ export async function seedTopikItem(
   } else {
     const testRes = await pool.query<{ id: string }>(
       `INSERT INTO topik_tests (corpus_source_id, corpus, test_number, topik_level, section)
-       VALUES ($1, 'topik'::corpus, $2, 'TOPIK II', $3::topik_section)
+       VALUES ($1, 'topik'::corpus, $2, $4, $3::topik_section)
        RETURNING id`,
-      [corpusSourceId, testNumber, section],
+      [corpusSourceId, testNumber, section, topikLevel],
     );
     testId = Number(testRes.rows[0]!.id);
   }

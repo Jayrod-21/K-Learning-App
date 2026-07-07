@@ -339,9 +339,10 @@ export interface DiagnosticDimension {
   note: string;
 }
 
-/** Reference line band on the SkillsCompare chart. */
+/** Reference line band on the SkillsCompare chart. F-002 adds L1/L2 so a
+ * beginner placement has honest reference lines below the old L3 floor. */
 export interface DiagnosticReference {
-  id: 'L3' | 'L4' | 'L5' | 'L6' | 'native';
+  id: 'L1' | 'L2' | 'L3' | 'L4' | 'L5' | 'L6' | 'native';
   label: string;
   kr: string;
   value: number;
@@ -387,8 +388,12 @@ export interface DiagnosticChoice {
 /** The section a diagnostic item exercises. */
 export type DiagnosticSection = 'vocab' | 'grammar' | 'reading' | 'listening';
 
-/** The proficiency band the server serves a live diagnostic item at. */
-export type DiagnosticLevel = 'L3' | 'L4' | 'L5+';
+/**
+ * The proficiency band the server serves a live diagnostic item at.
+ * F-002: the ladder now reaches down to L1/L2 (TOPIK I territory) instead of
+ * collapsing everything below L3 — beginners get real item targeting.
+ */
+export type DiagnosticLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
 
 /**
  * A live diagnostic item as the client receives it from the server.

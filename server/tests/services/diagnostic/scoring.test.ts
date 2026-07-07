@@ -29,8 +29,8 @@ describe('RUBRIC_VERSION', () => {
   it('matches the diagnostic_snapshots semver CHECK', () => {
     expect(RUBRIC_VERSION).toMatch(/^v\d+\.\d+\.\d+$/);
   });
-  it('is bumped to v1.1.0 for the F-011 proportion + band rubric', () => {
-    expect(RUBRIC_VERSION).toBe('v1.1.0');
+  it('is bumped to v1.2.0 for the F-002 L1/L2 ladder + low score anchors', () => {
+    expect(RUBRIC_VERSION).toBe('v1.2.0');
   });
 });
 
@@ -152,6 +152,20 @@ describe('dimensionResult (confidence band)', () => {
     expect(r.scoreHigh).toBe(r.score);
     expect(r.scoreLow).toBeLessThan(r.score);
   });
+
+  it('behaves at the F-002 floor: an all-wrong L1-difficulty run keeps a sane band', () => {
+    // difficulty 1.5 (an L1/L2 mix), all wrong: estimate clamps at 1 → score 10
+    // (the new low anchor). The Agresti-Coull band is generic — at the floor it
+    // collapses downward onto the clamp edge but keeps its upward tail, the
+    // exact mirror of the ceiling case, and never leaves [0, 100].
+    const r = dimensionResult(responsesOf(4, 0, 1.5))!;
+    expect(r.estimate).toBe(1);
+    expect(r.score).toBe(10);
+    expect(r.scoreLow).toBe(r.score); // clamp edge — cannot dip below estimate 1
+    expect(r.scoreHigh).toBeGreaterThan(r.score); // the uncertainty shows above
+    expect(r.scoreLow).toBeGreaterThanOrEqual(0);
+    expect(r.scoreHigh).toBeLessThanOrEqual(100);
+  });
 });
 
 describe('resultsByDimension', () => {
@@ -176,23 +190,43 @@ describe('resultsByDimension', () => {
 });
 
 describe('estimateToScore', () => {
-  it('hits the anchor points', () => {
+  it('hits the anchor points, including the F-002 low anchors', () => {
+    expect(estimateToScore(1)).toBe(10); // L1 — ANCHORED, not extrapolated
+    expect(estimateToScore(2)).toBe(25); // L2 — ANCHORED, not extrapolated
     expect(estimateToScore(3)).toBe(40);
     expect(estimateToScore(4)).toBe(55);
     expect(estimateToScore(5)).toBe(70);
     expect(estimateToScore(6)).toBe(85);
   });
   it('interpolates between anchors', () => {
+    expect(estimateToScore(1.5)).toBe(18); // midpoint of 10 and 25 → 17.5 → 18
     expect(estimateToScore(3.5)).toBe(48); // midpoint of 40 and 55 → 47.5 → 48
     expect(estimateToScore(4.5)).toBe(63); // midpoint of 55 and 70 → 62.5 → 63
   });
   it('extrapolates below the first anchor and clamps at 0', () => {
-    expect(estimateToScore(2)).toBe(25); // 40 − 15
-    expect(estimateToScore(1)).toBe(10);
-    expect(estimateToScore(0)).toBe(0); // 40 − 60 = −20 → clamp 0
+    expect(estimateToScore(0.5)).toBe(3); // 10 − 7.5 → 2.5 → round 3
+    expect(estimateToScore(0)).toBe(0); // 10 − 15 = −5 → clamp 0
   });
   it('clamps at 100 above the last anchor', () => {
     expect(estimateToScore(7)).toBe(100);
     expect(estimateToScore(8)).toBe(100);
+  });
+  it('is monotonic non-decreasing and within [0, 100] across the whole range', () => {
+    // All segment slopes are positive and Math.round is monotone, so the
+    // rounded curve must never decrease anywhere — including across the new
+    // low-anchor joins at 1 and 2.
+    let prev = estimateToScore(0);
+    for (let est = 0.05; est <= 7.5; est += 0.05) {
+      const score = estimateToScore(est);
+      expect(score).toBeGreaterThanOrEqual(prev);
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(100);
+      prev = score;
+    }
+    // Strict increase across the anchor points themselves.
+    const anchorScores = [1, 2, 3, 4, 5, 6, 7].map(estimateToScore);
+    for (let i = 1; i < anchorScores.length; i += 1) {
+      expect(anchorScores[i]!).toBeGreaterThan(anchorScores[i - 1]!);
+    }
   });
 });

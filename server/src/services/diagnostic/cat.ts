@@ -21,22 +21,32 @@ export const SEED_THETA = 4.0;
 
 /** θ is clamped to this closed interval after every update. The 0–6 column
  *  CHECK in migration 001/014 is the durable guard; this keeps the in-memory
- *  value honest so it never violates the constraint on write. */
-export const THETA_MIN = 2.0;
+ *  value honest so it never violates the constraint on write. Floor 1.0
+ *  (F-002): θ can descend into L1 territory so a beginner gets a real
+ *  placement instead of being floored at the old 2.0 / 'basic' collapse. */
+export const THETA_MIN = 1.0;
 export const THETA_MAX = 6.0;
 
-/** The discrete proficiency bands the CAT can land on for item selection. */
-export type DiagnosticBand = 'basic' | 'L3' | 'L4' | 'L5+';
+/** The discrete proficiency bands the CAT can land on for item selection.
+ *  F-002: 'basic' is no longer a diagnostic band — the below-L3 range splits
+ *  into L1/L2. ('basic' survives only as a CONTENT tag on corpus rows.) */
+export type DiagnosticBand = 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
 
 /**
  * Map a proficiency label to its numeric position on the 0–6 θ scale.
  *
  * Used to (a) seed/interpret bands and (b) translate a topik_items row's
  * `proficiency` enum into a difficulty number for scoring. The values are the
- * locked product decision: basic=2, L3=3, L4=4, L5+=5.5.
+ * locked product decision: L1=1, L2=2, basic=2, L3=3, L4=4, L5+=5.5.
+ * ('basic' stays at 2 — it is a corpus content tag, not a diagnostic band,
+ * and its rough difficulty sits at the L2 anchor.)
  */
 export function proficiencyToNumber(level: ProficiencyLevel): number {
   switch (level) {
+    case 'L1':
+      return 1;
+    case 'L2':
+      return 2;
     case 'basic':
       return 2;
     case 'L3':
@@ -55,31 +65,33 @@ export function proficiencyToNumber(level: ProficiencyLevel): number {
 
 /**
  * Collapse a continuous θ to the discrete band used to pick/generate the next
- * item. Nearest of {L3, L4, L5+}, with 'basic' reserved for genuinely low θ
- * (< 2.5) so a struggling learner gets easier items rather than being floored
- * at L3.
+ * item. Five bands (F-002): the old `θ < 2.5 → 'basic'` collapse is replaced
+ * by real L1/L2 placement so a beginner is not lumped into one bucket.
  *
- * Boundaries (using the numeric anchors L3=3, L4=4, L5+=5.5):
- *   θ < 2.5            → basic
+ * Boundaries (using the numeric anchors L1=1, L2=2, L3=3, L4=4, L5+=5.5):
+ *   θ < 1.5            → L1
+ *   1.5 ≤ θ < 2.5      → L2
  *   2.5 ≤ θ < 3.5      → L3
  *   3.5 ≤ θ < 4.75     → L4   (4.75 = midpoint of 4 and 5.5)
  *   θ ≥ 4.75           → L5+
  */
 export function bandForTheta(theta: number): DiagnosticBand {
-  if (theta < 2.5) return 'basic';
+  if (theta < 1.5) return 'L1';
+  if (theta < 2.5) return 'L2';
   if (theta < 3.5) return 'L3';
   if (theta < 4.75) return 'L4';
   return 'L5+';
 }
 
 /**
- * The band a GENERATED (Claude) item is authored at. Claude's diagnostic-item
- * route only accepts L3/L4/L5+ (DiagnosticTargetLevel) — a 'basic' θ floors to
- * L3 for generation because the corpus/generator has no sub-L3 target.
+ * The band a GENERATED (Claude) item is authored at. Since F-002 the
+ * generator accepts the full L1–L5+ range (DiagnosticTargetLevel), so this is
+ * the identity over `bandForTheta` — kept as a named seam because the
+ * "band for selection" and "level for generation" are distinct concepts the
+ * route wires to different sinks (topik row picks vs. Claude prompts).
  */
 export function targetLevelForTheta(theta: number): DiagnosticTargetLevel {
-  const band = bandForTheta(theta);
-  return band === 'basic' ? 'L3' : band;
+  return bandForTheta(theta);
 }
 
 /**

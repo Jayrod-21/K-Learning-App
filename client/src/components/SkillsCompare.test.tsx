@@ -54,6 +54,14 @@ const BANDED_SKILLS: ReadonlyArray<SkillRow> = [
   },
 ];
 
+// F-002: the ladder reaches down to TOPIK 1/2 — the picker must render and
+// honour beginner reference lines, not just the old L3+ set.
+const BEGINNER_REFS: ReadonlyArray<SkillReference> = [
+  { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+  { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
+  { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
+];
+
 describe('SkillsCompare', () => {
   it('defaults to the first reference id', () => {
     render(<SkillsCompare skills={SKILLS} references={REFS} />);
@@ -95,6 +103,31 @@ describe('SkillsCompare', () => {
     const nativeRadio = screen.getByRole('radio', { name: 'Native' });
     await user.click(nativeRadio);
     expect(nativeRadio.className).toContain('km-skillscompare__pick--ceiling');
+  });
+
+  it('F-002: renders TOPIK 1 / TOPIK 2 reference options and switches between them', async () => {
+    const user = userEvent.setup();
+    render(
+      <SkillsCompare
+        skills={SKILLS}
+        references={BEGINNER_REFS}
+        defaultRefId="L2"
+      />,
+    );
+    // Both beginner refs are pickable and the explicit default is honoured.
+    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'TOPIK 2' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // Switching to TOPIK 1 re-targets the bars and updates the legend's
+    // Korean shorthand — the beginner refs behave exactly like the old set.
+    await user.click(screen.getByRole('radio', { name: 'TOPIK 1' }));
+    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByText(/1급/)).toBeInTheDocument();
   });
 
   it('groups the radios under a single radiogroup with a label', () => {
