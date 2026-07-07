@@ -24,7 +24,11 @@ import { mockDelay } from './_delay';
  */
 export const DIAGNOSTIC_SNAPSHOT_FIXTURE: DiagnosticSnapshot = {
   dimensions: [],
+  // F-002: L1/L2 join the ladder (values 10/25 per the scoring anchor table
+  // {1→10, 2→25, 3→40, …}) so a beginner placement has real reference lines.
   references: [
+    { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+    { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
     { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
     { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
     { id: 'L5', label: 'TOPIK 5', kr: '5급', value: 70 },
@@ -93,7 +97,10 @@ export const DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE: DiagnosticSnapshot = {
       note: 'Connectives (-더라도, -느라고) inconsistent under time.',
     },
   ],
+  // F-002: same full L1–native ladder as the empty fixture above.
   references: [
+    { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+    { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
     { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
     { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
     { id: 'L5', label: 'TOPIK 5', kr: '5급', value: 70 },

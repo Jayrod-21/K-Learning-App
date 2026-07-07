@@ -14,8 +14,15 @@
  *  v1.1.0 (F-011): per-dimension estimate moved from the 3-bucket
  *  all/none/mixed delta to a smooth proportion-correct adjustment
  *  (`ESTIMATE_SPREAD`), and dimensions gained an Agresti-Coull confidence
- *  band (`dimensionResult`). */
-export const RUBRIC_VERSION = 'v1.1.0';
+ *  band (`dimensionResult`).
+ *
+ *  v1.2.0 (F-002): the 0–6 band semantics changed — the diagnostic ladder
+ *  gained L1/L2 (θ floor 2.0 → 1.0, 5-band cuts) and `estimateToScore` gained
+ *  low anchors (1→10, 2→25) so L1/L2 scores are anchored, not extrapolated.
+ *  (The anchor VALUES coincide with the old extrapolation, but estimates in
+ *  [1, 2.5) now occur in real runs; F-010 history must compare like
+ *  versions.) */
+export const RUBRIC_VERSION = 'v1.2.0';
 
 /** The four diagnostic dimensions, in the fixed display order. */
 export const DIMENSION_ORDER = ['reading', 'listening', 'vocab', 'grammar'] as const;
@@ -151,17 +158,22 @@ export function resultsByDimension(
 
 /**
  * Map a 0–6 estimate to a 0–100 score via a piecewise-linear curve through the
- * anchors { 3→40, 4→55, 5→70, 6→85, 7→100 }, clamped to [0, 100].
+ * anchors { 1→10, 2→25, 3→40, 4→55, 5→70, 6→85, 7→100 }, clamped to [0, 100].
  *
- * The anchors intentionally run past 6 (the estimate ceiling) to 7→100 so that
- * a perfect TOPIK-6-level estimate (6) lands at 85 ("strong") rather than a
- * misleading 100 — 100 is reserved for native-level, which the diagnostic does
- * not measure. Below the first anchor (est < 3) the curve extrapolates down the
- * 3→40 / 4→55 slope (15 points per level) and clamps at 0.
+ * The low anchors 1→10 and 2→25 (F-002) pin the L1/L2 range explicitly now
+ * that estimates below 2.5 occur in real runs — anchored, not extrapolated.
+ * (They lie on the same 15-points-per-level line, so no historical score
+ * changes value.) The anchors intentionally run past 6 (the estimate ceiling)
+ * to 7→100 so that a perfect TOPIK-6-level estimate (6) lands at 85
+ * ("strong") rather than a misleading 100 — 100 is reserved for native-level,
+ * which the diagnostic does not measure. Below the first anchor (est < 1) the
+ * curve extrapolates down the 1→10 / 2→25 slope and clamps at 0.
  */
 export function estimateToScore(estimate: number): number {
   // Anchor table: [estimate, score], ascending by estimate.
   const anchors: ReadonlyArray<readonly [number, number]> = [
+    [1, 10],
+    [2, 25],
     [3, 40],
     [4, 55],
     [5, 70],

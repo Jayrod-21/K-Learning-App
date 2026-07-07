@@ -22,6 +22,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import { ToastProvider } from '../components/ToastProvider';
+import {
+  DIAGNOSTIC_SNAPSHOT_FIXTURE,
+  DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE,
+} from '../data/mocks/diagnostic';
 import { ApiError } from '../services/api';
 import type {
   DiagnosticAnswerResponse,
@@ -122,6 +126,40 @@ const POPULATED_SNAPSHOT: DiagnosticSnapshot = {
   goals: ['Drill -더라도 daily.'],
 };
 
+// F-002: a beginner placement — the ladder now reaches below L3, so the
+// snapshot can carry TOPIK 1/2 reference lines and default to one of them.
+// Typing this literal as DiagnosticSnapshot pins the widened
+// `DiagnosticReference['id']` union at compile time.
+const BEGINNER_SNAPSHOT: DiagnosticSnapshot = {
+  dimensions: [
+    {
+      key: 'reading',
+      label: 'Reading',
+      kr: '읽기',
+      score: 22,
+      scoreLow: 12,
+      scoreHigh: 32,
+      note: 'Start with short sentences.',
+    },
+    {
+      key: 'vocab',
+      label: 'Vocabulary',
+      kr: '어휘',
+      score: 14,
+      scoreLow: 14,
+      scoreHigh: 14,
+      note: 'Core 800 words first.',
+    },
+  ],
+  references: [
+    { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+    { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
+    { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
+  ],
+  defaultRef: 'L2',
+  goals: ['Finish the core 800 vocabulary list.'],
+};
+
 const ITEM_1: DiagnosticLiveItem = {
   responseId: 101,
   ordinal: 1,
@@ -145,6 +183,34 @@ const ITEM_2: DiagnosticLiveItem = {
   choices: [
     { id: 'a', kr: '오니까', en: 'because it rains' },
     { id: 'b', kr: '올 텐데', en: 'will likely rain' },
+  ],
+};
+
+// F-002: live items can now be served at the new beginner bands. Typing these
+// literals as DiagnosticLiveItem pins the widened `DiagnosticLevel` union.
+const ITEM_L1: DiagnosticLiveItem = {
+  responseId: 201,
+  ordinal: 1,
+  section: 'vocab',
+  level: 'L1',
+  kind: 'cloze',
+  prompt: '저는 물을 ( ).',
+  choices: [
+    { id: 'a', kr: '마셔요', en: 'drink' },
+    { id: 'b', kr: '읽어요', en: 'read' },
+  ],
+};
+
+const ITEM_L2: DiagnosticLiveItem = {
+  responseId: 202,
+  ordinal: 2,
+  section: 'grammar',
+  level: 'L2',
+  kind: 'pattern',
+  prompt: '주말에 친구를 ( ) 영화를 봤어요.',
+  choices: [
+    { id: 'a', kr: '만나서', en: 'met and then' },
+    { id: 'b', kr: '만나면', en: 'if I meet' },
   ],
 };
 
@@ -301,6 +367,86 @@ describe('Diagnostic', () => {
     expect(
       screen.getByRole('button', { name: /begin today/i }),
     ).toBeInTheDocument();
+  });
+
+  it('F-002: results render TOPIK 1 / TOPIK 2 reference options for a beginner placement', () => {
+    hookState.snapshot = {
+      data: BEGINNER_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    renderWithRouter();
+    // Both new beginner reference lines are pickable…
+    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toBeInTheDocument();
+    // …and the snapshot's defaultRef ('L2') is honoured as the active pick.
+    expect(screen.getByRole('radio', { name: 'TOPIK 2' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // The full-mode legend echoes the active beginner ref's 급 shorthand.
+    expect(screen.getByText(/2급/)).toBeInTheDocument();
+  });
+
+  it('F-002: the mock snapshot fixtures carry the full L1–native reference ladder', () => {
+    // Pins the fixture itself: if L1/L2 are ever dropped from the mock
+    // references, the mock-mode Results/Today screens silently lose the
+    // beginner ladder — fail here instead.
+    for (const fixture of [
+      DIAGNOSTIC_SNAPSHOT_FIXTURE,
+      DIAGNOSTIC_SNAPSHOT_POPULATED_FIXTURE,
+    ]) {
+      expect(fixture.references).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'L1', label: 'TOPIK 1', kr: '1급' }),
+          expect.objectContaining({ id: 'L2', label: 'TOPIK 2', kr: '2급' }),
+        ]),
+      );
+      // The ladder stays ordered: L1 < L2 < L3 reference values.
+      const value = (id: string): number =>
+        fixture.references.find((r) => r.id === id)?.value ?? NaN;
+      expect(value('L1')).toBeLessThan(value('L2'));
+      expect(value('L2')).toBeLessThan(value('L3'));
+    }
+  });
+
+  it('F-002: the taking flow serves and labels items at the new L1/L2 bands', async () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    startDiagnostic.mockResolvedValue({
+      runId: 9,
+      item: ITEM_L1,
+      progress: { ordinal: 1, total: 2 },
+    });
+    answerDiagnostic.mockResolvedValueOnce({
+      result: { correct: true, correctAnswer: 'a', explain: '마시다 = to drink.' },
+      done: false,
+      progress: { ordinal: 1, total: 2 },
+    });
+    nextDiagnostic.mockResolvedValueOnce({
+      next: ITEM_L2,
+      progress: { ordinal: 2, total: 2 },
+    });
+
+    const user = userEvent.setup();
+    renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+
+    // Item 1 arrives at the L1 band — the level pill shows it.
+    await screen.findByText(ITEM_L1.prompt);
+    expect(screen.getByText('L1')).toBeInTheDocument();
+
+    // Grade + advance: item 2 arrives at the L2 band.
+    await user.click(screen.getAllByRole('radio')[0]!);
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+    await screen.findByText('Correct');
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await screen.findByText(ITEM_L2.prompt);
+    expect(screen.getByText('L2')).toBeInTheDocument();
   });
 
   it('F-011: results show the honest placement disclaimer — no "Level 4" or fake timestamp', () => {

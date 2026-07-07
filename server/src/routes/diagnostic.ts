@@ -47,7 +47,7 @@ import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
-import type { DiagnosticTargetLevel } from '../services/claude/index.js';
+import type { DiagnosticTargetLevel, ProficiencyLevel } from '../services/claude/index.js';
 import {
   SEED_THETA,
   bandForTheta,
@@ -185,9 +185,15 @@ interface TopikRow {
  * served in this run. Widens band → any band if the targeted band is empty.
  * Returns null only when the section pool is genuinely empty.
  *
- * Band → proficiency mapping: we filter on the row's `proficiency` enum, but
- * because the corpus tagging is sparse, an unmatched band falls through to "any
- * proficiency" rather than returning nothing.
+ * Band targeting (2 attempts, band-targeted → any):
+ *   - L3/L4/L5+ filter on the row's `proficiency` enum; because the corpus
+ *     tagging is sparse, an unmatched band falls through to "any" rather than
+ *     returning nothing.
+ *   - L1/L2 (F-002) filter on the parent test's paper instead —
+ *     `topik_tests.topik_level = 'TOPIK I'` — because no topik_items rows are
+ *     proficiency-tagged L1/L2 (migration 039 adds the enum values with no
+ *     backfill) and the ~776 answerable TOPIK I reading/listening items ARE
+ *     the beginner pool. Falls through to "any" when TOPIK I runs short.
  *
  * Answerable-item guard mirrors topik.ts ANSWERABLE_ITEM_SQL: >= 2 options,
  * non-null answer, AND not a picture-choice item whose options are bare
@@ -200,12 +206,20 @@ async function pickTopikRow(
   band: DiagnosticBand,
   excludeIds: readonly string[],
 ): Promise<TopikRow | null> {
-  const bandProf = band === 'basic' ? 'L3' : band; // topik proficiency has no 'basic' target separate from L3 use
   // 1) Try the targeted band, then 2) any band. Each excludes already-served ids.
-  const attempts: ReadonlyArray<{ readonly proficiency: string | null }> = [
-    { proficiency: bandProf },
-    { proficiency: null },
-  ];
+  const attempts: ReadonlyArray<{
+    readonly proficiency: string | null;
+    readonly topikLevel: string | null;
+  }> =
+    band === 'L1' || band === 'L2'
+      ? [
+          { proficiency: null, topikLevel: 'TOPIK I' },
+          { proficiency: null, topikLevel: null },
+        ]
+      : [
+          { proficiency: band, topikLevel: null },
+          { proficiency: null, topikLevel: null },
+        ];
   for (const attempt of attempts) {
     const params: unknown[] = [section];
     // JOIN topik_tests to carry the test's `passages` JSONB (shared reading
@@ -226,6 +240,10 @@ async function pickTopikRow(
     if (attempt.proficiency !== null) {
       params.push(attempt.proficiency);
       sql += ` AND i.proficiency = $${params.length}::proficiency_level`;
+    }
+    if (attempt.topikLevel !== null) {
+      params.push(attempt.topikLevel);
+      sql += ` AND t.topik_level = $${params.length}`;
     }
     if (excludeIds.length > 0) {
       params.push(excludeIds);
@@ -278,9 +296,9 @@ function buildTopikItem(
 
   const difficulty =
     row.proficiency !== null
-      ? proficiencyToNumber(row.proficiency as 'basic' | 'L3' | 'L4' | 'L5+')
-      : proficiencyToNumber(band === 'basic' ? 'L3' : band);
-  const level: DiagnosticTargetLevel = band === 'basic' ? 'L3' : band;
+      ? proficiencyToNumber(row.proficiency as ProficiencyLevel)
+      : proficiencyToNumber(band);
+  const level: DiagnosticTargetLevel = band;
   const prompt = (row.prompt ?? row.stem ?? '').trim() || '다음 질문에 답하세요.';
 
   // The passage text the item depends on: its OWN `stem` first, else the shared
