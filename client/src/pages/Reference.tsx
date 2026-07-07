@@ -47,6 +47,7 @@
  *     free-form path concatenation.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Eyebrow } from '../components/Eyebrow';
@@ -87,6 +88,16 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
   { id: 'lists', label: 'My Lists' },
 ];
 
+/**
+ * Overhaul P1.1: the Review library index deep-links into a tab via
+ * `?tab=vocab|dictionary|grammar|lists`. Unknown/absent values fall back to
+ * the vocab default rather than erroring — the param is a hint, not a
+ * contract (Reference dissolves into the library in P1.2 anyway).
+ */
+function isTab(value: string | null): value is Tab {
+  return value !== null && TABS.some((t) => t.id === value);
+}
+
 const SEARCH_DEBOUNCE_MS = 200;
 const PAGE_SIZE = 30;
 /** Grammar corpus is small (≈370); one wide page covers it without a pager. */
@@ -96,7 +107,12 @@ const GRAMMAR_PAGE_SIZE = 400;
 type AddState = 'idle' | 'adding' | 'added' | 'error';
 
 export default function Reference(): JSX.Element {
-  const [tab, setTab] = useState<Tab>('vocab');
+  // Initial tab honours the library's `?tab=` deep link; subsequent tab
+  // switches are local state only (no URL writes — matches pre-P1.1
+  // behaviour, and the param is consumed once on mount).
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const [tab, setTab] = useState<Tab>(isTab(tabParam) ? tabParam : 'vocab');
 
   return (
     <section

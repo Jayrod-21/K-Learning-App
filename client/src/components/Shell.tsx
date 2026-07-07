@@ -4,62 +4,76 @@
  * Structure (top to bottom):
  *   1. 54px status-bar spacer (respects iOS `safe-area-inset-top`).
  *   2. Scroll area where the routed screen body renders.
- *   3. Sticky 64px BottomNav + a portal-mounted MoreSheet when open.
+ *   3. Sticky BottomNav (4 tabs + the center LEARN hexagon) with the
+ *      upward-expanding LearnMenu overlaying it when open (P1.1).
+ *   4. ChatFab — the floating chat dot on the right edge (hides itself on
+ *      /chat, /settings, during a mock exam, and while the keyboard is up).
  *
- * Owns the MoreSheet open state locally because it's UI-only — no other
- * screen needs to read or write it, so lifting it to App would only add a
- * prop hop. Theme comes from `useTheme`.
+ * `ExamActiveProvider` mounts here so BOTH the writer (MockMode, rendered
+ * deep inside the `<Outlet/>`) and the reader (ChatFab, shell chrome) sit
+ * under one provider without lifting the flag to App.
  *
- * Focus management: Shell owns the "restore focus to the More button after
- * the sheet closes" contract (WCAG 2.4.3). The ref is captured here,
- * passed into BottomNav, and called from `closeMore` via `queueMicrotask`
- * so React has finished unmounting the sheet before we move focus.
+ * Owns the LearnMenu open state locally because it's UI-only — no other
+ * screen needs to read or write it. The menu also closes on ROUTE CHANGE
+ * (effect below): rows close themselves after navigating, but browser
+ * back/forward while the menu is open would otherwise leave it stranded
+ * over the new page.
+ *
+ * Focus restoration to the hexagon after close is owned by `useModalA11y`
+ * inside LearnMenu (it captures `document.activeElement` — the hexagon —
+ * on open and restores it on unmount), so Shell carries no focus plumbing
+ * of its own (unlike the retired MoreSheet wiring).
  */
-import { useRef, useState, type JSX } from 'react';
-import { Outlet } from 'react-router-dom';
+import { useState, type JSX } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 import { BottomNav } from './BottomNav';
-import { MoreSheet } from './MoreSheet';
-import { useTheme } from '../hooks/useTheme';
+import { ChatFab } from './ChatFab';
+import { LearnMenu } from './LearnMenu';
+import { ExamActiveProvider } from '../hooks/ExamActiveProvider';
+
+/** DOM id linking the hexagon's `aria-controls` to the LearnMenu panel. */
+const LEARN_MENU_ID = 'km-learn-menu';
 
 export function Shell(): JSX.Element {
-  const [moreOpen, setMoreOpen] = useState(false);
-  const { theme, toggleTheme } = useTheme();
-  // The More button lives inside BottomNav. We pass the ref *down* rather
-  // than lifting the button up so BottomNav stays a self-contained nav unit.
-  const moreButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [learnOpen, setLearnOpen] = useState(false);
+  const location = useLocation();
 
-  // `useState`'s setter is referentially stable, so these don't need
-  // `useCallback`. The sheet/nav consumers aren't memoized either, so the
-  // wrapper would only add indirection.
-  const openMore = (): void => {
-    setMoreOpen(true);
+  // Safety net: close the menu on any route change (browser back/forward,
+  // programmatic navigation from a page). Row taps already close it. Uses
+  // the derive-state-during-render pattern (not an effect) so the menu
+  // never paints one frame over the new page before closing.
+  const [lastPathname, setLastPathname] = useState(location.pathname);
+  if (lastPathname !== location.pathname) {
+    setLastPathname(location.pathname);
+    setLearnOpen(false);
+  }
+
+  const toggleLearn = (): void => {
+    setLearnOpen((open) => !open);
   };
-  const closeMore = (): void => {
-    setMoreOpen(false);
-    // Restore focus to the trigger after the sheet unmounts. `queueMicrotask`
-    // lets React finish the reconciliation pass first; calling `.focus()`
-    // synchronously would race the unmount and lose focus to `<body>`.
-    queueMicrotask(() => {
-      moreButtonRef.current?.focus();
-    });
+  const closeLearn = (): void => {
+    setLearnOpen(false);
   };
 
   return (
-    <div className="km-shell">
-      <div className="km-shell__statusbar" aria-hidden="true" />
-      <main className="km-shell__scroll">
-        <Outlet />
-      </main>
-      <div className="km-shell__nav">
-        <BottomNav
-          moreOpen={moreOpen}
-          onOpenMore={openMore}
-          moreButtonRef={moreButtonRef}
-        />
+    <ExamActiveProvider>
+      <div className="km-shell">
+        <div className="km-shell__statusbar" aria-hidden="true" />
+        <main className="km-shell__scroll">
+          <Outlet />
+        </main>
+        <ChatFab />
+        <div className="km-shell__nav">
+          <BottomNav
+            learnOpen={learnOpen}
+            onToggleLearn={toggleLearn}
+            learnMenuId={LEARN_MENU_ID}
+          />
+        </div>
+        {learnOpen ? (
+          <LearnMenu id={LEARN_MENU_ID} onClose={closeLearn} />
+        ) : null}
       </div>
-      {moreOpen ? (
-        <MoreSheet onClose={closeMore} onToggleTheme={toggleTheme} theme={theme} />
-      ) : null}
-    </div>
+    </ExamActiveProvider>
   );
 }

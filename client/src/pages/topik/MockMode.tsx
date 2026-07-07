@@ -68,6 +68,7 @@ import { TopikImageNote } from '../../components/TopikImageNote';
 import { TopikPassage } from '../../components/TopikPassage';
 import { cn } from '../../lib/cn';
 import { splitImageItem } from '../../lib/topikImage';
+import { useExamActive } from '../../hooks/useExamActive';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { errorMessageFor } from '../../lib/errorCopy';
 import {
@@ -187,6 +188,20 @@ export function MockMode(): JSX.Element {
       ctrlRef.current?.abort();
     };
   }, []);
+
+  // Overhaul P1.1: publish "exam in progress" to the shared context so the
+  // shell chrome (ChatFab) can hide during a timed run. Derived straight
+  // from the phase machine — true on entering `exam` (fresh start OR F-007
+  // resume), false on submit/results/new-mock, and the cleanup guarantees
+  // false on unmount (leaving mid-exam). Deliberately independent of the
+  // wall-clock timer — this effect only mirrors `phase`.
+  const { setExamActive } = useExamActive();
+  useEffect(() => {
+    setExamActive(phase === 'exam');
+    return () => {
+      setExamActive(false);
+    };
+  }, [phase, setExamActive]);
 
   const beginCall = useCallback((): AbortController => {
     ctrlRef.current?.abort();

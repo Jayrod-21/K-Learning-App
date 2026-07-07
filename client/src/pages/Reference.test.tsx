@@ -16,6 +16,7 @@ import {
 } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import type {
@@ -130,11 +131,18 @@ const SERVER_LIST: ServerVocabList = {
   updated_at: 'y',
 };
 
-function renderResources(): ReturnType<typeof render> {
+/**
+ * MemoryRouter because Reference reads `?tab=` via `useSearchParams`
+ * (Overhaul P1.1 — the Review library index deep-links into a tab).
+ * `initialPath` lets a test land with a `?tab=` param.
+ */
+function renderResources(initialPath = '/reference'): ReturnType<typeof render> {
   return render(
-    <ToastProvider>
-      <Reference />
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[initialPath]}>
+      <ToastProvider>
+        <Reference />
+      </ToastProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -264,6 +272,28 @@ describe('Resources — default Vocabulary tab', () => {
         expect.anything(),
       );
     });
+  });
+});
+
+describe('Resources — ?tab= deep link (Overhaul P1.1)', () => {
+  it('opens on the Grammar tab when arriving with ?tab=grammar', async () => {
+    renderResources('/reference?tab=grammar');
+
+    const grammarTab = screen.getByRole('tab', { name: 'Grammar' });
+    expect(grammarTab).toHaveAttribute('aria-selected', 'true');
+    // The grammar list actually rendered (not just the tab highlight) —
+    // the pattern-count line is unique to the Grammar tab.
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+  });
+
+  it('falls back to Vocabulary for an unknown ?tab value', async () => {
+    renderResources('/reference?tab=nonsense');
+
+    expect(screen.getByRole('tab', { name: 'Vocabulary' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(await screen.findByText('영향')).toBeInTheDocument();
   });
 });
 

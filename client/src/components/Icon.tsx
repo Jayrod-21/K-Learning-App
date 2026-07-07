@@ -32,6 +32,7 @@ export type IconName =
   | 'home'
   | 'image'
   | 'info'
+  | 'learn'
   | 'list'
   | 'mic'
   | 'more'
@@ -41,6 +42,7 @@ export type IconName =
   | 'plus'
   | 'play'
   | 'search'
+  | 'search-fab'
   | 'send'
   | 'settings'
   | 'spark'
@@ -134,6 +136,11 @@ const PATHS: Record<IconName, SvgChildren> = {
     <circle key="0" cx="12" cy="12" r="9" />,
     <path key="1" d="M12 8h.01M11 12h1v5h1" />,
   ],
+  // Faceted hexagon — the LEARN launcher mark (overhaul mockup, P1.1).
+  learn: [
+    <path key="0" d="M12 4l7 4v8l-7 4-7-4V8z" />,
+    <path key="1" d="M12 8v8M8 10l8 4M16 10l-8 4" />,
+  ],
   list: <path d="M4 6h16M4 12h16M4 18h10" />,
   mic: [
     <rect key="0" x="9" y="3" width="6" height="12" rx="3" />,
@@ -164,6 +171,13 @@ const PATHS: Record<IconName, SvgChildren> = {
   search: [
     <circle key="0" cx="11" cy="11" r="7" />,
     <path key="1" d="M21 21l-4-4" />,
+  ],
+  // Short-handled magnifier used by the floating chat dot (overhaul mockup,
+  // P1.1) — deliberately distinct from `search` (longer handle) so the FAB
+  // reads as its own mark at 22px.
+  'search-fab': [
+    <circle key="0" cx="11" cy="11" r="7" />,
+    <path key="1" d="M20 20l-3.5-3.5" />,
   ],
   send: <path d="M22 2L11 13M22 2l-7 20-4-9-9-4z" />,
   settings: [

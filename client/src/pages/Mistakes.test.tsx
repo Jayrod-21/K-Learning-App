@@ -108,9 +108,9 @@ describe('Mistakes page (F-021)', () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };
     const user = userEvent.setup();
     render(
-      <MemoryRouter initialEntries={['/mistakes']}>
+      <MemoryRouter initialEntries={['/review/mistakes']}>
         <Routes>
-          <Route path="/mistakes" element={<Mistakes />} />
+          <Route path="/review/mistakes" element={<Mistakes />} />
           <Route path="/chat" element={<ChatSeedProbe />} />
         </Routes>
       </MemoryRouter>,

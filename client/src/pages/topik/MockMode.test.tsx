@@ -47,6 +47,8 @@ vi.mock('../../data/mocks/topik', () => ({
 }));
 
 import { MockMode } from './MockMode';
+import { ExamActiveProvider } from '../../hooks/ExamActiveProvider';
+import { useExamActive } from '../../hooks/useExamActive';
 
 const TEST: MockTest = {
   sourceTest: 7,
@@ -131,9 +133,9 @@ function ChatSeedProbe(): JSX.Element {
 /** Render MockMode with a `/chat` probe route so seed navigations land. */
 function renderWithChatProbe(): void {
   render(
-    <MemoryRouter initialEntries={['/topik']}>
+    <MemoryRouter initialEntries={['/learn/topik']}>
       <Routes>
-        <Route path="/topik" element={<MockMode />} />
+        <Route path="/learn/topik" element={<MockMode />} />
         <Route path="/chat" element={<ChatSeedProbe />} />
       </Routes>
     </MemoryRouter>,
@@ -997,6 +999,63 @@ describe('MockMode (Mock test)', () => {
     expect(answer).toBeDefined();
     // ~70 min elapsed on the item, clamped to the server's 1h cap exactly.
     expect(answer?.timeMs).toBe(3_600_000);
+  });
+
+  describe('exam-active context (Overhaul P1.1)', () => {
+    function ExamFlagProbe(): JSX.Element {
+      const { examActive } = useExamActive();
+      return <div data-testid="exam-active">{String(examActive)}</div>;
+    }
+
+    function harness(children: JSX.Element | null): JSX.Element {
+      return (
+        <ExamActiveProvider>
+          <ExamFlagProbe />
+          <MemoryRouter>{children}</MemoryRouter>
+        </ExamActiveProvider>
+      );
+    }
+
+    it('publishes true on entering the exam and false again on results', async () => {
+      const user = userEvent.setup();
+      render(harness(<MockMode />));
+
+      // Select phase — no exam yet.
+      expect(screen.getByTestId('exam-active')).toHaveTextContent('false');
+
+      await user.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('exam-active')).toHaveTextContent('true');
+
+      // Submit → results: the flag must drop with the phase.
+      await user.click(screen.getByRole('button', { name: /Submit test/i }));
+      await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId('exam-active')).toHaveTextContent('false');
+      });
+    });
+
+    it('clears the flag when MockMode unmounts mid-exam (leaving the page)', async () => {
+      const user = userEvent.setup();
+      const { rerender } = render(harness(<MockMode />));
+
+      await user.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('exam-active')).toHaveTextContent('true');
+
+      // Simulate navigating away — MockMode unmounts; the effect cleanup
+      // must reset the shared flag so the ChatFab doesn't stay hidden.
+      rerender(harness(null));
+      expect(screen.getByTestId('exam-active')).toHaveTextContent('false');
+    });
   });
 
   describe('PROD posture — no fixture substitution for real failures', () => {

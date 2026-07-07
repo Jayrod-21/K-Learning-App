@@ -26,10 +26,10 @@ function ChatStateProbe(): JSX.Element {
 
 function renderButton(): void {
   render(
-    <MemoryRouter initialEntries={['/mistakes']}>
+    <MemoryRouter initialEntries={['/review/mistakes']}>
       <Routes>
         <Route
-          path="/mistakes"
+          path="/review/mistakes"
           element={
             <AskAboutThisButton
               prompt="이 글의 내용과 같은 것은?"

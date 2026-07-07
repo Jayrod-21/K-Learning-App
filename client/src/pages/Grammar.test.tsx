@@ -68,11 +68,13 @@ function renderGrammar(drillTarget?: DrillTarget): ReturnType<typeof render> {
   return render(
     <MemoryRouter
       initialEntries={[
-        drillTarget ? { pathname: '/grammar', state: { drillTarget } } : '/grammar',
+        drillTarget
+          ? { pathname: '/learn/grammar', state: { drillTarget } }
+          : '/learn/grammar',
       ]}
     >
       <Routes>
-        <Route path="/grammar" element={<Grammar />} />
+        <Route path="/learn/grammar" element={<Grammar />} />
       </Routes>
     </MemoryRouter>,
   );
