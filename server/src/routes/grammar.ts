@@ -111,9 +111,16 @@ router.get(
         validatedParams: z.infer<typeof KgiuIdParamsSchema>;
       }).validatedParams.id;
       const { rows } = await query(
+        // `unit` must ride along: the client's KgiuEntryDetail extends
+        // KgiuEntrySummary (which declares `unit`) and the detail Sheet footer
+        // renders `Unit · {detail.unit ?? '—'}`. It was omitted here until
+        // REVIEW_F018 SHOULD-FIX-1 — every real row footer showed "Unit · —"
+        // while client tests passed on mocks that included it. Pinned by a
+        // route test so the wire-vs-mock gap can't recur.
         `SELECT id, corpus, source_id, pattern, title_en, category, proficiency,
-                explanation, formation_rules, examples, dialogues, vocabulary,
-                tips, compare_with, exercises, cultural_notes, source_pages
+                unit, explanation, formation_rules, examples, dialogues,
+                vocabulary, tips, compare_with, exercises, cultural_notes,
+                source_pages
            FROM kgiu_entries
           WHERE id = $1
           LIMIT 1`,
