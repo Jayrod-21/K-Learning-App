@@ -204,6 +204,21 @@ describe('GET /grammar/kgiu/:id', () => {
     expect(res.body.id).toBe(id);
   });
 
+  it('detail wire carries the real `unit` value (REVIEW_F018 SF-1)', async () => {
+    // Regression pin for the fixture-infidelity class: the detail SELECT
+    // omitted `unit`, so every real row's footer rendered "Unit · —" while the
+    // client tests passed on mocks that included it. Assert against the REAL
+    // route response, with a non-null seeded value, so an omission is a
+    // failure here (an unselected column arrives as `undefined`, not null).
+    const id = await seedKgiuEntry(pg.pool, {
+      unit: 'Ch.7. Expressing Conjecture',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/grammar/kgiu/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.unit).toBe('Ch.7. Expressing Conjecture');
+  });
+
   it('missing id → 404', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/grammar/kgiu/99999999');

@@ -83,9 +83,27 @@ const SUGGEST_GRAMMAR: KgiuEntrySummary[] = [
 const KGIU_DETAIL = {
   ...SUGGEST_GRAMMAR[0]!,
   explanation: 'Contrasts two clauses — "whereas / while on the other hand".',
-  formation_rules: null,
-  examples: null,
-  dialogues: null,
+  // Always arrays on the wire (JSONB NOT NULL DEFAULT '[]') — populated here
+  // so the F-004 detail test also covers the F-018 rich sections.
+  formation_rules: ['Verb stem + 는 반면에'],
+  examples: [
+    {
+      korean: '동생은 활발한 반면에 형은 조용해요.',
+      english: 'The younger brother is outgoing, whereas the older one is quiet.',
+    },
+  ],
+  dialogues: [
+    {
+      context: 'Comparing two apartments.',
+      lines: [
+        {
+          speaker: '지은',
+          korean: '이 집은 넓은 반면에 좀 어두워요.',
+          english: 'This place is spacious, whereas it is a bit dark.',
+        },
+      ],
+    },
+  ],
   vocabulary: null,
   tips: null,
   compare_with: null,
@@ -415,6 +433,22 @@ describe('Resources — Grammar tab', () => {
       ),
     ).toBeInTheDocument();
     expect(within(dialog).getByText(/Unit 9/)).toBeInTheDocument();
+
+    // F-018 — the rich sections render through the shared KgiuDetailBody.
+    expect(within(dialog).getByText('Formation')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('Verb stem + 는 반면에'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('동생은 활발한 반면에 형은 조용해요.'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('Comparing two apartments.'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText('지은')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('이 집은 넓은 반면에 좀 어두워요.'),
+    ).toBeInTheDocument();
   });
 
   it('a failed detail fetch surfaces an inline error in the Sheet (row list keeps working)', async () => {

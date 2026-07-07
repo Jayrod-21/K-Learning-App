@@ -126,6 +126,8 @@ export async function seedKgiuEntry(
     proficiency?: 'basic' | 'L3' | 'L4' | 'L5+';
     category?: string;
     sourceId?: string;
+    /** Chapter/unit label (nullable TEXT column; defaults to NULL). */
+    unit?: string;
   } = {},
 ): Promise<number> {
   const corpus = opts.corpus ?? 'kgiu_intermediate';
@@ -135,9 +137,9 @@ export async function seedKgiuEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO kgiu_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
-        source_book, pattern, title_en, category, proficiency)
+        source_book, pattern, title_en, category, proficiency, unit)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'grammar'::kgiu_entry_type,
-             'test-book', $4, 'mock title', $6, $5::proficiency_level)
+             'test-book', $4, 'mock title', $6, $5::proficiency_level, $7)
      RETURNING id`,
     [
       corpusSourceId,
@@ -146,6 +148,7 @@ export async function seedKgiuEntry(
       opts.pattern ?? '-아/어 보이다',
       opts.proficiency ?? 'L3',
       opts.category ?? 'mock category',
+      opts.unit ?? null,
     ],
   );
   return Number(rows[0]!.id);

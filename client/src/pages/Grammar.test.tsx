@@ -149,14 +149,45 @@ const BANKED_ROW_2 = {
 const DETAIL: KgiuEntryDetail = {
   ...ROW,
   explanation: 'Strong concessive — even if the premise holds.',
-  formation_rules: null,
-  examples: null,
-  dialogues: null,
+  // The wire always carries arrays here (JSONB NOT NULL DEFAULT '[]') —
+  // empty arrays are the "pattern has no rich content" case (F-018).
+  formation_rules: [],
+  examples: [],
+  dialogues: [],
   vocabulary: null,
   tips: null,
   compare_with: null,
   exercises: null,
   cultural_notes: null,
+};
+
+/** DETAIL with every F-018 rich section populated. */
+const DETAIL_RICH: KgiuEntryDetail = {
+  ...DETAIL,
+  formation_rules: [
+    'Verb stem + 더라도',
+    'Adjective stem + 더라도',
+  ],
+  examples: [
+    { korean: '비가 오더라도 갈 거예요.', english: "Even if it rains, we'll go." },
+  ],
+  dialogues: [
+    {
+      context: 'Two colleagues at the office, late in the day.',
+      lines: [
+        {
+          speaker: '수진',
+          korean: '일이 많더라도 오늘 끝내야 해요.',
+          english: 'Even if there is a lot of work, we must finish today.',
+        },
+        {
+          speaker: '민호',
+          korean: '알겠어요. 힘들더라도 해 볼게요.',
+          english: "Got it. Even if it's hard, I'll try.",
+        },
+      ],
+    },
+  ],
 };
 
 const FIXTURE = [
@@ -579,6 +610,80 @@ describe('Grammar — detail Sheet', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders Formation bullets, Examples, and Dialogue lines when populated (F-018)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.getPattern.mockResolvedValue(DETAIL_RICH);
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: '-더라도 even if / even though',
+      }),
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    // Formation bullets.
+    expect(await within(dialog).findByText('Formation')).toBeInTheDocument();
+    expect(within(dialog).getByText('Verb stem + 더라도')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('Adjective stem + 더라도'),
+    ).toBeInTheDocument();
+    // Examples: Korean + English gloss.
+    expect(within(dialog).getByText('Examples')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('비가 오더라도 갈 거예요.'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Even if it rains, we'll go."),
+    ).toBeInTheDocument();
+    // Dialogues: context + speaker-labelled turns.
+    expect(within(dialog).getByText('Dialogues')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('Two colleagues at the office, late in the day.'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText('수진')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText('일이 많더라도 오늘 끝내야 해요.'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText('민호')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("Got it. Even if it's hard, I'll try."),
+    ).toBeInTheDocument();
+    // The explanation still leads the body.
+    expect(
+      within(dialog).getByText(/Strong concessive/),
+    ).toBeInTheDocument();
+  });
+
+  it('renders no rich-section headers when the arrays are empty (F-018)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    services.getPattern.mockResolvedValue(DETAIL); // all three arrays empty
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: '-더라도 even if / even though',
+      }),
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    // Explanation + unit footer still render…
+    expect(
+      await within(dialog).findByText(/Strong concessive/),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/Unit ·/)).toBeInTheDocument();
+    // …but no orphaned section headers for the empty arrays.
+    expect(within(dialog).queryByText('Formation')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Examples')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Dialogues')).not.toBeInTheDocument();
+  });
+
   it('drops a late detail settle for a previously opened row (stale-guard)', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
@@ -586,9 +691,9 @@ describe('Grammar — detail Sheet', () => {
     const DETAIL_2: KgiuEntryDetail = {
       ...ROW_2,
       explanation: 'Causal — because of doing X, a (bad) result followed.',
-      formation_rules: null,
-      examples: null,
-      dialogues: null,
+      formation_rules: [],
+      examples: [],
+      dialogues: [],
       vocabulary: null,
       tips: null,
       compare_with: null,

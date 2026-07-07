@@ -1120,12 +1120,55 @@ export interface KgiuEntrySummary {
   register?: string | null;
 }
 
-/** Server-side KGIU entry detail. */
+/**
+ * One sample sentence on a KGIU entry detail (`examples[]` element).
+ * Shape verified against live km-db: every element carries exactly
+ * `{korean, english}` with string values (never null).
+ */
+export interface KgiuExample {
+  korean: string;
+  english: string;
+}
+
+/** One speaker turn inside a KGIU dialogue (`dialogues[].lines[]` element). */
+export interface KgiuDialogueLine {
+  speaker: string;
+  korean: string;
+  english: string;
+}
+
+/**
+ * One dialogue block on a KGIU entry detail (`dialogues[]` element).
+ *
+ * Shape comes from the loader contract documented on
+ * `db/migrations/002_darakwon_corpora.up.sql` (`kgiu_entries.dialogues`
+ * column comment). The current corpus load has NO populated dialogues
+ * (every row is `[]`), so unlike {@link KgiuExample} this shape is not yet
+ * verified against live rows — treat it as the contract for future loads.
+ */
+export interface KgiuDialogue {
+  context: string;
+  lines: KgiuDialogueLine[];
+  /** Alternative renderings — shape not pinned down by the loader yet. */
+  alternatives?: unknown;
+}
+
+/**
+ * Server-side KGIU entry detail (`GET /grammar/kgiu/:id`).
+ *
+ * The three F-018 rich fields are JSONB columns constrained `NOT NULL
+ * DEFAULT '[]'` with a `jsonb_typeof(...) = 'array'` CHECK, so the wire
+ * value is always an array (possibly empty) — never null/undefined.
+ * The remaining JSONB columns stay `unknown` until a feature renders them.
+ */
 export interface KgiuEntryDetail extends KgiuEntrySummary {
   explanation: string | null;
-  formation_rules: unknown;
-  examples: unknown;
-  dialogues: unknown;
+  /** Conjugation/formation bullets. Array of plain strings. */
+  formation_rules: string[];
+  /** Sample sentences (intro dialog + usage examples). */
+  examples: KgiuExample[];
+  /** Speaker-labelled dialogues. Empty across the current corpus load. */
+  dialogues: KgiuDialogue[];
   vocabulary: unknown;
   tips: unknown;
   compare_with: unknown;

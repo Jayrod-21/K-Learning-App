@@ -897,7 +897,7 @@ body {
   margin-top: 2px;
 }
 
-/* ScreenStub ─────────────────────────────────────────────────────────── */
+/* Stub layout — App.tsx route-loading fallback + ErrorBoundary ───────── */
 .km-stub {
   padding: 28px 20px 80px;
 }

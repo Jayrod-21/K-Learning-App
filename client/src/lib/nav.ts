@@ -4,9 +4,9 @@
  *
  * `path` is the React Router route. `kr` is the Korean label that appears as
  * a sublabel on the More sheet rows. `icon` is a key into the `<Icon/>`
- * registry. `headerTitle` is the serif Korean title shown by `ScreenStub` /
- * Pass 2's `Topbar` — it includes the English suffix per design header
- * pattern (e.g. `복습 · Review`).
+ * registry. `headerTitle` is the serif Korean title shown by `Topbar` — it
+ * includes the English suffix per design header pattern (e.g.
+ * `복습 · Review`).
  *
  * Order in `NAV_ITEMS` is the rendering order in the More sheet.
  */
@@ -217,13 +217,6 @@ const _navIdExhaustivenessExtra: _ExtraInTabs extends never ? true : never =
   true;
 void _navIdExhaustivenessMissing;
 void _navIdExhaustivenessExtra;
-
-/**
- * Which integration-plan pass owns the build-out of a given screen. Pinned
- * to the 9-pass plan (`CLAUDE_DESIGN_INTEGRATION_PLAN.md`); update both
- * here and the plan together if a pass is added.
- */
-export type PassNumber = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 const ITEM_BY_ID = new Map<NavItemId, NavItem>(
   NAV_ITEMS.map((it) => [it.id, it]),
