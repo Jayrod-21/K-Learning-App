@@ -108,11 +108,11 @@ export function SkillsCompare({
        * existing bars, which is a "pick one of N" gesture. Radiogroup
        * with `aria-checked` is the honest role.
        *
-       * P3b: the segmented picks deliberately keep the plain `r.label`
-       * ("TOPIK 4", "Native") — TOPIK is a proper noun the glossary keeps
-       * untranslated in this shape, and the Korean shorthand (`r.kr`)
-       * surfaces in the legend below via `<Bilingual/>`. Page tests also
-       * pin these accessible names.
+       * P3b top-up (review S-2): the segmented picks render through
+       * `<Bilingual compact>` so ko-mode shows the Korean shorthand
+       * (`r.kr` — e.g. 원어민 for "Native", 4급 for "TOPIK 4") instead of
+       * EN-only chrome. `compact` keeps the tight strip one-script in
+       * 'both' mode; a ref without `kr` falls back to its label alone.
        */}
       <div className="km-skillscompare__pickerrow">
         <Eyebrow>
@@ -140,7 +140,7 @@ export function SkillsCompare({
                   setRefId(r.id);
                 }}
               >
-                {r.label}
+                <Bilingual en={r.label} kr={r.kr} compact />
               </button>
             );
           })}

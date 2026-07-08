@@ -324,11 +324,11 @@ export default function ReviewGrammar(): JSX.Element {
                         }
                       >
                         {isBanked ? (
-                          <Bilingual en="Banked" kr="추가됨" compact />
+                          <Bilingual en="Banked" kr="담김" compact />
                         ) : pending ? (
-                          <Bilingual en="Banking…" kr="추가 중…" compact />
+                          <Bilingual en="Banking…" kr="담는 중…" compact />
                         ) : (
-                          <Bilingual en="Bank" kr="모으기" compact />
+                          <Bilingual en="Bank" kr="담기" compact />
                         )}
                       </Button>
                     </div>
@@ -426,11 +426,11 @@ function GrammarDetailSheet({
             leadingIcon={<Icon name="plus" size={14} />}
           >
             {banked ? (
-              <Bilingual en="Already banked" kr="이미 추가됨" />
+              <Bilingual en="Already banked" kr="이미 담김" />
             ) : pending ? (
-              <Bilingual en="Banking…" kr="추가 중…" />
+              <Bilingual en="Banking…" kr="담는 중…" />
             ) : (
-              <Bilingual en="Bank pattern" kr="문형 모으기" />
+              <Bilingual en="Bank pattern" kr="문형 담기" />
             )}
           </Button>
         </div>

@@ -92,7 +92,7 @@ function Topik(): JSX.Element {
         titleId="topik-title"
         eyebrow={
           mode === 'mock' ? (
-            <Bilingual en="Mock test · timed" kr="모의시험 · 시간 제한" />
+            <Bilingual en="Mock test · timed" kr="모의고사 · 시간 제한" />
           ) : (
             <Bilingual en="Study mode" kr="학습 모드" />
           )
@@ -449,7 +449,7 @@ function StudyMode(): JSX.Element {
         <TopikResults
           summary={buildStudySummary(reviewLog, answered)}
           onRestart={startNewSet}
-          restartLabel="New set"
+          restartLabel={<Bilingual en="New set" kr="새 세트" />}
         />
       ) : null}
 
@@ -694,7 +694,7 @@ function TopikBody({
             <span className="km-topik__count">
               <Bilingual
                 en={`${String(answered)} answered`}
-                kr={`${String(answered)}개 답함`}
+                kr={`답변 ${String(answered)}개`}
                 compact
               />
             </span>

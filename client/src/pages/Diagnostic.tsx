@@ -1056,7 +1056,7 @@ function DoneBlock({ onContinue }: DoneProps): JSX.Element {
         onClick={onContinue}
         trailingIcon={<Icon name="arrow-right" size={14} />}
       >
-        <Bilingual en="See gap map" kr="결과 보기" />
+        <Bilingual en="See gap map" kr="약점 지도 보기" />
       </Button>
     </section>
   );
@@ -1110,7 +1110,7 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
       <p className="km-diagnostic__results-sub">
         <Bilingual
           en="A short adaptive quiz — a rough placement estimate, not an official TOPIK score. Bands show how confident each result is."
-          kr="짧은 적응형 퀴즈예요 — 공식 TOPIK 점수가 아닌 대략적인 추정이에요. 띠는 각 결과의 신뢰도를 보여 줘요."
+          kr="짧은 적응형 퀴즈예요 — 공식 TOPIK 점수가 아닌 대략적인 추정이에요. 신뢰 구간은 각 결과의 신뢰도를 보여 줘요."
         />
       </p>
 

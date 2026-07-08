@@ -55,8 +55,10 @@ import {
   useState,
   type JSX,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { AskAboutThisButton } from '../../components/AskAboutThisButton';
+import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
 import { Button } from '../../components/Button';
 import { Pill } from '../../components/Pill';
@@ -434,13 +436,16 @@ export function MockMode(): JSX.Element {
 
       {net === 'loading' ? (
         <div className="km-topik__state" role="status">
-          Loading mock test…
+          <Bilingual
+            en="Loading mock test…"
+            kr="모의고사를 불러오는 중…"
+          />
         </div>
       ) : null}
 
       {net === 'submitting' ? (
         <div className="km-topik__state" role="status">
-          Grading your test…
+          <Bilingual en="Grading your test…" kr="채점 중…" />
         </div>
       ) : null}
 
@@ -476,8 +481,10 @@ export function MockMode(): JSX.Element {
                   role="status"
                   style={{ marginBottom: 16, color: 'var(--paper-mute)' }}
                 >
-                  Couldn&apos;t resume your saved test — start a fresh one
-                  below.
+                  <Bilingual
+                    en="Couldn't resume your saved test — start a fresh one below."
+                    kr="저장된 시험을 이어서 하지 못했어요 — 아래에서 새로 시작해 주세요."
+                  />
                 </p>
               ) : null}
               <SectionSelect onStart={startSection} />
@@ -497,7 +504,7 @@ export function MockMode(): JSX.Element {
             <TopikResults
               summary={buildMockResultsSummary(result, test?.items ?? [])}
               onRestart={newMock}
-              restartLabel="New mock"
+              restartLabel={<Bilingual en="New mock" kr="새 모의고사" />}
             />
           ) : null}
         </>
@@ -518,8 +525,10 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
   return (
     <div className="km-mock__select">
       <p className="km-mock__lead">
-        Pick a section to take a timed, scored mock. Answers are graded after
-        you submit — no peeking mid-exam.
+        <Bilingual
+          en="Pick a section to take a timed, scored mock. Answers are graded after you submit — no peeking mid-exam."
+          kr="영역을 골라 시간 제한 모의고사를 풀어 보세요. 답은 제출한 뒤에 채점돼요 — 시험 중에는 정답을 볼 수 없어요."
+        />
       </p>
       <div className="km-mock__sections">
         {SECTIONS.map((s) => {
@@ -545,17 +554,29 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
                 if (!disabled && s.id !== 'writing') onStart(s.id);
               }}
             >
-              <span className="km-mock__section-en">{s.en}</span>
-              <span className="kr km-mock__section-kr">
-                {s.kr} · {String(s.items)} items · {String(s.mins)} min
+              {/* P3b: title + meta are chrome — the section NAME pair renders
+                  through <Bilingual>, and the items/minutes meta gets its own
+                  pair (문항/분 counters per the glossary). */}
+              <span className="km-mock__section-en">
+                <Bilingual en={s.en} kr={s.kr} />
+              </span>
+              <span className="km-mock__section-kr">
+                <Bilingual
+                  en={`${String(s.items)} items · ${String(s.mins)} min`}
+                  kr={`${String(s.items)}문항 · ${String(s.mins)}분`}
+                  compact
+                />
               </span>
               {disabled ? (
                 <span className="km-mock__section-soon">
-                  <Pill tone="default">Coming soon</Pill>
+                  <Pill tone="default">
+                    <Bilingual en="Coming soon" kr="준비 중" compact />
+                  </Pill>
                 </span>
               ) : (
                 <span className="km-mock__section-go">
-                  Start <Icon name="arrow-right" size={13} />
+                  <Bilingual en="Start" kr="시작" compact />{' '}
+                  <Icon name="arrow-right" size={13} />
                 </span>
               )}
             </button>
@@ -585,6 +606,7 @@ function ResumeBanner({
   onDismiss: () => void;
 }): JSX.Element {
   const sectionKr = attempt.section === 'reading' ? '읽기' : '듣기';
+  const sectionEn = attempt.section === 'reading' ? 'Reading' : 'Listening';
   const remainingSec = Math.round(attempt.remainingMs / 1000);
   return (
     <div
@@ -603,10 +625,17 @@ function ResumeBanner({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <strong>
-          Resume your <span className="kr">{sectionKr}</span> test
+          <Bilingual
+            en={`Resume your ${sectionEn} test`}
+            kr={`${sectionKr} 시험 이어서 하기`}
+          />
         </strong>
         <span style={{ fontSize: '0.85rem', color: 'var(--paper-mute)' }}>
-          {attempt.answered} answered · {formatClock(remainingSec)} left
+          <Bilingual
+            en={`${String(attempt.answered)} answered · ${formatClock(remainingSec)} left`}
+            kr={`답변 ${String(attempt.answered)}개 · ${formatClock(remainingSec)} 남음`}
+            compact
+          />
         </span>
       </div>
       <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
@@ -615,7 +644,7 @@ function ResumeBanner({
           className="km-btn km-btn--sm focusring"
           onClick={onResume}
         >
-          Resume
+          <Bilingual en="Resume" kr="이어서 하기" compact />
         </button>
         <button
           type="button"
@@ -940,6 +969,7 @@ function ExamRunner({
   const pickedHere = picks.get(currentId) ?? null;
   const answeredCount = picks.size;
   const sectionLabel = test.section === 'reading' ? 'Reading' : 'Listening';
+  const sectionLabelKr = test.section === 'reading' ? '읽기' : '듣기';
   // Image-dependent item (no stored asset — see lib/topikImage.ts): feature
   // the bracketed text description in a labelled block, same as Study mode.
   const imageSplit =
@@ -950,7 +980,9 @@ function ExamRunner({
   return (
     <div className="km-mock__exam">
       <div className="km-mock__exam-head">
-        <Pill tone="red">Timed · live</Pill>
+        <Pill tone="red">
+          <Bilingual en="Timed · live" kr="실전 · 시간 제한" compact />
+        </Pill>
         <span
           className="km-mock__timer"
           role="timer"
@@ -970,7 +1002,11 @@ function ExamRunner({
       </div>
 
       <div className="km-mock__progress">
-        {sectionLabel} · {String(idx + 1)} / {String(total)}
+        <Bilingual
+          en={`${sectionLabel} · ${String(idx + 1)} / ${String(total)}`}
+          kr={`${sectionLabelKr} · ${String(idx + 1)} / ${String(total)}`}
+          compact
+        />
       </div>
 
       <QuestionPalette
@@ -1018,10 +1054,14 @@ function ExamRunner({
             goTo(idx - 1);
           }}
         >
-          Prev
+          <Bilingual en="Prev" kr="이전" />
         </Button>
         <span className="km-topik__count">
-          {String(answeredCount)} / {String(total)} answered
+          <Bilingual
+            en={`${String(answeredCount)} / ${String(total)} answered`}
+            kr={`답변 ${String(answeredCount)} / ${String(total)}`}
+            compact
+          />
         </span>
         <Button
           variant="ghost"
@@ -1031,7 +1071,7 @@ function ExamRunner({
           }}
           trailingIcon={<Icon name="arrow-right" size={14} />}
         >
-          Next
+          <Bilingual en="Next" kr="다음" />
         </Button>
       </div>
 
@@ -1042,7 +1082,7 @@ function ExamRunner({
             setConfirming(true);
           }}
         >
-          Submit test
+          <Bilingual en="Submit test" kr="시험 제출" />
         </Button>
       </div>
 
@@ -1051,10 +1091,14 @@ function ExamRunner({
         // which also carries the alertdialog role + label (useModalA11y above).
         <div ref={confirmRef} role="alertdialog" aria-label="Confirm submit">
           <Card variant="flat" className="km-mock__confirm">
-            <Eyebrow>Submit test?</Eyebrow>
+            <Eyebrow>
+              <Bilingual en="Submit test?" kr="시험을 제출할까요?" />
+            </Eyebrow>
             <p className="km-topik__explain">
-              You’ve answered {String(answeredCount)} of {String(total)}.
-              Unanswered items are marked incorrect. This can’t be undone.
+              <Bilingual
+                en={`You’ve answered ${String(answeredCount)} of ${String(total)}. Unanswered items are marked incorrect. This can’t be undone.`}
+                kr={`전체 ${String(total)}문항 중 ${String(answeredCount)}문항에 답했어요. 답하지 않은 문제는 오답으로 처리돼요. 제출하면 되돌릴 수 없어요.`}
+              />
             </p>
             <div className="km-topik__footer">
               <Button
@@ -1063,14 +1107,14 @@ function ExamRunner({
                   setConfirming(false);
                 }}
               >
-                Keep going
+                <Bilingual en="Keep going" kr="계속 풀기" />
               </Button>
               <Button
                 variant="gold"
                 onClick={doSubmit}
                 trailingIcon={<Icon name="arrow-right" size={14} />}
               >
-                Submit
+                <Bilingual en="Submit" kr="제출" />
               </Button>
             </div>
           </Card>
@@ -1317,8 +1361,9 @@ export interface ResultsSummary {
 interface TopikResultsProps {
   summary: ResultsSummary;
   onRestart: () => void;
-  /** "New mock" (Mock mode) or "New set" (Study mode). */
-  restartLabel: string;
+  /** "New mock" (Mock mode) or "New set" (Study mode) — chrome, so callers
+   *  pass a `<Bilingual>` pair (P3b). */
+  restartLabel: ReactNode;
 }
 
 /**
@@ -1348,15 +1393,22 @@ export function TopikResults({
           <span className="km-mock__score-unit">%</span>
         </div>
         <p className="km-topik__explain">
-          {String(summary.correct)} / {String(summary.totalItems)} correct ·{' '}
-          {String(summary.answered)} answered ·{' '}
-          {wrongCount > 0
-            ? `${String(wrongCount)} to review`
-            : 'no misses'}
+          <Bilingual
+            en={`${String(summary.correct)} / ${String(summary.totalItems)} correct · ${String(summary.answered)} answered · ${
+              wrongCount > 0 ? `${String(wrongCount)} to review` : 'no misses'
+            }`}
+            kr={`정답 ${String(summary.correct)} / ${String(summary.totalItems)} · 답변 ${String(summary.answered)}개 · ${
+              wrongCount > 0
+                ? `복습할 문제 ${String(wrongCount)}개`
+                : '틀린 문제 없음'
+            }`}
+          />
         </p>
       </Card>
 
-      <Eyebrow className="km-mock__review-head">Review</Eyebrow>
+      <Eyebrow className="km-mock__review-head">
+        <Bilingual en="Review" kr="복습" />
+      </Eyebrow>
       <ol className="km-mock__review">
         {summary.rows.map((row, i) => {
           const markerId = `km-mock-reveal-${String(row.key)}`;
@@ -1386,10 +1438,14 @@ export function TopikResults({
                   >
                     {row.isCorrect ? (
                       <>
-                        <Icon name="check" size={14} /> Correct
+                        <Icon name="check" size={14} />{' '}
+                        <Bilingual en="Correct" kr="맞았어요" compact />
                       </>
                     ) : (
-                      '✗ Incorrect'
+                      <>
+                        {'✗ '}
+                        <Bilingual en="Incorrect" kr="틀렸어요" compact />
+                      </>
                     )}
                   </span>
                 </div>
@@ -1399,11 +1455,13 @@ export function TopikResults({
                 {row.passage ? <TopikPassage text={row.passage} /> : null}
                 <div className="km-mock__review-picks">
                   <span className="km-mock__review-pick">
-                    Your answer: <span className="kr">{row.pickedText}</span>
+                    <Bilingual en="Your answer" kr="내 답" compact />:{' '}
+                    <span className="kr">{row.pickedText}</span>
                   </span>
                   {!row.isCorrect ? (
                     <span className="km-mock__review-pick km-mock__review-pick--correct">
-                      Correct: <span className="kr">{row.correctText}</span>
+                      <Bilingual en="Correct answer" kr="정답" compact />:{' '}
+                      <span className="kr">{row.correctText}</span>
                     </span>
                   ) : null}
                 </div>

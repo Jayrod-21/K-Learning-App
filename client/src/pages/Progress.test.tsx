@@ -337,9 +337,9 @@ describe('Progress page — compare surface (P1.2 reconciliation)', () => {
     // The moved TOPIK-level display: full-variant SkillsCompare with the
     // reference picker (TOPIK levels through the Native ceiling)…
     const picker = screen.getByRole('radiogroup', { name: 'Reference level' });
-    expect(within(picker).getByRole('radio', { name: 'TOPIK 3' })).toBeInTheDocument();
-    expect(within(picker).getByRole('radio', { name: 'TOPIK 4' })).toBeInTheDocument();
-    expect(within(picker).getByRole('radio', { name: 'Native' })).toBeInTheDocument();
+    expect(within(picker).getByRole('radio', { name: '3급 · TOPIK 3' })).toBeInTheDocument();
+    expect(within(picker).getByRole('radio', { name: '4급 · TOPIK 4' })).toBeInTheDocument();
+    expect(within(picker).getByRole('radio', { name: '원어민 · Native' })).toBeInTheDocument();
     // …and exactly ONE such picker — one compare surface, not two widgets.
     expect(screen.getAllByRole('radiogroup')).toHaveLength(1);
 

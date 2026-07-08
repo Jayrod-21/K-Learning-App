@@ -311,7 +311,7 @@ describe('Today', () => {
       within(region).getByText(/Mock-exam picks based on your practice/),
     ).toBeInTheDocument();
     expect(
-      within(region).getByText('맞춤 모의시험 추천이 여기에 나와요.'),
+      within(region).getByText('맞춤 모의고사 추천이 여기에 나와요.'),
     ).toBeInTheDocument();
   });
 
@@ -326,7 +326,7 @@ describe('Today', () => {
     expect(screen.getByText('Exam in progress')).toBeInTheDocument();
     expect(screen.getByText(/Listening mock/)).toBeInTheDocument();
     // P3b: the SECTION_LABELS pair renders its Korean half via <Bilingual/>.
-    expect(screen.getByText('듣기 모의시험')).toBeInTheDocument();
+    expect(screen.getByText('듣기 모의고사')).toBeInTheDocument();
     expect(screen.getByText(/12 answered/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Resume exam/ }));

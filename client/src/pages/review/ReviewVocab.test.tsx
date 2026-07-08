@@ -339,7 +339,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
   it('opens the lists view via the ?tab=lists deep link', async () => {
     renderPage('/review/vocab?tab=lists');
     expect(
-      screen.getByRole('tab', { name: '내 목록 · My lists' }),
+      screen.getByRole('tab', { name: '내 단어장 · My lists' }),
     ).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
   });
@@ -349,7 +349,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     renderPage();
     await screen.findByText('영향');
 
-    await user.click(screen.getByRole('tab', { name: '내 목록 · My lists' }));
+    await user.click(screen.getByRole('tab', { name: '내 단어장 · My lists' }));
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
 
     // Create flow — default kind stays 'vocab'.

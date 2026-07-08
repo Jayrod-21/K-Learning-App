@@ -66,7 +66,7 @@ type View = 'browse' | 'lists';
 
 const VIEWS: ReadonlyArray<{ id: View; label: string; kr: string }> = [
   { id: 'browse', label: 'Browse', kr: '둘러보기' },
-  { id: 'lists', label: 'My lists', kr: '내 목록' },
+  { id: 'lists', label: 'My lists', kr: '내 단어장' },
 ];
 
 function isView(value: string | null): value is View {
@@ -413,7 +413,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
           <p className="km-reference__empty">
             <Bilingual
               en="No lists yet — create one in the My lists view first."
-              kr="아직 목록이 없어요 — 내 목록에서 먼저 만들어 주세요."
+              kr="아직 목록이 없어요 — 내 단어장에서 먼저 만들어 주세요."
             />
           </p>
         ) : null}

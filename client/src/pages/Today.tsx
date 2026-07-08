@@ -167,7 +167,7 @@ function OpenExamPanel({
         <div className="km-today__examTitle">
           <Bilingual
             en={`${section.label} mock`}
-            kr={`${section.kr} 모의시험`}
+            kr={`${section.kr} 모의고사`}
           />
         </div>
         <div className="km-today__examMeta">
@@ -195,7 +195,7 @@ function OpenExamPanel({
       <div className="km-today__examMeta">
         <Bilingual
           en="No exam in progress — take a timed reading or listening mock."
-          kr="진행 중인 시험이 없어요 — 읽기·듣기 모의시험을 시작해 보세요."
+          kr="진행 중인 시험이 없어요 — 읽기·듣기 모의고사를 시작해 보세요."
         />
       </div>
       <Button
@@ -447,7 +447,7 @@ export function Today(): JSX.Element {
               title="Recommended for you"
               kr="추천"
               copy="Mock-exam picks based on your practice."
-              krCopy="맞춤 모의시험 추천이 여기에 나와요."
+              krCopy="맞춤 모의고사 추천이 여기에 나와요."
             />
           </SwipeCarousel>
         </Card>

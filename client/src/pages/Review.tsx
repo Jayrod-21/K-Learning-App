@@ -1061,7 +1061,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
             <hr className="hr" />
             <div>
               <div className="km-eyebrow">
-                <Bilingual en="Source · seen in" kr="출처" />
+                <Bilingual en="Seen in" kr="출처" />
               </div>
               <div className="km-review__source">{card.mined_in ?? '—'}</div>
             </div>

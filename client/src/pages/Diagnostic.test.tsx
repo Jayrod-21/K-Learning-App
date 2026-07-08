@@ -395,6 +395,12 @@ describe('Diagnostic', () => {
     // P3b: the results chrome is bilingual (Korean segments present).
     expect(screen.getByText('실력 요약')).toBeInTheDocument();
     expect(screen.getByText('다음 단계')).toBeInTheDocument();
+    // P3b consistency: the sub-line names the band 신뢰 구간 — the same term
+    // as the SkillsCompare legend on this screen (bare 띠 is retired).
+    expect(
+      screen.getByText(/신뢰 구간은 각 결과의 신뢰도를 보여 줘요/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/띠는/)).not.toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /begin today/i }),
     ).toBeInTheDocument();
@@ -409,14 +415,15 @@ describe('Diagnostic', () => {
     };
     renderWithRouter();
     // Both new beginner reference lines are pickable…
-    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '1급 · TOPIK 1' })).toBeInTheDocument();
     // …and the snapshot's defaultRef ('L2') is honoured as the active pick.
-    expect(screen.getByRole('radio', { name: 'TOPIK 2' })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: '2급 · TOPIK 2' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
-    // The full-mode legend echoes the active beginner ref's 급 shorthand.
-    expect(screen.getByText(/2급/)).toBeInTheDocument();
+    // The full-mode legend (and now the bilingual pick itself) echoes the
+    // active beginner ref's 급 shorthand.
+    expect(screen.getAllByText(/2급/).length).toBeGreaterThan(0);
   });
 
   it('F-002: the mock snapshot fixtures carry the full L1–native reference ladder', () => {
@@ -618,6 +625,12 @@ describe('Diagnostic', () => {
     // The stale hard-coded "TOPIK II L4" done-hint must never come back —
     // results pick their reference dynamically (a beginner run defaults to L2).
     expect(screen.queryByText(/Comparing against/)).not.toBeInTheDocument();
+
+    // P3b consistency: "See gap map" got its own Korean (약점 지도 보기) —
+    // no longer a 결과 보기 twin of the taking flow's "See results".
+    expect(
+      screen.getByRole('button', { name: '약점 지도 보기 · See gap map' }),
+    ).toBeInTheDocument();
 
     // ── done → results (renders the server-returned snapshot) ──
     await user.click(screen.getByRole('button', { name: /see gap map/i }));

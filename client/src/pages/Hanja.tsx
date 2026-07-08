@@ -96,7 +96,7 @@ const FILTER_OPTIONS: ReadonlyArray<{
   kr: string;
 }> = [
   { id: 'all', label: 'All', kr: '전체' },
-  { id: 'banked', label: 'Banked', kr: '모음' },
+  { id: 'banked', label: 'Banked', kr: '담김' },
   { id: 'practicing', label: 'Practicing', kr: '연습 중' },
   { id: 'new', label: 'New', kr: '신규' },
 ];
@@ -107,9 +107,11 @@ const STATE_PILL_LABEL: Record<HanjaState, string> = {
   new: 'New',
 };
 
-/** Korean chrome labels for the three hanja states (P3b). */
+/** Korean chrome labels for the three hanja states (P3b). `banked` uses the
+ *  담기/담김 family (glossary): bare 모음 as a status chip was ambiguous next
+ *  to Hanja content (모음 also = "vowel"). */
 const STATE_PILL_KR: Record<HanjaState, string> = {
-  banked: '모음',
+  banked: '담김',
   practicing: '연습 중',
   new: '신규',
 };
@@ -372,7 +374,7 @@ function EncounteredBand({
         />
       </Eyebrow>
       <div className="km-hanja__chips">
-        <StateChip label="Banked" kr="모음" count={progress.banked} tone="moss" />
+        <StateChip label="Banked" kr="담김" count={progress.banked} tone="moss" />
         <StateChip
           label="Practicing"
           kr="연습 중"
@@ -713,7 +715,7 @@ function HanjaDetail({
             ) : h.state === 'banked' ? (
               <Bilingual en="Practice again" kr="다시 연습" />
             ) : (
-              <Bilingual en="Bank this hanja" kr="이 한자 모음에 추가" />
+              <Bilingual en="Bank this hanja" kr="이 한자 담기" />
             )}
           </span>
         </button>

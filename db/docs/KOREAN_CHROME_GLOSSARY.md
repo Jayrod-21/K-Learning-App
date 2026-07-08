@@ -19,17 +19,23 @@ Reading 읽기 · Listening 듣기 · Vocabulary/Vocab 어휘 · Grammar 문법 
 ## Common recurring chrome nouns
 mastery 숙달 · review 복습 · practice 연습 · due 복습 예정 · progress 성장 · trend/over time 추이 ·
 level 등급 (TOPIK 급) · score 점수 · streak 연속 · today's tasks 오늘의 과제 · overview 요약 ·
-this week 이번 주 · recommendation 추천 · exam 시험 · mock exam 모의시험 · section 영역 ·
-passage 지문 · question 문제 · answer 정답 · pattern (grammar) 문형 · word 단어 · list 목록 ·
-card 카드 · bank(noun, saved set) 모음 · results 결과 · settings 설정 · appearance 화면 표시 ·
+this week 이번 주 · recommendation 추천 · exam 시험 · mock exam 모의고사 (ONE term — 모의시험 retired) ·
+section 영역 · passage 지문 · question 문제 · answer 정답 · pattern (grammar) 문형 · word 단어 ·
+list 목록 · My lists (vocab lists surface) 내 단어장 (everywhere — 내 목록 retired) ·
+card 카드 · bank(noun, saved set) 모음 · results 결과 · confidence band 신뢰 구간 (never bare 띠) ·
+answered count 답변 N개 · settings 설정 · appearance 화면 표시 ·
 account 계정 · notifications 알림 · theme 테마
 
 ## Buttons / actions (imperative, polite-terse)
 Start 시작 · Start review 복습 시작 · Continue 계속 · Resume 이어서 하기 · Retake 다시 하기 ·
 Retake diagnostic 진단 다시 하기 · Retry 다시 시도 · Add 추가 · Add to bank 모음에 추가 ·
+Bank (button) 담기 · Banked (state) 담김 · Banking… 담는 중… · Already banked 이미 담김
+(the 담다 family — NOT 모으기/추가됨; keeps the bank verb consistent and avoids 모음=vowel ambiguity;
+the full "Add (all) to bank" phrasing stays 모음에 추가) ·
 Remove 빼기 · Delete 삭제 · Edit 편집 · Rename 이름 변경 · Create 만들기 · New 새로 만들기 ·
 Save 저장 · Cancel 취소 · Close 닫기 · Send 보내기 · Search 검색 · Filter 필터 · Browse 둘러보기 ·
 Browse all patterns 전체 문형 보기 · Open 열기 · Manage 관리 · Look up 찾아보기 · Submit 제출 ·
+See results 결과 보기 · See gap map 약점 지도 보기 (distinct — never both 결과 보기) ·
 Grade 채점 · Next 다음 · Previous 이전 · Skip 건너뛰기 · Show answer 정답 보기 · Graduate 완료 처리 (verify) ·
 Re-admit 다시 학습 (verify)
 

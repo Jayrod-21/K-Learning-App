@@ -156,7 +156,7 @@ async function driveToResults(
     expect(screen.getByRole('timer')).toBeInTheDocument();
   });
   await user.click(screen.getByRole('button', { name: /Submit test/i }));
-  await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+  await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
   await waitFor(() => {
     expect(
       screen.getAllByRole('button', { name: 'Ask about this' }).length,
@@ -349,7 +349,7 @@ describe('MockMode (Mock test)', () => {
         await Promise.resolve();
         await Promise.resolve();
       });
-      fireEvent.click(screen.getByRole('button', { name: /^Resume$/ }));
+      fireEvent.click(screen.getByRole('button', { name: '이어서 하기 · Resume' }));
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -504,7 +504,7 @@ describe('MockMode (Mock test)', () => {
     // Submit → confirm.
     await user.click(screen.getByRole('button', { name: /Submit test/i }));
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+    await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
 
     // Results render: score, band, per-item reveal with the now-shown
     // correct answer for the missed item.
@@ -605,7 +605,7 @@ describe('MockMode (Mock test)', () => {
     });
     await user.click(screen.getByRole('radio', { name: /나/ }));
     await user.click(screen.getByRole('button', { name: /Submit test/i }));
-    await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+    await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
 
     await waitFor(() => {
       expect(screen.getByText('On track for L5+')).toBeInTheDocument();
@@ -814,7 +814,7 @@ describe('MockMode (Mock test)', () => {
     ).toBeTruthy();
 
     // The second item is self-contained — stepping to it drops the block.
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: '다음 · Next' }));
     expect(screen.queryByText(passageText)).not.toBeInTheDocument();
   });
 
@@ -880,7 +880,7 @@ describe('MockMode (Mock test)', () => {
     });
     await user.click(screen.getByRole('radio', { name: /나/ }));
     await user.click(screen.getByRole('button', { name: /Submit test/i }));
-    await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+    await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
 
     // Fixed copy, not the server prose.
     expect(
@@ -906,7 +906,7 @@ describe('MockMode (Mock test)', () => {
     render(<MockMode />, { wrapper: MemoryRouter });
 
     // The banner appears once the mount-time fetchAttempt resolves.
-    const resumeBtn = await screen.findByRole('button', { name: /^Resume$/ });
+    const resumeBtn = await screen.findByRole('button', { name: '이어서 하기 · Resume' });
     expect(screen.getByText(/Resume your/i)).toBeInTheDocument();
 
     await user.click(resumeBtn);
@@ -937,14 +937,14 @@ describe('MockMode (Mock test)', () => {
     svc.fetchMockTest.mockRejectedValueOnce(new Error('gone'));
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(await screen.findByRole('button', { name: /^Resume$/ }));
+    await user.click(await screen.findByRole('button', { name: '이어서 하기 · Resume' }));
 
     // The banner is gone AND the user is told why (pre-fix: silent vanish).
     const notice = await screen.findByText(/Couldn't resume your saved test/i);
     expect(notice).toBeInTheDocument();
     // The banner (with its Resume button) is gone.
     expect(
-      screen.queryByRole('button', { name: /^Resume$/ }),
+      screen.queryByRole('button', { name: '이어서 하기 · Resume' }),
     ).not.toBeInTheDocument();
     // Still on the select screen, sections startable.
     const reading = screen.getByRole('button', {
@@ -1033,7 +1033,7 @@ describe('MockMode (Mock test)', () => {
 
       // Submit → results: the flag must drop with the phase.
       await user.click(screen.getByRole('button', { name: /Submit test/i }));
-      await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+      await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
       await waitFor(() => {
         expect(screen.getByTestId('exam-active')).toHaveTextContent('false');
       });
@@ -1106,7 +1106,7 @@ describe('MockMode (Mock test)', () => {
       });
       await user.click(screen.getByRole('radio', { name: /나/ }));
       await user.click(screen.getByRole('button', { name: /Submit test/i }));
-      await user.click(screen.getByRole('button', { name: /^Submit$/i }));
+      await user.click(screen.getByRole('button', { name: '제출 · Submit' }));
 
       // No fabricated results screen — the pseudo-grader must not run.
       const alert = await screen.findByRole('alert');
@@ -1126,6 +1126,103 @@ describe('MockMode (Mock test)', () => {
         [{ answers: unknown[] }],
       ];
       expect(second[0].answers).toEqual(first[0].answers);
+    });
+  });
+
+  describe('P3b language wiring — chrome bilingual, exam CONTENT raw', () => {
+    // No SettingsProvider here, so `useLanguageDisplay` serves the default
+    // 'both' (Korean-first) mode — the Korean half of every wired pair must
+    // be in the DOM, while TOPIK material (prompts/passages/choices/reveals)
+    // must render outside <Bilingual> entirely.
+
+    it('renders Korean chrome on the section select', () => {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      // Lead line carries its Korean half (모의고사 — the canonical term).
+      expect(
+        screen.getByText(/영역을 골라 시간 제한 모의고사를 풀어 보세요/),
+      ).toBeInTheDocument();
+      // Section-card meta uses the glossary counters (N문항 · N분). Compact
+      // pairs render their Korean twice (visible + sr-only), hence getAll.
+      expect(screen.getAllByText('50문항 · 70분').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('50문항 · 60분').length).toBeGreaterThan(0);
+      // The deferred Writing card wears the glossary's 준비 중.
+      expect(screen.getAllByText('준비 중').length).toBeGreaterThan(0);
+    });
+
+    it('renders Korean exam chrome while the TOPIK item content stays raw', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Start Reading mock test/i }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+
+      // Chrome went bilingual: timer pill, progress line, item nav, submit.
+      expect(screen.getAllByText('실전 · 시간 제한').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('읽기 · 1 / 2').length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole('button', { name: '이전 · Prev' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: '다음 · Next' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: '시험 제출 · Submit test' }),
+      ).toBeInTheDocument();
+
+      // CONTENT stays raw: the TOPIK prompt and choice text render outside
+      // any <Bilingual> wrapper (never chrome-wrapped).
+      const prompt = screen.getByText('첫 번째 문제입니다.');
+      expect(prompt.closest('.km-bilingual')).toBeNull();
+      const choice = screen.getByText('가');
+      expect(choice.closest('.km-bilingual')).toBeNull();
+
+      // The submit-confirm dialog is bilingual chrome end to end.
+      await user.click(
+        screen.getByRole('button', { name: '시험 제출 · Submit test' }),
+      );
+      expect(screen.getByText('시험을 제출할까요?')).toBeInTheDocument();
+      expect(
+        screen.getByText(/전체 2문항 중 0문항에 답했어요/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: '계속 풀기 · Keep going' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: '제출 · Submit' }),
+      ).toBeInTheDocument();
+    });
+
+    it('renders Korean results chrome while the graded reveal content stays raw', async () => {
+      const user = userEvent.setup();
+      renderWithChatProbe();
+      await driveToResults(user);
+
+      // Score meta uses the canonical counters (답변 N개, 복습할 문제 N개).
+      expect(
+        screen.getByText('정답 1 / 2 · 답변 2개 · 복습할 문제 1개'),
+      ).toBeInTheDocument();
+      // Verdicts use the app-wide 맞았어요/틀렸어요 pair; the pick labels are
+      // bilingual (compact pairs appear visible + sr-only, hence getAll).
+      expect(screen.getAllByText('맞았어요').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('틀렸어요').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('내 답').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('정답').length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole('button', { name: '새 모의고사 · New mock' }),
+      ).toBeInTheDocument();
+
+      // CONTENT stays raw: the server's band headline and the reveal's
+      // prompt / choice text never pass through <Bilingual>.
+      expect(
+        screen.getByText('L3 range').closest('.km-bilingual'),
+      ).toBeNull();
+      expect(
+        screen.getByText('두 번째 문제입니다.').closest('.km-bilingual'),
+      ).toBeNull();
+      expect(screen.getByText('셋').closest('.km-bilingual')).toBeNull();
     });
   });
 });

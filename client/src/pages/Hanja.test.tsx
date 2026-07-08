@@ -163,7 +163,7 @@ describe('Hanja page', () => {
       screen.getByRole('button', { name: '전체 · All', pressed: true }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: '모음 · Banked', pressed: false }),
+      screen.getByRole('button', { name: '담김 · Banked', pressed: false }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /學 배울 학/ }),
@@ -178,7 +178,7 @@ describe('Hanja page', () => {
     render(<Hanja />);
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
-    await user.click(screen.getByRole('button', { name: '모음 · Banked' }));
+    await user.click(screen.getByRole('button', { name: '담김 · Banked' }));
 
     // 生 is banked → stays; 學 is practicing → filtered out.
     expect(
