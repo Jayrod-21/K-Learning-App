@@ -53,7 +53,7 @@ import os
 import pathlib
 import re
 import sys
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 import psycopg
 import structlog
@@ -267,6 +267,14 @@ _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 # anywhere (we accept any character that isn't `$` in the tag so we don't
 # stop early on nested tags). The opening and closing tags must match.
 _DOLLAR_QUOTED = re.compile(r"\$([^$]*)\$.*?\$\1\$", re.DOTALL)
+# Ordinary single-quoted string literals. In SQL an embedded quote is written
+# `''` (a doubled quote), so a literal's body is any run of non-quote chars or
+# doubled quotes. `[^']` already spans newlines, so multi-line literals match.
+# Stripped so a documentary literal — e.g. `COMMENT ON t IS '... after the DB
+# commit ...'` — never false-positives the tx-control / destructive scanners on
+# a keyword that appears only as prose inside the string. A genuine top-level
+# BEGIN/COMMIT/DROP is never inside quotes, so stripping literals is safe.
+_SINGLE_QUOTED = re.compile(r"'(?:[^']|'')*'")
 
 
 def strip_sql_comments(sql: str) -> str:
@@ -275,16 +283,19 @@ def strip_sql_comments(sql: str) -> str:
 
 
 def strip_sql_noise(sql: str) -> str:
-    """Strip comments AND dollar-quoted string literals.
+    """Strip comments, dollar-quoted blocks, AND single-quoted string literals.
 
-    Used by `contains_top_level_tx_control` so that `DO $$ BEGIN ... END $$`
-    blocks (where BEGIN is a PL/pgSQL keyword, not a SQL transaction-control
-    statement) don't trip the detector.
+    Used by `contains_top_level_tx_control` (and `contains_destructive`) so that
+    neither a `DO $$ BEGIN ... END $$` block (where BEGIN is a PL/pgSQL keyword,
+    not transaction control) nor a keyword appearing only as prose inside a
+    string literal (e.g. a `COMMENT ON ... IS '... commit ...'`) trips the
+    detectors.
     """
     # Order matters: strip comments first (comments inside a dollar-quoted
     # string aren't really comments, but the SQL grammar allows them and we
-    # don't care for our purposes).
-    return _DOLLAR_QUOTED.sub("", strip_sql_comments(sql))
+    # don't care for our purposes), then dollar-quoted blocks (which may
+    # contain single quotes), then ordinary single-quoted literals.
+    return _SINGLE_QUOTED.sub("", _DOLLAR_QUOTED.sub("", strip_sql_comments(sql)))
 
 
 def contains_destructive(sql: str) -> bool:
