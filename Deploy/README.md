@@ -1,12 +1,14 @@
 # Korean Master — Production Deployment (blue/green)
 
 This directory is the **production deployment runbook** for Korean Master: a
-blue/green Docker stack on a single host (dad's server), fronted by an nginx
-load balancer and reached from the internet through a Cloudflare Tunnel. A
-deploy stands up the *inactive* color, validates it on a test port, and a
-manual approval flips the load balancer to it. The database is **one shared
-Postgres** that both colors point at, so a switch is a pure nginx reload — no
-data is copied and user uploads survive unchanged.
+blue/green Docker stack on a single self-hosted host — **the project's own
+PC** — fronted by an nginx load balancer and reached from the internet through
+a Cloudflare Tunnel. A deploy is **run by hand on that host** (see
+[Deploy → test → switch](#deploy--test--switch-flow)): it stands up the
+*inactive* color, validates it on a test port, and flips the load balancer to
+it. The database is **one shared Postgres** that both colors point at, so a
+switch is a pure nginx reload — no data is copied and user uploads survive
+unchanged.
 
 > **Local development** uses `docker-compose.yml` at the repo root and the
 > scripts in `db/scripts/` (see [Relationship to `db/scripts/`](#relationship-to-dbscripts-local-dev)).
@@ -89,33 +91,36 @@ never publicly reachable. See `SECURITY.md`.
 
 ## Deploy → test → switch flow
 
-The Azure pipeline (`azure-pipelines.yml`) runs three stages on a push to
-`main`:
+Deploys are run **by hand on the host** — there is no CI/CD system driving
+them. (The `azure-*` script names are historical: they were adapted from an
+Azure Pipelines reference, but everything runs locally on this PC — there is no
+Azure DevOps agent, pipeline, or cloud involved.) A release is three fail-fast
+steps run from the repo checkout root; the active color keeps serving until the
+final flip:
 
-1. **BuildAndTest** (hosted agent): server `npm ci && lint && typecheck && test`,
-   client `npm ci && lint && build`, then `docker build` + `docker save` the
-   three images (`km-server`, `km-client`, `km-kiwi`) tagged with the build id,
-   published as **tar artifacts** (no external registry).
-2. **DeployToInactive** (self-hosted agent on dad's server, ungated):
-   `docker load`s the tars, refreshes the runtime secrets into the server
-   `.env`, then runs `azure-deploy-inactive.sh <tag>` which:
-   takes a pre-deploy DB backup → runs `python db/migrate.py up` (expand/contract)
-   on the shared DB → brings up the inactive color → verifies it on **:1841**.
-   The active color keeps serving the whole time.
-3. **SwitchToProduction** (self-hosted agent, **manual-approval gate**):
-   `azure-switch-production.sh <tag>` flips the LB to the new color and verifies
-   **:1840**. A failed post-switch health check **auto-rolls back** the flip.
-
-To run any step by hand on the server (paths relative to the repo checkout root):
+1. **Build** — `local-build.sh [TAG]` builds the five images (`km-server`,
+   `km-client`, `km-kiwi`, `km-migrate`, `km-loader`) straight into the local
+   Docker image store (default tag `local`; pass a git short SHA for an
+   immutable release). Does not touch the running stack.
+2. **Deploy to inactive** — `azure-deploy-inactive.sh <TAG>` takes a pre-deploy
+   DB backup → runs the migrations on the shared DB (dry-run expand/contract
+   gate, **then** apply) → brings up the **inactive** color → verifies it on
+   **:1841**. Production (**:1840**) is untouched the whole time.
+3. **Switch** — `azure-switch-production.sh <TAG>` flips the LB to the new color
+   and verifies **:1840**. A failed post-switch health check **auto-rolls back**
+   the flip.
 
 ```bash
-Deploy/azure-deploy-inactive.sh   "$(git rev-parse --short HEAD)"   # deploy inactive
-Deploy/bg-health.sh                                                 # check all colors/ports
-Deploy/azure-switch-production.sh "$(git rev-parse --short HEAD)"   # flip prod
+Deploy/local-build.sh             "$(git rev-parse --short HEAD)"   # 1. build images
+Deploy/azure-deploy-inactive.sh   "$(git rev-parse --short HEAD)"   # 2. deploy + migrate + validate :1841
+Deploy/bg-health.sh                                                 # (check all colors/ports)
+Deploy/azure-switch-production.sh "$(git rev-parse --short HEAD)"   # 3. flip prod → new color
 ```
 
-> **GitHub Actions** (`.github/workflows/ci.yml`) still runs PR CI — Azure owns
-> build→deploy, GitHub gates merges. They are complementary.
+> **CI vs. deploy:** `.github/workflows/ci.yml` (+ `gitleaks.yml`) runs the full
+> lint/type/test suite on every PR and gates merges into `rebuild`. It does
+> **not** deploy — deploying is the manual step sequence above, run on the host
+> after the merge.
 
 ---
 
@@ -137,21 +142,19 @@ hand — it is overwritten from `nginx-${color}-active.conf` on every switch.
 
 ---
 
-## Secrets (D2 — hybrid)
+## Secrets
 
-* The **runtime source of truth** is a gitignored, `chmod 0600` `.env` on the
-  server (alongside this directory's compose files). Containers read it; it is
-  backed up with the DB. `Deploy/.env.example` is the **template** — placeholders
-  only, never real values.
-* The **Azure pipeline** holds `POSTGRES_PASSWORD`, `ANTHROPIC_API_KEY`, and
-  `TOTP_SECRET_ENC_KEY` as **secret pipeline variables**. The deploy stage
-  writes/refreshes them into the server `.env` via `save_env_var`
-  (deployment-utils.sh) — idempotent, **never echoed, never logged**, masked by
-  Azure in CI output.
+* The **source of truth** is a single gitignored, `chmod 0600` `.env` on the
+  host (alongside this directory's compose files). Containers read it; it is
+  backed up with the DB. `Deploy/.env.example` is the **template** —
+  placeholders only, never real values.
+* The three sensitive values — `POSTGRES_PASSWORD`, `ANTHROPIC_API_KEY`, and
+  `TOTP_SECRET_ENC_KEY` — live **only** in that local `.env`. They are never
+  committed, and the deploy scripts never echo or log them.
 
-To rotate a secret: update the Azure secret variable and re-run the pipeline
-(the deploy stage rewrites the `.env` line), or edit the server `.env` directly
-and restart the active color. See `SECURITY.md` for the full posture.
+To rotate a secret: edit the line in the host `.env` and restart the active
+color (`rebuild-environment.sh`, or recreate just that trio with
+`compose_color <active> up`). See `SECURITY.md` for the full posture.
 
 ---
 
@@ -227,10 +230,9 @@ port other than 1840/1841 is exposed off-loopback.
 
 ---
 
-## First-time server setup
+## First-time host setup
 
-1. Install Docker + the Azure DevOps self-hosted agent; set the agent
-   capability `Deploy=True` (the deploy/switch stages `demand` it).
+1. Install Docker + the Docker Compose plugin.
 2. Copy `Deploy/.env.example` → `.env` next to the compose files; fill in real
    values; `chmod 0600 .env`. Set `ACTIVE_ENVIRONMENT=blue` (or green) and the
    `BACKUP_*` knobs.
@@ -239,19 +241,13 @@ port other than 1840/1841 is exposed off-loopback.
 4. Bring up shared + the active color (the deploy script does this on first run,
    or `compose_shared up` + `compose_color <active> up`).
 5. `python db/migrate.py up` to initialize the schema.
-6. Configure the Azure secret variables and the `km-production` Environment's
-   manual-approval check.
-   **HARD PRE-FLIGHT GATE (P-SF1) — do NOT run the pipeline for the first time
-   until this is verified:** the `km-production` Azure DevOps Environment MUST
-   have at least one approval check with ≥1 approver. The pipeline YAML *cannot*
-   enforce this — the approval lives on the Environment object in the Azure UI,
-   and Stage 2 (deploy-to-inactive) is intentionally ungated. If `km-production`
-   has no approval check, Stage 3 (`SwitchToProduction`) flips production
-   **unattended**. Confirm in *Pipelines → Environments → km-production → Approvals
-   and checks* that an approval exists before the first real run. This is the
-   single human gate between an auto-deploy and a production flip; see
-   `VERIFICATION.md §8` (the stand-up checklist asserts it) and `SECURITY.md §10`.
-7. Start `cloudflared` pointing at `:1840`.
+6. Start `cloudflared` pointing at `:1840`.
+
+> The production flip is a **manual operator step** — a human runs
+> `azure-switch-production.sh` — so there is no unattended auto-deploy to guard
+> against. `azure-deploy-inactive.sh` only ever touches the idle color and the
+> test port (`:1841`); production is never affected until someone runs the
+> switch.
 
 See `VERIFICATION.md` (repo root) **§8 Deploy stand-up** for the full,
 copy-pasteable stand-up + switch + backup/restore verification checklist.
@@ -278,7 +274,10 @@ needs.
 
 | File                        | Role                                              |
 |-----------------------------|---------------------------------------------------|
-| `azure-pipelines.yml`       | build → deploy-inactive → switch (manual gate)    |
+| `azure-pipelines.yml`       | legacy Azure Pipelines def — **unused** (deploys are manual, see above) |
+| `local-build.sh`            | build the 5 images into the local Docker store    |
+| `azure-deploy-inactive.sh`  | deploy+migrate+validate the inactive color (:1841) |
+| `azure-switch-production.sh`| flip the LB to the new color (:1840), auto-rollback |
 | `db-backup.sh`              | pg_dump the shared DB, prune, optional offsite     |
 | `db-restore.sh`             | restore a dump (path-guarded, active-color gated)  |
 | `db-validate.sh`            | prove a dump restores + matches live (scratch DB)  |

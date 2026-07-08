@@ -150,7 +150,7 @@ CLI):
 1. Merge/fast-forward `rebuild` into `main` (or make `rebuild` the new `main`).
 2. Push; swap the default branch on GitHub.
 3. Optionally rename the repo to drop "OVERNIGHT"; decide re-public.
-4. Deploy to dad's home Postgres + serve via the Cloudflare Tunnel.
+4. Deploy to the self-hosted Postgres on this PC + serve via the Cloudflare Tunnel.
 
 ### 7a. Production auth provisioning (Login pass — do this at deploy)
 
@@ -182,7 +182,7 @@ The login is the public gate, so the prod box must be set up deliberately:
 - **FU-NF-43 (c)** — confirmed here: the route suites run green under Docker.
 - The §3 Vision smoke case (above).
 
-## 8. Deploy stand-up (Docker finalize — blue/green on dad's server)
+## 8. Deploy stand-up (Docker finalize — blue/green on the self-hosted host)
 
 This section exercises the `Deploy/` blue/green stack for real (it is
 correct-by-construction in the build env — no Docker daemon here). Run it on the
@@ -191,17 +191,12 @@ for the threat model.
 
 ### 8.1 Pre-flight (before the first deploy)
 
-**HARD GATE — production approval check (P-SF1).** Before the first pipeline run,
-confirm the `km-production` Azure DevOps Environment has **at least one approval
-check with ≥1 approver**. The pipeline YAML cannot enforce this: the approval is a
-property of the Environment object (Azure UI), and Stage 2 (deploy-to-inactive) is
-intentionally ungated. If `km-production` has no approval, Stage 3
-(`SwitchToProduction`) flips production **unattended** — that approval is the only
-human gate between an auto-deploy and a prod flip.
-
-- [ ] **Operator MUST verify:** *Pipelines → Environments → `km-production` →
-  Approvals and checks* lists an **Approvals** check with one or more approvers.
-  Do NOT proceed to the first real run until this box is checked.
+The production flip is a **manual operator step** — a human runs
+`azure-switch-production.sh` on the host — so there is no unattended pipeline to
+gate. `azure-deploy-inactive.sh` only ever touches the idle color and the test
+port (`:1841`); production (`:1840`) changes only when someone deliberately runs
+the switch. (There is no CI/CD system or Azure DevOps in the path, despite the
+`azure-*` script names — see `Deploy/README.md`.)
 
 ```bash
 # Shared volumes + networks exist (idempotent).

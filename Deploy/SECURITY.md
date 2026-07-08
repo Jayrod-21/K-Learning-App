@@ -1,9 +1,9 @@
 # Korean Master — Deploy Security (threat model)
 
-Scope: the **production deployment surface** — the blue/green Docker stack, the
-Azure pipeline, secret handling, the backup/restore tooling, and the
-self-hosted agent. Application-level threats (auth, input validation, the Claude
-proxy) are covered in `server/SECURITY.md`, `client/SECURITY.md`, and
+Scope: the **production deployment surface** — the blue/green Docker stack on
+the self-hosted host, secret handling, the backup/restore tooling, and the
+manually-run deploy scripts. Application-level threats (auth, input validation,
+the Claude proxy) are covered in `server/SECURITY.md`, `client/SECURITY.md`, and
 `db/SECURITY.md`; this document covers what the *deploy* adds or exposes.
 
 Per the project's standing order, each surface is enumerated as **attack vector
@@ -26,36 +26,32 @@ the gate, and the load balancer (`km-lb`) is the **only** public ingress.
 * **Vector:** the test port (1841) is used to reach an unreleased/unapproved
   build in production.
   **Defense:** 1841 serves the *inactive* color for pre-switch validation only;
-  it requires the same app login. Promotion to 1840 requires the manual-approval
-  gate on the `km-production` Azure Environment.
+  it requires the same app login. Promotion to 1840 is a deliberate manual step
+  — an operator runs `azure-switch-production.sh`; nothing flips production
+  automatically.
 
 ---
 
-## 2. Secret handling (D2 hybrid)
+## 2. Secret handling
 
 Secrets: `POSTGRES_PASSWORD`, `ANTHROPIC_API_KEY`, `TOTP_SECRET_ENC_KEY` (and
 the composed `DATABASE_URL`).
 
 * **Vector:** secrets committed to git.
   **Defense:** the runtime `.env` is gitignored. `Deploy/.env.example` ships
-  **placeholders only**. CI's secret-scan step (`ci.yml` "Check for committed
-  secrets") fails the build on a literal `ANTHROPIC_API_KEY=sk-…`. No real
-  `sk-ant-` key and no real base64 key appears anywhere in this directory.
-* **Vector:** secrets leak into CI logs.
-  **Defense:** the three secrets are **secret pipeline variables** — Azure
-  auto-masks them in logs. The deploy step receives them as `env:` and pipes
-  them straight into `save_env_var`, which writes the `.env` line **without
-  echoing the value**. No deploy script ever `echo`s a secret; the reference
-  example's `echo "DATABASE_PASSWORD"` debug line was deliberately **not**
-  carried over.
-* **Vector:** the `.env` is world-readable on the server.
-  **Defense:** it is `chmod 0600`, owned by the deploy user. `save_env_var` is
-  expected to preserve those perms (Builder B owns the function; the contract
-  pins "never logs the value").
+  **placeholders only**. CI's `gitleaks` job fails the build on a committed
+  secret (e.g. a literal `sk-ant-…` key). No real key appears anywhere in this
+  directory.
+* **Vector:** secrets leak into logs.
+  **Defense:** the three secrets live **only** in the host `.env`; no deploy
+  script ever `echo`s a secret value (the reference example's
+  `echo "DATABASE_PASSWORD"` debug line was deliberately **not** carried over).
+* **Vector:** the `.env` is world-readable on the host.
+  **Defense:** it is `chmod 0600`, owned by the deploy user.
 * **Vector:** a stale secret lingers after rotation.
-  **Defense:** every deploy run rewrites the three `.env` secret lines from the
-  Azure variables, so rotating in Azure + re-running the pipeline refreshes the
-  server. `save_env_var` is idempotent (update-in-place, not append-duplicate).
+  **Defense:** rotation is a single edit-in-place of the `.env` line followed by
+  restarting the active color — there is no second copy of the secret (no CI
+  variable store) that could drift out of sync.
 
 ---
 
@@ -122,8 +118,8 @@ the composed `DATABASE_URL`).
 * **Vector:** off-site copies leak the dataset.
   **Defense:** off-site is opt-in (`BACKUP_OFFSITE_DIR`); when unset we log
   "offsite skipped — pending Q-BACKUP" rather than silently doing nothing.
-  **OPEN ITEM (Q-BACKUP):** off-site **encryption-at-rest** is pending dad's
-  decision. Until answered, the off-site destination is assumed to be an
+  **OPEN ITEM (Q-BACKUP):** off-site **encryption-at-rest** is pending an
+  operator decision. Until answered, the off-site destination is assumed to be an
   already-encrypted target (encrypted external volume or an `rclone crypt`
   remote). Do not point `BACKUP_OFFSITE_DIR` at an unencrypted cloud bucket.
 * **Vector:** a backup silently rots and won't restore when needed.
@@ -176,48 +172,46 @@ the composed `DATABASE_URL`).
 
 ---
 
-## 9. Image provenance (tar artifacts, no registry)
+## 9. Image provenance (built locally, no registry)
 
 * **Vector:** a poisoned image is pulled from a compromised public registry.
-  **Defense:** images are **built in CI from this repo** and delivered as
-  `docker save` **tar artifacts** that the self-hosted agent `docker load`s.
-  There is no external registry in the path, no registry credentials to steal,
-  and the image bytes are produced by the same pipeline that ran the tests.
+  **Defense:** images are **built on the host from this repo checkout** by
+  `local-build.sh`, straight into the local Docker image store. There is no
+  external registry in the path and no registry credentials to steal.
 * **Vector:** the wrong image version is deployed.
-  **Defense:** all three images carry the same `$(Build.BuildId)` tag, and the
-  deploy/switch scripts take that exact tag as their argument and pin the color
-  trio to it.
+  **Defense:** `local-build.sh` tags all five images with the same tag (a git
+  short SHA for a real release), and the deploy/switch scripts take that exact
+  tag as their argument and pin the color trio to it.
 
 ---
 
-## 10. Self-hosted agent blast radius
+## 10. Deploy host blast radius
 
-The DeployToInactive and SwitchToProduction stages run on a **self-hosted Azure
-agent on dad's server** with access to the host Docker daemon.
+Builds and deploys are run **by hand on the host** by an operator with access to
+the host Docker daemon. There is no CI/CD agent — the deploy scripts execute
+directly in the operator's shell.
 
-* **Vector:** a malicious PR runs arbitrary code on the build/deploy agent.
-  **Defense:** the deploy pipeline is `pr: none` (PRs run only in GitHub Actions
-  hosted runners, which have no access to the server). The self-hosted stages
-  run only on pushes to `main` (post-merge), and the production switch is behind
-  a **manual-approval** Environment check.
-* **Vector:** the agent's Docker socket access is leveraged to escape onto the
-  host.
-  **Defense:** scope is acknowledged and minimized — the agent runs only the
-  deploy scripts in this directory; secrets reach it as masked variables and are
-  written `0600`; `cleanup.sh` prunes images/containers but **preserves named
-  volumes** so a buggy cleanup can't delete the DB. Treat the agent host as part
-  of the trust boundary: keep it patched and off shared accounts. (Running the
-  agent as a non-root user in the `docker` group is the documented baseline; a
-  rootless-Docker or socket-proxy hardening is a known future improvement.)
+* **Vector:** untrusted code from a PR runs against the host during a deploy.
+  **Defense:** PR CI runs only in **GitHub Actions hosted runners**, which have
+  no access to this host. Nothing deploys automatically: an operator pulls the
+  merged `rebuild` branch and runs the scripts deliberately, so only reviewed,
+  merged code is ever built and deployed here.
+* **Vector:** the operator's Docker access is leveraged to escape onto the host.
+  **Defense:** scope is acknowledged and minimized — the deploy scripts only
+  build/run this project's compose stack; secrets stay in the `0600` `.env`;
+  `cleanup.sh` prunes images/containers but **preserves named volumes** so a
+  buggy cleanup can't delete the DB. Treat the host as part of the trust
+  boundary: keep it patched and off shared accounts. (Running Docker rootless or
+  behind a socket proxy is a known future hardening.)
 
 ---
 
 ## Residual risks / open items
 
 * **Q-BACKUP** — off-site encryption-at-rest policy (§6). Tooling is
-  parametrized and ready; the destination/crypto choice is dad's call. Not a
-  deploy blocker.
-* **Self-hosted agent isolation** (§10) — rootless Docker / socket proxy is a
-  future hardening, not yet applied.
+  parametrized and ready; the destination/crypto choice is an operator call.
+  Not a deploy blocker.
+* **Deploy host isolation** (§10) — rootless Docker / socket proxy is a future
+  hardening, not yet applied.
 * **Dump trust** (§8) — restoring an untrusted dump is a deliberate operator
   action with documented risk, not a technical sandbox.
