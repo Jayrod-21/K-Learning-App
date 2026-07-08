@@ -438,6 +438,50 @@ def test_discover_accepts_comment_begin(migrations_dir: pathlib.Path) -> None:
     migrate.discover_migrations(migrations_dir)
 
 
+def test_discover_accepts_tx_word_in_string_literal(migrations_dir: pathlib.Path) -> None:
+    """A transaction-control keyword appearing only as prose inside a single-
+    quoted string literal — e.g. a `COMMENT ON ... IS '... after the DB commit
+    ...'` — must not trip the detector. Regression for migration 041, whose
+    COMMENT string contained the bare word "commit,"; the runner's noise
+    stripper now strips single-quoted literals before matching."""
+    write_pair(
+        migrations_dir,
+        "001",
+        "tx_word_in_string_ok",
+        up=(
+            "CREATE TABLE tx_string_demo (id BIGINT PRIMARY KEY);\n"
+            "COMMENT ON TABLE tx_string_demo IS\n"
+            "    'Rows are cleaned up after the DB commit, since file deletion '\n"
+            "    'is not transactional; a rollback would otherwise orphan them. '\n"
+            "    'Levels: beginner, intermediate.';"
+        ),
+        down="DROP TABLE IF EXISTS tx_string_demo;",
+    )
+    # Must not raise.
+    migrate.discover_migrations(migrations_dir)
+
+
+def test_discover_still_rejects_real_commit_despite_string_literal(
+    migrations_dir: pathlib.Path,
+) -> None:
+    """Stripping string literals must NOT create a false negative: a genuine
+    top-level COMMIT is still rejected even when a string literal elsewhere in
+    the file also contains the word "commit"."""
+    write_pair(
+        migrations_dir,
+        "001",
+        "real_commit_still_bad",
+        up=(
+            "CREATE TABLE tx_fn_demo (id BIGINT PRIMARY KEY);\n"
+            "COMMENT ON TABLE tx_fn_demo IS 'written on each commit, by design';\n"
+            "COMMIT;"
+        ),
+        down="DROP TABLE IF EXISTS tx_fn_demo;",
+    )
+    with pytest.raises(migrate.TxControlInMigration):
+        migrate.discover_migrations(migrations_dir)
+
+
 # ---------------------------------------------------------------------------
 # Connection settings (SF1)
 # ---------------------------------------------------------------------------
