@@ -1,245 +1,346 @@
 /**
- * UploadViewer — `/uploads/:id`, the U1b VIEW-ONLY PDF viewer
- * (`db/docs/PDF_UPLOAD_DESIGN.md` §"U1 → U1b client"). Renders the uploaded
- * PDF page-by-page from `GET /uploads/:id/file` via `pdfjs-dist`, with page
- * navigation and a zoom/fit control. NO text or annotation layer is
- * mounted — only the page's `<canvas>` bitmap renders — so there is nothing
- * to select, highlight, or edit; this is a read surface, not an editor.
+ * UploadViewer — `/uploads/:id`, the U1b VIEW-ONLY PAGE-IMAGE viewer
+ * (`db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION" — authoritative). Renders the
+ * uploaded book page-by-page as plain `<img>` bitmaps fetched from
+ * `GET /uploads/:id/page/:n`; NO pdf.js, NO canvas rasterization — the
+ * server already normalized the zip/PDF into ordered page images at upload
+ * time, so the viewer's only job is "show page N of M, lazily."
  *
- * pdf.js + Vite wiring (the part that has to survive a PRODUCTION build, not
- * just dev — verified via `npm run build`):
- *   - The worker script MUST be bundled, never CDN-fetched: this app runs
- *     behind an offline-capable PWA shell (vite.config.ts's Workbox
- *     precache) and a strict CSP, so a runtime `cdn.jsdelivr.net`/unpkg
- *     fetch would be blocked online and simply absent offline.
- *     `import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'`
- *     is Vite's asset-URL import form — Vite copies the worker file into
- *     `dist/assets/` at build time (content-hashed filename) and resolves
- *     the import to that final same-origin URL string. No network fetch at
- *     import time, no CDN dependency, ever.
- *   - `GlobalWorkerOptions.workerSrc` is set ONCE at module scope (below),
- *     not per-render, so every document load in the app shares the one
- *     worker configuration — matches pdf.js's own recommended pattern.
- *   - We never override pdf.js's safe `isEvalSupported` default — a scanned
- *     PDF's embedded JS (if any) never executes.
+ * Why an `<img>`, not pdf.js (the model this replaces): pdf.js needed a
+ * bundled worker + `withCredentials` fetch + its own render-cancellation
+ * discipline because it was rasterizing PDF bytes client-side. A page image
+ * is already a JPEG — the browser's native image loader does all of that for
+ * free. A same-origin `<img src>` sends the session cookie automatically (no
+ * `withCredentials` equivalent needed — that flag only matters for
+ * fetch/XHR), and there is nothing to cancel: reassigning/removing an `<img>`
+ * lets the browser abandon the in-flight request on its own.
  *
- * Progressive rendering (big-PDF judgment call — flag for /fixpass): U1's
- * "a handful of books, 200–300pp, hand-scanned" volume (design doc) makes
- * full virtualized multi-page scroll overkill for v1. We render exactly ONE
- * page's canvas at a time (paged nav, not infinite-scroll): a 300-page PDF
- * therefore costs one page's raster work per nav tap, never blocking the
- * main thread rasterizing the other 299. A virtualized continuous-scroll
- * viewer is a reasonable follow-up if usage shows a preference for that over
- * paged nav.
+ * Lazy by construction: only the CURRENT page's `<img>` is ever mounted (plus
+ * a fire-and-forget prefetch of the next page, matching Jared's "500-page
+ * book" sample) — a 500-page book therefore costs ~1-2 image fetches per nav
+ * tap, never all 500 at once. Per-page load/error state is owned by
+ * `PageImage` below and keyed by `${pageNum}-${retryToken}`, so a page
+ * navigation OR a retry both cleanly remount a fresh `<img>` (fresh
+ * `loading` state, fresh network request) rather than needing an effect to
+ * reset anything.
  *
- * Cancellation: pdf.js's own `RenderTask.cancel()` stops a fast page-flip or
- * zoom drag from racing two renders onto the same canvas (pdf.js throws if a
- * second render starts before the first finishes) — the render-cancellation
- * analogue of the `AbortController` discipline the rest of the app uses for
- * network calls (F-016/Slice-2). The document + loading task are destroyed
- * on unmount / id change / retry so worker-side resources never leak across
- * navigations, and every async continuation is guarded against a stale `id`
- * or an unmounted component before touching state.
+ * Reorder tool (Jared: vFlat retakes can land out of order — design doc
+ * REVISION): a "Reorder pages" mode with a numeric "move page N to position"
+ * control (keyboard-operable by construction — a plain labelled
+ * `<input type="number">` + button, no pointer-only drag required to operate
+ * it). Optimistic: the local page order updates immediately (so the viewer
+ * reflects the move without waiting on the network), then
+ * `PATCH /uploads/:id/pages/order` confirms it; a failure rolls the local
+ * order back and toasts fixed copy (never echoed server prose).
+ *
+ * KNOWN CROSS-AGENT CONTRACT GAP: the reorder tool needs each page's stable
+ * DB id (not just its display number) to submit a valid full-order PATCH —
+ * see `services/uploads.ts`'s header for why `listPages` (`GET
+ * /uploads/:id/pages`) does not exist on the server commit this was built
+ * against. The reorder UI below is complete and correct against the
+ * documented `page_ids` contract, but its initial "load current order" step
+ * will 404 until that route (or an equivalent) lands server-side.
+ *
+ * Abort discipline: `getUpload` (meta), `listPages` (reorder's page-id list),
+ * and `reorderPages` (the PATCH) are the only network calls this component
+ * makes directly, and each threads its own `AbortController` + checks
+ * `signal.aborted` before every state write after an `await`/`.then` —
+ * mirrors `pages/Uploads.tsx`'s pattern. The per-page `<img>` itself needs no
+ * such guard (see above — nothing to leak once the DOM node is gone).
  */
 import {
   useCallback,
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
+  type CSSProperties,
   type JSX,
 } from 'react';
 import { useParams } from 'react-router-dom';
-import {
-  getDocument,
-  GlobalWorkerOptions,
-  RenderingCancelledException,
-} from 'pdfjs-dist';
-import type {
-  PDFDocumentLoadingTask,
-  PDFDocumentProxy,
-  RenderTask,
-} from 'pdfjs-dist';
-// Vite asset-URL import (`?url`) — see the header doc for why this MUST be
-// a bundled file, never a CDN string.
-import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
 import { Icon } from '../components/Icon';
 import { Topbar } from '../components/Topbar';
-import { getUpload, pdfFileUrl } from '../services/uploads';
-
-// Module scope, once — every document load in the app shares this worker.
-GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
+import { useToast } from '../components/useToast';
+import { errorMessageFor } from '../lib/errorCopy';
+import { ApiError } from '../services/api';
+import { getUpload, listPages, pageUrl, reorderPages } from '../services/uploads';
+import type { BookUpload, Page } from '../types/domain';
 
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 2.5;
 const SCALE_STEP = 0.25;
 const DEFAULT_SCALE = 1;
 
-type LoadState = 'loading' | 'ready' | 'error';
+type MetaState = 'loading' | 'ready' | 'error';
+type PagesState = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * One page's `<img>`, own load/error/retry state. Keyed by the parent on
+ * `${pageNumber}-${retryToken}` — a page nav OR a retry both remount this
+ * component fresh, so `status` always starts at `'loading'` for whatever is
+ * currently being requested; no effect needed to "reset" anything.
+ */
+function PageImage({
+  src,
+  alt,
+  style,
+  onRetry,
+}: {
+  src: string;
+  alt: string;
+  style: CSSProperties;
+  onRetry: () => void;
+}): JSX.Element {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+
+  if (status === 'error') {
+    return (
+      <ErrorCard
+        message="Couldn’t load this page. Try again."
+        onRetry={onRetry}
+      />
+    );
+  }
+
+  return (
+    <>
+      {status === 'loading' ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual en="Loading this page…" kr="이 페이지를 불러오는 중…" />
+        </div>
+      ) : null}
+      <img
+        src={src}
+        alt={alt}
+        style={{ ...style, display: status === 'loaded' ? style.display ?? 'block' : 'none' }}
+        onLoad={() => {
+          setStatus('loaded');
+        }}
+        onError={() => {
+          setStatus('error');
+        }}
+      />
+    </>
+  );
+}
 
 export default function UploadViewer(): JSX.Element {
   const { id } = useParams<{ id: string }>();
-  const [title, setTitle] = useState<string | null>(null);
-  const [state, setState] = useState<LoadState>('loading');
-  const [numPages, setNumPages] = useState(0);
+  const { toast } = useToast();
+
+  const [meta, setMeta] = useState<BookUpload | null>(null);
+  const [metaState, setMetaState] = useState<MetaState>('loading');
   const [pageNum, setPageNum] = useState(1);
+  const [jumpValue, setJumpValue] = useState('');
   const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [fit, setFit] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const docRef = useRef<PDFDocumentProxy | null>(null);
-  const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
-  const renderTaskRef = useRef<RenderTask | null>(null);
-  // Guards every async settle against a stale `id` (route param changed
-  // without unmounting this component instance) or a real unmount.
-  const aliveRef = useRef(true);
+  const [reorderOpen, setReorderOpen] = useState(false);
+  const [pages, setPages] = useState<Page[] | null>(null);
+  const [pagesState, setPagesState] = useState<PagesState>('idle');
+  const [moveTarget, setMoveTarget] = useState('');
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
 
-  /** Tear down whatever pdf.js resources are currently held, if any. Called
-   *  both from `load()` (so a manual retry / id-change never leaks the
-   *  PREVIOUS attempt's doc/task) and from the mount effect's cleanup. */
-  const teardown = useCallback((): void => {
-    renderTaskRef.current?.cancel();
-    renderTaskRef.current = null;
-    loadingTaskRef.current?.destroy();
-    loadingTaskRef.current = null;
-    const doc = docRef.current;
-    docRef.current = null;
-    if (doc) void doc.destroy();
-  }, []);
+  const metaCtrlRef = useRef<AbortController | null>(null);
+  const pagesCtrlRef = useRef<AbortController | null>(null);
+  const reorderCtrlRef = useRef<AbortController | null>(null);
 
-  const load = useCallback((): void => {
-    teardown();
+  const pageCount = meta?.pageCount;
+
+  const loadMeta = useCallback((): void => {
     if (!id) {
-      setState('error');
+      setMetaState('error');
       return;
     }
-    setState('loading');
-    setNumPages(0);
+    const ctrl = new AbortController();
+    metaCtrlRef.current?.abort();
+    metaCtrlRef.current = ctrl;
+    setMetaState('loading');
     setPageNum(1);
-    setTitle(null);
-
-    // Best-effort title fetch — a failure here never blocks the PDF itself
-    // (the header just falls back to a generic label).
-    getUpload(id)
+    getUpload(id, ctrl.signal)
       .then((upload) => {
-        if (!aliveRef.current) return;
-        setTitle(upload.title);
+        if (ctrl.signal.aborted) return;
+        setMeta(upload);
+        setMetaState('ready');
       })
-      .catch(() => {
-        // Fixed fallback title renders in the header; nothing else to do.
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setMetaState('error');
       });
-
-    const loadingTask = getDocument({
-      url: pdfFileUrl(id),
-      // The PDF route is authed via the session cookie, not a bearer token —
-      // pdf.js does its own fetch/XHR outside axios, so it needs this flag
-      // to actually send the cookie (mirrors `withCredentials: true` on the
-      // shared axios instance in services/api.ts).
-      withCredentials: true,
-    });
-    loadingTaskRef.current = loadingTask;
-
-    loadingTask.promise
-      .then((doc) => {
-        if (!aliveRef.current || loadingTaskRef.current !== loadingTask) {
-          void doc.destroy();
-          return;
-        }
-        docRef.current = doc;
-        setNumPages(doc.numPages);
-        setState('ready');
-      })
-      .catch(() => {
-        if (!aliveRef.current || loadingTaskRef.current !== loadingTask) return;
-        setState('error');
-      });
-  }, [id, teardown]);
+  }, [id]);
 
   useEffect(() => {
-    aliveRef.current = true;
-    // Sync-to-external-system case (mirrors AuthProvider's session probe):
-    // there's no way to know what's in a given PDF without asking the
-    // server for its bytes, so kicking off the load from an effect (keyed on
-    // `id`) is the correct place, not something to hoist out of an effect.
+    // Sync-to-external-system case (mirrors the old pdf.js viewer's mount
+    // effect, and Uploads.tsx's own `load` effect): there's no way to know
+    // this upload's metadata without asking the server, so kicking off the
+    // fetch from an effect keyed on `id` is the correct place, not something
+    // to hoist out of an effect. `eslint-plugin-react-hooks`'s
+    // `set-state-in-effect` rule flags the indirection through `loadMeta()`
+    // here even though it does not trip on the structurally-identical
+    // `load()` call in Uploads.tsx (a same-file quirk of the rule's
+    // heuristic, not a real hazard — `loadMeta` guards every state write
+    // after its `await` on `ctrl.signal.aborted`, same as `load` does).
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
+    loadMeta();
     return () => {
-      aliveRef.current = false;
-      teardown();
+      metaCtrlRef.current?.abort();
     };
-  }, [load, teardown]);
+  }, [loadMeta]);
 
-  // Render the current page whenever the doc/page/scale changes. Cancels
-  // any in-flight render first (see the header doc on why).
-  const renderPage = useCallback(async (): Promise<void> => {
-    const doc = docRef.current;
-    const canvas = canvasRef.current;
-    if (!doc || !canvas) return;
-
-    renderTaskRef.current?.cancel();
-    try {
-      const page = await doc.getPage(pageNum);
-      if (!aliveRef.current || docRef.current !== doc) return;
-      const viewport = page.getViewport({ scale });
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-
-      const task = page.render({ canvas, viewport });
-      renderTaskRef.current = task;
-      await task.promise;
-      if (renderTaskRef.current === task) renderTaskRef.current = null;
-    } catch (err) {
-      if (!aliveRef.current || docRef.current !== doc) return;
-      // A cancelled render (fast page-flip / zoom drag) throws pdf.js's own
-      // cancellation exception — the EXPECTED result of `.cancel()` above,
-      // not a real failure. Only a genuine render error flips to the error
-      // state; a cancellation must not blank a perfectly good document.
-      if (err instanceof RenderingCancelledException) return;
-      setState('error');
-    }
-  }, [pageNum, scale]);
-
+  // Abort any still-pending reorder-related requests on unmount.
   useEffect(() => {
-    if (state !== 'ready') return;
-    // Sync-to-external-system case — same reasoning as the load effect
-    // above: rasterizing the current page is a canvas side-effect driven by
-    // React state (doc/page/scale), not something to compute inline.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void renderPage();
-  }, [state, renderPage]);
+    return () => {
+      pagesCtrlRef.current?.abort();
+      reorderCtrlRef.current?.abort();
+    };
+  }, []);
 
-  const goPrev = (): void => {
-    setPageNum((p) => Math.max(1, p - 1));
+  // Fire-and-forget prefetch of the NEXT page image only — never the whole
+  // book. No state is written here, so there is nothing to guard against a
+  // stale settle; the browser simply warms its own cache (or doesn't, if the
+  // component unmounts first — harmless either way).
+  useEffect(() => {
+    if (!id || !pageCount || pageNum >= pageCount) return;
+    const img = new Image();
+    img.src = pageUrl(id, pageNum + 1);
+  }, [id, pageNum, pageCount]);
+
+  const goToPage = (n: number): void => {
+    if (!pageCount) return;
+    const clamped = Math.max(1, Math.min(pageCount, n));
+    setPageNum(clamped);
+    setRetryToken(0);
   };
-  const goNext = (): void => {
-    setPageNum((p) => Math.min(numPages, p + 1));
+
+  const goPrev = (): void => goToPage(pageNum - 1);
+  const goNext = (): void => goToPage(pageNum + 1);
+
+  const submitJump = (): void => {
+    const n = Number(jumpValue);
+    if (!Number.isInteger(n)) return;
+    goToPage(n);
+    setJumpValue('');
   };
+
   const zoomIn = (): void => {
+    setFit(false);
     setScale((s) => Math.min(MAX_SCALE, Number((s + SCALE_STEP).toFixed(2))));
   };
   const zoomOut = (): void => {
+    setFit(false);
     setScale((s) => Math.max(MIN_SCALE, Number((s - SCALE_STEP).toFixed(2))));
   };
+  const fitWidth = (): void => {
+    setFit(true);
+  };
 
-  /** Fit the page to the container's current width. Best-effort — a failure
-   *  just leaves the current zoom level unchanged. */
-  const fitWidth = useCallback(async (): Promise<void> => {
-    const doc = docRef.current;
-    const container = containerRef.current;
-    if (!doc || !container || container.clientWidth <= 0) return;
-    try {
-      const page = await doc.getPage(pageNum);
-      if (!aliveRef.current || docRef.current !== doc) return;
-      const naturalWidth = page.getViewport({ scale: 1 }).width;
-      if (naturalWidth <= 0) return;
-      const target = container.clientWidth / naturalWidth;
-      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, Number(target.toFixed(2)))));
-    } catch {
-      // Best-effort — see doc above.
+  const loadPages = useCallback((): void => {
+    if (!id) return;
+    const ctrl = new AbortController();
+    pagesCtrlRef.current?.abort();
+    pagesCtrlRef.current = ctrl;
+    setPagesState('loading');
+    listPages(id, ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setPages(rows);
+        setPagesState('ready');
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setPagesState('error');
+      });
+  }, [id]);
+
+  const openReorder = (): void => {
+    setReorderOpen(true);
+    setMoveError(null);
+    if (pagesState === 'idle' || pagesState === 'error') {
+      loadPages();
     }
-  }, [pageNum]);
+  };
+  const closeReorder = (): void => {
+    setReorderOpen(false);
+    setMoveTarget('');
+    setMoveError(null);
+  };
+
+  const submitMove = (): void => {
+    if (!id || !pages) return;
+    const total = pages.length;
+    const target = Number(moveTarget);
+    if (!Number.isInteger(target) || target < 1 || target > total) {
+      setMoveError(`Enter a page number between 1 and ${String(total)}.`);
+      return;
+    }
+    const currentIndex = pageNum - 1;
+    const targetIndex = target - 1;
+    if (currentIndex < 0 || currentIndex >= total) return;
+    if (targetIndex === currentIndex) {
+      setMoveError(null);
+      setMoveTarget('');
+      return;
+    }
+
+    const previousPages = pages;
+    const previousPageNum = pageNum;
+
+    const reordered = [...pages];
+    const [moved] = reordered.splice(currentIndex, 1);
+    if (!moved) return;
+    reordered.splice(targetIndex, 0, moved);
+    const optimistic = reordered.map((p, i) => ({ id: p.id, pageNumber: i + 1 }));
+
+    // Optimistic: reflect the new order + jump to the moved page's new
+    // position immediately, before the server confirms.
+    setPages(optimistic);
+    setPageNum(targetIndex + 1);
+    setRetryToken(0);
+    setMoveTarget('');
+    setMoveError(null);
+    setReordering(true);
+
+    const ctrl = new AbortController();
+    reorderCtrlRef.current?.abort();
+    reorderCtrlRef.current = ctrl;
+
+    reorderPages(
+      id,
+      optimistic.map((p) => p.id),
+      ctrl.signal,
+    )
+      .then((serverPages) => {
+        if (ctrl.signal.aborted) return;
+        setPages(serverPages);
+        setReordering(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        // Rollback — the optimistic move didn't stick server-side.
+        setPages(previousPages);
+        setPageNum(previousPageNum);
+        setReordering(false);
+        toast({
+          message: errorMessageFor(err, 'Could not move that page. Try again.'),
+          tone: 'error',
+        });
+      });
+  };
+
+  const title = meta?.title ?? 'Book';
+  const canView = metaState === 'ready' && meta?.status === 'ready' && !!pageCount && pageCount > 0;
+
+  const imgStyle: CSSProperties = fit
+    ? { width: '100%', height: 'auto', maxWidth: '100%' }
+    : { width: 'auto', height: 'auto', maxWidth: 'none', transform: `scale(${String(scale)})`, transformOrigin: 'top left' };
 
   return (
     <section
@@ -247,20 +348,26 @@ export default function UploadViewer(): JSX.Element {
       aria-labelledby="km-upload-viewer-title"
     >
       <Topbar
-        krTitle="PDF"
-        title={title ?? 'PDF'}
+        krTitle={title}
+        title={title}
         titleId="km-upload-viewer-title"
-        eyebrow={<Bilingual en="View-only PDF" kr="PDF 보기 전용" />}
+        eyebrow={<Bilingual en="View-only" kr="보기 전용" />}
       />
 
-      {state === 'loading' ? (
+      {metaState === 'loading' ? (
         <div className="km-grammar__state" role="status">
-          <Bilingual en="Loading the PDF…" kr="PDF를 불러오는 중…" />
+          <Bilingual en="Loading this book…" kr="책 정보를 불러오는 중…" />
         </div>
-      ) : state === 'error' ? (
+      ) : metaState === 'error' ? (
+        <ErrorCard message="Couldn’t load this book. Try again." onRetry={loadMeta} />
+      ) : !canView ? (
         <ErrorCard
-          message="Couldn’t load this PDF. Try again."
-          onRetry={load}
+          message={
+            meta?.status === 'failed'
+              ? 'This upload failed to process and has no viewable pages.'
+              : 'This upload is still processing — check back shortly.'
+          }
+          onRetry={loadMeta}
         />
       ) : (
         <>
@@ -284,58 +391,151 @@ export default function UploadViewer(): JSX.Element {
               <Icon name="chevron-left" size={14} />
             </Button>
             <span className="km-resources__pager-count" aria-live="polite">
-              {pageNum} / {numPages || 1}
+              {pageNum} / {pageCount}
             </span>
             <Button
               variant="ghost"
               size="sm"
               onClick={goNext}
-              disabled={pageNum >= numPages}
+              disabled={!pageCount || pageNum >= pageCount}
               aria-label="Next page"
             >
               <Icon name="chevron-right" size={14} />
             </Button>
+
+            <input
+              id="km-upload-jump"
+              type="number"
+              min={1}
+              max={pageCount}
+              value={jumpValue}
+              placeholder="Page #"
+              className="km-field__input"
+              style={{ width: 84 }}
+              aria-label="Jump to page"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                setJumpValue(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitJump();
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={submitJump}
+              disabled={jumpValue.trim() === ''}
+              aria-label="Go"
+            >
+              <Bilingual en="Go" kr="이동" compact />
+            </Button>
+
             <Button
               variant="ghost"
               size="sm"
               onClick={zoomOut}
-              disabled={scale <= MIN_SCALE}
+              disabled={fit || scale <= MIN_SCALE}
               aria-label="Zoom out"
             >
               −
             </Button>
             <span className="km-resources__pager-count">
-              {Math.round(scale * 100)}%
+              {fit ? 'Fit' : `${String(Math.round(scale * 100))}%`}
             </span>
             <Button
               variant="ghost"
               size="sm"
               onClick={zoomIn}
-              disabled={scale >= MAX_SCALE}
+              disabled={fit || scale >= MAX_SCALE}
               aria-label="Zoom in"
             >
               +
             </Button>
+            <Button variant="ghost" size="sm" onClick={fitWidth}>
+              <Bilingual en="Fit width" kr="너비 맞춤" compact />
+            </Button>
+
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
-                void fitWidth();
-              }}
+              onClick={reorderOpen ? closeReorder : openReorder}
+              aria-pressed={reorderOpen}
+              aria-label={reorderOpen ? 'Done reordering' : 'Reorder pages'}
             >
-              <Bilingual en="Fit width" kr="너비 맞춤" compact />
+              <Bilingual
+                en={reorderOpen ? 'Done reordering' : 'Reorder pages'}
+                kr={reorderOpen ? '순서 편집 완료' : '페이지 순서 편집'}
+                compact
+              />
             </Button>
           </div>
+
+          {reorderOpen ? (
+            <div
+              className="km-upload-viewer__reorder"
+              role="group"
+              aria-label="Reorder pages controls"
+              style={{ padding: '8px 0' }}
+            >
+              {pagesState === 'loading' ? (
+                <div role="status">
+                  <Bilingual en="Loading page order…" kr="페이지 순서를 불러오는 중…" />
+                </div>
+              ) : pagesState === 'error' ? (
+                <ErrorCard message="Could not load page order. Try again." onRetry={loadPages} />
+              ) : pages ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <label htmlFor="km-move-to-page">
+                    <Bilingual
+                      en={`Move page ${String(pageNum)} to position`}
+                      kr={`${String(pageNum)}페이지를 다음 위치로 이동`}
+                      compact
+                    />
+                  </label>
+                  <input
+                    id="km-move-to-page"
+                    type="number"
+                    min={1}
+                    max={pages.length}
+                    value={moveTarget}
+                    className="km-field__input"
+                    style={{ width: 84 }}
+                    aria-label={`Move page ${String(pageNum)} to position`}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                      setMoveTarget(e.target.value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') submitMove();
+                    }}
+                  />
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    onClick={submitMove}
+                    disabled={reordering || moveTarget.trim() === ''}
+                    aria-busy={reordering}
+                    aria-label="Move"
+                  >
+                    <Bilingual en="Move" kr="이동" compact />
+                  </Button>
+                  {moveError ? <ErrorCard message={moveError} /> : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div
-            ref={containerRef}
             className="km-upload-viewer__page"
             style={{ overflow: 'auto', width: '100%' }}
           >
-            {/* View-only: no text/annotation layer is mounted, only the
-                rasterized bitmap — nothing here is selectable or editable. */}
-            <canvas
-              ref={canvasRef}
-              aria-label={`Page ${String(pageNum)} of ${title ?? 'this PDF'}`}
+            <PageImage
+              key={`${String(pageNum)}-${String(retryToken)}`}
+              src={id ? pageUrl(id, pageNum) : ''}
+              alt={`Page ${String(pageNum)} of ${title}`}
+              style={imgStyle}
+              onRetry={() => {
+                setRetryToken((t) => t + 1);
+              }}
             />
           </div>
         </>

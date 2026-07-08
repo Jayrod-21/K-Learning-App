@@ -128,14 +128,16 @@ export default function App(): JSX.Element {
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
-                    {/* U1b — PDF book-upload feature. `/uploads` is BOTH a
-                        client route (this list) AND an API prefix
-                        (`GET /uploads`, `POST /uploads`, …); the nginx
-                        Accept-header split routes browser navigation here to
-                        the SPA while the page's own XHR/fetch calls hit the
-                        server — no redirect needed (see
+                    {/* U1b — page-image book-upload feature (zip-of-images or
+                        PDF, normalized server-side into ordered page
+                        images). `/uploads` is BOTH a client route (this
+                        list) AND an API prefix (`GET /uploads`,
+                        `POST /uploads`, …); the nginx Accept-header split
+                        routes browser navigation here to the SPA while the
+                        page's own XHR/fetch calls hit the server — no
+                        redirect needed (see
                         [[km-nginx-api-route-allowlist]]). `/uploads/:id` is
-                        the view-only PDF viewer; it isn't its own NavItem
+                        the view-only page viewer; it isn't its own NavItem
                         (dynamic detail view, same convention as Images'
                         capture view). */}
                     <Route path="uploads" element={<Uploads />} />

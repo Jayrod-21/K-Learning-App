@@ -1,5 +1,5 @@
 /**
- * Uploads (U1b) — `/uploads`, the front door for user-uploaded book PDFs.
+ * Uploads (U1b) — `/uploads`, the front door for user-uploaded books.
  *
  * Covers: list render (title/type/status pill/size+date), tap-a-row
  * navigation to the viewer (`/uploads/:id`), confirm-gated delete (cancel
@@ -23,8 +23,10 @@ const uploadsSvc = vi.hoisted(() => ({
   deleteUpload: vi.fn(),
   uploadBook: vi.fn(),
   getUpload: vi.fn(),
-  pdfFileUrl: vi.fn((id: string) => `/uploads/${id}/file`),
-  checkPdfFile: vi.fn(() => null as string | null),
+  listPages: vi.fn(),
+  reorderPages: vi.fn(),
+  pageUrl: vi.fn((id: string, n: number) => `/uploads/${id}/page/${String(n)}`),
+  checkBookFile: vi.fn(() => null as string | null),
 }));
 
 vi.mock('../services/uploads', () => uploadsSvc);
@@ -74,11 +76,11 @@ beforeEach(() => {
   uploadsSvc.deleteUpload.mockReset();
   uploadsSvc.uploadBook.mockReset();
   uploadsSvc.getUpload.mockReset();
-  uploadsSvc.checkPdfFile.mockReset();
+  uploadsSvc.checkBookFile.mockReset();
 
   uploadsSvc.listUploads.mockResolvedValue([READY, PROCESSING]);
   uploadsSvc.deleteUpload.mockResolvedValue(undefined);
-  uploadsSvc.checkPdfFile.mockReturnValue(null);
+  uploadsSvc.checkBookFile.mockReturnValue(null);
 });
 
 afterEach(() => {

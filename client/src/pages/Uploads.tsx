@@ -1,8 +1,8 @@
 /**
- * Uploads — `/uploads`, the U1 "front door" for user-uploaded book PDFs
- * (`db/docs/PDF_UPLOAD_DESIGN.md` §"U1 → U1b client"). Lists every upload
- * (title, type, status pill, page count/size, date); tapping a row opens the
- * view-only PDF viewer at `/uploads/:id` (pages/UploadViewer.tsx); each row
+ * Uploads — `/uploads`, the U1 "front door" for user-uploaded books
+ * (`db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION"). Lists every upload (title,
+ * type, status pill, page count/size, date); tapping a row opens the
+ * view-only page viewer at `/uploads/:id` (pages/UploadViewer.tsx); each row
  * also carries a confirm-gated delete. Reachable from Settings → Uploads
  * ("See all uploads") — and IS where that Settings screen's own "Upload a
  * book" button's result shows up.
@@ -160,8 +160,8 @@ export default function Uploads(): JSX.Element {
       ) : rows.length === 0 ? (
         <p className="km-reference__empty">
           <Bilingual
-            en="No uploads yet. Upload a scanned book PDF to get started."
-            kr="아직 업로드가 없어요. 스캔한 책 PDF를 업로드해 보세요."
+            en="No uploads yet. Upload a scanned book (PDF or zip) to get started."
+            kr="아직 업로드가 없어요. 스캔한 책(PDF 또는 zip)을 업로드해 보세요."
           />
         </p>
       ) : (

@@ -1,12 +1,13 @@
 /**
- * UploadTypeModal (U1b) — the two-step upload flow: type chips → file +
- * title → `uploadBook`. Covers every type choosing the right service call,
- * the filename-default title (and that a manual edit isn't clobbered by
- * picking a new file), the client pre-check (non-PDF rejected before any
- * network call), success (`onUploaded` + `onClose`), a server failure
- * (fixed copy, modal stays open), and abort-on-close/unmount.
+ * UploadTypeModal (U1b, page-image rework) — the two-step upload flow: type
+ * chips → file + title → `uploadBook`. Covers every type choosing the right
+ * service call, the filename-default title (with `.pdf`/`.zip` stripped,
+ * and that a manual edit isn't clobbered by picking a new file), the client
+ * pre-check (a file that's neither a PDF nor a zip is rejected before any
+ * network call; a zip IS accepted), success (`onUploaded` + `onClose`), a
+ * server failure (fixed copy, modal stays open), and abort-on-close/unmount.
  *
- * `checkPdfFile` runs for REAL (not mocked) so the pre-check assertions
+ * `checkBookFile` runs for REAL (not mocked) so the pre-check assertions
  * exercise the actual validation logic, not a stand-in; only `uploadBook`
  * is replaced.
  */
@@ -46,6 +47,10 @@ function makePdfFile(name = 'my-book.pdf'): File {
 
 function makeJpegFile(name = 'photo.jpg'): File {
   return new File([new Uint8Array(10)], name, { type: 'image/jpeg' });
+}
+
+function makeZipFile(name = 'vflat-export.zip'): File {
+  return new File([new Uint8Array(1024)], name, { type: 'application/zip' });
 }
 
 /** Every TYPE_OPTIONS chip's rendered (default both-mode) accessible name. */
@@ -102,9 +107,9 @@ describe('UploadTypeModal — type step', () => {
       renderModal();
       const dialog = await screen.findByRole('dialog');
       await user.click(within(dialog).getByRole('button', { name: label }));
-      expect(within(dialog).getByText('PDF file')).toBeInTheDocument();
+      expect(within(dialog).getByText('Book file')).toBeInTheDocument();
       expect(
-        within(dialog).getByRole('button', { name: 'Choose a PDF…' }),
+        within(dialog).getByRole('button', { name: 'Choose a PDF or zip…' }),
       ).toBeInTheDocument();
     },
   );
@@ -114,7 +119,7 @@ describe('UploadTypeModal — type step', () => {
     renderModal();
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.vocab }));
-    expect(within(dialog).getByText('PDF file')).toBeInTheDocument();
+    expect(within(dialog).getByText('Book file')).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: /뒤로/ }));
     expect(within(dialog).getByRole('button', { name: TYPE_LABELS.vocab })).toBeInTheDocument();
@@ -128,11 +133,26 @@ describe('UploadTypeModal — file + title step', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
 
-    const fileInput = within(dialog).getByLabelText('PDF file') as HTMLInputElement;
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
     await user.upload(fileInput, makePdfFile('KGIU-Book.pdf'));
 
     const titleInput = within(dialog).getByLabelText('Title') as HTMLInputElement;
     expect(titleInput.value).toBe('KGIU-Book');
+  });
+
+  it('accepts a vFlat zip export (a zip of page images), stripping .zip from the default title', async () => {
+    const user = userEvent.setup();
+    renderModal();
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.vocab }));
+
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
+    await user.upload(fileInput, makeZipFile('2000-Essential-Words.zip'));
+
+    expect(screen.queryByText(/isn.t a PDF or a zip/)).not.toBeInTheDocument();
+    const titleInput = within(dialog).getByLabelText('Title') as HTMLInputElement;
+    expect(titleInput.value).toBe('2000-Essential-Words');
+    expect(within(dialog).getByRole('button', { name: '2000-Essential-Words.zip' })).toBeInTheDocument();
   });
 
   it('does not clobber a manually-edited title when a new file is picked', async () => {
@@ -141,7 +161,7 @@ describe('UploadTypeModal — file + title step', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
 
-    const fileInput = within(dialog).getByLabelText('PDF file') as HTMLInputElement;
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
     await user.upload(fileInput, makePdfFile('first.pdf'));
     const titleInput = within(dialog).getByLabelText('Title') as HTMLInputElement;
     await user.clear(titleInput);
@@ -164,13 +184,13 @@ describe('UploadTypeModal — file + title step', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.dialogue }));
 
-    const fileInput = within(dialog).getByLabelText('PDF file') as HTMLInputElement;
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
     await user.upload(fileInput, makeJpegFile());
 
     expect(await within(dialog).findByText(/isn.t a PDF/)).toBeInTheDocument();
     expect(uploadBook).not.toHaveBeenCalled();
     // No file accepted — the file-choose button still shows the placeholder.
-    expect(within(dialog).getByRole('button', { name: 'Choose a PDF…' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Choose a PDF or zip…' })).toBeInTheDocument();
   });
 
   it('submits (file, type, trimmed title, signal) and fires onUploaded + onClose on success', async () => {
@@ -180,7 +200,7 @@ describe('UploadTypeModal — file + title step', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.literature }));
 
-    const fileInput = within(dialog).getByLabelText('PDF file') as HTMLInputElement;
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
     const file = makePdfFile('novel.pdf');
     await user.upload(fileInput, file);
 
@@ -215,7 +235,7 @@ describe('UploadTypeModal — file + title step', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.vocab }));
     await user.upload(
-      within(dialog).getByLabelText('PDF file') as HTMLInputElement,
+      within(dialog).getByLabelText('Book file') as HTMLInputElement,
       makePdfFile(),
     );
     await user.click(within(dialog).getByRole('button', { name: /Upload/ }));
@@ -242,7 +262,7 @@ describe('UploadTypeModal — abort discipline', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
     await user.upload(
-      within(dialog).getByLabelText('PDF file') as HTMLInputElement,
+      within(dialog).getByLabelText('Book file') as HTMLInputElement,
       makePdfFile(),
     );
     await user.click(within(dialog).getByRole('button', { name: /Upload/ }));
@@ -274,7 +294,7 @@ describe('UploadTypeModal — abort discipline', () => {
     const dialog = await screen.findByRole('dialog');
     await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
     await user.upload(
-      within(dialog).getByLabelText('PDF file') as HTMLInputElement,
+      within(dialog).getByLabelText('Book file') as HTMLInputElement,
       makePdfFile(),
     );
     await user.click(within(dialog).getByRole('button', { name: /Upload/ }));

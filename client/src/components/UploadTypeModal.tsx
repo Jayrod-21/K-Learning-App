@@ -1,27 +1,31 @@
 /**
- * UploadTypeModal — the "upload a book" flow (U1b client, PDF book-upload
- * feature, `db/docs/PDF_UPLOAD_DESIGN.md` §"U1 → U1b client"). A two-step
- * `Sheet` (bottom modal — `useModalA11y` via `Sheet`, so focus-trap / Esc /
- * body-scroll-lock / focus-restore are inherited, not reimplemented):
+ * UploadTypeModal — the "upload a book" flow (U1b client, PAGE-IMAGE
+ * book-upload feature, `db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION"). A
+ * two-step `Sheet` (bottom modal — `useModalA11y` via `Sheet`, so
+ * focus-trap / Esc / body-scroll-lock / focus-restore are inherited, not
+ * reimplemented):
  *
  *   1. Type   — vocab / grammar / both / dialogue / literature, bilingual
  *      chips. This is what U2's extraction eventually tags the content with.
- *   2. File + title — a PDF file picker (`accept="application/pdf"`) plus a
- *      title field defaulting to the filename; submitting calls `uploadBook`.
+ *   2. File + title — a file picker accepting EITHER a vFlat zip export (a
+ *      zip of page images — Jared's real scans) OR a plain PDF
+ *      (`accept="application/pdf,application/zip,.zip,.pdf"`), plus a title
+ *      field defaulting to the filename; submitting calls `uploadBook`. The
+ *      server normalizes either into ordered page images before this ever
+ *      reaches the viewer.
  *
  * Shared by Settings (the "Upload a book" row) and the Uploads page (its own
  * "+ Upload" entry) so both surfaces get the identical flow. On success the
- * fresh `BookUpload` (status `processing` — U1 has no extraction yet) is
- * handed to the caller via `onUploaded` so it can splice it into whatever
- * list it's showing without a refetch.
+ * fresh `BookUpload` is handed to the caller via `onUploaded` so it can
+ * splice it into whatever list it's showing without a refetch.
  *
  * Threat model:
- *   - `checkPdfFile` is a client convenience pre-check only (see
+ *   - `checkBookFile` is a client convenience pre-check only (see
  *     services/uploads.ts's header) — it saves the user a doomed round-trip
- *     for an obviously-wrong file, but the server's magic-byte sniff + size
- *     cap are the real defence and still run on every request. Server
- *     failures map to fixed copy via `bookUploadErrorMessage` — never
- *     echoed.
+ *     for an obviously-wrong file, but the server's magic-byte sniff
+ *     (`PK\x03\x04` zip / `%PDF-` pdf) + ~300 MiB size cap are the real
+ *     defence and still run on every request. Server failures map to fixed
+ *     copy via `bookUploadErrorMessage` — never echoed.
  *   - Abort discipline: the in-flight `uploadBook` call is aborted whenever
  *     the modal closes or unmounts mid-request, and every state write after
  *     the `await` is guarded on the controller's own signal, so a late
@@ -42,7 +46,7 @@ import { Eyebrow } from './Eyebrow';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { bookUploadErrorMessage } from '../lib/errorCopy';
-import { checkPdfFile, uploadBook } from '../services/uploads';
+import { checkBookFile, uploadBook } from '../services/uploads';
 import type { BookUpload, BookUploadType } from '../types/domain';
 
 export interface UploadTypeModalProps {
@@ -66,9 +70,9 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
   { id: 'literature', en: 'Literature', kr: '문학' },
 ];
 
-/** Filename minus a trailing `.pdf` (case-insensitive) — the title default. */
+/** Filename minus a trailing `.pdf`/`.zip` (case-insensitive) — the title default. */
 function titleFromFilename(name: string): string {
-  return name.replace(/\.pdf$/i, '');
+  return name.replace(/\.(pdf|zip)$/i, '');
 }
 
 export function UploadTypeModal({
@@ -111,7 +115,7 @@ export function UploadTypeModal({
     // Reset the input so picking the SAME file again still fires `change`.
     e.target.value = '';
     if (!picked) return;
-    const precheck = checkPdfFile(picked);
+    const precheck = checkBookFile(picked);
     if (precheck) {
       setError(precheck);
       return;
@@ -160,7 +164,7 @@ export function UploadTypeModal({
               {step === 'type' ? (
                 <Bilingual en="What kind of content?" kr="어떤 종류인가요?" />
               ) : (
-                <Bilingual en="Choose a PDF" kr="PDF 선택" />
+                <Bilingual en="Choose a file" kr="파일 선택" />
               )}
             </div>
           </div>
@@ -215,8 +219,14 @@ export function UploadTypeModal({
 
             <div className="km-field" style={{ marginTop: 12 }}>
               <span className="km-field__label" id="km-upload-file-label">
-                PDF file
+                Book file
               </span>
+              <p style={{ fontSize: 13, color: 'var(--paper-dim)', margin: '2px 0 8px' }}>
+                <Bilingual
+                  en="Upload a scanned book (a PDF or a vFlat zip of page images)"
+                  kr="스캔한 책을 업로드하세요 (PDF 또는 vFlat 페이지 이미지 zip)"
+                />
+              </p>
               <Button
                 variant="ghost"
                 size="md"
@@ -224,12 +234,12 @@ export function UploadTypeModal({
                 onClick={() => fileInputRef.current?.click()}
                 leadingIcon={<Icon name="upload" size={14} />}
               >
-                {file ? file.name : 'Choose a PDF…'}
+                {file ? file.name : 'Choose a PDF or zip…'}
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="application/pdf"
+                accept="application/pdf,application/zip,.zip,.pdf"
                 hidden
                 aria-labelledby="km-upload-file-label"
                 onChange={onFileChange}

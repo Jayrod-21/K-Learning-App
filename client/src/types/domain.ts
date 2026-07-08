@@ -2017,11 +2017,26 @@ export interface BookUpload {
   type: BookUploadType;
   status: BookUploadStatus;
   /**
-   * Page count, once known. Absent in U1 (the server's `page_count` column
-   * is nullable and no page-counting pass is wired yet) — always omitted
-   * rather than a fabricated 0.
+   * Page count, once known. The normalize-to-pages step (zip/PDF → ordered
+   * page images, `book_pages`) runs synchronously at ingest (design doc
+   * REVISION), so this is present as soon as `status` is `ready`; still
+   * `?`-optional (rather than a fabricated 0) for a `processing`/`failed` row
+   * whose `page_count` column is null.
    */
   pageCount?: number;
   byteSize: number;
   createdAt: string;
+}
+
+/**
+ * One page of an upload's ordered page-image sequence (`book_pages`,
+ * migration 041) — its stable DB identity (`id`) plus its current 1-based
+ * DISPLAY position (`pageNumber`, matches `GET /uploads/:id/page/:n`'s `:n`).
+ * The reorder tool (vFlat retakes can land out of order — see the design
+ * doc's REVISION) operates on `id`; `pageNumber` is what a reorder changes.
+ * `services/uploads.ts` is the wire↔domain boundary.
+ */
+export interface Page {
+  id: string;
+  pageNumber: number;
 }

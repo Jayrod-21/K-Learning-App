@@ -1,16 +1,19 @@
 /**
- * uploads service (U1b) — multipart upload config, envelope unwrap, wire →
- * domain mapping (page_count null → pageCount absent, snake→camel byte
- * size/created-at), the `pdfFileUrl` base-join contract (mirrors images.ts's
- * `blobUrlFor`), the client pre-check, signal threading, and error re-throw.
+ * uploads service (U1b, page-image rework) — multipart upload config,
+ * envelope unwrap, wire → domain mapping (page_count null → pageCount
+ * absent, snake→camel byte size/created-at), the `pageUrl` /
+ * `listPages` / `reorderPages` contract, the client pre-check (now
+ * accepting zip OR pdf, ~300 MB), signal threading, and error re-throw.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  checkPdfFile,
+  checkBookFile,
   deleteUpload,
   getUpload,
+  listPages,
   listUploads,
-  pdfFileUrl,
+  pageUrl,
+  reorderPages,
   uploadBook,
 } from './uploads';
 import { api, ApiError } from './api';
@@ -43,6 +46,10 @@ function makePdfFile(name = 'book.pdf', size = 1024): File {
   return new File([new Uint8Array(size)], name, { type: 'application/pdf' });
 }
 
+function makeZipFile(name = 'book.zip', size = 1024): File {
+  return new File([new Uint8Array(size)], name, { type: 'application/zip' });
+}
+
 describe('uploadBook', () => {
   it('POSTs /uploads with FormData carrying file+title+type and a boundary-clearing Content-Type', async () => {
     const spy = vi
@@ -65,6 +72,17 @@ describe('uploadBook', () => {
     expect(form.get('type')).toBe('grammar');
   });
 
+  it('POSTs a zip file the same way as a PDF (server normalizes either)', async () => {
+    const spy = vi
+      .spyOn(api, 'post')
+      .mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
+
+    await uploadBook(makeZipFile('vflat-export.zip'), 'vocab', 'x');
+
+    const form = spy.mock.calls[0][1] as FormData;
+    expect((form.get('file') as File).name).toBe('vflat-export.zip');
+  });
+
   it('maps the wire upload onto the domain shape (page_count present)', async () => {
     vi.spyOn(api, 'post').mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
 
@@ -81,7 +99,7 @@ describe('uploadBook', () => {
     });
   });
 
-  it('omits pageCount when the wire page_count is null (U1 — always null pre-U2)', async () => {
+  it('omits pageCount when the wire page_count is null (still processing / failed)', async () => {
     vi.spyOn(api, 'post').mockResolvedValueOnce({
       upload: UPLOAD_WIRE_PROCESSING,
     });
@@ -188,39 +206,132 @@ describe('deleteUpload', () => {
   });
 });
 
-describe('pdfFileUrl', () => {
+describe('pageUrl', () => {
   it('stays a relative same-origin path when the API base is empty (prod)', () => {
-    expect(pdfFileUrl('9', '')).toBe('/uploads/9/file');
+    expect(pageUrl('9', 3, '')).toBe('/uploads/9/page/3');
   });
 
-  it('joins the API base in dev so pdf.js hits the API, not the Vite SPA fallback', () => {
-    expect(pdfFileUrl('9', 'http://localhost:4000')).toBe(
-      'http://localhost:4000/uploads/9/file',
+  it('joins the API base in dev so the <img> hits the API, not the Vite SPA fallback', () => {
+    expect(pageUrl('9', 3, 'http://localhost:4000')).toBe(
+      'http://localhost:4000/uploads/9/page/3',
     );
+  });
+
+  it('encodes the upload id', () => {
+    expect(pageUrl('a/b', 1, '')).toBe('/uploads/a%2Fb/page/1');
   });
 });
 
-describe('checkPdfFile', () => {
+describe('listPages', () => {
+  it('GETs /uploads/:id/pages and maps every row (id, pageNumber)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      pages: [
+        { id: '101', page_number: 1 },
+        { id: '102', page_number: 2 },
+      ],
+    });
+
+    const pages = await listPages('9');
+
+    expect(spy).toHaveBeenCalledWith('/uploads/9/pages', undefined);
+    expect(pages).toEqual([
+      { id: '101', pageNumber: 1 },
+      { id: '102', pageNumber: 2 },
+    ]);
+  });
+
+  it('threads an AbortSignal', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ pages: [] });
+    const ctrl = new AbortController();
+
+    await listPages('9', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/uploads/9/pages', { signal: ctrl.signal });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(listPages('9')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('reorderPages', () => {
+  it('PATCHes /uploads/:id/pages/order with the numeric page_ids array in order', async () => {
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce({
+      pages: [
+        { id: '102', page_number: 1 },
+        { id: '101', page_number: 2 },
+      ],
+    });
+
+    const pages = await reorderPages('9', ['102', '101']);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/uploads/9/pages/order',
+      { page_ids: [102, 101] },
+      undefined,
+    );
+    expect(pages).toEqual([
+      { id: '102', pageNumber: 1 },
+      { id: '101', pageNumber: 2 },
+    ]);
+  });
+
+  it('threads an AbortSignal', async () => {
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce({ pages: [] });
+    const ctrl = new AbortController();
+
+    await reorderPages('9', ['1'], ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/uploads/9/pages/order',
+      { page_ids: [1] },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('rethrows ApiError on failure (e.g. stale/foreign page set)', async () => {
+    vi.spyOn(api, 'patch').mockRejectedValueOnce(
+      new ApiError('mismatched set', { status: 400, code: 'validation_error' }),
+    );
+
+    await expect(reorderPages('9', ['1', '2'])).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe('checkBookFile', () => {
   it('accepts a same-declared-mime PDF under the size cap', () => {
-    expect(checkPdfFile(makePdfFile('book.pdf', 1024))).toBeNull();
+    expect(checkBookFile(makePdfFile('book.pdf', 1024))).toBeNull();
+  });
+
+  it('accepts a same-declared-mime zip under the size cap', () => {
+    expect(checkBookFile(makeZipFile('book.zip', 1024))).toBeNull();
   });
 
   it('accepts a .pdf-named file even with a missing/odd declared mime (extension fallback)', () => {
     const file = new File([new Uint8Array(10)], 'book.PDF', { type: '' });
-    expect(checkPdfFile(file)).toBeNull();
+    expect(checkBookFile(file)).toBeNull();
   });
 
-  it('rejects a non-PDF file with fixed copy', () => {
+  it('accepts a .zip-named file even with a missing/odd declared mime (extension fallback)', () => {
+    const file = new File([new Uint8Array(10)], 'book.ZIP', { type: '' });
+    expect(checkBookFile(file)).toBeNull();
+  });
+
+  it('rejects a file that is neither a PDF nor a zip, with fixed copy', () => {
     const file = new File([new Uint8Array(10)], 'photo.jpg', {
       type: 'image/jpeg',
     });
-    expect(checkPdfFile(file)).toMatch(/isn.t a PDF/);
+    expect(checkBookFile(file)).toMatch(/isn.t a PDF or a zip/);
   });
 
-  it('rejects an oversize PDF (>15MB) with fixed copy', () => {
-    const bigFile = new File([new Uint8Array(15 * 1024 * 1024 + 1)], 'big.pdf', {
+  it('rejects an oversize file (>300MB) with fixed copy', () => {
+    const bigFile = new File([new Uint8Array(300 * 1024 * 1024 + 1)], 'big.pdf', {
       type: 'application/pdf',
     });
-    expect(checkPdfFile(bigFile)).toMatch(/too large/);
+    expect(checkBookFile(bigFile)).toMatch(/too large/);
   });
 });
