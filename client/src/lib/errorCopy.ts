@@ -49,3 +49,35 @@ export function errorMessageFor(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/**
+ * Fixed copy for a failed IMAGE upload (the OCR pipeline behind both the
+ * Images screen's `POST /images/ocr` and Chat's
+ * `POST /conversation/:id/image` — chat rework Slice 3). Keyed on the
+ * structured status/code only; server prose is never echoed. Shared so the
+ * two upload surfaces can't drift apart on copy.
+ *
+ * 429 here is the per-user DAILY VISION CAP (a cost control), not the
+ * generic short-window rate limit — hence the "today's limit" phrasing
+ * instead of `errorMessageFor`'s retry-in-N-seconds line.
+ */
+export function imageUploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return "You've hit today's image limit. Try again tomorrow.";
+    }
+    if (err.status === 413) {
+      return 'That image is too large. Pick one under 8 MB.';
+    }
+    if (err.status === 400) {
+      return 'That file isn’t a supported image. Use a JPEG, PNG, or WebP.';
+    }
+    if (err.status === 502) {
+      return 'OCR is temporarily unavailable. Try again shortly.';
+    }
+    if (err.code === 'network') {
+      return 'Network unreachable. Check your connection and try again.';
+    }
+  }
+  return 'Upload failed. Try again.';
+}

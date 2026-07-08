@@ -50,6 +50,7 @@ import { MockBadge } from '../components/MockBadge';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
 import { SwipeCarousel } from '../components/SwipeCarousel';
+import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
@@ -59,6 +60,23 @@ import { fetchAttempt } from '../services/topik';
 import type { AttemptState } from '../services/topik';
 import type { TodayPlan, TodayTask } from '../types/domain';
 import './Today.css';
+
+/**
+ * One-line "what Today is showing" for the chat-context store (Slice 3) —
+ * the FAB's "Discuss the page you were on?" popup renders this. Mirrors the
+ * visible cards: the due-review count plus whichever task tiles resolved.
+ */
+function chatSummaryForPlan(plan: TodayPlan): string {
+  const parts: string[] = [
+    `${String(plan.reviewCount)} review ${
+      plan.reviewCount === 1 ? 'card' : 'cards'
+    } due`,
+  ];
+  if (plan.reading) parts.push(`Reading: ${plan.reading.title}`);
+  if (plan.listening) parts.push(`Listening: ${plan.listening.title}`);
+  if (plan.writing) parts.push(`Writing: ${plan.writing.title}`);
+  return parts.join(' · ');
+}
 
 /** Format the current date in the design's eyebrow style ("Monday, May 28" /
  *  "5월 28일 월요일") — one formatter, locale-keyed, so the en/kr pair the
@@ -285,6 +303,18 @@ export function Today(): JSX.Element {
     'today.attempt',
     loadOpenAttemptMock,
     { realFn: () => fetchAttempt() },
+  );
+
+  // Publish "what this page is showing" for the chat FAB (Slice 3) once the
+  // plan has loaded; nothing is published while loading/failed, so the FAB's
+  // discuss-this-page popup simply skips.
+  useChatContext(
+    today.data
+      ? {
+          pageLabel: 'Today · 오늘',
+          summary: chatSummaryForPlan(today.data),
+        }
+      : null,
   );
 
   const now = new Date();

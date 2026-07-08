@@ -57,8 +57,8 @@ import { Topbar } from '../components/Topbar';
 import { WordPopover, type WordPopoverData } from '../components/WordPopover';
 import { loadImagesMock } from '../data/mocks/images';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { imageUploadErrorMessage } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
-import { ApiError } from '../services/api';
 import { fetchImage, fetchImages, uploadImage } from '../services/images';
 import { mineWord } from '../services/vocab';
 import { useToast } from '../components/useToast';
@@ -219,7 +219,7 @@ export default function Images(): JSX.Element {
       setCurrent(capture.id);
       pushHistory(capture.id);
     } catch (err) {
-      setUploadError(messageForUploadError(err));
+      setUploadError(imageUploadErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -311,34 +311,6 @@ export default function Images(): JSX.Element {
       ) : null}
     </section>
   );
-}
-
-/**
- * Map an `ApiError` (or unknown throw) from the upload onto FIXED user-facing
- * copy keyed on the structured status/code (F-UP-018). Server prose on
- * `err.message` is never echoed — same contract as `lib/errorCopy` and the
- * Login/Writing messageFor lookups.
- */
-function messageForUploadError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 429) {
-      return "You've hit today's image limit. Try again tomorrow.";
-    }
-    if (err.status === 413) {
-      return 'That image is too large. Pick one under 8 MB.';
-    }
-    if (err.status === 400) {
-      return 'That file isn’t a supported image. Use a JPEG, PNG, or WebP.';
-    }
-    if (err.status === 502) {
-      return 'OCR is temporarily unavailable. Try again shortly.';
-    }
-    if (err.code === 'network') {
-      return 'Network unreachable. Check your connection and try again.';
-    }
-    return 'Upload failed. Try again.';
-  }
-  return 'Upload failed. Try again.';
 }
 
 function wordToPopover(w: OcrWord): WordPopoverData {

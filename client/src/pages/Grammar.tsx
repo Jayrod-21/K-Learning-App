@@ -84,6 +84,7 @@ import { MockBadge } from '../components/MockBadge';
 import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
 import { KgiuDetailBody } from '../components/KgiuDetailBody';
+import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadGrammarMock } from '../data/mocks/grammar';
 import { grammarKey } from '../lib/grammarKey';
@@ -382,6 +383,18 @@ function Grammar(): JSX.Element {
   // load resolves underneath.
   const [openRow, setOpenRow] = useState<PatternListItem | null>(null);
   const [detail, setDetail] = useState<KgiuEntryDetail | null>(null);
+
+  // Publish the open pattern for the chat FAB's discuss-this-page popup
+  // (Slice 3). Only while the detail Sheet is up — the browse list has no
+  // single pattern on screen to discuss.
+  useChatContext(
+    openRow !== null
+      ? {
+          pageLabel: 'Grammar · 문법',
+          summary: `${openRow.pattern} — ${openRow.title}`,
+        }
+      : null,
+  );
   const [detailLoading, setDetailLoading] = useState<boolean>(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   // Id of the row whose detail fetch is authoritative — a slow settle for a

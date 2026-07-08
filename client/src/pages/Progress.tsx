@@ -71,6 +71,7 @@ import { Pill } from '../components/Pill';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillReference, SkillRow } from '../components/SkillsCompare';
 import { SwipeCarousel } from '../components/SwipeCarousel';
+import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { navItem } from '../lib/nav';
@@ -440,6 +441,24 @@ function Progress(): JSX.Element {
     hist.error !== null && (snapshots === null || snapshots.length === 0)
       ? hist.error
       : null;
+
+  // Publish the latest snapshot's per-skill scores for the chat FAB's
+  // discuss-this-page popup (Slice 3). History arrives oldest→newest, so
+  // the last entry is the newest run; no runs yet → publish nothing.
+  const latestSnapshot =
+    snapshots !== null && snapshots.length > 0
+      ? snapshots[snapshots.length - 1]
+      : undefined;
+  useChatContext(
+    latestSnapshot !== undefined
+      ? {
+          pageLabel: 'Progress · 성장',
+          summary: `Latest diagnostic: ${latestSnapshot.dimensions
+            .map((d) => `${d.label} ${String(Math.round(d.score))}%`)
+            .join(', ')}`,
+        }
+      : null,
+  );
 
   return (
     <section

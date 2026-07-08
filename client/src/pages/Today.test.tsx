@@ -66,6 +66,7 @@ vi.mock('../services/topik', () => ({
 
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
 import { Today } from './Today';
+import { getChatContext } from '../lib/chatContext';
 
 const PLAN: TodayPlan = {
   reviewCount: 24,
@@ -131,6 +132,25 @@ describe('Today', () => {
     // Skeleton cards + the exam panel's pending state announce aria-busy.
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
+    // Nothing is published to the chat-context store while loading — the
+    // FAB's discuss-this-page popup would have nothing honest to offer.
+    expect(getChatContext()).toBeNull();
+  });
+
+  it('publishes the loaded plan to the chat-context store and retracts on unmount (Slice 3)', () => {
+    loadDefaults();
+    const { unmount } = renderTodayAt();
+
+    const ctx = getChatContext();
+    expect(ctx).not.toBeNull();
+    expect(ctx?.pageLabel).toBe('Today · 오늘');
+    // The summary mirrors the visible cards: due count + resolved tasks.
+    expect(ctx?.summary).toContain('24 review cards due');
+    expect(ctx?.summary).toContain('Listening: KBS — 재택근무 확산');
+    expect(ctx?.summary).toContain('Reading: 도시화와 환경');
+
+    unmount();
+    expect(getChatContext()).toBeNull();
   });
 
   it('renders the title, review queue lead, and the R/L/W task carousel when loaded', () => {

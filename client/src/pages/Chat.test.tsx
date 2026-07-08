@@ -44,6 +44,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import type {
+  AppendImageTurnResult,
   AppendMessageBody,
   ConversationDetailResult,
   ConversationsList,
@@ -53,6 +54,7 @@ import type {
   StoredConversationTurn,
 } from '../types/domain';
 import type { ChatSeedState } from '../lib/askSeed';
+import { buildChatOpenState, type ChatContext } from '../lib/chatContext';
 import { ApiError } from '../services/api';
 import { ToastProvider } from '../components/ToastProvider';
 
@@ -87,6 +89,16 @@ const hoisted = vi.hoisted(() => {
     /** Resolve the lookup from the test. */
     resolve: (result: DefineResult) => void;
     /** Reject the lookup from the test. */
+    reject: (err: Error) => void;
+  }
+  interface CapturedUploadCall {
+    conversationId: number;
+    file: File;
+    expectedVersion: number;
+    signal: AbortSignal | undefined;
+    /** Resolve the upload from the test. */
+    resolve: (result: AppendImageTurnResult) => void;
+    /** Reject the upload from the test. */
     reject: (err: Error) => void;
   }
   interface EndpointState {
@@ -135,6 +147,7 @@ const hoisted = vi.hoisted(() => {
       mineCalls: [] as MineWordInput[],
       /** When set, the next (and every) mineWord call rejects with this. */
       mineRejectWith: null as Error | null,
+      uploadCalls: [] as CapturedUploadCall[],
     },
   };
 });
@@ -272,6 +285,33 @@ vi.mock('../services/conversation', () => ({
       return promise;
     },
   ),
+  uploadConversationImage: vi.fn(
+    (
+      conversationId: number,
+      file: File,
+      expectedVersion: number,
+      signal?: AbortSignal,
+    ): Promise<AppendImageTurnResult> => {
+      let resolveFn: (result: AppendImageTurnResult) => void = () =>
+        undefined;
+      let rejectFn: (err: Error) => void = () => undefined;
+      const promise = new Promise<AppendImageTurnResult>(
+        (resolve, reject) => {
+          resolveFn = resolve;
+          rejectFn = reject;
+        },
+      );
+      hoisted.ref.uploadCalls.push({
+        conversationId,
+        file,
+        expectedVersion,
+        signal,
+        resolve: resolveFn,
+        reject: rejectFn,
+      });
+      return promise;
+    },
+  ),
 }));
 
 // ── services/define mock — controlled promise per lookup (F-016) ────────
@@ -308,18 +348,21 @@ vi.mock('../services/vocab', () => ({
 import { Chat } from './Chat';
 
 /**
- * Chat reads `useLocation`/`useNavigate` (F-020 seeding), so every render
- * needs a router. `seedState`, when given, rides in as the `/chat` entry's
- * router state — exactly how `AskAboutThisButton` delivers it. Chat also
- * calls `useToast` (F-016 add-to-bank failure toast), so every render needs
- * a `ToastProvider` too.
+ * Chat reads `useLocation`/`useNavigate` (F-020 seeding + the Slice-3 FAB
+ * open request), so every render needs a router. `routeState`, when given,
+ * rides in as the `/chat` entry's router state — exactly how
+ * `AskAboutThisButton` (a `ChatSeedState`) and `ChatFab` (a `ChatOpenState`)
+ * deliver theirs. Chat also calls `useToast` (F-016 add-to-bank failure
+ * toast), so every render needs a `ToastProvider` too.
  */
-function renderChat(seedState?: ChatSeedState): ReturnType<typeof render> {
+function renderChat(
+  routeState?: ChatSeedState | ReturnType<typeof buildChatOpenState>,
+): ReturnType<typeof render> {
   return render(
     <MemoryRouter
       initialEntries={
-        seedState !== undefined
-          ? [{ pathname: '/chat', state: seedState }]
+        routeState !== undefined
+          ? [{ pathname: '/chat', state: routeState }]
           : ['/chat']
       }
     >
@@ -372,6 +415,7 @@ function resetState(): void {
   hoisted.ref.defineCalls = [];
   hoisted.ref.mineCalls = [];
   hoisted.ref.mineRejectWith = null;
+  hoisted.ref.uploadCalls = [];
   window.localStorage.clear();
 }
 
@@ -1770,5 +1814,431 @@ describe('Chat dictionary lookup (F-016)', () => {
     expect(hoisted.ref.streamCalls[0]?.body.content).toBe('감사합니다');
     // The dictionary lookup never fired.
     expect(hoisted.ref.defineCalls.length).toBe(0);
+  });
+});
+
+// ── FAB entry: force-new + "Discuss the page you were on?" (Slice 3) ─────
+describe('Chat FAB open (Slice 3)', () => {
+  const PAGE_CTX: ChatContext = {
+    pageLabel: 'Today · 오늘',
+    summary: '3 review cards due · Listening: 재택근무',
+  };
+
+  /** The generic FAB-entry opener (mockup copy). */
+  const ASK_OPENER_RE = /무엇에 대해 이야기하고 싶으세요/;
+
+  it('shows the popup with the page context; Yes seeds the composer and targets a NEW conversation', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    // The popup is up, carrying the page's label + summary; the opener
+    // stays hidden underneath it (mockup behavior) and NO conversation was
+    // started or fetched — the FAB entry is the pending-'new' thread.
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Today · 오늘');
+    expect(dialog).toHaveTextContent('3 review cards due');
+    expect(screen.queryByText(ASK_OPENER_RE)).not.toBeInTheDocument();
+    expect(hoisted.ref.startCalls.length).toBe(0);
+    expect(hoisted.ref.getCalls.length).toBe(0);
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /Yes, use it/ }),
+    );
+
+    // Popup gone; composer pre-filled with the generic context seed —
+    // pre-fill ONLY, nothing auto-sent.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    expect(input.value).toContain('Today · 오늘');
+    expect(input.value).toContain('3 review cards due');
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+    // The ask-opener now renders (empty pending thread).
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(input).toHaveFocus();
+    });
+
+    // Sending lazy-starts a NEW conversation (not 42, the newest existing
+    // row) and the prior conversations stay listed in the sidebar.
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(hoisted.ref.streamCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.startCalls.length).toBe(1);
+    expect(hoisted.ref.streamCalls[0]?.conversationId).toBe(9001);
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(1);
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(within(nav).getAllByRole('listitem').length).toBe(3);
+    expect(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/29/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('No dismisses the popup, keeps the composer empty, and shows the generic opener', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    await user.click(
+      screen.getByRole('button', { name: /No, start fresh/ }),
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>('Reply input').value,
+    ).toBe('');
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+    // The default remote-work greeting does NOT render on a FAB entry.
+    expect(screen.queryByText(OPENER_RE)).not.toBeInTheDocument();
+  });
+
+  it('Escape closes the popup as No (useModalA11y contract)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>('Reply input').value,
+    ).toBe('');
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+  });
+
+  it('skips the popup entirely when the FAB carried no context', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(buildChatOpenState(null));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // Straight to the generic opener on the pending-'new' thread; the
+    // existing conversations were neither resumed nor fetched.
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+    expect(hoisted.ref.getCalls.length).toBe(0);
+    // Prior conversations remain listed.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(within(nav).getAllByRole('listitem').length).toBe(2);
+  });
+
+  it('a malformed context in forged history state degrades to the no-popup flow', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/chat',
+            state: { kmChatOpen: true, context: { pageLabel: 42 } },
+          },
+        ]}
+      >
+        <ToastProvider>
+          <Chat />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+  });
+
+  it('clears the open request from history state after consuming it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location-state')).toHaveTextContent('empty');
+    });
+    // The popup survived the state-clearing re-render (captured at mount).
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('a plain navigation (no open request) keeps resuming the latest conversation', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+
+    // Unchanged Slice-2 behavior: newest row auto-active, history fetched,
+    // default greeting on its empty thread — and no popup.
+    expect(await screen.findByText(OPENER_RE)).toBeInTheDocument();
+    expect(hoisted.ref.getCalls[0]?.id).toBe(42);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(ASK_OPENER_RE)).not.toBeInTheDocument();
+  });
+});
+
+// ── Image-in-chat (Slice 3) ───────────────────────────────────────────────
+describe('Chat image upload (Slice 3)', () => {
+  const UPLOAD_LABEL = 'Upload a photo · 사진 올리기';
+
+  function makeImageFile(
+    name = 'menu.jpg',
+    type = 'image/jpeg',
+    size?: number,
+  ): File {
+    const file = new File(['x'], name, { type });
+    if (size !== undefined) {
+      Object.defineProperty(file, 'size', { value: size });
+    }
+    return file;
+  }
+
+  /** Fire a picked file straight into the hidden input. */
+  function pickFile(file: File): void {
+    const input = screen.getByTestId<HTMLInputElement>('chat-image-input');
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  const IMAGE_TURN: StoredConversationTurn = {
+    role: 'user',
+    content: '아메리카노 4,500원',
+    sent_at: '2026-07-07T12:00:00Z',
+    image: {
+      capture_id: 7,
+      blob_url: '/images/7/blob',
+      caption_kr: '아메리카노 4,500원',
+      caption_en: 'Americano 4,500 won',
+    },
+  };
+
+  it('uploads onto the active conversation and renders the OCR turn (image + Korean + caption)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE); // conversation 42 loaded, version 5
+
+    await user.click(screen.getByRole('button', { name: UPLOAD_LABEL }));
+    pickFile(makeImageFile());
+
+    // The service got the ACTIVE conversation + the history-loaded version.
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.uploadCalls[0];
+    if (!call) throw new Error('no captured upload call');
+    expect(call.conversationId).toBe(42);
+    expect(call.expectedVersion).toBe(5);
+    expect(call.file.name).toBe('menu.jpg');
+
+    // In-flight affordances: busy button + status line.
+    expect(
+      screen.getByRole('button', { name: UPLOAD_LABEL }),
+    ).toBeDisabled();
+    expect(screen.getByText(/Uploading photo/)).toBeInTheDocument();
+
+    await act(async () => {
+      call.resolve({ version: 6, messages: [], turn: IMAGE_TURN });
+    });
+
+    // The OCR'd turn renders: photo + Korean text; the English caption
+    // follows the hints toggle (on by default here). The image is
+    // decorative for AT (its OCR'd text below is the content) — tests key
+    // off the testid.
+    const img = within(thread()).getByTestId('chat-bubble-image');
+    expect(img).toHaveAttribute('src', '/images/7/blob');
+    expect(
+      within(thread()).getByText('아메리카노 4,500원'),
+    ).toBeInTheDocument();
+    expect(
+      within(thread()).getByText('Americano 4,500 won'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: UPLOAD_LABEL }),
+    ).not.toBeDisabled();
+
+    // The version advanced to the server's post-append value: the next
+    // send must ride version 6, not the stale 5.
+    await user.type(screen.getByLabelText('Reply input'), '이게 무슨 뜻이에요?');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(6);
+  });
+
+  it('renders image turns from a loaded history (persistence round-trip)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.detailMessages[42] = [
+      IMAGE_TURN,
+      turn('assistant', '메뉴판이네요!'),
+    ];
+    renderChat();
+
+    const img = await within(thread()).findByTestId('chat-bubble-image');
+    expect(img).toHaveAttribute('src', '/images/7/blob');
+    expect(
+      within(thread()).getByText('메뉴판이네요!'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the FIXED daily-cap copy on a 429 — never the server prose', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: UPLOAD_LABEL }));
+    pickFile(makeImageFile());
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+
+    await act(async () => {
+      hoisted.ref.uploadCalls[0]?.reject(
+        new ApiError('vision_daily_cap_exceeded: user 3 spent $1.02', {
+          status: 429,
+          code: 'daily_cap_exceeded',
+        }),
+      );
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(
+      "You've hit today's image limit. Try again tomorrow.",
+    );
+    expect(alert).not.toHaveTextContent('vision_daily_cap_exceeded');
+    // The failed upload appended nothing.
+    expect(
+      within(thread()).queryByTestId('chat-bubble-image'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: UPLOAD_LABEL }),
+    ).not.toBeDisabled();
+  });
+
+  it('rejects an oversize file client-side with the shared fixed copy (no request)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    pickFile(makeImageFile('big.jpg', 'image/jpeg', 9 * 1024 * 1024));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'That image is too large. Pick one under 8 MB.',
+    );
+    expect(hoisted.ref.uploadCalls.length).toBe(0);
+  });
+
+  it('rejects a non-image file client-side with the shared fixed copy (no request)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    pickFile(makeImageFile('doc.pdf', 'application/pdf'));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'That file isn’t a supported image. Use a JPEG, PNG, or WebP.',
+    );
+    expect(hoisted.ref.uploadCalls.length).toBe(0);
+  });
+
+  it('aborts the in-flight upload on unmount and a late resolve never paints', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const { unmount } = renderChat();
+    await screen.findByText(OPENER_RE);
+
+    pickFile(makeImageFile());
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.uploadCalls[0];
+    if (!call) throw new Error('no captured upload call');
+    expect(call.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(call.signal?.aborted).toBe(true);
+
+    // A late settle against the dead tree is a total no-op.
+    await act(async () => {
+      call.resolve({ version: 6, messages: [], turn: IMAGE_TURN });
+    });
+  });
+
+  it('aborts the in-flight upload when switching conversations — the OCR turn never lands in the other thread', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.detailMessages[11] = [turn('assistant', '다른 대화')];
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    pickFile(makeImageFile());
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.uploadCalls[0];
+    if (!call) throw new Error('no captured upload call');
+
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    await user.click(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    );
+    expect(call.signal?.aborted).toBe(true);
+
+    await within(thread()).findByText('다른 대화');
+    await act(async () => {
+      call.resolve({ version: 6, messages: [], turn: IMAGE_TURN });
+    });
+    expect(
+      within(thread()).queryByTestId('chat-bubble-image'),
+    ).not.toBeInTheDocument();
+    expect(
+      within(thread()).queryByText('아메리카노 4,500원'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a 409 (stale version) shows fixed copy and refetches the thread for the fresh version', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+    expect(hoisted.ref.getCalls.length).toBe(1);
+
+    pickFile(makeImageFile());
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    // The server has since moved the row to version 7 — the refetch the
+    // 409 triggers must observe it (set BEFORE rejecting: the auto-detail
+    // mock resolves synchronously at call time).
+    hoisted.ref.detailVersions[42] = 7;
+    await act(async () => {
+      hoisted.ref.uploadCalls[0]?.reject(
+        new ApiError('version conflict: expected 5, row at 7', {
+          status: 409,
+          code: 'version_conflict',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'This conversation changed — reloading it. Try the photo again.',
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent(
+      'version conflict',
+    );
+    // The loaded-thread cache was invalidated → a fresh history fetch for
+    // the SAME conversation refreshes the version before the user retries.
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.getCalls[1]?.id).toBe(42);
+    // A follow-up send rides the refetched version.
+    await screen.findByText(OPENER_RE);
+    await user.type(screen.getByLabelText('Reply input'), '다시');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(7);
   });
 });

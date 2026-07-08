@@ -84,6 +84,35 @@
  *   when THIS visit lazily starts a NEW conversation, and the router state
  *   is then cleared so a reload / back-nav can't re-seed.
  *
+ * FAB entry + "Discuss the page you were on?" popup (Slice 3):
+ *   The shell ChatFab navigates here with a `ChatOpenState` in router state
+ *   (discriminator `kmChatOpen`, optional `ChatContext` — the page the user
+ *   was on published its descriptor via `useChatContext`). A FAB entry
+ *   always targets a NEW conversation: the initial selection is the pending
+ *   'new' thread (lazy-started on first send, so an abandoned open never
+ *   spams empty server rows) and prior conversations stay in the sidebar.
+ *   When a context rode along, a focus-trapped modal (useModalA11y, Esc =
+ *   No) offers it: Yes → the composer pre-fills with `buildContextSeed`
+ *   (generic F-020 pattern — never auto-sent); No / no-context → the
+ *   mockup's generic opener ("무엇에 대해 이야기하고 싶으세요? · What would
+ *   you like to chat about?") renders instead of the default greeting. The
+ *   open-state is cleared from history like the F-020 seed.
+ *
+ * Image-in-chat (Slice 3):
+ *   A camera button in the composer opens a file picker; the picked photo
+ *   goes to `uploadConversationImage` (Slice 1's `POST /conversation/:id/
+ *   image`), which OCRs it and appends ONE user turn — the OCR'd Korean as
+ *   `content`, the image block carrying the blob URL + English caption.
+ *   The turn renders as a user bubble with the image above its text.
+ *   Client pre-checks (type/size) are convenience only — the server
+ *   re-validates (magic bytes, 8 MiB, daily Vision cap). Failures surface
+ *   as FIXED copy via `imageUploadErrorMessage` (shared with the Images
+ *   screen so the two upload surfaces can't drift); a 409 (stale version)
+ *   additionally invalidates the loaded thread so the history effect
+ *   refetches the authoritative version. One AbortController per upload,
+ *   aborted on unmount AND on conversation switch. OCR'd text is CONTENT —
+ *   rendered like any message, never through `<Bilingual>`.
+ *
  * Threat model (FU-NF-4 closeout + Slice 2 additions):
  *   - **Streaming abort on unmount AND on conversation switch.** A
  *     controller per send is aborted when the screen unmounts or the user
@@ -150,9 +179,15 @@ import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
 import { useToast } from '../components/useToast';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { useModalA11y } from '../hooks/useModalA11y';
 import { useSettings } from '../hooks/useSettings';
 import { loadConversationMock } from '../data/mocks/chat';
 import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
+import {
+  buildContextSeed,
+  readChatOpenState,
+  type ChatOpenRequest,
+} from '../lib/chatContext';
 import { cn } from '../lib/cn';
 import { navItem } from '../lib/nav';
 import {
@@ -163,8 +198,8 @@ import {
 import * as conversationService from '../services/conversation';
 import { defineEntry } from '../services/define';
 import { mineWord } from '../services/vocab';
-import { ApiError } from '../services/api';
-import { errorMessageFor } from '../lib/errorCopy';
+import { ApiError, getApiBaseUrl } from '../services/api';
+import { errorMessageFor, imageUploadErrorMessage } from '../lib/errorCopy';
 import type {
   Conversation,
   ConversationMessage,
@@ -191,6 +226,31 @@ const FALLBACK_OPENER: ConversationMessage = {
   kr: '안녕하십니까. 오늘은 재택근무의 장단점에 대해 이야기해 보겠습니다.',
   en: "Hello. Today we'll discuss the pros and cons of remote work.",
 };
+
+/**
+ * Opener for a FAB-opened fresh conversation (Slice 3 — mockup copy).
+ * Message CONTENT like `FALLBACK_OPENER` (rendered as a tutor bubble whose
+ * EN line follows the hints toggle), so it is deliberately NOT `<Bilingual>`
+ * chrome, and it is never run through `personalise` (that helper rewrites
+ * the remote-work greeting specifically).
+ */
+const ASK_OPENER: ConversationMessage = {
+  role: 'tutor',
+  kr: '무엇에 대해 이야기하고 싶으세요?',
+  en: 'What would you like to chat about?',
+};
+
+/** `accept` filter for the composer's photo input — mirrors the server's
+ *  jpeg/png/webp allowlist (convenience only; the server re-sniffs). */
+const IMAGE_ACCEPT = 'image/jpeg,image/png,image/webp';
+
+/** Client-side pre-check ceiling — the server's own multer cap is 8 MiB. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/** Fixed copy when an image upload hit a stale `expected_version` (409).
+ *  The thread is refetched (authoritative version) so a retry can succeed. */
+const UPLOAD_CONFLICT_COPY =
+  'This conversation changed — reloading it. Try the photo again.';
 
 /** Server start mode — kept here (one screen, one mode) to avoid a config dep. */
 const DEFAULT_START_MODE = 'casual' as const;
@@ -332,18 +392,36 @@ function byUpdatedAtDesc(a: ConversationRow, b: ConversationRow): number {
 }
 
 /**
- * Map the wire history (`StoredConversationTurn[]`, role user/assistant)
- * into render rows (role user/tutor). Image turns already carry the OCR'd
- * Korean text as `content`; their English translation rides as the bubble's
- * EN line (the hints toggle governs display). Rendering the image itself is
- * Slice 3 (composer upload + <img> bubble).
+ * Join a server-relative blob path onto the API base — the same rule
+ * `services/images.ts` `blobUrlFor` applies (same-origin in prod, absolute
+ * base in dev). The path only ever originates from a server response.
  */
-function mapStoredTurns(turns: StoredConversationTurn[]): ThreadRow[] {
-  return turns.map((turn) => ({
+function joinApiPath(path: string): string {
+  const base = getApiBaseUrl();
+  return base === '' ? path : `${base}${path}`;
+}
+
+/**
+ * Map ONE wire turn (`StoredConversationTurn`, role user/assistant) into a
+ * render row (role user/tutor). Image turns carry the OCR'd Korean text as
+ * `content` (CONTENT — rendered like any message text); their English
+ * caption rides as the bubble's EN line (the hints toggle governs display)
+ * and the image itself renders above the text via `row.image`.
+ */
+function storedTurnToRow(turn: StoredConversationTurn): ThreadRow {
+  return {
     role: turn.role === 'assistant' ? 'tutor' : 'user',
     kr: turn.content,
     en: turn.image?.caption_en ?? '',
-  }));
+    ...(turn.image !== undefined
+      ? { image: { src: joinApiPath(turn.image.blob_url) } }
+      : {}),
+  };
+}
+
+/** Map the wire history into render rows. */
+function mapStoredTurns(turns: StoredConversationTurn[]): ThreadRow[] {
+  return turns.map(storedTurnToRow);
 }
 
 /** Skeleton placeholder during load. */
@@ -385,6 +463,8 @@ interface ThreadRow extends ConversationMessage {
   failedRequestId?: string;
   /** Original content for failed user rows — retry reuses this verbatim. */
   failedContent?: string;
+  /** Present on image turns (Slice 3) — the photo renders above the text. */
+  image?: { src: string };
 }
 
 /** Which conversation the thread pane is showing: a server id, or the
@@ -414,6 +494,14 @@ export function Chat(): JSX.Element {
   // narrowed (see askSeed.ts threat model).
   const [chatSeed] = useState<ChatSeedState | null>(() =>
     readChatSeedState(location.state),
+  );
+
+  // ── FAB open request (Slice 3) ─────────────────────────────────────
+  // The shell ChatFab navigates here with a `ChatOpenState` (discriminated
+  // by `kmChatOpen`, so an F-020 seed can never be misread as one). Same
+  // once-at-mount lazy capture + untrusted-state narrowing as the seed.
+  const [openRequest] = useState<ChatOpenRequest | null>(() =>
+    readChatOpenState(location.state),
   );
 
   // Real call: list the user's conversations. Mock fallback: load the
@@ -475,8 +563,14 @@ export function Chat(): JSX.Element {
   // ── Active conversation (explicit selection + derived default) ─────
   // `selectedKey` only changes on user action (row click / New chat /
   // first-send pin); the default — newest row, else the pending 'new'
-  // state — is DERIVED, so mount needs no list-adoption effect.
-  const [selectedKey, setSelectedKey] = useState<ActiveKey | null>(null);
+  // state — is DERIVED, so mount needs no list-adoption effect. A FAB
+  // entry (Slice 3) pre-selects the pending 'new' thread: the FAB always
+  // opens a NEW conversation (lazy-started on first send so an abandoned
+  // open never creates an empty server row) while prior conversations stay
+  // in the sidebar.
+  const [selectedKey, setSelectedKey] = useState<ActiveKey | null>(() =>
+    openRequest !== null ? 'new' : null,
+  );
   const activeKey: ActiveKey = selectedKey ?? rows[0]?.id ?? 'new';
   const activeId: number | null = typeof activeKey === 'number' ? activeKey : null;
 
@@ -513,6 +607,49 @@ export function Chat(): JSX.Element {
   // "New chat" in-flight latch — the button is disabled while starting.
   const [creating, setCreating] = useState<boolean>(false);
 
+  // ── "Discuss the page you were on?" popup (Slice 3) ────────────────
+  // Open exactly when the FAB entry carried a page context; a no-context
+  // FAB entry skips straight to the generic ASK_OPENER. Lazy initializer —
+  // the popup can only ever arm at mount, mirroring the seed contract.
+  const popupContext = openRequest?.context ?? null;
+  const [contextPopupOpen, setContextPopupOpen] = useState<boolean>(
+    () => popupContext !== null,
+  );
+  const popupRef = useRef<HTMLDivElement | null>(null);
+
+  // Composer focus target for "New chat" + the popup's dismiss handlers.
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  /**
+   * Settle the popup. Yes → pre-fill the composer with the generic context
+   * seed (F-020's pattern: pre-fill only, never auto-sent, never clobbers
+   * text the user somehow already typed). Either way focus the composer —
+   * deferred a macrotask so it lands AFTER useModalA11y's microtask focus
+   * restore (which would otherwise fire last and win).
+   */
+  const answerContextPopup = useCallback(
+    (useIt: boolean): void => {
+      setContextPopupOpen(false);
+      if (useIt && popupContext !== null) {
+        const seed = buildContextSeed(popupContext);
+        setInput((prev) => (prev.trim() === '' ? seed : prev));
+      }
+      window.setTimeout(() => {
+        composerRef.current?.focus();
+      }, 0);
+    },
+    [popupContext],
+  );
+  const dismissContextPopup = useCallback((): void => {
+    // Esc = No (the popup is an offer, not a gate).
+    answerContextPopup(false);
+  }, [answerContextPopup]);
+  useModalA11y({
+    open: contextPopupOpen,
+    onClose: dismissContextPopup,
+    containerRef: popupRef,
+  });
+
   // ── Sidebar collapse (persisted) ───────────────────────────────────
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     readCollapsedPref(),
@@ -525,9 +662,6 @@ export function Chat(): JSX.Element {
     });
   }, []);
 
-  // Composer focus target for "New chat".
-  const composerRef = useRef<HTMLTextAreaElement | null>(null);
-
   // Mounted marker for async handlers that have no AbortSignal to thread
   // (startConversation). Re-armed on StrictMode remount.
   const mountedRef = useRef<boolean>(true);
@@ -538,13 +672,19 @@ export function Chat(): JSX.Element {
     };
   }, []);
 
-  // Clear the consumed seed out of router/history state so a reload or a
-  // back-navigation to /chat never re-seeds the composer (F-020). Navigation
-  // is a side effect (not a state set), and the ref-guard makes it fire at
-  // most once even though the replace itself changes `location` identity.
+  // Clear the consumed seed / FAB open-request out of router/history state
+  // so a reload or a back-navigation to /chat never re-seeds the composer
+  // (F-020) or re-arms the popup (Slice 3). Navigation is a side effect
+  // (not a state set), and the ref-guard makes it fire at most once even
+  // though the replace itself changes `location` identity.
   const seedClearedRef = useRef<boolean>(false);
   useEffect(() => {
-    if (chatSeed === null || seedClearedRef.current) return;
+    if (
+      (chatSeed === null && openRequest === null) ||
+      seedClearedRef.current
+    ) {
+      return;
+    }
     seedClearedRef.current = true;
     // Preserve search + hash: rebuilding the URL from the pathname alone
     // would silently strip any future query param (deep-linked conversation
@@ -557,7 +697,14 @@ export function Chat(): JSX.Element {
       },
       { replace: true, state: null },
     );
-  }, [chatSeed, navigate, location.pathname, location.search, location.hash]);
+  }, [
+    chatSeed,
+    openRequest,
+    navigate,
+    location.pathname,
+    location.search,
+    location.hash,
+  ]);
 
   // ── History load (Slice 2 — the previously-missing capability) ─────
   // Fetch the active conversation's full history. Cleanup aborts on
@@ -606,12 +753,22 @@ export function Chat(): JSX.Element {
   // seeding state) means a `settings.name` change re-personalises for free
   // and there is no seeding effect to guard.
   const baseRows = useMemo<Conversation>(() => {
+    // While the context popup is up the opener stays hidden (mockup: the
+    // opener bubble appears only once the popup is answered).
+    if (contextPopupOpen) return [];
+    // A FAB entry (Slice 3) swaps the default greeting for the generic
+    // "what would you like to chat about?" opener on every empty thread of
+    // this visit — the FAB's contract is a fresh, topic-open conversation.
+    const opener: Conversation =
+      openRequest !== null
+        ? [ASK_OPENER]
+        : personalise([FALLBACK_OPENER], settings.name);
     if (serverList !== null) {
       if (activeId === null) {
-        return personalise([FALLBACK_OPENER], settings.name);
+        return opener;
       }
       if (loaded?.key === activeId && loaded.empty) {
-        return personalise([FALLBACK_OPENER], settings.name);
+        return opener;
       }
       return [];
     }
@@ -619,7 +776,15 @@ export function Chat(): JSX.Element {
       return personalise(mockSeed, settings.name);
     }
     return [];
-  }, [serverList, activeId, loaded, mockSeed, settings.name]);
+  }, [
+    contextPopupOpen,
+    openRequest,
+    serverList,
+    activeId,
+    loaded,
+    mockSeed,
+    settings.name,
+  ]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -635,6 +800,19 @@ export function Chat(): JSX.Element {
   useEffect(() => {
     return () => {
       sendCtrlRef.current?.abort();
+    };
+  }, []);
+
+  // ── In-flight image upload tracking (Slice 3) ──────────────────────
+  // Same discipline as sends: one controller per upload, aborted on
+  // unmount and on conversation switch (a late OCR turn must never append
+  // into a different thread).
+  const [uploading, setUploading] = useState<boolean>(false);
+  const uploadCtrlRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    return () => {
+      uploadCtrlRef.current?.abort();
     };
   }, []);
 
@@ -675,8 +853,10 @@ export function Chat(): JSX.Element {
   const selectConversation = useCallback(
     (id: number): void => {
       if (id === activeKey) return;
-      // Abort any in-flight stream — it belongs to the previous thread.
+      // Abort any in-flight stream / image upload — both belong to the
+      // previous thread.
       sendCtrlRef.current?.abort();
+      uploadCtrlRef.current?.abort();
       setSendError(null);
       setHistoryError(null);
       setSelectedKey(id);
@@ -705,6 +885,7 @@ export function Chat(): JSX.Element {
   const startNewChat = useCallback((): void => {
     if (creating) return;
     sendCtrlRef.current?.abort();
+    uploadCtrlRef.current?.abort();
     setCreating(true);
     setSendError(null);
     conversationService
@@ -782,6 +963,99 @@ export function Chat(): JSX.Element {
       );
     },
     [],
+  );
+
+  /**
+   * Upload one photo onto the active conversation (Slice 3). The server
+   * OCRs it and appends ONE user turn (OCR'd Korean `content` + image
+   * block); on success that turn renders in the thread and the version
+   * snapshot advances to the server's post-append value. Client pre-checks
+   * mirror the server limits for fast feedback only — the server re-sniffs
+   * magic bytes and re-enforces the cap. Fixed-copy failures only
+   * (`imageUploadErrorMessage` — shared with the Images screen); a 409
+   * invalidates the loaded thread so the history effect refetches the
+   * authoritative version before the user retries.
+   */
+  const uploadImageFile = useCallback(
+    (file: File): void => {
+      if (uploading || streaming || !threadReady) return;
+      // Pre-checks reuse the shared fixed copy by synthesising the matching
+      // structured error — one source of truth for the strings, zero drift.
+      if (file.size > MAX_IMAGE_BYTES) {
+        setSendError(
+          imageUploadErrorMessage(
+            new ApiError('client size pre-check', {
+              status: 413,
+              code: 'payload_too_large',
+            }),
+          ),
+        );
+        return;
+      }
+      if (file.type !== '' && !IMAGE_ACCEPT.split(',').includes(file.type)) {
+        setSendError(
+          imageUploadErrorMessage(
+            new ApiError('client type pre-check', {
+              status: 400,
+              code: 'unsupported_image',
+            }),
+          ),
+        );
+        return;
+      }
+      setSendError(null);
+      setUploading(true);
+      // Pin the derived default selection — same rule as `send`.
+      if (selectedKey === null && typeof activeKey === 'number') {
+        setSelectedKey(activeKey);
+      }
+      const ctrl = new AbortController();
+      uploadCtrlRef.current = ctrl;
+      void (async (): Promise<void> => {
+        try {
+          const convId = await ensureActiveConversationId();
+          // Unmounted / switched away during a lazy start — nothing to
+          // upload into anymore.
+          if (!mountedRef.current || ctrl.signal.aborted) return;
+          const result = await conversationService.uploadConversationImage(
+            convId,
+            file,
+            versionRef.current,
+            ctrl.signal,
+          );
+          if (ctrl.signal.aborted) return;
+          versionRef.current = result.version;
+          setMsgs((prev) => [...prev, storedTurnToRow(result.turn)]);
+          learnTitleFromSend(convId, result.turn.content);
+          setTouchedAt((prev) =>
+            new Map(prev).set(convId, new Date().toISOString()),
+          );
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          if (err instanceof ApiError && err.status === 409) {
+            // Stale expected_version — drop the loaded-thread cache so the
+            // history effect refetches (thread AND authoritative version).
+            setLoaded(null);
+            setSendError(UPLOAD_CONFLICT_COPY);
+            return;
+          }
+          setSendError(imageUploadErrorMessage(err));
+        } finally {
+          if (uploadCtrlRef.current === ctrl) uploadCtrlRef.current = null;
+          if (mountedRef.current) setUploading(false);
+        }
+      })();
+    },
+    [
+      activeKey,
+      ensureActiveConversationId,
+      learnTitleFromSend,
+      selectedKey,
+      streaming,
+      threadReady,
+      uploading,
+    ],
   );
 
   /**
@@ -1340,6 +1614,55 @@ export function Chat(): JSX.Element {
 
           {/* ── Thread + composer ───────────────────────────────────── */}
           <div className="km-chat__main">
+            {/* "Discuss the page you were on?" (Slice 3) — modal offer of
+                the page context the FAB carried in. Focus-trapped via
+                useModalA11y; Esc = No. Page label/summary are descriptor
+                text (rendered as escaped text nodes); the button labels are
+                chrome → Bilingual. */}
+            {contextPopupOpen && popupContext !== null ? (
+              <div
+                ref={popupRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="chat-askpop-title"
+                className="km-chat__askpop"
+              >
+                <div id="chat-askpop-title" className="km-chat__askpopTitle">
+                  <Bilingual
+                    en="Discuss the page you were on?"
+                    kr="보던 페이지에 대해 이야기할까요?"
+                  />
+                </div>
+                <div className="km-chat__askpopCtx">
+                  <span className="km-eyebrow">
+                    <Bilingual en="From" kr="이전 화면" />
+                  </span>
+                  <span className="km-chat__askpopFrom">
+                    {popupContext.pageLabel} — {popupContext.summary}
+                  </span>
+                </div>
+                <div className="km-chat__askpopRow">
+                  <Button
+                    variant="gold"
+                    size="sm"
+                    onClick={() => {
+                      answerContextPopup(true);
+                    }}
+                  >
+                    <Bilingual en="Yes, use it" kr="네, 좋아요" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      answerContextPopup(false);
+                    }}
+                  >
+                    <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             <div
               ref={scrollRef}
               className="km-chat__thread"
@@ -1395,6 +1718,36 @@ export function Chat(): JSX.Element {
                 </span>
               </label>
               <div className="km-chat__composerRow">
+                {/* 📷 upload (Slice 3) — mockup places it left of the field.
+                    Hidden input holds the actual picker; the visible button
+                    proxies a click so the affordance stays a real button. */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={IMAGE_ACCEPT}
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  data-testid="chat-image-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    // Clear so re-picking the SAME file re-fires change.
+                    e.target.value = '';
+                    if (file) uploadImageFile(file);
+                  }}
+                />
+                <Button
+                  variant="ghost"
+                  size="md"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={uploading || streaming || !threadReady}
+                  aria-label="Upload a photo · 사진 올리기"
+                  aria-busy={uploading ? 'true' : 'false'}
+                >
+                  <Icon name="camera" size={16} />
+                </Button>
                 <textarea
                   id="chat-input"
                   ref={composerRef}
@@ -1478,6 +1831,11 @@ export function Chat(): JSX.Element {
                   ) : null}
                 </div>
               ) : null}
+              {uploading ? (
+                <div role="status" className="km-chat__uploadStatus">
+                  <Bilingual en="Uploading photo…" kr="사진 업로드 중…" />
+                </div>
+              ) : null}
               {sendError ? (
                 <div
                   role="alert"
@@ -1556,6 +1914,19 @@ function Bubble({
             <Bilingual en="Tutor" kr="튜터" />
           )}
         </div>
+        {msg.image ? (
+          // Slice 3 image turn — the photo renders above its OCR'd text.
+          // Decorative for AT (empty alt): the OCR'd Korean + English
+          // caption directly below ARE this image's textual content, so an
+          // alt would only announce the same thing twice (and jsx-a11y
+          // rightly bans "photo/image" filler labels).
+          <img
+            className="km-chat__bubbleImg"
+            src={msg.image.src}
+            alt=""
+            data-testid="chat-bubble-image"
+          />
+        ) : null}
         <div className="kr km-chat__text">{msg.kr}</div>
         {showEn && msg.en ? (
           <div className="km-chat__en">{msg.en}</div>
