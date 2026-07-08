@@ -31,6 +31,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
@@ -231,16 +232,11 @@ export default function ReviewGrammar(): JSX.Element {
       aria-labelledby="km-review-grammar-title"
     >
       <Topbar
-        krTitle={
-          <>
-            문법 <span className="km-topbar__title-en">· Grammar</span>
-          </>
-        }
-        eyebrow="Review library"
+        krTitle="문법"
+        title="Grammar"
+        titleId="km-review-grammar-title"
+        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
       />
-      <span id="km-review-grammar-title" className="km-sr-only">
-        Grammar library
-      </span>
 
       <LibrarySubnav />
 
@@ -268,13 +264,17 @@ export default function ReviewGrammar(): JSX.Element {
             describe the STALE row set under the new filter/search. */}
         {error === null ? (
           <div className="km-reference__count">
-            {rows.length} pattern{rows.length === 1 ? '' : 's'}
+            <Bilingual
+              en={`${String(rows.length)} pattern${rows.length === 1 ? '' : 's'}`}
+              kr={`문형 ${String(rows.length)}개`}
+              compact
+            />
           </div>
         ) : null}
         {bankError ? <ErrorCard message={bankError} /> : null}
         {loading && rows.length === 0 ? (
           <div className="km-grammar__state" role="status">
-            Loading patterns…
+            <Bilingual en="Loading patterns…" kr="문형을 불러오는 중…" />
           </div>
         ) : error ? (
           // Always surface a failed fetch — a filter/search change that
@@ -282,7 +282,9 @@ export default function ReviewGrammar(): JSX.Element {
           // matched the new filter.
           <ErrorCard message={error} onRetry={load} />
         ) : rows.length === 0 ? (
-          <p className="km-reference__empty">No patterns match.</p>
+          <p className="km-reference__empty">
+            <Bilingual en="No patterns match." kr="맞는 문형이 없어요." />
+          </p>
         ) : (
           <Card className="km-reference__list" variant="flat">
             <ul>
@@ -321,7 +323,13 @@ export default function ReviewGrammar(): JSX.Element {
                           isBanked ? 'Already banked' : `Bank ${p.pattern}`
                         }
                       >
-                        {isBanked ? 'Banked' : pending ? 'Banking…' : 'Bank'}
+                        {isBanked ? (
+                          <Bilingual en="Banked" kr="담김" compact />
+                        ) : pending ? (
+                          <Bilingual en="Banking…" kr="담는 중…" compact />
+                        ) : (
+                          <Bilingual en="Bank" kr="담기" compact />
+                        )}
                       </Button>
                     </div>
                   </li>
@@ -387,7 +395,9 @@ function GrammarDetailSheet({
       <div className="km-review__sheetBody">
         <div className="km-review__sheetHead">
           <div>
-            <Eyebrow>Pattern</Eyebrow>
+            <Eyebrow>
+              <Bilingual en="Pattern" kr="문형" />
+            </Eyebrow>
             <div className="kr-display km-review__sheetTitle">
               {row?.pattern ?? ''}
             </div>
@@ -415,7 +425,13 @@ function GrammarDetailSheet({
             aria-pressed={banked}
             leadingIcon={<Icon name="plus" size={14} />}
           >
-            {banked ? 'Already banked' : pending ? 'Banking…' : 'Bank pattern'}
+            {banked ? (
+              <Bilingual en="Already banked" kr="이미 담김" />
+            ) : pending ? (
+              <Bilingual en="Banking…" kr="담는 중…" />
+            ) : (
+              <Bilingual en="Bank pattern" kr="문형 담기" />
+            )}
           </Button>
         </div>
 
@@ -423,7 +439,7 @@ function GrammarDetailSheet({
 
         {loading ? (
           <div className="km-grammar__state" role="status">
-            Loading detail…
+            <Bilingual en="Loading detail…" kr="상세 정보를 불러오는 중…" />
           </div>
         ) : null}
         {error ? <ErrorCard message={error} onRetry={onRetry} /> : null}

@@ -26,10 +26,14 @@
  */
 import type { JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Bilingual } from '../components/Bilingual';
 import { Icon, type IconName } from '../components/Icon';
 import { Pill } from '../components/Pill';
 import { Topbar } from '../components/Topbar';
 import { navItem, type NavItemId } from '../lib/nav';
+
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const LIBRARY_NAV = navItem('review');
 
 interface LibraryRow {
   readonly key: string;
@@ -72,9 +76,10 @@ const ROWS: ReadonlyArray<LibraryRow> = [
 const HOT_BUTTONS: ReadonlyArray<{
   readonly id: NavItemId;
   readonly label: string;
+  readonly kr: string;
 }> = [
-  { id: 'flashcards', label: 'Vocab flashcards' },
-  { id: 'grammar', label: 'Grammar drill' },
+  { id: 'flashcards', label: 'Vocab flashcards', kr: '단어 카드' },
+  { id: 'grammar', label: 'Grammar drill', kr: '문법 연습' },
 ];
 
 function ReviewLibrary(): JSX.Element {
@@ -86,7 +91,9 @@ function ReviewLibrary(): JSX.Element {
         krTitle="복습"
         title="Review"
         titleId="review-title"
-        eyebrow="Library · 자료실"
+        eyebrow={
+          <Bilingual en={LIBRARY_NAV.eyebrow} kr={LIBRARY_NAV.krEyebrow} />
+        }
       />
 
       <div
@@ -106,7 +113,9 @@ function ReviewLibrary(): JSX.Element {
               }}
             >
               <Icon name={item.icon} size={16} />
-              <span>{hb.label}</span>
+              <span>
+                <Bilingual en={hb.label} kr={hb.kr} compact />
+              </span>
             </button>
           );
         })}
@@ -127,8 +136,12 @@ function ReviewLibrary(): JSX.Element {
                 >
                   <Icon name={row.icon} size={20} />
                   <span className="km-library__rowmeta">
-                    <span className="km-library__rowlabel">{row.label}</span>
-                    <span className="kr km-library__rowkr">{row.kr}</span>
+                    {/* P3b: the row's en/kr pair renders through the
+                        bilingual primitive so the language-display setting
+                        applies (was two hand-stacked single-language spans). */}
+                    <span className="km-library__rowlabel">
+                      <Bilingual en={row.label} kr={row.kr} />
+                    </span>
                   </span>
                   <Icon name="chevron-right" size={16} />
                 </button>
@@ -136,10 +149,13 @@ function ReviewLibrary(): JSX.Element {
                 <div className="km-library__row km-library__row--soon">
                   <Icon name={row.icon} size={20} />
                   <span className="km-library__rowmeta">
-                    <span className="km-library__rowlabel">{row.label}</span>
-                    <span className="kr km-library__rowkr">{row.kr}</span>
+                    <span className="km-library__rowlabel">
+                      <Bilingual en={row.label} kr={row.kr} />
+                    </span>
                   </span>
-                  <Pill>Coming soon</Pill>
+                  <Pill>
+                    <Bilingual en="Coming soon" kr="준비 중" compact />
+                  </Pill>
                 </div>
               )}
             </div>

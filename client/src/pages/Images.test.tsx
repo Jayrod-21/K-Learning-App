@@ -128,6 +128,19 @@ describe('Images page — list view', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('P3b: title + trimmed nav eyebrow render Korean in both-mode', () => {
+    renderImages();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '이미지 · Images' }),
+    ).toBeInTheDocument();
+    // nav.ts pair — the old "mine real-world Korean" wording is gone.
+    expect(screen.getByText('OCR · 실생활 한국어')).toBeInTheDocument();
+    expect(screen.getByText('OCR · real-world Korean')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/mine real-world Korean/),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows the 🅂 mock badge when on mock data and hides it when real', () => {
     const { rerender } = renderImages();
     expect(screen.getByTestId('mock-badge')).toBeInTheDocument();
@@ -201,7 +214,7 @@ describe('Images page — capture view (no boxes)', () => {
 
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
     // The first detected word's Add button → mine by lemma (no krdictEntryId).
-    const addButtons = screen.getAllByRole('button', { name: /^Add$/ });
+    const addButtons = screen.getAllByRole('button', { name: /^추가 · Add$/ });
     await user.click(addButtons[0]);
 
     await waitFor(() => {
@@ -228,20 +241,20 @@ describe('Images page — capture view (no boxes)', () => {
     renderImages();
 
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
-    expect(screen.getAllByRole('button', { name: /^Add$/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^추가 · Add$/ })).toHaveLength(2);
 
-    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /^추가 · Add$/ })[0]);
     await waitFor(() => {
       expect(mineWordMock).toHaveBeenCalledTimes(1);
     });
 
     // Exactly ONE row reads "Added"; the other still offers "Add".
     expect(screen.getAllByRole('button', { name: /Added/ })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: /^Add$/ })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: /^추가 · Add$/ })).toHaveLength(1);
 
     // And the second word can still be banked (the old bug short-circuited
     // it as already-added via the shared undefined key).
-    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /^추가 · Add$/ })[0]);
     await waitFor(() => {
       expect(mineWordMock).toHaveBeenCalledTimes(2);
     });
@@ -259,7 +272,7 @@ describe('Images page — capture view (no boxes)', () => {
     renderImages();
 
     await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
-    await user.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await user.click(screen.getAllByRole('button', { name: /^추가 · Add$/ })[0]);
 
     // The fixed, non-blocking failure toast surfaces (never server text).
     expect(
@@ -268,7 +281,7 @@ describe('Images page — capture view (no boxes)', () => {
     // The optimistic flip rolled back — the row is tappable as "Add" again.
     await waitFor(() => {
       expect(
-        screen.getAllByRole('button', { name: /^Add$/ }).length,
+        screen.getAllByRole('button', { name: /^추가 · Add$/ }).length,
       ).toBeGreaterThan(0);
     });
   });
@@ -353,7 +366,7 @@ describe('Images page — upload', () => {
 
     // The error is dismissable.
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await user.click(screen.getByRole('button', { name: '닫기 · Dismiss' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

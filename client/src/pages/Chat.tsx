@@ -90,6 +90,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -104,6 +105,7 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { loadConversationMock } from '../data/mocks/chat';
 import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
+import { navItem } from '../lib/nav';
 import {
   buildWordPopover,
   GLOSS_DICTIONARY_ENTRY,
@@ -120,6 +122,9 @@ import type {
   ConversationRow,
   ConversationsList,
 } from '../types/domain';
+
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const CHAT_NAV = navItem('chat');
 
 /** Quick-reply starter strings shown under composer when hints are on. */
 const HINT_STARTERS: ReadonlyArray<string> = [
@@ -811,7 +816,7 @@ export function Chat(): JSX.Element {
         krTitle="대화"
         title="Chat"
         titleId="chat-title"
-        eyebrow="Tutor conversation"
+        eyebrow={<Bilingual en={CHAT_NAV.eyebrow} kr={CHAT_NAV.krEyebrow} />}
         right={
           <Toggle
             ariaLabel="Show hints"
@@ -856,7 +861,11 @@ export function Chat(): JSX.Element {
           {/* Composer */}
           <div className="km-chat__composer">
             <label className="km-chat__composerLabel" htmlFor="chat-input">
-              <span className="km-eyebrow">Reply · 합쇼체</span>
+              {/* The 합쇼체 register cue stays OUTSIDE the bilingual pair —
+                  it's the target register, not a translation of "Reply". */}
+              <span className="km-eyebrow">
+                <Bilingual en="Reply" kr="답장" /> · 합쇼체
+              </span>
             </label>
             <div className="km-chat__composerRow">
               <textarea
@@ -898,7 +907,9 @@ export function Chat(): JSX.Element {
                   className="km-chat__composerLabel"
                   htmlFor="chat-dict-input"
                 >
-                  <span className="km-eyebrow">Dictionary · 사전</span>
+                  <span className="km-eyebrow">
+                    <Bilingual en="Dictionary" kr="사전" />
+                  </span>
                 </label>
                 <div className="km-chat__dictInputRow">
                   <input
@@ -1010,7 +1021,11 @@ function Bubble({
         }`}
       >
         <div className="km-eyebrow km-chat__role">
-          {isUser ? 'You' : 'Tutor'}
+          {isUser ? (
+            <Bilingual en="You" kr="나" />
+          ) : (
+            <Bilingual en="Tutor" kr="튜터" />
+          )}
         </div>
         <div className="kr km-chat__text">{msg.kr}</div>
         {showEn && msg.en ? (
@@ -1032,7 +1047,7 @@ function Bubble({
               padding: 0,
             }}
           >
-            failed — retry
+            <Bilingual en="failed — retry" kr="실패 — 다시 시도" />
           </button>
         ) : null}
       </div>

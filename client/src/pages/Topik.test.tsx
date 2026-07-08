@@ -201,6 +201,20 @@ describe('Topik (Study mode)', () => {
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
+  it('P3b: title + mode eyebrow render Korean in both-mode', () => {
+    setDraw([ITEM_A, ITEM_B]);
+    render(<Topik />, { wrapper: MemoryRouter });
+    // Title aligned with nav.ts's headerTitle (모의 · TOPIK).
+    expect(
+      screen.getByRole('heading', { level: 1, name: '모의 · TOPIK' }),
+    ).toBeInTheDocument();
+    // Default Study-mode eyebrow renders its Korean half.
+    expect(screen.getByText('학습 모드')).toBeInTheDocument();
+    expect(screen.getByText('Study mode')).toBeInTheDocument();
+    // The draw-position eyebrow is bilingual too.
+    expect(screen.getByText(/문제 1 \/ 2/)).toBeInTheDocument();
+  });
+
   it('a WRONG submit reveals the verdict, the correct answer, and the explanation', async () => {
     setDraw([ITEM_A, ITEM_B]);
     const user = userEvent.setup();
@@ -216,7 +230,7 @@ describe('Topik (Study mode)', () => {
     expect(screen.getByText('Not quite')).toBeInTheDocument();
     // The reveal names the correct answer in text — a wrong answer is never a
     // bare "Not quite" (the FU where wrong answers gave no information).
-    expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
+    expect(screen.getByText('Correct answer')).toBeInTheDocument();
     expect(screen.getByText(/② 나/)).toBeInTheDocument();
     expect(
       screen.getByText(/Choice B summarises the passage faithfully/),
@@ -243,7 +257,7 @@ describe('Topik (Study mode)', () => {
     await user.click(screen.getByRole('button', { name: /submit/i }));
 
     expect(screen.getByText('Correct')).toBeInTheDocument();
-    expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
+    expect(screen.getByText('Correct answer')).toBeInTheDocument();
     expect(
       screen.getByText(/Choice B summarises the passage faithfully/),
     ).toBeInTheDocument();

@@ -64,6 +64,7 @@ import {
   type JSX,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
@@ -103,11 +104,18 @@ import type {
 type Tab = 'session' | 'lists' | 'all';
 type RatingId = FsrsRating;
 
-const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
-  { id: 'session', label: 'Session' },
-  { id: 'lists', label: 'Lists' },
-  { id: 'all', label: 'All cards' },
+const TABS: ReadonlyArray<{ id: Tab; label: string; kr: string }> = [
+  { id: 'session', label: 'Session', kr: '세션' },
+  { id: 'lists', label: 'Lists', kr: '목록' },
+  { id: 'all', label: 'All cards', kr: '전체 카드' },
 ];
+
+/**
+ * Single tooltip for the two not-yet-wired list actions (P3b dedup — the
+ * string used to be pasted on both buttons).
+ */
+const LIST_ACTION_SOON_TITLE =
+  'Coming soon — seed review cards via “Add to review” on the Lists tab';
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -306,18 +314,21 @@ function SkeletonCard({ height = 240 }: { height?: number }): JSX.Element {
 /** Hanji-styled inline empty state (no error, just "nothing yet"). */
 function EmptyCard({
   message,
+  krMessage,
   hint,
 }: {
   message: string;
+  /** Korean counterpart of `message` — rendered via `<Bilingual/>`. */
+  krMessage?: string;
   hint?: string;
 }): JSX.Element {
   return (
     <Card variant="flat" role="status">
       <div className="km-eyebrow" style={{ marginBottom: 6 }}>
-        Nothing here yet
+        <Bilingual en="Nothing here yet" kr="아직 없어요" />
       </div>
       <div style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-        {message}
+        <Bilingual en={message} kr={krMessage} />
       </div>
       {hint ? (
         <div
@@ -675,10 +686,12 @@ export function Review(): JSX.Element {
     >
       {isMock ? <MockBadge /> : null}
 
-      <Topbar
-        krTitle={<span id="review-title">복습 · Review</span>}
-        eyebrow="SRS · FSRS-style scheduling"
-      />
+      {/* P3b: title aligned with nav.ts's headerTitle (단어 카드 · Vocab) —
+          the baked "복습 · Review" predated the P1.1 re-home to /learn/vocab
+          and collided with the library index's title. The nav eyebrow pair
+          ("Flashcards · 단어 카드") would repeat this title, and the old
+          "SRS · FSRS-style scheduling" was an impl leak — so no eyebrow. */}
+      <Topbar krTitle="단어 카드" title="Vocab" titleId="review-title" />
 
       {/* Tabs ─────────────────────────────────────────────── */}
       <div
@@ -699,7 +712,7 @@ export function Review(): JSX.Element {
                 setTab(t.id);
               }}
             >
-              {t.label}
+              <Bilingual en={t.label} kr={t.kr} compact />
             </button>
           );
         })}
@@ -835,15 +848,17 @@ interface SessionPanelProps {
 interface RatingDef {
   id: RatingId;
   label: string;
+  /** Korean chrome label (Anki-convention renderings). */
+  kr: string;
   sub: string;
   className: string;
 }
 
 const RATINGS: ReadonlyArray<RatingDef> = [
-  { id: 'again', label: 'Again', sub: '<1m', className: 'km-review__rating--again' },
-  { id: 'hard', label: 'Hard', sub: '6m', className: 'km-review__rating--hard' },
-  { id: 'good', label: 'Good', sub: '1d', className: 'km-review__rating--good' },
-  { id: 'easy', label: 'Easy', sub: '4d', className: 'km-review__rating--easy' },
+  { id: 'again', label: 'Again', kr: '다시', sub: '<1m', className: 'km-review__rating--again' },
+  { id: 'hard', label: 'Hard', kr: '어려움', sub: '6m', className: 'km-review__rating--hard' },
+  { id: 'good', label: 'Good', kr: '좋음', sub: '1d', className: 'km-review__rating--good' },
+  { id: 'easy', label: 'Easy', kr: '쉬움', sub: '4d', className: 'km-review__rating--easy' },
 ];
 
 function SessionPanel(props: SessionPanelProps): JSX.Element {
@@ -944,6 +959,7 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
     return (
       <EmptyCard
         message="0 cards in your bank yet."
+        krMessage="아직 모음에 카드가 없어요."
         hint="Tap a word on the Listen screen to mine it, or open Lists → New list to seed one."
       />
     );
@@ -961,12 +977,24 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
       <Card variant="default" className="km-review__strip">
         <SealStamp char="復" size="sm" />
         <div className="km-review__stripBody">
-          <div className="km-eyebrow">Active list</div>
+          <div className="km-eyebrow">
+            <Bilingual en="Active list" kr="현재 목록" />
+          </div>
           <div className="kr km-review__stripName">
-            {activeList ? activeList.name : 'All banked cards'}
+            {activeList ? (
+              activeList.name
+            ) : (
+              <Bilingual en="All banked cards" kr="모든 저장 카드" compact />
+            )}
           </div>
         </div>
-        <Pill>{cards.length} cards</Pill>
+        <Pill>
+          <Bilingual
+            en={`${String(cards.length)} cards`}
+            kr={`카드 ${String(cards.length)}장`}
+            compact
+          />
+        </Pill>
       </Card>
 
       {/* Progress */}
@@ -975,7 +1003,13 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
           <span>
             {idx + 1} / {cards.length}
           </span>
-          <span>~{(cards.length - idx) * 8}s left</span>
+          <span>
+            <Bilingual
+              en={`~${String((cards.length - idx) * 8)}s left`}
+              kr={`약 ${String((cards.length - idx) * 8)}초 남음`}
+              compact
+            />
+          </span>
         </div>
         <div
           className="km-review__progressBar"
@@ -1000,7 +1034,11 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
             <div className="km-eyebrow">{card.pos} · L3</div>
             <div className="kr-display km-review__word">{card.kr}</div>
             <Button variant="ghost" size="sm">
-              Reveal · spacebar
+              <Bilingual
+                en="Reveal · spacebar"
+                kr="정답 보기 · 스페이스바"
+                compact
+              />
             </Button>
           </div>
         }
@@ -1022,7 +1060,9 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
             <div className="km-review__en">{card.en}</div>
             <hr className="hr" />
             <div>
-              <div className="km-eyebrow">Source · seen in</div>
+              <div className="km-eyebrow">
+                <Bilingual en="Seen in" kr="출처" />
+              </div>
               <div className="km-review__source">{card.mined_in ?? '—'}</div>
             </div>
             <div>
@@ -1043,12 +1083,22 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
               className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawerBtn"
               aria-expanded={drawer}
             >
-              <Icon name="info" size={14} /> {drawer ? 'Hide' : 'More'} examples
+              <Icon name="info" size={14} />{' '}
+              {drawer ? (
+                <Bilingual en="Hide examples" kr="예문 접기" compact />
+              ) : (
+                <Bilingual en="More examples" kr="예문 더 보기" compact />
+              )}
             </button>
             {drawer ? (
               <div className="km-review__drawer">
                 {examplesLoading ? (
-                  <div className="km-review__drawerEn">Loading examples…</div>
+                  <div className="km-review__drawerEn">
+                    <Bilingual
+                      en="Loading examples…"
+                      kr="예문을 불러오는 중…"
+                    />
+                  </div>
                 ) : (krdictExamples ?? []).length > 0 ? (
                   (krdictExamples ?? []).map((ex, i) => (
                     <div key={i} className="km-review__drawerRow">
@@ -1060,7 +1110,10 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
                   ))
                 ) : (
                   <div className="km-review__drawerEn">
-                    No additional examples.
+                    <Bilingual
+                      en="No additional examples."
+                      kr="추가 예문이 없어요."
+                    />
                   </div>
                 )}
                 {card.notes ? (
@@ -1085,7 +1138,9 @@ function SessionPanel(props: SessionPanelProps): JSX.Element {
               }}
               className={`km-review__rating focusring ${r.className}`}
             >
-              <span className="km-review__ratingLabel">{r.label}</span>
+              <span className="km-review__ratingLabel">
+                <Bilingual en={r.label} kr={r.kr} compact />
+              </span>
               <span className="km-review__ratingSub">{r.sub}</span>
             </button>
           ))}
@@ -1142,7 +1197,10 @@ function GrammarReviewSection({
       style={{ marginBottom: 16 }}
     >
       <div className="km-eyebrow" id="review-grammar-head" style={{ marginBottom: 8 }}>
-        Grammar production · {cards.length} due
+        <Bilingual
+          en={`Grammar production · ${String(cards.length)} due`}
+          kr={`문법 만들기 · 복습 예정 ${String(cards.length)}개`}
+        />
       </div>
       <div className="km-review__grammarCol">
         {cards.map((gc) => (
@@ -1161,7 +1219,9 @@ function GrammarReviewSection({
                 <span className="km-review__grammarSummary">{gc.summary}</span>
               ) : null}
             </div>
-            <span className="km-pill km-pill--gold">Drill</span>
+            <span className="km-pill km-pill--gold">
+              <Bilingual en="Drill" kr="연습" compact />
+            </span>
             <Icon name="chevron-right" size={16} />
           </button>
         ))}
@@ -1224,11 +1284,12 @@ function ListsPanel({
       <section aria-labelledby="review-seed-head">
         <Card variant="flat">
           <div className="km-eyebrow" id="review-seed-head" style={{ marginBottom: 4 }}>
-            내 단어장에 추가 · Add to review
+            <Bilingual kr="내 단어장에 추가" en="Add to review" />
           </div>
           <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
-            Seed FSRS review cards from the loaded vocab corpus so they show
-            up in your Session queue.
+            {/* P3b trim: dropped the "FSRS" impl jargon. */}
+            Seed review cards from the loaded vocab corpus so they show up in
+            your Session queue.
           </div>
           <Button
             variant="gold"
@@ -1237,7 +1298,11 @@ function ListsPanel({
             onClick={onSeedReview}
             disabled={seeding}
           >
-            {seeding ? 'Adding…' : 'Add to review'}
+            {seeding ? (
+              <Bilingual en="Adding…" kr="추가 중…" />
+            ) : (
+              <Bilingual en="Add to review" kr="복습에 추가" />
+            )}
           </Button>
           {seedStatus ? (
             <div
@@ -1261,7 +1326,7 @@ function ListsPanel({
             id="review-mylists-head"
             style={{ marginBottom: 4 }}
           >
-            내 단어장 · My lists
+            <Bilingual kr="내 단어장" en="My lists" />
           </div>
           <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
             Your custom lists live in the Review library — create, rename,
@@ -1273,7 +1338,7 @@ function ListsPanel({
             onClick={onManageLists}
             trailingIcon={<Icon name="chevron-right" size={14} />}
           >
-            Manage my lists
+            <Bilingual en="Manage my lists" kr="내 단어장 관리" />
           </Button>
         </Card>
       </section>
@@ -1282,11 +1347,18 @@ function ListsPanel({
       <section>
         <header className="km-review__listsHead">
           <div>
-            <div className="km-eyebrow">교재 단어장</div>
-            <div className="km-review__sectionTitle">From sources</div>
+            {/* P3b: the stacked 교재 단어장 / From sources pair collapses
+                into one bilingual heading (the hand-composed pattern). */}
+            <div className="km-eyebrow">
+              <Bilingual kr="교재 단어장" en="From sources" />
+            </div>
           </div>
           <span className="km-review__sourcesMeta">
-            {totalSourceLists} lists · {bundle.sources.length} sources
+            <Bilingual
+              en={`${String(totalSourceLists)} lists · ${String(bundle.sources.length)} sources`}
+              kr={`목록 ${String(totalSourceLists)} · 출처 ${String(bundle.sources.length)}`}
+              compact
+            />
           </span>
         </header>
         <div className="km-review__listsCol">
@@ -1452,6 +1524,7 @@ function AllPanel({
         <SearchRow query={query} onQuery={onQuery} />
         <EmptyCard
           message="0 banked cards."
+          krMessage="아직 저장된 카드가 없어요."
           hint="Mine a word from the Listen screen or import a list from the Lists tab."
         />
       </div>
@@ -1462,17 +1535,32 @@ function AllPanel({
     <div className="km-review__all">
       <SearchRow query={query} onQuery={onQuery} />
       <div className="km-eyebrow km-review__allCount">
-        {results.length} card{results.length === 1 ? '' : 's'}
+        <Bilingual
+          en={`${String(results.length)} card${results.length === 1 ? '' : 's'}`}
+          kr={`카드 ${String(results.length)}장`}
+          compact
+        />
       </div>
       <div className="km-card km-card--flat km-review__allList">
         <div className="km-review__allHead">
-          <span>Word · 단어</span>
-          <span>Meaning</span>
-          <span className="km-review__allMat">Maturity</span>
+          <span>
+            <Bilingual en="Word" kr="단어" />
+          </span>
+          <span>
+            <Bilingual en="Meaning" kr="뜻" />
+          </span>
+          <span className="km-review__allMat">
+            <Bilingual en="Maturity" kr="숙달" compact />
+          </span>
         </div>
         {results.length === 0 ? (
           <div className="km-review__allRow km-review__allRow--last">
-            <div className="km-review__en">No matches for &ldquo;{debouncedQuery}&rdquo;.</div>
+            <div className="km-review__en">
+              <Bilingual
+                en={`No matches for “${debouncedQuery}”.`}
+                kr={`“${debouncedQuery}”에 맞는 결과가 없어요.`}
+              />
+            </div>
           </div>
         ) : (
           results.map((c, i) => (
@@ -1633,25 +1721,28 @@ function ListDetailSheet({
             size="md"
             leadingIcon={<Icon name="play" size={14} />}
             disabled
-            title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
+            title={LIST_ACTION_SOON_TITLE}
           >
-            Study this list
+            <Bilingual en="Study this list" kr="이 목록 학습" />
           </Button>
           <Button
             variant="ghost"
             size="md"
             leadingIcon={<Icon name="plus" size={14} />}
             disabled
-            title="Coming soon — use “Add to review” on the Lists tab to seed review cards"
+            title={LIST_ACTION_SOON_TITLE}
           >
-            Add all to my bank
+            <Bilingual en="Add all to my bank" kr="모두 모음에 추가" />
           </Button>
         </div>
 
         <hr className="hr-double km-review__sheetRule" />
 
         <div className="km-eyebrow km-review__previewHead">
-          Preview · {preview.length} of {total}
+          <Bilingual
+            en={`Preview · ${String(preview.length)} of ${String(total)}`}
+            kr={`미리보기 · ${String(total)}개 중 ${String(preview.length)}개`}
+          />
         </div>
         <div className="km-review__previewCol">
           {preview.map((w, i) => (
@@ -1665,7 +1756,11 @@ function ListDetailSheet({
           ))}
           {total > preview.length ? (
             <div className="km-review__previewMore">
-              + {total - preview.length} more
+              <Bilingual
+                en={`+ ${String(total - preview.length)} more`}
+                kr={`+ ${String(total - preview.length)}개 더`}
+                compact
+              />
             </div>
           ) : null}
         </div>

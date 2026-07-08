@@ -22,6 +22,7 @@
  *     message text; the flip state derives from our own row ids.
  */
 import { useCallback, useEffect, useState, type JSX } from 'react';
+import { Bilingual } from './Bilingual';
 import { Button } from './Button';
 import { Card } from './Card';
 import { Eyebrow } from './Eyebrow';
@@ -128,20 +129,27 @@ export function WeeklySuggestions(): JSX.Element | null {
 
   return (
     <Card className="km-resources__week" variant="flat">
-      <Eyebrow>이번 주 · This Week</Eyebrow>
+      <Eyebrow>
+        <Bilingual en="This Week" kr="이번 주" />
+      </Eyebrow>
+      {/* P3b verbage trim — one line; keeps the suggest-only guarantee. */}
       <p className="km-resources__week-hint">
-        A fresh set every week. Tap Add to bank a card — nothing is added
-        automatically.
+        <Bilingual
+          en="New picks each week — nothing is added automatically."
+          kr="매주 새로운 추천 — 자동으로 추가되지 않아요."
+        />
       </p>
       {loading ? (
         <div className="km-grammar__state" role="status">
-          Loading this week’s picks…
+          <Bilingual en="Loading this week’s picks…" kr="불러오는 중…" />
         </div>
       ) : (
         <div className="km-resources__week-cols">
           {(vocab?.length ?? 0) > 0 ? (
             <div className="km-resources__week-col">
-              <Eyebrow className="km-resources__week-coltitle">Vocabulary</Eyebrow>
+              <Eyebrow className="km-resources__week-coltitle">
+                <Bilingual en="Vocabulary" kr="어휘" />
+              </Eyebrow>
               <ul className="km-resources__suggest-list">
                 {vocab?.map((entry) => {
                   const key = `v:${String(entry.id)}`;
@@ -163,7 +171,9 @@ export function WeeklySuggestions(): JSX.Element | null {
           ) : null}
           {(grammar?.length ?? 0) > 0 ? (
             <div className="km-resources__week-col">
-              <Eyebrow className="km-resources__week-coltitle">Grammar</Eyebrow>
+              <Eyebrow className="km-resources__week-coltitle">
+                <Bilingual en="Grammar" kr="문법" />
+              </Eyebrow>
               <ul className="km-resources__suggest-list">
                 {grammar?.map((pattern) => {
                   const key = `g:${grammarKey(pattern)}`;
@@ -200,13 +210,16 @@ interface SuggestRowProps {
 function SuggestRow({ kr, en, level, state, onAdd }: SuggestRowProps): JSX.Element {
   const added = state === 'added';
   const adding = state === 'adding';
+  // P3b: bilingual button chrome (glossary: Add 추가 · Retry 다시 시도).
+  // Rendered `compact` — the row button is tight chrome, so 'both' mode
+  // shows the primary language only while the sr reading keeps both.
   const label = added
-    ? '✓ Added'
+    ? { en: '✓ Added', kr: '✓ 추가됨' }
     : adding
-      ? 'Adding…'
+      ? { en: 'Adding…', kr: '추가 중…' }
       : state === 'error'
-        ? 'Retry'
-        : 'Add';
+        ? { en: 'Retry', kr: '다시 시도' }
+        : { en: 'Add', kr: '추가' };
   return (
     <li className="km-resources__suggest-row">
       <span className="kr km-resources__suggest-kr">{kr}</span>
@@ -222,7 +235,7 @@ function SuggestRow({ kr, en, level, state, onAdd }: SuggestRowProps): JSX.Eleme
         aria-pressed={added}
         aria-label={added ? `${kr} added` : `Add ${kr}`}
       >
-        {label}
+        <Bilingual en={label.en} kr={label.kr} compact />
       </Button>
     </li>
   );

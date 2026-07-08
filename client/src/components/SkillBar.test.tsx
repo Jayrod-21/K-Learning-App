@@ -51,6 +51,15 @@ describe('SkillBar', () => {
     expect(header?.textContent).toContain('/ 55');
   });
 
+  it('P3b: renders the label pair bilingually (Korean visible in default both-mode)', () => {
+    const { container } = render(
+      <SkillBar label="Reading" kr="읽기" score={60} target={55} />,
+    );
+    const label = container.querySelector('.km-skillbar__label');
+    expect(label?.textContent).toContain('읽기');
+    expect(label?.textContent).toContain('Reading');
+  });
+
   it('paints the tick indigo when tone="ceiling"', () => {
     const { container } = render(
       <SkillBar

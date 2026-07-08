@@ -11,10 +11,12 @@
  */
 import { type JSX } from 'react';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
+import { navItem } from '../lib/nav';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -24,6 +26,9 @@ import { cn } from '../lib/cn';
 import './Mistakes.css';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
+
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const MISTAKES_NAV = navItem('mistakes');
 
 function whenLabel(iso: string): string {
   const d = new Date(iso);
@@ -74,7 +79,9 @@ function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
               </span>
               {isCorrect ? <Icon name="check" size={16} /> : null}
               {isPicked && !isCorrect ? (
-                <span className="km-mistakes__tag">Your answer</span>
+                <span className="km-mistakes__tag">
+                  <Bilingual en="Your answer" kr="내 답" compact />
+                </span>
               ) : null}
             </div>
           );
@@ -85,7 +92,8 @@ function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
         <Card variant="flat" className="km-mistakes__explain">
           {correct !== undefined ? (
             <p className="km-mistakes__answer">
-              Correct answer: <span className="kr">{correct.kr}</span>
+              <Bilingual en="Correct answer" kr="정답" />:{' '}
+              <span className="kr">{correct.kr}</span>
             </p>
           ) : null}
           <p className="km-mistakes__explain-text">{item.explanation}</p>
@@ -121,12 +129,16 @@ export default function Mistakes(): JSX.Element {
         krTitle="틀린 문제"
         title="Mistakes"
         titleId="km-mistakes-title"
-        eyebrow="what you missed, in one place"
+        eyebrow={
+          <Bilingual en={MISTAKES_NAV.eyebrow} kr={MISTAKES_NAV.krEyebrow} />
+        }
       />
 
       {loading ? (
         <Card className="km-mistakes__state" aria-busy="true">
-          <Eyebrow>Loading your mistakes</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="Loading your mistakes" kr="틀린 문제를 불러오는 중" />
+          </Eyebrow>
           <div className="km-mistakes__skeleton-line" />
           <div className="km-mistakes__skeleton-line" />
         </Card>
@@ -138,9 +150,12 @@ export default function Mistakes(): JSX.Element {
       ) : mistakes.length === 0 ? (
         <Card className="km-mistakes__state km-mistakes__empty">
           <Icon name="check" size={22} />
-          <p>No mistakes in the last 30 days — nice work.</p>
-          <p className="km-mistakes__empty-sub">
-            Missed TOPIK questions collect here so you can review why.
+          {/* P3b trim: one line — the old second sub-line restated the page. */}
+          <p>
+            <Bilingual
+              en="No mistakes in the last 30 days — nice work."
+              kr="최근 30일간 틀린 문제가 없어요 — 잘하고 있어요."
+            />
           </p>
         </Card>
       ) : (

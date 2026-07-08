@@ -133,3 +133,13 @@
   color: var(--paper-mute);
   margin-top: 1px;
 }
+
+/* P3b Batch B — mute the secondary language of bilingual chrome on this
+   page (the primary keeps the element's own ink). .km-today__examKr and
+   .km-today__shortcutKr above are orphaned by the <Bilingual/> rewiring;
+   left for the app-wide dead-rule sweep (Batch A precedent). */
+.km-today__examTitle .km-bilingual__sub,
+.km-today__shortcutLabel .km-bilingual__sub {
+  color: var(--paper-mute);
+  font-weight: 400;
+}

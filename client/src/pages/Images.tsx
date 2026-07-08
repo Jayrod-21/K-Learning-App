@@ -46,6 +46,7 @@ import {
   type ChangeEvent,
   type JSX,
 } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
@@ -56,6 +57,7 @@ import { Topbar } from '../components/Topbar';
 import { WordPopover, type WordPopoverData } from '../components/WordPopover';
 import { loadImagesMock } from '../data/mocks/images';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import { fetchImage, fetchImages, uploadImage } from '../services/images';
 import { mineWord } from '../services/vocab';
@@ -63,6 +65,9 @@ import { useToast } from '../components/useToast';
 import type { ImageCapture, OcrWord } from '../types/domain';
 
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const IMAGES_NAV = navItem('images');
 
 /**
  * Stable per-word key inside ONE capture's word list. The wire sends NO word
@@ -228,23 +233,32 @@ export default function Images(): JSX.Element {
     >
       {result.isMock ? <MockBadge /> : null}
       <Topbar
-        krTitle={
-          <>
-            이미지 <span className="km-topbar__title-en">· Images</span>
-          </>
+        krTitle="이미지"
+        title="Images"
+        titleId="km-images-title"
+        // P3b — adopts nav.ts's trimmed pair (was "OCR · mine real-world
+        // Korean").
+        eyebrow={
+          <Bilingual en={IMAGES_NAV.eyebrow} kr={IMAGES_NAV.krEyebrow} />
         }
-        eyebrow="OCR · mine real-world Korean"
       />
 
       {result.loading ? (
         <Card className="km-images__skeleton" aria-busy="true">
-          <Eyebrow>Loading captures</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="Loading captures" kr="캡처를 불러오는 중" />
+          </Eyebrow>
           <div className="km-images__skeleton-line" />
           <div className="km-images__skeleton-line" />
         </Card>
       ) : result.error && captures.length === 0 ? (
         <Card className="km-images__error" role="alert">
-          <Eyebrow>Captures unavailable</Eyebrow>
+          <Eyebrow>
+            <Bilingual
+              en="Captures unavailable"
+              kr="캡처를 불러오지 못했어요"
+            />
+          </Eyebrow>
           <p>We couldn&apos;t load your captures. Try again shortly.</p>
         </Card>
       ) : cap ? (
@@ -404,7 +418,11 @@ function ListView({
           )}
         </span>
         <div className="km-images__upload-title">
-          {uploading ? 'Reading your image…' : 'Capture or upload'}
+          {uploading ? (
+            <Bilingual en="Reading your image…" kr="이미지를 읽는 중…" />
+          ) : (
+            <Bilingual en="Capture or upload" kr="촬영 또는 업로드" />
+          )}
         </div>
         <p className="km-images__upload-hint">
           Photo of signage, a menu, a book page — anything with Korean text.
@@ -430,7 +448,7 @@ function ListView({
             onClick={onDismissError}
             className="km-btn km-btn--ghost km-btn--sm focusring"
           >
-            Dismiss
+            <Bilingual en="Dismiss" kr="닫기" compact />
           </button>
         </Card>
       ) : null}
@@ -438,7 +456,7 @@ function ListView({
       {captures.length > 0 ? (
         <>
           <Eyebrow className="km-images__group-eyebrow">
-            Or try a sample
+            <Bilingual en="Or try a sample" kr="샘플로 해 보기" />
           </Eyebrow>
           <ul className="km-images__samples">
             {captures.map((c) => (
@@ -466,7 +484,7 @@ function ListView({
       {history.length > 0 && captures.length > 0 ? (
         <>
           <Eyebrow className="km-images__group-eyebrow">
-            Recent captures
+            <Bilingual en="Recent captures" kr="최근 캡처" />
           </Eyebrow>
           <ul className="km-images__recent">
             {history.map((id) => {
@@ -587,11 +605,17 @@ function CaptureView({
           <span style={{ display: 'inline-flex', transform: 'rotate(180deg)' }}>
             <Icon name="arrow-right" size={12} />
           </span>
-          <span>Back</span>
+          <span>
+            <Bilingual en="Back" kr="뒤로" compact />
+          </span>
         </button>
         <Pill tone="gold">
-          <Icon name="translate" size={11} /> {cap.words.length}{' '}
-          {cap.words.length === 1 ? 'word' : 'words'} detected
+          <Icon name="translate" size={11} />{' '}
+          <Bilingual
+            en={`${String(cap.words.length)} ${cap.words.length === 1 ? 'word' : 'words'} detected`}
+            kr={`단어 ${String(cap.words.length)}개 인식`}
+            compact
+          />
         </Pill>
       </div>
 
@@ -647,11 +671,16 @@ function CaptureView({
         </div>
       </Card>
 
-      <Eyebrow className="km-images__list-eyebrow">Detected words</Eyebrow>
+      <Eyebrow className="km-images__list-eyebrow">
+        <Bilingual en="Detected words" kr="인식된 단어" />
+      </Eyebrow>
       <Card className="km-images__detected">
         {cap.words.length === 0 ? (
           <p className="km-images__detected-empty">
-            No words detected in this image.
+            <Bilingual
+              en="No words detected in this image."
+              kr="이 이미지에서 인식된 단어가 없어요."
+            />
           </p>
         ) : (
           <ul className="km-images__detected-list">
@@ -700,12 +729,16 @@ function CaptureView({
                     {isAdded ? (
                       <>
                         <Icon name="check" size={11} />
-                        <span>Added</span>
+                        <span>
+                          <Bilingual en="Added" kr="추가됨" compact />
+                        </span>
                       </>
                     ) : (
                       <>
                         <Icon name="plus" size={11} />
-                        <span>Add</span>
+                        <span>
+                          <Bilingual en="Add" kr="추가" compact />
+                        </span>
                       </>
                     )}
                   </button>
@@ -723,14 +756,14 @@ function CaptureView({
           disabled={cap.words.length === 0}
           className="km-btn km-btn--gold km-btn--md km-btn--full focusring"
         >
-          Add all to bank
+          <Bilingual en="Add all to bank" kr="모두 모음에 추가" />
         </button>
         <button
           type="button"
           onClick={onBack}
           className="km-btn km-btn--ghost km-btn--md focusring"
         >
-          New capture
+          <Bilingual en="New capture" kr="새 캡처" />
         </button>
       </div>
     </div>

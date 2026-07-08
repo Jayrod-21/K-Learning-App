@@ -171,12 +171,27 @@ describe('Ttmik page — browse', () => {
     expect(within(lesson21).getByText('No audio')).toBeInTheDocument();
   });
 
+  it('P3b: title, nav eyebrow, and level headings render Korean in both-mode', async () => {
+    renderPage();
+    await screen.findByText('Level 1');
+    expect(
+      screen.getByRole('heading', { level: 1, name: '듣기 · Listen' }),
+    ).toBeInTheDocument();
+    // Topbar eyebrow — the nav manifest pair.
+    expect(screen.getByText('TTMIK · 이야기 오디오')).toBeInTheDocument();
+    expect(screen.getByText('TTMIK · Iyagi audio')).toBeInTheDocument();
+    // Level group eyebrows carry their Korean halves.
+    expect(screen.getByText('레벨 1')).toBeInTheDocument();
+    // The audio pills expose both languages in the accessible reading.
+    expect(screen.getAllByText('오디오').length).toBeGreaterThan(0);
+  });
+
   it('switches to the Iyagi Episodes tab and lists episodes', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('Level 1');
 
-    await user.click(screen.getByRole('tab', { name: 'Iyagi Episodes' }));
+    await user.click(screen.getByRole('tab', { name: '이야기 에피소드 · Iyagi Episodes' }));
 
     expect(
       await screen.findByRole('button', { name: 'Open episode 1: 서울의 겨울' }),
@@ -235,10 +250,10 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
 
     // Sub-tabs render under the player; Highlights is the default panel.
     expect(
-      screen.getByRole('tab', { name: 'Highlights', selected: true }),
+      screen.getByRole('tab', { name: '하이라이트 · Highlights', selected: true }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('tab', { name: 'Transcript', selected: false }),
+      screen.getByRole('tab', { name: '대본 · Transcript', selected: false }),
     ).toBeInTheDocument();
 
     // Highlights: ordinal order (the wire fixture is deliberately reversed),
@@ -274,10 +289,10 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     await openLessonOne(user);
 
     expect(
-      screen.getByRole('tab', { name: 'Transcript', selected: true }),
+      screen.getByRole('tab', { name: '대본 · Transcript', selected: true }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('tab', { name: 'Highlights' }),
+      screen.queryByRole('tab', { name: /Highlights/ }),
     ).not.toBeInTheDocument();
     expect(
       await screen.findByRole('list', { name: 'Transcript' }),
@@ -286,7 +301,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     // "No highlights for this one." must never leak (the derived-tab fix means
     // there is no post-render flash showing it, unlike a set-state-in-effect).
     expect(
-      screen.queryByText('No highlights for this one.'),
+      screen.queryByText('No highlights yet.'),
     ).not.toBeInTheDocument();
   });
 
@@ -301,12 +316,12 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     await openLessonOne(user);
 
     expect(
-      await screen.findByText('No read-along content for this lesson yet.'),
+      await screen.findByText('No lesson text yet.'),
     ).toBeInTheDocument();
     // No tablist with zero tabs (ARIA-invalid) and no leaked empty panels.
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
     expect(
-      screen.queryByText('No highlights for this one.'),
+      screen.queryByText('No highlights yet.'),
     ).not.toBeInTheDocument();
   });
 
@@ -319,7 +334,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     expect(audio).not.toBeNull();
 
     // Highlights → Transcript: the panel below swaps, the player does not.
-    await user.click(screen.getByRole('tab', { name: 'Transcript' }));
+    await user.click(screen.getByRole('tab', { name: '대본 · Transcript' }));
     await screen.findByRole('list', { name: 'Transcript' });
     // Identity assertion — the exact same DOM node, not an equal-looking
     // replacement. A remount would produce a new element (and reset
@@ -327,7 +342,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     expect(document.querySelector('audio')).toBe(audio);
 
     // And back again.
-    await user.click(screen.getByRole('tab', { name: 'Highlights' }));
+    await user.click(screen.getByRole('tab', { name: '하이라이트 · Highlights' }));
     await screen.findByRole('list', { name: 'Highlights' });
     expect(document.querySelector('audio')).toBe(audio);
     expect(audio).toHaveAttribute('src', '/ttmik/lessons/1/1/audio');
@@ -341,7 +356,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     renderPage();
     await openLessonOne(user);
 
-    await user.click(screen.getByRole('tab', { name: 'Transcript' }));
+    await user.click(screen.getByRole('tab', { name: '대본 · Transcript' }));
     const transcript = await screen.findByRole('list', { name: 'Transcript' });
 
     // header with korean: null → falls back to the English title, no crash.
@@ -476,7 +491,7 @@ describe('Ttmik page — Iyagi episode detail', () => {
     renderPage();
     await screen.findByText('Level 1');
 
-    await user.click(screen.getByRole('tab', { name: 'Iyagi Episodes' }));
+    await user.click(screen.getByRole('tab', { name: '이야기 에피소드 · Iyagi Episodes' }));
     await user.click(
       await screen.findByRole('button', {
         name: 'Open episode 143: 한국의 카페 문화',

@@ -51,6 +51,18 @@ describe('ReviewLibrary (P1.2 index)', () => {
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
   });
 
+  it('P3b: the eyebrow and directory rows render Korean in both-mode', () => {
+    renderLibrary();
+    // Topbar eyebrow — the nav manifest pair (Library · 자료실).
+    expect(screen.getByText('자료실')).toBeInTheDocument();
+    expect(screen.getByText('Library')).toBeInTheDocument();
+    // Rows render their en/kr pair through <Bilingual> (both halves present).
+    const list = screen.getByRole('list', { name: 'Review library' });
+    expect(within(list).getByText('틀린 문제')).toBeInTheDocument();
+    expect(within(list).getByText('Mistakes')).toBeInTheDocument();
+    expect(within(list).getByText('기출 시험')).toBeInTheDocument();
+  });
+
   it('links Mistakes to its re-homed /review/mistakes path', async () => {
     const user = userEvent.setup();
     renderLibrary();
@@ -71,7 +83,7 @@ describe('ReviewLibrary (P1.2 index)', () => {
       // wording ("Vocab flashcards", "Grammar drill").
       const list = screen.getByRole('list', { name: 'Review library' });
       await user.click(
-        within(list).getByRole('button', { name: new RegExp(`^${label}`) }),
+        within(list).getByRole('button', { name: new RegExp(label) }),
       );
       expect(screen.getByTestId('location')).toHaveTextContent(target);
     },
@@ -99,7 +111,7 @@ describe('ReviewLibrary (P1.2 index)', () => {
       const user = userEvent.setup();
       renderLibrary();
       const quick = screen.getByRole('group', { name: 'Quick launch' });
-      await user.click(within(quick).getByRole('button', { name: label }));
+      await user.click(within(quick).getByRole('button', { name: new RegExp(label) }));
       expect(screen.getByTestId('location')).toHaveTextContent(target);
     },
   );

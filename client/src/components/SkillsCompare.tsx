@@ -22,6 +22,7 @@
  */
 import type { JSX } from 'react';
 import { useState } from 'react';
+import { Bilingual } from './Bilingual';
 import { Eyebrow } from './Eyebrow';
 import { SkillBar } from './SkillBar';
 import { cn } from '../lib/cn';
@@ -106,9 +107,17 @@ export function SkillsCompare({
        * doesn't switch panels — it switches the *target line* for the
        * existing bars, which is a "pick one of N" gesture. Radiogroup
        * with `aria-checked` is the honest role.
+       *
+       * P3b top-up (review S-2): the segmented picks render through
+       * `<Bilingual compact>` so ko-mode shows the Korean shorthand
+       * (`r.kr` — e.g. 원어민 for "Native", 4급 for "TOPIK 4") instead of
+       * EN-only chrome. `compact` keeps the tight strip one-script in
+       * 'both' mode; a ref without `kr` falls back to its label alone.
        */}
       <div className="km-skillscompare__pickerrow">
-        <Eyebrow>Compare to</Eyebrow>
+        <Eyebrow>
+          <Bilingual en="Compare to" kr="비교 기준" />
+        </Eyebrow>
         <div
           className="km-skillscompare__picker"
           role="radiogroup"
@@ -131,7 +140,7 @@ export function SkillsCompare({
                   setRefId(r.id);
                 }}
               >
-                {r.label}
+                <Bilingual en={r.label} kr={r.kr} compact />
               </button>
             );
           })}
@@ -161,6 +170,9 @@ export function SkillsCompare({
       {/* Legend (full mode only) ────────────────────────────────── */}
       {!isCompact ? (
         <div className="km-skillscompare__legend">
+          {/* P3b: legend entries render `<Bilingual/>` — no hand-composed
+              "label · kr" strings. `activeRef.kr` may be absent; the
+              primitive's fallback renders the label alone. */}
           <span className="km-skillscompare__legenditem">
             <span
               className={cn(
@@ -168,23 +180,20 @@ export function SkillsCompare({
                 activeRef.isCeiling && 'km-skillscompare__legendtick--ceiling',
               )}
             />
-            {activeRef.label}
-            {activeRef.kr ? (
-              <span className="kr km-skillscompare__legendkr">· {activeRef.kr}</span>
-            ) : null}
+            <Bilingual en={activeRef.label} kr={activeRef.kr} />
           </span>
           <span className="km-skillscompare__legenditem">
             <span className="km-skillscompare__legendsq km-skillscompare__legendsq--meets" />
-            At / above
+            <Bilingual en="At / above" kr="달성" />
           </span>
           <span className="km-skillscompare__legenditem">
             <span className="km-skillscompare__legendsq km-skillscompare__legendsq--below" />
-            Below
+            <Bilingual en="Below" kr="미달" />
           </span>
           {hasAnyBand ? (
             <span className="km-skillscompare__legenditem">
               <span className="km-skillscompare__legendsq km-skillscompare__legendsq--band" />
-              Confidence band
+              <Bilingual en="Confidence band" kr="신뢰 구간" />
             </span>
           ) : null}
         </div>

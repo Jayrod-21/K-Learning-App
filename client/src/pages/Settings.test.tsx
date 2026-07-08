@@ -184,6 +184,34 @@ describe('Settings — profile hydration', () => {
     expect(screen.getByText('Appearance')).toBeInTheDocument();
   });
 
+  it('P3b: group headings render Korean in both-mode, with 화면 표시 (not 외관)', () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+
+    renderSettings();
+    expect(screen.getByText('프로필')).toBeInTheDocument();
+    expect(screen.getByText('알림')).toBeInTheDocument();
+    // Glossary reconciliation: Appearance is 화면 표시 app-wide; 외관 retired.
+    expect(screen.getByText('화면 표시')).toBeInTheDocument();
+    expect(screen.queryByText('외관')).not.toBeInTheDocument();
+    // The topbar eyebrow renders the nav manifest pair.
+    expect(screen.getByText('프로필 · 알림 · 화면 표시')).toBeInTheDocument();
+  });
+
+  it('P3b trim: the locally-cached-preferences impl-leak tooltip is gone', () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+
+    renderSettings();
+    expect(document.querySelector('[title*="locally-cached"]')).toBeNull();
+  });
+
   it('seeds the profile inputs from useAuth().user immediately', () => {
     mocks.fetchMe.mockResolvedValue({
       id: 1,

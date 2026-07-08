@@ -26,6 +26,12 @@
  * `path` is the React Router route. `kr` is the Korean sublabel (LearnMenu
  * rows, a11y labels). `icon` is a key into the `<Icon/>` registry.
  * `headerTitle` is the serif Korean title pattern (e.g. `복습 · Review`).
+ *
+ * Eyebrows (Overhaul P3b): `eyebrow` is the ENGLISH eyebrow, `krEyebrow` its
+ * Korean counterpart — the same flat en/kr convention as `label`/`kr`.
+ * Consumers must render the pair through the bilingual-chrome primitive
+ * (`<Bilingual en={item.eyebrow} kr={item.krEyebrow} />`) so the
+ * language-display setting applies; never hand-compose "kr · en" strings.
  */
 import type { IconName } from '../components/Icon';
 
@@ -34,7 +40,10 @@ export interface NavItem {
   readonly path: string;
   readonly label: string;
   readonly kr: string;
+  /** English eyebrow. Render with `krEyebrow` via `<Bilingual/>`. */
   readonly eyebrow: string;
+  /** Korean eyebrow — chrome register (bare nouns, no trailing punctuation). */
+  readonly krEyebrow: string;
   readonly headerTitle: string;
   readonly icon: IconName;
 }
@@ -70,6 +79,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Today',
     kr: '오늘',
     eyebrow: 'Daily plan',
+    krEyebrow: '오늘의 계획',
     headerTitle: '오늘 · Today',
     icon: 'home',
   },
@@ -79,6 +89,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Progress',
     kr: '성장',
     eyebrow: 'Diagnostic history',
+    krEyebrow: '진단 기록',
     headerTitle: '성장 · Progress',
     icon: 'history',
   },
@@ -91,6 +102,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Review',
     kr: '복습',
     eyebrow: 'Library',
+    krEyebrow: '자료실',
     headerTitle: '복습 · Review',
     icon: 'folder',
   },
@@ -100,6 +112,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Settings',
     kr: '설정',
     eyebrow: 'Profile · notifications · appearance',
+    krEyebrow: '프로필 · 알림 · 화면 표시',
     headerTitle: '설정 · Settings',
     icon: 'settings',
   },
@@ -110,6 +123,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'TOPIK',
     kr: '모의',
     eyebrow: 'Mock test',
+    krEyebrow: '모의고사',
     headerTitle: '모의 · TOPIK',
     icon: 'spark',
   },
@@ -121,6 +135,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Listen',
     kr: '듣기',
     eyebrow: 'TTMIK · Iyagi audio',
+    krEyebrow: 'TTMIK · 이야기 오디오',
     headerTitle: '듣기 · Listen',
     icon: 'headphones',
   },
@@ -131,6 +146,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Vocab flashcards',
     kr: '단어 카드',
     eyebrow: 'Flashcards',
+    krEyebrow: '단어 카드',
     headerTitle: '단어 카드 · Vocab',
     icon: 'cards',
   },
@@ -140,6 +156,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Grammar practice',
     kr: '문법',
     eyebrow: 'Production drill',
+    krEyebrow: '문형 연습',
     headerTitle: '문법 · Grammar',
     icon: 'grammar',
   },
@@ -149,6 +166,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Writing',
     kr: '쓰기',
     eyebrow: 'TOPIK writing grader',
+    krEyebrow: 'TOPIK 쓰기 채점',
     headerTitle: '쓰기 · Writing',
     icon: 'pen',
   },
@@ -157,7 +175,9 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     path: '/learn/hanja',
     label: 'Hanja',
     kr: '한자',
-    eyebrow: 'The bones inside the words',
+    // P3b verbage trim — was the flowery "The bones inside the words".
+    eyebrow: 'Word roots',
+    krEyebrow: '한자 어원',
     headerTitle: '한자 · Hanja',
     icon: 'hanja',
   },
@@ -169,6 +189,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Reading',
     kr: '읽기',
     eyebrow: 'Coming soon',
+    krEyebrow: '준비 중',
     headerTitle: '읽기 · Reading',
     icon: 'book',
   },
@@ -178,7 +199,9 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     path: '/review/mistakes',
     label: 'Mistakes',
     kr: '틀린 문제',
-    eyebrow: 'What you missed, in one place',
+    // P3b verbage trim — was "What you missed, in one place".
+    eyebrow: 'Missed questions',
+    krEyebrow: '틀린 문제 모음',
     headerTitle: '틀린 문제 · Mistakes',
     icon: 'history',
   },
@@ -190,6 +213,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Vocabulary',
     kr: '단어',
     eyebrow: 'Corpus · my lists',
+    krEyebrow: '말뭉치 · 내 단어장',
     headerTitle: '단어 · Vocabulary',
     icon: 'cards',
   },
@@ -201,6 +225,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Dictionary',
     kr: '사전',
     eyebrow: 'KRDICT · 54k entries',
+    krEyebrow: 'KRDICT · 표제어 5.4만',
     headerTitle: '사전 · Dictionary',
     icon: 'search',
   },
@@ -212,6 +237,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Grammar',
     kr: '문법',
     eyebrow: 'KGIU patterns',
+    krEyebrow: 'KGIU 문형',
     headerTitle: '문법 · Grammar',
     icon: 'grammar',
   },
@@ -221,6 +247,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Diagnostic',
     kr: '진단',
     eyebrow: 'Skills check',
+    krEyebrow: '실력 점검',
     headerTitle: '진단 · Diagnostic',
     icon: 'compass',
   },
@@ -229,7 +256,9 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     path: '/images',
     label: 'Images',
     kr: '이미지',
-    eyebrow: 'OCR · mine real-world Korean',
+    // P3b verbage trim — was "OCR · mine real-world Korean".
+    eyebrow: 'OCR · real-world Korean',
+    krEyebrow: 'OCR · 실생활 한국어',
     headerTitle: '이미지 · Images',
     icon: 'image',
   },
@@ -240,6 +269,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     label: 'Chat',
     kr: '대화',
     eyebrow: 'Tutor conversation',
+    krEyebrow: '튜터 대화',
     headerTitle: '대화 · Chat',
     icon: 'chat',
   },

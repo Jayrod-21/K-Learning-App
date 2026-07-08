@@ -65,7 +65,7 @@ const BEGINNER_REFS: ReadonlyArray<SkillReference> = [
 describe('SkillsCompare', () => {
   it('defaults to the first reference id', () => {
     render(<SkillsCompare skills={SKILLS} references={REFS} />);
-    const active = screen.getByRole('radio', { name: 'TOPIK 4' });
+    const active = screen.getByRole('radio', { name: '4급 · TOPIK 4' });
     expect(active).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -77,7 +77,7 @@ describe('SkillsCompare', () => {
         defaultRefId="l5"
       />,
     );
-    expect(screen.getByRole('radio', { name: 'TOPIK 5' })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: '5급 · TOPIK 5' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
@@ -86,12 +86,12 @@ describe('SkillsCompare', () => {
   it('switches refId state when the user picks another reference', async () => {
     const user = userEvent.setup();
     render(<SkillsCompare skills={SKILLS} references={REFS} />);
-    await user.click(screen.getByRole('radio', { name: 'TOPIK 5' }));
-    expect(screen.getByRole('radio', { name: 'TOPIK 5' })).toHaveAttribute(
+    await user.click(screen.getByRole('radio', { name: '5급 · TOPIK 5' }));
+    expect(screen.getByRole('radio', { name: '5급 · TOPIK 5' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
-    expect(screen.getByRole('radio', { name: 'TOPIK 4' })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: '4급 · TOPIK 4' })).toHaveAttribute(
       'aria-checked',
       'false',
     );
@@ -100,7 +100,7 @@ describe('SkillsCompare', () => {
   it('marks the ceiling pick with the ceiling class when active', async () => {
     const user = userEvent.setup();
     render(<SkillsCompare skills={SKILLS} references={REFS} />);
-    const nativeRadio = screen.getByRole('radio', { name: 'Native' });
+    const nativeRadio = screen.getByRole('radio', { name: '원어민 · Native' });
     await user.click(nativeRadio);
     expect(nativeRadio.className).toContain('km-skillscompare__pick--ceiling');
   });
@@ -115,19 +115,20 @@ describe('SkillsCompare', () => {
       />,
     );
     // Both beginner refs are pickable and the explicit default is honoured.
-    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'TOPIK 2' })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: '1급 · TOPIK 1' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '2급 · TOPIK 2' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
     // Switching to TOPIK 1 re-targets the bars and updates the legend's
     // Korean shorthand — the beginner refs behave exactly like the old set.
-    await user.click(screen.getByRole('radio', { name: 'TOPIK 1' }));
-    expect(screen.getByRole('radio', { name: 'TOPIK 1' })).toHaveAttribute(
+    await user.click(screen.getByRole('radio', { name: '1급 · TOPIK 1' }));
+    expect(screen.getByRole('radio', { name: '1급 · TOPIK 1' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
-    expect(screen.getByText(/1급/)).toBeInTheDocument();
+    // 1급 now renders in BOTH the (bilingual) pick and the legend.
+    expect(screen.getAllByText(/1급/).length).toBeGreaterThan(0);
   });
 
   it('groups the radios under a single radiogroup with a label', () => {
@@ -199,6 +200,26 @@ describe('SkillsCompare', () => {
     // No banded rows (legacy snapshot shape) → no band legend entry.
     rerender(<SkillsCompare skills={SKILLS} references={REFS} />);
     expect(screen.queryByText('Confidence band')).not.toBeInTheDocument();
+  });
+
+  it('P3b: eyebrow + legend render bilingually in default both-mode', () => {
+    render(<SkillsCompare skills={SKILLS} references={REFS} />);
+    // "Compare to" eyebrow.
+    expect(screen.getByText('비교 기준')).toBeInTheDocument();
+    expect(screen.getByText('Compare to')).toBeInTheDocument();
+    // Legend + picker: the active ref's Korean shorthand now flows through
+    // <Bilingual/> (no hand-composed "· kr" span) — it appears in both the
+    // segmented pick (P3b top-up, review S-2) and the legend entry.
+    expect(screen.getAllByText('4급').length).toBeGreaterThan(0);
+    // At / above → 달성, Below → 미달.
+    expect(screen.getByText('달성')).toBeInTheDocument();
+    expect(screen.getByText('미달')).toBeInTheDocument();
+  });
+
+  it('P3b: the confidence-band legend entry is bilingual', () => {
+    render(<SkillsCompare skills={BANDED_SKILLS} references={REFS} />);
+    expect(screen.getByText('Confidence band')).toBeInTheDocument();
+    expect(screen.getByText('신뢰 구간')).toBeInTheDocument();
   });
 
   it('fans the bars in with a per-index transition delay (i * 70ms)', () => {

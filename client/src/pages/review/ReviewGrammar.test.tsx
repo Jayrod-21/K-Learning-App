@@ -413,13 +413,13 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     );
     const dialog = await screen.findByRole('dialog');
     await user.click(
-      within(dialog).getByRole('button', { name: 'Bank pattern' }),
+      within(dialog).getByRole('button', { name: '문형 담기 · Bank pattern' }),
     );
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
     expect(
-      await within(dialog).findByRole('button', { name: 'Already banked' }),
+      await within(dialog).findByRole('button', { name: '이미 담김 · Already banked' }),
     ).toBeInTheDocument();
   });
 });

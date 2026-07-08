@@ -39,6 +39,7 @@
  */
 import { useNavigate } from 'react-router-dom';
 import type { JSX } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
@@ -59,9 +60,11 @@ import type { AttemptState } from '../services/topik';
 import type { TodayPlan, TodayTask } from '../types/domain';
 import './Today.css';
 
-/** Format the current date in the design's eyebrow style ("Monday, May 28"). */
-function formatDateEyebrow(d: Date): string {
-  return d.toLocaleDateString('en-US', {
+/** Format the current date in the design's eyebrow style ("Monday, May 28" /
+ *  "5월 28일 월요일") — one formatter, locale-keyed, so the en/kr pair the
+ *  bilingual eyebrow renders can never drift apart. */
+function formatDateEyebrow(d: Date, locale: 'en-US' | 'ko-KR'): string {
+  return d.toLocaleDateString(locale, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
@@ -144,7 +147,12 @@ function OpenExamPanel({
   if (attempt.loading) {
     return (
       <div className="km-today__examPanel" aria-busy="true">
-        <div className="km-today__examMeta">Checking for an exam in progress…</div>
+        <div className="km-today__examMeta">
+          <Bilingual
+            en="Checking for an exam in progress…"
+            kr="진행 중인 시험 확인 중…"
+          />
+        </div>
       </div>
     );
   }
@@ -153,13 +161,20 @@ function OpenExamPanel({
     const section = SECTION_LABELS[open.section];
     return (
       <div className="km-today__examPanel">
-        <Pill tone="gold">Exam in progress</Pill>
+        <Pill tone="gold">
+          <Bilingual en="Exam in progress" kr="진행 중인 시험" />
+        </Pill>
         <div className="km-today__examTitle">
-          {section.label} mock{' '}
-          <span className="kr km-today__examKr">{section.kr}</span>
+          <Bilingual
+            en={`${section.label} mock`}
+            kr={`${section.kr} 모의고사`}
+          />
         </div>
         <div className="km-today__examMeta">
-          {open.answered} answered · picks and timer saved
+          <Bilingual
+            en={`${String(open.answered)} answered · picks and timer saved`}
+            kr={`${String(open.answered)}문항 답변 · 선택과 타이머 저장됨`}
+          />
         </div>
         <Button
           variant="gold"
@@ -167,7 +182,7 @@ function OpenExamPanel({
           onClick={onOpen}
           trailingIcon={<Icon name="arrow-right" size={14} />}
         >
-          Resume exam
+          <Bilingual en="Resume exam" kr="이어서 하기" />
         </Button>
       </div>
     );
@@ -175,10 +190,13 @@ function OpenExamPanel({
   return (
     <div className="km-today__examPanel">
       <div className="km-today__examTitle">
-        Mock exams <span className="kr km-today__examKr">모의고사</span>
+        <Bilingual en="Mock exams" kr="모의고사" />
       </div>
       <div className="km-today__examMeta">
-        No exam in progress — take a timed reading or listening mock.
+        <Bilingual
+          en="No exam in progress — take a timed reading or listening mock."
+          kr="진행 중인 시험이 없어요 — 읽기·듣기 모의고사를 시작해 보세요."
+        />
       </div>
       <Button
         variant="ghost"
@@ -186,7 +204,7 @@ function OpenExamPanel({
         onClick={onOpen}
         trailingIcon={<Icon name="arrow-right" size={14} />}
       >
-        Open TOPIK practice
+        <Bilingual en="Open TOPIK practice" kr="모의고사 열기" />
       </Button>
     </div>
   );
@@ -198,19 +216,26 @@ function OpenExamPanel({
 
 /**
  * Designed placeholder for a P4 feature slot — an intentional empty-state
- * panel (icon + bilingual title + copy + "Coming soon" pill), never a blank
- * or broken card.
+ * panel (icon + bilingual title + one terse copy line + "Coming soon" pill),
+ * never a blank or broken card.
+ *
+ * P3b (Batch A owns this component): the title/kr pair and the pill render
+ * through `<Bilingual/>` so the language-display setting applies; `krCopy`
+ * is an ADDITIVE optional prop (existing call sites stay valid) — when
+ * absent the primitive's fallback renders the English copy in ko-mode.
  */
 function ComingSoonPanel({
   icon,
   title,
   kr,
   copy,
+  krCopy,
 }: {
   icon: IconName;
   title: string;
   kr: string;
   copy: string;
+  krCopy?: string;
 }): JSX.Element {
   return (
     <div className="km-today__soon">
@@ -219,11 +244,15 @@ function ComingSoonPanel({
       </span>
       <span className="km-today__soonMeta">
         <span className="km-today__soonTitle">
-          {title} <span className="kr km-today__soonKr">{kr}</span>
+          <Bilingual en={title} kr={kr} />
         </span>
-        <span className="km-today__soonCopy">{copy}</span>
+        <span className="km-today__soonCopy">
+          <Bilingual en={copy} kr={krCopy} />
+        </span>
       </span>
-      <Pill>Coming soon</Pill>
+      <Pill>
+        <Bilingual en="Coming soon" kr="준비 중" />
+      </Pill>
     </div>
   );
 }
@@ -258,7 +287,9 @@ export function Today(): JSX.Element {
     { realFn: () => fetchAttempt() },
   );
 
-  const dateStr = formatDateEyebrow(new Date());
+  const now = new Date();
+  const dateEn = formatDateEyebrow(now, 'en-US');
+  const dateKr = formatDateEyebrow(now, 'ko-KR');
 
   // Retry routes through the hook's `refetch()` rather than a brutal
   // `window.location.reload()` — a plan failure retries the plan alone.
@@ -299,7 +330,7 @@ export function Today(): JSX.Element {
         krTitle="오늘"
         title="Today"
         titleId="today-title"
-        eyebrow={dateStr}
+        eyebrow={<Bilingual en={dateEn} kr={dateKr} />}
       />
 
       {/* Review queue CTA — the lead action ──────────────────── */}
@@ -319,17 +350,26 @@ export function Today(): JSX.Element {
           aria-label={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
         >
           <div>
-            <Pill tone="gold">Due now</Pill>
+            <Pill tone="gold">
+              <Bilingual en="Due now" kr="지금 복습" />
+            </Pill>
             <div className="km-today__queueCount">
-              {today.data.reviewCount}{' '}
-              {today.data.reviewCount === 1 ? 'card' : 'cards'} due
+              <Bilingual
+                en={`${String(today.data.reviewCount)} ${
+                  today.data.reviewCount === 1 ? 'card' : 'cards'
+                } due`}
+                kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
+              />
             </div>
             {/* No fabricated grammar/vocab split or minute estimate here —
                 /plan/today returns only `dueCount`, so any breakdown would
                 contradict the live count above (it would always read the
                 fixture's "24"). Keep the meta honest to the data we have. */}
             <div className="km-today__queueMeta">
-              FSRS scheduling · due for review
+              <Bilingual
+                en="FSRS scheduling · due for review"
+                kr="FSRS 스케줄링 · 복습 예정"
+              />
             </div>
           </div>
           <Icon name="arrow-right" size={22} />
@@ -348,7 +388,7 @@ export function Today(): JSX.Element {
         <section style={{ marginBottom: 16 }}>
           <Card variant="default" style={{ padding: '20px 22px' }}>
             <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-              오늘의 과제 · Today&rsquo;s tasks
+              <Bilingual en="Today’s tasks" kr="오늘의 과제" />
             </div>
             <SwipeCarousel ariaLabel="Today's tasks">
               {taskTiles.map((tile) => (
@@ -375,13 +415,15 @@ export function Today(): JSX.Element {
       <section style={{ marginBottom: 16 }}>
         <Card variant="default" style={{ padding: '20px 22px' }}>
           <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-            문법 연습 · Grammar practice
+            <Bilingual en="Grammar practice" kr="문법 연습" />
           </div>
+          {/* P3b verbage trim — copy cut to one terse line. */}
           <ComingSoonPanel
             icon="grammar"
             title="Daily grammar drills"
             kr="문법"
-            copy="Your due grammar patterns will queue up here for a quick daily drill."
+            copy="Due grammar patterns queue here."
+            krCopy="복습 예정 문형이 여기에 모여요."
           />
         </Card>
       </section>
@@ -390,7 +432,7 @@ export function Today(): JSX.Element {
       <section style={{ marginBottom: 16 }}>
         <Card variant="default" style={{ padding: '20px 22px' }}>
           <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-            시험 · TOPIK
+            <Bilingual en="TOPIK" kr="시험" />
           </div>
           <SwipeCarousel ariaLabel="TOPIK exams">
             <OpenExamPanel
@@ -399,11 +441,13 @@ export function Today(): JSX.Element {
                 navigate('/learn/topik');
               }}
             />
+            {/* P3b verbage trim — copy cut to one terse line. */}
             <ComingSoonPanel
               icon="spark"
               title="Recommended for you"
               kr="추천"
-              copy="A mock-exam recommendation based on your recent practice will land here."
+              copy="Mock-exam picks based on your practice."
+              krCopy="맞춤 모의고사 추천이 여기에 나와요."
             />
           </SwipeCarousel>
         </Card>
@@ -419,8 +463,9 @@ export function Today(): JSX.Element {
       >
         <Icon name="history" size={20} />
         <span className="km-today__shortcutMeta">
-          <span className="km-today__shortcutLabel">Review mistakes</span>
-          <span className="kr km-today__shortcutKr">오답 복습</span>
+          <span className="km-today__shortcutLabel">
+            <Bilingual en="Review mistakes" kr="오답 복습" />
+          </span>
         </span>
         <Icon name="chevron-right" size={16} />
       </button>

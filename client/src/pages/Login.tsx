@@ -56,6 +56,7 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Eyebrow } from '../components/Eyebrow';
 import { SealStamp } from '../components/SealStamp';
@@ -87,7 +88,11 @@ export default function Login(): JSX.Element {
         <div className="km-login__seal" aria-hidden="true">
           <SealStamp char="韓" size="lg" />
         </div>
-        <Eyebrow>한국어 마스터 · Korean Master</Eyebrow>
+        <Eyebrow>
+          {/* Pre-auth there is no SettingsProvider — useLanguageDisplay
+              degrades to the 'both' default, i.e. today's baked look. */}
+          <Bilingual kr="한국어 마스터" en="Korean Master" />
+        </Eyebrow>
 
         {recoveryCodes !== null ? (
           <RecoveryStep codes={recoveryCodes} />
@@ -154,7 +159,11 @@ function CredentialsStep(): JSX.Element {
   return (
     <>
       <h1 className="kr-display km-login__title">
-        {mode === 'login' ? '환영합니다' : '계정 만들기'}
+        {mode === 'login' ? (
+          <Bilingual kr="환영합니다" en="Welcome" />
+        ) : (
+          <Bilingual kr="계정 만들기" en="Create account" />
+        )}
       </h1>
       <p className="km-login__lede">
         {mode === 'login'
@@ -312,7 +321,9 @@ function CodeStep(): JSX.Element {
 
   return (
     <>
-      <h1 className="kr-display km-login__title">확인 코드</h1>
+      <h1 className="kr-display km-login__title">
+        <Bilingual kr="확인 코드" en="Verification code" />
+      </h1>
       <p className="km-login__lede">
         {useRecovery
           ? 'Enter one of your saved recovery codes.'
@@ -472,7 +483,9 @@ function EnrollStep({
 
   return (
     <>
-      <h1 className="kr-display km-login__title">2단계 인증 설정</h1>
+      <h1 className="kr-display km-login__title">
+        <Bilingual kr="2단계 인증 설정" en="Set up two-factor authentication" />
+      </h1>
       <p className="km-login__lede">
         Two-factor authentication is required. Scan the code with an
         authenticator app (Google Authenticator, 1Password, Authy…), then enter
@@ -587,7 +600,9 @@ function RecoveryStep({ codes }: { codes: string[] }): JSX.Element {
 
   return (
     <>
-      <h1 className="kr-display km-login__title">복구 코드</h1>
+      <h1 className="kr-display km-login__title">
+        <Bilingual kr="복구 코드" en="Recovery codes" />
+      </h1>
       <DoubleRule accent style={{ margin: '18px 0 22px' }} />
       <RecoveryCodesPanel
         codes={codes}

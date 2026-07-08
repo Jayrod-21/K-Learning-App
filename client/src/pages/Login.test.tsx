@@ -80,6 +80,17 @@ describe('Login — credentials step', () => {
     expect(login).toHaveBeenCalledWith('jay@example.com', 'a-long-passphrase');
   });
 
+  it('P3b: the brand eyebrow + title render Korean in both-mode', () => {
+    render(<Login />);
+    // Pre-auth there is no SettingsProvider — the primitive falls back to
+    // the 'both' default, so both halves of the pair must be present.
+    expect(screen.getByText('한국어 마스터')).toBeInTheDocument();
+    expect(screen.getByText('Korean Master')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '환영합니다 · Welcome' }),
+    ).toBeInTheDocument();
+  });
+
   it('maps a 401 to the fixed credential string (never echoes server text)', async () => {
     const login = vi.fn(async () => {
       throw new ApiError('user bob@evil.com not found', {

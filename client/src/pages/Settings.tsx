@@ -93,6 +93,7 @@ import {
   patchMe,
   regenerateRecoveryCodes,
 } from '../services/auth';
+import { navItem } from '../lib/nav';
 import { otpauthUriToDataUrl } from '../lib/qr';
 import { fetchPrefs, putPrefs, type Prefs } from '../services/settings';
 import type { User } from '../hooks/auth-context';
@@ -105,6 +106,9 @@ import type { MfaStatus, NotifPrefs, PalettePrefs } from '../types/domain';
  * the server user; we keep this Mock local to Settings.tsx because no other
  * screen needs it.
  */
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const SETTINGS_NAV = navItem('settings');
+
 async function loadMeMock(): Promise<User> {
   // Tiny synthetic delay so the loading skeleton paints — matches the other
   // mock loaders' shape.
@@ -701,7 +705,9 @@ export default function Settings(): JSX.Element {
         krTitle="설정"
         title="Settings"
         titleId="km-settings-title"
-        eyebrow="Profile · notifications · appearance"
+        eyebrow={
+          <Bilingual en={SETTINGS_NAV.eyebrow} kr={SETTINGS_NAV.krEyebrow} />
+        }
       />
 
       {/* ───── Profile (server-backed) ───── */}
@@ -781,7 +787,9 @@ export default function Settings(): JSX.Element {
         title="Notifications"
         mock={prefsQuery.isMock}
       >
-        <Eyebrow className="km-settings__group-eyebrow">Channels</Eyebrow>
+        <Eyebrow className="km-settings__group-eyebrow">
+          <Bilingual en="Channels" kr="채널" />
+        </Eyebrow>
         <div className="km-settings__channels">
           <ChannelChip
             label="Email"
@@ -819,7 +827,9 @@ export default function Settings(): JSX.Element {
           />
         </div>
 
-        <Eyebrow className="km-settings__group-eyebrow">Send me</Eyebrow>
+        <Eyebrow className="km-settings__group-eyebrow">
+          <Bilingual en="Send me" kr="받을 알림" />
+        </Eyebrow>
         <ToggleRow
           label="Reviews due"
           hint="When 10+ cards are ready."
@@ -854,9 +864,11 @@ export default function Settings(): JSX.Element {
       </SettingsGroup>
 
       {/* ───── Appearance (localStorage cache + server sync) ───── */}
+      {/* Glossary reconciliation (P3b): "Appearance" is 화면 표시 app-wide
+          (nav.ts settings eyebrow agrees) — the old 외관 is retired. */}
       <SettingsGroup
         icon="palette"
-        eyebrow="외관"
+        eyebrow="화면 표시"
         title="Appearance"
         mock={prefsQuery.isMock}
       >
@@ -918,7 +930,7 @@ export default function Settings(): JSX.Element {
           onClick={resetSettings}
           className="km-btn km-btn--ghost km-btn--sm focusring km-settings__reset"
         >
-          Reset to Hanji
+          <Bilingual en="Reset to Hanji" kr="한지 기본값으로" />
         </button>
       </SettingsGroup>
 
@@ -939,7 +951,9 @@ function SettingsGroup({
   children,
 }: {
   icon: IconName;
+  /** Korean group heading — renders with `title` via `<Bilingual/>`. */
   eyebrow: string;
+  /** English group heading. */
   title: string;
   /** When true, this group's prefs are running off the mock fall-back (the
    *  server is unreachable). Renders a small 🅂 marker so the dev signal is
@@ -954,13 +968,16 @@ function SettingsGroup({
           <Icon name={icon} size={14} />
         </span>
         <div>
-          <Eyebrow>{eyebrow}</Eyebrow>
-          <div className="km-settings__group-title">{title}</div>
+          {/* P3b: the old Korean-eyebrow-over-English-title stack was the
+              hand-composed bilingual pattern — one heading through the
+              primitive lets the language-display setting apply. */}
+          <div className="km-settings__group-title">
+            <Bilingual kr={eyebrow} en={title} />
+          </div>
         </div>
         {mock ? (
           <span
             className="km-settings__group-mock"
-            title="Showing locally-cached preferences — not synced from your account"
             aria-label="Preferences not synced from server"
             style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.6 }}
           >

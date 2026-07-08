@@ -32,6 +32,7 @@ import {
   type JSX,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
@@ -63,9 +64,9 @@ import type { ServerVocabList, VocabEntry } from '../../types/domain';
 
 type View = 'browse' | 'lists';
 
-const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
-  { id: 'browse', label: 'Browse' },
-  { id: 'lists', label: 'My lists' },
+const VIEWS: ReadonlyArray<{ id: View; label: string; kr: string }> = [
+  { id: 'browse', label: 'Browse', kr: '둘러보기' },
+  { id: 'lists', label: 'My lists', kr: '내 단어장' },
 ];
 
 function isView(value: string | null): value is View {
@@ -92,16 +93,11 @@ export default function ReviewVocab(): JSX.Element {
       aria-labelledby="km-review-vocab-title"
     >
       <Topbar
-        krTitle={
-          <>
-            단어 <span className="km-topbar__title-en">· Vocabulary</span>
-          </>
-        }
-        eyebrow="Review library"
+        krTitle="단어"
+        title="Vocabulary"
+        titleId="km-review-vocab-title"
+        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
       />
-      <span id="km-review-vocab-title" className="km-sr-only">
-        Vocabulary library
-      </span>
 
       <LibrarySubnav />
 
@@ -125,7 +121,7 @@ export default function ReviewVocab(): JSX.Element {
                 setView(v.id);
               }}
             >
-              {v.label}
+              <Bilingual en={v.label} kr={v.kr} compact />
             </button>
           );
         })}
@@ -234,7 +230,7 @@ function VocabBrowse(): JSX.Element {
       />
       {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">
-          Loading vocabulary…
+          <Bilingual en="Loading vocabulary…" kr="어휘를 불러오는 중…" />
         </div>
       ) : error ? (
         // Render the error whenever the LAST fetch failed — even when stale
@@ -245,7 +241,10 @@ function VocabBrowse(): JSX.Element {
         <ErrorCard message={error} onRetry={refetch} />
       ) : rows.length === 0 ? (
         <p className="km-reference__empty">
-          No words match. Try a dictionary form.
+          <Bilingual
+            en="No words match. Try a dictionary form."
+            kr="맞는 단어가 없어요. 사전형으로 검색해 보세요."
+          />
         </p>
       ) : (
         <>
@@ -272,7 +271,7 @@ function VocabBrowse(): JSX.Element {
                       }}
                       aria-label={`Add ${entry.korean ?? 'word'} to a list`}
                     >
-                      List
+                      <Bilingual en="List" kr="목록" compact />
                     </Button>
                   </div>
                 </li>
@@ -386,7 +385,9 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
       <div className="km-review__sheetBody">
         <div className="km-review__sheetHead">
           <div>
-            <Eyebrow>Add to list</Eyebrow>
+            <Eyebrow>
+              <Bilingual en="Add to list" kr="목록에 추가" />
+            </Eyebrow>
             <div className="kr-display km-review__sheetTitle">{krLabel}</div>
             <div className="km-review__sheetMeta">{entry?.english ?? ''}</div>
           </div>
@@ -404,13 +405,16 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
 
         {loading ? (
           <div className="km-grammar__state" role="status">
-            Loading your lists…
+            <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
           </div>
         ) : null}
         {error ? <ErrorCard message={error} /> : null}
         {!loading && lists.length === 0 && !error ? (
           <p className="km-reference__empty">
-            No lists yet — create one in the My lists view first.
+            <Bilingual
+              en="No lists yet — create one in the My lists view first."
+              kr="아직 목록이 없어요 — 내 단어장에서 먼저 만들어 주세요."
+            />
           </p>
         ) : null}
         {lists.length > 0 ? (
@@ -427,7 +431,11 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
                   disabled={pendingId === list.id}
                   leadingIcon={<Icon name="plus" size={14} />}
                 >
-                  {pendingId === list.id ? 'Adding…' : list.name_kr}
+                  {pendingId === list.id ? (
+                    <Bilingual en="Adding…" kr="추가 중…" />
+                  ) : (
+                    list.name_kr
+                  )}
                 </Button>
               </li>
             ))}
