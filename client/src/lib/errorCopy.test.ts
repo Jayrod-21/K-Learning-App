@@ -6,7 +6,7 @@
  * structured numeric retry_after) do.
  */
 import { describe, it, expect } from 'vitest';
-import { errorMessageFor } from './errorCopy';
+import { errorMessageFor, imageUploadErrorMessage } from './errorCopy';
 import { ApiError } from '../services/api';
 
 const SERVER_PROSE =
@@ -81,5 +81,104 @@ describe('errorMessageFor', () => {
     );
     expect(errorMessageFor('string', 'Fallback.')).toBe('Fallback.');
     expect(errorMessageFor(undefined, 'Fallback.')).toBe('Fallback.');
+  });
+});
+
+describe('imageUploadErrorMessage', () => {
+  it('never echoes server prose from an ApiError message', () => {
+    const cases = [
+      new ApiError(SERVER_PROSE, { status: 429, code: 'daily_cap_exceeded' }),
+      new ApiError(SERVER_PROSE, {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 9,
+      }),
+      new ApiError(SERVER_PROSE, { status: 413, code: 'payload_too_large' }),
+      new ApiError(SERVER_PROSE, { status: 400, code: 'unsupported_image' }),
+      new ApiError(SERVER_PROSE, { status: 502, code: 'ocr_unavailable' }),
+      new ApiError(SERVER_PROSE, { status: 0, code: 'network' }),
+      new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' }),
+    ];
+    for (const err of cases) {
+      expect(imageUploadErrorMessage(err)).not.toContain('unique constraint');
+      expect(imageUploadErrorMessage(err)).not.toBe(SERVER_PROSE);
+    }
+  });
+
+  it('splits the two 429s — short-window retry_after vs the daily Vision cap (img SF-2)', () => {
+    // The expensive-bucket limiter's 429 carries the structured
+    // retry_after — a seconds-scale wait, NOT the daily cap. The copy must
+    // not tell the user to come back tomorrow.
+    const limited = new ApiError('rate_limited: bucket exhausted', {
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 12,
+    });
+    expect(imageUploadErrorMessage(limited)).toBe(
+      'Rate-limited. Try again in about 12 seconds.',
+    );
+    // Fractional retry_after rounds UP (never invites an early retry).
+    const fractional = new ApiError('rate_limited', {
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 0.4,
+    });
+    expect(imageUploadErrorMessage(fractional)).toBe(
+      'Rate-limited. Try again in about 1 seconds.',
+    );
+    // The daily cap has NO retry_after — that one IS "tomorrow".
+    const cap = new ApiError('vision_daily_cap_exceeded: user 3 spent $1.02', {
+      status: 429,
+      code: 'daily_cap_exceeded',
+    });
+    expect(imageUploadErrorMessage(cap)).toBe(
+      "You've hit today's image limit. Try again tomorrow.",
+    );
+    // Same-code daily-cap shape (both 429s use `rate_limited` on some
+    // paths — presence of retry_after is the only discriminator).
+    const capSameCode = new ApiError('daily limit reached', {
+      status: 429,
+      code: 'rate_limited',
+    });
+    expect(imageUploadErrorMessage(capSameCode)).toBe(
+      "You've hit today's image limit. Try again tomorrow.",
+    );
+  });
+
+  it('maps 413 / 400 / 502 / network to their fixed copy', () => {
+    expect(
+      imageUploadErrorMessage(
+        new ApiError('x', { status: 413, code: 'payload_too_large' }),
+      ),
+    ).toBe('That image is too large. Pick one under 8 MB.');
+    expect(
+      imageUploadErrorMessage(
+        new ApiError('x', { status: 400, code: 'unsupported_image' }),
+      ),
+    ).toBe('That file isn’t a supported image. Use a JPEG, PNG, or WebP.');
+    expect(
+      imageUploadErrorMessage(
+        new ApiError('x', { status: 502, code: 'ocr_unavailable' }),
+      ),
+    ).toBe('OCR is temporarily unavailable. Try again shortly.');
+    expect(
+      imageUploadErrorMessage(
+        new ApiError('x', { status: 0, code: 'network' }),
+      ),
+    ).toBe('Network unreachable. Check your connection and try again.');
+  });
+
+  it('falls back to the generic fixed copy for everything else', () => {
+    // Unmatched ApiError (generic 500) and non-ApiError values alike.
+    expect(
+      imageUploadErrorMessage(
+        new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' }),
+      ),
+    ).toBe('Upload failed. Try again.');
+    expect(imageUploadErrorMessage(new Error('raw internals'))).toBe(
+      'Upload failed. Try again.',
+    );
+    expect(imageUploadErrorMessage('string')).toBe('Upload failed. Try again.');
+    expect(imageUploadErrorMessage(undefined)).toBe('Upload failed. Try again.');
   });
 });

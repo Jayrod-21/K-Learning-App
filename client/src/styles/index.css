@@ -3519,8 +3519,24 @@ body {
 }
 .km-chat__historyError { color: var(--vermilion); }
 /* "Discuss the page you were on?" popup (chat rework Slice 3) — matches
-   the ink-themed thread chrome. */
+   the ink-themed thread chrome. The backdrop makes the dialog's
+   aria-modal="true" honest for pointer users: the sidebar/thread behind
+   the offer is not clickable while it is up (clicking the scrim answers
+   No). Same fixed-inset button pattern as .km-popover__backdrop, and the
+   same 60/61 layer pair; the card itself stays in-flow (mockup placement)
+   but is lifted above the scrim. */
+.km-chat__askpopBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 24, 19, 0.32);
+  z-index: 60;
+  border: none;
+  cursor: pointer;
+  animation: fade 160ms ease-out;
+}
 .km-chat__askpop {
+  position: relative;
+  z-index: 61;
   margin: 0 0 10px;
   padding: 14px 16px;
   border: 1px solid var(--line-strong);

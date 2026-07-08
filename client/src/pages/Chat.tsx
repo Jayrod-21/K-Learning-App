@@ -644,8 +644,24 @@ export function Chat(): JSX.Element {
     // Esc = No (the popup is an offer, not a gate).
     answerContextPopup(false);
   }, [answerContextPopup]);
+
+  // List-level failure: the loader truly failed AND no mock came through.
+  const hasNothingToShow = !data;
+
+  // The popup's DOM lives inside the LOADED branch of the screen — the
+  // skeleton (loading) and list-error branches never mount it. useModalA11y
+  // must therefore arm on this render-accurate flag, NOT on
+  // `contextPopupOpen` alone: in prod the list fetch is async, so the first
+  // render is always the skeleton, and an unconditionally-armed hook would
+  // run its container-reading effects (initial focus + Tab trap, keyed on
+  // `open` only) once against a null `popupRef` and never re-arm — a dialog
+  // claiming `aria-modal` with no focus trap — while the body scroll lock
+  // (container-free) would leak onto the skeleton/error screens with no
+  // dialog ever mounting to release it (Slice-3 review B-1).
+  const contextPopupVisible =
+    contextPopupOpen && popupContext !== null && !loading && !hasNothingToShow;
   useModalA11y({
-    open: contextPopupOpen,
+    open: contextPopupVisible,
     onClose: dismissContextPopup,
     containerRef: popupRef,
   });
@@ -1209,7 +1225,12 @@ export function Chat(): JSX.Element {
   };
 
   const send = useCallback((): void => {
-    if (streaming || !threadReady) return;
+    // `uploading` gates too (symmetric with the camera button's gate on
+    // `streaming`): a text send fired while an image upload is in flight
+    // would carry the SAME expected_version as the upload, so the server
+    // is guaranteed to 409 one of them — a wasted Claude stream or Vision
+    // call the client can simply prevent (Slice-3 image review SF-1).
+    if (streaming || uploading || !threadReady) return;
     const text = input.trim();
     if (!text) return;
     setInput('');
@@ -1267,6 +1288,7 @@ export function Chat(): JSX.Element {
     selectedKey,
     streaming,
     threadReady,
+    uploading,
   ]);
 
   const retryFailedRow = useCallback(
@@ -1479,9 +1501,6 @@ export function Chat(): JSX.Element {
     [toast],
   );
 
-  // List-level failure: the loader truly failed AND no mock came through.
-  const hasNothingToShow = !data;
-
   return (
     <section
       className="screen km-chat"
@@ -1618,50 +1637,71 @@ export function Chat(): JSX.Element {
                 the page context the FAB carried in. Focus-trapped via
                 useModalA11y; Esc = No. Page label/summary are descriptor
                 text (rendered as escaped text nodes); the button labels are
-                chrome → Bilingual. */}
-            {contextPopupOpen && popupContext !== null ? (
-              <div
-                ref={popupRef}
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="chat-askpop-title"
-                className="km-chat__askpop"
-              >
-                <div id="chat-askpop-title" className="km-chat__askpopTitle">
-                  <Bilingual
-                    en="Discuss the page you were on?"
-                    kr="보던 페이지에 대해 이야기할까요?"
-                  />
+                chrome → Bilingual. Gated on `contextPopupVisible` (the same
+                flag useModalA11y arms on) so the hook and the DOM can never
+                disagree about whether the dialog exists (B-1). */}
+            {contextPopupVisible && popupContext !== null ? (
+              <>
+                {/* Backdrop — makes the dialog's aria-modal="true" honest
+                    for pointer users too: the sidebar/thread behind the
+                    offer is not clickable while it is up; clicking the
+                    scrim answers No (same as Esc). Mouse/touch only
+                    (tabIndex -1) — keyboard dismissal is Esc, and the Tab
+                    trap confines focus to the dialog. Same fixed-inset
+                    button pattern as WordPopover/Sheet backdrops. */}
+                <button
+                  type="button"
+                  className="km-chat__askpopBackdrop"
+                  aria-label="Dismiss — start fresh"
+                  tabIndex={-1}
+                  data-testid="chat-askpop-backdrop"
+                  onClick={() => {
+                    answerContextPopup(false);
+                  }}
+                />
+                <div
+                  ref={popupRef}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="chat-askpop-title"
+                  className="km-chat__askpop"
+                >
+                  <div id="chat-askpop-title" className="km-chat__askpopTitle">
+                    <Bilingual
+                      en="Discuss the page you were on?"
+                      kr="보던 페이지에 대해 이야기할까요?"
+                    />
+                  </div>
+                  <div className="km-chat__askpopCtx">
+                    <span className="km-eyebrow">
+                      <Bilingual en="From" kr="이전 화면" />
+                    </span>
+                    <span className="km-chat__askpopFrom">
+                      {popupContext.pageLabel} — {popupContext.summary}
+                    </span>
+                  </div>
+                  <div className="km-chat__askpopRow">
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={() => {
+                        answerContextPopup(true);
+                      }}
+                    >
+                      <Bilingual en="Yes, use it" kr="네, 좋아요" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        answerContextPopup(false);
+                      }}
+                    >
+                      <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="km-chat__askpopCtx">
-                  <span className="km-eyebrow">
-                    <Bilingual en="From" kr="이전 화면" />
-                  </span>
-                  <span className="km-chat__askpopFrom">
-                    {popupContext.pageLabel} — {popupContext.summary}
-                  </span>
-                </div>
-                <div className="km-chat__askpopRow">
-                  <Button
-                    variant="gold"
-                    size="sm"
-                    onClick={() => {
-                      answerContextPopup(true);
-                    }}
-                  >
-                    <Bilingual en="Yes, use it" kr="네, 좋아요" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      answerContextPopup(false);
-                    }}
-                  >
-                    <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
-                  </Button>
-                </div>
-              </div>
+              </>
             ) : null}
             <div
               ref={scrollRef}
@@ -1765,7 +1805,9 @@ export function Chat(): JSX.Element {
                   variant="gold"
                   size="md"
                   onClick={send}
-                  disabled={!input.trim() || streaming || !threadReady}
+                  disabled={
+                    !input.trim() || streaming || uploading || !threadReady
+                  }
                   aria-label="Send"
                   aria-busy={streaming ? 'true' : 'false'}
                 >

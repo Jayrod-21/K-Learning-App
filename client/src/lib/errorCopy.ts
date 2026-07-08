@@ -57,14 +57,22 @@ export function errorMessageFor(err: unknown, fallback: string): string {
  * structured status/code only; server prose is never echoed. Shared so the
  * two upload surfaces can't drift apart on copy.
  *
- * 429 here is the per-user DAILY VISION CAP (a cost control), not the
- * generic short-window rate limit — hence the "today's limit" phrasing
- * instead of `errorMessageFor`'s retry-in-N-seconds line.
+ * TWO different 429s reach this route and must not share copy: the image
+ * endpoints also sit behind the generic short-window rate limiter, whose
+ * 429 carries the structured `retry_after` (a seconds-scale wait), while
+ * the per-user DAILY VISION CAP (a cost control) does not — that one
+ * really is "try again tomorrow". `retryAfter` presence is the
+ * discriminator (both use code `rate_limited` on some paths, so the code
+ * field cannot disambiguate).
  */
 export function imageUploadErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 429) {
-      return "You've hit today's image limit. Try again tomorrow.";
+      // Short-window limiter (retry_after present) vs the daily cap. Only
+      // the STRUCTURED retry_after number is interpolated — never prose.
+      return err.retryAfter !== undefined
+        ? `Rate-limited. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : "You've hit today's image limit. Try again tomorrow.";
     }
     if (err.status === 413) {
       return 'That image is too large. Pick one under 8 MB.';

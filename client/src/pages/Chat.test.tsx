@@ -1912,6 +1912,149 @@ describe('Chat FAB open (Slice 3)', () => {
     expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
   });
 
+  it('arms the focus trap + initial focus only when the popup actually mounts — async list load (B-1)', async () => {
+    resetState();
+    // PROD SHAPE: the conversation-list fetch is ASYNC, so the FIRST render
+    // of every FAB entry is the loading skeleton — the popup is NOT in the
+    // DOM yet. A synchronous `kind: 'data'` mock hides exactly this (the
+    // hook's container-reading effects would arm in the same commit the
+    // popup mounts), so this test drives loading → data explicitly.
+    hoisted.ref.endpoint = { kind: 'loading', data: null };
+    // Fresh element per render pass — reusing the SAME element object would
+    // let React bail out on reference equality and never re-read the
+    // endpoint mock.
+    const makeUi = (): JSX.Element => (
+      <MemoryRouter
+        initialEntries={[
+          { pathname: '/chat', state: buildChatOpenState(PAGE_CTX) },
+        ]}
+      >
+        <ToastProvider>
+          <Chat />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+    const { rerender } = render(makeUi());
+
+    // During the load: no dialog, and — the B-1 leak — NO body scroll lock
+    // (the old unconditional hook locked scroll under the skeleton with no
+    // dialog anywhere to release it).
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.body.style.overflow).not.toBe('hidden');
+
+    // The list resolves → the loaded layout mounts WITH the popup, and the
+    // modal a11y arms NOW (the `open` flag flips, re-running the effects
+    // against the mounted container).
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    rerender(makeUi());
+    const dialog = screen.getByRole('dialog');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Initial focus landed INSIDE the dialog (first focusable = Yes).
+    const yes = within(dialog).getByRole('button', { name: /Yes, use it/ });
+    const no = within(dialog).getByRole('button', { name: /No, start fresh/ });
+    await waitFor(() => {
+      expect(yes).toHaveFocus();
+    });
+
+    // The Tab trap armed too: Tab from the last focusable wraps to the
+    // first, Shift+Tab from the first wraps back — focus cannot escape.
+    no.focus();
+    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(yes).toHaveFocus();
+    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    expect(no).toHaveFocus();
+
+    // Dismissing releases the scroll lock.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(document.body.style.overflow).not.toBe('hidden');
+  });
+
+  it('never locks body scroll on the list-error screen — the popup cannot mount there (B-1)', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'loading', data: null };
+    // Fresh element per render pass (see the async-load test above).
+    const makeUi = (): JSX.Element => (
+      <MemoryRouter
+        initialEntries={[
+          { pathname: '/chat', state: buildChatOpenState(PAGE_CTX) },
+        ]}
+      >
+        <ToastProvider>
+          <Chat />
+        </ToastProvider>
+      </MemoryRouter>
+    );
+    const { rerender } = render(makeUi());
+    expect(document.body.style.overflow).not.toBe('hidden');
+
+    // The list load FAILS (no data, no mock fallback) → the error branch.
+    // The popup never mounts, so the scroll lock must never engage — the
+    // old unconditional hook locked it indefinitely here (only Esc or a
+    // full unmount could release it).
+    hoisted.ref.endpoint = { kind: 'data', data: null };
+    rerender(makeUi());
+
+    expect(
+      screen.getByText("The conversation couldn't be loaded."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.body.style.overflow).not.toBe('hidden');
+  });
+
+  it('renders a backdrop behind the popup — clicking it answers No (background not interactive)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    // The dialog claims aria-modal="true"; a viewport-covering scrim backs
+    // that claim for pointer users — the sidebar/thread behind it is not
+    // clickable while the offer is up.
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const backdrop = screen.getByTestId('chat-askpop-backdrop');
+    expect(backdrop).toBeInTheDocument();
+
+    // Scrim click = No: popup + scrim unmount, the composer stays empty,
+    // the generic opener renders, and nothing was started or sent.
+    await user.click(backdrop);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('chat-askpop-backdrop'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>('Reply input').value,
+    ).toBe('');
+    expect(screen.getByText(ASK_OPENER_RE)).toBeInTheDocument();
+    expect(hoisted.ref.startCalls.length).toBe(0);
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+  });
+
+  it('Yes never clobbers text already in the composer (seed fills an empty composer only)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat(buildChatOpenState(PAGE_CTX));
+
+    // Pre-existing composer text. Driven via a direct change event — the
+    // backdrop blocks the pointer path in prod, but the Yes-branch guard
+    // (`prev.trim() === '' ? seed : prev`) must hold regardless of how the
+    // text got there.
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    fireEvent.change(input, { target: { value: '미리 쓴 답장' } });
+
+    await user.click(screen.getByRole('button', { name: /Yes, use it/ }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(input.value).toBe('미리 쓴 답장');
+    expect(input.value).not.toContain('Today · 오늘');
+    // Still pre-fill-only semantics: nothing auto-sent either way.
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+  });
+
   it('skips the popup entirely when the FAB carried no context', () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
@@ -2240,5 +2383,45 @@ describe('Chat image upload (Slice 3)', () => {
     await user.type(screen.getByLabelText('Reply input'), '다시');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(7);
+  });
+
+  it('Send is disabled and Enter no-ops while an upload is in flight (SF-1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE); // conversation 42 loaded, version 5
+
+    const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
+    await user.type(input, '업로드 중에 보내기');
+    pickFile(makeImageFile());
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.uploadCalls[0];
+    if (!call) throw new Error('no captured upload call');
+
+    // Symmetric with the camera button's `streaming` gate: a text send now
+    // would carry the SAME expected_version (5) as the in-flight upload,
+    // guaranteeing a server 409 on one side. The button is disabled…
+    const sendBtn = screen.getByRole('button', { name: 'Send' });
+    expect(sendBtn).toBeDisabled();
+    // …and the Enter-to-send path (which bypasses the button) no-ops too,
+    // keeping the typed text intact.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+    expect(input.value).toBe('업로드 중에 보내기');
+
+    // Once the upload settles, Send re-enables and the message rides the
+    // POST-append version (6) — no conflict, nothing lost.
+    await act(async () => {
+      call.resolve({ version: 6, messages: [], turn: IMAGE_TURN });
+    });
+    expect(sendBtn).not.toBeDisabled();
+    await user.click(sendBtn);
+    await waitFor(() => {
+      expect(hoisted.ref.streamCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(6);
   });
 });
