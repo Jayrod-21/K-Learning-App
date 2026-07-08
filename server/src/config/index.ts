@@ -37,6 +37,22 @@ const EnvSchema = z.object({
   // it returns 429 before any upstream call. See SECURITY.md §16.
   IMAGE_OCR_DAILY_CAP: z.coerce.number().int().positive().default(20),
 
+  // Book-upload (PDF) blob store (U1a — PDF book-upload feature). Mirrors
+  // IMAGE_STORAGE_DIR's contract exactly: a filesystem root under which
+  // uploaded PDFs are stored as `{userId}/{uuid}.pdf`, with only the RELATIVE
+  // path kept in Postgres (book_uploads.blob_ref). Separate root from images
+  // (different content, different retention story) but the identical
+  // save/read/traversal-guard mechanism — see server/src/services/uploadStore.ts.
+  BOOK_UPLOAD_STORAGE_DIR: z.string().min(1).default('./var/book-uploads'),
+
+  // Per-user DAILY cap on book uploads. This is a personal single-user app
+  // expecting a HANDFUL of books ever (~10) — the cap exists purely as an
+  // abuse/runaway-script backstop, not a meaningful usage limit, so it is set
+  // generously relative to expected real use. Re-uploading an EXISTING title
+  // (idempotent replace) does not consume budget — only a brand-new title
+  // creates a new row that counts toward this cap.
+  BOOK_UPLOAD_DAILY_CAP: z.coerce.number().int().positive().default(10),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this

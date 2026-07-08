@@ -640,6 +640,52 @@ export async function seedImageCapture(
   return captureId;
 }
 
+/**
+ * Seed a single book_uploads row directly (U1a — PDF book-upload feature).
+ * Returns the new upload id. Bypasses the upload route entirely (no blob file
+ * is written) — useful for tests that only need rows to exist (e.g. the
+ * daily-cap test, which needs many distinct-titled rows fast) and don't touch
+ * `GET /uploads/:id/file`. `blobRef` defaults to a path that resolves under
+ * the configured store root but points at no real file; a test exercising the
+ * file-streaming route must upload via the real route (or pass a `blobRef`
+ * it has actually written) instead.
+ */
+export async function seedBookUpload(
+  pool: Pool,
+  userId: number,
+  opts: {
+    title?: string;
+    type?: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature';
+    status?: 'processing' | 'ready' | 'failed';
+    blobRef?: string;
+    byteSize?: number;
+    pageCount?: number | null;
+    createdAt?: Date;
+  } = {},
+): Promise<number> {
+  const title = opts.title ?? `seed-book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const blobRef =
+    opts.blobRef ?? `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`;
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO book_uploads
+       (user_id, title, type, status, blob_ref, byte_size, page_count, created_at)
+     VALUES ($1, $2, $3::book_upload_type, $4::book_upload_status, $5, $6, $7,
+             COALESCE($8, now()))
+     RETURNING id`,
+    [
+      userId,
+      title,
+      opts.type ?? 'vocab',
+      opts.status ?? 'processing',
+      blobRef,
+      opts.byteSize ?? 1024,
+      opts.pageCount ?? null,
+      opts.createdAt ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,
