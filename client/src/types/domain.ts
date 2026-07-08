@@ -1475,6 +1475,62 @@ export interface ConversationsList {
   conversations: ConversationRow[];
 }
 
+/**
+ * Optional image reference on a persisted turn (chat rework Slice 1 —
+ * mirrors the server's `StoredTurnImage` in routes/conversation.ts). Present
+ * only on turns created by `POST /conversation/:id/image`: the turn's
+ * `content` is the OCR'd Korean text and this block carries the capture
+ * linkage + the English translation. `blob_url` is a same-origin path — join
+ * it onto the API base like `services/images.ts` `blobUrlFor` does before
+ * using it as an `<img src>`.
+ */
+export interface ConversationTurnImage {
+  capture_id: number;
+  blob_url: string;
+  caption_kr: string;
+  caption_en: string;
+}
+
+/**
+ * One persisted turn as the server stores it in the `messages` JSONB (the
+ * server's `StoredTurn`). This is the WIRE shape `GET /conversation/:id`
+ * returns — distinct from the render-side `ConversationMessage` (kr/en
+ * bilingual line) the Chat screen builds. Plain text turns carry no `image`.
+ */
+export interface StoredConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  sent_at: string;
+  request_id?: string;
+  image?: ConversationTurnImage;
+}
+
+/** Payload of `GET /conversation/:id` — full history + streaming metadata. */
+export interface ConversationDetail {
+  id: number;
+  mode: string;
+  target_register: string | null;
+  /** Optimistic-concurrency snapshot — send as `expected_version` on the
+   *  next append/stream against this conversation. */
+  version: number;
+  messages: StoredConversationTurn[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Envelope for `GET /conversation/:id`. */
+export interface ConversationDetailResult {
+  conversation: ConversationDetail;
+}
+
+/** Result envelope from `POST /conversation/:id/image` (201). */
+export interface AppendImageTurnResult {
+  version: number;
+  messages: unknown;
+  /** The appended user turn — always carries `image`. */
+  turn: StoredConversationTurn;
+}
+
 /** Auth `/auth/me` and PATCH envelope. */
 export interface AuthMeResponse {
   user: {

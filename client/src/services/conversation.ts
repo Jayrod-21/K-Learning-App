@@ -28,10 +28,13 @@
  * passed it.)
  */
 import { ApiError, api, getApiBaseUrl } from './api';
+import { buildMultipartConfig } from './images';
 import { streamSse, type SseEvent } from './sseStream';
 import type {
+  AppendImageTurnResult,
   AppendMessageBody,
   AppendMessageResult,
+  ConversationDetailResult,
   ConversationsList,
   StartConversationBody,
   StartConversationResult,
@@ -58,6 +61,57 @@ export async function appendMessage(
 /** GET /conversation — recent sessions for the current user. */
 export async function listConversations(): Promise<ConversationsList> {
   return api.get<ConversationsList>('/conversation');
+}
+
+/**
+ * GET /conversation/:id — one conversation's FULL message history plus the
+ * metadata needed to keep talking to it (`version` for the next
+ * `expected_version`). Chat rework Slice 1: the sidebar's click-to-switch
+ * loads history through this. The server scopes the lookup to the session
+ * user and 404s on anything that isn't theirs (or was retention-swept);
+ * that surfaces as an `ApiError` for the caller.
+ */
+export async function getConversation(
+  id: number,
+  signal?: AbortSignal,
+): Promise<ConversationDetailResult> {
+  return api.get<ConversationDetailResult>(
+    `/conversation/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * POST /conversation/:id/image — upload one photo onto a conversation
+ * (multipart `image` field + `expected_version` text field).
+ *
+ * The server runs the same hardened pipeline as `POST /images/ocr` (size /
+ * mime / magic-byte validation, per-user daily Vision cap, Claude Vision
+ * OCR), then appends ONE user turn whose `content` is the OCR'd Korean text
+ * and whose `image` block carries the capture id, blob URL, and English
+ * translation. Failures surface as `ApiError` (400 bad file, 404 not the
+ * user's conversation, 409 stale `expected_version` — refetch via
+ * `getConversation` and retry, 413 oversize, 429 daily cap, 502 Vision).
+ * A failure persists neither a capture nor a turn, so a retry is safe.
+ */
+export async function uploadConversationImage(
+  conversationId: number,
+  file: File,
+  expectedVersion: number,
+  signal?: AbortSignal,
+): Promise<AppendImageTurnResult> {
+  const form = new FormData();
+  // Third arg pins the filename so the server sees the original name for the
+  // capture's `original_filename` column.
+  form.append('image', file, file.name);
+  // Multipart text fields ride as strings; the server coerces + validates.
+  form.append('expected_version', String(expectedVersion));
+
+  return api.post<AppendImageTurnResult>(
+    `/conversation/${String(conversationId)}/image`,
+    form,
+    buildMultipartConfig(signal),
+  );
 }
 
 /** Options for `streamMessage`. */
