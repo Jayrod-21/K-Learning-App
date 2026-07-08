@@ -178,8 +178,15 @@ export default function Uploads(): JSX.Element {
                       type="button"
                       className="km-resources__list-open focusring"
                       onClick={() => {
+                        // Guard alongside `disabled` below (belt-and-suspenders,
+                        // matches the delete button's own `disabled={pending}`):
+                        // without this, a click landing between "delete request
+                        // sent" and "row removed from `rows`" could navigate into
+                        // an id that's about to vanish server-side.
+                        if (pending) return;
                         navigate(`/uploads/${upload.id}`);
                       }}
+                      disabled={pending}
                       aria-label={`View ${upload.title}`}
                     >
                       <span className="km-reference__row-en">

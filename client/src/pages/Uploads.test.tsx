@@ -196,6 +196,45 @@ describe('Uploads — delete (confirm-gated)', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  // C-S4 regression: the delete button was correctly `disabled={pending}`,
+  // but the row's "view" button had no such gate — a click landing between
+  // "delete request sent" and "row removed from `rows`" could navigate into
+  // an id that's about to be deleted server-side.
+  it('disables the row-open ("view") button while THAT row\'s delete is pending, and blocks navigation', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    let resolveDelete!: () => void;
+    uploadsSvc.deleteUpload.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    try {
+      const user = userEvent.setup();
+      renderPage();
+      await screen.findByText('한국어 문법 사전');
+
+      await user.click(screen.getByRole('button', { name: 'Delete 한국어 문법 사전' }));
+      await waitFor(() => expect(uploadsSvc.deleteUpload).toHaveBeenCalledTimes(1));
+
+      // Delete is now in flight — that row's view button must be disabled...
+      const viewButton = screen.getByRole('button', { name: 'View 한국어 문법 사전' });
+      expect(viewButton).toBeDisabled();
+      // ...and the OTHER row's view button is untouched (only this row is gated).
+      expect(screen.getByRole('button', { name: 'View 읽기 연습' })).not.toBeDisabled();
+
+      // A click on a disabled button never fires onClick / navigates.
+      await user.click(viewButton);
+      expect(screen.queryByTestId('viewer-probe')).not.toBeInTheDocument();
+
+      resolveDelete();
+      await waitFor(() => {
+        expect(screen.queryByText('한국어 문법 사전')).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('Uploads — the "+ Upload" entry', () => {

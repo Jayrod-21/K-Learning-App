@@ -97,6 +97,18 @@ export function imageUploadErrorMessage(err: unknown): string {
  * `retry_after`, while the short-window rate limiter's 429 does —
  * `retryAfter` presence is the discriminator, same reasoning as that
  * function's doc.
+ *
+ * 413/400 copy was rewritten post-REVISION (`db/docs/PDF_UPLOAD_DESIGN.md`
+ * §"NORMALIZE TO PAGE IMAGES"): the cap is ~300 MB (not the pre-revision
+ * ~15 MB) and the accepted types are a PDF *or* a zip (not PDF-only). The 400
+ * branch is also reached by every `ValidationError` the route can throw —
+ * a bad magic-byte sniff, a zip/PDF normalize failure, OR a body-schema
+ * violation unrelated to the file itself (a blank/>200-char title, an
+ * invalid `type` — see `UploadBodySchema`, `routes/uploads.ts`). The server
+ * folds all of these into the same `code: 'validation_error'`, so the client
+ * cannot structurally tell them apart — the copy below is worded to stay
+ * correct for either cause rather than confidently blaming the file when the
+ * real problem might be the title.
  */
 export function bookUploadErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
@@ -106,10 +118,10 @@ export function bookUploadErrorMessage(err: unknown): string {
         : "You've hit today's upload limit. Try again tomorrow.";
     }
     if (err.status === 413) {
-      return 'That PDF is too large. Pick one under 15 MB.';
+      return 'That file is too large. Pick one under 300 MB.';
     }
     if (err.status === 400) {
-      return 'That file isn’t a valid PDF. Choose a different file.';
+      return 'That upload could not be processed. Check the file (PDF or zip) and the title, then try again.';
     }
     if (err.code === 'network') {
       return 'Network unreachable. Check your connection and try again.';

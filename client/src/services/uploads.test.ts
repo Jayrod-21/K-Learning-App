@@ -6,6 +6,7 @@
  * accepting zip OR pdf, ~300 MB), signal threading, and error re-throw.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AxiosProgressEvent } from 'axios';
 import {
   checkBookFile,
   deleteUpload,
@@ -132,6 +133,59 @@ describe('uploadBook', () => {
       uploadBook(makePdfFile(), 'grammar', 'x'),
     ).rejects.toMatchObject({ status: 413 });
   });
+
+  // C-S5 regression: a real (up to ~300 MB) book upload can run minutes on a
+  // slow connection. Two things were missing before the fix: (1) the
+  // app-wide 10s axios default would misfire as a timeout well before a real
+  // transfer completes, and (2) there was no way for a caller to surface
+  // progress. Both are per-call config on this one POST — assert both are
+  // actually wired, not just documented.
+  it('overrides the app-wide 10s timeout with a generous per-call one (a 300 MB transfer would otherwise misfire as a timeout)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
+
+    await uploadBook(makePdfFile(), 'grammar', 'x');
+
+    const [, , config] = spy.mock.calls[0];
+    expect(config?.timeout).toBeGreaterThan(10_000);
+  });
+
+  it('threads onProgress into axios onUploadProgress, computing an integer percent from real loaded/total bytes', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
+    const onProgress = vi.fn<(percent: number) => void>();
+
+    await uploadBook(makePdfFile(), 'grammar', 'x', undefined, onProgress);
+
+    const [, , config] = spy.mock.calls[0];
+    expect(config?.onUploadProgress).toBeInstanceOf(Function);
+
+    const progress = config?.onUploadProgress as (e: AxiosProgressEvent) => void;
+    progress({ loaded: 50, total: 200 } as AxiosProgressEvent);
+    expect(onProgress).toHaveBeenCalledWith(25);
+
+    progress({ loaded: 200, total: 200 } as AxiosProgressEvent);
+    expect(onProgress).toHaveBeenCalledWith(100);
+  });
+
+  it('does not call onProgress when axios cannot report a total (defends divide-by-undefined)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
+    const onProgress = vi.fn<(percent: number) => void>();
+
+    await uploadBook(makePdfFile(), 'grammar', 'x', undefined, onProgress);
+
+    const [, , config] = spy.mock.calls[0];
+    const progress = config?.onUploadProgress as (e: AxiosProgressEvent) => void;
+    progress({ loaded: 50, total: undefined } as unknown as AxiosProgressEvent);
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('omitting onProgress leaves onUploadProgress unset (no unconditional callback)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ upload: UPLOAD_WIRE_READY });
+
+    await uploadBook(makePdfFile(), 'grammar', 'x');
+
+    const [, , config] = spy.mock.calls[0];
+    expect(config?.onUploadProgress).toBeUndefined();
+  });
 });
 
 describe('listUploads', () => {
@@ -219,6 +273,36 @@ describe('pageUrl', () => {
 
   it('encodes the upload id', () => {
     expect(pageUrl('a/b', 1, '')).toBe('/uploads/a%2Fb/page/1');
+  });
+
+  // B-S1 regression: the page route is deliberately cache-friendly, so a
+  // plain retry that reissues the byte-identical URL could replay a
+  // browser-cached bad-but-200 response forever. `cacheBust` must be opt-in
+  // (never on by default — the normal nav path must stay fully cacheable)
+  // and must change the URL every time it's bumped.
+  describe('cacheBust', () => {
+    it('omitting cacheBust (normal navigation) never appends a query param', () => {
+      expect(pageUrl('9', 3, '')).toBe('/uploads/9/page/3');
+    });
+
+    it('cacheBust=0 (the default) never appends a query param', () => {
+      expect(pageUrl('9', 3, '', 0)).toBe('/uploads/9/page/3');
+    });
+
+    it('a positive cacheBust appends it as a query param', () => {
+      expect(pageUrl('9', 3, '', 1)).toBe('/uploads/9/page/3?r=1');
+    });
+
+    it('a different cacheBust value produces a different URL (forces a fresh fetch on repeated retries)', () => {
+      expect(pageUrl('9', 3, '', 1)).not.toBe(pageUrl('9', 3, '', 2));
+      expect(pageUrl('9', 3, '', 2)).toBe('/uploads/9/page/3?r=2');
+    });
+
+    it('appends after a joined dev API base too', () => {
+      expect(pageUrl('9', 3, 'http://localhost:4000', 1)).toBe(
+        'http://localhost:4000/uploads/9/page/3?r=1',
+      );
+    });
   });
 });
 

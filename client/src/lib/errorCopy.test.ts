@@ -6,7 +6,7 @@
  * structured numeric retry_after) do.
  */
 import { describe, it, expect } from 'vitest';
-import { errorMessageFor, imageUploadErrorMessage } from './errorCopy';
+import { bookUploadErrorMessage, errorMessageFor, imageUploadErrorMessage } from './errorCopy';
 import { ApiError } from '../services/api';
 
 const SERVER_PROSE =
@@ -180,5 +180,76 @@ describe('imageUploadErrorMessage', () => {
     );
     expect(imageUploadErrorMessage('string')).toBe('Upload failed. Try again.');
     expect(imageUploadErrorMessage(undefined)).toBe('Upload failed. Try again.');
+  });
+});
+
+describe('bookUploadErrorMessage', () => {
+  it('never echoes server prose from an ApiError message', () => {
+    const cases = [
+      new ApiError(SERVER_PROSE, { status: 429, code: 'daily_cap_exceeded' }),
+      new ApiError(SERVER_PROSE, { status: 429, code: 'rate_limited', retryAfter: 9 }),
+      new ApiError(SERVER_PROSE, { status: 413, code: 'payload_too_large' }),
+      new ApiError(SERVER_PROSE, { status: 400, code: 'validation_error' }),
+      new ApiError(SERVER_PROSE, { status: 0, code: 'network' }),
+      new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' }),
+    ];
+    for (const err of cases) {
+      expect(bookUploadErrorMessage(err)).not.toContain('unique constraint');
+      expect(bookUploadErrorMessage(err)).not.toBe(SERVER_PROSE);
+    }
+  });
+
+  // C-S2 regression: post-REVISION the cap is ~300 MB (not the pre-revision
+  // ~15 MB) and the accepted types are PDF OR zip (not PDF-only) — the old
+  // copy for both the 413 and 400 branches was stale and actively wrong.
+  it('states the current ~300 MB cap on 413 (not the pre-revision 15 MB copy)', () => {
+    expect(
+      bookUploadErrorMessage(new ApiError('x', { status: 413, code: 'payload_too_large' })),
+    ).toBe('That file is too large. Pick one under 300 MB.');
+  });
+
+  // C-S2 regression: the 400 branch is reached by EVERY ValidationError the
+  // route can throw — a bad file (magic-byte/zip-PDF normalize failure) OR a
+  // body-schema violation unrelated to the file (a >200-char title, a blank
+  // title, an invalid `type`). The old copy ("That file isn't a valid PDF.
+  // Choose a different file.") gave wrong, unactionable advice whenever the
+  // real cause was the title — re-picking the same valid file would just
+  // hit the same 400 again. The new copy must stay correct for either cause
+  // and must NOT single out "the file" or say "isn't a valid PDF".
+  it('does not blame "the file" specifically on 400 (title-length 400s share this code too)', () => {
+    const msg = bookUploadErrorMessage(
+      new ApiError('title must be at most 200 characters', {
+        status: 400,
+        code: 'validation_error',
+      }),
+    );
+    expect(msg).not.toMatch(/isn.t a valid PDF/i);
+    expect(msg).not.toMatch(/choose a different file/i);
+    expect(msg).toMatch(/title/i);
+  });
+
+  it('splits the two 429s — short-window retry_after vs the daily upload cap', () => {
+    const limited = new ApiError('rate_limited: bucket exhausted', {
+      status: 429,
+      code: 'rate_limited',
+      retryAfter: 12,
+    });
+    expect(bookUploadErrorMessage(limited)).toBe('Rate-limited. Try again in about 12 seconds.');
+    const cap = new ApiError('book_upload_daily_cap_exceeded: user 3', {
+      status: 429,
+      code: 'daily_cap_exceeded',
+    });
+    expect(bookUploadErrorMessage(cap)).toBe("You've hit today's upload limit. Try again tomorrow.");
+  });
+
+  it('maps network to its fixed copy and falls back to generic copy otherwise', () => {
+    expect(
+      bookUploadErrorMessage(new ApiError('x', { status: 0, code: 'network' })),
+    ).toBe('Network unreachable. Check your connection and try again.');
+    expect(
+      bookUploadErrorMessage(new ApiError(SERVER_PROSE, { status: 500, code: 'server_error' })),
+    ).toBe('Upload failed. Try again.');
+    expect(bookUploadErrorMessage(new Error('raw internals'))).toBe('Upload failed. Try again.');
+    expect(bookUploadErrorMessage(undefined)).toBe('Upload failed. Try again.');
   });
 });

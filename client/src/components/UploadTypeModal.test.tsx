@@ -12,7 +12,7 @@
  * is replaced.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { UploadTypeModal } from './UploadTypeModal';
 import { uploadBook } from '../services/uploads';
@@ -224,6 +224,78 @@ describe('UploadTypeModal — file + title step', () => {
       expect(onUploaded).toHaveBeenCalledWith(READY);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // C-S3 regression: the title input had no length cap, so a >200-char
+  // title round-tripped to a server 400 with (pre C-S2) misleading copy.
+  // `maxLength` on the input is the primary defense (blocks typing/pasting
+  // past the cap in a real browser); this asserts the DOM attribute exists
+  // at the exact value the server's `UploadBodySchema`/migration-040 CHECK
+  // enforces (200), so the two limits can't silently drift apart.
+  it('caps the title input at 200 characters (the server\'s exact limit)', async () => {
+    const user = userEvent.setup();
+    renderModal();
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
+
+    const titleInput = within(dialog).getByLabelText('Title') as HTMLInputElement;
+    expect(titleInput.maxLength).toBe(200);
+  });
+
+  it('rejects a title over 200 characters client-side (defense-in-depth) and never calls uploadBook', async () => {
+    const user = userEvent.setup();
+    renderModal();
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
+
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
+    await user.upload(fileInput, makePdfFile());
+
+    // Bypass the native `maxLength` truncation (simulating a programmatic
+    // value assignment) to exercise the `submit()`-level guard directly.
+    const titleInput = within(dialog).getByLabelText('Title') as HTMLInputElement;
+    const overLong = 'a'.repeat(201);
+    fireEvent.change(titleInput, { target: { value: overLong } });
+
+    await user.click(within(dialog).getByRole('button', { name: /Upload/ }));
+
+    expect(await within(dialog).findByText(/200 characters max/)).toBeInTheDocument();
+    expect(uploadBook).not.toHaveBeenCalled();
+  });
+
+  // C-S5: a real (up to ~300 MB) book upload can run minutes — the button
+  // must show real progress driven by `uploadBook`'s `onProgress` callback,
+  // not a static "Uploading…" the whole time.
+  it('shows an upload-progress percentage driven by onProgress, not a static label', async () => {
+    let capturedOnProgress: ((percent: number) => void) | undefined;
+    vi.mocked(uploadBook).mockImplementation(
+      (_file, _type, _title, _signal, onProgress) =>
+        new Promise<BookUpload>(() => {
+          capturedOnProgress = onProgress;
+        }),
+    );
+    const user = userEvent.setup();
+    renderModal();
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.grammar }));
+    await user.upload(
+      within(dialog).getByLabelText('Book file') as HTMLInputElement,
+      makePdfFile(),
+    );
+    await user.click(within(dialog).getByRole('button', { name: /Upload/ }));
+
+    await waitFor(() => expect(uploadBook).toHaveBeenCalledTimes(1));
+    expect(await within(dialog).findByText(/Uploading…$/)).toBeInTheDocument();
+
+    act(() => {
+      capturedOnProgress?.(42);
+    });
+    expect(await within(dialog).findByText(/Uploading… 42%/)).toBeInTheDocument();
+
+    act(() => {
+      capturedOnProgress?.(100);
+    });
+    expect(await within(dialog).findByText(/Uploading… 100%/)).toBeInTheDocument();
   });
 
   it('a server failure surfaces fixed copy (never raw server prose) and keeps the modal open', async () => {

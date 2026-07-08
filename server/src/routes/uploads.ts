@@ -73,7 +73,6 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { getLogger } from '../logging.js';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter, mediaLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
@@ -195,7 +194,7 @@ router.post('/', expensiveLimiter(), multerBookUpload, validateBody(UploadBodySc
           try {
             await deleteBlob(blobRef);
           } catch (err) {
-            getLogger().warn(
+            req.log.warn(
               { err: String(err), blobRef },
               'uploads: failed to delete replaced page blob (orphaned, non-fatal)',
             );
@@ -322,7 +321,7 @@ router.get(
 
       const stream = createReadStream(absPath);
       stream.on('error', (err) => {
-        getLogger().error({ err, absPath }, 'uploads: page stream error');
+        req.log.error({ err, absPath }, 'uploads: page stream error');
         stream.destroy();
         if (res.headersSent) {
           res.destroy();
@@ -528,7 +527,7 @@ router.delete(
           try {
             await deleteBlob(blobRef);
           } catch (err) {
-            getLogger().warn(
+            req.log.warn(
               { err: String(err), blobRef },
               'uploads: failed to delete page blob on DELETE (orphaned, non-fatal)',
             );

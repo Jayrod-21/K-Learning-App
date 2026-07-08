@@ -22,7 +22,11 @@
  * `PageImage` below and keyed by `${pageNum}-${retryToken}`, so a page
  * navigation OR a retry both cleanly remount a fresh `<img>` (fresh
  * `loading` state, fresh network request) rather than needing an effect to
- * reset anything.
+ * reset anything. A retry ALSO threads `retryToken` into `pageUrl`'s
+ * `cacheBust` param (never on plain navigation), so a retry forces a fresh
+ * network fetch instead of remounting onto the byte-identical URL — the page
+ * route is deliberately cache-friendly, so a same-URL retry could otherwise
+ * just replay a cached bad response forever.
  *
  * Reorder tool (Jared: vFlat retakes can land out of order — design doc
  * REVISION): a "Reorder pages" mode with a numeric "move page N to position"
@@ -33,13 +37,11 @@
  * `PATCH /uploads/:id/pages/order` confirms it; a failure rolls the local
  * order back and toasts fixed copy (never echoed server prose).
  *
- * KNOWN CROSS-AGENT CONTRACT GAP: the reorder tool needs each page's stable
- * DB id (not just its display number) to submit a valid full-order PATCH —
- * see `services/uploads.ts`'s header for why `listPages` (`GET
- * /uploads/:id/pages`) does not exist on the server commit this was built
- * against. The reorder UI below is complete and correct against the
- * documented `page_ids` contract, but its initial "load current order" step
- * will 404 until that route (or an equivalent) lands server-side.
+ * Reorder tool dependency: the panel's initial "load current order" step
+ * calls `listPages` (`GET /uploads/:id/pages`), which needs each page's
+ * stable DB id (not just its display number) to submit a valid full-order
+ * PATCH. That route is implemented server-side (see `services/uploads.ts`'s
+ * header) — the reorder UI below is live, not blocked on a pending contract.
  *
  * Abort discipline: `getUpload` (meta), `listPages` (reorder's page-id list),
  * and `reorderPages` (the PATCH) are the only network calls this component
@@ -180,12 +182,25 @@ export default function UploadViewer(): JSX.Element {
     // effect, and Uploads.tsx's own `load` effect): there's no way to know
     // this upload's metadata without asking the server, so kicking off the
     // fetch from an effect keyed on `id` is the correct place, not something
-    // to hoist out of an effect. `eslint-plugin-react-hooks`'s
-    // `set-state-in-effect` rule flags the indirection through `loadMeta()`
-    // here even though it does not trip on the structurally-identical
-    // `load()` call in Uploads.tsx (a same-file quirk of the rule's
-    // heuristic, not a real hazard — `loadMeta` guards every state write
-    // after its `await` on `ctrl.signal.aborted`, same as `load` does).
+    // to hoist out of an effect.
+    //
+    // `eslint-plugin-react-hooks`'s `set-state-in-effect` rule fires here
+    // (confirmed real, not stale, via `--report-unused-disable-directives`)
+    // on the SYNCHRONOUS `setMetaState('loading')` + `setPageNum(1)` that
+    // `loadMeta` runs BEFORE its `await` (plus the no-`id` early
+    // `setMetaState('error')` branch) — NOT on anything after the await,
+    // which is a separate concern already covered by the `ctrl.signal.
+    // aborted` guards below. Those synchronous writes are safe: on first
+    // mount they're redundant no-ops (state is already at those initial
+    // values, so React bails without a re-render); on an `id` change
+    // without unmount (navigating from one book straight to another via the
+    // same route) they're an intentional, correct "reset prop-derived state
+    // when the identity prop changes," and nothing downstream can race
+    // because `loadMeta`'s only dep is `id` and every write after its await
+    // is itself guarded. The rule does not trip on the
+    // structurally-identical `load()` effect in Uploads.tsx — a same-file
+    // quirk of the rule's heuristic (confirmed by lint), not evidence the
+    // hazard differs there.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadMeta();
     return () => {
@@ -273,6 +288,17 @@ export default function UploadViewer(): JSX.Element {
   };
 
   const submitMove = (): void => {
+    // Explicit in-flight guard — the Move BUTTON is disabled while
+    // `reordering` (`disabled={reordering || ...}` below), but the
+    // move-target input's Enter-key handler calls submitMove() directly and
+    // does not consult that disabled state, so without this guard two Enter
+    // presses dispatched before React commits the post-move re-render could
+    // both read a still-valid `moveTarget` from the same render and both
+    // proceed — a second in-flight PATCH racing the first, with its
+    // `previousPages` rollback snapshot capturing the FIRST move's
+    // unconfirmed optimistic order instead of the true last-known-good one.
+    // One guard at the top covers both the button and the Enter path.
+    if (reordering) return;
     if (!id || !pages) return;
     const total = pages.length;
     const target = Number(moveTarget);
@@ -530,7 +556,7 @@ export default function UploadViewer(): JSX.Element {
           >
             <PageImage
               key={`${String(pageNum)}-${String(retryToken)}`}
-              src={id ? pageUrl(id, pageNum) : ''}
+              src={id ? pageUrl(id, pageNum, undefined, retryToken) : ''}
               alt={`Page ${String(pageNum)} of ${title}`}
               style={imgStyle}
               onRetry={() => {

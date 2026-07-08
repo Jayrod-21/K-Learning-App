@@ -19,6 +19,13 @@
  * fresh `BookUpload` is handed to the caller via `onUploaded` so it can
  * splice it into whatever list it's showing without a refetch.
  *
+ * Progress: a real (up to ~300 MB) book upload can run minutes on a slow
+ * connection, so the Upload button's label swaps to "Uploading… NN%" driven
+ * by `uploadBook`'s `onProgress` callback (axios's real
+ * `XMLHttpRequest.upload` progress, not a simulated ramp) — `role="status"
+ * aria-live="polite"` on the label announces it to AT the same way the
+ * static "Uploading…" text always did.
+ *
  * Threat model:
  *   - `checkBookFile` is a client convenience pre-check only (see
  *     services/uploads.ts's header) — it saves the user a doomed round-trip
@@ -70,6 +77,19 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
   { id: 'literature', en: 'Literature', kr: '문학' },
 ];
 
+/**
+ * Matches the server's `UploadBodySchema` title cap exactly (`routes/
+ * uploads.ts`'s `z.string().trim().min(1).max(200)`, backed by migration
+ * 040's `ck_book_uploads_title_length` CHECK). A client-side `maxLength`
+ * stops the round-trip a too-long title used to dead-end into: the field
+ * previously had no cap, so a >200-char title always 400'd server-side, and
+ * that 400 rendered the SAME "isn't a valid PDF" copy as an actual bad file
+ * — wrong, unactionable advice for a title problem. The server remains
+ * authoritative (this is UX, not the security boundary — same posture as
+ * `checkBookFile`).
+ */
+const TITLE_MAX_LENGTH = 200;
+
 /** Filename minus a trailing `.pdf`/`.zip` (case-insensitive) — the title default. */
 function titleFromFilename(name: string): string {
   return name.replace(/\.(pdf|zip)$/i, '');
@@ -86,6 +106,7 @@ export function UploadTypeModal({
   const [titleTouched, setTitleTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -100,6 +121,7 @@ export function UploadTypeModal({
     setTitleTouched(false);
     setError(null);
     setUploading(false);
+    setUploadProgress(null);
   }, [open]);
 
   // Abort on unmount too — belt-and-suspenders alongside the close-driven
@@ -132,13 +154,28 @@ export function UploadTypeModal({
       setError('Give the book a title.');
       return;
     }
+    // Defense-in-depth alongside the input's `maxLength` (which stops normal
+    // typing/pasting but not every programmatic path) — mirrors the
+    // blank-title check above rather than letting an oversized title reach
+    // the network and 400.
+    if (trimmedTitle.length > TITLE_MAX_LENGTH) {
+      setError(`Title is too long — ${String(TITLE_MAX_LENGTH)} characters max.`);
+      return;
+    }
     ctrlRef.current?.abort();
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
     setUploading(true);
+    // Stays `null` (renders a bare "Uploading…") until the first real
+    // `onProgress` tick — before any bytes are confirmed sent (DNS/TLS/
+    // connection setup) a "0%" would imply more certainty than we have.
+    setUploadProgress(null);
     setError(null);
     try {
-      const upload = await uploadBook(file, type, trimmedTitle, ctrl.signal);
+      const upload = await uploadBook(file, type, trimmedTitle, ctrl.signal, (percent) => {
+        if (ctrl.signal.aborted) return;
+        setUploadProgress(percent);
+      });
       if (ctrl.signal.aborted) return;
       onUploaded(upload);
       onClose();
@@ -146,7 +183,10 @@ export function UploadTypeModal({
       if (ctrl.signal.aborted) return;
       setError(bookUploadErrorMessage(err));
     } finally {
-      if (!ctrl.signal.aborted) setUploading(false);
+      if (!ctrl.signal.aborted) {
+        setUploading(false);
+        setUploadProgress(null);
+      }
     }
   }
 
@@ -255,6 +295,7 @@ export function UploadTypeModal({
                 type="text"
                 className="km-field__input"
                 value={title}
+                maxLength={TITLE_MAX_LENGTH}
                 onChange={(e) => {
                   setTitleTouched(true);
                   setTitle(e.target.value);
@@ -277,7 +318,19 @@ export function UploadTypeModal({
             >
               <span role="status" aria-live="polite">
                 {uploading ? (
-                  <Bilingual en="Uploading…" kr="업로드 중…" compact />
+                  <Bilingual
+                    en={
+                      uploadProgress !== null
+                        ? `Uploading… ${String(uploadProgress)}%`
+                        : 'Uploading…'
+                    }
+                    kr={
+                      uploadProgress !== null
+                        ? `업로드 중… ${String(uploadProgress)}%`
+                        : '업로드 중…'
+                    }
+                    compact
+                  />
                 ) : (
                   <Bilingual en="Upload" kr="업로드" compact />
                 )}

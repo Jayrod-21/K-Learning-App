@@ -51,20 +51,16 @@
  * Uploads list, the upload modal, the viewer, the reorder tool) can cancel on
  * unmount — mirrors every other service in this module.
  *
- * KNOWN CROSS-AGENT CONTRACT GAP (flag, do not silently paper over): the
- * reorder tool's `PATCH /uploads/:id/pages/order` requires the FULL current
- * set of `book_pages.id` values (routes/uploads.ts validates the submitted
- * set matches exactly). As of the committed server rework (commit
- * `82ea4c2`), no route returns that id list — `GET /uploads/:id` returns
- * only `page_count`, and `GET /uploads/:id/page/:n` returns image bytes, not
- * an id. `listPages` below calls `GET /uploads/:id/pages`, which does NOT
- * exist on that server commit — this is a genuine, unresolved dependency on
- * the parallel server work (out of scope for this client-only pass to add).
- * Until the server exposes an equivalent page-id-list route, the reorder
- * tool's initial load will 404 in the running app even though this client
- * code, the reorder UI, and its tests are otherwise complete and correct
- * against the documented `page_ids` contract.
+ * `GET /uploads/:id/pages` (the reorder tool's page-id-list route,
+ * `listPages` below) is implemented server-side (`routes/uploads.ts:355-390`)
+ * and returns exactly the `{ pages: [{ id, page_number }] }` shape this
+ * module expects — verified field-for-field against the live route, not
+ * assumed. (A prior draft of this file carried a "KNOWN CROSS-AGENT CONTRACT
+ * GAP" note claiming this route did not exist; that gap has since been
+ * closed server-side and the note was stale — removed rather than left to
+ * mislead the next reader into re-diagnosing a 404 that no longer happens.)
  */
+import type { AxiosProgressEvent } from 'axios';
 import { api, getApiBaseUrl } from './api';
 import { buildMultipartConfig } from './images';
 import type { BookUpload, BookUploadType, Page } from '../types/domain';
@@ -105,7 +101,7 @@ interface PageWire {
   page_number: number;
 }
 
-/** Envelope shape for both the (assumed) page-list GET and the reorder PATCH response. */
+/** Envelope shape for both the page-list GET and the reorder PATCH response. */
 interface PagesEnvelope {
   pages: PageWire[];
 }
@@ -138,10 +134,26 @@ function toPage(wire: PageWire): Page {
  * the page bytes. `id` and `n` always originate from a prior server response
  * or a bounded page-count loop — never client free-form text — so this is
  * injection-free.
+ *
+ * `cacheBust`: the route is deliberately cache-friendly (`Cache-Control:
+ * private, max-age=3600` server-side) for the normal navigation path, which
+ * is correct — but that means a plain retry of a failed load reissues the
+ * BYTE-IDENTICAL URL, and a truncated/partial-but-200 response the browser
+ * cached would replay forever no matter how many times the user taps Retry.
+ * Pass a positive `cacheBust` (e.g. an incrementing retry counter)
+ * ONLY on an explicit user-initiated retry to force a fresh fetch; omit it
+ * (default 0) on every normal navigation so that path stays fully
+ * cache-friendly.
  */
-export function pageUrl(id: string, n: number, base: string = getApiBaseUrl()): string {
+export function pageUrl(
+  id: string,
+  n: number,
+  base: string = getApiBaseUrl(),
+  cacheBust = 0,
+): string {
   const path = `/uploads/${encodeURIComponent(id)}/page/${String(n)}`;
-  return base === '' ? path : `${base}${path}`;
+  const url = base === '' ? path : `${base}${path}`;
+  return cacheBust > 0 ? `${url}?r=${String(cacheBust)}` : url;
 }
 
 /** GET /uploads — this user's uploads, newest first. */
@@ -172,9 +184,9 @@ export async function getUpload(
  * GET /uploads/:id/pages — the full ordered list of `{ id, pageNumber }`
  * pairs, needed by the reorder tool to submit a valid full-order PATCH (the
  * server validates the submitted id set against the upload's CURRENT id set
- * exactly — a partial or stale list is rejected). See this module's header
- * for the KNOWN CROSS-AGENT CONTRACT GAP: this route is not present on the
- * server commit this client was built against.
+ * exactly — a partial or stale list is rejected). Implemented server-side at
+ * `routes/uploads.ts:355-390`, response shape verified to match `PagesEnvelope`
+ * field-for-field.
  */
 export async function listPages(id: string, signal?: AbortSignal): Promise<Page[]> {
   const res = await api.get<PagesEnvelope>(
@@ -208,16 +220,34 @@ export async function reorderPages(
 }
 
 /**
+ * A large book upload on a slow connection genuinely takes minutes — the
+ * app-wide axios default (`services/api.ts`, 10 s, sized for synchronous
+ * JSON endpoints) would otherwise misfire as `code: 'timeout'` well before a
+ * real 200-300 MB transfer completes. Same per-call override pattern the
+ * Claude-wrapping routes use (`services/grammarDrill.ts`,
+ * `services/writing.ts`) — sized generously (10 min) against the
+ * `MAX_UPLOAD_BYTES` cap above, not tuned to any measured p99.
+ */
+const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
  * POST /uploads — upload a zip-of-page-images or a PDF (multipart `file` +
  * `title` + `type`). Idempotent replace server-side: re-uploading the same
  * (user, title) pair replaces the whole page set rather than creating a
  * duplicate.
+ *
+ * `onProgress`, when given, is called with an integer 0-100 as the browser
+ * reports upload bytes sent (axios's native `onUploadProgress`, computed
+ * from the underlying `XMLHttpRequest.upload` `progress` event — real
+ * bytes-on-the-wire, not a faked/simulated ramp). Omit it to upload silently
+ * (the caller then owns showing an indeterminate "Uploading…" state).
  */
 export async function uploadBook(
   file: File,
   type: BookUploadType,
   title: string,
   signal?: AbortSignal,
+  onProgress?: (percent: number) => void,
 ): Promise<BookUpload> {
   const form = new FormData();
   // Third arg pins the filename, matching `uploadImage`'s convention.
@@ -225,11 +255,20 @@ export async function uploadBook(
   form.append('title', title);
   form.append('type', type);
 
-  const res = await api.post<UploadEnvelope>(
-    '/uploads',
-    form,
-    buildMultipartConfig(signal),
-  );
+  const config = buildMultipartConfig(signal);
+  config.timeout = UPLOAD_TIMEOUT_MS;
+  if (onProgress) {
+    config.onUploadProgress = (event: AxiosProgressEvent) => {
+      // `total` is absent when the browser can't determine content length
+      // up front (rare for a same-origin multipart POST with a known File,
+      // but defend anyway rather than divide by undefined).
+      if (event.total) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+  }
+
+  const res = await api.post<UploadEnvelope>('/uploads', form, config);
   return toBookUpload(res.upload);
 }
 

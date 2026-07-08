@@ -811,6 +811,96 @@ describe('PATCH /uploads/:id/pages/order — reorder, user-scoped, transactional
   });
 });
 
+// A-S2 regression: the reorder handler's correctness rests on `SELECT ...
+// FOR UPDATE` locking `book_uploads` then `book_pages` (routes/uploads.ts) to
+// serialize concurrent mutation of the same upload's page order — but until
+// now nothing actually FIRED two overlapping requests at it; the guarantee
+// was argued from reading the code, not demonstrated. These tests fire real
+// concurrent `Promise.all` requests (mirrors the racing-recovery-code /
+// racing-mfa-confirm pattern in tests/routes/auth.mfa.test.ts) and assert
+// the DB-visible invariant the locks exist to protect — not a specific
+// "winner" (which request wins the race is legitimately non-deterministic;
+// pinning it would make the test flaky, exactly what auth.mfa.test.ts's own
+// comments warn against).
+describe('PATCH /uploads/:id/pages/order — concurrency (SELECT ... FOR UPDATE serialization)', () => {
+  it('two concurrent PATCHes on the same upload both succeed and the final order is EXACTLY one of the two submissions, never an interleaved mix', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+
+    // Both submissions carry the SAME id set (only order differs), so both
+    // pass the exact-set check regardless of which acquires the lock first
+    // — the lock only serializes them, it doesn't reject a "loser" the way
+    // the unique-flip races in auth.mfa.test.ts do.
+    const orderA = [p1, p2, p3]; // identity order
+    const orderB = [p3, p2, p1]; // full reverse — maximally different from A
+
+    // Same agent (session cookie) fires both — a supertest agent doesn't
+    // serialize its own concurrent requests, it just attaches the same
+    // stored cookie to each independent HTTP request, so `Promise.all` here
+    // genuinely races two in-flight PATCHes against the SAME upload.
+    const [resA, resB] = await Promise.all([
+      agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: orderA }),
+      agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: orderB }),
+    ]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+
+    const rows = await pg.pool.query<{ id: string; page_number: number }>(
+      `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+      [uploadId],
+    );
+    const finalOrder = rows.rows.map((r) => Number(r.id));
+    const matchesA = orderA.every((id, i) => id === finalOrder[i]);
+    const matchesB = orderB.every((id, i) => id === finalOrder[i]);
+    // Sanity: A and B are genuinely different orderings of the same 3 ids —
+    // otherwise "matches exactly one" would be a vacuous assertion.
+    expect(orderA).not.toEqual(orderB);
+    // The two-phase placeholder renumber + the lock together must produce
+    // EXACTLY one submitter's full order — never a row-by-row interleave of
+    // both (which an unlocked or partially-locked implementation could
+    // produce if the second UPDATE's placeholder phase overlapped the
+    // first's final-assignment phase).
+    expect(matchesA || matchesB).toBe(true);
+
+    // Constraint invariants hold post-race regardless of which order won.
+    expect(new Set(rows.rows.map((r) => r.page_number))).toEqual(new Set([1, 2, 3]));
+    expect(rows.rows.every((r) => r.page_number > 0)).toBe(true);
+  });
+
+  it('a PATCH racing a DELETE on the same upload never 500s: the PATCH either commits before the delete or 404s after it, and the delete always wins the eventual outcome', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+
+    const [patchRes, deleteRes] = await Promise.all([
+      agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: [p3, p1, p2] }),
+      agent.delete(`/uploads/${uploadId}`),
+    ]);
+
+    // DELETE has no precondition on upload content, so whichever order the
+    // two transactions actually interleaved in, DELETE finds a row to
+    // remove (either the pre-reorder or the just-reordered one) — it always
+    // succeeds. The PATCH's own `book_uploads ... FOR UPDATE` either runs
+    // BEFORE the delete commits (200, reorder applied, then the row is
+    // deleted out from under it) or AFTER (404 — the lock-ordering
+    // discipline, `book_uploads` before `book_pages` in BOTH handlers, is
+    // exactly what rules out the alternative: a deadlock surfacing as 500).
+    expect(deleteRes.status).toBe(204);
+    expect([200, 404]).toContain(patchRes.status);
+
+    const uploadRows = await pg.pool.query(`SELECT id FROM book_uploads WHERE id = $1`, [uploadId]);
+    expect(uploadRows.rows).toHaveLength(0);
+    const pageRows = await pg.pool.query(`SELECT id FROM book_pages WHERE upload_id = $1`, [uploadId]);
+    expect(pageRows.rows).toHaveLength(0); // CASCADE — no orphaned pages regardless of the race outcome.
+  });
+});
+
 describe('DELETE /uploads/:id — removes row + every page blob (cascade)', () => {
   it('deletes the row, all book_pages rows, and every on-disk page blob', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
