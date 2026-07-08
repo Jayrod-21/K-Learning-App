@@ -27,8 +27,9 @@ trap 'echo "[ensure-shared-volume] ERROR on line ${LINENO}" >&2' ERR
 log() { printf '[ensure-shared-volume] %s\n' "$*"; }
 
 # --- Named volumes -----------------------------------------------------------
-# km_db_data  → km-db pgdata (shared DB; the switch never copies it)
-# km_images   → user-uploaded OCR images, mounted by BOTH colors' servers
+# km_db_data      → km-db pgdata (shared DB; the switch never copies it)
+# km_images       → user-uploaded OCR images, mounted by BOTH colors' servers
+# km_book_uploads → user-uploaded book PDFs (U1a), mounted by BOTH colors' servers
 # (backups use a host BIND mount, not a named volume — see azure-deploy-inactive.sh)
 ensure_volume() {
     local volume="$1"
@@ -68,6 +69,7 @@ main() {
 
     ensure_volume km_db_data
     ensure_volume km_images
+    ensure_volume km_book_uploads
     # NOTE: backups are NOT a named volume — they are a host BIND mount
     # (${BACKUP_DIR}) so the host scripts and the containers share one location.
     # The deploy creates that host dir (it needs the loaded .env); see

@@ -1974,3 +1974,69 @@ export interface AllSkillSeries {
   grammar: SkillSeries;
   writing: SkillSeries;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Book uploads (U1 — PDF book-upload feature)
+// ─────────────────────────────────────────────────────────────
+//
+// A user-uploaded scanned-book PDF. U1a (server) only stores + streams the
+// PDF; U2 (a later phase) OCRs/curates it and tags the resulting
+// vocab/grammar/dialogue/literature rows with `source_upload_id`. See
+// `db/docs/PDF_UPLOAD_DESIGN.md`. `services/uploads.ts` is the wire↔domain
+// boundary (mirrors `services/images.ts`'s split for image captures).
+
+/**
+ * What kind of content this book is expected to populate once U2's
+ * extraction lands. `'both'` = vocab + grammar from the same source.
+ */
+export type BookUploadType =
+  | 'vocab'
+  | 'grammar'
+  | 'both'
+  | 'dialogue'
+  | 'literature';
+
+/**
+ * Processing state. U1 has no extraction yet, so every upload stays
+ * `processing` from the moment it lands — U2 is what eventually flips a row
+ * to `ready` (or `failed` if curation errors out). The PDF itself is
+ * viewable immediately regardless of status (design doc: "async — upload →
+ * viewable now → structured content lands when curated").
+ */
+export type BookUploadStatus = 'processing' | 'ready' | 'failed';
+
+/**
+ * A user-uploaded book PDF, as `listUploads` / `getUpload` / `uploadBook`
+ * (services/uploads.ts) resolve it — the in-app shape for `GET /uploads`,
+ * `GET /uploads/:id`, and the `POST /uploads` response alike.
+ */
+export interface BookUpload {
+  /** Server row id (BIGINT identity, wire string — see routes/uploads.ts). */
+  id: string;
+  title: string;
+  type: BookUploadType;
+  status: BookUploadStatus;
+  /**
+   * Page count, once known. The normalize-to-pages step (zip/PDF → ordered
+   * page images, `book_pages`) runs synchronously at ingest (design doc
+   * REVISION), so this is present as soon as `status` is `ready`; still
+   * `?`-optional (rather than a fabricated 0) for a `processing`/`failed` row
+   * whose `page_count` column is null.
+   */
+  pageCount?: number;
+  byteSize: number;
+  createdAt: string;
+}
+
+/**
+ * One page of an upload's ordered page-image sequence (`book_pages`,
+ * migration 041) — its stable DB identity (`id`) plus its current 1-based
+ * DISPLAY position (`pageNumber`, matches `GET /uploads/:id/page/:n`'s `:n`).
+ * The reorder tool (vFlat retakes can land out of order — see the design
+ * doc's REVISION) operates on `id`; `pageNumber` is what a reorder changes.
+ * `services/uploads.ts` is the wire↔domain boundary.
+ */
+export interface Page {
+  id: string;
+  pageNumber: number;
+}

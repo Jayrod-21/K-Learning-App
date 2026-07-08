@@ -33,6 +33,16 @@ export interface ListPatternsOptions {
   domain?: ContentDomain;
   /** Difficulty filter — the source book's `book_level` band (F-005). */
   book_level?: BookLevel;
+  /**
+   * Source-book filter (U1 scaffolding — `db/docs/PDF_UPLOAD_DESIGN.md`
+   * §"U1 → sort-by-source filter"). The `book_uploads.id` to filter by.
+   * WIRED but inert until U2 lands: no `kgiu_entries` row carries a
+   * `source_upload_id` yet, so this param returns nothing today (the
+   * server's query schema isn't `.strict()`, so an unused param is a safe
+   * no-op, never a 400) — U2's extraction just has to start populating the
+   * column for this to start returning real rows.
+   */
+  source_upload_id?: string;
   limit?: number;
   offset?: number;
 }

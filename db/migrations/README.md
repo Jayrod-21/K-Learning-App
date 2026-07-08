@@ -28,6 +28,7 @@ Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
 | 015 | `topik_responses` | P6A | TOPIK Prep answer log: append-only graded attempts (Study mode live + Mock route) |
 | 016 | `hanja` | P7A | Hanja reference corpus (`hanja_characters` + `hanja_compounds`) + per-user `hanja_progress` (Hanja screen live); extends `corpus` enum with `'hanja'` |
 | 017 | `image_captures` | P8A | Per-user image OCR mining: `image_captures` (uploaded photo + caption, soft-deleted) + `image_words` (the OCR'd content words, no bounding boxes) — Images screen live |
+| 041 | `book_pages` | U1a | Book-upload rework: `book_pages` (ordered per-page images, normalized from an uploaded zip-of-images or PDF) + drops `book_uploads.blob_ref` (the original file is no longer retained — see `db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION (2026-07-08)") |
 
 ## Transaction ownership (ADR-013)
 

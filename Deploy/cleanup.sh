@@ -6,8 +6,9 @@
 # (7 days), and stopped containers. Run by the pipeline after deploy/switch.
 #
 # PRESERVES (never removed):
-#   * named volumes km_db_data / km_images / km_backups (data — DB, uploaded OCR
-#     images, backups). We NEVER prune volumes here.
+#   * named volumes km_db_data / km_images / km_book_uploads / km_backups (data —
+#     DB, uploaded OCR images, uploaded book PDFs, backups). We NEVER prune
+#     volumes here.
 #   * the image currently used by the running active color's containers (so a
 #     `docker compose up` after cleanup can still recreate them, and so an
 #     emergency rollback to the active color is always possible).

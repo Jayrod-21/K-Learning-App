@@ -30,6 +30,17 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# poppler-utils (pdftoppm + pdfinfo) — U1a book-upload rework:
+# routes/uploads.ts's PDF upload path shells out to `pdftoppm`
+# (services/pdfPageRender.ts) to rasterize an uploaded PDF's pages into page
+# images, and to `pdfinfo` (same package) to read the PDF's page count for the
+# page-count-bomb guard before rendering. (The ZIP-of-images/vFlat path needs
+# no external tool — pure-JS `yauzl`.) Same dependency the corpus ingest
+# tooling already leans on for PDF handling (see Deploy/loader.Dockerfile's
+# header comment), just needed here at RUNTIME instead of at a one-off
+# loader-image build time.
+RUN apk add --no-cache poppler-utils
+
 # Production dependencies only (drops typescript, eslint, vitest, @types, …).
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force

@@ -34,6 +34,7 @@ import imagesRoutes from './routes/images.js';
 import settingsRoutes from './routes/settings.js';
 import grammarDrillRoutes from './routes/grammarDrill.js';
 import writingRoutes from './routes/writing.js';
+import uploadsRoutes from './routes/uploads.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -94,6 +95,10 @@ export function createApp(): Express {
   app.use('/hanja', hanjaRoutes);
   app.use('/images', imagesRoutes);
   app.use('/settings', settingsRoutes);
+  // U1a: PDF book-upload feature — a NEW top-level prefix, so it must also be
+  // added to the km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf)
+  // or the SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/uploads', uploadsRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {

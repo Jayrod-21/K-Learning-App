@@ -46,6 +46,7 @@ import {
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { MyVocabLists } from '../../components/MyVocabLists';
 import { Sheet } from '../../components/Sheet';
+import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
 import { Topbar } from '../../components/Topbar';
 import { WeeklySuggestions } from '../../components/WeeklySuggestions';
 import { useToast } from '../../components/useToast';
@@ -153,6 +154,9 @@ function VocabBrowse(): JSX.Element {
   // omits the param so the endpoint returns every row.
   const [domain, setDomain] = useState<DomainFilter>('all');
   const [level, setLevel] = useState<LevelFilter>('all');
+  // U1 scaffolding — sort-by-source filter (see SourceFilterRow's header
+  // doc). Inert until U2 tags vocab_entries with source_upload_id.
+  const [source, setSource] = useState<string>(ALL_SOURCES);
   const ctrlRef = useRef<AbortController | null>(null);
 
   // Reset to the first page whenever the query or a filter changes so the
@@ -161,7 +165,7 @@ function VocabBrowse(): JSX.Element {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOffset(0);
-  }, [q, domain, level]);
+  }, [q, domain, level, source]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -179,6 +183,7 @@ function VocabBrowse(): JSX.Element {
           ...(q ? { q } : {}),
           ...(domain !== 'all' ? { domain } : {}),
           ...(level !== 'all' ? { book_level: level } : {}),
+          ...(source !== ALL_SOURCES ? { source_upload_id: source } : {}),
           limit: PAGE_SIZE,
           offset,
         },
@@ -201,7 +206,7 @@ function VocabBrowse(): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, domain, level, reloadTick]);
+  }, [q, offset, domain, level, source, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -227,6 +232,11 @@ function VocabBrowse(): JSX.Element {
         options={VOCAB_LEVEL_FILTERS}
         value={level}
         onChange={setLevel}
+      />
+      <SourceFilterRow
+        ariaLabel="Filter vocabulary by source book"
+        value={source}
+        onChange={setSource}
       />
       {loading && rows.length === 0 ? (
         <div className="km-grammar__state" role="status">

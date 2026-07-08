@@ -63,6 +63,8 @@ import Chat from './pages/Chat';
 import Settings from './pages/Settings';
 import Progress from './pages/Progress';
 import Ttmik from './pages/Ttmik';
+import Uploads from './pages/Uploads';
+import UploadViewer from './pages/UploadViewer';
 
 export default function App(): JSX.Element {
   return (
@@ -126,6 +128,20 @@ export default function App(): JSX.Element {
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
+                    {/* U1b — page-image book-upload feature (zip-of-images or
+                        PDF, normalized server-side into ordered page
+                        images). `/uploads` is BOTH a client route (this
+                        list) AND an API prefix (`GET /uploads`,
+                        `POST /uploads`, …); the nginx Accept-header split
+                        routes browser navigation here to the SPA while the
+                        page's own XHR/fetch calls hit the server — no
+                        redirect needed (see
+                        [[km-nginx-api-route-allowlist]]). `/uploads/:id` is
+                        the view-only page viewer; it isn't its own NavItem
+                        (dynamic detail view, same convention as Images'
+                        capture view). */}
+                    <Route path="uploads" element={<Uploads />} />
+                    <Route path="uploads/:id" element={<UploadViewer />} />
                     {/* Legacy paths → new namespaced homes (includes the
                         tab-aware /reference shim — the page is retired). */}
                     {legacyRedirectRoutes()}

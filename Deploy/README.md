@@ -57,6 +57,7 @@ data is copied and user uploads survive unchanged.
 Shared volumes (survive a color switch):
   km_db_data   → km-db   /var/lib/postgresql/data
   km_images    → BOTH km-server-{blue,green} at $IMAGE_STORAGE_DIR (user OCR uploads)
+  km_book_uploads → BOTH km-server-{blue,green} at $BOOK_UPLOAD_STORAGE_DIR (uploaded book PDFs)
   km_backups   → km-db + km-backup /backups (pg_dump target)
 ```
 
@@ -208,8 +209,9 @@ Deploy/rebuild-environment.sh   # tears down both colors + shared, brings the
 ```
 
 This causes a **1–2 minute interruption** and is for critical failures only.
-Named volumes (`km_db_data`, `km_images`, `km_backups`) are preserved — no data
-loss. If the DB itself is corrupt, restore from a backup *after* the rebuild.
+Named volumes (`km_db_data`, `km_images`, `km_book_uploads`, `km_backups`) are
+preserved — no data loss. If the DB itself is corrupt, restore from a backup
+*after* the rebuild.
 
 ---
 
@@ -233,7 +235,7 @@ port other than 1840/1841 is exposed off-loopback.
    values; `chmod 0600 .env`. Set `ACTIVE_ENVIRONMENT=blue` (or green) and the
    `BACKUP_*` knobs.
 3. `Deploy/ensure-shared-volume.sh` (creates `km_db_data`, `km_images`,
-   `km_backups`).
+   `km_book_uploads`, `km_backups`).
 4. Bring up shared + the active color (the deploy script does this on first run,
    or `compose_shared up` + `compose_color <active> up`).
 5. `python db/migrate.py up` to initialize the schema.

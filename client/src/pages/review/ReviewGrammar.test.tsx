@@ -33,9 +33,18 @@ const grammarSvc = vi.hoisted(() => ({
   getPattern: vi.fn(),
 }));
 
+// U1 sort-by-source filter scaffolding (SourceFilterRow) — best-effort,
+// defaults to empty so every PRE-EXISTING test in this file sees no source
+// row, matching its pre-U1 behaviour exactly.
+const uploadsSvc = vi.hoisted(() => ({
+  listUploads: vi.fn(),
+}));
+
 vi.mock('../../services/grammar', () => grammarSvc);
+vi.mock('../../services/uploads', () => uploadsSvc);
 
 import ReviewGrammar from './ReviewGrammar';
+import type { BookUpload } from '../../types/domain';
 
 const ROW: KgiuEntrySummary = {
   id: 100,
@@ -100,12 +109,23 @@ function renderPage(): ReturnType<typeof render> {
   );
 }
 
+const READY_UPLOAD: BookUpload = {
+  id: '9',
+  title: '한국어 문법 사전',
+  type: 'grammar',
+  status: 'ready',
+  byteSize: 4_200_000,
+  createdAt: '2026-07-01T00:00:00Z',
+};
+
 beforeEach(() => {
   for (const fn of Object.values(grammarSvc)) (fn as Mock).mockReset();
   grammarSvc.listPatterns.mockResolvedValue([ROW]);
   grammarSvc.listBanked.mockResolvedValue({ entries: [] });
   grammarSvc.bankPattern.mockResolvedValue({ id: 1 });
   grammarSvc.getPattern.mockResolvedValue(DETAIL);
+  uploadsSvc.listUploads.mockReset();
+  uploadsSvc.listUploads.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -420,6 +440,46 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     });
     expect(
       await within(dialog).findByRole('button', { name: '이미 담김 · Already banked' }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — U1 sort-by-source filter scaffolding', () => {
+  it('renders no source row when the user has no ready uploads', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    renderPage();
+    await screen.findByText(/1 pattern/);
+    expect(
+      screen.queryByRole('group', { name: 'Filter grammar by source book' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('lists ready uploads as filter chips and sets source_upload_id on select', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([
+      READY_UPLOAD,
+      { ...READY_UPLOAD, id: '10', title: '처리 중인 책', status: 'processing' },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    const group = await screen.findByRole('group', {
+      name: 'Filter grammar by source book',
+    });
+    expect(within(group).getByText('한국어 문법 사전')).toBeInTheDocument();
+    expect(within(group).queryByText('처리 중인 책')).not.toBeInTheDocument();
+
+    await user.click(within(group).getByText('한국어 문법 사전'));
+
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source_upload_id: '9' }),
+        expect.anything(),
+      );
+    });
+
+    expect(
+      screen.getByRole('button', { name: /View PDF/ }),
     ).toBeInTheDocument();
   });
 });
