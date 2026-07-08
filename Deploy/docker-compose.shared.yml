@@ -292,10 +292,11 @@ networks:
 # -----------------------------------------------------------------------------
 # Volumes — EXTERNAL in all three projects; ensure-shared-volume.sh is the single
 # creator (same single-creator rationale as the networks above). Name-pinned so
-# the real docker objects are km_db_data / km_images (not km-shared_km_db_data)
-# and every project attaches to the same ones. NOTE: backups are NOT a named
-# volume — they use a host BIND mount (${BACKUP_DIR}) so the host backup/restore
-# scripts and the containers address the same files (see the km-db volumes).
+# the real docker objects are km_db_data / km_images / km_book_uploads (not
+# km-shared_km_db_data) and every project attaches to the same ones. NOTE: backups
+# are NOT a named volume — they use a host BIND mount (${BACKUP_DIR}) so the host
+# backup/restore scripts and the containers address the same files (see the km-db
+# volumes).
 # -----------------------------------------------------------------------------
 volumes:
   km_db_data:
@@ -304,3 +305,6 @@ volumes:
   km_images:
     external: true
     name: km_images
+  km_book_uploads:
+    external: true
+    name: km_book_uploads

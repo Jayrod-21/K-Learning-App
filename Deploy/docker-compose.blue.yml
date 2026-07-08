@@ -13,10 +13,11 @@
 # pins the whole trio to ONE version per color (set by save_env_var on deploy).
 #
 # CROSS-PROJECT SHARING (see docker-compose.shared.yml header for the full rationale):
-# km-internal / km-edge / km_images are declared `external: true` + name-pinned
-# here, so this project ATTACHES to the objects km-shared (or ensure-shared-volume.sh)
-# created rather than minting its own namespaced copies. Both colors mount the SAME
-# km_images volume so user-uploaded OCR images survive a switch.
+# km-internal / km-edge / km_images / km_book_uploads are declared `external: true` +
+# name-pinned here, so this project ATTACHES to the objects km-shared (or
+# ensure-shared-volume.sh) created rather than minting its own namespaced copies.
+# Both colors mount the SAME km_images volume so user-uploaded OCR images survive a
+# switch, and the SAME km_book_uploads volume so uploaded book PDFs (U1a) do too.
 # =============================================================================
 
 name: km-blue
@@ -112,6 +113,7 @@ services:
       - MFA_REQUIRED=${MFA_REQUIRED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMAGE_STORAGE_DIR=${IMAGE_STORAGE_DIR:-/app/var/images}
+      - BOOK_UPLOAD_STORAGE_DIR=${BOOK_UPLOAD_STORAGE_DIR:-/app/var/book-uploads}
       # F-012: where the server reads corpus mp3s (routes/ttmik.ts). Matches
       # the read-only bind mount below — fixed in-container path, both colors.
       - CORPUS_AUDIO_DIR=/corpus
@@ -120,6 +122,9 @@ services:
       # SHARED image volume — BOTH colors mount km_images at the same path so
       # user-uploaded OCR images persist across a color switch.
       - km_images:${IMAGE_STORAGE_DIR:-/app/var/images}
+      # SHARED book-upload volume — BOTH colors mount km_book_uploads at the same
+      # path so user-uploaded book PDFs (U1a) persist across a color switch.
+      - km_book_uploads:${BOOK_UPLOAD_STORAGE_DIR:-/app/var/book-uploads}
       # F-012: corpus audio tree (TTMIK/Iyagi mp3s), READ-ONLY — the server
       # only ever streams from it; a compromised server cannot alter the
       # corpus. Set CORPUS_AUDIO_DIR_HOST in the .env to the host directory
@@ -239,3 +244,6 @@ volumes:
   km_images:
     external: true
     name: km_images
+  km_book_uploads:
+    external: true
+    name: km_book_uploads
