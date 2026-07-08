@@ -1,0 +1,52 @@
+{
+  "source": {
+    "book": "2000 Essential Korean Words Advanced Fixture",
+    "publisher": "Darakwon",
+    "authors": "Fixture",
+    "level": "advanced",
+    "default_proficiency": "L4",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-08",
+    "note": "Mini fixture for the U2 advanced-corpus loader path (migrations 042/043).",
+    "extraction_complete": true
+  },
+  "items": [
+    {
+      "id": "vocab-adv-0001",
+      "type": "theme_intro",
+      "theme": "01 사회 / Society",
+      "korean": "사회",
+      "english": "Society",
+      "source_book": "2000 Essential Korean Words Advanced Fixture",
+      "source_pages": [12]
+    },
+    {
+      "id": "vocab-adv-0002",
+      "type": "word",
+      "korean": "경쟁",
+      "english": "competition",
+      "pronunciation": "[경쟁]",
+      "part_of_speech": "noun",
+      "hanja": "競爭",
+      "proficiency": "L4",
+      "theme": "01 사회 / Society",
+      "subsection": "1 경제 / Economy",
+      "example_korean": "시장 경쟁이 치열하다.",
+      "source_book": "2000 Essential Korean Words Advanced Fixture",
+      "source_pages": [14]
+    },
+    {
+      "id": "vocab-adv-0003",
+      "type": "word",
+      "korean": "협력",
+      "english": "cooperation",
+      "pronunciation": "[혐녁]",
+      "part_of_speech": "noun",
+      "theme": "01 사회 / Society",
+      "subsection": "1 경제 / Economy",
+      "notes": "Deliberately ships WITHOUT proficiency: exercises the advanced word-row fallback (source default_proficiency 'L4', not the flat 'L3').",
+      "source_book": "2000 Essential Korean Words Advanced Fixture",
+      "source_pages": [15]
+    }
+  ]
+}
