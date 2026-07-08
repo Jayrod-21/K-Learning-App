@@ -43,6 +43,7 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -72,9 +73,9 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 /** The two TOPIK Prep modes the segmented toggle switches between. */
 type TopikMode = 'study' | 'mock';
 
-const MODES: ReadonlyArray<{ id: TopikMode; label: string }> = [
-  { id: 'study', label: 'Study' },
-  { id: 'mock', label: 'Mock' },
+const MODES: ReadonlyArray<{ id: TopikMode; label: string; kr: string }> = [
+  { id: 'study', label: 'Study', kr: '학습' },
+  { id: 'mock', label: 'Mock', kr: '모의' },
 ];
 
 function Topik(): JSX.Element {
@@ -83,11 +84,19 @@ function Topik(): JSX.Element {
 
   return (
     <section className="screen km-topik" aria-labelledby="topik-title">
+      {/* P3b: title aligned with nav.ts's headerTitle (모의 · TOPIK) — the
+          old 학습 was a pre-P1.1 leftover and collided with "study mode". */}
       <Topbar
-        krTitle="학습"
+        krTitle="모의"
         title="TOPIK"
         titleId="topik-title"
-        eyebrow={mode === 'mock' ? 'Mock test · timed' : 'Study mode'}
+        eyebrow={
+          mode === 'mock' ? (
+            <Bilingual en="Mock test · timed" kr="모의시험 · 시간 제한" />
+          ) : (
+            <Bilingual en="Study mode" kr="학습 모드" />
+          )
+        }
       />
 
       <ModeToggle mode={mode} onSelect={setMode} />
@@ -205,7 +214,7 @@ function ModeToggle({
               selected && 'km-topik__mode--active',
             )}
           >
-            {m.label}
+            <Bilingual en={m.label} kr={m.kr} compact />
           </button>
         );
       })}
@@ -406,16 +415,19 @@ function StudyMode(): JSX.Element {
       {!loading && current ? (
         <div className="km-topik__substate" role="status">
           <Eyebrow>
-            {`${current.section} · Item ${String(idx + 1)} / ${String(
-              draw.length,
-            )}`}
+            {current.section}
+            {' · '}
+            <Bilingual
+              en={`Item ${String(idx + 1)} / ${String(draw.length)}`}
+              kr={`문제 ${String(idx + 1)} / ${String(draw.length)}`}
+            />
           </Eyebrow>
         </div>
       ) : null}
 
       {loading ? (
         <div className="km-topik__state" role="status">
-          Loading items…
+          <Bilingual en="Loading items…" kr="문제를 불러오는 중…" />
         </div>
       ) : null}
 
@@ -425,7 +437,7 @@ function StudyMode(): JSX.Element {
           {errorMessageFor(error, 'Try again in a moment.')}
           <div className="km-topik__footer">
             <Button variant="gold" onClick={startNewSet}>
-              Try again
+              <Bilingual en="Try again" kr="다시 시도" />
             </Button>
           </div>
         </div>
@@ -447,9 +459,14 @@ function StudyMode(): JSX.Element {
         // is a dead-end header with no items and no way forward; offer a fresh
         // pull instead.
         <Card variant="flat" className="km-topik__state" role="status">
-          <Eyebrow>No items</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="No items" kr="문제 없음" />
+          </Eyebrow>
           <p className="km-topik__explain">
-            No items match right now. Pull a fresh set to try again.
+            <Bilingual
+              en="No items match right now. Pull a fresh set to try again."
+              kr="지금은 맞는 문제가 없어요. 새 세트를 뽑아 보세요."
+            />
           </p>
           <div className="km-topik__footer">
             <Button
@@ -457,7 +474,7 @@ function StudyMode(): JSX.Element {
               onClick={startNewSet}
               trailingIcon={<Icon name="arrow-right" size={14} />}
             >
-              New set
+              <Bilingual en="New set" kr="새 세트" />
             </Button>
           </div>
         </Card>
@@ -552,7 +569,13 @@ function TopikBody({
         <Pill tone="gold">
           {item.section} · L{String(item.level)}
         </Pill>
-        <span className="km-topik__num">No. {String(item.number)}</span>
+        <span className="km-topik__num">
+          <Bilingual
+            en={`No. ${String(item.number)}`}
+            kr={`${String(item.number)}번`}
+            compact
+          />
+        </span>
       </div>
 
       {imageSplit === null ? (
@@ -615,13 +638,19 @@ function TopikBody({
 
       {revealed ? (
         <Card variant="flat" className="km-topik__reveal" id={revealBlockId}>
-          <Eyebrow>{isCorrect ? 'Correct' : 'Not quite'}</Eyebrow>
+          <Eyebrow>
+            {isCorrect ? (
+              <Bilingual en="Correct" kr="맞았어요" />
+            ) : (
+              <Bilingual en="Not quite" kr="틀렸어요" />
+            )}
+          </Eyebrow>
           {correctChoice !== undefined ? (
             // Name the correct answer in text (not just the green highlight
             // above) so a wrong answer is never a dead-end "Not quite" — the
             // reveal always says what the right answer was.
             <p className="km-topik__answer">
-              Correct answer:{' '}
+              <Bilingual en="Correct answer" kr="정답" />:{' '}
               <span className="kr">
                 {CHOICE_MARKERS[correctIndex] ?? ''} {correctChoice.kr}
               </span>
@@ -649,7 +678,7 @@ function TopikBody({
         {!revealed ? (
           <>
             <Button variant="ghost" onClick={onSkip}>
-              Skip
+              <Bilingual en="Skip" kr="건너뛰기" />
             </Button>
             <Button
               variant="gold"
@@ -657,20 +686,24 @@ function TopikBody({
               disabled={picked === null}
               trailingIcon={<Icon name="arrow-right" size={14} />}
             >
-              Submit
+              <Bilingual en="Submit" kr="제출" />
             </Button>
           </>
         ) : (
           <>
             <span className="km-topik__count">
-              {String(answered)} answered
+              <Bilingual
+                en={`${String(answered)} answered`}
+                kr={`${String(answered)}개 답함`}
+                compact
+              />
             </span>
             <Button
               variant="gold"
               onClick={onNext}
               trailingIcon={<Icon name="arrow-right" size={14} />}
             >
-              Next
+              <Bilingual en="Next" kr="다음" />
             </Button>
           </>
         )}

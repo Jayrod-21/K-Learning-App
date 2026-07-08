@@ -10,6 +10,7 @@
  * React text node — a malicious payload becomes literal text, never markup.
  */
 import type { JSX } from 'react';
+import { Bilingual } from './Bilingual';
 import { Eyebrow } from './Eyebrow';
 
 interface TopikImageNoteProps {
@@ -27,7 +28,10 @@ export function TopikImageNote({
       // "image description" rather than floating unexplained text.
       aria-label="Image described in text"
     >
-      <Eyebrow>그림 · Image described in text</Eyebrow>
+      {/* P3b trim — was the wordy "그림 · Image described in text". */}
+      <Eyebrow>
+        <Bilingual kr="그림 설명" en="Image description" />
+      </Eyebrow>
       {description !== null ? (
         <p className="kr km-topik__image-desc">{description}</p>
       ) : (

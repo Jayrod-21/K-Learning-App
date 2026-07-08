@@ -52,6 +52,7 @@
  */
 import { useCallback, useMemo, useState, type JSX } from 'react';
 import { Card } from '../components/Card';
+import { Bilingual } from '../components/Bilingual';
 import { CornerMark } from '../components/CornerMark';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
@@ -70,6 +71,7 @@ import {
   loadHanjaTodayMock,
 } from '../data/mocks/hanja';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { navItem } from '../lib/nav';
 import {
   fetchHanjaList,
   fetchHanjaProgress,
@@ -85,17 +87,31 @@ import type {
 type ViewMode = 'today' | 'index';
 type FilterMode = 'all' | HanjaState;
 
-const FILTER_OPTIONS: ReadonlyArray<{ id: FilterMode; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'banked', label: 'Banked' },
-  { id: 'practicing', label: 'Practicing' },
-  { id: 'new', label: 'New' },
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const HANJA_NAV = navItem('hanja');
+
+const FILTER_OPTIONS: ReadonlyArray<{
+  id: FilterMode;
+  label: string;
+  kr: string;
+}> = [
+  { id: 'all', label: 'All', kr: '전체' },
+  { id: 'banked', label: 'Banked', kr: '모음' },
+  { id: 'practicing', label: 'Practicing', kr: '연습 중' },
+  { id: 'new', label: 'New', kr: '신규' },
 ];
 
 const STATE_PILL_LABEL: Record<HanjaState, string> = {
   banked: 'Banked',
   practicing: 'Practicing',
   new: 'New',
+};
+
+/** Korean chrome labels for the three hanja states (P3b). */
+const STATE_PILL_KR: Record<HanjaState, string> = {
+  banked: '모음',
+  practicing: '연습 중',
+  new: '신규',
 };
 
 const STATE_PILL_TONE = {
@@ -239,18 +255,24 @@ export default function Hanja(): JSX.Element {
         krTitle="한자"
         title="Hanja"
         titleId="km-hanja-title"
-        eyebrow="the bones inside the words"
+        // P3b trim — adopts nav.ts's terse pair (was the flowery
+        // "the bones inside the words").
+        eyebrow={<Bilingual en={HANJA_NAV.eyebrow} kr={HANJA_NAV.krEyebrow} />}
       />
 
       {loading ? (
         <Card className="km-hanja__skeleton" aria-busy="true">
-          <Eyebrow>Loading hanja</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="Loading hanja" kr="한자를 불러오는 중" />
+          </Eyebrow>
           <div className="km-hanja__skeleton-line" />
           <div className="km-hanja__skeleton-line" />
         </Card>
       ) : fatal ? (
         <Card className="km-hanja__error" role="alert">
-          <Eyebrow>Hanja unavailable</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="Hanja unavailable" kr="한자를 불러오지 못했어요" />
+          </Eyebrow>
           <p>We couldn&apos;t load 한자 right now. Pull to retry shortly.</p>
         </Card>
       ) : progress && chars ? (
@@ -277,7 +299,12 @@ export default function Hanja(): JSX.Element {
               />
             ) : (
               <Card className="km-hanja__empty">
-                <Eyebrow>No featured 한자 yet</Eyebrow>
+                <Eyebrow>
+                  <Bilingual
+                    en="No featured 한자 yet"
+                    kr="아직 오늘의 한자가 없어요"
+                  />
+                </Eyebrow>
                 <p>
                   Read a passage to start mining 한자 — your daily character
                   will surface here.
@@ -295,7 +322,9 @@ export default function Hanja(): JSX.Element {
         </>
       ) : (
         <Card className="km-hanja__empty">
-          <Eyebrow>No hanja yet</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="No hanja yet" kr="아직 한자가 없어요" />
+          </Eyebrow>
           <p>Read a passage to start encountering 한자.</p>
         </Card>
       )}
@@ -337,16 +366,20 @@ function EncounteredBand({
     <Card className="km-hanja__band">
       <CornerMark />
       <Eyebrow>
-        Encountered · {progress.encountered} of ~{progress.targetL4} at L4
+        <Bilingual
+          en={`Encountered · ${String(progress.encountered)} of ~${String(progress.targetL4)} at L4`}
+          kr={`접한 한자 · ${String(progress.encountered)} / 약 ${String(progress.targetL4)} (L4 기준)`}
+        />
       </Eyebrow>
       <div className="km-hanja__chips">
-        <StateChip label="Banked" count={progress.banked} tone="moss" />
+        <StateChip label="Banked" kr="모음" count={progress.banked} tone="moss" />
         <StateChip
           label="Practicing"
+          kr="연습 중"
           count={progress.practicing}
           tone="vermilion"
         />
-        <StateChip label="New" count={progress.new} tone="mute" />
+        <StateChip label="New" kr="신규" count={progress.new} tone="mute" />
       </div>
       <div
         className="km-hanja__bar"
@@ -368,17 +401,22 @@ function EncounteredBand({
 
 function StateChip({
   label,
+  kr,
   count,
   tone,
 }: {
   label: string;
+  kr: string;
   count: number;
   tone: 'moss' | 'vermilion' | 'mute';
 }): JSX.Element {
   return (
     <div className={`km-hanja__statechip km-hanja__statechip--${tone}`}>
       <span className="km-hanja__statechip-count">{count}</span>
-      <span className="km-hanja__statechip-label">{label}</span>
+      <span className="km-hanja__statechip-label">
+        {/* Compact — the chip is tight; the sr name still carries both. */}
+        <Bilingual en={label} kr={kr} compact />
+      </span>
     </div>
   );
 }
@@ -390,9 +428,9 @@ function ViewToggle({
   view: ViewMode;
   onChange: (next: ViewMode) => void;
 }): JSX.Element {
-  const tabs: ReadonlyArray<{ id: ViewMode; label: string }> = [
-    { id: 'today', label: "Today's 한자" },
-    { id: 'index', label: 'Index' },
+  const tabs: ReadonlyArray<{ id: ViewMode; label: string; kr: string }> = [
+    { id: 'today', label: "Today's 한자", kr: '오늘의 한자' },
+    { id: 'index', label: 'Index', kr: '색인' },
   ];
   return (
     <div className="km-hanja__viewtoggle" role="tablist" aria-label="Hanja view">
@@ -412,7 +450,7 @@ function ViewToggle({
               if (!active) onChange(t.id);
             }}
           >
-            {t.label}
+            <Bilingual en={t.label} kr={t.kr} compact />
           </button>
         );
       })}
@@ -445,17 +483,29 @@ function HanjaFeature({
         </div>
 
         <div className="km-hanja__feature-meta">
-          <Eyebrow>Today&apos;s 한자</Eyebrow>
+          <Eyebrow>
+            <Bilingual en="Today's 한자" kr="오늘의 한자" />
+          </Eyebrow>
           <div className="kr kr-display km-hanja__feature-gloss">
             <span className="km-hanja__feature-gloss-kr">{h.gloss}</span>{' '}
             <span className="km-hanja__feature-gloss-sound">{h.sound}</span>
           </div>
           <div className="km-hanja__feature-en">{h.en}</div>
           <div className="km-hanja__feature-pills">
-            <Pill>{h.strokes} strokes</Pill>
+            <Pill>
+              <Bilingual
+                en={`${String(h.strokes)} strokes`}
+                kr={`${String(h.strokes)}획`}
+                compact
+              />
+            </Pill>
             <Pill>{h.level}</Pill>
             <Pill tone={STATE_PILL_TONE[h.state]}>
-              {STATE_PILL_LABEL[h.state]}
+              <Bilingual
+                en={STATE_PILL_LABEL[h.state]}
+                kr={STATE_PILL_KR[h.state]}
+                compact
+              />
             </Pill>
           </div>
         </div>
@@ -464,7 +514,12 @@ function HanjaFeature({
       <GoldRule />
 
       <div className="km-hanja__feature-compounds">
-        <Eyebrow>Words you unlock · {h.compounds.length}</Eyebrow>
+        <Eyebrow>
+          <Bilingual
+            en={`Words you unlock · ${String(h.compounds.length)}`}
+            kr={`열리는 단어 · ${String(h.compounds.length)}개`}
+          />
+        </Eyebrow>
         <div className="km-hanja__compound-row">
           {h.compounds.map((c, i) => (
             <span key={`${c.kr}-${String(i)}`} className="km-hanja__compound-chip kr">
@@ -476,7 +531,9 @@ function HanjaFeature({
       </div>
 
       <div className="km-hanja__feature-foot">
-        <span>Tap for etymology + drill</span>
+        <span>
+          <Bilingual en="Tap for etymology + drill" kr="눌러서 어원과 연습 보기" />
+        </span>
         <Icon name="arrow-right" size={16} />
       </div>
     </button>
@@ -512,13 +569,18 @@ function IndexView({
                 (active ? ' km-pill--gold' : ' km-pill--default')
               }
             >
-              {f.label}
+              <Bilingual en={f.label} kr={f.kr} compact />
             </button>
           );
         })}
       </div>
       {chars.length === 0 ? (
-        <p className="km-hanja__index-empty">No hanja match that filter yet.</p>
+        <p className="km-hanja__index-empty">
+          <Bilingual
+            en="No hanja match that filter yet."
+            kr="이 필터에 맞는 한자가 없어요."
+          />
+        </p>
       ) : (
         <div className="km-hanja__grid">
           {chars.map((h) => (
@@ -556,8 +618,6 @@ function HanjaDetail({
   // ("practicing") and mastered ("banked") states. A banked character offers
   // "Practice again"; anything else offers "Bank this hanja".
   const nextState: HanjaState = h.state === 'banked' ? 'practicing' : 'banked';
-  const bankLabel =
-    h.state === 'banked' ? 'Practice again' : 'Bank this hanja';
   return (
     <div className="km-hanja__detail">
       <div className="km-hanja__detail-head">
@@ -569,20 +629,35 @@ function HanjaDetail({
           </div>
           <div className="km-hanja__detail-en">{h.en}</div>
           <div className="km-hanja__detail-pills">
-            <Pill>{h.strokes} strokes</Pill>
+            <Pill>
+              <Bilingual
+                en={`${String(h.strokes)} strokes`}
+                kr={`${String(h.strokes)}획`}
+                compact
+              />
+            </Pill>
             <Pill>{h.level}</Pill>
             <Pill tone={STATE_PILL_TONE[h.state]}>
-              {STATE_PILL_LABEL[h.state]}
+              <Bilingual
+                en={STATE_PILL_LABEL[h.state]}
+                kr={STATE_PILL_KR[h.state]}
+                compact
+              />
             </Pill>
           </div>
         </div>
       </div>
 
-      <Eyebrow className="km-hanja__detail-eyebrow">Etymology</Eyebrow>
+      <Eyebrow className="km-hanja__detail-eyebrow">
+        <Bilingual en="Etymology" kr="어원" />
+      </Eyebrow>
       <p className="km-hanja__detail-note">{h.note}</p>
 
       <Eyebrow className="km-hanja__detail-eyebrow">
-        Compound words · {h.compounds.length}
+        <Bilingual
+          en={`Compound words · ${String(h.compounds.length)}`}
+          kr={`복합어 · ${String(h.compounds.length)}개`}
+        />
       </Eyebrow>
       <ul className="km-hanja__detail-compounds">
         {h.compounds.map((c, i) => (
@@ -618,7 +693,9 @@ function HanjaDetail({
           className="km-btn km-btn--gold km-btn--md focusring km-hanja__detail-drill"
         >
           <Icon name="pen" size={14} />
-          <span>Drill · recall 음 &amp; 뜻</span>
+          <span>
+            <Bilingual en="Drill · recall 음 & 뜻" kr="연습 · 음과 뜻 떠올리기" />
+          </span>
         </button>
         <button
           type="button"
@@ -630,7 +707,15 @@ function HanjaDetail({
           }}
         >
           <Icon name="plus" size={14} />
-          <span>{pending ? 'Saving…' : bankLabel}</span>
+          <span>
+            {pending ? (
+              <Bilingual en="Saving…" kr="저장 중…" />
+            ) : h.state === 'banked' ? (
+              <Bilingual en="Practice again" kr="다시 연습" />
+            ) : (
+              <Bilingual en="Bank this hanja" kr="이 한자 모음에 추가" />
+            )}
+          </span>
         </button>
       </div>
       {error ? (

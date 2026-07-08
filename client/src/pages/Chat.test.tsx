@@ -307,6 +307,22 @@ describe('Chat', () => {
     ).toBeInTheDocument();
   });
 
+  it('P3b: chrome eyebrows render Korean in both-mode', () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    // Topbar eyebrow — the nav manifest pair (Tutor conversation · 튜터 대화).
+    expect(screen.getByText('튜터 대화')).toBeInTheDocument();
+    expect(screen.getByText('Tutor conversation')).toBeInTheDocument();
+    // Composer label: bilingual "Reply · 답장" with the 합쇼체 register cue
+    // kept OUTSIDE the pair (it names the target register, not a translation).
+    expect(screen.getByText('답장')).toBeInTheDocument();
+    expect(screen.getByText('Reply')).toBeInTheDocument();
+    expect(screen.getByText(/합쇼체/)).toBeInTheDocument();
+    // Bubble role labels are bilingual too.
+    expect(screen.getAllByText('튜터').length).toBeGreaterThan(0);
+  });
+
   it(
     'sends a message — calls streamMessage with the most recent ' +
       'conversation id, expected_version, and a request id',

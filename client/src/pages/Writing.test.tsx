@@ -183,11 +183,24 @@ describe('Writing', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('P3b: title + eyebrows render Korean in both-mode', async () => {
+    await renderLoaded();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '쓰기 · Writing' }),
+    ).toBeInTheDocument();
+    // Topbar eyebrow — the nav manifest pair.
+    expect(screen.getByText('TOPIK 쓰기 채점')).toBeInTheDocument();
+    expect(screen.getByText('TOPIK writing grader')).toBeInTheDocument();
+    // Rubric eyebrow (Q53 default) carries its Korean half.
+    expect(screen.getByText('설명하는 글')).toBeInTheDocument();
+    expect(screen.getByText('Describe and explain')).toBeInTheDocument();
+  });
+
   it('disables Grade until the learner has written something', async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    const submit = screen.getByRole('button', { name: 'Grade my writing' });
+    const submit = screen.getByRole('button', { name: '채점하기 · Grade my writing' });
     expect(submit).toBeDisabled();
 
     await user.type(
@@ -206,7 +219,7 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       SAMPLE,
     );
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     // Outgoing body — the .strict() wire contract: exactly these four fields,
     // with the served task's text as `prompt` and its id as `promptId` so the
@@ -258,7 +271,7 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       '안녕하세요',
     );
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     expect(screen.getByRole('status')).toHaveTextContent(/Grading your writing/);
 
@@ -283,7 +296,7 @@ describe('Writing', () => {
       name: /Your writing in Korean/,
     });
     await user.type(textarea, '안녕하세요');
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/rate-limited/);
@@ -291,7 +304,7 @@ describe('Writing', () => {
     // The learner's text survives the failure and Submit is the retry.
     expect(textarea).toHaveValue('안녕하세요');
     expect(
-      screen.getByRole('button', { name: 'Grade my writing' }),
+      screen.getByRole('button', { name: '채점하기 · Grade my writing' }),
     ).toBeEnabled();
   });
 
@@ -306,7 +319,7 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       '안녕하세요',
     );
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/rate-limited right now/);
@@ -324,7 +337,7 @@ describe('Writing', () => {
       name: /Your writing in Korean/,
     });
     await user.type(textarea, '안녕하세요');
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't score this sample/);
@@ -351,7 +364,7 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       '인공지능은 편리합니다.',
     );
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
 
     await waitFor(() => {
       expect(gradeWritingMock).toHaveBeenCalledTimes(1);
@@ -371,10 +384,10 @@ describe('Writing', () => {
       name: /Your writing in Korean/,
     });
     await user.type(textarea, '안녕하세요');
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
     await screen.findByText('63');
 
-    await user.click(screen.getByRole('button', { name: 'Revise & regrade' }));
+    await user.click(screen.getByRole('button', { name: '고쳐서 다시 채점 · Revise & regrade' }));
 
     expect(screen.queryByText('63')).not.toBeInTheDocument();
     expect(textarea).toHaveValue('안녕하세요');
@@ -389,7 +402,7 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       '안녕하세요',
     );
-    await user.click(screen.getByRole('button', { name: 'New prompt' }));
+    await user.click(screen.getByRole('button', { name: '새 과제 · New prompt' }));
 
     // Second served Q53 prompt is now on screen; the draft is cleared. No
     // refetch — rotation walks the already-fetched pool.
@@ -409,7 +422,7 @@ describe('Writing', () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    const newPrompt = screen.getByRole('button', { name: 'New prompt' });
+    const newPrompt = screen.getByRole('button', { name: '새 과제 · New prompt' });
     expect(newPrompt).toBeDisabled();
 
     // The draft survives — clicking a disabled button must not clear it.
@@ -435,14 +448,14 @@ describe('Writing', () => {
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
       '안녕하세요',
     );
-    await user.click(screen.getByRole('button', { name: 'Grade my writing' }));
+    await user.click(screen.getByRole('button', { name: '채점하기 · Grade my writing' }));
     await screen.findByText('63');
 
     // Same contract post-grade: "New prompt" cannot deliver a new prompt, so
     // it stays disabled; "Revise & regrade" remains the way back to editing.
-    expect(screen.getByRole('button', { name: 'New prompt' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '새 과제 · New prompt' })).toBeDisabled();
     expect(
-      screen.getByRole('button', { name: 'Revise & regrade' }),
+      screen.getByRole('button', { name: '고쳐서 다시 채점 · Revise & regrade' }),
     ).toBeEnabled();
   });
 });

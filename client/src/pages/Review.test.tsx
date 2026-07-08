@@ -332,8 +332,16 @@ describe('Review', () => {
     hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
     renderReview();
 
-    expect(screen.getByText('복습 · Review')).toBeInTheDocument();
+    // P3b: nav-aligned title (was the stale 복습 · Review), Korean chrome in
+    // both-mode, and the old FSRS impl-leak eyebrow is gone.
+    expect(
+      screen.getByRole('heading', { level: 1, name: '단어 카드 · Vocab' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/FSRS-style scheduling/),
+    ).not.toBeInTheDocument();
     expect(screen.getByText('Active list')).toBeInTheDocument();
+    expect(screen.getByText('현재 목록')).toBeInTheDocument();
     expect(screen.getAllByText('영향').length).toBeGreaterThan(0);
     expect(screen.getByText(/Tap card or press/)).toBeInTheDocument();
   });
@@ -505,9 +513,10 @@ describe('Review', () => {
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
     // The link card is present…
-    expect(screen.getByText('내 단어장 · My lists')).toBeInTheDocument();
+    expect(screen.getByText('내 단어장')).toBeInTheDocument();
+    expect(screen.getByText('My lists')).toBeInTheDocument();
     // …but the old duplicate surface is GONE: no create affordance and no
     // custom-list row (the bundle's 병원 어휘 must not render as a row).
     expect(
@@ -521,7 +530,7 @@ describe('Review', () => {
 
     // The manage link deep-links into the canonical surface: the library's
     // vocab page with its lists view preselected.
-    await user.click(screen.getByRole('button', { name: 'Manage my lists' }));
+    await user.click(screen.getByRole('button', { name: /Manage my lists/ }));
     expect(await screen.findByTestId('library-vocab-stub')).toBeInTheDocument();
     expect(screen.getByTestId('library-vocab-search')).toHaveTextContent(
       '?tab=lists',
@@ -538,9 +547,9 @@ describe('Review', () => {
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
     const seedBefore = hoisted.refetchCalls.due;
-    await user.click(screen.getByRole('button', { name: 'Add to review' }));
+    await user.click(screen.getByRole('button', { name: /Add to review/ }));
 
     await waitFor(() => {
       expect(screen.getByText('Added 15 cards to review.')).toBeInTheDocument();
@@ -566,9 +575,9 @@ describe('Review', () => {
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
     const seedBefore = hoisted.refetchCalls.due;
-    await user.click(screen.getByRole('button', { name: 'Add to review' }));
+    await user.click(screen.getByRole('button', { name: /Add to review/ }));
 
     await waitFor(() => {
       expect(
@@ -592,8 +601,8 @@ describe('Review', () => {
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: 'Lists' }));
-    const seedButton = screen.getByRole('button', { name: 'Add to review' });
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
+    const seedButton = screen.getByRole('button', { name: /Add to review/ });
     await user.click(seedButton);
 
     await waitFor(() => {
@@ -618,7 +627,7 @@ describe('Review', () => {
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: 'All cards' }));
+    await user.click(screen.getByRole('tab', { name: '전체 카드 · All cards' }));
 
     const input = screen.getByLabelText('Search banked vocab');
     await user.type(input, '학교');
@@ -706,7 +715,7 @@ describe('Review', () => {
     renderReview();
 
     // Open ListDetailSheet by switching to Lists and tapping a source row.
-    await user.click(screen.getByRole('tab', { name: 'Lists' }));
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
     await user.click(screen.getByRole('button', { name: /11일 · 정치/ }));
     expect(await screen.findByText(/Preview ·/)).toBeInTheDocument();
 
@@ -717,7 +726,7 @@ describe('Review', () => {
     // intercept a pointer-event-simulated click via elementFromPoint in
     // some happy-dom configs) can't accidentally close the sheet before
     // we get to assert the guard.
-    fireEvent.click(screen.getByRole('tab', { name: 'Session' }));
+    fireEvent.click(screen.getByRole('tab', { name: '세션 · Session' }));
 
     const flip = screen.getByRole('button', { name: 'Flip card' });
     expect(flip.getAttribute('aria-expanded')).toBe('false');
@@ -731,6 +740,28 @@ describe('Review', () => {
     expect(
       screen.queryByRole('button', { name: /Again/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it('P3b trim: the two disabled sheet actions share ONE coming-soon tooltip', async () => {
+    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
+    hoisted.lists.state = {
+      kind: 'data',
+      data: BUNDLE_WITH_SOURCE,
+      isMock: false,
+    };
+
+    const user = userEvent.setup();
+    renderReview();
+    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
+    await user.click(screen.getByRole('button', { name: /11일 · 정치/ }));
+    await screen.findByText(/Preview ·/);
+
+    const titled = Array.from(
+      document.querySelectorAll('button[title*="Coming soon"]'),
+    );
+    expect(titled).toHaveLength(2);
+    // De-duplicated: one string, used by both (not two pasted variants).
+    expect(new Set(titled.map((b) => b.getAttribute('title'))).size).toBe(1);
   });
 
   it('logs study time on unmount when at least one card was rated', async () => {

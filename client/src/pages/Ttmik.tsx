@@ -69,6 +69,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
@@ -87,6 +88,7 @@ import {
 } from '../lib/tapChain';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
+import { navItem } from '../lib/nav';
 import {
   buildAudioSrc,
   getIyagiEpisode,
@@ -104,17 +106,20 @@ import type {
 
 type Tab = 'ttmik' | 'iyagi';
 
-const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
-  { id: 'ttmik', label: 'TTMIK Lessons' },
-  { id: 'iyagi', label: 'Iyagi Episodes' },
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const TTMIK_NAV = navItem('ttmik');
+
+const TABS: ReadonlyArray<{ id: Tab; label: string; kr: string }> = [
+  { id: 'ttmik', label: 'TTMIK Lessons', kr: 'TTMIK 레슨' },
+  { id: 'iyagi', label: 'Iyagi Episodes', kr: '이야기 에피소드' },
 ];
 
 /** TTMIK lesson-detail sub-tabs (below the persistent player). */
 type LessonTab = 'highlights' | 'transcript';
 
-const LESSON_TABS: ReadonlyArray<{ id: LessonTab; label: string }> = [
-  { id: 'highlights', label: 'Highlights' },
-  { id: 'transcript', label: 'Transcript' },
+const LESSON_TABS: ReadonlyArray<{ id: LessonTab; label: string; kr: string }> = [
+  { id: 'highlights', label: 'Highlights', kr: '하이라이트' },
+  { id: 'transcript', label: 'Transcript', kr: '대본' },
 ];
 
 /**
@@ -143,6 +148,8 @@ type DetailData =
       corpus: 'ttmik';
       /** Context line above the title, e.g. `Level 2 · Lesson 21`. */
       eyebrow: string;
+      /** Korean counterpart of `eyebrow` — rendered via `<Bilingual/>`. */
+      krEyebrow: string;
       title: string;
       /** Fully-resolved `<audio src>`; null → transcript-only. */
       audioSrc: string | null;
@@ -152,6 +159,7 @@ type DetailData =
   | {
       corpus: 'iyagi';
       eyebrow: string;
+      krEyebrow: string;
       title: string;
       /** Hosts line; null when the episode has no hosts listed. */
       subtitle: string | null;
@@ -191,12 +199,12 @@ export default function Ttmik(): JSX.Element {
       style={{ padding: '0 18px 32px' }}
     >
       <Topbar
-        krTitle={
-          <>
-            듣기 <span className="km-topbar__title-en">· Listen</span>
-          </>
+        krTitle="듣기"
+        title="Listen"
+        titleId="km-ttmik-title"
+        eyebrow={
+          <Bilingual en={TTMIK_NAV.eyebrow} kr={TTMIK_NAV.krEyebrow} />
         }
-        eyebrow="TTMIK · Iyagi audio"
         right={
           selection !== null ? (
             <Button
@@ -206,15 +214,11 @@ export default function Ttmik(): JSX.Element {
               onClick={closeDetail}
               aria-label="Back to all lessons and episodes"
             >
-              Browse
+              <Bilingual en="Browse" kr="둘러보기" compact />
             </Button>
           ) : undefined
         }
       />
-      <span id="km-ttmik-title" className="km-sr-only">
-        Listen
-      </span>
-
       {selection !== null ? (
         // Keyed on the selection: opening a DIFFERENT unit remounts the
         // detail (fresh sub-tab, fresh player, fresh popover state), while
@@ -241,7 +245,7 @@ export default function Ttmik(): JSX.Element {
                     setTab(t.id);
                   }}
                 >
-                  {t.label}
+                  <Bilingual en={t.label} kr={t.kr} compact />
                 </button>
               );
             })}
@@ -265,10 +269,11 @@ function AudioPill({ hasAudio }: { hasAudio: boolean }): JSX.Element {
     <span className="km-pill km-pill--default">
       {hasAudio ? (
         <>
-          <Icon name="headphones" size={12} /> Audio
+          <Icon name="headphones" size={12} />{' '}
+          <Bilingual en="Audio" kr="오디오" compact />
         </>
       ) : (
-        'No audio'
+        <Bilingual en="No audio" kr="오디오 없음" compact />
       )}
     </span>
   );
@@ -344,7 +349,7 @@ function TtmikLessonsTab({
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
-        Loading lessons…
+        <Bilingual en="Loading lessons…" kr="레슨을 불러오는 중…" />
       </div>
     );
   }
@@ -352,14 +357,23 @@ function TtmikLessonsTab({
     return <ErrorCard message={error} onRetry={refetch} />;
   }
   if (groups.length === 0) {
-    return <p className="km-reference__empty">No lessons available yet.</p>;
+    return (
+      <p className="km-reference__empty">
+        <Bilingual en="No lessons available yet." kr="아직 레슨이 없어요." />
+      </p>
+    );
   }
 
   return (
     <div>
       {groups.map((group) => (
         <div key={`level:${String(group.level)}`} style={{ marginBottom: 18 }}>
-          <Eyebrow>Level {group.level}</Eyebrow>
+          <Eyebrow>
+            <Bilingual
+              en={`Level ${String(group.level)}`}
+              kr={`레벨 ${String(group.level)}`}
+            />
+          </Eyebrow>
           <Card className="km-reference__list" variant="flat">
             <ul>
               {group.lessons.map((lesson) => (
@@ -450,7 +464,7 @@ function IyagiEpisodesTab({
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
-        Loading episodes…
+        <Bilingual en="Loading episodes…" kr="에피소드를 불러오는 중…" />
       </div>
     );
   }
@@ -458,7 +472,14 @@ function IyagiEpisodesTab({
     return <ErrorCard message={error} onRetry={refetch} />;
   }
   if (ordered.length === 0) {
-    return <p className="km-reference__empty">No episodes available yet.</p>;
+    return (
+      <p className="km-reference__empty">
+        <Bilingual
+          en="No episodes available yet."
+          kr="아직 에피소드가 없어요."
+        />
+      </p>
+    );
   }
 
   return (
@@ -519,6 +540,7 @@ async function loadDetail(
     return {
       corpus: 'ttmik',
       eyebrow: `Level ${String(detail.meta.level)} · Lesson ${String(detail.meta.number)}`,
+      krEyebrow: `레벨 ${String(detail.meta.level)} · ${String(detail.meta.number)}과`,
       title: detail.meta.title,
       audioSrc: buildAudioSrc(detail.audioUrl),
       highlights: detail.highlights,
@@ -529,6 +551,7 @@ async function loadDetail(
   return {
     corpus: 'iyagi',
     eyebrow: `Iyagi · Episode ${String(detail.meta.number)}`,
+    krEyebrow: `이야기 · ${String(detail.meta.number)}화`,
     title: detail.meta.title,
     subtitle:
       detail.meta.hosts.length > 0 ? detail.meta.hosts.join(' · ') : null,
@@ -767,7 +790,9 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
 
   return (
     <div>
-      <Eyebrow>{data.eyebrow}</Eyebrow>
+      <Eyebrow>
+        <Bilingual en={data.eyebrow} kr={data.krEyebrow} />
+      </Eyebrow>
       <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
         {data.title}
       </h2>
@@ -799,8 +824,13 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
             style={{ width: '100%' }}
           />
         ) : (
+          // P3b trim: the scattered "No X for this one." empty-states are
+          // consolidated to one terse "No X yet." shape (here + the panels).
           <p className="km-reference__empty" role="note">
-            No audio for this one yet — read along below.
+            <Bilingual
+              en="No audio yet — read along below."
+              kr="아직 오디오가 없어요 — 아래에서 읽어 보세요."
+            />
           </p>
         )}
       </div>
@@ -808,7 +838,10 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
       {data.corpus === 'ttmik' ? (
         visibleLessonTabs.length === 0 ? (
           <p className="km-reference__row-en" style={{ margin: '8px 0' }}>
-            No read-along content for this lesson yet.
+            <Bilingual
+              en="No lesson text yet."
+              kr="아직 수업 내용이 없어요."
+            />
           </p>
         ) : (
           <>
@@ -830,7 +863,7 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
                       setLessonTab(t.id);
                     }}
                   >
-                    {t.label}
+                    <Bilingual en={t.label} kr={t.kr} compact />
                   </button>
                 );
               })}
@@ -981,7 +1014,9 @@ function HighlightsPanel({
         ))}
       </ol>
       {rows.length === 0 ? (
-        <p className="km-reference__empty">No highlights for this one.</p>
+        <p className="km-reference__empty">
+          <Bilingual en="No highlights yet." kr="아직 하이라이트가 없어요." />
+        </p>
       ) : null}
     </Card>
   );
@@ -1010,7 +1045,7 @@ function SentencesPanel({
       </ol>
       {rows.length === 0 ? (
         <p className="km-reference__empty">
-          No transcript lines for this one.
+          <Bilingual en="No transcript yet." kr="아직 대본이 없어요." />
         </p>
       ) : null}
     </Card>
@@ -1120,7 +1155,7 @@ function TranscriptPanel({
       </ol>
       {lines.length === 0 ? (
         <p className="km-reference__empty">
-          No transcript lines for this one.
+          <Bilingual en="No transcript yet." kr="아직 대본이 없어요." />
         </p>
       ) : null}
     </Card>

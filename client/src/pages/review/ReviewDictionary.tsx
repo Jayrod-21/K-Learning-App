@@ -20,6 +20,7 @@
  * slow response never paints over a newer one).
  */
 import { useEffect, useRef, useState, type JSX } from 'react';
+import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Pager, SearchBox } from '../../components/LibraryControls';
@@ -161,16 +162,11 @@ export default function ReviewDictionary(): JSX.Element {
       aria-labelledby="km-review-dictionary-title"
     >
       <Topbar
-        krTitle={
-          <>
-            사전 <span className="km-topbar__title-en">· Dictionary</span>
-          </>
-        }
-        eyebrow="Review library"
+        krTitle="사전"
+        title="Dictionary"
+        titleId="km-review-dictionary-title"
+        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
       />
-      <span id="km-review-dictionary-title" className="km-sr-only">
-        Dictionary
-      </span>
 
       <LibrarySubnav />
 
@@ -193,12 +189,21 @@ export default function ReviewDictionary(): JSX.Element {
         ) : null}
         {loading && rows.length === 0 ? (
           <div className="km-grammar__state" role="status">
-            {browsing ? 'Loading dictionary…' : 'Searching…'}
+            {browsing ? (
+              <Bilingual en="Loading dictionary…" kr="사전을 불러오는 중…" />
+            ) : (
+              <Bilingual en="Searching…" kr="검색 중…" />
+            )}
           </div>
         ) : error ? (
           <ErrorCard message={error} />
         ) : rows.length === 0 ? (
-          <p className="km-reference__empty">No dictionary entries found.</p>
+          <p className="km-reference__empty">
+            <Bilingual
+              en="No dictionary entries found."
+              kr="검색 결과가 없어요."
+            />
+          </p>
         ) : (
           <>
             <Card className="km-reference__list" variant="flat">

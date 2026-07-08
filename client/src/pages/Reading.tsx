@@ -11,23 +11,33 @@
  * No I/O — no threat model.
  */
 import type { JSX } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
 import { Topbar } from '../components/Topbar';
+import { navItem } from '../lib/nav';
+
+/** Page chrome source — nav.ts owns the en/kr pair (P3b Batch A). */
+const READING_NAV = navItem('reading');
 
 function Reading(): JSX.Element {
   return (
     <section className="screen km-reading" aria-labelledby="reading-title">
       <Topbar
-        krTitle={<span id="reading-title">읽기 · Reading</span>}
-        eyebrow="Coming soon"
+        krTitle="읽기"
+        title="Reading"
+        titleId="reading-title"
+        eyebrow={
+          <Bilingual en={READING_NAV.eyebrow} kr={READING_NAV.krEyebrow} />
+        }
       />
       <Card variant="flat" style={{ padding: '20px 22px' }}>
-        <div className="km-eyebrow" style={{ marginBottom: 6 }}>
-          준비 중 · In the works
-        </div>
+        {/* P3b trim: the card's own "준비 중 · In the works" eyebrow repeated
+            the topbar eyebrow, and the two-sentence pitch is now one line. */}
         <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: 'var(--paper-dim)' }}>
-          Reading — coming with your book scans. Graded passages from your own
-          books will live here once they’re digitised.
+          <Bilingual
+            en="Graded passages from your scanned books will live here."
+            kr="스캔한 책의 지문이 여기에 담길 예정이에요."
+          />
         </p>
       </Card>
     </section>

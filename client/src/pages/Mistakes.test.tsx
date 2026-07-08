@@ -97,10 +97,12 @@ describe('Mistakes page (F-021)', () => {
     renderPage();
     expect(screen.getByText('알맞은 것을 고르십시오.')).toBeInTheDocument();
     expect(screen.getByText('정답은 나입니다.')).toBeInTheDocument();
-    // The user's wrong pick is tagged.
+    // The user's wrong pick is tagged (bilingual chrome — EN half present).
     expect(screen.getByText('Your answer')).toBeInTheDocument();
     // The correct answer is named (appears in the choice + the reveal block).
-    expect(screen.getByText(/Correct answer:/)).toBeInTheDocument();
+    // P3b: the label is a <Bilingual> pair, so match the EN + KR segments.
+    expect(screen.getByText('Correct answer')).toBeInTheDocument();
+    expect(screen.getByText('정답')).toBeInTheDocument();
     expect(screen.getAllByText('나 정답').length).toBeGreaterThanOrEqual(1);
   });
 
@@ -127,12 +129,30 @@ describe('Mistakes page (F-021)', () => {
     expect(probe.textContent).toContain('mode=topik_prep');
   });
 
-  it('shows an empty state when there are no mistakes', () => {
+  it('shows a single-line empty state (P3b trim) with Korean present', () => {
     hoisted.state = { kind: 'data', data: [] };
     renderPage();
     expect(
       screen.getByText(/No mistakes in the last 30 days/i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/최근 30일간 틀린 문제가 없어요/),
+    ).toBeInTheDocument();
+    // The old second sub-line was cut — exactly one <p> in the empty card.
+    expect(
+      screen.queryByText(/Missed TOPIK questions collect here/i),
+    ).not.toBeInTheDocument();
+    const empty = document.querySelector('.km-mistakes__empty');
+    expect(empty).not.toBeNull();
+    expect(empty?.querySelectorAll('p')).toHaveLength(1);
+  });
+
+  it('renders the nav-manifest eyebrow bilingually in both-mode', () => {
+    hoisted.state = { kind: 'data', data: [] };
+    renderPage();
+    // nav.ts pair: Missed questions · 틀린 문제 모음.
+    expect(screen.getByText('Missed questions')).toBeInTheDocument();
+    expect(screen.getByText('틀린 문제 모음')).toBeInTheDocument();
   });
 
   it('shows an error state when the load fails', () => {

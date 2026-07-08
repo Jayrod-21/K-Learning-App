@@ -68,11 +68,6 @@
   padding: 32px 20px;
 }
 
-.km-mistakes__empty-sub {
-  font-size: 0.85rem;
-  color: var(--paper-mute);
-}
-
 .km-mistakes__skeleton-line {
   height: 14px;
   border-radius: 6px;

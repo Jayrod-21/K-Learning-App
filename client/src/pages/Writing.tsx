@@ -52,6 +52,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
@@ -59,6 +60,7 @@ import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
 import { ErrorCard } from '../components/ErrorCard';
+import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import { fetchWritingPrompts, gradeWriting } from '../services/writing';
 import type { WritingPromptDTO } from '../services/writing';
@@ -75,19 +77,24 @@ import type {
  */
 const SAMPLE_MAX_CHARS = 5_000;
 
+/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+const WRITING_NAV = navItem('writing');
+
 /** Per-rubric presentation meta. Target bands are the official TOPIK specs. */
 const RUBRIC_META: Record<
   TopikWritingRubric,
-  { label: string; eyebrow: string; target: string }
+  { label: string; eyebrow: string; krEyebrow: string; target: string }
 > = {
   topik_ii_53: {
     label: 'Q53 · 200–300자',
     eyebrow: 'Describe and explain',
+    krEyebrow: '설명하는 글',
     target: '200–300자',
   },
   topik_ii_54: {
     label: 'Q54 · 600–700자',
     eyebrow: 'Argue a position',
+    krEyebrow: '주장하는 글',
     target: '600–700자',
   },
 };
@@ -311,7 +318,9 @@ function Writing(): JSX.Element {
         krTitle="쓰기"
         title="Writing"
         titleId="writing-title"
-        eyebrow="TOPIK writing grader"
+        eyebrow={
+          <Bilingual en={WRITING_NAV.eyebrow} kr={WRITING_NAV.krEyebrow} />
+        }
       />
 
       {/* Rubric tabs ─────────────────────────────────────────── */}
@@ -336,10 +345,18 @@ function Writing(): JSX.Element {
 
       {/* Task prompt ─────────────────────────────────────────── */}
       <Card variant="default" style={{ marginBottom: 16 }}>
-        <Eyebrow>{RUBRIC_META[rubric].eyebrow}</Eyebrow>
+        <Eyebrow>
+          <Bilingual
+            en={RUBRIC_META[rubric].eyebrow}
+            kr={RUBRIC_META[rubric].krEyebrow}
+          />
+        </Eyebrow>
         {promptsLoading ? (
           <div className="km-grammar__state" role="status">
-            Loading writing tasks…
+            <Bilingual
+              en="Loading writing tasks…"
+              kr="쓰기 과제를 불러오는 중…"
+            />
           </div>
         ) : promptsError !== null ? (
           <ErrorCard message={promptsError} onRetry={retryPrompts} />
@@ -347,7 +364,10 @@ function Writing(): JSX.Element {
           // Fetched fine, but the rubric's active pool is empty — an honest
           // empty state, not a spinner that never resolves.
           <p className="km-reference__empty">
-            No writing tasks are available for this section yet.
+            <Bilingual
+              en="No writing tasks are available for this section yet."
+              kr="아직 이 영역의 쓰기 과제가 없어요."
+            />
           </p>
         ) : (
           <>
@@ -372,7 +392,10 @@ function Writing(): JSX.Element {
               className="km-grammar__instruction"
               style={{ display: 'block' }}
             >
-              Your writing in Korean · target {RUBRIC_META[rubric].target}
+              <Bilingual
+                en={`Your writing in Korean · target ${RUBRIC_META[rubric].target}`}
+                kr={`한국어로 쓰기 · 목표 ${RUBRIC_META[rubric].target}`}
+              />
             </label>
             <textarea
               id={textareaId}
@@ -402,7 +425,10 @@ function Writing(): JSX.Element {
 
             {grading ? (
               <div className="km-grammar__state" role="status">
-                Grading your writing… this can take up to a minute.
+                <Bilingual
+                  en="Grading your writing… this can take up to a minute."
+                  kr="채점 중이에요… 1분 정도 걸릴 수 있어요."
+                />
               </div>
             ) : null}
 
@@ -421,16 +447,20 @@ function Writing(): JSX.Element {
                         : 'Only one task is available for this section right now.'
                     }
                   >
-                    New prompt
+                    <Bilingual en="New prompt" kr="새 과제" />
                   </Button>
                   <Button variant="gold" onClick={() => void submit()} disabled={!canSubmit}>
-                    {grading ? 'Grading…' : 'Grade my writing'}
+                    {grading ? (
+                      <Bilingual en="Grading…" kr="채점 중…" />
+                    ) : (
+                      <Bilingual en="Grade my writing" kr="채점하기" />
+                    )}
                   </Button>
                 </>
               ) : (
                 <>
                   <Button variant="ghost" onClick={revise}>
-                    Revise &amp; regrade
+                    <Bilingual en="Revise & regrade" kr="고쳐서 다시 채점" />
                   </Button>
                   <Button
                     variant="gold"
@@ -442,7 +472,7 @@ function Writing(): JSX.Element {
                         : 'Only one task is available for this section right now.'
                     }
                   >
-                    New prompt
+                    <Bilingual en="New prompt" kr="새 과제" />
                   </Button>
                 </>
               )}
@@ -478,6 +508,7 @@ function GradePanel({
 
       <GoldRule className="km-grammar__rule" />
 
+      {/* Dimension headings render through <Bilingual> below (P3b). */}
       <DimensionBlock
         krLabel="내용 및 과제수행"
         enLabel="Content & task completion"
@@ -494,7 +525,9 @@ function GradePanel({
         dim={grade.languageUse}
       />
 
-      <Eyebrow className="km-grammar__seed-eyebrow">Overall</Eyebrow>
+      <Eyebrow className="km-grammar__seed-eyebrow">
+        <Bilingual en="Overall" kr="총평" />
+      </Eyebrow>
       <p className="km-grammar__summary">{grade.overallComment}</p>
     </Card>
   );
@@ -521,13 +554,10 @@ function DimensionBlock({
           marginBottom: 4,
         }}
       >
-        <div>
-          <span className="kr" style={{ fontSize: 15, color: 'var(--paper)' }}>
-            {krLabel}
-          </span>{' '}
-          <span style={{ fontSize: 12, color: 'var(--paper-mute)' }}>
-            {enLabel}
-          </span>
+        <div style={{ fontSize: 15, color: 'var(--paper)' }}>
+          {/* P3b: the rubric-dimension heading is a hand-composed kr/en pair —
+              route it through the primitive so the setting applies. */}
+          <Bilingual kr={krLabel} en={enLabel} />
         </div>
         <div style={{ fontSize: 14, color: 'var(--paper)', whiteSpace: 'nowrap' }}>
           {dim.score} / {dim.maxScore}

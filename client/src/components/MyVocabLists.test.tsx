@@ -116,7 +116,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
 
     const nameInput = screen.getByRole('textbox', { name: 'New list name' });
     await user.type(nameInput, '새 단어장');
-    await user.click(screen.getByRole('button', { name: /^Create$/ }));
+    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
 
     // Exact body: name_en must be ABSENT (not null/empty), kind defaulted.
     await waitFor(() => {
@@ -145,8 +145,8 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
       screen.getByRole('textbox', { name: 'English label' }),
       'Grammar list',
     );
-    await user.click(screen.getByRole('radio', { name: 'grammar' }));
-    await user.click(screen.getByRole('button', { name: /^Create$/ }));
+    await user.click(screen.getByRole('radio', { name: '문법 · grammar' }));
+    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
 
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
@@ -247,13 +247,13 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     const dialog = await screen.findByRole('dialog');
     await within(dialog).findByText('영향');
 
-    await user.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    await user.click(within(dialog).getByRole('button', { name: '이름 변경 · Rename' }));
     const nameInput = within(dialog).getByRole('textbox', {
       name: 'List name',
     });
     await user.clear(nameInput);
     await user.type(nameInput, '새 이름');
-    await user.click(within(dialog).getByRole('button', { name: 'Save name' }));
+    await user.click(within(dialog).getByRole('button', { name: '이름 저장 · Save name' }));
 
     await waitFor(() => {
       expect(vocabSvc.patchList).toHaveBeenCalledWith(7, { name_kr: '새 이름' });

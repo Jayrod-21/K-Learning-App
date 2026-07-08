@@ -143,6 +143,15 @@ describe('Hanja page', () => {
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
+  it('P3b: adopts the terse nav eyebrow pair (the flowery line is gone)', () => {
+    render(<Hanja />);
+    expect(screen.getByText('Word roots')).toBeInTheDocument();
+    expect(screen.getByText('한자 어원')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/bones inside the words/i),
+    ).not.toBeInTheDocument();
+  });
+
   it('toggles to the Index view and shows the filter chips (aria-pressed) + grid', async () => {
     const user = userEvent.setup();
     render(<Hanja />);
@@ -151,10 +160,10 @@ describe('Hanja page', () => {
 
     // Filter chips are toggle buttons → aria-pressed is the correct ARIA.
     expect(
-      screen.getByRole('button', { name: 'All', pressed: true }),
+      screen.getByRole('button', { name: '전체 · All', pressed: true }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Banked', pressed: false }),
+      screen.getByRole('button', { name: '모음 · Banked', pressed: false }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /學 배울 학/ }),
@@ -169,7 +178,7 @@ describe('Hanja page', () => {
     render(<Hanja />);
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
-    await user.click(screen.getByRole('button', { name: 'Banked' }));
+    await user.click(screen.getByRole('button', { name: '모음 · Banked' }));
 
     // 生 is banked → stays; 學 is practicing → filtered out.
     expect(

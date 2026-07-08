@@ -323,11 +323,23 @@ describe('ReviewVocab — add a corpus word to a list', () => {
   });
 });
 
+describe('ReviewVocab — bilingual chrome (P3b)', () => {
+  it('renders the title + "Review library" eyebrow with Korean in both-mode', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    expect(
+      screen.getByRole('heading', { level: 1, name: '단어 · Vocabulary' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('복습 자료실')).toBeInTheDocument();
+    expect(screen.getByText('Review library')).toBeInTheDocument();
+  });
+});
+
 describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
   it('opens the lists view via the ?tab=lists deep link', async () => {
     renderPage('/review/vocab?tab=lists');
     expect(
-      screen.getByRole('tab', { name: 'My lists' }),
+      screen.getByRole('tab', { name: '내 목록 · My lists' }),
     ).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
   });
@@ -337,7 +349,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     renderPage();
     await screen.findByText('영향');
 
-    await user.click(screen.getByRole('tab', { name: 'My lists' }));
+    await user.click(screen.getByRole('tab', { name: '내 목록 · My lists' }));
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
 
     // Create flow — default kind stays 'vocab'.
@@ -345,7 +357,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
       screen.getByRole('textbox', { name: 'New list name' }),
       '새 단어장',
     );
-    await user.click(screen.getByRole('button', { name: /^Create$/ }));
+    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
         name_kr: '새 단어장',
@@ -375,8 +387,8 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
       screen.getByRole('textbox', { name: 'English label' }),
       'Hanja list',
     );
-    await user.click(screen.getByRole('radio', { name: 'hanja' }));
-    await user.click(screen.getByRole('button', { name: /^Create$/ }));
+    await user.click(screen.getByRole('radio', { name: '한자 · hanja' }));
+    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
 
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
@@ -413,14 +425,14 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     const dialog = await screen.findByRole('dialog');
     await within(dialog).findByText('영향');
 
-    await user.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    await user.click(within(dialog).getByRole('button', { name: '이름 변경 · Rename' }));
     const nameInput = within(dialog).getByRole('textbox', {
       name: 'List name',
     });
     await user.clear(nameInput);
     await user.type(nameInput, '새 이름');
     await user.click(
-      within(dialog).getByRole('button', { name: 'Save name' }),
+      within(dialog).getByRole('button', { name: '이름 저장 · Save name' }),
     );
 
     await waitFor(() => {

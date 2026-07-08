@@ -27,6 +27,7 @@
  *     entry-removal rolls back on failure so the view never lies.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { Bilingual } from './Bilingual';
 import { Button } from './Button';
 import { Card } from './Card';
 import { ErrorCard } from './ErrorCard';
@@ -49,6 +50,14 @@ const KIND_OPTIONS: ReadonlyArray<VocabListKind> = [
   'hanja',
   'mixed',
 ];
+
+/** Korean chrome labels for the list-kind radios (P3b). */
+const KIND_KR: Record<VocabListKind, string> = {
+  vocab: '단어',
+  grammar: '문법',
+  hanja: '한자',
+  mixed: '혼합',
+};
 
 export function MyVocabLists(): JSX.Element {
   const { toast } = useToast();
@@ -132,7 +141,9 @@ export function MyVocabLists(): JSX.Element {
   return (
     <div className="km-resources__panel">
       <Card className="km-resources__create" variant="flat">
-        <Eyebrow>New list</Eyebrow>
+        <Eyebrow>
+          <Bilingual en="New list" kr="새 목록" />
+        </Eyebrow>
         <div className="km-resources__create-row">
           <input
             type="text"
@@ -159,7 +170,11 @@ export function MyVocabLists(): JSX.Element {
             }}
             disabled={newName.trim().length === 0 || creating}
           >
-            {creating ? 'Creating…' : 'Create'}
+            {creating ? (
+              <Bilingual en="Creating…" kr="만드는 중…" compact />
+            ) : (
+              <Bilingual en="Create" kr="만들기" compact />
+            )}
           </Button>
         </div>
         <div className="km-resources__create-row">
@@ -192,7 +207,7 @@ export function MyVocabLists(): JSX.Element {
               className={`km-review__kindOpt focusring${newKind === k ? ' km-review__kindOpt--on' : ''}`}
               disabled={creating}
             >
-              {k}
+              <Bilingual en={k} kr={KIND_KR[k]} compact />
             </button>
           ))}
         </div>
@@ -201,13 +216,16 @@ export function MyVocabLists(): JSX.Element {
 
       {loading ? (
         <div className="km-grammar__state" role="status">
-          Loading your lists…
+          <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
         </div>
       ) : error && lists.length === 0 ? (
         <ErrorCard message={error} onRetry={load} />
       ) : lists.length === 0 ? (
         <p className="km-reference__empty">
-          No lists yet. Create one above, then add words from the Browse view.
+          <Bilingual
+            en="No lists yet. Create one above, then add words from the Browse view."
+            kr="아직 목록이 없어요. 위에서 만든 뒤 둘러보기에서 단어를 추가하세요."
+          />
         </p>
       ) : (
         <>
@@ -246,8 +264,11 @@ export function MyVocabLists(): JSX.Element {
                         </span>
                       ) : null}
                       <span className="km-pill km-pill--default">
-                        {list.entry_count}{' '}
-                        {list.entry_count === 1 ? 'word' : 'words'}
+                        <Bilingual
+                          en={`${String(list.entry_count)} ${list.entry_count === 1 ? 'word' : 'words'}`}
+                          kr={`단어 ${String(list.entry_count)}개`}
+                          compact
+                        />
                       </span>
                     </button>
                     <Button
@@ -392,7 +413,9 @@ function ListDetailSheet({
       <div className="km-review__sheetBody">
         <div className="km-review__sheetHead">
           <div>
-            <Eyebrow>List</Eyebrow>
+            <Eyebrow>
+              <Bilingual en="List" kr="목록" />
+            </Eyebrow>
             {renaming ? (
               <input
                 className="kr-display km-review__input"
@@ -422,8 +445,11 @@ function ListDetailSheet({
             )}
             <div className="km-review__sheetMeta">
               {list?.name_en ? `${list.name_en} · ` : ''}
-              {list?.entry_count ?? 0}{' '}
-              {(list?.entry_count ?? 0) === 1 ? 'word' : 'words'}
+              <Bilingual
+                en={`${String(list?.entry_count ?? 0)} ${(list?.entry_count ?? 0) === 1 ? 'word' : 'words'}`}
+                kr={`단어 ${String(list?.entry_count ?? 0)}개`}
+                compact
+              />
             </div>
           </div>
           <Button
@@ -446,7 +472,11 @@ function ListDetailSheet({
               }}
               disabled={renameBusy}
             >
-              {renameBusy ? 'Saving…' : 'Save name'}
+              {renameBusy ? (
+                <Bilingual en="Saving…" kr="저장 중…" />
+              ) : (
+                <Bilingual en="Save name" kr="이름 저장" />
+              )}
             </Button>
           ) : (
             <Button
@@ -459,7 +489,7 @@ function ListDetailSheet({
               }}
               disabled={list === null}
             >
-              Rename
+              <Bilingual en="Rename" kr="이름 변경" />
             </Button>
           )}
         </div>
@@ -468,13 +498,16 @@ function ListDetailSheet({
 
         {loading ? (
           <div className="km-grammar__state" role="status">
-            Loading words…
+            <Bilingual en="Loading words…" kr="단어를 불러오는 중…" />
           </div>
         ) : null}
         {error ? <ErrorCard message={error} onRetry={load} /> : null}
         {!loading && entries.length === 0 && !error ? (
           <p className="km-reference__empty">
-            No words in this list yet. Add some from the Browse view.
+            <Bilingual
+              en="No words in this list yet. Add some from the Browse view."
+              kr="아직 단어가 없어요. 둘러보기에서 추가하세요."
+            />
           </p>
         ) : null}
         {entries.length > 0 ? (
