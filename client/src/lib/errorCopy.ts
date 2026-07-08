@@ -89,3 +89,31 @@ export function imageUploadErrorMessage(err: unknown): string {
   }
   return 'Upload failed. Try again.';
 }
+
+/**
+ * Fixed copy for a failed BOOK upload (`POST /uploads`, U1 — see
+ * services/uploads.ts). Mirrors `imageUploadErrorMessage`'s shape: the
+ * per-user DAILY upload cap (an abuse/cost backstop) carries NO
+ * `retry_after`, while the short-window rate limiter's 429 does —
+ * `retryAfter` presence is the discriminator, same reasoning as that
+ * function's doc.
+ */
+export function bookUploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return err.retryAfter !== undefined
+        ? `Rate-limited. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : "You've hit today's upload limit. Try again tomorrow.";
+    }
+    if (err.status === 413) {
+      return 'That PDF is too large. Pick one under 15 MB.';
+    }
+    if (err.status === 400) {
+      return 'That file isn’t a valid PDF. Choose a different file.';
+    }
+    if (err.code === 'network') {
+      return 'Network unreachable. Check your connection and try again.';
+    }
+  }
+  return 'Upload failed. Try again.';
+}

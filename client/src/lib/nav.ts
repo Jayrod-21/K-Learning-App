@@ -69,7 +69,8 @@ export type NavItemId =
   | 'review-grammar'
   | 'diagnostic'
   | 'images'
-  | 'chat';
+  | 'chat'
+  | 'uploads';
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   // ── Primary tabs ────────────────────────────────────────────────────
@@ -273,6 +274,20 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     headerTitle: '대화 · Chat',
     icon: 'chat',
   },
+  {
+    // U1b (PDF book-upload feature) — reached from Settings → Uploads
+    // ("See all uploads") and from tapping a row to open the PDF viewer at
+    // `/uploads/:id` (that route is NOT its own NavItem — it's a dynamic
+    // detail view, same convention as Images' capture view).
+    id: 'uploads',
+    path: '/uploads',
+    label: 'Uploads',
+    kr: '업로드',
+    eyebrow: 'Your book PDFs',
+    krEyebrow: '내 책 PDF',
+    headerTitle: '업로드 · Uploads',
+    icon: 'upload',
+  },
 ];
 
 // Note: the `as const` is load-bearing — it narrows `typeof X[number]` to a
@@ -308,6 +323,7 @@ export const SECONDARY_IDS = [
   'diagnostic',
   'images',
   'chat',
+  'uploads',
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 /**

@@ -52,11 +52,21 @@ const suggestSvc = vi.hoisted(() => ({
   fetchWeeklyGrammarSuggestions: vi.fn(),
 }));
 
+// U1 sort-by-source filter scaffolding (SourceFilterRow) — listUploads is
+// best-effort and defaults to empty so every PRE-EXISTING test in this file
+// (which knows nothing about uploads) sees no source row at all, matching
+// its pre-U1 behaviour exactly.
+const uploadsSvc = vi.hoisted(() => ({
+  listUploads: vi.fn(),
+}));
+
 vi.mock('../../services/vocab', () => vocabSvc);
 vi.mock('../../services/grammar', () => grammarSvc);
 vi.mock('../../services/suggestions', () => suggestSvc);
+vi.mock('../../services/uploads', () => uploadsSvc);
 
 import ReviewVocab from './ReviewVocab';
+import type { BookUpload } from '../../types/domain';
 
 const VOCAB_ROWS: VocabEntry[] = [
   { id: 1, corpus: 'vocab_2000_intermediate', korean: '영향', english: 'influence', proficiency: 'L3', theme: null },
@@ -105,10 +115,21 @@ function renderPage(initialPath = '/review/vocab'): ReturnType<typeof render> {
   );
 }
 
+const READY_UPLOAD: BookUpload = {
+  id: '9',
+  title: '한국어 문법 사전',
+  type: 'grammar',
+  status: 'ready',
+  byteSize: 4_200_000,
+  createdAt: '2026-07-01T00:00:00Z',
+};
+
 beforeEach(() => {
   for (const fn of Object.values(vocabSvc)) (fn as Mock).mockReset();
   (grammarSvc.bankPattern as Mock).mockReset();
   for (const fn of Object.values(suggestSvc)) (fn as Mock).mockReset();
+  uploadsSvc.listUploads.mockReset();
+  uploadsSvc.listUploads.mockResolvedValue([]);
 
   vocabSvc.searchEntriesPage.mockResolvedValue({
     entries: VOCAB_ROWS,
@@ -461,5 +482,47 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('ReviewVocab — U1 sort-by-source filter scaffolding', () => {
+  it('renders no source row when the user has no ready uploads', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    renderPage();
+    await screen.findByText('영향');
+    expect(
+      screen.queryByRole('group', { name: 'Filter vocabulary by source book' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('lists ready uploads as filter chips and sets source_upload_id on select', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([
+      READY_UPLOAD,
+      { ...READY_UPLOAD, id: '10', title: '처리 중인 책', status: 'processing' },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+
+    const group = await screen.findByRole('group', {
+      name: 'Filter vocabulary by source book',
+    });
+    // Only the READY upload becomes a chip — the processing one is filtered out.
+    expect(within(group).getByText('한국어 문법 사전')).toBeInTheDocument();
+    expect(within(group).queryByText('처리 중인 책')).not.toBeInTheDocument();
+
+    await user.click(within(group).getByText('한국어 문법 사전'));
+
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source_upload_id: '9' }),
+        expect.anything(),
+      );
+    });
+
+    // Selecting a source reveals the "View PDF" affordance.
+    expect(
+      screen.getByRole('button', { name: /View PDF/ }),
+    ).toBeInTheDocument();
   });
 });

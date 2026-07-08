@@ -1,0 +1,281 @@
+/**
+ * UploadTypeModal — the "upload a book" flow (U1b client, PDF book-upload
+ * feature, `db/docs/PDF_UPLOAD_DESIGN.md` §"U1 → U1b client"). A two-step
+ * `Sheet` (bottom modal — `useModalA11y` via `Sheet`, so focus-trap / Esc /
+ * body-scroll-lock / focus-restore are inherited, not reimplemented):
+ *
+ *   1. Type   — vocab / grammar / both / dialogue / literature, bilingual
+ *      chips. This is what U2's extraction eventually tags the content with.
+ *   2. File + title — a PDF file picker (`accept="application/pdf"`) plus a
+ *      title field defaulting to the filename; submitting calls `uploadBook`.
+ *
+ * Shared by Settings (the "Upload a book" row) and the Uploads page (its own
+ * "+ Upload" entry) so both surfaces get the identical flow. On success the
+ * fresh `BookUpload` (status `processing` — U1 has no extraction yet) is
+ * handed to the caller via `onUploaded` so it can splice it into whatever
+ * list it's showing without a refetch.
+ *
+ * Threat model:
+ *   - `checkPdfFile` is a client convenience pre-check only (see
+ *     services/uploads.ts's header) — it saves the user a doomed round-trip
+ *     for an obviously-wrong file, but the server's magic-byte sniff + size
+ *     cap are the real defence and still run on every request. Server
+ *     failures map to fixed copy via `bookUploadErrorMessage` — never
+ *     echoed.
+ *   - Abort discipline: the in-flight `uploadBook` call is aborted whenever
+ *     the modal closes or unmounts mid-request, and every state write after
+ *     the `await` is guarded on the controller's own signal, so a late
+ *     settle after close/unmount is a no-op (mirrors the PATCH/prefs pattern
+ *     in pages/Settings.tsx).
+ */
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type JSX,
+} from 'react';
+import { Bilingual } from './Bilingual';
+import { Button } from './Button';
+import { ErrorCard } from './ErrorCard';
+import { Eyebrow } from './Eyebrow';
+import { Icon } from './Icon';
+import { Sheet } from './Sheet';
+import { bookUploadErrorMessage } from '../lib/errorCopy';
+import { checkPdfFile, uploadBook } from '../services/uploads';
+import type { BookUpload, BookUploadType } from '../types/domain';
+
+export interface UploadTypeModalProps {
+  open: boolean;
+  onClose: () => void;
+  /** Fired with the fresh row right after a successful `POST /uploads`. */
+  onUploaded: (upload: BookUpload) => void;
+}
+
+interface TypeOption {
+  id: BookUploadType;
+  en: string;
+  kr: string;
+}
+
+const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
+  { id: 'vocab', en: 'Vocabulary', kr: '단어' },
+  { id: 'grammar', en: 'Grammar', kr: '문법' },
+  { id: 'both', en: 'Vocab + grammar', kr: '단어 + 문법' },
+  { id: 'dialogue', en: 'Dialogue', kr: '대화' },
+  { id: 'literature', en: 'Literature', kr: '문학' },
+];
+
+/** Filename minus a trailing `.pdf` (case-insensitive) — the title default. */
+function titleFromFilename(name: string): string {
+  return name.replace(/\.pdf$/i, '');
+}
+
+export function UploadTypeModal({
+  open,
+  onClose,
+  onUploaded,
+}: UploadTypeModalProps): JSX.Element {
+  const [type, setType] = useState<BookUploadType | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [titleTouched, setTitleTouched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const ctrlRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Reset the whole flow whenever the modal closes, so re-opening always
+  // starts fresh at the type step, and abort any upload still in flight.
+  useEffect(() => {
+    if (open) return;
+    ctrlRef.current?.abort();
+    setType(null);
+    setFile(null);
+    setTitle('');
+    setTitleTouched(false);
+    setError(null);
+    setUploading(false);
+  }, [open]);
+
+  // Abort on unmount too — belt-and-suspenders alongside the close-driven
+  // reset above, in case a parent unmounts this without flipping `open`.
+  useEffect(() => {
+    return () => {
+      ctrlRef.current?.abort();
+    };
+  }, []);
+
+  function onFileChange(e: ChangeEvent<HTMLInputElement>): void {
+    const picked = e.target.files?.[0] ?? null;
+    // Reset the input so picking the SAME file again still fires `change`.
+    e.target.value = '';
+    if (!picked) return;
+    const precheck = checkPdfFile(picked);
+    if (precheck) {
+      setError(precheck);
+      return;
+    }
+    setError(null);
+    setFile(picked);
+    if (!titleTouched) setTitle(titleFromFilename(picked.name));
+  }
+
+  async function submit(): Promise<void> {
+    if (!type || !file || uploading) return;
+    const trimmedTitle = title.trim();
+    if (trimmedTitle === '') {
+      setError('Give the book a title.');
+      return;
+    }
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    setUploading(true);
+    setError(null);
+    try {
+      const upload = await uploadBook(file, type, trimmedTitle, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      onUploaded(upload);
+      onClose();
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      setError(bookUploadErrorMessage(err));
+    } finally {
+      if (!ctrl.signal.aborted) setUploading(false);
+    }
+  }
+
+  const step: 'type' | 'file' = type === null ? 'type' : 'file';
+
+  return (
+    <Sheet open={open} onClose={onClose} ariaLabel="Upload a book">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>
+              <Bilingual en="Upload a book" kr="책 업로드" />
+            </Eyebrow>
+            <div className="kr-display km-review__sheetTitle">
+              {step === 'type' ? (
+                <Bilingual en="What kind of content?" kr="어떤 종류인가요?" />
+              ) : (
+                <Bilingual en="Choose a PDF" kr="PDF 선택" />
+              )}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close upload"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+
+        <hr className="hr-double km-review__sheetRule" />
+
+        {step === 'type' ? (
+          <ul className="km-resources__pick-list">
+            {TYPE_OPTIONS.map((opt) => (
+              <li key={opt.id}>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  fullWidth
+                  onClick={() => {
+                    setType(opt.id);
+                  }}
+                >
+                  <Bilingual en={opt.en} kr={opt.kr} />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setType(null);
+                setError(null);
+              }}
+            >
+              <span
+                style={{ display: 'inline-flex', transform: 'rotate(180deg)' }}
+              >
+                <Icon name="arrow-right" size={12} />
+              </span>
+              <span>
+                <Bilingual en="Back" kr="뒤로" compact />
+              </span>
+            </Button>
+
+            <div className="km-field" style={{ marginTop: 12 }}>
+              <span className="km-field__label" id="km-upload-file-label">
+                PDF file
+              </span>
+              <Button
+                variant="ghost"
+                size="md"
+                fullWidth
+                onClick={() => fileInputRef.current?.click()}
+                leadingIcon={<Icon name="upload" size={14} />}
+              >
+                {file ? file.name : 'Choose a PDF…'}
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf"
+                hidden
+                aria-labelledby="km-upload-file-label"
+                onChange={onFileChange}
+              />
+            </div>
+
+            <div className="km-field">
+              <label className="km-field__label" htmlFor="km-upload-title">
+                Title
+              </label>
+              <input
+                id="km-upload-title"
+                type="text"
+                className="km-field__input"
+                value={title}
+                onChange={(e) => {
+                  setTitleTouched(true);
+                  setTitle(e.target.value);
+                }}
+                placeholder="Book title"
+              />
+            </div>
+
+            {error ? <ErrorCard message={error} /> : null}
+
+            <Button
+              variant="gold"
+              size="md"
+              fullWidth
+              onClick={() => {
+                void submit();
+              }}
+              disabled={!file || title.trim() === '' || uploading}
+              aria-busy={uploading}
+            >
+              <span role="status" aria-live="polite">
+                {uploading ? (
+                  <Bilingual en="Uploading…" kr="업로드 중…" compact />
+                ) : (
+                  <Bilingual en="Upload" kr="업로드" compact />
+                )}
+              </span>
+            </Button>
+          </div>
+        )}
+      </div>
+    </Sheet>
+  );
+}

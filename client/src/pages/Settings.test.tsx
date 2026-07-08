@@ -29,6 +29,7 @@ import {
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { ApiError } from '../services/api';
 import type { User } from '../hooks/auth-context';
 
@@ -98,20 +99,23 @@ import { ThemeProvider } from '../hooks/ThemeProvider';
 import { ToastProvider } from '../components/ToastProvider';
 
 /**
- * Settings now consumes `useTheme` (A4 theme-mode control) and `useToast`
- * (A3 prefs-sync-failure surface), so every render needs ThemeProvider +
- * ToastProvider in the tree alongside SettingsProvider. This helper wraps
- * the page in the same provider order App.tsx uses.
+ * Settings now consumes `useTheme` (A4 theme-mode control), `useToast`
+ * (A3 prefs-sync-failure surface + U1b upload toast), and `useNavigate`
+ * (U1b "See all uploads" link), so every render needs ThemeProvider +
+ * ToastProvider + a Router in the tree alongside SettingsProvider. This
+ * helper wraps the page in the same provider order App.tsx uses.
  */
 function renderSettings(): ReturnType<typeof render> {
   return render(
-    <ThemeProvider>
-      <ToastProvider>
-        <SettingsProvider>
-          <Settings />
-        </SettingsProvider>
-      </ToastProvider>
-    </ThemeProvider>,
+    <MemoryRouter>
+      <ThemeProvider>
+        <ToastProvider>
+          <SettingsProvider>
+            <Settings />
+          </SettingsProvider>
+        </ToastProvider>
+      </ThemeProvider>
+    </MemoryRouter>,
   );
 }
 

@@ -69,6 +69,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
@@ -79,6 +80,7 @@ import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
 import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { Topbar } from '../components/Topbar';
+import { UploadTypeModal } from '../components/UploadTypeModal';
 import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -256,6 +258,13 @@ export default function Settings(): JSX.Element {
   const { settings, updateSettings, resetSettings } = useSettings();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const { toast } = useToast();
+  const navigate = useNavigate();
+
+  // U1b — Uploads group. The modal itself owns the upload flow; Settings
+  // just needs to know when to open it and to acknowledge a success. The
+  // Uploads page (not this screen) is the list of honest truth, so a
+  // successful upload here doesn't try to maintain its own copy of the list.
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
   // Hydrate from /auth/me. Mock fallback keeps the screen rendering during
   // dev when the server route is down; `isMock` flips the corner badge.
@@ -776,6 +785,37 @@ export default function Settings(): JSX.Element {
       {/* ───── Two-Factor Authentication (server-backed) ───── */}
       <TwoFactorSection />
 
+      {/* ───── Uploads (U1b — PDF book-upload feature) ───── */}
+      <SettingsGroup icon="upload" eyebrow="업로드" title="Uploads">
+        <div className="km-settings__row-head">
+          <span className="km-settings__row-label">Upload a book</span>
+          <span className="km-settings__row-hint">
+            Add a scanned PDF — vocab, grammar, dialogue, or literature.
+          </span>
+        </div>
+        <div className="km-mfa__actions">
+          <Button
+            variant="gold"
+            size="sm"
+            leadingIcon={<Icon name="upload" size={14} />}
+            onClick={() => {
+              setUploadModalOpen(true);
+            }}
+          >
+            <Bilingual en="Upload a book" kr="책 업로드" compact />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              navigate('/uploads');
+            }}
+          >
+            <Bilingual en="See all uploads" kr="모든 업로드 보기" compact />
+          </Button>
+        </div>
+      </SettingsGroup>
+
       {/* Prefs (notif + palette) cross-device sync failure is surfaced via a
           non-blocking toast (see flushPrefs) — the change is already durable in
           localStorage, so it never blanks the screen with an inline ErrorCard. */}
@@ -935,6 +975,16 @@ export default function Settings(): JSX.Element {
       </SettingsGroup>
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>
+
+      <UploadTypeModal
+        open={uploadModalOpen}
+        onClose={() => {
+          setUploadModalOpen(false);
+        }}
+        onUploaded={() => {
+          toast({ message: 'Uploaded — now processing.', tone: 'success' });
+        }}
+      />
     </section>
   );
 }

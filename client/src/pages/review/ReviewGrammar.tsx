@@ -41,6 +41,7 @@ import { KgiuDetailBody } from '../../components/KgiuDetailBody';
 import { FilterGroup, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { Sheet } from '../../components/Sheet';
+import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
 import { Topbar } from '../../components/Topbar';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
 import {
@@ -76,6 +77,9 @@ export default function ReviewGrammar(): JSX.Element {
   // F-005 filters: genre (content_domain) + difficulty (book_level).
   const [domain, setDomain] = useState<DomainFilter>('all');
   const [level, setLevel] = useState<LevelFilter>('all');
+  // U1 scaffolding — sort-by-source filter (see SourceFilterRow's header
+  // doc). Inert until U2 tags kgiu_entries with source_upload_id.
+  const [source, setSource] = useState<string>(ALL_SOURCES);
   // F-004 detail Sheet: the tapped row paints the header immediately while
   // the full `GET /grammar/kgiu/:id` detail resolves underneath.
   const [openRow, setOpenRow] = useState<KgiuEntrySummary | null>(null);
@@ -129,6 +133,7 @@ export default function ReviewGrammar(): JSX.Element {
           ...(q ? { q } : {}),
           ...(domain !== 'all' ? { domain } : {}),
           ...(level !== 'all' ? { book_level: level } : {}),
+          ...(source !== ALL_SOURCES ? { source_upload_id: source } : {}),
           limit: GRAMMAR_PAGE_SIZE,
         },
         ctrl.signal,
@@ -146,7 +151,7 @@ export default function ReviewGrammar(): JSX.Element {
         setError(errorMessageFor(err, 'Could not load grammar.'));
         setLoading(false);
       });
-  }, [q, domain, level]);
+  }, [q, domain, level, source]);
 
   useEffect(() => {
     // Fetch on mount / query change. The set-state-in-effect rule only flags
@@ -259,6 +264,11 @@ export default function ReviewGrammar(): JSX.Element {
           options={GRAMMAR_LEVEL_FILTERS}
           value={level}
           onChange={setLevel}
+        />
+        <SourceFilterRow
+          ariaLabel="Filter grammar by source book"
+          value={source}
+          onChange={setSource}
         />
         {/* Hidden while the last fetch errored — the count would otherwise
             describe the STALE row set under the new filter/search. */}
