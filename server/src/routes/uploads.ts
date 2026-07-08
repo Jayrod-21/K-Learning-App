@@ -19,6 +19,12 @@
  *   GET    /uploads                  → this user's uploads, newest first
  *   GET    /uploads/:id              → one upload's metadata (incl. page_count)
  *   GET    /uploads/:id/page/:n      → page n's image bytes (user-scoped)
+ *   GET    /uploads/:id/pages        → the ordered list of {id, page_number}
+ *                                       for every page (the client's reorder
+ *                                       tool needs the stable `book_pages.id`
+ *                                       set BEFORE it can submit a valid
+ *                                       PATCH .../pages/order body — the same
+ *                                       ids that route validates against)
  *   PATCH  /uploads/:id/pages/order  → reorder pages (vFlat retakes can land
  *                                       out of order — see migration 041)
  *   DELETE /uploads/:id              → remove the row + all its pages' blobs
@@ -125,9 +131,9 @@ const UploadBodySchema = z
  * of `book_pages.id` values. Must be exactly the upload's current page-id set
  * (no partial reorders, no ids from another upload) — validated in the
  * handler, where the DB has the current set to compare against. Capped at
- * 3000 (comfortably above the zip/PDF page-count guards in
- * services/zipPageExtract.ts / pdfPageRender.ts, which bound how many pages
- * an upload can ever have).
+ * 3000 (comfortably above `MAX_ZIP_ENTRIES` in services/zipPageExtract.ts and
+ * `MAX_PDF_PAGES` in services/pdfPageRender.ts — both 2000 — which bound how
+ * many pages an upload can ever have).
  */
 const PageOrderBodySchema = z
   .object({
@@ -328,6 +334,55 @@ router.get(
       // eventually, but destroying promptly frees the fd).
       res.on('close', () => stream.destroy());
       stream.pipe(res);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /uploads/:id/pages — the ordered list of every page's stable id
+// (user-scoped). Closes the cross-agent contract gap: the client's reorder
+// tool (services/uploads.ts `listPages`) needs each page's `book_pages.id`
+// BEFORE it can submit `PATCH .../pages/order`, which validates the
+// submitted `page_ids` set against the upload's CURRENT id set exactly (see
+// that handler below) — this route is where that current set comes from.
+// Response shape is deliberately IDENTICAL to the PATCH's response
+// (`{ pages: [{ id, page_number }] }`) so the ids this route hands back are
+// literally the same ids — and the same wire shape — the PATCH accepts.
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/:id/pages',
+  cheapLimiter(),
+  validateParams(IdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
+        .validatedParams;
+
+      // Ownership check FIRST, separate from the page query: an owned upload
+      // that's still `processing` (or a corpus edge case) can legitimately
+      // have zero pages, which must be a 200 with an empty list — not folded
+      // into the same 404 the way page/:n's single-query IDOR check is,
+      // since that route only ever needs "does page n exist for me".
+      const owner = await query<{ id: string }>(
+        `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+      if (!owner.rows[0]) {
+        // Not theirs / missing → 404 (don't confirm existence).
+        throw new NotFoundError('upload not found');
+      }
+
+      const { rows } = await query<{ id: string; page_number: number }>(
+        `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+        [id],
+      );
+      res.status(200).json({
+        pages: rows.map((r) => ({ id: r.id, page_number: r.page_number })),
+      });
     } catch (err) {
       next(err);
     }

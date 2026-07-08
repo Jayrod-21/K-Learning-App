@@ -36,7 +36,7 @@
  *   - Zero usable image pages after the full scan → the caller
  *     (`bookUploadIngest.ingestUpload`) rejects with 400.
  */
-import { fromBuffer, type Entry } from 'yauzl';
+import { fromBuffer, type Entry, type ZipFile } from 'yauzl';
 import { ValidationError } from '../middleware/errors.js';
 import { sniffImageMime } from './imageIngest.js';
 import { naturalCompare } from './naturalSort.js';
@@ -84,15 +84,34 @@ function isSkippableEntryName(name: string): boolean {
   return false;
 }
 
+/**
+ * Two passes, deliberately:
+ *   PASS 1 (metadata only) — enumerate EVERY central-directory entry, applying
+ *     the count / per-entry-declared / total-declared zip-bomb guards, and
+ *     collect the image-candidate `Entry` refs. NO entry bytes are read here.
+ *     A declared bomb is rejected from its central directory alone, before a
+ *     single byte is decompressed — the proper posture (don't start extracting
+ *     an archive that ANNOUNCES it's a bomb) AND it means a later entry's
+ *     size lie can't be masked by successfully streaming the earlier ones.
+ *   PASS 2 (extract) — only once every guard has passed, open a read stream
+ *     per candidate, sequentially, enforcing the ACTUAL-bytes cap (an entry
+ *     that under-declares its size in the header can't sneak past — the
+ *     streamed byte count is re-checked), sniff the magic bytes, keep the
+ *     jpg/png pages.
+ *
+ * `autoClose: false` so the zipfile stays open for pass 2's streams after the
+ * enumerate pass's 'end' fires; it's closed explicitly once both passes are
+ * done (or on any failure).
+ */
 function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
   return new Promise((resolve, reject) => {
-    fromBuffer(zipBuffer, { lazyEntries: true }, (openErr, zipfile) => {
+    fromBuffer(zipBuffer, { lazyEntries: true, autoClose: false }, (openErr, zipfile) => {
       if (openErr || !zipfile) {
         reject(new ValidationError('uploaded file is not a valid zip archive'));
         return;
       }
 
-      const results: RawEntry[] = [];
+      const candidates: Entry[] = [];
       let entryCount = 0;
       let totalDeclaredUncompressed = 0;
       let settled = false;
@@ -103,15 +122,10 @@ function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
         zipfile.close();
         reject(err);
       };
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        resolve(results);
-      };
 
       zipfile.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
-      zipfile.on('end', finish);
 
+      // PASS 1: metadata-only enumeration + guards.
       zipfile.on('entry', (entry: Entry) => {
         entryCount += 1;
         if (entryCount > MAX_ZIP_ENTRIES) {
@@ -124,8 +138,8 @@ function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
           return;
         }
 
-        // Declared-size guard BEFORE touching any bytes — yauzl reads this
-        // straight from the central directory record.
+        // Declared-size guards — read straight from the central directory
+        // record; no entry bytes are touched.
         if (entry.uncompressedSize > MAX_ENTRY_UNCOMPRESSED_BYTES) {
           fail(
             new ValidationError(
@@ -144,45 +158,81 @@ function readZipImageEntries(zipBuffer: Buffer): Promise<RawEntry[]> {
           return;
         }
 
-        zipfile.openReadStream(entry, (streamErr, stream) => {
-          if (streamErr || !stream) {
-            fail(streamErr instanceof Error ? streamErr : new Error('failed to open zip entry stream'));
-            return;
-          }
-          const chunks: Buffer[] = [];
-          let size = 0;
-          stream.on('data', (chunk: Buffer) => {
-            size += chunk.length;
-            // Defense in depth: re-check against the ACTUAL bytes streamed,
-            // not just the (possibly understated/lying) declared size above.
-            if (size > MAX_ENTRY_UNCOMPRESSED_BYTES) {
-              stream.destroy();
-              fail(
-                new ValidationError(
-                  `zip entry "${entry.fileName}" exceeds the per-page size limit`,
-                ),
-              );
-              return;
+        candidates.push(entry);
+        zipfile.readEntry();
+      });
+
+      // PASS 2: all metadata validated — now extract the candidates' bytes.
+      zipfile.on('end', () => {
+        if (settled) return;
+        void (async () => {
+          try {
+            const results: RawEntry[] = [];
+            for (const entry of candidates) {
+              const buffer = await readEntryBuffer(zipfile, entry);
+              const mime = sniffImageMime(buffer);
+              // Page images are jpg/png only (photographs of book pages) —
+              // webp (a valid mime for the unrelated Images/OCR feature) and
+              // anything else are silently skipped, not errors.
+              if (mime === 'image/jpeg' || mime === 'image/png') {
+                results.push({ name: entry.fileName, buffer, mime });
+              }
             }
-            chunks.push(chunk);
-          });
-          stream.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
-          stream.on('end', () => {
             if (settled) return;
-            const buffer = Buffer.concat(chunks);
-            const mime = sniffImageMime(buffer);
-            // Page images are jpg/png only (photographs of book pages) —
-            // webp (a valid mime for the unrelated Images/OCR feature) and
-            // anything else are silently skipped, not errors.
-            if (mime === 'image/jpeg' || mime === 'image/png') {
-              results.push({ name: entry.fileName, buffer, mime });
-            }
-            zipfile.readEntry();
-          });
-        });
+            settled = true;
+            zipfile.close();
+            resolve(results);
+          } catch (err) {
+            fail(err instanceof Error ? err : new Error(String(err)));
+          }
+        })();
       });
 
       zipfile.readEntry();
+    });
+  });
+}
+
+/**
+ * Read one entry's bytes into a Buffer, enforcing the ACTUAL-streamed-bytes
+ * cap (defense in depth: an entry that under-declares its size in the central
+ * directory — which pass 1's declared-size guard trusts — can't smuggle in
+ * more than MAX_ENTRY_UNCOMPRESSED_BYTES of real data). Rejects with a
+ * ValidationError if the entry over-runs the per-page cap while streaming.
+ */
+function readEntryBuffer(zipfile: ZipFile, entry: Entry): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    zipfile.openReadStream(entry, (streamErr, stream) => {
+      if (streamErr || !stream) {
+        reject(streamErr instanceof Error ? streamErr : new Error('failed to open zip entry stream'));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let done = false;
+      stream.on('data', (chunk: Buffer) => {
+        if (done) return;
+        size += chunk.length;
+        if (size > MAX_ENTRY_UNCOMPRESSED_BYTES) {
+          done = true;
+          stream.destroy();
+          reject(
+            new ValidationError(`zip entry "${entry.fileName}" exceeds the per-page size limit`),
+          );
+          return;
+        }
+        chunks.push(chunk);
+      });
+      stream.on('error', (err) => {
+        if (done) return;
+        done = true;
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+      stream.on('end', () => {
+        if (done) return;
+        done = true;
+        resolve(Buffer.concat(chunks));
+      });
     });
   });
 }

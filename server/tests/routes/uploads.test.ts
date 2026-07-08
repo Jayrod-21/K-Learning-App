@@ -8,6 +8,7 @@
  *   GET    /uploads
  *   GET    /uploads/:id
  *   GET    /uploads/:id/page/:n
+ *   GET    /uploads/:id/pages
  *   PATCH  /uploads/:id/pages/order
  *   DELETE /uploads/:id
  *
@@ -44,6 +45,9 @@
  *     bad id → 400
  *   - GET :id/page/:n: streams the right page's bytes + headers; IDOR → 404;
  *     out-of-range n → 404; bad n → 400
+ *   - GET :id/pages: ordered {id, page_number} list for the owner; IDOR →
+ *     404; bad id → 400; round-trips into PATCH :id/pages/order (the ids
+ *     this route returns are exactly the ids that route accepts)
  *   - PATCH :id/pages/order: re-sequences page_number atomically; IDOR → 404;
  *     mismatched/foreign page_ids → 400; duplicate ids → 400
  *   - DELETE: removes row + ALL pages' blobs (cascade); IDOR → 404; second
@@ -161,6 +165,7 @@ describe('uploads — auth required', () => {
     ['GET', '/uploads'],
     ['GET', '/uploads/1'],
     ['GET', '/uploads/1/page/1'],
+    ['GET', '/uploads/1/pages'],
     ['POST', '/uploads'],
     ['PATCH', '/uploads/1/pages/order'],
     ['DELETE', '/uploads/1'],
@@ -614,6 +619,102 @@ describe('GET /uploads/:id/page/:n — streams a page image, user-scoped', () =>
     await seedBookPage(pg.pool, uploadId, 1); // no real blob written on disk
     const res = await getBinary(agent, `/uploads/${uploadId}/page/1`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /uploads/:id/pages — ordered page-id list, user-scoped', () => {
+  it('returns every page in page_number order with its stable id', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+
+    const res = await agent.get(`/uploads/${uploadId}/pages`);
+    expect(res.status).toBe(200);
+    expect(res.body.pages).toEqual([
+      { id: String(p1), page_number: 1 },
+      { id: String(p2), page_number: 2 },
+      { id: String(p3), page_number: 3 },
+    ]);
+  });
+
+  it('returns pages in page_number order even when inserted out of order', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    // Insert in reverse page_number order — the route must sort by
+    // page_number, not by insertion/id order.
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+
+    const res = await agent.get(`/uploads/${uploadId}/pages`);
+    expect(res.status).toBe(200);
+    expect(res.body.pages.map((p: { id: string }) => p.id)).toEqual([
+      String(p1),
+      String(p2),
+      String(p3),
+    ]);
+    expect(res.body.pages.map((p: { page_number: number }) => p.page_number)).toEqual([1, 2, 3]);
+  });
+
+  it('returns an empty list for an owned upload with no pages yet', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'processing', pageCount: null });
+
+    const res = await agent.get(`/uploads/${uploadId}/pages`);
+    expect(res.status).toBe(200);
+    expect(res.body.pages).toEqual([]);
+  });
+
+  it("returns 404 for another user's upload (IDOR)", async () => {
+    const other = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, other.userId, { status: 'ready', pageCount: 2 });
+    await seedBookPage(pg.pool, uploadId, 1);
+    await seedBookPage(pg.pool, uploadId, 2);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get(`/uploads/${uploadId}/pages`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 404 for a nonexistent id', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/uploads/999999/pages');
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a non-numeric id (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/uploads/abc/pages');
+    expect(res.status).toBe(400);
+  });
+
+  it('round-trips into PATCH :id/pages/order: the ids GET /pages returns are exactly the ids the reorder PATCH accepts', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+
+    const listRes = await agent.get(`/uploads/${uploadId}/pages`);
+    expect(listRes.status).toBe(200);
+    const fetchedIds = listRes.body.pages.map((p: { id: string }) => Number(p.id));
+    expect(new Set(fetchedIds)).toEqual(new Set([p1, p2, p3]));
+
+    // Submit the fetched ids back in a new order (reverse) — this is exactly
+    // the reorder tool's flow: load ids via listPages, then submit a full
+    // permutation of that SAME set via reorderPages.
+    const reversed = [...fetchedIds].reverse();
+    const patchRes = await agent
+      .patch(`/uploads/${uploadId}/pages/order`)
+      .send({ page_ids: reversed });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.pages).toEqual([
+      { id: String(reversed[0]), page_number: 1 },
+      { id: String(reversed[1]), page_number: 2 },
+      { id: String(reversed[2]), page_number: 3 },
+    ]);
   });
 });
 
