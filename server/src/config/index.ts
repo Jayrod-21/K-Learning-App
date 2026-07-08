@@ -37,12 +37,15 @@ const EnvSchema = z.object({
   // it returns 429 before any upstream call. See SECURITY.md §16.
   IMAGE_OCR_DAILY_CAP: z.coerce.number().int().positive().default(20),
 
-  // Book-upload (PDF) blob store (U1a — PDF book-upload feature). Mirrors
-  // IMAGE_STORAGE_DIR's contract exactly: a filesystem root under which
-  // uploaded PDFs are stored as `{userId}/{uuid}.pdf`, with only the RELATIVE
-  // path kept in Postgres (book_uploads.blob_ref). Separate root from images
-  // (different content, different retention story) but the identical
-  // save/read/traversal-guard mechanism — see server/src/services/uploadStore.ts.
+  // Book-upload blob store (U1a — book-upload feature, page-image model).
+  // Mirrors IMAGE_STORAGE_DIR's contract exactly: a filesystem root under
+  // which each uploaded book's PAGE IMAGES are stored as
+  // `{userId}/{uuid}.{jpg|png}` (one per book_pages row) — the original
+  // zip/PDF a user uploads is normalized into pages and then discarded, never
+  // itself stored. Only the RELATIVE path is kept in Postgres
+  // (book_pages.blob_ref). Separate root from images (different content,
+  // different retention story) but the identical save/read/traversal-guard
+  // mechanism — see server/src/services/uploadStore.ts.
   BOOK_UPLOAD_STORAGE_DIR: z.string().min(1).default('./var/book-uploads'),
 
   // Per-user DAILY cap on book uploads. This is a personal single-user app

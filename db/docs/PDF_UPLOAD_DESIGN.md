@@ -30,7 +30,36 @@ already powers Ttmik/Reading/Images). Only new work = tokenizing the digitized r
 words (as Ttmik passages already do). Paid part = the optional enrich call (tiny, already per-tap app-wide).
 
 ## Phases (each shippable)
-### U1 — the front door (build now; needs NO extraction/OCR; works with any PDF)
+## REVISION (2026-07-08, after seeing the sample): NORMALIZE TO PAGE IMAGES
+The real scans are the **vFlat export** = a ZIP of high-res JPG **page images** (sample: "2000 Essential
+Korean Words Advanced" = 548 JPGs @ 2271×3176, 240 MB) — NOT a single ≤15MB PDF. Jared chose **accept
+BOTH a zip-of-images AND a PDF, normalize internally to ORDERED PAGE IMAGES.** So the storage model is
+per-page images (not one blob), the viewer is a lightweight **image-page viewer** (fetch page N on demand
+— never load 240MB at once; DROP pdf.js), and OCR (U2) reads the page images directly.
+- Upload accepts `.zip` (image entries, ordered by filename) OR `.pdf`. Magic-byte: `PK\x03\x04` (zip) or
+  `%PDF`. Cap ~**300 MB** (Jared has the storage; a book is ~240MB). 
+- **Normalize**: zip → extract image entries (jpg/png), order by filename, store each as a page. pdf →
+  `pdftoppm` (poppler — add `poppler-utils` to the server Dockerfile; the ingest already uses poppler) →
+  one image per page. Reject zip-bombs / non-image zip entries / 0-page.
+- **Storage**: `book_pages` table (`upload_id` FK, `page_number` INT, `blob_ref` UUID, unique(upload_id,page_number))
+  + per-page image blobs on the shared `km_book_uploads` volume. `book_uploads.page_count` set on ingest.
+- **Serving**: `GET /uploads/:id/page/:n` streams page n's image (user-scoped, nosniff, cache-friendly);
+  `GET /uploads/:id` returns page_count. REMOVE the single-PDF `/uploads/:id/file`.
+- **Viewer**: image-page viewer (page N of M, prev/next/zoom, lazy — fetch current page image). No pdf.js.
+- Processing can be sync-ish for the store-pages step (unzip is fast; pdftoppm a few sec) OR async if a big
+  zip is slow — show `processing` until pages are stored, then `ready` (viewable). OCR/extraction stays U2.
+- **PAGE ORDER (Jared flagged 2026-07-08):** vFlat retakes can land OUT OF ORDER (his sample: pages ~1-60
+  are misordered because retakes appended instead of replacing). So `page_number` is the DISPLAY order,
+  initialized from filename sort but **MUTABLE** — plan a **reorder tool** (drag pages / move a page to N)
+  as part of the viewer/uploads UI (a `PATCH /uploads/:id/pages/order` reorders `book_pages.page_number`).
+  Build the storage to support it now (page_number is the source of truth, not the blob filename); the
+  reorder UI can ship in U1b or a fast-follow. For the sample, filename order is wrong in 1-60 but the
+  upload/viewer/extraction still testable (vocab entries are per-page self-contained — order-insensitive).
+Everything else in U1a/U1b below still applies (book_uploads table, type popup, Uploads page, Settings
+upload, source-filter scaffolding, routes) — only the STORAGE (per-page) + VIEWER (image) + UPLOAD (zip/pdf,
+big cap, normalize) change.
+
+### U1 — the front door (build now; needs NO extraction/OCR)
 - **U1a server**: 
   - Migration: `book_uploads` (id, user_id FK, title, type ENUM[vocab|grammar|both|dialogue|literature],
     status ENUM[processing|ready|failed] default processing, page_count nullable, byte_size, created_at,

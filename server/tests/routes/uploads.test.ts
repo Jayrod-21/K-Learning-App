@@ -1,50 +1,83 @@
 /**
- * Integration tests for /uploads routes (U1a — PDF book-upload feature).
+ * Integration tests for /uploads routes (U1a — book-upload feature, reworked
+ * to the PAGE-IMAGE model; see db/docs/PDF_UPLOAD_DESIGN.md §"REVISION
+ * (2026-07-08)").
  *
  * Routes:
  *   POST   /uploads
  *   GET    /uploads
  *   GET    /uploads/:id
- *   GET    /uploads/:id/file  (Range-capable)
+ *   GET    /uploads/:id/page/:n
+ *   PATCH  /uploads/:id/pages/order
  *   DELETE /uploads/:id
  *
  * Real Postgres via testcontainers per Bar §"Testing" (no SQLite stand-in).
  * The blob store points at a throwaway temp dir (BOOK_UPLOAD_STORAGE_DIR is
  * env-injected before buildTestApp) — never any real storage.
  *
+ * The ZIP-of-images path is exercised with a REAL, hand-built zip archive
+ * (tests/helpers/zip.ts + the real `yauzl` parser via services/
+ * zipPageExtract.ts — see tests/services/zipPageExtract.test.ts for the
+ * dedicated zip-bomb-guard unit tests). The PDF path mocks
+ * services/pdfPageRender.ts's `renderPdfPagesToJpeg` — the test container
+ * doesn't have poppler-utils installed (see that module's header and
+ * tests/services/pdfPageRender.test.ts, a self-skipping real-poppler smoke
+ * test).
+ *
  * Coverage:
  *   - auth required on every route (401 unauthenticated)
- *   - POST happy path: a valid PDF (%PDF- signature) → 201 + row persisted +
- *     blob on disk
- *   - POST rejects: non-PDF bytes (400), missing file (400), oversize (413),
- *     missing/blank title (400), invalid type (400), unknown extra field (400,
- *     .strict())
+ *   - POST happy path (zip): a real multi-image zip → 201 + book_uploads row +
+ *     book_pages rows in NATURAL FILENAME ORDER + each page's blob on disk
+ *     with the exact bytes
+ *   - POST happy path (pdf): mocked renderPdfPagesToJpeg → 201 + pages persisted
+ *   - POST rejects: neither-zip-nor-pdf bytes (400), disallowed declared mime
+ *     (400), missing file (400), oversize (413), zip with 0 usable pages
+ *     (400), missing/blank title (400), invalid type (400), unknown extra
+ *     field (400, .strict())
  *   - POST idempotent replace: re-upload of the SAME (user, title) → 200 (not
- *     201), ONE row, a NEW blob on disk, the OLD blob deleted
+ *     201), ONE book_uploads row, OLD book_pages rows + blob files gone, NEW
+ *     ones present
  *   - POST daily cap: many distinct titles → 429; a same-title replace at the
  *     cap is exempt
  *   - GET list: user-scoped, newest first
- *   - GET :id: own returns metadata; other user's id → 404; bad id → 400
- *   - GET :id/file: streams the bytes with the right headers; Range slices
- *     (206), unsatisfiable range (416), full body (200); IDOR → 404
- *   - DELETE: removes row + blob; second delete / other user's id → 404
+ *   - GET :id: own returns metadata incl. page_count; other user's id → 404;
+ *     bad id → 400
+ *   - GET :id/page/:n: streams the right page's bytes + headers; IDOR → 404;
+ *     out-of-range n → 404; bad n → 400
+ *   - PATCH :id/pages/order: re-sequences page_number atomically; IDOR → 404;
+ *     mismatched/foreign page_ids → 400; duplicate ids → 400
+ *   - DELETE: removes row + ALL pages' blobs (cascade); IDOR → 404; second
+ *     delete → 404
  */
 import os from 'node:os';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedBookUpload } from '../helpers/seed.js';
+import { registerUser, seedBookPage, seedBookUpload } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { MAX_UPLOAD_BYTES } from '../../src/services/bookUploadIngest.js';
+import { buildStoredZip } from '../helpers/zip.js';
+
+// The PDF path shells out to `pdftoppm`, which the test container doesn't
+// have (see services/pdfPageRender.ts's header) — mock the whole module so
+// the PDF-upload route test is deterministic without poppler.
+vi.mock('../../src/services/pdfPageRender.js', () => ({
+  renderPdfPagesToJpeg: vi.fn(),
+}));
+// eslint-disable-next-line import/order
+import { renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
 
 let pg: PgHandle;
 let t: TestApp;
 
 /** A minimal but VALID (parseable) 1-page PDF — real %PDF- signature + a
  *  trailer, so the magic-byte sniff AND a "does this look like a PDF" smell
- *  test both pass, mirroring what a real scanner/export would send. */
+ *  test both pass, mirroring what a real scanner/export would send. Only
+ *  used to reach the mocked renderPdfPagesToJpeg — its actual bytes are never
+ *  rendered in this suite. */
 const TINY_PDF = Buffer.from(
   '%PDF-1.4\n' +
     '1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n' +
@@ -54,6 +87,26 @@ const TINY_PDF = Buffer.from(
     '%%EOF',
   'utf8',
 );
+
+/** A minimal but VALID (decodable) 1x1 PNG — same fixture as
+ *  tests/routes/images.test.ts's TINY_PNG. The magic-byte sniff only checks
+ *  the leading 8 bytes; appending a distinguishing marker after it (see
+ *  `markedPng`) keeps every "page" byte-for-byte distinct for assertions
+ *  without breaking that check. */
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+function markedPng(marker: string): Buffer {
+  return Buffer.concat([TINY_PNG, Buffer.from(`-${marker}`, 'utf8')]);
+}
+
+/** A single-page zip — the generic "any valid upload" body for tests that
+ *  don't care about zip specifics (mass-assignment, cap, validation, etc.). */
+function minimalZip(): Buffer {
+  return buildStoredZip([{ name: '001.png', data: TINY_PNG }]);
+}
 
 beforeAll(async () => {
   pg = await startPostgres();
@@ -75,31 +128,41 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  // users CASCADE clears book_uploads (user_id FK). RESTART IDENTITY keeps
-  // ids small/predictable across tests.
+  // users CASCADE clears book_uploads (user_id FK), which CASCADEs
+  // book_pages (upload_id FK, migration 041). RESTART IDENTITY keeps ids
+  // small/predictable across tests.
   await pg.pool.query(
     'TRUNCATE TABLE book_uploads, vocab_cards, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
+  vi.mocked(renderPdfPagesToJpeg).mockReset();
 });
 
 /** GET a binary URL with the body captured as a raw Buffer (mirrors
- *  ttmik.test.ts's getAudio — supertest doesn't auto-buffer application/pdf). */
-function getBinary(agent: ReturnType<typeof request.agent>, url: string, range?: string) {
-  const req = agent.get(url).buffer(true).parse((res, cb) => {
+ *  ttmik.test.ts's getAudio — supertest doesn't auto-buffer image bytes). */
+function getBinary(agent: ReturnType<typeof request.agent>, url: string) {
+  return agent.get(url).buffer(true).parse((res, cb) => {
     const chunks: Buffer[] = [];
     res.on('data', (c: Buffer) => chunks.push(c));
     res.on('end', () => cb(null, Buffer.concat(chunks)));
   });
-  return range === undefined ? req : req.set('Range', range);
+}
+
+async function bookPageRows(uploadId: string | number) {
+  const { rows } = await pg.pool.query<{ id: string; page_number: number; blob_ref: string }>(
+    `SELECT id, page_number, blob_ref FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+    [uploadId],
+  );
+  return rows;
 }
 
 describe('uploads — auth required', () => {
   it.each([
     ['GET', '/uploads'],
     ['GET', '/uploads/1'],
-    ['GET', '/uploads/1/file'],
+    ['GET', '/uploads/1/page/1'],
     ['POST', '/uploads'],
+    ['PATCH', '/uploads/1/pages/order'],
     ['DELETE', '/uploads/1'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const res =
@@ -107,60 +170,150 @@ describe('uploads — auth required', () => {
         ? await request(t.app).get(p)
         : method === 'DELETE'
           ? await request(t.app).delete(p)
-          : await request(t.app).post(p);
+          : method === 'PATCH'
+            ? await request(t.app).patch(p).send({ page_ids: [1] })
+            : await request(t.app).post(p);
     expect(res.status).toBe(401);
   });
 });
 
-describe('POST /uploads — upload a PDF', () => {
-  it('uploads a valid PDF, persists the row, and writes the blob to disk (201)', async () => {
+describe('POST /uploads — zip-of-images upload', () => {
+  it('uploads a real multi-image zip, orders pages by NATURAL filename sort, and writes every page blob to disk (201)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Deliberately out of append order (mirrors a vFlat retake landing out of
+    // sequence) AND non-zero-padded (010 before 002 lexically) to prove
+    // natural sort, not append order or plain lexical sort, seeds page_number.
+    const pageA = markedPng('A'); // should end up page 1 ("001.png")
+    const pageB = markedPng('B'); // should end up page 2 ("002.png")
+    const pageC = markedPng('C'); // should end up page 3 ("010.png")
+    const zip = buildStoredZip([
+      { name: '010.png', data: pageC },
+      { name: '001.png', data: pageA },
+      { name: '002.png', data: pageB },
+    ]);
 
     const res = await agent
       .post('/uploads')
-      .field('title', 'KGIU Beginner Scan')
+      .field('title', 'Vocab 2000 Advanced')
+      .field('type', 'vocab')
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+
+    expect(res.status).toBe(201);
+    const up = res.body.upload;
+    expect(up.title).toBe('Vocab 2000 Advanced');
+    expect(up.status).toBe('ready');
+    expect(up.page_count).toBe(3);
+    expect(up.byte_size).toBe(zip.length);
+
+    const pages = await bookPageRows(up.id);
+    expect(pages.length).toBe(3);
+    expect(pages.map((p) => p.page_number)).toEqual([1, 2, 3]);
+
+    const onDiskA = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[0]!.blob_ref));
+    const onDiskB = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[1]!.blob_ref));
+    const onDiskC = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[2]!.blob_ref));
+    expect(Buffer.compare(onDiskA, pageA)).toBe(0);
+    expect(Buffer.compare(onDiskB, pageB)).toBe(0);
+    expect(Buffer.compare(onDiskC, pageC)).toBe(0);
+
+    // Blob filenames are server UUIDs under the user's own subdirectory.
+    for (const p of pages) {
+      expect(p.blob_ref).toMatch(new RegExp(`^${userId}/[0-9a-f-]{36}\\.png$`));
+    }
+  });
+
+  it('ignores non-image entries and still succeeds with only the real pages counted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const zip = buildStoredZip([
+      { name: 'metadata.json', data: Buffer.from('{"title":"x"}') },
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+    ]);
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'With Metadata File')
+      .field('type', 'grammar')
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(201);
+    expect(res.body.upload.page_count).toBe(2);
+  });
+
+  it('rejects a zip with zero usable image pages (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const zip = buildStoredZip([{ name: 'readme.txt', data: Buffer.from('no images') }]);
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'Empty Book')
+      .field('type', 'vocab')
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(400);
+    const rows = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM book_uploads`);
+    expect(rows.rows[0]?.n).toBe('0');
+  });
+
+  it('rejects a zip that lies about an entry size past the zip-bomb guard (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const zip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG, declaredUncompressedSize: 200 * 1024 * 1024 },
+    ]);
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'Bomb Book')
+      .field('type', 'vocab')
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /uploads — PDF upload (mocked pdftoppm)', () => {
+  it('renders a PDF to pages via renderPdfPagesToJpeg and persists them in order (201)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const jpegPage1 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1]);
+    const jpegPage2 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 2]);
+    vi.mocked(renderPdfPagesToJpeg).mockResolvedValueOnce([jpegPage1, jpegPage2]);
+
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'KGIU Scan')
       .field('type', 'grammar')
       .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
 
     expect(res.status).toBe(201);
-    const up = res.body.upload;
-    expect(up.id).toBeTruthy();
-    expect(up.title).toBe('KGIU Beginner Scan');
-    expect(up.type).toBe('grammar');
-    expect(up.status).toBe('processing');
-    expect(up.page_count).toBeNull();
-    expect(up.byte_size).toBe(TINY_PDF.length);
+    expect(res.body.upload.page_count).toBe(2);
+    expect(vi.mocked(renderPdfPagesToJpeg)).toHaveBeenCalledWith(TINY_PDF);
 
-    // Persisted: one row for this user.
-    const rows = await pg.pool.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1`,
-      [userId],
-    );
-    expect(rows.rows[0]?.n).toBe('1');
-
-    // The blob is really on disk with the exact bytes.
-    const blobRow = await pg.pool.query<{ blob_ref: string }>(
-      `SELECT blob_ref FROM book_uploads WHERE id = $1`,
-      [up.id],
-    );
-    const blobRef = blobRow.rows[0]!.blob_ref;
-    expect(blobRef).toMatch(new RegExp(`^${userId}/[0-9a-f-]{36}\\.pdf$`));
-    const onDisk = await readFile(
-      path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, blobRef),
-    );
-    expect(Buffer.compare(onDisk, TINY_PDF)).toBe(0);
+    const pages = await bookPageRows(res.body.upload.id);
+    expect(pages.length).toBe(2);
+    const onDisk1 = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[0]!.blob_ref));
+    const onDisk2 = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, pages[1]!.blob_ref));
+    expect(Buffer.compare(onDisk1, jpegPage1)).toBe(0);
+    expect(Buffer.compare(onDisk2, jpegPage2)).toBe(0);
+    // PDF pages are always stored as .jpg (renderPdfPagesToJpeg's contract).
+    expect(pages[0]!.blob_ref.endsWith('.jpg')).toBe(true);
   });
 
-  it('rejects a file whose bytes are not a PDF despite a pdf mime (400)', async () => {
+  it('rejects a PDF that renders to zero pages (400)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const notAPdf = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 'utf8');
+    vi.mocked(renderPdfPagesToJpeg).mockResolvedValueOnce([]);
+    const res = await agent
+      .post('/uploads')
+      .field('title', 'Blank PDF')
+      .field('type', 'vocab')
+      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+    expect(res.status).toBe(400);
+  });
+});
 
+describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
+  it('rejects a file whose bytes are neither a zip nor a PDF, despite an allowed declared mime (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const notAZipOrPdf = Buffer.from('just some plain bytes, not an archive', 'utf8');
     const res = await agent
       .post('/uploads')
       .field('title', 'Fake Book')
       .field('type', 'vocab')
-      .attach('file', notAPdf, { filename: 'evil.pdf', contentType: 'application/pdf' });
-
+      .attach('file', notAZipOrPdf, { filename: 'evil.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
     const rows = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM book_uploads`);
     expect(rows.rows[0]?.n).toBe('0');
@@ -170,7 +323,7 @@ describe('POST /uploads — upload a PDF', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .post('/uploads')
-      .field('title', 'Not A PDF')
+      .field('title', 'Not Zip Or PDF')
       .field('type', 'vocab')
       .attach('file', Buffer.from('hello'), { filename: 'note.txt', contentType: 'text/plain' });
     expect(res.status).toBe(400);
@@ -184,23 +337,18 @@ describe('POST /uploads — upload a PDF', () => {
 
   it('rejects an oversize upload with 413 Payload Too Large, not 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    // 15 MiB + 1 byte, leading bytes a valid %PDF- signature so the size limit
-    // — not the magic-byte sniff — is what rejects it.
-    const oversize = Buffer.concat([
-      TINY_PDF,
-      Buffer.alloc(15 * 1024 * 1024 + 1 - TINY_PDF.length, 0),
-    ]);
+    const oversize = Buffer.alloc(MAX_UPLOAD_BYTES + 1, 0);
     const res = await agent
       .post('/uploads')
       .field('title', 'Huge Book')
       .field('type', 'vocab')
-      .attach('file', oversize, { filename: 'huge.pdf', contentType: 'application/pdf' });
+      .attach('file', oversize, { filename: 'huge.zip', contentType: 'application/zip' });
 
     expect(res.status).toBe(413);
     expect(res.body?.error?.code).toBe('payload_too_large');
     const rows = await pg.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM book_uploads`);
     expect(rows.rows[0]?.n).toBe('0');
-  });
+  }, 30_000);
 
   it('rejects a blank title (400)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
@@ -208,7 +356,7 @@ describe('POST /uploads — upload a PDF', () => {
       .post('/uploads')
       .field('title', '   ')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
   });
 
@@ -217,7 +365,7 @@ describe('POST /uploads — upload a PDF', () => {
     const res = await agent
       .post('/uploads')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
   });
 
@@ -226,7 +374,7 @@ describe('POST /uploads — upload a PDF', () => {
     const res = await agent
       .post('/uploads')
       .field('title', 'Some Book')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
   });
 
@@ -236,7 +384,7 @@ describe('POST /uploads — upload a PDF', () => {
       .post('/uploads')
       .field('title', 'Some Book')
       .field('type', 'not_a_real_type')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
   });
 
@@ -247,38 +395,47 @@ describe('POST /uploads — upload a PDF', () => {
       .field('title', 'Some Book')
       .field('type', 'vocab')
       .field('status', 'ready') // not a writable field
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(400);
   });
 
-  it('re-uploading the SAME (user, title) REPLACES: one row, new blob, old blob deleted (200)', async () => {
+  it('re-uploading the SAME (user, title) REPLACES: one row, old pages+blobs deleted, new pages persisted (200)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
 
+    const firstZip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+    ]);
     const first = await agent
       .post('/uploads')
       .field('title', 'My Book')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'v1.pdf', contentType: 'application/pdf' });
+      .attach('file', firstZip, { filename: 'v1.zip', contentType: 'application/zip' });
     expect(first.status).toBe(201);
-    const firstBlobRow = await pg.pool.query<{ blob_ref: string }>(
-      `SELECT blob_ref FROM book_uploads WHERE id = $1`,
-      [first.body.upload.id],
+    const firstPages = await bookPageRows(first.body.upload.id);
+    expect(firstPages.length).toBe(2);
+    const firstBlobPaths = firstPages.map((p) =>
+      path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, p.blob_ref),
     );
-    const firstBlobRef = firstBlobRow.rows[0]!.blob_ref;
-    const firstBlobPath = path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, firstBlobRef);
-    await expect(readFile(firstBlobPath)).resolves.toBeInstanceOf(Buffer);
+    for (const p of firstBlobPaths) {
+      await expect(readFile(p)).resolves.toBeInstanceOf(Buffer);
+    }
 
-    const secondPdf = Buffer.concat([TINY_PDF, Buffer.from('\n% v2 padding')]);
+    const secondZip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+      { name: '003.png', data: TINY_PNG },
+    ]);
     const second = await agent
       .post('/uploads')
       .field('title', 'My Book') // same title
       .field('type', 'grammar') // type may change too
-      .attach('file', secondPdf, { filename: 'v2.pdf', contentType: 'application/pdf' });
+      .attach('file', secondZip, { filename: 'v2.zip', contentType: 'application/zip' });
 
     expect(second.status).toBe(200); // replace, not create
     expect(second.body.upload.id).toBe(first.body.upload.id); // same row
     expect(second.body.upload.type).toBe('grammar');
-    expect(second.body.upload.byte_size).toBe(secondPdf.length);
+    expect(second.body.upload.page_count).toBe(3);
 
     const rows = await pg.pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1`,
@@ -286,19 +443,14 @@ describe('POST /uploads — upload a PDF', () => {
     );
     expect(rows.rows[0]?.n).toBe('1'); // still exactly one row
 
-    const secondBlobRow = await pg.pool.query<{ blob_ref: string }>(
-      `SELECT blob_ref FROM book_uploads WHERE id = $1`,
-      [first.body.upload.id],
-    );
-    const secondBlobRef = secondBlobRow.rows[0]!.blob_ref;
-    expect(secondBlobRef).not.toBe(firstBlobRef); // a fresh UUID blob
+    const secondPages = await bookPageRows(second.body.upload.id);
+    expect(secondPages.length).toBe(3);
 
-    // The new blob holds the new bytes.
-    const onDisk = await readFile(path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, secondBlobRef));
-    expect(Buffer.compare(onDisk, secondPdf)).toBe(0);
-
-    // The OLD blob file was deleted (orphan cleanup after the replace commits).
-    await expect(readFile(firstBlobPath)).rejects.toThrow();
+    // The OLD page blob files were deleted (orphan cleanup after the replace
+    // commits) — no orphans left behind.
+    for (const p of firstBlobPaths) {
+      await expect(readFile(p)).rejects.toThrow();
+    }
   });
 
   it('enforces the per-user daily cap on NEW titles (429)', async () => {
@@ -311,7 +463,7 @@ describe('POST /uploads — upload a PDF', () => {
       .post('/uploads')
       .field('title', 'One Too Many')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(429);
   });
 
@@ -325,7 +477,7 @@ describe('POST /uploads — upload a PDF', () => {
       .post('/uploads')
       .field('title', 'cap-book-0')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(200);
   });
 });
@@ -394,104 +546,207 @@ describe('GET /uploads/:id — single upload, user-scoped', () => {
   });
 });
 
-describe('GET /uploads/:id/file — streams the PDF, Range-capable', () => {
-  async function uploadOne(agent: ReturnType<typeof request.agent>, title = 'Streamed Book') {
+describe('GET /uploads/:id/page/:n — streams a page image, user-scoped', () => {
+  async function uploadThreePages(agent: ReturnType<typeof request.agent>, title = 'Paged Book') {
+    const zip = buildStoredZip([
+      { name: '001.png', data: markedPng('one') },
+      { name: '002.png', data: markedPng('two') },
+      { name: '003.png', data: markedPng('three') },
+    ]);
     const res = await agent
       .post('/uploads')
       .field('title', title)
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(201);
     return res.body.upload.id as string;
   }
 
-  it('no Range header → 200 with the full PDF + the right headers', async () => {
+  it('streams page 1 with the right bytes and headers', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const id = await uploadOne(agent);
+    const id = await uploadThreePages(agent);
 
-    const res = await getBinary(agent, `/uploads/${id}/file`);
+    const res = await getBinary(agent, `/uploads/${id}/page/1`);
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.headers['content-type']).toBe('image/png');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['content-disposition']).toBe('inline');
-    expect(res.headers['accept-ranges']).toBe('bytes');
-    expect(res.headers['content-length']).toBe(String(TINY_PDF.length));
-    expect(res.headers['content-range']).toBeUndefined();
-    expect(Buffer.compare(res.body as Buffer, TINY_PDF)).toBe(0);
+    expect(res.headers['cache-control']).toContain('private');
+    expect(Buffer.compare(res.body as Buffer, markedPng('one'))).toBe(0);
   });
 
-  it('Range: bytes=0-3 → 206 with Content-Range and the exact slice', async () => {
+  it('streams page 3 with the right (different) bytes', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const id = await uploadOne(agent);
+    const id = await uploadThreePages(agent);
 
-    const res = await getBinary(agent, `/uploads/${id}/file`, 'bytes=0-3');
-    expect(res.status).toBe(206);
-    expect(res.headers['content-range']).toBe(`bytes 0-3/${TINY_PDF.length}`);
-    expect(res.headers['content-length']).toBe('4');
-    expect(Buffer.compare(res.body as Buffer, TINY_PDF.subarray(0, 4))).toBe(0);
+    const res = await getBinary(agent, `/uploads/${id}/page/3`);
+    expect(res.status).toBe(200);
+    expect(Buffer.compare(res.body as Buffer, markedPng('three'))).toBe(0);
   });
 
-  it('open-ended Range: bytes=10- → 206 to EOF', async () => {
+  it('returns 404 for a page number past the end of the book', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const id = await uploadOne(agent);
-
-    const res = await getBinary(agent, `/uploads/${id}/file`, 'bytes=10-');
-    expect(res.status).toBe(206);
-    expect(res.headers['content-range']).toBe(`bytes 10-${TINY_PDF.length - 1}/${TINY_PDF.length}`);
-    expect(Buffer.compare(res.body as Buffer, TINY_PDF.subarray(10))).toBe(0);
+    const id = await uploadThreePages(agent);
+    const res = await getBinary(agent, `/uploads/${id}/page/4`);
+    expect(res.status).toBe(404);
   });
 
-  it('unsatisfiable Range (start past EOF) → 416 with total-size Content-Range', async () => {
+  it('returns 400 for a non-positive/non-integer page number', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const id = await uploadOne(agent);
-
-    const res = await getBinary(agent, `/uploads/${id}/file`, `bytes=${TINY_PDF.length + 100}-`);
-    expect(res.status).toBe(416);
-    expect(res.headers['content-range']).toBe(`bytes */${TINY_PDF.length}`);
+    const id = await uploadThreePages(agent);
+    const zero = await getBinary(agent, `/uploads/${id}/page/0`);
+    expect(zero.status).toBe(400);
+    const nonNumeric = await getBinary(agent, `/uploads/${id}/page/abc`);
+    expect(nonNumeric.status).toBe(400);
   });
 
   it("returns 404 for another user's upload (IDOR)", async () => {
     const other = await registerUser(t.app, pg.pool);
-    const id = await uploadOne(other.agent, 'Other Book');
+    const id = await uploadThreePages(other.agent, 'Other Book');
     const { agent } = await registerUser(t.app, pg.pool);
 
-    const res = await agent.get(`/uploads/${id}/file`);
+    const res = await getBinary(agent, `/uploads/${id}/page/1`);
     expect(res.status).toBe(404);
   });
 
   it('returns 404 when the row exists but the blob file is missing', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
-    const id = await seedBookUpload(pg.pool, userId); // no real blob written
-    const res = await agent.get(`/uploads/${id}/file`);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 1 });
+    await seedBookPage(pg.pool, uploadId, 1); // no real blob written on disk
+    const res = await getBinary(agent, `/uploads/${uploadId}/page/1`);
     expect(res.status).toBe(404);
   });
 });
 
-describe('DELETE /uploads/:id — removes row + blob', () => {
-  it('deletes the row and the on-disk blob', async () => {
+describe('PATCH /uploads/:id/pages/order — reorder, user-scoped, transactional', () => {
+  it('re-sequences page_number to match the submitted order', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 3 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const p3 = await seedBookPage(pg.pool, uploadId, 3);
+
+    // New order: p3, p1, p2 (a vFlat-retake-style correction).
+    const res = await agent.patch(`/uploads/${uploadId}/pages/order`).send({
+      page_ids: [p3, p1, p2],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.pages).toEqual([
+      { id: String(p3), page_number: 1 },
+      { id: String(p1), page_number: 2 },
+      { id: String(p2), page_number: 3 },
+    ]);
+
+    const rows = await pg.pool.query<{ id: string; page_number: number }>(
+      `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+      [uploadId],
+    );
+    expect(rows.rows.map((r) => Number(r.id))).toEqual([p3, p1, p2]);
+    expect(rows.rows.map((r) => r.page_number)).toEqual([1, 2, 3]);
+  });
+
+  it("returns 404 for another user's upload (IDOR) and does not touch its pages", async () => {
+    const other = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, other.userId, { status: 'ready', pageCount: 2 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: [p2, p1] });
+    expect(res.status).toBe(404);
+
+    const rows = await pg.pool.query<{ id: string; page_number: number }>(
+      `SELECT id, page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+      [uploadId],
+    );
+    expect(rows.rows.map((r) => Number(r.id))).toEqual([p1, p2]); // untouched
+  });
+
+  it('rejects a page_ids set that omits an existing page (400)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 2 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    await seedBookPage(pg.pool, uploadId, 2);
+
+    const res = await agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: [p1] });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a page_ids array containing a foreign page id (400)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 2 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    const p2 = await seedBookPage(pg.pool, uploadId, 2);
+
+    const otherUploadId = await seedBookUpload(pg.pool, userId, { title: 'other', status: 'ready', pageCount: 1 });
+    const foreignPageId = await seedBookPage(pg.pool, otherUploadId, 1);
+
+    const res = await agent
+      .patch(`/uploads/${uploadId}/pages/order`)
+      .send({ page_ids: [p1, foreignPageId] }); // wrong length AND foreign id
+    expect(res.status).toBe(400);
+
+    const rows = await pg.pool.query<{ page_number: number }>(
+      `SELECT page_number FROM book_pages WHERE upload_id = $1 ORDER BY page_number`,
+      [uploadId],
+    );
+    expect(rows.rows.map((r) => r.page_number)).toEqual([1, 2]); // untouched
+    void p2;
+  });
+
+  it('rejects duplicate ids in page_ids (400)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready', pageCount: 2 });
+    const p1 = await seedBookPage(pg.pool, uploadId, 1);
+    await seedBookPage(pg.pool, uploadId, 2);
+
+    const res = await agent.patch(`/uploads/${uploadId}/pages/order`).send({ page_ids: [p1, p1] });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a non-numeric upload id (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.patch('/uploads/abc/pages/order').send({ page_ids: [1] });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /uploads/:id — removes row + every page blob (cascade)', () => {
+  it('deletes the row, all book_pages rows, and every on-disk page blob', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const zip = buildStoredZip([
+      { name: '001.png', data: TINY_PNG },
+      { name: '002.png', data: TINY_PNG },
+    ]);
     const uploadRes = await agent
       .post('/uploads')
       .field('title', 'To Delete')
       .field('type', 'vocab')
-      .attach('file', TINY_PDF, { filename: 'book.pdf', contentType: 'application/pdf' });
+      .attach('file', zip, { filename: 'book.zip', contentType: 'application/zip' });
     const id = uploadRes.body.upload.id as string;
-    const blobRow = await pg.pool.query<{ blob_ref: string }>(
-      `SELECT blob_ref FROM book_uploads WHERE id = $1`,
-      [id],
-    );
-    const blobPath = path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, blobRow.rows[0]!.blob_ref);
-    await expect(readFile(blobPath)).resolves.toBeInstanceOf(Buffer);
+    const pages = await bookPageRows(id);
+    const blobPaths = pages.map((p) => path.join(process.env.BOOK_UPLOAD_STORAGE_DIR!, p.blob_ref));
+    for (const p of blobPaths) {
+      await expect(readFile(p)).resolves.toBeInstanceOf(Buffer);
+    }
 
     const res = await agent.delete(`/uploads/${id}`);
     expect(res.status).toBe(204);
 
-    const rows = await pg.pool.query<{ n: string }>(
+    const uploadRows = await pg.pool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM book_uploads WHERE user_id = $1`,
       [userId],
     );
-    expect(rows.rows[0]?.n).toBe('0');
-    await expect(readFile(blobPath)).rejects.toThrow();
+    expect(uploadRows.rows[0]?.n).toBe('0');
+
+    const pageRows = await pg.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM book_pages WHERE upload_id = $1`,
+      [id],
+    );
+    expect(pageRows.rows[0]?.n).toBe('0');
+
+    for (const p of blobPaths) {
+      await expect(readFile(p)).rejects.toThrow();
+    }
   });
 
   it("returns 404 for another user's upload (IDOR) and does not delete it", async () => {

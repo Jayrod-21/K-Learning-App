@@ -641,14 +641,13 @@ export async function seedImageCapture(
 }
 
 /**
- * Seed a single book_uploads row directly (U1a — PDF book-upload feature).
- * Returns the new upload id. Bypasses the upload route entirely (no blob file
- * is written) — useful for tests that only need rows to exist (e.g. the
- * daily-cap test, which needs many distinct-titled rows fast) and don't touch
- * `GET /uploads/:id/file`. `blobRef` defaults to a path that resolves under
- * the configured store root but points at no real file; a test exercising the
- * file-streaming route must upload via the real route (or pass a `blobRef`
- * it has actually written) instead.
+ * Seed a single book_uploads row directly (U1a — book-upload feature, page-
+ * image model). Returns the new upload id. Bypasses the upload route
+ * entirely (no page rows/blob files are written) — useful for tests that
+ * only need the `book_uploads` row to exist (e.g. the daily-cap test, which
+ * needs many distinct-titled rows fast) and don't touch page-serving routes.
+ * A test exercising `GET /uploads/:id/page/:n` needs actual `book_pages` rows
+ * too — see `seedBookPage` below, or upload via the real route.
  */
 export async function seedBookUpload(
   pool: Pool,
@@ -657,31 +656,52 @@ export async function seedBookUpload(
     title?: string;
     type?: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature';
     status?: 'processing' | 'ready' | 'failed';
-    blobRef?: string;
     byteSize?: number;
     pageCount?: number | null;
     createdAt?: Date;
   } = {},
 ): Promise<number> {
   const title = opts.title ?? `seed-book-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const blobRef =
-    opts.blobRef ?? `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO book_uploads
-       (user_id, title, type, status, blob_ref, byte_size, page_count, created_at)
-     VALUES ($1, $2, $3::book_upload_type, $4::book_upload_status, $5, $6, $7,
-             COALESCE($8, now()))
+       (user_id, title, type, status, byte_size, page_count, created_at)
+     VALUES ($1, $2, $3::book_upload_type, $4::book_upload_status, $5, $6,
+             COALESCE($7, now()))
      RETURNING id`,
     [
       userId,
       title,
       opts.type ?? 'vocab',
       opts.status ?? 'processing',
-      blobRef,
       opts.byteSize ?? 1024,
       opts.pageCount ?? null,
       opts.createdAt ?? null,
     ],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
+ * Seed a single book_pages row directly. Returns the new page id. Bypasses
+ * the upload route entirely (no blob file is written unless `blobRef` points
+ * at one a test has actually created) — a test exercising
+ * `GET /uploads/:id/page/:n`'s byte-streaming needs a REAL file at the
+ * returned blob path (write one under `process.env.BOOK_UPLOAD_STORAGE_DIR`
+ * first, or upload via the real route instead).
+ */
+export async function seedBookPage(
+  pool: Pool,
+  uploadId: number,
+  pageNumber: number,
+  opts: { blobRef?: string } = {},
+): Promise<number> {
+  const blobRef =
+    opts.blobRef ?? `seed/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO book_pages (upload_id, page_number, blob_ref)
+     VALUES ($1, $2, $3)
+     RETURNING id`,
+    [uploadId, pageNumber, blobRef],
   );
   return Number(rows[0]!.id);
 }

@@ -1,18 +1,25 @@
 /**
- * Filesystem blob store for uploaded book PDFs (U1a — PDF book-upload feature).
+ * Filesystem blob store for uploaded-book PAGE IMAGES (U1a — the book-upload
+ * feature, reworked to the page-image model — see
+ * db/docs/PDF_UPLOAD_DESIGN.md §"REVISION (2026-07-08)").
  *
  * WHY this module exists: mirrors `services/imageStore.ts` (Pass 8 Images
  * screen) exactly, for the same reason — the upload route needs to persist
- * the PDF bytes so the viewer can later stream them back
- * (`GET /uploads/:id/file`). Bytes live on the local filesystem under a single
- * configured root (`BOOK_UPLOAD_STORAGE_DIR`); Postgres keeps only a RELATIVE
- * path (`book_uploads.blob_ref`). Same v1-store caveat as images: durable/
- * offsite (S3) is deferred.
+ * bytes so the viewer can later stream them back
+ * (`GET /uploads/:id/page/:n`). Originally (pre-rework) this stored ONE PDF
+ * blob per upload; it now stores ONE BLOB PER PAGE (a `book_pages` row per
+ * call to `saveBlob`) — the original zip/PDF the user uploaded is never
+ * itself retained (see `services/bookUploadIngest.ts`, `services/
+ * zipPageExtract.ts`, `services/pdfPageRender.ts`), only its normalized page
+ * images. Bytes live on the local filesystem under a single configured root
+ * (`BOOK_UPLOAD_STORAGE_DIR`); Postgres keeps only a RELATIVE path
+ * (`book_pages.blob_ref`). Same v1-store caveat as images: durable/offsite
+ * (S3) is deferred.
  *
  * A separate root + module from imageStore.ts (rather than generalizing that
  * one) because the two blob kinds have nothing else in common (different
  * config knob, different size class, different delete lifecycle — uploads are
- * hard-deleted with their blob; images are soft-deleted and keep theirs) and
+ * hard-deleted with their blobs; images are soft-deleted and keep theirs) and
  * keeping them apart avoids a shared module growing a "kind" parameter that
  * has to be threaded through every call. The SECURITY POSTURE is identical by
  * design — copy the reasoning, not just the code:
@@ -23,8 +30,9 @@
  *     outside the root and is rejected before any read/write/unlink. No
  *     client string ever reaches the filesystem un-vetted.
  *   - INJECTION-FREE PATHS. `saveBlob` builds the path from the SESSION user
- *     id (a number) + a SERVER-generated UUID + a fixed extension ('.pdf') —
- *     never from the client filename or any client string.
+ *     id (a number) + a SERVER-generated UUID + an extension derived from the
+ *     SNIFFED (magic-byte) page-image mime — never from the client filename
+ *     or any client string.
  *   - The root is created lazily and the per-user subdirectory is `mkdir -p`'d
  *     so a fresh deploy / new user works without manual provisioning.
  */
@@ -33,8 +41,10 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { loadConfig } from '../config/index.js';
 
-/** The one blob-store extension this module ever writes (PDF-only upload). */
-export type BlobExt = 'pdf';
+/** The page-image blob-store extensions this module writes — one per
+ *  `book_pages` row (jpg for `image/jpeg` pages, png for `image/png` pages;
+ *  see bookUploadIngest.ts's ext-from-mime mapping). */
+export type BlobExt = 'jpg' | 'png';
 
 /** Absolute, resolved storage root from config. Computed per call so a
  *  test-time config override is honored (config is memoized, so this is cheap). */
@@ -44,35 +54,38 @@ function storageRoot(): string {
 }
 
 /**
- * Persist a blob and return its RELATIVE path (what goes in
- * `book_uploads.blob_ref`).
+ * Persist one page's blob and return its RELATIVE path (what goes in
+ * `book_pages.blob_ref`). Called ONCE PER PAGE — a book with 548 pages calls
+ * this 548 times, each with its own fresh UUID (bookUploadIngest.ts's
+ * `persistUpload`).
  *
- * The path is `{userId}/{uploadId}.{ext}` — built ENTIRELY from server-trusted
- * values: `userId` is the session user (a number), `uploadId` is a
- * server-generated UUID, `ext` is fixed ('pdf'). No client string is involved,
- * so the path is injection-free by construction.
+ * The path is `{userId}/{pageId}.{ext}` — built ENTIRELY from server-trusted
+ * values: `userId` is the session user (a number), `pageId` is a
+ * server-generated UUID (one per page, never the upload's id), `ext` is
+ * derived from the SNIFFED page-image mime (never the client filename). No
+ * client string is involved, so the path is injection-free by construction.
  *
- * @param userId    session user id (number — never client-supplied)
- * @param uploadId  server-generated UUID for this upload (never client input)
- * @param ext       on-disk extension (always 'pdf' today)
- * @param buffer    the validated PDF bytes
+ * @param userId  session user id (number — never client-supplied)
+ * @param pageId  server-generated UUID for this PAGE (never client input)
+ * @param ext     on-disk extension — 'jpg' or 'png', from the sniffed mime
+ * @param buffer  the validated page-image bytes
  * @returns the relative path under the storage root
  */
 export async function saveBlob(
   userId: number,
-  uploadId: string,
+  pageId: string,
   ext: BlobExt,
   buffer: Buffer,
 ): Promise<string> {
-  // userId is a number from the session; uploadId is a server UUID. Guard
+  // userId is a number from the session; pageId is a server UUID. Guard
   // defensively anyway so a programming error can never write outside the root.
   if (!Number.isInteger(userId) || userId <= 0) {
     throw new Error('saveBlob: userId must be a positive integer');
   }
-  if (!/^[0-9a-fA-F-]{36}$/.test(uploadId)) {
-    throw new Error('saveBlob: uploadId must be a UUID');
+  if (!/^[0-9a-fA-F-]{36}$/.test(pageId)) {
+    throw new Error('saveBlob: pageId must be a UUID');
   }
-  const relPath = `${userId}/${uploadId}.${ext}`;
+  const relPath = `${userId}/${pageId}.${ext}`;
   const root = storageRoot();
   const userDir = join(root, String(userId));
   await mkdir(userDir, { recursive: true });
