@@ -1,20 +1,30 @@
 /**
- * Chat — Pass 3 wiring tests.
+ * Chat — Pass 3 wiring + chat rework Slice 2 tests.
  *
  * Covers:
  *   - Loading skeleton.
- *   - Happy load via `listConversations` → seeded opener renders.
+ *   - Happy load via `listConversations` → active history loads via
+ *     `getConversation` → opener (empty history) renders.
+ *   - Sidebar: lists conversations newest-first (derived titles + fallback
+ *     mode/date titles), click-to-switch loads + renders that
+ *     conversation's history, current-row highlight, collapse toggle
+ *     (persisted in localStorage, narrow-viewport default), "New chat"
+ *     (fresh conversation, prior rows remain, composer focused), 30-day
+ *     retention note.
+ *   - History fetch abort on switch/unmount + late-result no-op + failure
+ *     fixed-copy + retry.
  *   - Send dispatches `streamMessage(convId, { content, expected_version },
- *     { onDelta, onDone, onError, requestId, signal })`.
- *   - `onDelta` callbacks grow a partial tutor bubble in the DOM.
- *   - `onDone` finalises that bubble.
+ *     { onDelta, onDone, onError, requestId, signal })` against the ACTIVE
+ *     conversation with the version its history load reported.
+ *   - `onDelta` grows a partial tutor bubble; `onDone` finalises it.
  *   - `onError` keeps the user turn and surfaces an inline error chip.
  *   - Send button is disabled / aria-busy while a stream is in-flight.
  *   - Unmounting mid-stream aborts the controller passed into the service.
+ *   - F-020 seeding + F-016 dictionary flows (unchanged contracts).
  *
- * Test boundary: we mock `services/conversation` and capture the latest
- * stream call's options, so each test can fire `onDelta`/`onDone`/`onError`
- * at will and inspect the screen's reaction. No real SSE.
+ * Test boundary: we mock `services/conversation` and capture every call's
+ * options, so each test can fire `onDelta`/`onDone`/`onError` or resolve a
+ * history fetch at will and inspect the screen's reaction. No real SSE.
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
@@ -30,10 +40,12 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import type {
   AppendMessageBody,
+  ConversationDetailResult,
   ConversationsList,
   DefineResult,
   MineWordInput,
   MineWordResult,
+  StoredConversationTurn,
 } from '../types/domain';
 import type { ChatSeedState } from '../lib/askSeed';
 import { ApiError } from '../services/api';
@@ -56,6 +68,14 @@ const hoisted = vi.hoisted(() => {
     /** Reject the promise from the test. */
     reject: (err: Error) => void;
   }
+  interface CapturedGetCall {
+    id: number;
+    signal: AbortSignal | undefined;
+    /** Resolve the history fetch from the test (manual mode). */
+    resolve: (result: ConversationDetailResult) => void;
+    /** Reject the history fetch from the test (manual mode). */
+    reject: (err: Error) => void;
+  }
   interface CapturedDefineCall {
     word: string;
     signal: AbortSignal | undefined;
@@ -68,12 +88,37 @@ const hoisted = vi.hoisted(() => {
     kind: 'loading' | 'data' | 'mock';
     data: ConversationsList | null;
   }
+  /** Build a `GET /conversation/:id` envelope for tests. */
+  const makeDetail = (
+    id: number,
+    messages: StoredConversationTurn[],
+    version: number,
+  ): ConversationDetailResult => ({
+    conversation: {
+      id,
+      mode: 'casual',
+      target_register: null,
+      version,
+      messages,
+      created_at: '2026-05-01T00:00:00Z',
+      updated_at: '2026-05-29T12:00:00Z',
+    },
+  });
   return {
+    makeDetail,
     ref: {
       endpoint: { kind: 'loading' } as EndpointState,
       streamCalls: [] as CapturedStreamCall[],
       startCalls: [] as Array<{ mode: string }>,
-      startResult: { conversation: { id: 9001 } } as { conversation: { id: number } },
+      startResult: { conversation: { id: 9001 } } as {
+        conversation: { id: number };
+      },
+      getCalls: [] as CapturedGetCall[],
+      /** true → getConversation auto-resolves from detailVersions/-Messages;
+       *  false → tests settle each captured call by hand. */
+      autoDetail: true,
+      detailVersions: {} as Record<number, number>,
+      detailMessages: {} as Record<number, StoredConversationTurn[]>,
       defineCalls: [] as CapturedDefineCall[],
       mineCalls: [] as MineWordInput[],
       /** When set, the next (and every) mineWord call rejects with this. */
@@ -138,6 +183,41 @@ vi.mock('../services/conversation', () => ({
     return hoisted.ref.startResult;
   }),
   appendMessage: vi.fn(),
+  getConversation: vi.fn(
+    (id: number, signal?: AbortSignal): Promise<ConversationDetailResult> => {
+      if (hoisted.ref.autoDetail) {
+        hoisted.ref.getCalls.push({
+          id,
+          signal,
+          resolve: () => undefined,
+          reject: () => undefined,
+        });
+        return Promise.resolve(
+          hoisted.makeDetail(
+            id,
+            hoisted.ref.detailMessages[id] ?? [],
+            hoisted.ref.detailVersions[id] ?? 1,
+          ),
+        );
+      }
+      let resolveFn: (result: ConversationDetailResult) => void = () =>
+        undefined;
+      let rejectFn: (err: Error) => void = () => undefined;
+      const promise = new Promise<ConversationDetailResult>(
+        (resolve, reject) => {
+          resolveFn = resolve;
+          rejectFn = reject;
+        },
+      );
+      hoisted.ref.getCalls.push({
+        id,
+        signal,
+        resolve: resolveFn,
+        reject: rejectFn,
+      });
+      return promise;
+    },
+  ),
   streamMessage: vi.fn(
     (
       conversationId: number,
@@ -207,7 +287,7 @@ vi.mock('../services/vocab', () => ({
 import { Chat } from './Chat';
 
 /**
- * Chat now reads `useLocation`/`useNavigate` (F-020 seeding), so every render
+ * Chat reads `useLocation`/`useNavigate` (F-020 seeding), so every render
  * needs a router. `seedState`, when given, rides in as the `/chat` entry's
  * router state — exactly how `AskAboutThisButton` delivers it. Chat also
  * calls `useToast` (F-016 add-to-bank failure toast), so every render needs
@@ -258,9 +338,16 @@ function resetState(): void {
   hoisted.ref.streamCalls = [];
   hoisted.ref.startCalls = [];
   hoisted.ref.startResult = { conversation: { id: 9001 } };
+  hoisted.ref.getCalls = [];
+  hoisted.ref.autoDetail = true;
+  // Versions mirror the LIST fixture rows so send tests assert the version
+  // came from the HISTORY fetch (the authoritative source), not the list.
+  hoisted.ref.detailVersions = { 42: 3, 11: 1 };
+  hoisted.ref.detailMessages = {};
   hoisted.ref.defineCalls = [];
   hoisted.ref.mineCalls = [];
   hoisted.ref.mineRejectWith = null;
+  window.localStorage.clear();
 }
 
 const LIST: ConversationsList = {
@@ -284,6 +371,26 @@ const LIST: ConversationsList = {
   ],
 };
 
+/** One stored user/assistant turn for detailMessages fixtures. */
+function turn(
+  role: 'user' | 'assistant',
+  content: string,
+): StoredConversationTurn {
+  return { role, content, sent_at: '2026-05-20T12:00:00Z' };
+}
+
+/** The empty-thread opener line (settings.name is '' in these tests). */
+const OPENER_RE = /오늘은 재택근무의 장단점에 대해/;
+
+/**
+ * The thread pane. Message text can ALSO appear in the sidebar as a derived
+ * conversation title (first user message snippet), so bubble assertions must
+ * scope to the log or `getByText` finds two matches.
+ */
+function thread(): HTMLElement {
+  return screen.getByRole('log', { name: 'Conversation' });
+}
+
 describe('Chat', () => {
   it('renders the skeleton while loading', () => {
     resetState();
@@ -293,21 +400,20 @@ describe('Chat', () => {
     expect(busy.length).toBeGreaterThan(0);
   });
 
-  it('renders the personalised opener once listConversations resolves', () => {
+  it('renders the opener once the active conversation loads with no history', async () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     renderChat();
     expect(
       screen.getByRole('heading', { level: 1, name: '대화 · Chat' }),
     ).toBeInTheDocument();
-    // The fallback opener (formal greeting) is shown until the first real
-    // tutor reply lands.
-    expect(
-      screen.getByText(/오늘은 재택근무의 장단점에 대해/),
-    ).toBeInTheDocument();
+    // The newest conversation (42) is auto-active; its (empty) history
+    // resolves and the opener greeting renders above the composer.
+    expect(await screen.findByText(OPENER_RE)).toBeInTheDocument();
+    expect(hoisted.ref.getCalls[0]?.id).toBe(42);
   });
 
-  it('P3b: chrome eyebrows render Korean in both-mode', () => {
+  it('P3b: chrome eyebrows render Korean in both-mode', async () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     renderChat();
@@ -319,18 +425,19 @@ describe('Chat', () => {
     expect(screen.getByText('답장')).toBeInTheDocument();
     expect(screen.getByText('Reply')).toBeInTheDocument();
     expect(screen.getByText(/합쇼체/)).toBeInTheDocument();
-    // Bubble role labels are bilingual too.
-    expect(screen.getAllByText('튜터').length).toBeGreaterThan(0);
+    // Bubble role labels are bilingual too (opener bubble, post history load).
+    expect((await screen.findAllByText('튜터')).length).toBeGreaterThan(0);
   });
 
   it(
-    'sends a message — calls streamMessage with the most recent ' +
-      'conversation id, expected_version, and a request id',
+    'sends a message — calls streamMessage with the active conversation ' +
+      'id, the history-loaded expected_version, and a request id',
     async () => {
       resetState();
       hoisted.ref.endpoint = { kind: 'data', data: LIST };
       const user = userEvent.setup();
       renderChat();
+      await screen.findByText(OPENER_RE); // history for 42 settled
 
       const input = screen.getByLabelText('Reply input');
       await user.type(input, '감사합니다');
@@ -342,11 +449,11 @@ describe('Chat', () => {
       if (!call) throw new Error('no captured stream call');
       expect(call.conversationId).toBe(42); // most-recent updated_at row
       expect(call.body.content).toBe('감사합니다');
-      expect(call.body.expected_version).toBe(3);
+      expect(call.body.expected_version).toBe(3); // from the history fetch
       expect(typeof call.requestId).toBe('string');
       expect((call.requestId ?? '').length).toBeGreaterThan(10);
-      // Optimistic user bubble visible.
-      expect(screen.getByText('감사합니다')).toBeInTheDocument();
+      // Optimistic user bubble visible (scoped: the text is also the row title).
+      expect(within(thread()).getByText('감사합니다')).toBeInTheDocument();
     },
   );
 
@@ -355,6 +462,7 @@ describe('Chat', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     renderChat();
+    await screen.findByText(OPENER_RE);
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '안녕');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -392,6 +500,7 @@ describe('Chat', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     renderChat();
+    await screen.findByText(OPENER_RE);
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '테스트');
     const send = screen.getByRole('button', { name: 'Send' });
@@ -407,6 +516,7 @@ describe('Chat', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     renderChat();
+    await screen.findByText(OPENER_RE);
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '실패');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -424,8 +534,8 @@ describe('Chat', () => {
       await call.promise.catch(() => undefined);
     });
 
-    // User turn is preserved.
-    expect(screen.getByText('실패')).toBeInTheDocument();
+    // User turn is preserved (scoped: the text is also the row title).
+    expect(within(thread()).getByText('실패')).toBeInTheDocument();
     // Inline error chip shows FIXED copy (F-UP-018) — never the server
     // prose riding on ApiError.message.
     expect(screen.getByRole('alert')).toHaveTextContent(
@@ -443,6 +553,7 @@ describe('Chat', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     renderChat();
+    await screen.findByText(OPENER_RE);
 
     // First send: capture the minted requestId off the failing call.
     const input = screen.getByLabelText('Reply input');
@@ -490,6 +601,7 @@ describe('Chat', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     const { unmount } = renderChat();
+    await screen.findByText(OPENER_RE);
     const input = screen.getByLabelText('Reply input');
     await user.type(input, '중간');
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -500,6 +612,309 @@ describe('Chat', () => {
 
     unmount();
     expect(call.signal.aborted).toBe(true);
+  });
+});
+
+// ── Conversation sidebar (chat rework Slice 2) ───────────────────────────
+describe('Chat sidebar (Slice 2)', () => {
+  it('lists conversations newest-first with fallback titles, highlights the current one, and shows the retention note', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+
+    const nav = await screen.findByRole('navigation', {
+      name: 'Conversations',
+    });
+    const items = within(nav).getAllByRole('listitem');
+    expect(items.length).toBe(2);
+
+    // Newest (42, updated 5/29) first — fallback title is mode + date
+    // because the list endpoint carries no message bodies.
+    const first = within(items[0] as HTMLElement).getByRole('button');
+    expect(first).toHaveAccessibleName(/^일상 대화 · 5\/29/);
+    expect(first).toHaveAttribute('aria-current', 'true');
+    const second = within(items[1] as HTMLElement).getByRole('button');
+    expect(second).toHaveAccessibleName(/^일상 대화 · 5\/20/);
+    expect(second).not.toHaveAttribute('aria-current');
+
+    // 30-day retention note (bilingual chrome).
+    expect(
+      within(nav).getByText(/kept 30 days, then cleared/),
+    ).toBeInTheDocument();
+    expect(within(nav).getByText(/30일 뒤 삭제/)).toBeInTheDocument();
+  });
+
+  it('clicking a row loads + renders its history, derives its title, and sends target it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.detailMessages[11] = [
+      turn('user', '문법 질문이 있어요'),
+      turn('assistant', '네, 말씀해 보세요'),
+    ];
+    const user = userEvent.setup();
+    renderChat();
+
+    const nav = await screen.findByRole('navigation', {
+      name: 'Conversations',
+    });
+    await user.click(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    );
+
+    // Full history renders — the previously-missing capability. (Scoped to
+    // the thread: the first user message doubles as the sidebar title.)
+    expect(
+      await within(thread()).findByText('문법 질문이 있어요'),
+    ).toBeInTheDocument();
+    expect(within(thread()).getByText('네, 말씀해 보세요')).toBeInTheDocument();
+    expect(hoisted.ref.getCalls.map((c) => c.id)).toContain(11);
+    // The opener does NOT render over real history.
+    expect(screen.queryByText(OPENER_RE)).not.toBeInTheDocument();
+
+    // Its sidebar title is now the first user message's snippet, and the
+    // highlight moved.
+    const row11 = within(nav).getByRole('button', {
+      name: /문법 질문이 있어요/,
+    });
+    expect(row11).toHaveAttribute('aria-current', 'true');
+
+    // A send now targets conversation 11 with the version ITS history
+    // fetch reported (1) — not the previous conversation's 3.
+    await user.type(screen.getByLabelText('Reply input'), '알겠습니다');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(hoisted.ref.streamCalls.length).toBe(1);
+    expect(hoisted.ref.streamCalls[0]?.conversationId).toBe(11);
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(1);
+  });
+
+  it('collapse toggles the rail, persists to localStorage, and survives a remount', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    const first = renderChat();
+
+    const toggle = await screen.findByRole('button', {
+      name: 'Collapse conversation list',
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    // Expanded: the New chat label text is visible.
+    expect(screen.getByText('New chat')).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    // Collapsed: labels hidden, accessible names intact, preference stored.
+    const expand = screen.getByRole('button', {
+      name: 'Expand conversation list',
+    });
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('New chat')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'New chat' }),
+    ).toBeInTheDocument();
+    // Rows stay keyboard-operable with their full accessible names.
+    expect(
+      screen.getByRole('button', { name: /일상 대화 · 5\/29/ }),
+    ).toBeInTheDocument();
+    expect(
+      window.localStorage.getItem('km.chat.sidebar-collapsed'),
+    ).toBe('1');
+
+    // A fresh mount reads the persisted preference.
+    first.unmount();
+    renderChat();
+    expect(
+      await screen.findByRole('button', {
+        name: 'Expand conversation list',
+      }),
+    ).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('defaults to collapsed on a narrow viewport (no stored preference)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const spy = vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: true,
+          media: query,
+          onchange: null,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList,
+    );
+    try {
+      renderChat();
+      expect(
+        await screen.findByRole('button', {
+          name: 'Expand conversation list',
+        }),
+      ).toHaveAttribute('aria-expanded', 'false');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('New chat starts a fresh conversation, keeps prior rows, focuses the composer, and sends use it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.detailMessages[42] = [
+      turn('user', '이전 대화 내용'),
+      turn('assistant', '이전 답변'),
+    ];
+    const user = userEvent.setup();
+    renderChat();
+    // The active conversation's real history is on screen first.
+    await within(thread()).findByText('이전 대화 내용');
+
+    await user.click(screen.getByRole('button', { name: 'New chat' }));
+
+    await waitFor(() => {
+      expect(hoisted.ref.startCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.startCalls[0]?.mode).toBe('casual');
+
+    // Fresh thread: opener renders, the old history is gone (the sidebar
+    // still shows conversation 42's derived title — only the THREAD resets).
+    expect(await screen.findByText(OPENER_RE)).toBeInTheDocument();
+    expect(
+      within(thread()).queryByText('이전 대화 내용'),
+    ).not.toBeInTheDocument();
+
+    // Prior conversations remain listed; the new one is current + newest.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    const items = within(nav).getAllByRole('listitem');
+    expect(items.length).toBe(3);
+    const newRow = within(items[0] as HTMLElement).getByRole('button');
+    expect(newRow).toHaveAttribute('aria-current', 'true');
+    // Conversation 42 kept its derived title (its history loaded, so its
+    // first user message replaced the mode/date fallback); 11 never loaded
+    // and keeps the fallback.
+    expect(
+      within(nav).getByRole('button', { name: /이전 대화 내용/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    ).toBeInTheDocument();
+
+    // Composer focused, ready to type.
+    expect(screen.getByLabelText('Reply input')).toHaveFocus();
+
+    // A send targets the NEW conversation at version 1 — no history fetch
+    // needed (a just-started conversation is known-empty).
+    await user.type(screen.getByLabelText('Reply input'), '새 대화 시작');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(hoisted.ref.streamCalls[0]?.conversationId).toBe(9001);
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(1);
+    expect(hoisted.ref.getCalls.every((c) => c.id !== 9001)).toBe(true);
+  });
+
+  it('switching aborts the in-flight history fetch and a late result never paints (abort discipline)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoDetail = false;
+    const user = userEvent.setup();
+    renderChat();
+
+    // Mount kicks off the newest conversation's history fetch.
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(1);
+    });
+    const firstCall = hoisted.ref.getCalls[0];
+    if (!firstCall) throw new Error('no captured history call');
+    expect(firstCall.id).toBe(42);
+    expect(firstCall.signal?.aborted).toBe(false);
+
+    // Switch to the other conversation while the first fetch is pending.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    await user.click(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    );
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(2);
+    });
+    expect(firstCall.signal?.aborted).toBe(true);
+
+    // The aborted fetch resolving LATE must be a total no-op.
+    await act(async () => {
+      firstCall.resolve(hoisted.makeDetail(42, [turn('user', '늦은 응답')], 3));
+    });
+    expect(screen.queryByText('늦은 응답')).not.toBeInTheDocument();
+
+    // The current fetch resolves and paints ITS history.
+    const secondCall = hoisted.ref.getCalls[1];
+    if (!secondCall) throw new Error('no second history call');
+    expect(secondCall.id).toBe(11);
+    await act(async () => {
+      secondCall.resolve(
+        hoisted.makeDetail(11, [turn('user', '두 번째 대화')], 1),
+      );
+    });
+    expect(
+      await within(thread()).findByText('두 번째 대화'),
+    ).toBeInTheDocument();
+  });
+
+  it('unmounting aborts the in-flight history fetch', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoDetail = false;
+    const { unmount } = renderChat();
+
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.getCalls[0];
+    if (!call) throw new Error('no captured history call');
+    expect(call.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(call.signal?.aborted).toBe(true);
+  });
+
+  it('a failed history load shows fixed copy (never server prose) and Retry refetches', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoDetail = false;
+    const user = userEvent.setup();
+    renderChat();
+
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(1);
+    });
+    await act(async () => {
+      hoisted.ref.getCalls[0]?.reject(
+        new ApiError('relation "conversations" does not exist', {
+          status: 500,
+          code: 'server_error',
+        }),
+      );
+    });
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('This conversation could not be loaded.');
+    expect(alert).not.toHaveTextContent('relation');
+    // Sends are blocked while the thread has no trustworthy version — even
+    // with text in the composer (non-vacuous: typing usually enables Send).
+    await user.type(screen.getByLabelText('Reply input'), '테스트');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+
+    // Retry re-arms the effect — a second fetch fires and paints.
+    await user.click(within(alert).getByRole('button', { name: /Retry/ }));
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(2);
+    });
+    await act(async () => {
+      hoisted.ref.getCalls[1]?.resolve(
+        hoisted.makeDetail(42, [turn('user', '다시 시도 성공')], 3),
+      );
+    });
+    expect(
+      await within(thread()).findByText('다시 시도 성공'),
+    ).toBeInTheDocument();
   });
 });
 
@@ -519,8 +934,6 @@ describe('Chat seed (F-020)', () => {
     expect(input.value).toBe(SEED.seedText);
     // Pre-fill only — no stream was dispatched and no user bubble appended.
     expect(hoisted.ref.streamCalls.length).toBe(0);
-    // The user can review + send: the button is enabled (composer non-empty).
-    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
   });
 
   it('clears the router state after consuming the seed (no re-seed on re-render)', async () => {
@@ -595,7 +1008,13 @@ describe('Chat seed (F-020)', () => {
     });
     expect(hoisted.ref.startCalls[0]?.mode).toBe('topik_prep');
     // And the seed text is what went out.
+    await waitFor(() => {
+      expect(hoisted.ref.streamCalls.length).toBe(1);
+    });
     expect(hoisted.ref.streamCalls[0]?.body.content).toBe(SEED.seedText);
+    // The lazily-started conversation joins the sidebar list.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(within(nav).getAllByRole('listitem').length).toBe(1);
   });
 
   it('ignores malformed router state (untrusted history state)', () => {
@@ -1127,6 +1546,7 @@ describe('Chat dictionary lookup (F-016)', () => {
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
     const user = userEvent.setup();
     renderChat();
+    await screen.findByText(OPENER_RE);
 
     // Open the dictionary field, then use the normal composer anyway.
     await user.click(

@@ -19,6 +19,7 @@ export type IconName =
   | 'chat'
   | 'check'
   | 'chevron-down'
+  | 'chevron-left'
   | 'chevron-right'
   | 'chevron-up'
   | 'close'
@@ -87,6 +88,7 @@ const PATHS: Record<IconName, SvgChildren> = {
   chat: <path d="M21 12a8 8 0 1 1-3.6-6.6L21 4l-1 4.6A8 8 0 0 1 21 12z" />,
   check: <path d="M5 12l5 5L20 7" />,
   'chevron-down': <path d="M6 9l6 6 6-6" />,
+  'chevron-left': <path d="M15 6l-6 6 6 6" />,
   'chevron-right': <path d="M9 6l6 6-6 6" />,
   'chevron-up': <path d="M6 15l6-6 6 6" />,
   close: <path d="M6 6l12 12M18 6L6 18" />,

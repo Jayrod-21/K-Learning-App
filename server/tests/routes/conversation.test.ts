@@ -15,12 +15,27 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Pool } from 'pg';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
-import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
+import {
+  buildTestApp,
+  makeStubProxy,
+  teardownTestApp,
+  type TestApp,
+} from '../helpers/app.js';
 import { registerUser, seedImageCapture } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
 let t: TestApp;
+
+/**
+ * SF-1 (Slice 1 review): count `ocrImage` invocations. A Vision call leaves
+ * NO DB trace (it runs before any persist), so tests asserting only
+ * `image_captures` = 0 would keep passing if a refactor reordered the cheap
+ * gates (404 IDOR / 409 stale / 429 cap / 400 no-file) BELOW the Vision
+ * call. This counter pins the ordering: those paths must never reach the
+ * stub, and the happy path must reach it exactly once.
+ */
+let ocrImageCalls = 0;
 
 /**
  * A minimal but VALID 1x1 PNG (8-byte signature + IHDR + IDAT + IEND) —
@@ -66,7 +81,18 @@ beforeAll(async () => {
     os.tmpdir(),
     `km-conv-images-test-${process.pid}-${Date.now()}`,
   );
-  t = buildTestApp({ connectionString: pg.connectionString });
+  // Wrap the default stub's ocrImage in a call counter (SF-1). Behavior is
+  // identical — only the invocation count is observed.
+  const baseProxy = makeStubProxy();
+  t = buildTestApp({
+    connectionString: pg.connectionString,
+    claudeProxy: {
+      ocrImage: async (input) => {
+        ocrImageCalls += 1;
+        return baseProxy.ocrImage(input);
+      },
+    },
+  });
 });
 
 afterAll(async () => {
@@ -79,6 +105,7 @@ beforeEach(async () => {
     'TRUNCATE TABLE image_words, image_captures, conversations, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
+  ocrImageCalls = 0;
 });
 
 describe('conversation — auth required', () => {
@@ -508,6 +535,8 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
 
     expect(res.status).toBe(201);
     expect(res.body.version).toBe(2);
+    // Exactly one Vision call for one accepted upload (SF-1).
+    expect(ocrImageCalls).toBe(1);
     const turn = res.body.turn;
     expect(turn.role).toBe('user');
     // content is the OCR'd Korean text (stub caption).
@@ -561,6 +590,8 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
       .post(`/conversation/${id}/image`)
       .field('expected_version', '1');
     expect(res.status).toBe(400);
+    // The no-file gate fires before Vision — no budget spent (SF-1).
+    expect(ocrImageCalls).toBe(0);
 
     const conv = await pg.pool.query<{ version: number }>(
       'SELECT version FROM conversations WHERE id = $1',
@@ -597,6 +628,8 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
       .field('expected_version', '1')
       .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
     expect(res.status).toBe(429);
+    // The daily cap fires before Vision — no budget spent (SF-1).
+    expect(ocrImageCalls).toBe(0);
 
     const conv = await pg.pool.query<{ version: number; messages: unknown[] }>(
       'SELECT version, messages FROM conversations WHERE id = $1',
@@ -620,6 +653,8 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
       .field('expected_version', '1')
       .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
     expect(res.status).toBe(409);
+    // The version pre-check fires before Vision — no budget spent (SF-1).
+    expect(ocrImageCalls).toBe(0);
 
     const caps = await pg.pool.query<{ n: string }>(
       'SELECT count(*)::text AS n FROM image_captures',
@@ -638,6 +673,9 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
       .field('expected_version', '1')
       .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
     expect(res.status).toBe(404);
+    // The ownership gate fires before Vision — an attacker with a foreign
+    // id cannot burn the victim's (or their own) Vision budget (SF-1).
+    expect(ocrImageCalls).toBe(0);
 
     const caps = await pg.pool.query<{ n: string }>(
       'SELECT count(*)::text AS n FROM image_captures',
@@ -665,6 +703,8 @@ describe('POST /conversation/:id/image — OCR image turn (chat rework Slice 1)'
       .field('expected_version', '1')
       .attach('image', notAnImage, { filename: 'evil.png', contentType: 'image/png' });
     expect(res.status).toBe(400);
+    // The magic-byte sniff fires before Vision — no budget spent (SF-1).
+    expect(ocrImageCalls).toBe(0);
     const caps = await pg.pool.query<{ n: string }>(
       'SELECT count(*)::text AS n FROM image_captures',
     );
