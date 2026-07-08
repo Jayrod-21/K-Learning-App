@@ -13,6 +13,11 @@
  *     retention note.
  *   - History fetch abort on switch/unmount + late-result no-op + failure
  *     fixed-copy + retry.
+ *   - Fast A→B→A bounce (B pending) refetches A — the `loaded` cache is
+ *     invalidated on switch, so a bounced-to thread is never blank.
+ *   - Switch mid-stream aborts the stream; late tokens never paint.
+ *   - Lazy-start hardening: unmount during a pending start never opens an
+ *     SSE; two rapid sends share ONE started conversation (latch).
  *   - Send dispatches `streamMessage(convId, { content, expected_version },
  *     { onDelta, onDone, onError, requestId, signal })` against the ACTIVE
  *     conversation with the version its history load reported.
@@ -113,6 +118,13 @@ const hoisted = vi.hoisted(() => {
       startResult: { conversation: { id: 9001 } } as {
         conversation: { id: number };
       },
+      /** true → startConversation resolves immediately with startResult;
+       *  false → tests settle each pending start via startGates. */
+      autoStart: true,
+      startGates: [] as Array<{
+        resolve: (result: { conversation: { id: number } }) => void;
+        reject: (err: Error) => void;
+      }>,
       getCalls: [] as CapturedGetCall[],
       /** true → getConversation auto-resolves from detailVersions/-Messages;
        *  false → tests settle each captured call by hand. */
@@ -178,10 +190,19 @@ vi.mock('../hooks/useSettings', () => ({
 // ── services/conversation mock — capture every call ─────────────────────
 vi.mock('../services/conversation', () => ({
   listConversations: vi.fn(),
-  startConversation: vi.fn(async (body: { mode: string }) => {
-    hoisted.ref.startCalls.push(body);
-    return hoisted.ref.startResult;
-  }),
+  startConversation: vi.fn(
+    (body: { mode: string }): Promise<{ conversation: { id: number } }> => {
+      hoisted.ref.startCalls.push(body);
+      if (hoisted.ref.autoStart) {
+        return Promise.resolve(hoisted.ref.startResult);
+      }
+      // Manual mode — the test controls when (and whether) the start
+      // settles, so lazy-start races (unmount / double-send) are testable.
+      return new Promise((resolve, reject) => {
+        hoisted.ref.startGates.push({ resolve, reject });
+      });
+    },
+  ),
   appendMessage: vi.fn(),
   getConversation: vi.fn(
     (id: number, signal?: AbortSignal): Promise<ConversationDetailResult> => {
@@ -340,9 +361,13 @@ function resetState(): void {
   hoisted.ref.startResult = { conversation: { id: 9001 } };
   hoisted.ref.getCalls = [];
   hoisted.ref.autoDetail = true;
-  // Versions mirror the LIST fixture rows so send tests assert the version
-  // came from the HISTORY fetch (the authoritative source), not the list.
-  hoisted.ref.detailVersions = { 42: 3, 11: 1 };
+  hoisted.ref.autoStart = true;
+  hoisted.ref.startGates = [];
+  // Versions deliberately DIFFER from the LIST fixture rows (42→3, 11→1)
+  // so send tests PROVE the expected_version came from the HISTORY fetch
+  // (the authoritative source) — an implementation that read `row.version`
+  // off the list envelope would send 3/1 and fail.
+  hoisted.ref.detailVersions = { 42: 5, 11: 2 };
   hoisted.ref.detailMessages = {};
   hoisted.ref.defineCalls = [];
   hoisted.ref.mineCalls = [];
@@ -449,7 +474,9 @@ describe('Chat', () => {
       if (!call) throw new Error('no captured stream call');
       expect(call.conversationId).toBe(42); // most-recent updated_at row
       expect(call.body.content).toBe('감사합니다');
-      expect(call.body.expected_version).toBe(3); // from the history fetch
+      // 5 comes from the HISTORY fetch (detailVersions); the list row says
+      // 3 — proving the send rebinds to the authoritative detail version.
+      expect(call.body.expected_version).toBe(5);
       expect(typeof call.requestId).toBe('string');
       expect((call.requestId ?? '').length).toBeGreaterThan(10);
       // Optimistic user bubble visible (scoped: the text is also the row title).
@@ -679,12 +706,13 @@ describe('Chat sidebar (Slice 2)', () => {
     expect(row11).toHaveAttribute('aria-current', 'true');
 
     // A send now targets conversation 11 with the version ITS history
-    // fetch reported (1) — not the previous conversation's 3.
+    // fetch reported (2) — not the list row's 1, and not the previous
+    // conversation's 5.
     await user.type(screen.getByLabelText('Reply input'), '알겠습니다');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(hoisted.ref.streamCalls.length).toBe(1);
     expect(hoisted.ref.streamCalls[0]?.conversationId).toBe(11);
-    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(1);
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(2);
   });
 
   it('collapse toggles the rail, persists to localStorage, and survives a remount', async () => {
@@ -857,6 +885,119 @@ describe('Chat sidebar (Slice 2)', () => {
     ).toBeInTheDocument();
   });
 
+  it('fast A→B→A bounce refetches A and renders its history (loaded-cache invalidation, B1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoDetail = false;
+    const user = userEvent.setup();
+    renderChat();
+
+    // A (42) is auto-active; its history loads fully.
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.getCalls[0]?.id).toBe(42);
+    await act(async () => {
+      hoisted.ref.getCalls[0]?.resolve(
+        hoisted.makeDetail(42, [turn('user', '원래 대화 내용')], 5),
+      );
+    });
+    expect(
+      await within(thread()).findByText('원래 대화 내용'),
+    ).toBeInTheDocument();
+
+    // Switch to B (11); its fetch stays PENDING.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    await user.click(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    );
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.getCalls[1]?.id).toBe(11);
+
+    // Bounce straight back to A BEFORE B's fetch resolves. (A's row now
+    // carries its derived first-user-message title.)
+    await user.click(
+      within(nav).getByRole('button', { name: /원래 대화 내용/ }),
+    );
+
+    // The bounce must (re)drive A's history fetch. Without invalidating the
+    // `loaded` cache on switch, the history effect early-returns on the
+    // stale `loaded.key === 42`, no third fetch fires, and the thread stays
+    // permanently blank — re-clicking the row is a no-op.
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(3);
+    });
+    expect(hoisted.ref.getCalls[2]?.id).toBe(42);
+    // B's pending fetch was aborted by the bounce.
+    expect(hoisted.ref.getCalls[1]?.signal?.aborted).toBe(true);
+    // A visible loading state shows while A refetches (scoped to the
+    // thread — the announce live region carries similar text).
+    expect(
+      within(thread()).getByText(/대화 불러오는 중/),
+    ).toBeInTheDocument();
+
+    // The refetch resolves and A's history renders again.
+    await act(async () => {
+      hoisted.ref.getCalls[2]?.resolve(
+        hoisted.makeDetail(42, [turn('user', '원래 대화 내용')], 5),
+      );
+    });
+    expect(
+      await within(thread()).findByText('원래 대화 내용'),
+    ).toBeInTheDocument();
+  });
+
+  it('switching conversations aborts the in-flight stream and its late tokens never paint', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.detailMessages[11] = [turn('assistant', '다른 대화 답변')];
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE); // history for 42 settled
+
+    // Start a stream in conversation 42 and let a first token paint.
+    await user.type(screen.getByLabelText('Reply input'), '스트림 질문');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    const call = hoisted.ref.streamCalls[0];
+    if (!call) throw new Error('no captured stream call');
+    expect(call.conversationId).toBe(42);
+    expect(call.signal.aborted).toBe(false);
+    act(() => {
+      call.onDelta('첫 토큰');
+    });
+    expect(within(thread()).getByText('첫 토큰')).toBeInTheDocument();
+
+    // Switch mid-stream — the prior stream's controller must be aborted
+    // (the threat-model claim previously only tested for unmount).
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    await user.click(
+      within(nav).getByRole('button', { name: /일상 대화 · 5\/20/ }),
+    );
+    expect(call.signal.aborted).toBe(true);
+
+    // Conversation 11's own history renders.
+    expect(
+      await within(thread()).findByText('다른 대화 답변'),
+    ).toBeInTheDocument();
+
+    // A late token from the aborted stream must not render into the new
+    // thread (defense-in-depth: the streaming-row tail guard).
+    act(() => {
+      call.onDelta('늦은 토큰');
+    });
+    expect(screen.queryByText(/늦은 토큰/)).not.toBeInTheDocument();
+
+    // The aborted stream settling is swallowed — no error chip on the way
+    // out of a deliberate switch.
+    await act(async () => {
+      call.reject(new ApiError('canceled', { status: 0, code: 'canceled' }));
+      await call.promise.catch(() => undefined);
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('unmounting aborts the in-flight history fetch', async () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
@@ -915,6 +1056,76 @@ describe('Chat sidebar (Slice 2)', () => {
     expect(
       await within(thread()).findByText('다시 시도 성공'),
     ).toBeInTheDocument();
+  });
+});
+
+// ── Lazy-start hardening (Slice 2 fix-pass) ──────────────────────────────
+describe('Chat lazy-start (Slice 2 hardening)', () => {
+  it('unmounting during a pending lazy-start never opens the SSE stream', async () => {
+    resetState();
+    // No existing conversations — sending must lazy-start one.
+    hoisted.ref.endpoint = { kind: 'data', data: { conversations: [] } };
+    hoisted.ref.autoStart = false;
+    const user = userEvent.setup();
+    const { unmount } = renderChat();
+
+    await user.type(screen.getByLabelText('Reply input'), '안녕하세요');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(hoisted.ref.startCalls.length).toBe(1);
+    });
+    // The start RTT is still pending — no stream yet.
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+
+    unmount();
+
+    // startConversation resolves AFTER unmount. The continuation must not
+    // open an SSE stream against the dead tree — the unmount cleanup has
+    // already run, so nothing would ever abort it (a held connection and
+    // real Claude spend, invisible to the user).
+    await act(async () => {
+      hoisted.ref.startGates[0]?.resolve({ conversation: { id: 9001 } });
+    });
+    expect(hoisted.ref.streamCalls.length).toBe(0);
+  });
+
+  it('two rapid sends on a fresh thread share ONE lazy-started conversation', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: { conversations: [] } };
+    hoisted.ref.autoStart = false;
+    const user = userEvent.setup();
+    renderChat();
+
+    // Two sends land before startConversation resolves — during that RTT
+    // `streaming` is still false, so the Send button is not the guard.
+    const input = screen.getByLabelText('Reply input');
+    await user.type(input, '첫 번째 질문');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await user.type(input, '두 번째 질문');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // Exactly ONE conversation was started — the second send latched onto
+    // the first's in-flight start instead of creating its own.
+    expect(hoisted.ref.startCalls.length).toBe(1);
+
+    await act(async () => {
+      hoisted.ref.startGates[0]?.resolve({ conversation: { id: 9001 } });
+    });
+
+    // Both sends stream into the SAME conversation.
+    await waitFor(() => {
+      expect(hoisted.ref.streamCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.streamCalls[0]?.conversationId).toBe(9001);
+    expect(hoisted.ref.streamCalls[1]?.conversationId).toBe(9001);
+    expect(hoisted.ref.streamCalls[0]?.body.content).toBe('첫 번째 질문');
+    expect(hoisted.ref.streamCalls[1]?.body.content).toBe('두 번째 질문');
+    // Both optimistic bubbles are in the one thread…
+    expect(within(thread()).getByText('첫 번째 질문')).toBeInTheDocument();
+    expect(within(thread()).getByText('두 번째 질문')).toBeInTheDocument();
+    // …and exactly one sidebar row was adopted.
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(within(nav).getAllByRole('listitem').length).toBe(1);
   });
 });
 

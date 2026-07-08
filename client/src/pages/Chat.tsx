@@ -103,6 +103,14 @@
  *   - **Concurrent-send race.** Send is disabled while a stream is in-
  *     flight (`aria-busy="true"`), so the user cannot start a second
  *     overlapping stream in the same conversation.
+ *   - **Lazy-start races.** A send from the pending-'new' thread first
+ *     awaits `startConversation` — a window where no stream (and no
+ *     abortable controller) exists yet. That window is latched
+ *     (`lazyStartRef`) so a second quick send joins the SAME new
+ *     conversation instead of creating its own, and both continuations
+ *     re-check `mountedRef` before opening the stream so an unmount
+ *     mid-start can never leak a live, unabortable SSE (and its Claude
+ *     spend) behind a dead tree.
  *   - **Network-flap retry via X-Request-Id.** Each send mints
  *     `crypto.randomUUID()` once; Retry reuses the SAME id so the server
  *     short-circuits to the persisted reply rather than re-running Claude.
@@ -672,6 +680,14 @@ export function Chat(): JSX.Element {
       setSendError(null);
       setHistoryError(null);
       setSelectedKey(id);
+      // Invalidate the thread cache: `msgs` is cleared below, so whatever
+      // conversation `loaded` says the thread holds is no longer rendered.
+      // Without this, a fast A→B→A bounce (B's fetch still pending, so
+      // `loaded` still names A) hits the history effect's early return and
+      // leaves A permanently blank. The `id === activeKey` guard above keeps
+      // re-clicking the current row refetch-free, so the normal
+      // already-loaded case never refetches redundantly.
+      setLoaded(null);
       // Clear immediately so the previous thread never flashes under the
       // new selection; the history effect repopulates.
       setMsgs([]);
@@ -724,15 +740,36 @@ export function Chat(): JSX.Element {
    * that starts the conversation — an existing conversation keeps its own
    * mode untouched.
    */
+  // Lazy-start latch — two rapid sends while the pending-'new' thread is
+  // active must share ONE `startConversation` (without it, each send creates
+  // its own conversation and the two messages split across two threads).
+  // The second caller awaits the first's in-flight promise. A failed start
+  // clears the latch so Retry can start fresh; a successful one needs no
+  // clearing — adoption sets `activeId`, so the latch is never consulted
+  // again for this thread.
+  const lazyStartRef = useRef<Promise<number> | null>(null);
+
   const ensureActiveConversationId = useCallback(async (): Promise<number> => {
     if (activeId !== null) return activeId;
+    if (lazyStartRef.current !== null) return lazyStartRef.current;
     const mode = chatSeed?.mode ?? DEFAULT_START_MODE;
-    const started = await conversationService.startConversation({ mode });
-    versionRef.current = 1;
-    adoptStartedConversation(started.conversation.id, mode, {
-      clearThread: false,
+    const pending = (async (): Promise<number> => {
+      const started = await conversationService.startConversation({ mode });
+      versionRef.current = 1;
+      // Post-unmount, adopting would only set state on a dead tree; the
+      // callers' own mounted-guards stop the stream from opening.
+      if (mountedRef.current) {
+        adoptStartedConversation(started.conversation.id, mode, {
+          clearThread: false,
+        });
+      }
+      return started.conversation.id;
+    })();
+    lazyStartRef.current = pending;
+    void pending.catch((): void => {
+      if (lazyStartRef.current === pending) lazyStartRef.current = null;
     });
-    return started.conversation.id;
+    return pending;
   }, [activeId, chatSeed, adoptStartedConversation]);
 
   /** Record a first-message-derived title if the conversation has none. */
@@ -913,6 +950,11 @@ export function Chat(): JSX.Element {
     void (async (): Promise<void> => {
       try {
         const convId = await ensureActiveConversationId();
+        // Unmounted while the lazy-start was in flight? Opening the SSE now
+        // would stream a real Claude turn into a dead tree with nothing left
+        // to abort it — the unmount cleanup already ran and `runStream`
+        // would mint a fresh controller it never sees.
+        if (!mountedRef.current) return;
         learnTitleFromSend(convId, text);
         await runStream({ convId, content: text, requestId });
       } catch (err) {
@@ -977,6 +1019,9 @@ export function Chat(): JSX.Element {
       void (async (): Promise<void> => {
         try {
           const convId = await ensureActiveConversationId();
+          // Same post-unmount guard as `send` — never open a stream the
+          // unmount cleanup can no longer abort.
+          if (!mountedRef.current) return;
           await runStream({ convId, content, requestId });
         } catch (err) {
           const message = errorMessageFor(err, 'Retry failed.');
