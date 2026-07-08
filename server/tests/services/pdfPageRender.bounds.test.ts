@@ -49,7 +49,6 @@ vi.mock('node:fs/promises', () => ({
   rm: fsMocks.rm,
 }));
 
-// eslint-disable-next-line import/order
 import { MAX_PDF_PAGES, renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
 
 type ExecCallback = (err: unknown, result?: { stdout: string; stderr: string }) => void;

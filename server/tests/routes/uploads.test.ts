@@ -71,7 +71,6 @@ import { buildStoredZip } from '../helpers/zip.js';
 vi.mock('../../src/services/pdfPageRender.js', () => ({
   renderPdfPagesToJpeg: vi.fn(),
 }));
-// eslint-disable-next-line import/order
 import { renderPdfPagesToJpeg } from '../../src/services/pdfPageRender.js';
 
 let pg: PgHandle;

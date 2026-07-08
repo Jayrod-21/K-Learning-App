@@ -137,7 +137,7 @@ COMMENT ON TABLE book_uploads IS
     'normalizes it to ordered page images (book_pages) at upload time and '
     'discards the source file. Hard-deleted (no history value once removed); '
     'deleting a row CASCADEs its book_pages (and their blob files — cleaned '
-    'up by routes/uploads.ts after the DB commit, since file deletion is not '
+    'up by routes/uploads.ts after the DB delete lands, since file deletion is not '
     'transactional). U2 extraction tags content rows back to this id via '
     'source_upload_id (ON DELETE SET NULL, so removing the upload never '
     'deletes content already pulled from it).';
