@@ -165,8 +165,12 @@ function summaryToImageCapture(wire: ImageSummaryWire): ImageCapture {
  * its JSON default and lets the browser set `multipart/form-data` WITH the
  * generated boundary. A manually-set `Content-Type` would omit the boundary
  * and the server's `multer` body parser would fail to find the file field.
+ *
+ * Exported for the other multipart caller (`uploadConversationImage` in
+ * services/conversation.ts — image-in-chat, Slice 1) so the boundary-handling
+ * subtlety lives in exactly one place.
  */
-function buildMultipartConfig(signal?: AbortSignal): AxiosRequestConfig {
+export function buildMultipartConfig(signal?: AbortSignal): AxiosRequestConfig {
   const config: AxiosRequestConfig = {
     // `undefined` is the documented axios escape hatch: the header default is
     // dropped for this request and the FormData boundary is set by the agent.

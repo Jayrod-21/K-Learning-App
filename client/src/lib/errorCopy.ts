@@ -49,3 +49,43 @@ export function errorMessageFor(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+/**
+ * Fixed copy for a failed IMAGE upload (the OCR pipeline behind both the
+ * Images screen's `POST /images/ocr` and Chat's
+ * `POST /conversation/:id/image` — chat rework Slice 3). Keyed on the
+ * structured status/code only; server prose is never echoed. Shared so the
+ * two upload surfaces can't drift apart on copy.
+ *
+ * TWO different 429s reach this route and must not share copy: the image
+ * endpoints also sit behind the generic short-window rate limiter, whose
+ * 429 carries the structured `retry_after` (a seconds-scale wait), while
+ * the per-user DAILY VISION CAP (a cost control) does not — that one
+ * really is "try again tomorrow". `retryAfter` presence is the
+ * discriminator (both use code `rate_limited` on some paths, so the code
+ * field cannot disambiguate).
+ */
+export function imageUploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      // Short-window limiter (retry_after present) vs the daily cap. Only
+      // the STRUCTURED retry_after number is interpolated — never prose.
+      return err.retryAfter !== undefined
+        ? `Rate-limited. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : "You've hit today's image limit. Try again tomorrow.";
+    }
+    if (err.status === 413) {
+      return 'That image is too large. Pick one under 8 MB.';
+    }
+    if (err.status === 400) {
+      return 'That file isn’t a supported image. Use a JPEG, PNG, or WebP.';
+    }
+    if (err.status === 502) {
+      return 'OCR is temporarily unavailable. Try again shortly.';
+    }
+    if (err.code === 'network') {
+      return 'Network unreachable. Check your connection and try again.';
+    }
+  }
+  return 'Upload failed. Try again.';
+}

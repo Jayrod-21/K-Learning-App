@@ -1,27 +1,66 @@
 /**
- * Chat (Conversation) screen — tutor-vs-user message thread with real
- * streaming wired in.
+ * Chat (Conversation) screen — multi-conversation tutor chat with a
+ * collapsible sidebar (chat rework Slice 2).
  *
- * Layout (per design README §9):
+ * Layout:
  *   1. Topbar: "Tutor conversation" eyebrow + 대화 · Chat serif title.
- *   2. Message list — tutor left, user right; tutor in 합쇼체 (formal).
- *   3. Composer: textarea + Send + "Show hints" Toggle. When hints on,
- *      common reply starters appear under the composer.
+ *   2. A two-pane layout below the Topbar:
+ *      - LEFT: a collapsible conversation sidebar (mockup: thin-rail
+ *        collapse ‹, "New chat", the conversation list newest-first, a
+ *        30-day retention note).
+ *      - RIGHT: the message thread (tutor left / user right) + composer.
  *
- * Wiring (Pass 3):
- *   - History: `services.conversation.listConversations()` via
- *     `useEndpointOrMock('chat:list', …, { realFn })`. Pick most-recent
- *     active conversation as the in-app thread anchor; if none, lazily
- *     start one via `startConversation` on first user submit. The local
- *     fixture (`loadConversationMock`) only seeds the UI under the mock
- *     fallback — the personalised opener still wins on the first paint
- *     (Pass 2 `seededRef` semantics preserved).
- *   - Send: optimistic user-bubble append, then
- *     `services.conversation.streamMessage(id, { content, expected_version },
- *     { signal, onDelta, onDone, onError, requestId })`. `onDelta` grows a
- *     partial tutor bubble, `onDone` finalises it, `onError` rolls the
- *     optimistic user-turn into a `failed → retry` chip and surfaces an
- *     inline error message under the composer.
+ * State model (Slice 2 — replaces the single-active-conversation shape):
+ *   - `rows` — the sidebar's conversation list. Derived per render from the
+ *     server list (`listConversations`, metadata only), locally-started
+ *     conversations (`localRows` — New chat / lazy-start), and per-send
+ *     `updated_at` bumps (`touchedAt`), sorted newest-first.
+ *   - `selectedKey` — the user's explicit selection (`number` id, or the
+ *     'new' pending state). `activeKey` derives the effective selection:
+ *     the user's pick, else the newest row, else 'new'. Mount therefore
+ *     resumes the latest conversation (unchanged behavior; the force-new
+ *     FAB entry is Slice 3) but now loads its FULL history.
+ *   - `loaded` — which conversation's history the thread currently holds
+ *     (`{ key, empty }`). `historyLoading` is DERIVED (`activeId` set but
+ *     not yet loaded and not failed) rather than set synchronously in an
+ *     effect, keeping the history effect clean of sync setState.
+ *   - `titles` — derived sidebar titles: the first user message's snippet,
+ *     learned when a conversation's history loads (the list endpoint has
+ *     no message bodies) or when this session sends its first message.
+ *     Fallback: Korean mode label + date.
+ *
+ * History loading (the previously-missing capability):
+ *   An effect keyed on the active conversation id fetches
+ *   `getConversation(id)` with an AbortController; switching away or
+ *   unmounting aborts, and every continuation is `signal.aborted`-guarded
+ *   so a late resolve can never set state on a dead tree or clobber a
+ *   newer selection (F-016's abort discipline). The fetched `version`
+ *   refreshes `versionRef` so the next send's `expected_version` is
+ *   correct for the switched-to conversation. Sends are gated on
+ *   `threadReady` (history loaded for the active id) so a send can never
+ *   ride a stale version from a previous conversation.
+ *
+ * Sidebar behavior:
+ *   - Click a row → abort any in-flight stream, clear the thread, load
+ *     that conversation's history. Current row is highlighted
+ *     (`aria-current`), switching is announced via a visually-hidden
+ *     `role="status"` region.
+ *   - Collapse toggle → Claude-style thin rail (rows shrink to dots,
+ *     labels hide; everything keeps its accessible name). The preference
+ *     persists in `localStorage["km.chat.sidebar-collapsed"]`; on a
+ *     narrow viewport the default is collapsed so the rail never crushes
+ *     the thread (mockup intent — the mockup keeps the sidebar inline on
+ *     phones, just narrow).
+ *   - "New chat" → `startConversation` immediately, prepend the new row,
+ *     switch to it (opener thread), focus the composer. Prior
+ *     conversations stay listed.
+ *
+ * Send wiring (unchanged from Pass 3 apart from the id/version source):
+ *   optimistic user-bubble append, then `streamMessage(id, { content,
+ *   expected_version }, { signal, onDelta, onDone, onError, requestId })`.
+ *   `onDelta` grows a partial tutor bubble, `onDone` finalises it and
+ *   bumps the row's recency, `onError` rolls the optimistic user-turn
+ *   into a `failed → retry` chip.
  *
  * Dictionary lookup (F-016):
  *   A book icon next to the composer reveals a compact single-word lookup
@@ -42,43 +81,81 @@
  *   navigate here with a `ChatSeedState` in router state. The seed text
  *   pre-fills the composer ONCE at mount (never auto-sent, never clobbers
  *   typed text — it's a lazy state initializer), its `mode` is preferred
- *   when THIS visit lazily starts the conversation, and the router state is
- *   then cleared so a reload / back-nav can't re-seed.
+ *   when THIS visit lazily starts a NEW conversation, and the router state
+ *   is then cleared so a reload / back-nav can't re-seed.
  *
- * Settings integration:
- *   First tutor message is personalised with `settings.name` when set
- *   (`안녕하세요, ${name}님. …`). Falls back to the fixture's generic greeting.
+ * FAB entry + "Discuss the page you were on?" popup (Slice 3):
+ *   The shell ChatFab navigates here with a `ChatOpenState` in router state
+ *   (discriminator `kmChatOpen`, optional `ChatContext` — the page the user
+ *   was on published its descriptor via `useChatContext`). A FAB entry
+ *   always targets a NEW conversation: the initial selection is the pending
+ *   'new' thread (lazy-started on first send, so an abandoned open never
+ *   spams empty server rows) and prior conversations stay in the sidebar.
+ *   When a context rode along, a focus-trapped modal (useModalA11y, Esc =
+ *   No) offers it: Yes → the composer pre-fills with `buildContextSeed`
+ *   (generic F-020 pattern — never auto-sent); No / no-context → the
+ *   mockup's generic opener ("무엇에 대해 이야기하고 싶으세요? · What would
+ *   you like to chat about?") renders instead of the default greeting. The
+ *   open-state is cleared from history like the F-020 seed.
  *
- * Threat model (FU-NF-4 closeout):
- *   - **Streaming abort on unmount.** A controller per send is aborted when
- *     the screen unmounts or the user navigates away mid-stream. The server
- *     persists the assistant turn ONLY after the upstream stream completes
- *     (server SECURITY.md §10) — aborting mid-stream therefore guarantees
- *     no half-turn is committed. No dangling sockets either: `streamSse`
- *     cancels the reader on abort.
+ * Image-in-chat (Slice 3):
+ *   A camera button in the composer opens a file picker; the picked photo
+ *   goes to `uploadConversationImage` (Slice 1's `POST /conversation/:id/
+ *   image`), which OCRs it and appends ONE user turn — the OCR'd Korean as
+ *   `content`, the image block carrying the blob URL + English caption.
+ *   The turn renders as a user bubble with the image above its text.
+ *   Client pre-checks (type/size) are convenience only — the server
+ *   re-validates (magic bytes, 8 MiB, daily Vision cap). Failures surface
+ *   as FIXED copy via `imageUploadErrorMessage` (shared with the Images
+ *   screen so the two upload surfaces can't drift); a 409 (stale version)
+ *   additionally invalidates the loaded thread so the history effect
+ *   refetches the authoritative version. One AbortController per upload,
+ *   aborted on unmount AND on conversation switch. OCR'd text is CONTENT —
+ *   rendered like any message, never through `<Bilingual>`.
+ *
+ * Threat model (FU-NF-4 closeout + Slice 2 additions):
+ *   - **Streaming abort on unmount AND on conversation switch.** A
+ *     controller per send is aborted when the screen unmounts or the user
+ *     switches conversations mid-stream. The server persists the assistant
+ *     turn ONLY after the upstream stream completes (server SECURITY.md
+ *     §10) — aborting mid-stream therefore guarantees no half-turn is
+ *     committed. No dangling sockets either: `streamSse` cancels the
+ *     reader on abort.
+ *   - **History-fetch abort.** One controller per history load, aborted by
+ *     the effect cleanup on switch/unmount; both continuations are
+ *     aborted-guarded, so a slow response for conversation A can never
+ *     paint over conversation B or a dead tree.
+ *   - **Stale-version cross-talk.** `versionRef` is only trusted once the
+ *     active conversation's history (and its `version`) has loaded —
+ *     `threadReady` gates Send, so switching can't emit an
+ *     `expected_version` belonging to the previous thread.
  *   - **Concurrent-send race.** Send is disabled while a stream is in-
  *     flight (`aria-busy="true"`), so the user cannot start a second
- *     overlapping stream in the same conversation. We never queue: the
- *     user re-submits after the current one settles. Prevents two parallel
- *     `expected_version` updates fighting over the same row.
+ *     overlapping stream in the same conversation.
+ *   - **Lazy-start races.** A send from the pending-'new' thread first
+ *     awaits `startConversation` — a window where no stream (and no
+ *     abortable controller) exists yet. That window is latched
+ *     (`lazyStartRef`) so a second quick send joins the SAME new
+ *     conversation instead of creating its own, and both continuations
+ *     re-check `mountedRef` before opening the stream so an unmount
+ *     mid-start can never leak a live, unabortable SSE (and its Claude
+ *     spend) behind a dead tree.
  *   - **Network-flap retry via X-Request-Id.** Each send mints
- *     `crypto.randomUUID()` once. If the stream fails and the user clicks
- *     Retry on the failed turn, we reuse the SAME id, so the server
- *     short-circuits to the persisted reply (if one landed during the
- *     drop) rather than re-running Claude and double-billing. A fresh id
- *     is only minted for a NEW user turn.
- *   - **Optimistic-UI rollback on failure.** The optimistic user bubble is
- *     NOT removed on stream failure — it stays visible as a `failed →
- *     retry` row so the user can re-send without retyping. The partial
- *     tutor bubble is dropped (we have nothing usable to keep). Both rules
- *     guard against a UX that "loses" the user's typed text.
- *   - **XSS / template injection.** Message text, including streamed
- *     deltas, is rendered as React children — escaped. `settings.name` is
- *     interpolated into a Korean string template, also rendered as text.
- *     Never add `dangerouslySetInnerHTML` here.
- *   - **Conversation impersonation.** The conversation id comes from the
- *     server's `listConversations`, scoped server-side to the cookie's
- *     user. The client cannot forge a target.
+ *     `crypto.randomUUID()` once; Retry reuses the SAME id so the server
+ *     short-circuits to the persisted reply rather than re-running Claude.
+ *     (Failed-retry chips are session-local: switching conversations
+ *     discards them — the typed text is gone, an accepted trade-off since
+ *     the user explicitly navigated away.)
+ *   - **XSS / template injection.** Message text, streamed deltas, and
+ *     derived sidebar titles (first-user-message snippets) are rendered as
+ *     React children — escaped. Never add `dangerouslySetInnerHTML` here.
+ *   - **Conversation impersonation.** Conversation ids come from the
+ *     server's own list/detail responses, scoped server-side to the
+ *     cookie's user; `GET /conversation/:id` 404s on foreign ids (IDOR
+ *     tested server-side).
+ *   - **localStorage.** Only the boolean sidebar preference is stored;
+ *     reads are try/catch'd (privacy mode) and coerced to a boolean —
+ *     nothing attacker-controllable flows anywhere sensitive.
  */
 import {
   useCallback,
@@ -102,9 +179,16 @@ import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
 import { useToast } from '../components/useToast';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { useModalA11y } from '../hooks/useModalA11y';
 import { useSettings } from '../hooks/useSettings';
 import { loadConversationMock } from '../data/mocks/chat';
 import { readChatSeedState, type ChatSeedState } from '../lib/askSeed';
+import {
+  buildContextSeed,
+  readChatOpenState,
+  type ChatOpenRequest,
+} from '../lib/chatContext';
+import { cn } from '../lib/cn';
 import { navItem } from '../lib/nav';
 import {
   buildWordPopover,
@@ -114,13 +198,15 @@ import {
 import * as conversationService from '../services/conversation';
 import { defineEntry } from '../services/define';
 import { mineWord } from '../services/vocab';
-import { ApiError } from '../services/api';
-import { errorMessageFor } from '../lib/errorCopy';
+import { ApiError, getApiBaseUrl } from '../services/api';
+import { errorMessageFor, imageUploadErrorMessage } from '../lib/errorCopy';
 import type {
   Conversation,
   ConversationMessage,
+  ConversationMode,
   ConversationRow,
   ConversationsList,
+  StoredConversationTurn,
 } from '../types/domain';
 
 /** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
@@ -134,12 +220,37 @@ const HINT_STARTERS: ReadonlyArray<string> = [
   '그렇다면',
 ];
 
-/** Default opener used until the personalised line lands or a server thread loads. */
+/** Default opener used while a NEW (or empty) conversation is active. */
 const FALLBACK_OPENER: ConversationMessage = {
   role: 'tutor',
   kr: '안녕하십니까. 오늘은 재택근무의 장단점에 대해 이야기해 보겠습니다.',
   en: "Hello. Today we'll discuss the pros and cons of remote work.",
 };
+
+/**
+ * Opener for a FAB-opened fresh conversation (Slice 3 — mockup copy).
+ * Message CONTENT like `FALLBACK_OPENER` (rendered as a tutor bubble whose
+ * EN line follows the hints toggle), so it is deliberately NOT `<Bilingual>`
+ * chrome, and it is never run through `personalise` (that helper rewrites
+ * the remote-work greeting specifically).
+ */
+const ASK_OPENER: ConversationMessage = {
+  role: 'tutor',
+  kr: '무엇에 대해 이야기하고 싶으세요?',
+  en: 'What would you like to chat about?',
+};
+
+/** `accept` filter for the composer's photo input — mirrors the server's
+ *  jpeg/png/webp allowlist (convenience only; the server re-sniffs). */
+const IMAGE_ACCEPT = 'image/jpeg,image/png,image/webp';
+
+/** Client-side pre-check ceiling — the server's own multer cap is 8 MiB. */
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/** Fixed copy when an image upload hit a stale `expected_version` (409).
+ *  The thread is refetched (authoritative version) so a retry can succeed. */
+const UPLOAD_CONFLICT_COPY =
+  'This conversation changed — reloading it. Try the photo again.';
 
 /** Server start mode — kept here (one screen, one mode) to avoid a config dep. */
 const DEFAULT_START_MODE = 'casual' as const;
@@ -156,11 +267,161 @@ const DICT_UNAVAILABLE_COPY =
 /** Fallback fixed copy for any other lookup failure. */
 const DICT_FAILED_COPY = 'Could not look that word up. Try again.';
 
+/** Fixed copy when a conversation's history fails to load (F-UP-018 —
+ *  never the server's prose). */
+const HISTORY_FAILED_COPY = 'This conversation could not be loaded.';
+
+/** Fixed copy when "New chat" fails to start a conversation. */
+const NEW_CHAT_FAILED_COPY = 'Could not start a new chat. Try again.';
+
+/** localStorage key for the persisted sidebar-collapsed preference. */
+const SIDEBAR_COLLAPSED_KEY = 'km.chat.sidebar-collapsed';
+
+/** Max characters for a derived (first-user-message) sidebar title. */
+const TITLE_SNIPPET_MAX = 42;
+
+/**
+ * Korean mode labels for the fallback sidebar title (used until we've seen
+ * the conversation's first user message — the list endpoint carries no
+ * message bodies). Unknown modes render verbatim.
+ */
+const MODE_TITLE_LABELS: Readonly<Record<string, string>> = {
+  casual: '일상 대화',
+  business: '비즈니스 대화',
+  research: '연구 대화',
+  topik_prep: 'TOPIK 준비',
+  register_drill: '말투 연습',
+};
+
 /** Inline notice under the dictionary field — friendly status ("no entry")
  *  vs. error (lookup failed) picks the a11y role and the colour. */
 interface DictNotice {
   tone: 'status' | 'error';
   text: string;
+}
+
+/**
+ * Default sidebar state: collapsed on a narrow viewport so the rail never
+ * crushes the thread on a phone (the mockup keeps the sidebar inline on
+ * mobile, just narrow — we go one step further and start it as the thin
+ * rail). Guarded — happy-dom/private-mode quirks must not throw at mount.
+ */
+function defaultCollapsed(): boolean {
+  try {
+    if (typeof window.matchMedia === 'function') {
+      return window.matchMedia('(max-width: 640px)').matches;
+    }
+  } catch {
+    // Fall through to the desktop default.
+  }
+  return false;
+}
+
+/** Read the persisted collapse preference; fall back to the viewport default. */
+function readCollapsedPref(): boolean {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    if (raw === '1') return true;
+    if (raw === '0') return false;
+  } catch {
+    // Privacy mode / storage denied — viewport default below.
+  }
+  return defaultCollapsed();
+}
+
+/** Persist the collapse preference. Best-effort — storage may be denied. */
+function writeCollapsedPref(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    // Best-effort only; the in-memory state still applies this session.
+  }
+}
+
+/**
+ * Derive a one-line sidebar title from message text: whitespace-flattened,
+ * ellipsis-truncated. `null` when the text has no visible characters (the
+ * caller keeps its fallback title instead).
+ */
+function snippetTitle(text: string): string | null {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat === '') return null;
+  if (flat.length <= TITLE_SNIPPET_MAX) return flat;
+  return `${flat.slice(0, TITLE_SNIPPET_MAX - 1)}…`;
+}
+
+/** Fallback sidebar title — Korean mode label + a short date. */
+function fallbackTitle(row: ConversationRow): string {
+  const label = MODE_TITLE_LABELS[row.mode] ?? row.mode;
+  const t = Date.parse(row.updated_at);
+  if (Number.isNaN(t)) return label;
+  const d = new Date(t);
+  return `${label} · ${String(d.getMonth() + 1)}/${String(d.getDate())}`;
+}
+
+/**
+ * Compact relative-time label for a sidebar row ("2m ago" … "yesterday" …
+ * "3w ago", then an absolute date). `nowMs` is captured once per mount —
+ * the labels don't need to tick live.
+ */
+function relativeTime(iso: string, nowMs: number): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const seconds = Math.max(0, Math.floor((nowMs - t) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${String(minutes)}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${String(days)}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${String(weeks)}w ago`;
+  const d = new Date(t);
+  return `${String(d.getFullYear())}-${String(d.getMonth() + 1).padStart(
+    2,
+    '0',
+  )}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Newest-first comparator on ISO-8601 `updated_at` (lexicographic = chrono). */
+function byUpdatedAtDesc(a: ConversationRow, b: ConversationRow): number {
+  if (a.updated_at === b.updated_at) return 0;
+  return a.updated_at < b.updated_at ? 1 : -1;
+}
+
+/**
+ * Join a server-relative blob path onto the API base — the same rule
+ * `services/images.ts` `blobUrlFor` applies (same-origin in prod, absolute
+ * base in dev). The path only ever originates from a server response.
+ */
+function joinApiPath(path: string): string {
+  const base = getApiBaseUrl();
+  return base === '' ? path : `${base}${path}`;
+}
+
+/**
+ * Map ONE wire turn (`StoredConversationTurn`, role user/assistant) into a
+ * render row (role user/tutor). Image turns carry the OCR'd Korean text as
+ * `content` (CONTENT — rendered like any message text); their English
+ * caption rides as the bubble's EN line (the hints toggle governs display)
+ * and the image itself renders above the text via `row.image`.
+ */
+function storedTurnToRow(turn: StoredConversationTurn): ThreadRow {
+  return {
+    role: turn.role === 'assistant' ? 'tutor' : 'user',
+    kr: turn.content,
+    en: turn.image?.caption_en ?? '',
+    ...(turn.image !== undefined
+      ? { image: { src: joinApiPath(turn.image.blob_url) } }
+      : {}),
+  };
+}
+
+/** Map the wire history into render rows. */
+function mapStoredTurns(turns: StoredConversationTurn[]): ThreadRow[] {
+  return turns.map(storedTurnToRow);
 }
 
 /** Skeleton placeholder during load. */
@@ -177,10 +438,7 @@ function SkeletonCard(): JSX.Element {
 }
 
 /** Personalise the first tutor message with the user's name if set. */
-function personalise(
-  msgs: Conversation,
-  name: string,
-): Conversation {
+function personalise(msgs: Conversation, name: string): Conversation {
   if (!name.trim()) return msgs;
   const first = msgs[0];
   if (!first || first.role !== 'tutor') return msgs;
@@ -195,24 +453,6 @@ function personalise(
 }
 
 /**
- * Pick the most recent active conversation row from the listConversations
- * envelope. Null when the user has no conversations yet — Chat will lazy-
- * start one on the first send.
- */
-function pickActiveConversation(
-  list: ConversationsList | null,
-): ConversationRow | null {
-  if (!list || !Array.isArray(list.conversations)) return null;
-  const rows = [...list.conversations];
-  rows.sort((a, b) => {
-    // ISO-8601 strings sort lexicographically same as chronologically.
-    if (a.updated_at === b.updated_at) return 0;
-    return a.updated_at < b.updated_at ? 1 : -1;
-  });
-  return rows[0] ?? null;
-}
-
-/**
  * Local thread row — extends a wire ConversationMessage with an optional
  * status so the UI can mark optimistic / streaming / failed turns without
  * mutating the canonical shape.
@@ -223,6 +463,20 @@ interface ThreadRow extends ConversationMessage {
   failedRequestId?: string;
   /** Original content for failed user rows — retry reuses this verbatim. */
   failedContent?: string;
+  /** Present on image turns (Slice 3) — the photo renders above the text. */
+  image?: { src: string };
+}
+
+/** Which conversation the thread pane is showing: a server id, or the
+ *  not-yet-started "new chat" pending state. */
+type ActiveKey = number | 'new';
+
+/** What the thread currently holds — set ONLY from a settled history load
+ *  or a just-started (known-empty) conversation. */
+interface LoadedThread {
+  key: number;
+  /** True when the server history was empty — the opener renders above. */
+  empty: boolean;
 }
 
 export function Chat(): JSX.Element {
@@ -240,6 +494,14 @@ export function Chat(): JSX.Element {
   // narrowed (see askSeed.ts threat model).
   const [chatSeed] = useState<ChatSeedState | null>(() =>
     readChatSeedState(location.state),
+  );
+
+  // ── FAB open request (Slice 3) ─────────────────────────────────────
+  // The shell ChatFab navigates here with a `ChatOpenState` (discriminated
+  // by `kmChatOpen`, so an F-020 seed can never be misread as one). Same
+  // once-at-mount lazy capture + untrusted-state narrowing as the seed.
+  const [openRequest] = useState<ChatOpenRequest | null>(() =>
+    readChatOpenState(location.state),
   );
 
   // Real call: list the user's conversations. Mock fallback: load the
@@ -264,39 +526,75 @@ export function Chat(): JSX.Element {
     return [];
   }, [data]);
 
-  const active = useMemo<ConversationRow | null>(
-    () => pickActiveConversation(serverList),
-    [serverList],
+  // ── Conversation list (sidebar) ────────────────────────────────────
+  // Conversations started THIS session (New chat / lazy-start) — the server
+  // list won't contain them until a refetch, so they're merged in locally.
+  const [localRows, setLocalRows] = useState<ConversationRow[]>([]);
+  // Per-conversation recency bumps from sends this session, so the sidebar
+  // order + relative times stay honest without refetching the list.
+  const [touchedAt, setTouchedAt] = useState<ReadonlyMap<number, string>>(
+    () => new Map<number, string>(),
   );
+  // Derived sidebar titles (first user message snippet). Learned from a
+  // history load or this session's first send; fallback is mode + date.
+  const [titles, setTitles] = useState<ReadonlyMap<number, string>>(
+    () => new Map<number, string>(),
+  );
+  // Captured once per mount — relative labels don't need to tick live.
+  const [nowMs] = useState<number>(() => Date.now());
 
-  // Conversation id + version are what every send needs. We track them
-  // mutably because a successful send bumps `version` server-side — we
-  // pre-compute via `expected_version = current + 1` after stream `done`.
-  // Lazy-start path also writes here on first send.
-  const [conversationId, setConversationId] = useState<number | null>(null);
+  const rows = useMemo<ConversationRow[]>(() => {
+    const seen = new Set<number>();
+    const merged: ConversationRow[] = [];
+    for (const row of [...localRows, ...(serverList?.conversations ?? [])]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      const bump = touchedAt.get(row.id);
+      merged.push(
+        bump !== undefined && bump > row.updated_at
+          ? { ...row, updated_at: bump }
+          : row,
+      );
+    }
+    merged.sort(byUpdatedAtDesc);
+    return merged;
+  }, [localRows, serverList, touchedAt]);
+
+  // ── Active conversation (explicit selection + derived default) ─────
+  // `selectedKey` only changes on user action (row click / New chat /
+  // first-send pin); the default — newest row, else the pending 'new'
+  // state — is DERIVED, so mount needs no list-adoption effect. A FAB
+  // entry (Slice 3) pre-selects the pending 'new' thread: the FAB always
+  // opens a NEW conversation (lazy-started on first send so an abandoned
+  // open never creates an empty server row) while prior conversations stay
+  // in the sidebar.
+  const [selectedKey, setSelectedKey] = useState<ActiveKey | null>(() =>
+    openRequest !== null ? 'new' : null,
+  );
+  const activeKey: ActiveKey = selectedKey ?? rows[0]?.id ?? 'new';
+  const activeId: number | null = typeof activeKey === 'number' ? activeKey : null;
+
+  // What the thread pane currently holds + the failure marker for the
+  // active load. `historyLoading` is derived — no sync setState in effects.
+  const [loaded, setLoaded] = useState<LoadedThread | null>(null);
+  const [historyError, setHistoryError] = useState<{ forId: number } | null>(
+    null,
+  );
+  const historyLoading =
+    activeId !== null &&
+    loaded?.key !== activeId &&
+    historyError?.forId !== activeId;
+  /** True when sends may trust `versionRef` for the active conversation. */
+  const threadReady = activeId === null || loaded?.key === activeId;
+
+  // Version snapshot for optimistic concurrency: refreshed by every history
+  // load / conversation start, bumped by every committed stream.
   const versionRef = useRef<number>(0);
 
-  // Seed once — and only once — when fresh data arrives. The previous
-  // shape re-ran `setMsgs(seed)` on every `seed` identity change, which
-  // wiped user-sent turns whenever `settings.name` changed (the
-  // personalised first message is recomputed → new identity → reset).
-  // We track whether we've seeded yet with a ref so a settings.name
-  // change while the thread is already populated only refreshes the
-  // first message in place.
-  const seed = useMemo<Conversation>(() => {
-    // Real path: server gave us a conversation header but not full message
-    // history — we open with the personalised opener until the user's first
-    // send streams in a tutor reply. (Full history fetch lands in a later
-    // pass; the contract for now is conversation-list + open with a
-    // greeting.)
-    if (active) {
-      return personalise([FALLBACK_OPENER], settings.name);
-    }
-    if (mockSeed.length > 0) {
-      return personalise(mockSeed, settings.name);
-    }
-    return [];
-  }, [active, mockSeed, settings.name]);
+  // Visually-hidden announcement for switch/load transitions (a11y). Set
+  // from handlers + settled loads only, so mid-conversation state changes
+  // (e.g. a title learned on first send) never re-announce.
+  const [announce, setAnnounce] = useState<string>('');
 
   const [msgs, setMsgs] = useState<ThreadRow[]>([]);
   // Composer text — pre-filled from an "Ask about this" seed when one rode
@@ -306,24 +604,103 @@ export function Chat(): JSX.Element {
   const [hintsOn, setHintsOn] = useState<boolean>(true);
   const [streaming, setStreaming] = useState<boolean>(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // "New chat" in-flight latch — the button is disabled while starting.
+  const [creating, setCreating] = useState<boolean>(false);
 
-  // Sync the resolved active conversation id into local state. Done in an
-  // effect to avoid a setState-during-render and to keep `versionRef` in
-  // lockstep with the conversation we adopted.
+  // ── "Discuss the page you were on?" popup (Slice 3) ────────────────
+  // Open exactly when the FAB entry carried a page context; a no-context
+  // FAB entry skips straight to the generic ASK_OPENER. Lazy initializer —
+  // the popup can only ever arm at mount, mirroring the seed contract.
+  const popupContext = openRequest?.context ?? null;
+  const [contextPopupOpen, setContextPopupOpen] = useState<boolean>(
+    () => popupContext !== null,
+  );
+  const popupRef = useRef<HTMLDivElement | null>(null);
+
+  // Composer focus target for "New chat" + the popup's dismiss handlers.
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  /**
+   * Settle the popup. Yes → pre-fill the composer with the generic context
+   * seed (F-020's pattern: pre-fill only, never auto-sent, never clobbers
+   * text the user somehow already typed). Either way focus the composer —
+   * deferred a macrotask so it lands AFTER useModalA11y's microtask focus
+   * restore (which would otherwise fire last and win).
+   */
+  const answerContextPopup = useCallback(
+    (useIt: boolean): void => {
+      setContextPopupOpen(false);
+      if (useIt && popupContext !== null) {
+        const seed = buildContextSeed(popupContext);
+        setInput((prev) => (prev.trim() === '' ? seed : prev));
+      }
+      window.setTimeout(() => {
+        composerRef.current?.focus();
+      }, 0);
+    },
+    [popupContext],
+  );
+  const dismissContextPopup = useCallback((): void => {
+    // Esc = No (the popup is an offer, not a gate).
+    answerContextPopup(false);
+  }, [answerContextPopup]);
+
+  // List-level failure: the loader truly failed AND no mock came through.
+  const hasNothingToShow = !data;
+
+  // The popup's DOM lives inside the LOADED branch of the screen — the
+  // skeleton (loading) and list-error branches never mount it. useModalA11y
+  // must therefore arm on this render-accurate flag, NOT on
+  // `contextPopupOpen` alone: in prod the list fetch is async, so the first
+  // render is always the skeleton, and an unconditionally-armed hook would
+  // run its container-reading effects (initial focus + Tab trap, keyed on
+  // `open` only) once against a null `popupRef` and never re-arm — a dialog
+  // claiming `aria-modal` with no focus trap — while the body scroll lock
+  // (container-free) would leak onto the skeleton/error screens with no
+  // dialog ever mounting to release it (Slice-3 review B-1).
+  const contextPopupVisible =
+    contextPopupOpen && popupContext !== null && !loading && !hasNothingToShow;
+  useModalA11y({
+    open: contextPopupVisible,
+    onClose: dismissContextPopup,
+    containerRef: popupRef,
+  });
+
+  // ── Sidebar collapse (persisted) ───────────────────────────────────
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    readCollapsedPref(),
+  );
+  const toggleCollapsed = useCallback((): void => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      writeCollapsedPref(next);
+      return next;
+    });
+  }, []);
+
+  // Mounted marker for async handlers that have no AbortSignal to thread
+  // (startConversation). Re-armed on StrictMode remount.
+  const mountedRef = useRef<boolean>(true);
   useEffect(() => {
-    if (active) {
-      setConversationId(active.id);
-      versionRef.current = active.version;
-    }
-  }, [active]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-  // Clear the consumed seed out of router/history state so a reload or a
-  // back-navigation to /chat never re-seeds the composer (F-020). Navigation
-  // is a side effect (not a state set), and the ref-guard makes it fire at
-  // most once even though the replace itself changes `location` identity.
+  // Clear the consumed seed / FAB open-request out of router/history state
+  // so a reload or a back-navigation to /chat never re-seeds the composer
+  // (F-020) or re-arms the popup (Slice 3). Navigation is a side effect
+  // (not a state set), and the ref-guard makes it fire at most once even
+  // though the replace itself changes `location` identity.
   const seedClearedRef = useRef<boolean>(false);
   useEffect(() => {
-    if (chatSeed === null || seedClearedRef.current) return;
+    if (
+      (chatSeed === null && openRequest === null) ||
+      seedClearedRef.current
+    ) {
+      return;
+    }
     seedClearedRef.current = true;
     // Preserve search + hash: rebuilding the URL from the pathname alone
     // would silently strip any future query param (deep-linked conversation
@@ -336,33 +713,94 @@ export function Chat(): JSX.Element {
       },
       { replace: true, state: null },
     );
-  }, [chatSeed, navigate, location.pathname, location.search, location.hash]);
+  }, [
+    chatSeed,
+    openRequest,
+    navigate,
+    location.pathname,
+    location.search,
+    location.hash,
+  ]);
 
-  const seededRef = useRef<boolean>(false);
+  // ── History load (Slice 2 — the previously-missing capability) ─────
+  // Fetch the active conversation's full history. Cleanup aborts on
+  // switch/unmount; continuations are aborted-guarded. Re-runs when
+  // `loaded`/`historyError` change but early-returns once the active id is
+  // settled, so it never loops. A failed load re-arms only via the explicit
+  // Retry (which clears `historyError`).
   useEffect(() => {
-    if (loading) return;
-    if (!seededRef.current && seed.length > 0) {
-      // First-paint seed — adopt the entire seed as the local thread.
-      // Sync-to-external-system case (same shape as AuthProvider's probe
-      // and Diagnostic's mode-init).
-      setMsgs(seed);
-      seededRef.current = true;
-      return;
+    if (activeId === null) return;
+    if (loaded?.key === activeId) return;
+    if (historyError?.forId === activeId) return;
+    const ctrl = new AbortController();
+    conversationService.getConversation(activeId, ctrl.signal).then(
+      (res) => {
+        if (ctrl.signal.aborted) return;
+        const detail = res.conversation;
+        versionRef.current = detail.version;
+        setMsgs(mapStoredTurns(detail.messages));
+        const firstUser = detail.messages.find((m) => m.role === 'user');
+        const title =
+          firstUser !== undefined ? snippetTitle(firstUser.content) : null;
+        if (title !== null) {
+          setTitles((prev) =>
+            prev.get(detail.id) === title
+              ? prev
+              : new Map(prev).set(detail.id, title),
+          );
+        }
+        setLoaded({ key: detail.id, empty: detail.messages.length === 0 });
+        setAnnounce(`Conversation loaded: ${title ?? 'chat'}`);
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setHistoryError({ forId: activeId });
+      },
+    );
+    return () => {
+      ctrl.abort();
+    };
+  }, [activeId, loaded, historyError]);
+
+  // ── Thread base rows (rendered ABOVE `msgs`, never stored) ─────────
+  // The personalised opener shows for a new/empty conversation; the mock
+  // fixture stands in when the endpoint fell back. Deriving (instead of
+  // seeding state) means a `settings.name` change re-personalises for free
+  // and there is no seeding effect to guard.
+  const baseRows = useMemo<Conversation>(() => {
+    // While the context popup is up the opener stays hidden (mockup: the
+    // opener bubble appears only once the popup is answered).
+    if (contextPopupOpen) return [];
+    // A FAB entry (Slice 3) swaps the default greeting for the generic
+    // "what would you like to chat about?" opener on every empty thread of
+    // this visit — the FAB's contract is a fresh, topic-open conversation.
+    const opener: Conversation =
+      openRequest !== null
+        ? [ASK_OPENER]
+        : personalise([FALLBACK_OPENER], settings.name);
+    if (serverList !== null) {
+      if (activeId === null) {
+        return opener;
+      }
+      if (loaded?.key === activeId && loaded.empty) {
+        return opener;
+      }
+      return [];
     }
-    if (seededRef.current && seed.length > 0) {
-      // Subsequent identity change (e.g. `settings.name` flipped). Only
-      // refresh the first tutor message; preserve user-sent turns +
-      // streamed tutor replies.
-      setMsgs((prev) => {
-        if (prev.length === 0) return seed;
-        const head = seed[0];
-        if (!head) return prev;
-        const cur = prev[0];
-        if (cur && cur.role === head.role && cur.kr === head.kr) return prev;
-        return [head, ...prev.slice(1)];
-      });
+    if (mockSeed.length > 0) {
+      return personalise(mockSeed, settings.name);
     }
-  }, [seed, loading]);
+    return [];
+  }, [
+    contextPopupOpen,
+    openRequest,
+    serverList,
+    activeId,
+    loaded,
+    mockSeed,
+    settings.name,
+  ]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -371,8 +809,9 @@ export function Chat(): JSX.Element {
   }, [msgs]);
 
   // ── In-flight send tracking ────────────────────────────────────────
-  // One controller per send; cleared on settle. The unmount cleanup
-  // aborts it so we never stream into a dead React tree.
+  // One controller per send; cleared on settle. Aborted on unmount AND on
+  // conversation switch so we never stream into a thread that no longer
+  // shows that conversation.
   const sendCtrlRef = useRef<AbortController | null>(null);
   useEffect(() => {
     return () => {
@@ -380,26 +819,260 @@ export function Chat(): JSX.Element {
     };
   }, []);
 
+  // ── In-flight image upload tracking (Slice 3) ──────────────────────
+  // Same discipline as sends: one controller per upload, aborted on
+  // unmount and on conversation switch (a late OCR turn must never append
+  // into a different thread).
+  const [uploading, setUploading] = useState<boolean>(false);
+  const uploadCtrlRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    return () => {
+      uploadCtrlRef.current?.abort();
+    };
+  }, []);
+
   const retry = (): void => {
-    seededRef.current = false;
     refetch();
   };
 
   /**
-   * Ensure we have a server conversation id; lazy-start if none. An "Ask
-   * about this" seed's mode (F-020, `topik_prep`) wins over the screen
-   * default when it is this navigation that starts the conversation — an
-   * already-active conversation keeps its own mode untouched.
+   * Adopt a conversation this session just started (New chat button or the
+   * lazy-start-on-send path): prepend its row, select it, and mark its
+   * (known-empty) history as loaded so no fetch fires. `clearThread` is
+   * false on the lazy-start path — the optimistic user bubble of the send
+   * that triggered the start must survive.
    */
-  const ensureConversationId = useCallback(async (): Promise<number> => {
-    if (conversationId !== null) return conversationId;
-    const started = await conversationService.startConversation({
-      mode: chatSeed?.mode ?? DEFAULT_START_MODE,
+  const adoptStartedConversation = useCallback(
+    (id: number, mode: ConversationMode, opts: { clearThread: boolean }): void => {
+      const nowIso = new Date().toISOString();
+      setLocalRows((prev) => [
+        {
+          id,
+          mode,
+          target_register: null,
+          version: 1,
+          updated_at: nowIso,
+          message_count: 0,
+        },
+        ...prev.filter((r) => r.id !== id),
+      ]);
+      setSelectedKey(id);
+      setLoaded({ key: id, empty: true });
+      setHistoryError(null);
+      if (opts.clearThread) setMsgs([]);
+    },
+    [],
+  );
+
+  /** Switch the thread to a sidebar conversation. */
+  const selectConversation = useCallback(
+    (id: number): void => {
+      if (id === activeKey) return;
+      // Abort any in-flight stream / image upload — both belong to the
+      // previous thread.
+      sendCtrlRef.current?.abort();
+      uploadCtrlRef.current?.abort();
+      setSendError(null);
+      setHistoryError(null);
+      setSelectedKey(id);
+      // Invalidate the thread cache: `msgs` is cleared below, so whatever
+      // conversation `loaded` says the thread holds is no longer rendered.
+      // Without this, a fast A→B→A bounce (B's fetch still pending, so
+      // `loaded` still names A) hits the history effect's early return and
+      // leaves A permanently blank. The `id === activeKey` guard above keeps
+      // re-clicking the current row refetch-free, so the normal
+      // already-loaded case never refetches redundantly.
+      setLoaded(null);
+      // Clear immediately so the previous thread never flashes under the
+      // new selection; the history effect repopulates.
+      setMsgs([]);
+      setAnnounce('Loading conversation…');
+    },
+    [activeKey],
+  );
+
+  /**
+   * "New chat" — eagerly start a fresh conversation, switch to it (opener
+   * thread), and focus the composer. Prior conversations stay in the list.
+   * Eager (vs. the lazy-start-on-send path) so the new conversation is
+   * immediately real: visible in the sidebar and safe to switch away from.
+   */
+  const startNewChat = useCallback((): void => {
+    if (creating) return;
+    sendCtrlRef.current?.abort();
+    uploadCtrlRef.current?.abort();
+    setCreating(true);
+    setSendError(null);
+    conversationService
+      .startConversation({ mode: DEFAULT_START_MODE })
+      .then(
+        (started) => {
+          if (!mountedRef.current) return;
+          versionRef.current = 1;
+          adoptStartedConversation(started.conversation.id, DEFAULT_START_MODE, {
+            clearThread: true,
+          });
+          setCreating(false);
+          setAnnounce('New chat started');
+          composerRef.current?.focus();
+        },
+        (err: unknown) => {
+          if (!mountedRef.current) return;
+          setCreating(false);
+          setSendError(errorMessageFor(err, NEW_CHAT_FAILED_COPY));
+        },
+      );
+  }, [creating, adoptStartedConversation]);
+
+  /** Re-arm the history effect after a failed load. */
+  const retryHistory = useCallback((): void => {
+    setHistoryError(null);
+  }, []);
+
+  /**
+   * Ensure the active conversation exists server-side; lazy-start if the
+   * pending 'new' state is active. An "Ask about this" seed's mode (F-020,
+   * `topik_prep`) wins over the screen default when it is this navigation
+   * that starts the conversation — an existing conversation keeps its own
+   * mode untouched.
+   */
+  // Lazy-start latch — two rapid sends while the pending-'new' thread is
+  // active must share ONE `startConversation` (without it, each send creates
+  // its own conversation and the two messages split across two threads).
+  // The second caller awaits the first's in-flight promise. A failed start
+  // clears the latch so Retry can start fresh; a successful one needs no
+  // clearing — adoption sets `activeId`, so the latch is never consulted
+  // again for this thread.
+  const lazyStartRef = useRef<Promise<number> | null>(null);
+
+  const ensureActiveConversationId = useCallback(async (): Promise<number> => {
+    if (activeId !== null) return activeId;
+    if (lazyStartRef.current !== null) return lazyStartRef.current;
+    const mode = chatSeed?.mode ?? DEFAULT_START_MODE;
+    const pending = (async (): Promise<number> => {
+      const started = await conversationService.startConversation({ mode });
+      versionRef.current = 1;
+      // Post-unmount, adopting would only set state on a dead tree; the
+      // callers' own mounted-guards stop the stream from opening.
+      if (mountedRef.current) {
+        adoptStartedConversation(started.conversation.id, mode, {
+          clearThread: false,
+        });
+      }
+      return started.conversation.id;
+    })();
+    lazyStartRef.current = pending;
+    void pending.catch((): void => {
+      if (lazyStartRef.current === pending) lazyStartRef.current = null;
     });
-    setConversationId(started.conversation.id);
-    versionRef.current = 1;
-    return started.conversation.id;
-  }, [conversationId, chatSeed]);
+    return pending;
+  }, [activeId, chatSeed, adoptStartedConversation]);
+
+  /** Record a first-message-derived title if the conversation has none. */
+  const learnTitleFromSend = useCallback(
+    (convId: number, text: string): void => {
+      const title = snippetTitle(text);
+      if (title === null) return;
+      setTitles((prev) =>
+        prev.has(convId) ? prev : new Map(prev).set(convId, title),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Upload one photo onto the active conversation (Slice 3). The server
+   * OCRs it and appends ONE user turn (OCR'd Korean `content` + image
+   * block); on success that turn renders in the thread and the version
+   * snapshot advances to the server's post-append value. Client pre-checks
+   * mirror the server limits for fast feedback only — the server re-sniffs
+   * magic bytes and re-enforces the cap. Fixed-copy failures only
+   * (`imageUploadErrorMessage` — shared with the Images screen); a 409
+   * invalidates the loaded thread so the history effect refetches the
+   * authoritative version before the user retries.
+   */
+  const uploadImageFile = useCallback(
+    (file: File): void => {
+      if (uploading || streaming || !threadReady) return;
+      // Pre-checks reuse the shared fixed copy by synthesising the matching
+      // structured error — one source of truth for the strings, zero drift.
+      if (file.size > MAX_IMAGE_BYTES) {
+        setSendError(
+          imageUploadErrorMessage(
+            new ApiError('client size pre-check', {
+              status: 413,
+              code: 'payload_too_large',
+            }),
+          ),
+        );
+        return;
+      }
+      if (file.type !== '' && !IMAGE_ACCEPT.split(',').includes(file.type)) {
+        setSendError(
+          imageUploadErrorMessage(
+            new ApiError('client type pre-check', {
+              status: 400,
+              code: 'unsupported_image',
+            }),
+          ),
+        );
+        return;
+      }
+      setSendError(null);
+      setUploading(true);
+      // Pin the derived default selection — same rule as `send`.
+      if (selectedKey === null && typeof activeKey === 'number') {
+        setSelectedKey(activeKey);
+      }
+      const ctrl = new AbortController();
+      uploadCtrlRef.current = ctrl;
+      void (async (): Promise<void> => {
+        try {
+          const convId = await ensureActiveConversationId();
+          // Unmounted / switched away during a lazy start — nothing to
+          // upload into anymore.
+          if (!mountedRef.current || ctrl.signal.aborted) return;
+          const result = await conversationService.uploadConversationImage(
+            convId,
+            file,
+            versionRef.current,
+            ctrl.signal,
+          );
+          if (ctrl.signal.aborted) return;
+          versionRef.current = result.version;
+          setMsgs((prev) => [...prev, storedTurnToRow(result.turn)]);
+          learnTitleFromSend(convId, result.turn.content);
+          setTouchedAt((prev) =>
+            new Map(prev).set(convId, new Date().toISOString()),
+          );
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          if (err instanceof ApiError && err.status === 409) {
+            // Stale expected_version — drop the loaded-thread cache so the
+            // history effect refetches (thread AND authoritative version).
+            setLoaded(null);
+            setSendError(UPLOAD_CONFLICT_COPY);
+            return;
+          }
+          setSendError(imageUploadErrorMessage(err));
+        } finally {
+          if (uploadCtrlRef.current === ctrl) uploadCtrlRef.current = null;
+          if (mountedRef.current) setUploading(false);
+        }
+      })();
+    },
+    [
+      activeKey,
+      ensureActiveConversationId,
+      learnTitleFromSend,
+      selectedKey,
+      streaming,
+      threadReady,
+      uploading,
+    ],
+  );
 
   /**
    * Drive one streaming send. Body and requestId are passed in so a Retry
@@ -424,8 +1097,8 @@ export function Chat(): JSX.Element {
       setStreaming(true);
       setSendError(null);
 
-      // Per-send controller. The unmount cleanup aborts whichever is
-      // current at the time the screen tears down.
+      // Per-send controller. The unmount cleanup and a conversation switch
+      // abort whichever is current at the time.
       const ctrl = new AbortController();
       sendCtrlRef.current = ctrl;
 
@@ -464,6 +1137,10 @@ export function Chat(): JSX.Element {
               });
               // Server bumped the row's version by 1 on commit.
               versionRef.current += 1;
+              // Bump the sidebar row's recency so ordering stays honest.
+              setTouchedAt((prev) =>
+                new Map(prev).set(convId, new Date().toISOString()),
+              );
             },
             onError: (err: Error): void => {
               // Marker-based; the catch below also runs and is the
@@ -474,12 +1151,12 @@ export function Chat(): JSX.Element {
         );
       } catch (err) {
         // Abort is not an error condition the UI surfaces — it's the
-        // unmount path. Swallow it so we don't paint a chip on the way out.
+        // unmount/switch path. Swallow it so we don't paint a chip on the
+        // way out.
         if (err instanceof ApiError && err.code === 'canceled') {
           return;
         }
-        const message =
-          errorMessageFor(err, 'Stream failed. Please retry.');
+        const message = errorMessageFor(err, 'Stream failed. Please retry.');
         // Roll back: drop the partial tutor row, mark the user row as
         // `failed` so the user can hit Retry without retyping.
         setMsgs((prev) => {
@@ -548,22 +1225,37 @@ export function Chat(): JSX.Element {
   };
 
   const send = useCallback((): void => {
-    if (streaming) return;
+    // `uploading` gates too (symmetric with the camera button's gate on
+    // `streaming`): a text send fired while an image upload is in flight
+    // would carry the SAME expected_version as the upload, so the server
+    // is guaranteed to 409 one of them — a wasted Claude stream or Vision
+    // call the client can simply prevent (Slice-3 image review SF-1).
+    if (streaming || uploading || !threadReady) return;
     const text = input.trim();
     if (!text) return;
     setInput('');
+    // Pin the derived default selection: from here on this send's target is
+    // an explicit choice, immune to list reordering.
+    if (selectedKey === null && typeof activeKey === 'number') {
+      setSelectedKey(activeKey);
+    }
     const userTurn: ThreadRow = { role: 'user', kr: text, en: '' };
     setMsgs((prev) => [...prev, userTurn]);
     const requestId = mintRequestId();
     void (async (): Promise<void> => {
       try {
-        const convId = await ensureConversationId();
+        const convId = await ensureActiveConversationId();
+        // Unmounted while the lazy-start was in flight? Opening the SSE now
+        // would stream a real Claude turn into a dead tree with nothing left
+        // to abort it — the unmount cleanup already ran and `runStream`
+        // would mint a fresh controller it never sees.
+        if (!mountedRef.current) return;
+        learnTitleFromSend(convId, text);
         await runStream({ convId, content: text, requestId });
       } catch (err) {
         // Failure to start the conversation (lazy-start path). Mark the
         // user turn as failed and surface the error.
-        const message =
-          errorMessageFor(err, 'Could not start conversation.');
+        const message = errorMessageFor(err, 'Could not start conversation.');
         setMsgs((prev) => {
           const out: ThreadRow[] = [];
           let marked = false;
@@ -587,11 +1279,21 @@ export function Chat(): JSX.Element {
         setSendError(message);
       }
     })();
-  }, [ensureConversationId, input, runStream, streaming]);
+  }, [
+    activeKey,
+    ensureActiveConversationId,
+    input,
+    learnTitleFromSend,
+    runStream,
+    selectedKey,
+    streaming,
+    threadReady,
+    uploading,
+  ]);
 
   const retryFailedRow = useCallback(
     (row: ThreadRow): void => {
-      if (streaming) return;
+      if (streaming || !threadReady) return;
       if (!row.failedContent || !row.failedRequestId) return;
       const content = row.failedContent;
       const requestId = row.failedRequestId;
@@ -612,16 +1314,18 @@ export function Chat(): JSX.Element {
       setSendError(null);
       void (async (): Promise<void> => {
         try {
-          const convId = await ensureConversationId();
+          const convId = await ensureActiveConversationId();
+          // Same post-unmount guard as `send` — never open a stream the
+          // unmount cleanup can no longer abort.
+          if (!mountedRef.current) return;
           await runStream({ convId, content, requestId });
         } catch (err) {
-          const message =
-            errorMessageFor(err, 'Retry failed.');
+          const message = errorMessageFor(err, 'Retry failed.');
           setSendError(message);
         }
       })();
     },
-    [ensureConversationId, runStream, streaming],
+    [ensureActiveConversationId, runStream, streaming, threadReady],
   );
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
@@ -797,13 +1501,6 @@ export function Chat(): JSX.Element {
     [toast],
   );
 
-  // Empty-state condition: we have no data AND we're not loading. With the
-  // realFn flipped on, the hook may resolve with an empty `conversations`
-  // array — that's not an error, that's "new user, no thread yet". The old
-  // ErrorCard branch only fires when the loader truly failed AND no mock
-  // came through either.
-  const hasNothingToShow = msgs.length === 0 && !data;
-
   return (
     <section
       className="screen km-chat"
@@ -826,6 +1523,14 @@ export function Chat(): JSX.Element {
         }
       />
 
+      {/* Switch/load announcements for screen readers. A bare polite live
+          region (no role="status") — the dictionary notice owns the page's
+          single status role (F-016 contract, and its tests query it
+          exclusively). */}
+      <div className="km-sr-only" aria-live="polite" data-testid="chat-announce">
+        {announce}
+      </div>
+
       {loading ? (
         <SkeletonCard />
       ) : hasNothingToShow ? (
@@ -834,157 +1539,381 @@ export function Chat(): JSX.Element {
           onRetry={retry}
         />
       ) : (
-        <>
-          <div
-            ref={scrollRef}
-            className="km-chat__thread"
-            role="log"
-            aria-live="polite"
-            aria-label="Conversation"
-          >
-            {msgs.map((m, i) => (
-              <Bubble
-                key={i}
-                msg={m}
-                showEn={hintsOn}
-                onRetry={
-                  m.status === 'failed' && !streaming
-                    ? () => {
-                        retryFailedRow(m);
-                      }
-                    : undefined
+        <div
+          className={cn(
+            'km-chat__layout',
+            collapsed && 'km-chat__layout--collapsed',
+          )}
+        >
+          {/* ── Conversation sidebar ────────────────────────────────── */}
+          <nav className="km-chat__side" aria-label="Conversations">
+            <div className="km-chat__sideHead">
+              <button
+                type="button"
+                className="km-chat__collapse focusring"
+                onClick={toggleCollapsed}
+                aria-expanded={!collapsed}
+                aria-controls="chat-conversations"
+                aria-label={
+                  collapsed
+                    ? 'Expand conversation list'
+                    : 'Collapse conversation list'
                 }
-              />
-            ))}
-          </div>
-
-          {/* Composer */}
-          <div className="km-chat__composer">
-            <label className="km-chat__composerLabel" htmlFor="chat-input">
-              {/* The 합쇼체 register cue stays OUTSIDE the bilingual pair —
-                  it's the target register, not a translation of "Reply". */}
-              <span className="km-eyebrow">
-                <Bilingual en="Reply" kr="답장" /> · 합쇼체
-              </span>
-            </label>
-            <div className="km-chat__composerRow">
-              <textarea
-                id="chat-input"
-                className="kr focusring km-chat__textarea"
-                value={input}
-                onChange={(e) => {
-                  setInput(e.target.value);
-                }}
-                onKeyDown={onKeyDown}
-                placeholder="Reply in Korean — formal register…"
-                rows={2}
-                aria-label="Reply input"
-              />
-              <Button
-                variant="gold"
-                size="md"
-                onClick={send}
-                disabled={!input.trim() || streaming}
-                aria-label="Send"
-                aria-busy={streaming ? 'true' : 'false'}
               >
-                <Icon name="send" size={16} />
-              </Button>
-              <Button
-                variant="ghost"
-                size="md"
-                onClick={toggleDict}
-                aria-label="Dictionary lookup"
-                aria-expanded={dictOpen}
-                aria-controls="chat-dict-row"
-              >
-                <Icon name="book" size={16} />
-              </Button>
+                <Icon
+                  name={collapsed ? 'chevron-right' : 'chevron-left'}
+                  size={16}
+                />
+              </button>
+              {!collapsed ? (
+                <span className="km-eyebrow km-chat__sideLabel">
+                  <Bilingual en="Chats" kr="대화" />
+                </span>
+              ) : null}
             </div>
-            {dictOpen ? (
-              <div id="chat-dict-row" className="km-chat__dictRow">
-                <label
-                  className="km-chat__composerLabel"
-                  htmlFor="chat-dict-input"
+            <button
+              type="button"
+              className="km-chat__newChat focusring"
+              onClick={startNewChat}
+              disabled={creating}
+              aria-busy={creating ? 'true' : 'false'}
+              aria-label="New chat"
+            >
+              <Icon name="plus" size={14} />
+              {!collapsed ? <Bilingual en="New chat" kr="새 대화" /> : null}
+            </button>
+            <ul
+              id="chat-conversations"
+              className="km-chat__convList"
+              aria-label="Conversation history"
+            >
+              {rows.map((row) => {
+                const isActive = row.id === activeKey;
+                const title = titles.get(row.id) ?? fallbackTitle(row);
+                const when = relativeTime(row.updated_at, nowMs);
+                return (
+                  <li key={row.id}>
+                    <button
+                      type="button"
+                      className={cn(
+                        'km-chat__convRow',
+                        'focusring',
+                        isActive && 'km-chat__convRow--current',
+                      )}
+                      onClick={() => {
+                        selectConversation(row.id);
+                      }}
+                      aria-current={isActive ? 'true' : undefined}
+                      aria-label={when ? `${title}, ${when}` : title}
+                      title={title}
+                    >
+                      <span className="km-chat__convDot" aria-hidden="true" />
+                      {!collapsed ? (
+                        <span className="km-chat__convText">
+                          <span className="kr km-chat__convTitle">
+                            {title}
+                          </span>
+                          <span className="km-chat__convWhen">{when}</span>
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {!collapsed ? (
+              <p className="km-chat__retention">
+                <Bilingual
+                  en="Chats are kept 30 days, then cleared"
+                  kr="대화는 30일 뒤 삭제됩니다"
+                />
+              </p>
+            ) : null}
+          </nav>
+
+          {/* ── Thread + composer ───────────────────────────────────── */}
+          <div className="km-chat__main">
+            {/* "Discuss the page you were on?" (Slice 3) — modal offer of
+                the page context the FAB carried in. Focus-trapped via
+                useModalA11y; Esc = No. Page label/summary are descriptor
+                text (rendered as escaped text nodes); the button labels are
+                chrome → Bilingual. Gated on `contextPopupVisible` (the same
+                flag useModalA11y arms on) so the hook and the DOM can never
+                disagree about whether the dialog exists (B-1). */}
+            {contextPopupVisible && popupContext !== null ? (
+              <>
+                {/* Backdrop — makes the dialog's aria-modal="true" honest
+                    for pointer users too: the sidebar/thread behind the
+                    offer is not clickable while it is up; clicking the
+                    scrim answers No (same as Esc). Mouse/touch only
+                    (tabIndex -1) — keyboard dismissal is Esc, and the Tab
+                    trap confines focus to the dialog. Same fixed-inset
+                    button pattern as WordPopover/Sheet backdrops. */}
+                <button
+                  type="button"
+                  className="km-chat__askpopBackdrop"
+                  aria-label="Dismiss — start fresh"
+                  tabIndex={-1}
+                  data-testid="chat-askpop-backdrop"
+                  onClick={() => {
+                    answerContextPopup(false);
+                  }}
+                />
+                <div
+                  ref={popupRef}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="chat-askpop-title"
+                  className="km-chat__askpop"
                 >
-                  <span className="km-eyebrow">
-                    <Bilingual en="Dictionary" kr="사전" />
-                  </span>
-                </label>
-                <div className="km-chat__dictInputRow">
-                  <input
-                    id="chat-dict-input"
-                    type="text"
-                    className="kr focusring km-chat__dictInput"
-                    value={dictInput}
-                    onChange={(e) => {
-                      setDictInput(e.target.value);
-                    }}
-                    onKeyDown={onDictKeyDown}
-                    placeholder="Korean word — e.g. 사전"
-                    aria-label="Dictionary word"
-                    autoComplete="off"
-                  />
-                  <Button
-                    variant="gold"
-                    size="md"
-                    onClick={lookupWord}
-                    disabled={!dictInput.trim() || dictLoading}
-                    aria-label="Look up word"
-                    aria-busy={dictLoading ? 'true' : 'false'}
-                  >
-                    <Icon name="search" size={16} />
+                  <div id="chat-askpop-title" className="km-chat__askpopTitle">
+                    <Bilingual
+                      en="Discuss the page you were on?"
+                      kr="보던 페이지에 대해 이야기할까요?"
+                    />
+                  </div>
+                  <div className="km-chat__askpopCtx">
+                    <span className="km-eyebrow">
+                      <Bilingual en="From" kr="이전 화면" />
+                    </span>
+                    <span className="km-chat__askpopFrom">
+                      {popupContext.pageLabel} — {popupContext.summary}
+                    </span>
+                  </div>
+                  <div className="km-chat__askpopRow">
+                    <Button
+                      variant="gold"
+                      size="sm"
+                      onClick={() => {
+                        answerContextPopup(true);
+                      }}
+                    >
+                      <Bilingual en="Yes, use it" kr="네, 좋아요" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        answerContextPopup(false);
+                      }}
+                    >
+                      <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : null}
+            <div
+              ref={scrollRef}
+              className="km-chat__thread"
+              role="log"
+              aria-live="polite"
+              aria-label="Conversation"
+              aria-busy={historyLoading ? 'true' : 'false'}
+            >
+              {historyError !== null && historyError.forId === activeId ? (
+                <div role="alert" className="km-chat__historyError">
+                  <span>{HISTORY_FAILED_COPY}</span>
+                  <Button variant="ghost" size="sm" onClick={retryHistory}>
+                    <Bilingual en="Retry" kr="다시 시도" />
                   </Button>
                 </div>
-                {dictNotice ? (
-                  <div
-                    role={dictNotice.tone === 'error' ? 'alert' : 'status'}
-                    className={`km-chat__dictNotice${
-                      dictNotice.tone === 'error'
-                        ? ' km-chat__dictNotice--error'
-                        : ''
-                    }`}
+              ) : historyLoading ? (
+                <div className="km-chat__historyLoading">
+                  <Bilingual
+                    en="Loading conversation…"
+                    kr="대화 불러오는 중…"
+                  />
+                </div>
+              ) : (
+                <>
+                  {baseRows.map((m, i) => (
+                    <Bubble key={`base-${String(i)}`} msg={m} showEn={hintsOn} />
+                  ))}
+                  {msgs.map((m, i) => (
+                    <Bubble
+                      key={i}
+                      msg={m}
+                      showEn={hintsOn}
+                      onRetry={
+                        m.status === 'failed' && !streaming
+                          ? () => {
+                              retryFailedRow(m);
+                            }
+                          : undefined
+                      }
+                    />
+                  ))}
+                </>
+              )}
+            </div>
+
+            {/* Composer */}
+            <div className="km-chat__composer">
+              <label className="km-chat__composerLabel" htmlFor="chat-input">
+                {/* The 합쇼체 register cue stays OUTSIDE the bilingual pair —
+                    it's the target register, not a translation of "Reply". */}
+                <span className="km-eyebrow">
+                  <Bilingual en="Reply" kr="답장" /> · 합쇼체
+                </span>
+              </label>
+              <div className="km-chat__composerRow">
+                {/* 📷 upload (Slice 3) — mockup places it left of the field.
+                    Hidden input holds the actual picker; the visible button
+                    proxies a click so the affordance stays a real button. */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={IMAGE_ACCEPT}
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  data-testid="chat-image-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    // Clear so re-picking the SAME file re-fires change.
+                    e.target.value = '';
+                    if (file) uploadImageFile(file);
+                  }}
+                />
+                <Button
+                  variant="ghost"
+                  size="md"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={uploading || streaming || !threadReady}
+                  aria-label="Upload a photo · 사진 올리기"
+                  aria-busy={uploading ? 'true' : 'false'}
+                >
+                  <Icon name="camera" size={16} />
+                </Button>
+                <textarea
+                  id="chat-input"
+                  ref={composerRef}
+                  className="kr focusring km-chat__textarea"
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                  }}
+                  onKeyDown={onKeyDown}
+                  placeholder="Reply in Korean — formal register…"
+                  rows={2}
+                  aria-label="Reply input"
+                />
+                <Button
+                  variant="gold"
+                  size="md"
+                  onClick={send}
+                  disabled={
+                    !input.trim() || streaming || uploading || !threadReady
+                  }
+                  aria-label="Send"
+                  aria-busy={streaming ? 'true' : 'false'}
+                >
+                  <Icon name="send" size={16} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="md"
+                  onClick={toggleDict}
+                  aria-label="Dictionary lookup"
+                  aria-expanded={dictOpen}
+                  aria-controls="chat-dict-row"
+                >
+                  <Icon name="book" size={16} />
+                </Button>
+              </div>
+              {dictOpen ? (
+                <div id="chat-dict-row" className="km-chat__dictRow">
+                  <label
+                    className="km-chat__composerLabel"
+                    htmlFor="chat-dict-input"
                   >
-                    {dictNotice.text}
+                    <span className="km-eyebrow">
+                      <Bilingual en="Dictionary" kr="사전" />
+                    </span>
+                  </label>
+                  <div className="km-chat__dictInputRow">
+                    <input
+                      id="chat-dict-input"
+                      type="text"
+                      className="kr focusring km-chat__dictInput"
+                      value={dictInput}
+                      onChange={(e) => {
+                        setDictInput(e.target.value);
+                      }}
+                      onKeyDown={onDictKeyDown}
+                      placeholder="Korean word — e.g. 사전"
+                      aria-label="Dictionary word"
+                      autoComplete="off"
+                    />
+                    <Button
+                      variant="gold"
+                      size="md"
+                      onClick={lookupWord}
+                      disabled={!dictInput.trim() || dictLoading}
+                      aria-label="Look up word"
+                      aria-busy={dictLoading ? 'true' : 'false'}
+                    >
+                      <Icon name="search" size={16} />
+                    </Button>
                   </div>
-                ) : null}
-              </div>
-            ) : null}
-            {sendError ? (
-              <div
-                role="alert"
-                className="km-chat__sendError"
-                style={{
-                  marginTop: 8,
-                  fontSize: 13,
-                  color: 'var(--vermilion)',
-                }}
-              >
-                {sendError}
-              </div>
-            ) : null}
-            {hintsOn ? (
-              <div
-                className="km-chat__hints"
-                role="group"
-                aria-label="Reply starters"
-              >
-                {HINT_STARTERS.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    className="km-chat__hint focusring"
-                    onClick={() => {
-                      setInput((prev) => (prev ? `${prev} ${h}` : h));
-                    }}
-                  >
-                    {h}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+                  {dictNotice ? (
+                    <div
+                      role={dictNotice.tone === 'error' ? 'alert' : 'status'}
+                      className={`km-chat__dictNotice${
+                        dictNotice.tone === 'error'
+                          ? ' km-chat__dictNotice--error'
+                          : ''
+                      }`}
+                    >
+                      {dictNotice.text}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {uploading ? (
+                <div role="status" className="km-chat__uploadStatus">
+                  <Bilingual en="Uploading photo…" kr="사진 업로드 중…" />
+                </div>
+              ) : null}
+              {sendError ? (
+                <div
+                  role="alert"
+                  className="km-chat__sendError"
+                  style={{
+                    marginTop: 8,
+                    fontSize: 13,
+                    color: 'var(--vermilion)',
+                  }}
+                >
+                  {sendError}
+                </div>
+              ) : null}
+              {hintsOn ? (
+                <div
+                  className="km-chat__hints"
+                  role="group"
+                  aria-label="Reply starters"
+                >
+                  {HINT_STARTERS.map((h) => (
+                    <button
+                      key={h}
+                      type="button"
+                      className="km-chat__hint focusring"
+                      onClick={() => {
+                        setInput((prev) => (prev ? `${prev} ${h}` : h));
+                      }}
+                    >
+                      {h}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
-        </>
+        </div>
       )}
 
       {dictPop ? (
@@ -1027,6 +1956,19 @@ function Bubble({
             <Bilingual en="Tutor" kr="튜터" />
           )}
         </div>
+        {msg.image ? (
+          // Slice 3 image turn — the photo renders above its OCR'd text.
+          // Decorative for AT (empty alt): the OCR'd Korean + English
+          // caption directly below ARE this image's textual content, so an
+          // alt would only announce the same thing twice (and jsx-a11y
+          // rightly bans "photo/image" filler labels).
+          <img
+            className="km-chat__bubbleImg"
+            src={msg.image.src}
+            alt=""
+            data-testid="chat-bubble-image"
+          />
+        ) : null}
         <div className="kr km-chat__text">{msg.kr}</div>
         {showEn && msg.en ? (
           <div className="km-chat__en">{msg.en}</div>

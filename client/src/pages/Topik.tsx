@@ -53,6 +53,7 @@ import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { TopikImageNote } from '../components/TopikImageNote';
 import { TopikPassage } from '../components/TopikPassage';
+import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTopikStudyMock } from '../data/mocks/topik';
 import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
@@ -299,6 +300,21 @@ function StudyMode(): JSX.Element {
   const draw = data ?? [];
   const current: TopikItem | undefined = draw[idx];
   const isComplete = draw.length > 0 && idx >= draw.length;
+
+  // Publish the CURRENT study item for the chat FAB's discuss-this-page
+  // popup (Slice 3). Study mode only — MockMode never publishes (the FAB is
+  // hidden during a timed exam anyway), and the completed/terminal state
+  // has no single item to discuss.
+  useChatContext(
+    current !== undefined && !isComplete
+      ? {
+          pageLabel: 'TOPIK study · TOPIK 학습',
+          summary: `Question ${String(current.number)} (Level ${String(
+            current.level,
+          )}): ${current.prompt}`,
+        }
+      : null,
+  );
 
   // Step to the next item, clearing the per-item interaction state. Walking
   // `idx` past the last item lands on the "draw complete" terminal state.

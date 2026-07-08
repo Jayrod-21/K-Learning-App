@@ -1,8 +1,13 @@
 /**
  * ChatFab — the floating chat dot, ~1/5 up the right edge of the shell
- * (Overhaul P1.1, per the approved mockup). In P1.1 it simply navigates to
- * the existing `/chat` screen; the chat rework (force-new conversation,
- * context hand-off, sidebar) is P4.
+ * (Overhaul P1.1 placement; chat rework Slice 3 behavior).
+ *
+ * Tapping it opens a NEW conversation (prior ones stay in the Chat
+ * sidebar): it navigates to `/chat` carrying a `ChatOpenState` in router
+ * state — the force-new discriminator plus the CURRENT page's published
+ * `ChatContext` (from the chat-context store, when the page provided one).
+ * Chat then shows the "Discuss the page you were on?" popup when a context
+ * rode along, or goes straight to the generic opener when none did.
  *
  * Visibility — HIDDEN (renders null) when any of:
  *   - already on `/chat` (a chat button on the chat is noise);
@@ -20,6 +25,8 @@ import type { JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useExamActive } from '../hooks/useExamActive';
 import { useKeyboardOpen } from '../hooks/useKeyboardOpen';
+import { useCurrentChatContext } from '../hooks/useChatContext';
+import { buildChatOpenState } from '../lib/chatContext';
 import { Icon } from './Icon';
 
 /** Route prefixes where the FAB stays hidden. `/chat` is the hard-contract
@@ -42,6 +49,9 @@ export function ChatFab(): JSX.Element | null {
   const navigate = useNavigate();
   const { examActive } = useExamActive();
   const keyboardOpen = useKeyboardOpen();
+  // The CURRENT page's published descriptor (or null). Read unconditionally
+  // — hooks must not sit behind the visibility early-return.
+  const pageContext = useCurrentChatContext();
 
   if (isHiddenPath(location.pathname) || examActive || keyboardOpen) {
     return null;
@@ -53,7 +63,10 @@ export function ChatFab(): JSX.Element | null {
       className="km-chatfab focusring"
       aria-label="Open chat · 대화"
       onClick={() => {
-        navigate('/chat');
+        // Slice 3: the FAB always opens a NEW conversation and hands the
+        // page's context along (Chat shows the discuss-this-page popup when
+        // one exists). Prior conversations stay in the Chat sidebar.
+        navigate('/chat', { state: buildChatOpenState(pageContext) });
       }}
     >
       <Icon name="search-fab" size={22} />

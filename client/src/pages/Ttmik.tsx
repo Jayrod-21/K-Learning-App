@@ -87,6 +87,7 @@ import {
   tokeniseKorean,
 } from '../lib/tapChain';
 import { ApiError } from '../services/api';
+import { useChatContext } from '../hooks/useChatContext';
 import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
 import {
@@ -170,6 +171,23 @@ type DetailData =
 export default function Ttmik(): JSX.Element {
   const [tab, setTab] = useState<Tab>('ttmik');
   const [selection, setSelection] = useState<Selection | null>(null);
+
+  // Publish the open lesson/episode for the chat FAB's discuss-this-page
+  // popup (Slice 3). The browse view publishes nothing — there is no single
+  // "thing on screen" to discuss until a row is opened.
+  useChatContext(
+    selection !== null
+      ? {
+          pageLabel: 'Listen · 듣기',
+          summary:
+            selection.corpus === 'ttmik'
+              ? `TTMIK Level ${String(selection.level)} Lesson ${String(
+                  selection.number,
+                )} — ${selection.title}`
+              : `Iyagi Episode ${String(selection.number)} — ${selection.title}`,
+        }
+      : null,
+  );
 
   const openLesson = useCallback((lesson: TtmikLesson): void => {
     setSelection({

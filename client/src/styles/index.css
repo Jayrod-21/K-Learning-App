@@ -3373,6 +3373,221 @@ body {
 .km-chat__dictNotice { font-size: 13px; color: var(--paper-mute); }
 .km-chat__dictNotice--error { color: var(--vermilion); }
 
+/* Conversation sidebar (chat rework Slice 2) — collapsible left rail
+   listing prior conversations, mirroring the approved overhaul mockup
+   (collapse ‹ toggle, New chat, list, 30-day retention note). */
+.km-chat__layout {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.km-chat__side {
+  flex: 0 0 auto;
+  width: 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ink-1);
+  overflow: hidden;
+  transition: width 200ms ease;
+}
+.km-chat__layout--collapsed .km-chat__side { width: 44px; }
+.km-chat__sideHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.km-chat__sideLabel { white-space: nowrap; overflow: hidden; }
+.km-chat__collapse {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--paper-mute);
+  cursor: pointer;
+  transition: color 140ms;
+}
+.km-chat__collapse:hover { color: var(--vermilion); }
+.km-chat__newChat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 10px 8px 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--vermilion);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--vermilion);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 140ms, color 140ms;
+}
+.km-chat__newChat:hover:not(:disabled) {
+  background: var(--vermilion);
+  color: var(--paper);
+}
+.km-chat__newChat:disabled { opacity: 0.55; cursor: default; }
+.km-chat__convList {
+  flex: 1;
+  margin: 0;
+  padding: 4px 6px;
+  list-style: none;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.km-chat__convRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 6px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--paper-dim);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 140ms, color 140ms;
+}
+.km-chat__convRow:hover { background: var(--ink-2); color: var(--paper); }
+.km-chat__convRow--current {
+  background: var(--ink-3);
+  color: var(--paper);
+}
+.km-chat__convDot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--paper-mute);
+}
+.km-chat__convRow--current .km-chat__convDot { background: var(--vermilion); }
+.km-chat__convText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.km-chat__convTitle {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.km-chat__convWhen { font-size: 10px; color: var(--paper-mute); }
+.km-chat__retention {
+  margin: 0;
+  padding: 8px 6px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--paper-mute);
+}
+.km-chat__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.km-chat__historyLoading,
+.km-chat__historyError {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 12px;
+  font-size: 13px;
+  color: var(--paper-mute);
+}
+.km-chat__historyError { color: var(--vermilion); }
+/* "Discuss the page you were on?" popup (chat rework Slice 3) — matches
+   the ink-themed thread chrome. The backdrop makes the dialog's
+   aria-modal="true" honest for pointer users: the sidebar/thread behind
+   the offer is not clickable while it is up (clicking the scrim answers
+   No). Same fixed-inset button pattern as .km-popover__backdrop, and the
+   same 60/61 layer pair; the card itself stays in-flow (mockup placement)
+   but is lifted above the scrim. */
+.km-chat__askpopBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 24, 19, 0.32);
+  z-index: 60;
+  border: none;
+  cursor: pointer;
+  animation: fade 160ms ease-out;
+}
+.km-chat__askpop {
+  position: relative;
+  z-index: 61;
+  margin: 0 0 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-2);
+  color: var(--paper);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.km-chat__askpopTitle {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.km-chat__askpopCtx {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.km-chat__askpopFrom {
+  font-size: 12px;
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+.km-chat__askpopRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* Image-in-chat (Slice 3): the photo above its OCR'd text in a bubble. */
+.km-chat__bubbleImg {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  margin-bottom: 8px;
+}
+.km-chat__uploadStatus {
+  margin-top: 8px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+/* Narrow phones: the expanded sidebar shrinks toward the mockup's inline
+   width so it never crushes the thread (and the DEFAULT there is the
+   collapsed rail — see readCollapsedPref). */
+@media (max-width: 640px) {
+  .km-chat__side { width: 148px; }
+  .km-chat__layout--collapsed .km-chat__side { width: 44px; }
+}
+
 /* ─────────────────────────────────────────────────────────────
    Pass 2 — Hanja / Images / Reference / Settings screens
    ───────────────────────────────────────────────────────────── */

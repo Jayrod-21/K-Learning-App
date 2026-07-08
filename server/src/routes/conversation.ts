@@ -40,15 +40,40 @@ import type {
   ConversationInput,
   ConversationTurn,
 } from '../services/claude/index.js';
+import {
+  multerImageUpload,
+  ocrUploadedImage,
+  persistCapture,
+  type IngestedImage,
+} from '../services/imageIngest.js';
+
+// Optional image reference on a stored turn (chat rework Slice 1). Present
+// when the turn is an uploaded photo that went through the Vision OCR
+// pipeline: `content` carries the OCR'd Korean text (so projectHistory feeds
+// it to Claude unchanged) and this block carries the capture linkage + the
+// translation. All fields are server-authored — never client input.
+interface StoredTurnImage {
+  /** image_captures.id — joins to GET /images/:id (words) + :id/blob. */
+  capture_id: number;
+  /** Authed same-origin `<img src>` path (`/images/:id/blob`). */
+  blob_url: string;
+  /** OCR'd Korean text from the image ('' when the photo had none). */
+  caption_kr: string;
+  /** English translation of the OCR'd text. */
+  caption_en: string;
+}
 
 // Shape: a user turn or assistant turn appended to conversations.messages
 // JSONB array. `request_id` is recorded on assistant turns to enable retry-
-// idempotency (see streamMessage below).
+// idempotency (see streamMessage below). `image` is present only on turns
+// created by POST /:conversationId/image — plain text turns stay exactly as
+// before (both fields optional ⇒ every pre-existing row remains valid).
 interface StoredTurn {
   role: 'user' | 'assistant';
   content: string;
   sent_at: string;
   request_id?: string;
+  image?: StoredTurnImage;
 }
 
 // Inbound idempotency-id shape: same alphabet as our correlation id. Caps
@@ -638,6 +663,31 @@ function writeSseFrame(res: Response, payload: unknown): void {
 router.get('/', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
+
+    // 30-day retention (chat rework Slice 1 — see db/docs/CHAT_REWORK_DESIGN.md
+    // §Decisions): soft-delete this user's stale conversations BEFORE listing,
+    // then return the still-live set. The list endpoint IS the sweep trigger —
+    // this repo has no cron/interval scheduler, and every read route already
+    // filters `deleted_at IS NULL`, so setting the stamp both hides and
+    // "deletes" with zero new infra. Idempotent (a swept row leaves the
+    // predicate) and strictly user-scoped (never touches other users' rows).
+    // Note: the BEFORE UPDATE trigger bumps updated_at on the swept rows, but
+    // they are already dead to every reader, so that is inert.
+    const swept = await query(
+      `UPDATE conversations
+          SET deleted_at = now()
+        WHERE user_id = $1
+          AND deleted_at IS NULL
+          AND updated_at < now() - interval '30 days'`,
+      [userId],
+    );
+    if (swept.rowCount > 0) {
+      req.log.info(
+        { userId, swept: swept.rowCount },
+        'conversation retention sweep soft-deleted stale conversations',
+      );
+    }
+
     const { rows } = await query(
       `SELECT id, mode, target_register, version, updated_at,
               jsonb_array_length(messages) AS message_count
@@ -658,5 +708,205 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
+
+/**
+ * GET /conversation/:conversationId — one conversation's FULL message history
+ * (chat rework Slice 1: the sidebar's click-to-switch loads this).
+ *
+ * Returns the JSONB `messages` array verbatim plus the row metadata the
+ * client needs to keep streaming against it (`version` for the optimistic-
+ * concurrency gate). User-scoped; another user's id, a missing id, or a
+ * soft-deleted (retention-swept) row → 404 — never 403, don't confirm
+ * existence (same IDOR posture as every read in this file). A non-numeric /
+ * out-of-int8 id → 400 at the boundary via MessageParamsSchema.
+ */
+router.get(
+  '/:conversationId',
+  cheapLimiter(),
+  validateParams(MessageParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const conversationId = (req as typeof req & {
+        validatedParams: z.infer<typeof MessageParamsSchema>;
+      }).validatedParams.conversationId;
+
+      const { rows } = await query<{
+        id: string;
+        mode: string;
+        target_register: string | null;
+        version: number;
+        messages: unknown;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        `SELECT id, mode::text AS mode,
+                target_register::text AS target_register,
+                version, messages, created_at, updated_at
+           FROM conversations
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [conversationId, userId],
+      );
+      const conv = rows[0];
+      if (!conv) throw new NotFoundError('conversation not found');
+
+      res.status(200).json({
+        conversation: {
+          // pg returns BIGINT as a string; the API contract documents the
+          // conversation id as a JSON number (matches POST + GET list).
+          id: Number(conv.id),
+          mode: conv.mode,
+          target_register: conv.target_register,
+          version: conv.version,
+          messages: conv.messages,
+          created_at: conv.created_at.toISOString(),
+          updated_at: conv.updated_at.toISOString(),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /conversation/:conversationId/image — image-in-chat (Slice 1).
+// ---------------------------------------------------------------------------
+
+const ImageBodySchema = z
+  .object({
+    // Multipart text field, so it arrives as a string — coerce. Bounded to
+    // INT4 like MessageBodySchema.expected_version (conversations.version is
+    // INTEGER; an absurd value must 400, not overflow in pg).
+    expected_version: z.coerce.number().int().positive().max(2_147_483_647),
+  })
+  .strict();
+
+/**
+ * POST /conversation/:conversationId/image — multipart upload of one `image`
+ * field (+ `expected_version` text field) onto a conversation.
+ *
+ * Runs the EXACT pipeline behind POST /images/ocr (services/imageIngest.ts —
+ * magic-byte sniff, per-user daily Vision cap, Claude Vision OCR outside any
+ * transaction), then appends ONE user turn carrying the OCR'd Korean text as
+ * `content` and the capture linkage + English translation in `image` (see
+ * StoredTurnImage). The capture also lands in image_captures/image_words, so
+ * it shows up on the Images screen and its words are minable as usual.
+ *
+ * Endpoint choice: a dedicated `/image` subpath rather than teaching
+ * POST /:id/messages to speak multipart — that route's JSON contract
+ * (content + Claude turn generation) and this one's (file + OCR, NO
+ * assistant turn) share almost nothing, and the rest of the API prefers
+ * path verbs over content-type switching (see the /messages/stream note).
+ *
+ * Atomicity: capture persist + turn append commit in ONE transaction — a
+ * version conflict rolls the capture back too (no orphan capture row; the
+ * already-written blob file is a harmless GC-able orphan, same posture as
+ * /images/ocr). The version pre-check runs BEFORE the Vision call so a stale
+ * client 409s without spending Vision budget.
+ *
+ * 201: the request created a durable subresource (the capture + the turn) —
+ * matches POST /images/ocr; the envelope mirrors POST /:id/messages
+ * (`version` + `messages`) plus the appended `turn`.
+ */
+router.post(
+  '/:conversationId/image',
+  expensiveLimiter(),
+  validateParams(MessageParamsSchema),
+  multerImageUpload,
+  validateBody(ImageBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const conversationId = (req as typeof req & {
+        validatedParams: z.infer<typeof MessageParamsSchema>;
+      }).validatedParams.conversationId;
+      const body = req.body as z.infer<typeof ImageBodySchema>;
+      const file = (req as Request & { file?: Express.Multer.File }).file;
+
+      // Cheap gates first: the conversation must exist, be the caller's, and
+      // be at the expected version BEFORE we spend a Vision call. (404 for
+      // other-user/missing/swept — never 403.)
+      const { rows } = await query<{ version: number }>(
+        `SELECT version
+           FROM conversations
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [conversationId, userId],
+      );
+      const conv = rows[0];
+      if (!conv) throw new NotFoundError('conversation not found');
+      if (conv.version !== body.expected_version) {
+        throw new ConflictError('stale conversation version');
+      }
+
+      // Validate file + daily cap + Vision OCR — all OUTSIDE any transaction
+      // (Bar §"Concurrency"). Throws 400/429/502; nothing persisted on failure.
+      const img = await ocrUploadedImage(file, userId, req.correlationId);
+
+      // ONE transaction: blob + capture + words + the conversation turn. The
+      // version gate re-runs inside the UPDATE so a concurrent writer between
+      // the pre-check and here rolls the capture back and 409s cleanly.
+      const out = await withTransaction(async (client) => {
+        const capture = await persistCapture(client, userId, img);
+        const imageTurn: StoredTurn = {
+          role: 'user',
+          content: imageTurnContent(img),
+          sent_at: new Date().toISOString(),
+          image: {
+            // capture.id is pg's BIGINT-as-string; fits MAX_SAFE_INTEGER.
+            capture_id: Number(capture.id),
+            blob_url: capture.blobUrl,
+            caption_kr: capture.caption_kr,
+            caption_en: capture.caption_en,
+          },
+        };
+        const upd = await client.query<{ version: number; messages: unknown }>(
+          `UPDATE conversations
+              SET messages = messages || $2::jsonb,
+                  version  = version + 1
+            WHERE id = $1 AND user_id = $3 AND version = $4 AND deleted_at IS NULL
+            RETURNING version, messages`,
+          [
+            conversationId,
+            JSON.stringify([imageTurn]),
+            userId,
+            body.expected_version,
+          ],
+        );
+        if (upd.rowCount === 0) {
+          throw new ConflictError('stale conversation version');
+        }
+        return {
+          version: upd.rows[0]!.version,
+          messages: upd.rows[0]!.messages,
+          turn: imageTurn,
+        };
+      });
+
+      res.status(201).json(out);
+      req.log.info(
+        { conversationId, userId, version: out.version },
+        'conversation image turn appended',
+      );
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * The `content` of an image turn — what projectHistory feeds Claude and what
+ * a text-only renderer falls back to. Prefer the OCR'd Korean text; fall back
+ * to the English caption; a photo with no readable text gets a fixed marker
+ * so the turn stays non-empty (an empty content would be silently dropped
+ * from the Claude history projection).
+ */
+function imageTurnContent(img: IngestedImage): string {
+  const kr = img.captionKr.trim();
+  if (kr !== '') return kr;
+  const en = img.captionEn.trim();
+  if (en !== '') return en;
+  return '(이미지)';
+}
 
 export default router;

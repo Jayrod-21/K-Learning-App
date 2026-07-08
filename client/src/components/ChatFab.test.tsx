@@ -1,10 +1,14 @@
 /**
- * ChatFab (P1.1) — visibility matrix + navigation.
+ * ChatFab (P1.1 visibility + Slice 3 open-new-with-context) — visibility
+ * matrix, navigation, and the router-state hand-off.
  *
  * Hidden when: on /chat, on /settings (incl. sub-paths), a mock exam is
  * active (ExamActiveContext), or the keyboard is open (useKeyboardOpen,
  * mocked here — the hook has its own viewport-level tests). Visible
- * everywhere else; clicking navigates to /chat.
+ * everywhere else; clicking navigates to /chat carrying a `ChatOpenState`
+ * — the force-new discriminator plus the current page's published
+ * `ChatContext` (real store, no mock — the publish → carry chain is the
+ * integration under test).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -15,6 +19,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cwd } from 'node:process';
 import { ExamActiveContext } from '../hooks/exam-active-context';
+import { useChatContext } from '../hooks/useChatContext';
+import { readChatOpenState } from '../lib/chatContext';
+import type { ChatContext } from '../lib/chatContext';
 
 // Controllable keyboard signal — the real hook is exercised in
 // useKeyboardOpen.test.tsx; here it's an input to the visibility logic.
@@ -114,6 +121,89 @@ describe('ChatFab (P1.1)', () => {
     expect(
       screen.queryByRole('button', { name: FAB_NAME }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatFab open-new + context hand-off (Slice 3)', () => {
+  beforeEach(() => {
+    keyboard.open = false;
+  });
+
+  /** Renders what `/chat` received as narrowed open-request JSON. */
+  function OpenStateProbe(): JSX.Element {
+    const loc = useLocation();
+    const req = readChatOpenState(loc.state);
+    return (
+      <div data-testid="open-state">
+        {req === null ? 'none' : JSON.stringify(req)}
+      </div>
+    );
+  }
+
+  /** A stand-in page that publishes its descriptor to the real store. */
+  function PublishingPage({
+    descriptor,
+  }: {
+    descriptor: ChatContext | null;
+  }): null {
+    useChatContext(descriptor);
+    return null;
+  }
+
+  function renderFabWithPage(descriptor: ChatContext | null): void {
+    render(
+      <ExamActiveContext.Provider
+        value={{ examActive: false, setExamActive: () => {} }}
+      >
+        <MemoryRouter initialEntries={['/progress']}>
+          <Routes>
+            <Route path="/chat" element={<OpenStateProbe />} />
+            <Route
+              path="*"
+              element={
+                <>
+                  <PublishingPage descriptor={descriptor} />
+                  <ChatFab />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </ExamActiveContext.Provider>,
+    );
+  }
+
+  it('carries the CURRENT page\'s published context to /chat', async () => {
+    const user = userEvent.setup();
+    renderFabWithPage({
+      pageLabel: 'Progress · 성장',
+      summary: 'Latest diagnostic: Reading 62%',
+    });
+
+    await user.click(screen.getByRole('button', { name: FAB_NAME }));
+
+    const probe = screen.getByTestId('open-state');
+    expect(probe).not.toHaveTextContent('none');
+    const req: unknown = JSON.parse(probe.textContent ?? 'null');
+    expect(req).toEqual({
+      context: {
+        pageLabel: 'Progress · 성장',
+        summary: 'Latest diagnostic: Reading 62%',
+      },
+    });
+  });
+
+  it('still sends a (context-free) open request when the page published nothing', async () => {
+    const user = userEvent.setup();
+    renderFabWithPage(null);
+
+    await user.click(screen.getByRole('button', { name: FAB_NAME }));
+
+    // The FAB's force-new contract holds even without a context — Chat
+    // must be able to tell a FAB entry from a plain navigation.
+    expect(screen.getByTestId('open-state')).toHaveTextContent(
+      JSON.stringify({ context: null }),
+    );
   });
 });
 
