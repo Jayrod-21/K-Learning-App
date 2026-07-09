@@ -16,11 +16,13 @@
  *      chosen book.
  *   3. Chapter reader — `GET /reading/chapters/:id`'s ordered passages,
  *      rendered as tappable Korean text (`tokeniseKorean` → `Tapword`,
- *      the `TapKorean` pattern from `Ttmik.tsx:936-968`) wired to
- *      `useTapWord` → `WordPopover`. "View original scan" jumps to the
- *      page-image viewer (`/uploads/:sourceUploadId` — `UploadViewer.tsx`
- *      has no page-number route param today, so this opens at page 1
- *      rather than the chapter's `startPage`; see that component's header).
+ *      the `TapKorean` pattern shared with `Ttmik.tsx`) wired to
+ *      `useTapWord` → `WordPopover`. "View original scan" deep-links to
+ *      the page-image viewer at the chapter's own scan page
+ *      (`/uploads/:sourceUploadId?page={startPage}` — U3c; `startPage` IS
+ *      `book_pages.page_number`, the loader wrote it as such, so no offset
+ *      correction applies). A null `startPage` (chapter not yet linked to
+ *      its scan pages) falls back to the bare route → page 1.
  *
  * Read-only consumption: no editing surface here. Tap-to-define reuses the
  * shared stack as-is (`lib/tapChain`, `components/Tapword`,
@@ -29,10 +31,11 @@
  * fixed-copy-toast contract `Ttmik.tsx`'s `DetailView` uses (kept
  * page-local rather than folded into `useTapWord` — see that hook's header
  * for why), INCLUDING the abort contract: `ChapterReader` keeps its own
- * `addCtrlRef` (mirroring `DetailView`'s `inFlightCtrlRef`, since
- * `useTapWord` deliberately doesn't expose its internal controller) so
- * closing the popover — or unmounting mid-request — aborts an in-flight
- * "Add to bank" POST too, not just the lemmatize→define→enrich chain.
+ * `addCtrlRef` (the same page-local controller `Ttmik.tsx`'s `DetailView`
+ * keeps post-U3c, since `useTapWord` deliberately doesn't expose its
+ * internal controller) so closing the popover — or unmounting mid-request —
+ * aborts an in-flight "Add to bank" POST too, not just the
+ * lemmatize→define→enrich chain.
  *
  * Threat model:
  *   - All data (book titles, chapter titles, passage bodies) is server
@@ -429,10 +432,10 @@ function SkeletonCard(): JSX.Element {
 
 /**
  * Render a Korean string through the shared tokeniser (`tokeniseKorean`) as
- * inline `Tapword`s — the exact `Ttmik.tsx:936-968` pattern, duplicated
+ * inline `Tapword`s — the exact `Ttmik.tsx` `TapKorean` pattern, duplicated
  * locally here rather than extracted: only the tap-handler STATE MACHINE
- * (`useTapWord`) was pulled out this pass, not this small render helper (see
- * that hook's header for the scope note).
+ * (`useTapWord`) was pulled out, not this small render helper (see that
+ * hook's header for the scope note).
  */
 function TapKorean({
   text,
@@ -521,11 +524,11 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
     () => new Set<string>(),
   );
   // Add-to-bank request controller. `useTapWord` deliberately doesn't expose
-  // its internal `inFlightCtrlRef` (see the hook's header), so this page
-  // keeps its own — aborted on popover close (via `handleClose` below) and
-  // on unmount, mirroring `Ttmik.tsx`'s `DetailView.inFlightCtrlRef` so
-  // closing the popover cancels an in-flight "Add to bank" POST too, not
-  // just the lemmatize→define→enrich chain `useTapWord` already aborts.
+  // its internal controller (see the hook's header), so this page keeps its
+  // own — aborted on popover close (via `handleClose` below) and on
+  // unmount, mirroring `Ttmik.tsx`'s `DetailView.addCtrlRef` so closing the
+  // popover cancels an in-flight "Add to bank" POST too, not just the
+  // lemmatize→define→enrich chain `useTapWord` already aborts.
   const addCtrlRef = useRef<AbortController | null>(null);
   useEffect(
     () => () => {
@@ -666,7 +669,15 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
           size="sm"
           leadingIcon={<Icon name="book" size={12} />}
           onClick={() => {
-            navigate(`/uploads/${String(chapter.sourceUploadId)}`);
+            // U3c deep-link: open the scan at this chapter's own start page
+            // (`startPage` IS `book_pages.page_number` — the loader wrote it
+            // as such, no offset correction). Null startPage → bare route →
+            // page 1, exactly the pre-U3c behavior.
+            navigate(
+              chapter.startPage !== null
+                ? `/uploads/${String(chapter.sourceUploadId)}?page=${String(chapter.startPage)}`
+                : `/uploads/${String(chapter.sourceUploadId)}`,
+            );
           }}
         >
           <Bilingual en="View original scan" kr="원본 스캔 보기" compact />

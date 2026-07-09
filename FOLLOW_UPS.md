@@ -282,11 +282,21 @@ Paper trail: `db/docs/reviews/u3b-reader/`. All non-blocking; U3b shipped PASS.
   one-line cross-reference.
 
 ## U3c (fast-follow — already planned in db/docs/U3_READER_DESIGN.md)
-- **Tap-handler de-dup** — migrate `Ttmik.tsx` + `Images.tsx` onto the new
-  `client/src/hooks/useTapWord.ts` (they still carry their own copies of the machine).
-- **"View original scan" deep-link** — `UploadViewer` has no page-number route param, so
-  the reader's scan link opens at page 1 instead of the chapter's `start_page`. Add a
-  page param to `UploadViewer` + thread `chapter.start_page` through.
+- **Tap-handler de-dup — RESOLVED (2026-07-09, `feat/u3c-dedup-deeplink`)** — `Ttmik.tsx`'s
+  `DetailView` migrated onto `client/src/hooks/useTapWord.ts` (its inline copy of the
+  machine — the copy the hook was originally extracted from — is deleted; add-to-bank
+  stays page-local via an `addCtrlRef`, the same composition `Reading.tsx` uses).
+  `Images.tsx` was NOT migrated, deliberately: it never carried a copy of this machine —
+  its word popover opens synchronously from OCR wire data (`wordToPopover`), with no
+  lemmatize→define→enrich resolve and no loading/abort state, so routing it through
+  `useTapWord` would ADD network calls rather than remove duplication. Its tap flow
+  remains its own (documented in the hook's header scope note).
+- **"View original scan" deep-link — RESOLVED (2026-07-09, `feat/u3c-dedup-deeplink`)** —
+  `UploadViewer` accepts an optional `?page=N` query (validated; clamped to
+  `[1, page_count]` once meta arrives; absent/invalid → page 1, so existing bare
+  `/uploads/:id` callers are unchanged) and the reader's scan link threads
+  `chapter.start_page` through it (`start_page` IS `book_pages.page_number` — no offset);
+  null `start_page` falls back to the bare route.
 
 ## Redesign (Modern Seoul restyle) — PR1 /fixpass residuals + later slices
 Paper trail: `db/docs/reviews/redesign-pr1/`. PR1 shipped PASS (all AA-contrast BLOCKERs fixed).
