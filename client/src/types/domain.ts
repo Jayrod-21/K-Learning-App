@@ -615,8 +615,12 @@ export interface HanjaProgress {
 
 /** Paper preset — base surface palette family. */
 export type PaperPreset = 'hanji' | 'ivory' | 'linen' | 'sumi';
-/** Accent preset — primary accent color family. */
-export type AccentPreset = 'vermilion' | 'indigo' | 'plum' | 'ochre';
+/** Accent preset — the Seoul-neon accent ids (Redesign §14a), server-synced
+ *  via `/settings/prefs` so the choice follows the user across devices.
+ *  Structurally identical to `hooks/accent-context.ts`'s `Accent` union —
+ *  keep them in lockstep. Legacy stored ids (vermilion|indigo|plum|ochre)
+ *  are coerced to 'coral' by the server schema, never 400'd. */
+export type AccentPreset = 'coral' | 'blue' | 'mint';
 /** Correct-state preset — success/affirmative color family. */
 export type CorrectPreset = 'moss' | 'pine' | 'teal';
 /** Wrong-state preset — danger/incorrect color family. */

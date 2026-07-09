@@ -15,10 +15,15 @@
  *   attribute already matches; subsequent `setAccent` calls flow through
  *   the effect as normal.
  *
- * Persistence is deliberately localStorage-only, matching the theme
- * choice's posture: the server `/settings/prefs` palette blob keeps its
- * own (legacy) accent field for schema parity, but the runtime accent —
- * like light/dark — is a per-device preference.
+ * Persistence is two-tier (accent cross-device sync):
+ *   - localStorage["km.accent"] is the same-device fast path (instant,
+ *     no-flash) — this provider owns it and nothing else.
+ *   - The server `/settings/prefs` palette.accent field is the
+ *     cross-device source of truth. The WIRE is deliberately NOT owned
+ *     here: the Settings screen (the sole `/settings/prefs` client)
+ *     adopts the server's accent on hydration via `setAccent` and PUTs
+ *     the user's picks back — this provider stays a pure local state +
+ *     attribute layer, exactly like ThemeProvider.
  */
 import {
   useCallback,

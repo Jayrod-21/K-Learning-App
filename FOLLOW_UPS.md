@@ -290,11 +290,14 @@ Paper trail: `db/docs/reviews/u3b-reader/`. All non-blocking; U3b shipped PASS.
 
 ## Redesign (Modern Seoul restyle) — PR1 /fixpass residuals + later slices
 Paper trail: `db/docs/reviews/redesign-pr1/`. PR1 shipped PASS (all AA-contrast BLOCKERs fixed).
-- **Accent cross-device sync (deferred, P3)** — the accent picker persists to
-  `localStorage["km.accent"]` only; it does not sync across devices because the server
-  `PrefsSchema.accent` is pinned to a legacy enum (`vermilion|indigo|plum|ochre`). Matches
-  the existing theme-toggle precedent (also localStorage-only). To sync: extend the server
-  prefs enum to accept `coral|blue|mint` and POST it, then read it back on load.
+- **Accent cross-device sync — RESOLVED (2026-07-09, `feat/settings-accent-sync`)** — the
+  server `PrefsSchema.accent` now accepts `coral|blue|mint` (default `coral`) with a
+  `.catch('coral')` so a stored/PUT legacy id (`vermilion|indigo|plum|ochre`) coerces
+  instead of 400ing or wiping the blob. The Settings screen adopts the server accent on
+  `/settings/prefs` hydration (localStorage fast-path + no-flash bootstrap keep the
+  same-device instant paint) and carries user picks in the debounced prefs PUT
+  (`palette.accent`). Accent remains a `data-accent` attribute only — no inline CSS-var
+  projection.
 - **Mint focus-ring contrast (new, P3)** — under the non-default Mint accent in light
   theme, the focus-ring outline measures ~2.86:1 against the raw page background (below the
   WCAG 1.4.11 3:1 non-text floor); it passes (3.39:1) on the more common card/nav surfaces.
@@ -312,12 +315,13 @@ Paper trail: `db/docs/reviews/redesign-v2/`. Shipped PASS.
 - **`--paper-mute` on white ≈2.56:1 (pre-existing)** — the muted meta/eyebrow text hue fails
   AA as small text on white; it's decorative secondary text and predates the redesign, but
   deepen it (or bump weight/size) for a clean AA sweep.
-- **Settings pre-hydration PUT can clobber the legacy `palette` blob** — `Settings.tsx`'s
-  debounced prefs PUT can fire before `GET /settings/prefs` hydration completes and overwrite
-  the server-stored (now-dead) `palette` field with `LEGACY_PALETTE_DEFAULT`. Harmless today
-  (nothing reads it), but a real data-clobber if that field is ever consumed. Guard the PUT
-  until hydration lands, or drop the wire `palette` field once the server schema stops
-  requiring it.
+- **Settings pre-hydration PUT can clobber the legacy `palette` blob — RESOLVED
+  (2026-07-09, `feat/settings-accent-sync`)** — the debounced prefs PUT is now gated on the
+  `prefsHydratedRef` latch: no PUT fires until the initial `GET /settings/prefs` settles
+  (real, non-mock), so the seeded `LEGACY_PALETTE_DEFAULT`/default baselines can never
+  overwrite the stored blob. Pre-hydration edits stay durable in localStorage; server wins
+  on load (unchanged semantic); post-hydration edits sync promptly. Mattered doubly once
+  `palette.accent` became a live consumed field (accent cross-device sync, same branch).
 
 ### Redesign PR2 residual (2026-07-09, P3)
 - **Remaining sumi-ink shadows/radii — RESOLVED (2026-07-09, `feat/redesign-polish-final`)** —

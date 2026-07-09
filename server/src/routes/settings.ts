@@ -15,8 +15,10 @@
  *     the session user — so cross-user access is structurally impossible.
  *   - Mass-assignment / unknown-key injection: PrefsSchema is `.strict()` at
  *     every level, so an unknown key or a bad enum is a clean 400 (validateBody)
- *     and never reaches the JSONB column. The whole blob is replaced, not
- *     merged, so a crafted partial can't smuggle extra keys past the schema.
+ *     and never reaches the JSONB column. (One deliberate exception: a legacy/
+ *     unknown `palette.accent` coerces to 'coral' instead of 400ing — see the
+ *     AccentPreset doc-comment.) The whole blob is replaced, not merged, so a
+ *     crafted partial can't smuggle extra keys past the schema.
  *   - Corrupt/legacy stored blob: a pre-schema or hand-edited blob that fails
  *     PrefsSchema.safeParse on READ falls back to DEFAULT_PREFS (logged at warn),
  *     never a 500 — the user's own bad data must not break their Settings screen.
@@ -38,13 +40,28 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 // PrefsSchema — mirrors the client domain.ts NotifPrefs/PalettePrefs EXACTLY.
 //
-// The preset enums are the SAME closed sets the client's palette picker offers;
-// keeping them in lockstep is what lets the server reject a tampered/unknown
-// value as a 400 instead of persisting a palette the client can't render.
+// The preset enums are the SAME closed sets the client offers; keeping them in
+// lockstep is what lets the server reject a tampered/unknown value as a 400
+// instead of persisting a palette the client can't render. `accent` is the one
+// deliberate exception — see its doc-comment below.
 // ---------------------------------------------------------------------------
 
 const PaperPreset = z.enum(['hanji', 'ivory', 'linen', 'sumi']);
-const AccentPreset = z.enum(['vermilion', 'indigo', 'plum', 'ochre']);
+
+/**
+ * Accent — the Seoul-neon accent picker ids (Redesign §14a), server-synced so
+ * the user's choice follows them across devices (the client stamps the value
+ * as `data-accent` on `<html>`; the server only stores the id).
+ *
+ * `.catch('coral')` instead of the hard-400 posture the sibling enums use:
+ * existing stored blobs (and stale clients mid-rolling-deploy) carry a LEGACY
+ * accent id (`vermilion|indigo|plum|ochre`). A hard enum would make the
+ * GET-side safeParse fail on the user's own stored blob — wiping their WHOLE
+ * prefs back to DEFAULT_PREFS — and would 400 a stale client's PUT. Coercing
+ * any legacy/unknown accent to the 'coral' default preserves the rest of the
+ * blob on both paths; the next PUT then persists a valid id.
+ */
+const AccentPreset = z.enum(['coral', 'blue', 'mint']).catch('coral');
 const CorrectPreset = z.enum(['moss', 'pine', 'teal']);
 const WrongPreset = z.enum(['vermilion', 'amber', 'slate']);
 
@@ -131,7 +148,7 @@ export type Prefs = z.infer<typeof PrefsSchema>;
  */
 const DEFAULT_PREFS: Prefs = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
-  palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
 };
 

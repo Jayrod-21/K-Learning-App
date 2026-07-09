@@ -16,7 +16,7 @@ const PREFS: Prefs = {
     daily: false,
     weekly: true,
   },
-  palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
 };
 
