@@ -44,9 +44,26 @@ import type {
  */
 export interface Prefs {
   notif: NotifPrefs;
+  /** WIRE-ONLY since the v2 flatten: the paper/correct/wrong palette UI was
+   *  removed and nothing renders or projects these ids anymore, but the
+   *  server `PrefsSchema` still requires the field (back-compat with stored
+   *  blobs). The client echoes the last value the server reported — or
+   *  `LEGACY_PALETTE_DEFAULT` before hydration — on every PUT. */
   palette: PalettePrefs;
   languageDisplay: LanguageDisplayPrefs;
 }
+
+/**
+ * Default palette ids for the wire `palette` field (mirrors the server's
+ * DEFAULT_PREFS.palette). Used only to seed the PUT body before the first
+ * successful GET hydration; after that the client echoes the stored value.
+ */
+export const LEGACY_PALETTE_DEFAULT: PalettePrefs = {
+  paper: 'hanji',
+  accent: 'vermilion',
+  correct: 'moss',
+  wrong: 'vermilion',
+};
 
 /** GET /settings/prefs → the user's stored prefs (or server defaults). */
 export async function fetchPrefs(signal?: AbortSignal): Promise<Prefs> {

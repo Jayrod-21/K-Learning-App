@@ -1,14 +1,17 @@
 /**
  * SettingsProvider — owns the user-preferences state (profile, notif,
- * palette, languageDisplay), persists to `localStorage["km.settings"]`, and
- * projects the selected palette presets + the language-display sub-text
- * scale (`--lang-sub-scale`, P3a) into CSS custom properties on `<html>`.
+ * languageDisplay), persists to `localStorage["km.settings"]`, and projects
+ * the language-display sub-text scale (`--lang-sub-scale`, P3a) as a CSS
+ * custom property on `<html>`.
  *
  * Mounted alongside `<ThemeProvider/>` (light/dark) under the app shell.
- * The two are independent: theme flips `data-theme` (which the CSS token
- * block reads), settings injects per-preset overrides as inline custom
- * properties on `<html>`. Cascade order ensures the inline style wins
- * over the dark/light defaults, so the user's choice always renders.
+ *
+ * v2 flatten: the paper/correct/wrong palette feature — and with it the
+ * whole inline CSS-variable projection (`applyPaletteVars` + its
+ * ALLOWED_VARS allowlist) — was removed. Appearance is now theme
+ * (`data-theme`, ThemeProvider) + accent (`data-accent`, AccentProvider)
+ * only; `--moss` / `--danger` are fixed theme tokens in index.css. The one
+ * remaining `<html>` projection is the self-owned `--lang-sub-scale` key.
  *
  * Threat model — storage I/O:
  *   - **Corrupt JSON** — `loadSettings` returns `DEFAULT_SETTINGS` on
@@ -17,17 +20,14 @@
  *   - **Quota exhaustion** — `saveSettings` swallows DOMException with a
  *     `console.warn`. In-memory state remains correct for the session.
  *   - **Cross-tab race** — NOT addressed in Pass 2. Two tabs both editing
- *     palette can clobber each other. Pass 9 will add a `storage` event
+ *     settings can clobber each other. Pass 9 will add a `storage` event
  *     listener (and decide last-writer-wins vs deep-merge).
- *   - **DOM property pollution** — the set of properties we touch is
- *     bounded by the preset `vars` maps (no untrusted keys, ever — we
- *     only ever apply our own constants).
  *
  * Persist debouncing:
- *   200ms via setTimeout/clearTimeout. Rapid drags across the SwatchPicker
- *   keyboard navigation would otherwise hammer `localStorage`. The cleanup
- *   on unmount flushes any pending write so a navigation immediately after
- *   a change still persists.
+ *   200ms via setTimeout/clearTimeout. Rapid keyboard nav across the
+ *   controls would otherwise hammer `localStorage`. The cleanup on unmount
+ *   flushes any pending write so a navigation immediately after a change
+ *   still persists.
  */
 import {
   useCallback,
@@ -43,7 +43,6 @@ import {
   DEFAULT_SETTINGS,
   LANG_SUB_SCALE_CSS_VAR,
   loadSettings,
-  paletteVars,
   saveSettings,
   type Settings,
 } from '../lib/settings';
@@ -53,84 +52,7 @@ import {
   type SettingsPatch,
 } from './settings-context';
 
-/**
- * Closed set of CSS variable names this Provider may touch on the document
- * element. Anything not in here is left alone — this is what guarantees
- * Pass 1 theme tokens are never accidentally clobbered when a preset map
- * grows.
- *
- * If a new preset key is added, extend this list AND update the threat
- * model in the header.
- */
-const ALLOWED_VARS = new Set<string>([
-  // Paper category
-  '--ink',
-  '--ink-1',
-  '--ink-2',
-  '--ink-3',
-  '--paper',
-  '--paper-dim',
-  '--paper-mute',
-  '--paper-faint',
-  '--line',
-  '--line-strong',
-  // Accent category — REMOVED (Seoul Neon redesign). The accent is owned
-  // by AccentProvider's `data-accent` attribute + the `[data-accent]` CSS
-  // blocks; an inline `--vermilion` here would beat them in the cascade.
-  // Keeping the tokens out of the allowlist guarantees no legacy blob can
-  // re-freeze the accent.
-  // Correct category. (The hanji-era `--green`/`--green-light` aliases were
-  // dropped — nothing in the stylesheet reads them anymore; only --moss*
-  // are live tokens.)
-  '--moss',
-  '--moss-soft',
-  // Wrong category
-  '--danger',
-  '--danger-soft',
-]);
-
 const PERSIST_DEBOUNCE_MS = 200;
-
-/**
- * Tracks the set of CSS custom-property keys this Provider has previously
- * written to `<html>` inline style. On every preset switch we clear the
- * keys we wrote last time but the new preset doesn't declare, so a stale
- * `--gold-soft` from a previous accent can't leak into the new accent's
- * cascade.
- *
- * Module-level rather than a ref because there's only ever one
- * `documentElement` and one Provider tree per page; the trade-off (no
- * isolation across multiple SSR contexts) doesn't apply to a CSR-only
- * SPA. If we ever ship SSR, hoist this into a ref keyed by the Provider.
- */
-const writtenVars = new Set<string>();
-
-/**
- * Apply the resolved palette vars to `<html>` inline style. Clears any
- * previously-written keys the new preset doesn't declare so the cascade
- * doesn't keep stale values around.
- *
- * Keeps the cascade predictable — `documentElement.style.setProperty`
- * sets an inline style, which beats both the `:root` and `[data-theme]`
- * blocks in `index.css`.
- */
-function applyPaletteVars(vars: Record<string, string>): void {
-  const el = document.documentElement;
-  const nextKeys = new Set<string>();
-  for (const [k, v] of Object.entries(vars)) {
-    if (!ALLOWED_VARS.has(k)) continue; // defence-in-depth allowlist
-    el.style.setProperty(k, v);
-    nextKeys.add(k);
-  }
-  // Clear keys we wrote last call that this call did not — prevents
-  // stale tokens sticking when the user picks a preset with fewer
-  // overrides than the previous one.
-  for (const k of writtenVars) {
-    if (!nextKeys.has(k)) el.style.removeProperty(k);
-  }
-  writtenVars.clear();
-  for (const k of nextKeys) writtenVars.add(k);
-}
 
 export function SettingsProvider({
   children,
@@ -174,21 +96,11 @@ export function SettingsProvider({
     };
   }, []);
 
-  // Project palette into CSS custom properties whenever palette changes.
-  // We rerun on the palette object identity — `updateSettings` creates a
-  // fresh `palette` ref on changes that touch it (and only then), so this
-  // does not fire on profile-only edits.
-  useEffect(() => {
-    applyPaletteVars(paletteVars(settings.palette));
-  }, [settings.palette]);
-
   // Project the language-display sub-text scale into a CSS custom property on
-  // `<html>` (P3a) — the same inline-style projection the palette uses, but
-  // kept OUT of `applyPaletteVars`: that function clears any key the current
-  // call doesn't declare, so routing this var through it would let a
-  // palette-only update erase the scale. One fixed, self-owned key needs no
-  // allowlist bookkeeping. `clampSubScale` re-clamps defensively so a stale
-  // out-of-range localStorage value can never reach the cascade.
+  // `<html>` (P3a) — the Provider's ONE remaining inline projection (the
+  // palette projection was removed in the v2 flatten). One fixed, self-owned
+  // key needs no allowlist bookkeeping. `clampSubScale` re-clamps defensively
+  // so a stale out-of-range localStorage value can never reach the cascade.
   useEffect(() => {
     document.documentElement.style.setProperty(
       LANG_SUB_SCALE_CSS_VAR,

@@ -88,8 +88,12 @@ function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
         })}
       </div>
 
+      {/* v2 flatten: the explanation is a plain inset panel, NOT a nested
+          <Card variant="flat"> — a card must never contain another card
+          (the flat card's shadow read as a tile floating on a tile).
+          Surface + padding come from .km-mistakes__explain (Mistakes.css). */}
       {item.explanation !== '' ? (
-        <Card variant="flat" className="km-mistakes__explain">
+        <div className="km-mistakes__explain">
           {correct !== undefined ? (
             <p className="km-mistakes__answer">
               <Bilingual en="Correct answer" kr="정답" />:{' '}
@@ -97,7 +101,7 @@ function MistakeCard({ mistake }: { mistake: Mistake }): JSX.Element {
             </p>
           ) : null}
           <p className="km-mistakes__explain-text">{item.explanation}</p>
-        </Card>
+        </div>
       ) : null}
 
       {/* F-020: hand this miss to the Chat tutor for an AI follow-up. */}

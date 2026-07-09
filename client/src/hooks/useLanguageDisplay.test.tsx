@@ -93,12 +93,11 @@ describe('SettingsProvider — --lang-sub-scale projection', () => {
     ).toBe('0.7');
   });
 
-  it('a palette-only settings update leaves --lang-sub-scale intact', () => {
-    // Regression pin for the ALLOWED_VARS invariant: `applyPaletteVars`
-    // clears every var it previously wrote that the new preset doesn't
-    // declare, so if --lang-sub-scale ever entered the palette path (e.g.
-    // someone adds it to ALLOWED_VARS or routes it through paletteVars), a
-    // palette swap would erase it. This test fails the moment that happens.
+  it('an unrelated settings update leaves --lang-sub-scale intact', () => {
+    // v2 flatten: the palette projection is gone, so the old "palette-only
+    // update can't erase the scale" pin becomes: NO unrelated settings
+    // update may touch the var, and nothing else ever inline-writes theme
+    // tokens (--danger stays owned by the index.css token blocks).
     seed({ mode: 'both', primary: 'ko', subScale: 0.55 });
     const { result } = renderHook(() => useSettings(), { wrapper });
     expect(
@@ -108,17 +107,14 @@ describe('SettingsProvider — --lang-sub-scale projection', () => {
     act(() => {
       result.current.updateSettings((prev) => ({
         ...prev,
-        // Seoul Neon: accent presets no longer project — use the wrong
-        // category, which still writes inline overrides, to force a
-        // palette projection pass.
-        palette: { ...prev.palette, wrong: 'slate' },
+        notif: { ...prev.notif, daily: !prev.notif.daily },
       }));
     });
 
-    // The palette projection ran (wrong-category vars rewritten)…
+    // No inline theme token landed (the provider projects ONLY the scale)…
     expect(
       document.documentElement.style.getPropertyValue('--danger'),
-    ).toBe('#4A4A55');
+    ).toBe('');
     // …and the language-display scale survived untouched.
     expect(
       document.documentElement.style.getPropertyValue(LANG_SUB_SCALE_CSS_VAR),
