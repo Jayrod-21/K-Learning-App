@@ -33,18 +33,27 @@ import { Icon } from './Icon';
 export interface BottomNavProps {
   /** True when the LearnMenu is open — drives `aria-expanded` + styling. */
   learnOpen: boolean;
+  /**
+   * True while the LearnMenu plays its exit cascade (Shell's 'closing'
+   * phase). `aria-expanded` already reads false — the close was requested
+   * — but the hexagon needs to know so its idle float stays paused while
+   * the 180°→0° un-spin transition runs (the float animation restarting
+   * mid-spin would bob the hexagon while it rotates).
+   */
+  learnClosing: boolean;
   /** Called when the user taps the LEARN hexagon (toggle). */
   onToggleLearn: () => void;
   /**
    * DOM id of the LearnMenu panel, for `aria-controls`. Only wired while
-   * the menu is open (an `aria-controls` pointing at a non-existent id is
-   * an a11y defect).
+   * the panel is mounted — open OR playing its close-out (an
+   * `aria-controls` pointing at a non-existent id is an a11y defect).
    */
   learnMenuId: string;
 }
 
 export function BottomNav({
   learnOpen,
+  learnClosing,
   onToggleLearn,
   learnMenuId,
 }: BottomNavProps): JSX.Element {
@@ -95,12 +104,16 @@ export function BottomNav({
         type="button"
         className={cn(
           'km-bottomnav__hex',
+          // --open drives the 180° spin (transitioned, so dropping it on
+          // close plays the un-spin); --closing only holds the idle float
+          // off while that un-spin runs.
           learnOpen && 'km-bottomnav__hex--open',
+          learnClosing && 'km-bottomnav__hex--closing',
           (learnOpen || onLearnSubpage) && 'km-bottomnav__hex--current',
         )}
         aria-haspopup="dialog"
         aria-expanded={learnOpen}
-        aria-controls={learnOpen ? learnMenuId : undefined}
+        aria-controls={learnOpen || learnClosing ? learnMenuId : undefined}
         aria-label="Learn · 배움"
         onClick={onToggleLearn}
       >

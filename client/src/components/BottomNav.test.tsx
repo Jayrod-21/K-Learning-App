@@ -13,7 +13,11 @@ import type { LanguageDisplayPrefs } from '../types/domain';
 
 function renderNavAt(
   path: string,
-  { learnOpen = false, onToggleLearn = vi.fn() } = {},
+  {
+    learnOpen = false,
+    learnClosing = false,
+    onToggleLearn = vi.fn(),
+  } = {},
 ): { onToggleLearn: ReturnType<typeof vi.fn> } {
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -23,6 +27,7 @@ function renderNavAt(
           element={
             <BottomNav
               learnOpen={learnOpen}
+              learnClosing={learnClosing}
               onToggleLearn={onToggleLearn}
               learnMenuId="learn-menu-test"
             />
@@ -105,6 +110,20 @@ describe('BottomNav (P1.1)', () => {
     ).not.toHaveAttribute('aria-current');
   });
 
+  it('closing phase: aria-expanded already false, spin class dropped, float held off, controls still wired', () => {
+    renderNavAt('/', { learnClosing: true });
+    const hex = screen.getByRole('button', { name: 'Learn · 배움' });
+    // AT hears the menu as closed the moment the close is REQUESTED…
+    expect(hex).toHaveAttribute('aria-expanded', 'false');
+    // …the un-spin plays (no --open), with --closing pausing the idle
+    // float so it can't bob mid-rotation…
+    expect(hex.className).not.toContain('km-bottomnav__hex--open');
+    expect(hex.className).toContain('km-bottomnav__hex--closing');
+    // …and aria-controls stays wired: the panel is still MOUNTED while the
+    // exit cascade plays.
+    expect(hex).toHaveAttribute('aria-controls', 'learn-menu-test');
+  });
+
   it('there is no "More" opener any more (retired with MoreSheet)', () => {
     renderNavAt('/');
     expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
@@ -128,6 +147,7 @@ function renderNavWithLang(languageDisplay: LanguageDisplayPrefs): void {
             element={
               <BottomNav
                 learnOpen={false}
+                learnClosing={false}
                 onToggleLearn={vi.fn()}
                 learnMenuId="learn-menu-test"
               />

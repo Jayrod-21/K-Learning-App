@@ -1,10 +1,14 @@
 /**
  * LearnMenu (P1.1 + Modern Seoul honeycomb) — upward study launcher: renders
  * all 7 LEARN sub-pages as hex-tile buttons in a 2-3-2 honeycomb, navigates
- * + closes on tile tap, closes on scrim tap and Esc.
+ * + closes on tile tap, closes on scrim tap and Esc. Close-out (motion
+ * polish): a `closing` prop swaps the entrance cascade for a reverse-
+ * staggered exit and the LAST tile's animationend reports `onExited`
+ * (Shell's cue to actually unmount — see Shell.test.tsx for the full
+ * phase-machine behaviour).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -19,7 +23,11 @@ function LocationProbe(): JSX.Element {
 function renderMenu(
   onClose = vi.fn(),
   initialPath = '/',
-): { onClose: ReturnType<typeof vi.fn> } {
+  { closing = false, onExited = vi.fn() } = {},
+): {
+  onClose: ReturnType<typeof vi.fn>;
+  onExited: ReturnType<typeof vi.fn>;
+} {
   render(
     <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
@@ -28,14 +36,19 @@ function renderMenu(
           element={
             <>
               <LocationProbe />
-              <LearnMenu id="learn-menu-test" onClose={onClose} />
+              <LearnMenu
+                id="learn-menu-test"
+                onClose={onClose}
+                closing={closing}
+                onExited={onExited}
+              />
             </>
           }
         />
       </Routes>
     </MemoryRouter>,
   );
-  return { onClose };
+  return { onClose, onExited };
 }
 
 describe('LearnMenu (P1.1, honeycomb)', () => {
@@ -146,5 +159,75 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
       dialog.querySelectorAll<HTMLElement>('.km-learnmenu__hexwrap'),
     );
     expect(wraps[1]?.style.animationDelay).not.toBe('0ms');
+  });
+});
+
+describe('LearnMenu — close-out (honeycomb motion polish)', () => {
+  /** All 7 tile wrappers in DOM order (row-by-row, left-to-right). */
+  function getWraps(): HTMLElement[] {
+    const dialog = screen.getByRole('dialog', { name: '배움 · Learn' });
+    return Array.from(
+      dialog.querySelectorAll<HTMLElement>('.km-learnmenu__hexwrap'),
+    );
+  }
+
+  it('closing swaps to the exit cascade: --closing modifier + reverse row stagger (top row first)', () => {
+    renderMenu(vi.fn(), '/', { closing: true });
+    // Root carries the modifier that switches every tile to the exit
+    // animation and turns pointer-events off (display-only exit).
+    expect(document.querySelector('.km-learnmenu--closing')).not.toBeNull();
+    // Reverse stagger: the top row (which appeared LAST) leaves first;
+    // 2-3-2 rows → delays 0/0, mid/mid/mid, max/max in DOM order, strictly
+    // increasing row by row with the bottom row last.
+    const delays = getWraps().map((w) =>
+      Number.parseInt(w.style.animationDelay, 10),
+    );
+    expect(delays).toHaveLength(7);
+    expect(delays[0]).toBe(0);
+    expect(delays[1]).toBe(0);
+    expect(new Set(delays.slice(2, 5)).size).toBe(1);
+    expect(delays[2]).toBeGreaterThan(0);
+    expect(delays[5]).toBeGreaterThan(delays[2] ?? 0);
+    expect(delays[6]).toBe(delays[5]);
+  });
+
+  it("reports onExited when the LAST tile's exit animation ends — and only then", () => {
+    const { onExited } = renderMenu(vi.fn(), '/', { closing: true });
+    const wraps = getWraps();
+    // Other tiles finishing must not unmount the menu early…
+    fireEvent.animationEnd(wraps[0] as HTMLElement);
+    fireEvent.animationEnd(wraps[3] as HTMLElement);
+    expect(onExited).not.toHaveBeenCalled();
+    // …the sentinel is the final tile of the bottom row (largest delay —
+    // it finishes last).
+    fireEvent.animationEnd(wraps[6] as HTMLElement);
+    expect(onExited).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores the sentinel animationend while NOT closing (entrance must not unmount)', () => {
+    const { onExited } = renderMenu(vi.fn(), '/', { closing: false });
+    const wraps = getWraps();
+    fireEvent.animationEnd(wraps[6] as HTMLElement);
+    expect(onExited).not.toHaveBeenCalled();
+  });
+
+  it('ignores bubbled child animationend on the sentinel (target guard)', () => {
+    const { onExited } = renderMenu(vi.fn(), '/', { closing: true });
+    const wraps = getWraps();
+    const childButton = (wraps[6] as HTMLElement).querySelector('button');
+    fireEvent.animationEnd(childButton as HTMLElement);
+    expect(onExited).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dialog + Esc wiring live while closing (focus restore waits for the real unmount)', async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderMenu(vi.fn(), '/', { closing: true });
+    // The dialog is still mounted mid-exit…
+    expect(
+      screen.getByRole('dialog', { name: '배움 · Learn' }),
+    ).toBeInTheDocument();
+    // …and a repeat Esc still routes to onClose (Shell no-ops it there).
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
