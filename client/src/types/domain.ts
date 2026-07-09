@@ -2040,3 +2040,52 @@ export interface Page {
   id: string;
   pageNumber: number;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Reading — U3b digitized chapter reader (`reading_chapters` /
+// `reading_passages`, migration 044). Read-only: a literature `BookUpload`
+// (see above) is OCR'd + curated into chapters of tappable passages.
+// `services/reading.ts` is the wire↔domain boundary; unlike `BookUpload`'s
+// wire-string ids, `routes/reading.ts` already returns every id as a JSON
+// number (it does the BIGINT→Number conversion server-side), so no `id:
+// string` split is needed here.
+
+/**
+ * One chapter of a digitized book, as the chapter-list endpoint
+ * (`GET /reading/chapters?source_upload_id=`) returns it — the reader's
+ * chapter selector. `title` is null for books whose chapters aren't
+ * individually titled (falls back to `Chapter {chapterNumber}` in the UI).
+ */
+export interface ReadingChapterSummary {
+  id: number;
+  chapterNumber: number;
+  title: string | null;
+  /** 1-based page range on the original scan (`book_pages.page_number`),
+   *  null until the OCR/curation pass links a chapter to its scan pages. */
+  startPage: number | null;
+  endPage: number | null;
+}
+
+/**
+ * One chapter's full metadata, as the chapter-detail endpoint
+ * (`GET /reading/chapters/:id`) returns it — adds `sourceUploadId` (the
+ * owning `BookUpload.id`, as a number) over `ReadingChapterSummary`, needed
+ * to link back to the original-scan viewer (`/uploads/:id`).
+ */
+export interface ReadingChapter extends ReadingChapterSummary {
+  sourceUploadId: number;
+}
+
+/**
+ * One paragraph/passage within a chapter (`reading_passages`) — the
+ * reader's tap-to-define unit and the per-passage progress/graded-passage
+ * reuse key (see `db/docs/U3_READER_DESIGN.md` §U3b). `body` is the OCR'd +
+ * curated text and may contain internal `\n`s that the reader preserves
+ * visually rather than collapsing.
+ */
+export interface ReadingPassage {
+  id: number;
+  passageNumber: number;
+  body: string;
+  pageNumber: number | null;
+}

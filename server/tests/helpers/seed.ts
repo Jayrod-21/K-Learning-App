@@ -722,6 +722,64 @@ export async function seedBookPage(
   return Number(rows[0]!.id);
 }
 
+/**
+ * Seed a single reading_chapters row (U3b, digitized chapter reader —
+ * migration 044). Returns the new chapter id. `userId` MUST be the owner of
+ * `uploadId` (the migration-044 composite FK rejects any other user_id), so
+ * pass the same userId you seeded the book_upload with.
+ */
+export async function seedReadingChapter(
+  pool: Pool,
+  userId: number,
+  uploadId: number,
+  opts: {
+    chapterNumber?: number;
+    title?: string | null;
+    startPage?: number | null;
+    endPage?: number | null;
+  } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO reading_chapters
+       (source_upload_id, user_id, chapter_number, title, start_page, end_page)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
+    [
+      uploadId,
+      userId,
+      opts.chapterNumber ?? 1,
+      opts.title === undefined ? 'Chapter' : opts.title,
+      opts.startPage ?? null,
+      opts.endPage ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
+ * Seed a single reading_passages row under a chapter (migration 044). Returns
+ * the new passage id.
+ */
+export async function seedReadingPassage(
+  pool: Pool,
+  chapterId: number,
+  opts: { passageNumber?: number; body?: string; pageNumber?: number | null } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO reading_passages
+       (chapter_id, passage_number, body, page_number)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [
+      chapterId,
+      opts.passageNumber ?? 1,
+      opts.body ?? '안녕하세요. 반갑습니다.',
+      opts.pageNumber ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,

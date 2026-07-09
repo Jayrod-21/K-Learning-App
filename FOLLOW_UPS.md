@@ -265,3 +265,25 @@ From the F-UP-010-full re-review (PASS WITH CONDITIONS — not blockers):
   testcontainer to assert the "corpus not loaded" error, so it fails when run
   alongside its `schema`-fixture module-mates (passes in isolation). Fix = give that
   one test an isolated DB/schema, then drop the last `--ignore`.
+
+## U3b (digitized chapter reader) — /fixpass re-review residuals (2026-07-08, all P3)
+Paper trail: `db/docs/reviews/u3b-reader/`. All non-blocking; U3b shipped PASS.
+- **README migration-table backfill** — `db/migrations/README.md`'s table was missing
+  040/042/043 (U3b added 044). Backfill the three older rows.
+- **Constraint-guard idempotency sweep** — migration 044 wrapped its `ADD CONSTRAINT`
+  in a `DO $$ … IF NOT EXISTS (pg_constraint) … $$` guard; migrations 029 and 038 have
+  the same un-guarded gap. Sweep + guard them so a manual re-apply doesn't error.
+- **ADR-019 addendum** — document why `load_literature.py` is deliberately NOT wired
+  into `load_to_postgres.py`'s corpus-enum dispatch (literature has no `corpus` enum
+  slot / no `load_state` checkpoint).
+- **reading.ts header cross-reference (NIT)** — `server/src/routes/reading.ts`'s header
+  doesn't mention migration 044's `COMMENT ON CONSTRAINT` caveat that the composite FK
+  does NOT enforce `book_uploads.type = 'literature'` (loader/route enforced). Add a
+  one-line cross-reference.
+
+## U3c (fast-follow — already planned in db/docs/U3_READER_DESIGN.md)
+- **Tap-handler de-dup** — migrate `Ttmik.tsx` + `Images.tsx` onto the new
+  `client/src/hooks/useTapWord.ts` (they still carry their own copies of the machine).
+- **"View original scan" deep-link** — `UploadViewer` has no page-number route param, so
+  the reader's scan link opens at page 1 instead of the chapter's `start_page`. Add a
+  page param to `UploadViewer` + thread `chapter.start_page` through.
