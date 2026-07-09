@@ -1,12 +1,16 @@
 /**
- * TianGrid — CSS-only calligraphy practice square (田 grid).
+ * TianGrid — CSS-only calligraphy practice square (田 grid). A FUNCTIONAL
+ * stroke-placement guide, not decoration.
  *
- * Vermilion crosshair (vertical + horizontal centerline) plus a rotated
- * dashed square that becomes the diagonals once inscribed. Stamped behind the
- * featured hanja on the Hanja Today view to evoke a 한자 practice page.
+ * Crosshair (vertical + horizontal centerline) plus a rotated dashed square
+ * that becomes the diagonals once inscribed. Rendered behind the featured
+ * hanja on the Hanja Today view. Seoul restyle: the strokes read the
+ * neutral `--paper-mute` ink (faint pencil guides) instead of the old
+ * hanji vermilion; structure and function unchanged.
  *
  * Pure CSS — no SVG — because the grid scales with the parent and inherits
- * the vermilion CSS variable cleanly (theme-aware without re-fetching paths).
+ * the stroke-color CSS variable cleanly (theme-aware without re-fetching
+ * paths).
  *
  * Absolute-positioned to fill the parent; the parent MUST be positioned.
  * `aria-hidden` — pure decoration.

@@ -53,7 +53,6 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
 import { Card } from '../components/Card';
 import { Bilingual } from '../components/Bilingual';
-import { CornerMark } from '../components/CornerMark';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
@@ -366,7 +365,6 @@ function EncounteredBand({
       : 0;
   return (
     <Card className="km-hanja__band">
-      <CornerMark />
       <Eyebrow>
         <Bilingual
           en={`Encountered · ${String(progress.encountered)} of ~${String(progress.targetL4)} at L4`}

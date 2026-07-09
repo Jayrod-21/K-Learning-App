@@ -318,3 +318,9 @@ Paper trail: `db/docs/reviews/redesign-v2/`. Shipped PASS.
   (nothing reads it), but a real data-clobber if that field is ever consumed. Guard the PUT
   until hydration lands, or drop the wire `palette` field once the server schema stops
   requiring it.
+
+### Redesign PR2 residual (2026-07-09, P3)
+- **Remaining sumi-ink shadows/radii** — ~14 old `rgba(27,24,19,…)` shadows + a few 4px
+  radii survive in `index.css` (e.g. `.km-hanja__feature` still 4px + rustic shadow) after
+  the motif retint. Not clashing enough to block, but a future pass should convert them to
+  the modern `--shadow*`/`--radius*` tokens for full consistency.
