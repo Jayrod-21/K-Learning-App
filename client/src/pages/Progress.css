@@ -159,6 +159,7 @@
 
 .km-progress__readout-value {
   color: var(--paper);
+  font-family: var(--font-display); /* §10 — stat numbers use the display face */
   font-weight: 600;
 }
 
@@ -263,8 +264,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-.km-progress__delta--up { color: var(--moss); }
-.km-progress__delta--down { color: var(--vermilion); }
+.km-progress__delta--up { color: var(--moss-ink); }
+.km-progress__delta--down { color: var(--danger-ink); }
 
 /* ── F-013 — word mastery ─────────────────────────────────────────────── */
 .km-mastery__summary { margin: 8px 0 14px; }
@@ -352,7 +353,7 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.km-mastery__stale { color: var(--ochre); font-size: 12px; margin: 0 0 8px; }
+.km-mastery__stale { color: var(--ochre-ink); font-size: 12px; margin: 0 0 8px; }
 .km-mastery__retry {
   background: none;
   border: none;

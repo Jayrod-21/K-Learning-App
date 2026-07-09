@@ -201,7 +201,10 @@ describe('paletteVars', () => {
     expect(vars['--vermilion']).toBeUndefined();
     expect(vars['--gold']).toBeUndefined();
     expect(vars['--moss']).toBe('#2E5B3E');
-    expect(vars['--green']).toBe('#2E5B3E');
+    // Dead hanji-era aliases were removed from the presets — nothing in the
+    // stylesheet reads --green/--green-light anymore.
+    expect(vars['--green']).toBeUndefined();
+    expect(vars['--green-light']).toBeUndefined();
     expect(vars['--danger']).toBe('#A66A1F');
   });
 

@@ -131,9 +131,11 @@ describe('SettingsProvider', () => {
     // No surface-only token leaks from a non-paper category — if the
     // allowlist were broken, an extraneous unknown key would appear.
     const touched = new Set(spy.mock.calls.map(([k]) => k));
-    // Spot-check: --green-light comes from correct; the accent's legacy
-    // --gold* tokens were removed from the allowlist and must NOT land.
-    expect(touched.has('--green-light')).toBe(true);
+    // Spot-check: --moss-soft comes from correct; the accent's legacy
+    // --gold* tokens AND the dead --green* aliases were removed from the
+    // allowlist/presets and must NOT land.
+    expect(touched.has('--moss-soft')).toBe(true);
+    expect(touched.has('--green-light')).toBe(false);
     expect(touched.has('--gold-light')).toBe(false);
     expect(touched.has('--vermilion')).toBe(false);
   });

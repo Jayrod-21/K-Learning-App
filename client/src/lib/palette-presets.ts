@@ -27,7 +27,8 @@
  *   PAPER_PRESETS — owns the surface (ink-*) + type (paper-*) + line tokens.
  *                   This is the only category that touches surface tokens.
  *   ACCENT_PRESETS — legacy ids only (not projected; see above).
- *   CORRECT_PRESETS — owns moss + green (legacy alias for parity).
+ *   CORRECT_PRESETS — owns moss. (The dead `--green`/`--green-light`
+ *                     aliases were removed — no CSS reads them.)
  *   WRONG_PRESETS — owns danger + danger-soft.
  */
 
@@ -131,8 +132,6 @@ export const CORRECT_PRESETS: PresetMap = {
     vars: {
       '--moss': '#2E5B3E',
       '--moss-soft': 'rgba(46,91,62,0.10)',
-      '--green': '#2E5B3E',
-      '--green-light': '#4A7558',
     },
   },
   teal: {
@@ -142,8 +141,6 @@ export const CORRECT_PRESETS: PresetMap = {
     vars: {
       '--moss': '#2E6E66',
       '--moss-soft': 'rgba(46,110,102,0.10)',
-      '--green': '#2E6E66',
-      '--green-light': '#4A8A82',
     },
   },
 };

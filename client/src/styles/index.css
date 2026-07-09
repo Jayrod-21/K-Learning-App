@@ -50,6 +50,23 @@
   --violet:      #7C5CFC;  --violet-soft: rgba(124,92,252,0.12);   /* Grammar (NEW) */
   --cyan:        #0EB8D6;  --cyan-soft:   rgba(14,184,214,0.12);   /* Reading (NEW) */
 
+  /* On-surface TEXT twins (§3a fix-pass) — whenever a category/accent hue
+   * is the *foreground* (pill labels, eyebrows, stat counts, icons), read
+   * the `-ink` twin instead of the raw hue. The light values are deepened
+   * so each computes ≥4.5:1 (WCAG AA) on the darkest light-theme host it
+   * sits on — its own *-soft tint composited over --ink-2, and for the
+   * accent even the 16% ghost-hover mix. The raw hues stay bright for
+   * fills, chips, borders, glows and gradients. --moss-ink / --danger-ink
+   * are color-mix-derived so they keep tracking the user-projectable
+   * CORRECT_PRESETS / WRONG_PRESETS inline overrides. */
+  --vermilion-ink: #BB183C;   /* coral accent as text (light) */
+  --indigo-ink:    #1C55FF;
+  --moss-ink:      color-mix(in srgb, var(--moss) 62%, #000);  /* #0B7756 */
+  --ochre-ink:     #965D05;
+  --violet-ink:    #643EFB;
+  --cyan-ink:      #097285;
+  --danger-ink:    color-mix(in srgb, var(--danger) 90%, #000); /* #CA1A41 */
+
   /* Legacy accent aliases — a few dev-panel styles still read --gold*.
    * Var-chained so they track whatever accent is active. (NEW) */
   --gold:       var(--vermilion);
@@ -106,6 +123,18 @@
   --violet: #9B7CFF;  --violet-soft: rgba(155,124,255,0.14);
   --cyan:   #33D6EF;  --cyan-soft:   rgba(51,214,239,0.14);
 
+  /* On-surface TEXT twins (§3a fix-pass) — dark counterparts. Brightened
+   * (or passed through) so each clears ≥4.5:1 even on the LIGHTEST dark
+   * host: its *-soft tint composited over --ink-3 (popovers/sheets).
+   * moss/ochre/cyan already clear that bar as-is and pass through. */
+  --vermilion-ink: #FF7190;   /* coral accent as text (dark) */
+  --indigo-ink:    #7AA2FF;
+  --moss-ink:      var(--moss);
+  --ochre-ink:     var(--ochre);
+  --violet-ink:    #AE96FF;
+  --cyan-ink:      var(--cyan);
+  --danger-ink:    color-mix(in srgb, var(--danger) 80%, #fff); /* #FF7190 */
+
   --line:        rgba(150, 180, 255, 0.08);
   --line-strong: rgba(150, 180, 255, 0.16);
 
@@ -134,6 +163,10 @@
  * mint's #0F9E7A only reaches ≈3.4:1 with white, so mint-light uses the
  * dark navy ink (≈5.4:1) — the same dark-ink-on-bright-fill move every
  * dark-theme fill makes. Dark fills all pair with #0A0C12 at ≥6:1.
+ * The accent AS TEXT (ghost buttons, gold pills, active nav) never reads
+ * --vermilion directly — it reads --vermilion-ink, deepened (light) /
+ * brightened (dark) per accent so small text clears AA on every host
+ * surface it can sit on (verified in the fix-pass contrast matrix).
  *
  * Cascade note: the light accent blocks are LATER in the sheet than
  * [data-theme="dark"] at equal specificity, so every dark combo needs (and
@@ -144,18 +177,21 @@
   --vermilion:        #E11D48;
   --vermilion-bright: #FF3E6C;
   --vermilion-soft:   rgba(255, 62, 108, 0.10);
+  --vermilion-ink:    #BB183C;
   --on-vermilion:     #FFFFFF;
 }
 [data-theme="dark"][data-accent="coral"] {
   --vermilion:        #FF4D74;
   --vermilion-bright: #FF6B8A;
   --vermilion-soft:   rgba(255, 77, 116, 0.14);
+  --vermilion-ink:    #FF7190;
   --on-vermilion:     #0A0C12;
 }
 [data-accent="blue"] {
   --vermilion:        #2563EB;
   --vermilion-bright: #4F7BFF;
   --vermilion-soft:   rgba(79, 123, 255, 0.10);
+  --vermilion-ink:    #1554DF;
   --on-vermilion:     #FFFFFF;
   --danger:           #E11D48;
   --danger-soft:      rgba(255, 62, 108, 0.10);
@@ -164,6 +200,7 @@
   --vermilion:        #5B8CFF;
   --vermilion-bright: #7AA2FF;
   --vermilion-soft:   rgba(91, 140, 255, 0.14);
+  --vermilion-ink:    #7AA2FF;
   --on-vermilion:     #0A0C12;
   --danger:           #FF4D74;
   --danger-soft:      rgba(255, 77, 116, 0.14);
@@ -172,6 +209,7 @@
   --vermilion:        #0F9E7A;
   --vermilion-bright: #10C79A;
   --vermilion-soft:   rgba(16, 199, 154, 0.10);
+  --vermilion-ink:    #0B7258;
   --on-vermilion:     #10141F;  /* see contrast note above */
   --danger:           #E11D48;
   --danger-soft:      rgba(255, 62, 108, 0.10);
@@ -180,6 +218,7 @@
   --vermilion:        #2BE0A6;
   --vermilion-bright: #5BF0C0;
   --vermilion-soft:   rgba(43, 224, 166, 0.14);
+  --vermilion-ink:    #5BF0C0;
   --on-vermilion:     #0A0C12;
   --danger:           #FF4D74;
   --danger-soft:      rgba(255, 77, 116, 0.14);
@@ -389,11 +428,13 @@ h1, h2 { font-family: var(--font-display); }
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
-/* Tone accents reuse the palette tokens (vermilion / moss / ink), matching
-   the ErrorCard idiom (vermilion = error). */
+/* Tone accents reuse the palette tokens (danger / moss / ink), matching
+   the ErrorCard idiom. Error tones read --danger, NOT --vermilion: --danger
+   is pinned red under the blue/mint accents (and tracks the user's
+   WRONG_PRESETS choice), so errors never re-hue to the brand accent. */
 .km-toast--error {
-  border-left-color: var(--vermilion);
-  background: var(--vermilion-soft);
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
 }
 .km-toast--success {
   border-left-color: var(--moss);
@@ -409,15 +450,17 @@ h1, h2 { font-family: var(--font-display); }
   margin-top: 1px;
   color: var(--ink-2);
 }
-.km-toast--error .km-toast__icon { color: var(--vermilion); }
-.km-toast--success .km-toast__icon { color: var(--moss); }
+.km-toast--error .km-toast__icon { color: var(--danger-ink); }
+.km-toast--success .km-toast__icon { color: var(--moss-ink); }
 
 .km-toast__message {
   flex: 1;
   margin: 0;
   font-size: 13.5px;
   line-height: 1.4;
-  color: var(--ink);
+  /* --paper (the TEXT token), not --ink: --ink is the page-background
+   * token, which as a foreground computes ~1.1:1 — invisible. */
+  color: var(--paper);
 }
 
 .km-toast__action {
@@ -426,7 +469,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 4px 10px;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   background: transparent;
   border: 1px solid var(--vermilion);
   border-radius: 3px;
@@ -448,7 +491,7 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 3px;
   cursor: pointer;
 }
-.km-toast__dismiss:hover { color: var(--ink); }
+.km-toast__dismiss:hover { color: var(--paper); }
 
 /* Install prompt — dismissible "Add to Home Screen" banner (Pass Final B3).
  *
@@ -492,7 +535,8 @@ h1, h2 { font-family: var(--font-display); }
   margin: 0 0 2px;
   font-size: 13.5px;
   font-weight: 600;
-  color: var(--ink);
+  /* --paper, not --ink — see .km-toast__message note. */
+  color: var(--paper);
 }
 .km-install__text {
   margin: 0;
@@ -580,7 +624,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-btn--gold:hover:not(:disabled) { filter: brightness(1.06); }
 .km-btn--ghost {
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   border: none;
 }
 .km-btn--ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--vermilion) 16%, transparent); }
@@ -603,10 +647,15 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
 }
 .km-pill--default { color: var(--paper-mute); background: var(--ink-2); }
-.km-pill--gold  { color: var(--vermilion); background: var(--vermilion-soft); }
-.km-pill--red   { color: var(--indigo);    background: var(--indigo-soft); }
-.km-pill--green { color: var(--moss);      background: var(--moss-soft); }
-.km-pill--ochre { color: var(--ochre);     background: var(--ochre-soft); }
+.km-pill--gold  { color: var(--vermilion-ink); background: var(--vermilion-soft); }
+/* NOTE: "--red" is a legacy pill name — it maps to --indigo (Vocab), NOT
+   the danger red. Error/danger UI reads the --danger family instead. Pill
+   text reads the -ink twins (AA on the soft chips); the chips keep the
+   bright soft tints. Future --violet/--cyan pill variants must do the
+   same (--violet-ink / --cyan-ink). */
+.km-pill--red   { color: var(--indigo-ink); background: var(--indigo-soft); }
+.km-pill--green { color: var(--moss-ink);   background: var(--moss-soft); }
+.km-pill--ochre { color: var(--ochre-ink);  background: var(--ochre-soft); }
 
 /* SealStamp ──────────────────────────────────────────────────────────── */
 .km-seal {
@@ -710,7 +759,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   font-family: inherit;
 }
-.km-bottomnav__cell--active { color: var(--vermilion); }
+.km-bottomnav__cell--active { color: var(--vermilion-ink); }
 .km-bottomnav__label {
   font-family: var(--font-display);
   font-size: 10px;
@@ -846,7 +895,7 @@ h1, h2 { font-family: var(--font-display); }
 [data-theme="dark"] .km-learnmenu__row {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
-.km-learnmenu__row[aria-current="page"] { color: var(--vermilion); }
+.km-learnmenu__row[aria-current="page"] { color: var(--vermilion-ink); }
 .km-learnmenu__rowtext {
   flex: 1;
   text-align: left;
@@ -881,7 +930,7 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 50%;
   border: 1px solid var(--line-strong);
   background: var(--ink-2);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -997,9 +1046,9 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-login__error {
   font-size: 13px;
-  color: var(--vermilion);
-  background: var(--vermilion-soft);
-  border: 1px solid var(--vermilion);
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
   border-radius: 3px;
   padding: 10px 12px;
   line-height: 1.45;
@@ -1012,7 +1061,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   border: none;
   cursor: pointer;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   font: inherit;
   font-size: 13px;
   letter-spacing: -0.005em;
@@ -1349,7 +1398,7 @@ h1, h2 { font-family: var(--font-display); }
   /* Two 1.5px strokes forming an L-bracket: top edge + right edge. Borders
    * paint inside the box, so the bracket reads as a corner notch rather than
    * a square. Vermilion currentColor keeps it theme-aware. */
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   border-top: 1.5px solid currentColor;
   border-right: 1.5px solid currentColor;
 }
@@ -1427,7 +1476,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-dim);
   white-space: nowrap;
 }
-.km-skillbar__score--meets { color: var(--moss); }
+.km-skillbar__score--meets { color: var(--moss-ink); }
 .km-skillbar__scoresep { color: var(--paper-mute); }
 .km-skillbar__track {
   position: relative;
@@ -1512,10 +1561,10 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-skillscompare__pick--active {
   background: var(--ink-1);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   box-shadow: 0 1px 0 rgba(27, 24, 19, 0.06);
 }
-.km-skillscompare__pick--ceiling { color: var(--indigo); }
+.km-skillscompare__pick--ceiling { color: var(--indigo-ink); }
 .km-skillscompare__bars {
   display: flex;
   flex-direction: column;
@@ -1603,8 +1652,8 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-dim);
   font-weight: 600;
 }
-.km-taskcard--gold .km-taskcard__skill { color: var(--vermilion); }
-.km-taskcard--red  .km-taskcard__skill { color: var(--indigo); }
+.km-taskcard--gold .km-taskcard__skill { color: var(--vermilion-ink); }
+.km-taskcard--red  .km-taskcard__skill { color: var(--indigo-ink); }
 .km-taskcard__krtag {
   font-size: 13px;
   color: var(--paper-mute);
@@ -1666,7 +1715,7 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0;
 }
 .km-hanjacell__gloss { color: var(--paper-mute); }
-.km-hanjacell__sound { color: var(--vermilion); }
+.km-hanjacell__sound { color: var(--vermilion-ink); }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Pass 2 — composite component classes.
@@ -1690,10 +1739,10 @@ h1, h2 { font-family: var(--font-display); }
 .km-tapword--active {
   background: var(--vermilion-soft);
   border-bottom-color: var(--vermilion);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 .km-tapword--mined {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   border-bottom: 1px dotted var(--vermilion);
 }
 
@@ -1827,7 +1876,7 @@ h1, h2 { font-family: var(--font-display); }
   width: 40px;
   height: 40px;
   padding: 0;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 .km-popover__drawer {
   margin-top: 16px;
@@ -1856,7 +1905,7 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.5;
 }
 .km-popover__note--contrast { margin-top: 6px; }
-.km-popover__contrast-tag { color: var(--vermilion); }
+.km-popover__contrast-tag { color: var(--vermilion-ink); }
 
 /* AudioBlock ────────────────────────────────────────────────────────── */
 .km-audioblock {
@@ -2093,8 +2142,8 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.5;
 }
 .km-topik__state--error {
-  border-color: var(--vermilion);
-  color: var(--vermilion);
+  border-color: var(--danger);
+  color: var(--danger-ink);
 }
 .km-topik__meta {
   display: flex;
@@ -2159,8 +2208,8 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--moss-soft);
 }
 .km-topik__choice--wrong {
-  border-color: var(--vermilion);
-  background: var(--vermilion-soft);
+  border-color: var(--danger);
+  background: var(--danger-soft);
 }
 .km-topik__marker {
   font-family: 'Inter', system-ui, sans-serif;
@@ -2407,7 +2456,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-mock__review-item { padding: 14px 16px; }
 .km-mock__review-item--correct { border-left: 2px solid var(--moss); }
-.km-mock__review-item--wrong { border-left: 2px solid var(--vermilion); }
+.km-mock__review-item--wrong { border-left: 2px solid var(--danger); }
 .km-mock__review-top {
   display: flex;
   align-items: center;
@@ -2421,8 +2470,8 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 12px;
   font-weight: 600;
 }
-.km-mock__verdict--correct { color: var(--moss); }
-.km-mock__verdict--wrong { color: var(--vermilion); }
+.km-mock__verdict--correct { color: var(--moss-ink); }
+.km-mock__verdict--wrong { color: var(--danger-ink); }
 .km-mock__review-prompt {
   margin: 0 0 10px;
   font-size: 15px;
@@ -2437,7 +2486,7 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 13px;
   color: var(--paper-dim);
 }
-.km-mock__review-pick--correct { color: var(--moss); }
+.km-mock__review-pick--correct { color: var(--moss-ink); }
 
 /* Diagnostic screen ──────────────────────────────────────────────────── */
 .km-diagnostic { padding: 0 18px 32px; }
@@ -2451,8 +2500,8 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.5;
 }
 .km-diagnostic__state--error {
-  border-color: var(--vermilion);
-  color: var(--vermilion);
+  border-color: var(--danger);
+  color: var(--danger-ink);
 }
 .km-diagnostic__display {
   margin: 8px 0 22px;
@@ -2589,8 +2638,8 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--moss-soft);
 }
 .km-diagnostic__choice--wrong {
-  border-color: var(--vermilion);
-  background: var(--vermilion-soft);
+  border-color: var(--danger);
+  background: var(--danger-soft);
 }
 .km-diagnostic__marker {
   font-family: 'Inter', system-ui, sans-serif;
@@ -2692,7 +2741,7 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.5;
 }
 .km-diagnostic__goal-num {
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
@@ -2713,8 +2762,8 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.5;
 }
 .km-grammar__state--error {
-  border-color: var(--vermilion);
-  color: var(--vermilion);
+  border-color: var(--danger);
+  color: var(--danger-ink);
 }
 .km-grammar__card { padding: 22px 24px; }
 .km-grammar__header {
@@ -2798,7 +2847,7 @@ h1, h2 { font-family: var(--font-display); }
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
-.km-grammar__tutor-label { color: var(--vermilion); font-weight: 500; }
+.km-grammar__tutor-label { color: var(--vermilion-ink); font-weight: 500; }
 
 /* FU-NF-42 B2: production schedule line inside the drill reveal. Subtle,
    hanji-toned, sits below the model answer. */
@@ -2905,6 +2954,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-today__queue:hover { background: rgba(184, 58, 46, 0.16); }
 .km-today__queueCount {
+  font-family: var(--font-display); /* §10 — stat numbers use the display face */
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.015em;
@@ -3032,7 +3082,7 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: -0.02em;
   margin: 0;
 }
-.km-review__en { font-size: 17px; color: var(--vermilion); font-weight: 500; }
+.km-review__en { font-size: 17px; color: var(--vermilion-ink); font-weight: 500; }
 .km-review__source { font-size: 13px; color: var(--paper-dim); font-style: italic; }
 .km-review__ex { font-size: 16px; color: var(--paper); line-height: 1.55; }
 .km-review__exEn { font-size: 12px; color: var(--paper-mute); margin-top: 4px; }
@@ -3041,7 +3091,7 @@ h1, h2 { font-family: var(--font-display); }
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 .km-review__drawer {
   padding: 12px 14px;
@@ -3079,10 +3129,10 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__rating--good:hover  { border-color: var(--indigo); }
 .km-review__rating--easy:hover  { border-color: var(--moss); }
 .km-review__ratingLabel { font-size: 14px; font-weight: 500; }
-.km-review__rating--again .km-review__ratingLabel { color: var(--vermilion); }
+.km-review__rating--again .km-review__ratingLabel { color: var(--vermilion-ink); }
 .km-review__rating--hard  .km-review__ratingLabel { color: var(--paper-mute); }
-.km-review__rating--good  .km-review__ratingLabel { color: var(--indigo); }
-.km-review__rating--easy  .km-review__ratingLabel { color: var(--moss); }
+.km-review__rating--good  .km-review__ratingLabel { color: var(--indigo-ink); }
+.km-review__rating--easy  .km-review__ratingLabel { color: var(--moss-ink); }
 .km-review__ratingSub { font-size: 11px; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
 .km-review__hint {
   text-align: center;
@@ -3189,7 +3239,7 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0.05em;
   font-variant-numeric: tabular-nums;
 }
-.km-review__due { color: var(--vermilion); }
+.km-review__due { color: var(--vermilion-ink); }
 .km-review__maturityBar {
   flex: 1;
   max-width: 100px;
@@ -3229,10 +3279,10 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 22px;
   font-weight: 700;
   border-radius: 2px;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
-.km-review__cover--grammar { color: var(--indigo); }
-.km-review__cover--mixed   { color: var(--ochre); }
+.km-review__cover--grammar { color: var(--indigo-ink); }
+.km-review__cover--mixed   { color: var(--ochre-ink); }
 .km-review__sourceMeta { flex: 1; min-width: 0; }
 .km-review__sourceName { font-size: 14px; font-weight: 500; color: var(--paper); }
 .km-review__sourcePub  { font-size: 11px; color: var(--paper-mute); margin-top: 1px; }
@@ -3266,8 +3316,8 @@ h1, h2 { font-family: var(--font-display); }
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }
-.km-review__sourceStatus--complete { color: var(--moss); }
-.km-review__sourceStatus--partial  { color: var(--vermilion); }
+.km-review__sourceStatus--complete { color: var(--moss-ink); }
+.km-review__sourceStatus--partial  { color: var(--vermilion-ink); }
 .km-review__sourceStatus--none     { color: var(--paper-faint); }
 .km-review__sourcePctBar {
   width: 50px;
@@ -3405,7 +3455,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__kindOpt--on {
   border-color: var(--vermilion);
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 .km-review__sheetFoot {
   display: flex;
@@ -3440,7 +3490,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-3);
   border-color: var(--line-strong);
 }
-.km-chat__role { margin-bottom: 4px; color: var(--vermilion); }
+.km-chat__role { margin-bottom: 4px; color: var(--vermilion-ink); }
 .km-chat__bubble--user .km-chat__role { color: var(--paper-mute); }
 .km-chat__text { font-size: 16px; color: var(--paper); line-height: 1.55; }
 .km-chat__en { font-size: 12px; color: var(--paper-mute); margin-top: 6px; font-style: italic; }
@@ -3482,7 +3532,7 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   transition: border-color 140ms, background 140ms;
 }
-.km-chat__hint:hover { border-color: var(--vermilion); color: var(--vermilion); }
+.km-chat__hint:hover { border-color: var(--vermilion); color: var(--vermilion-ink); }
 
 /* Dictionary lookup field (F-016) — compact single-word row revealed by
    the book toggle in the composer row. Input mirrors the textarea's skin
@@ -3506,7 +3556,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-3);
 }
 .km-chat__dictNotice { font-size: 13px; color: var(--paper-mute); }
-.km-chat__dictNotice--error { color: var(--vermilion); }
+.km-chat__dictNotice--error { color: var(--danger-ink); }
 
 /* Conversation sidebar (chat rework Slice 2) — collapsible left rail
    listing prior conversations, mirroring the approved overhaul mockup
@@ -3550,7 +3600,7 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   transition: color 140ms;
 }
-.km-chat__collapse:hover { color: var(--vermilion); }
+.km-chat__collapse:hover { color: var(--vermilion-ink); }
 .km-chat__newChat {
   display: flex;
   align-items: center;
@@ -3561,7 +3611,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px solid var(--vermilion);
   border-radius: 3px;
   background: transparent;
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   font-family: 'Noto Sans KR', sans-serif;
   font-size: 12px;
   font-weight: 600;
@@ -3652,7 +3702,7 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 13px;
   color: var(--paper-mute);
 }
-.km-chat__historyError { color: var(--vermilion); }
+.km-chat__historyError { color: var(--danger-ink); }
 /* "Discuss the page you were on?" popup (chat rework Slice 3) — matches
    the ink-themed thread chrome. The backdrop makes the dialog's
    aria-modal="true" honest for pointer users: the sidebar/thread behind
@@ -3757,13 +3807,14 @@ h1, h2 { font-family: var(--font-display); }
   gap: 4px;
 }
 .km-hanja__statechip-count {
+  font-family: var(--font-display); /* §10 — stat numbers use the display face */
   font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
-.km-hanja__statechip--moss .km-hanja__statechip-count { color: var(--moss); }
-.km-hanja__statechip--vermilion .km-hanja__statechip-count { color: var(--vermilion); }
+.km-hanja__statechip--moss .km-hanja__statechip-count { color: var(--moss-ink); }
+.km-hanja__statechip--vermilion .km-hanja__statechip-count { color: var(--vermilion-ink); }
 .km-hanja__statechip--mute .km-hanja__statechip-count { color: var(--paper-mute); }
 .km-hanja__statechip-label {
   font-size: 10px;
@@ -3873,7 +3924,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper);
 }
 .km-hanja__feature-gloss-kr { color: var(--paper-mute); font-family: 'Noto Sans KR', sans-serif; }
-.km-hanja__feature-gloss-sound { color: var(--vermilion); font-family: 'Noto Sans KR', sans-serif; }
+.km-hanja__feature-gloss-sound { color: var(--vermilion-ink); font-family: 'Noto Sans KR', sans-serif; }
 .km-hanja__feature-en {
   font-size: 13px;
   color: var(--paper-dim);
@@ -3899,7 +3950,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px solid var(--line);
   border-radius: 3px;
 }
-.km-hanja__compound-han { color: var(--vermilion); margin-right: 4px; }
+.km-hanja__compound-han { color: var(--vermilion-ink); margin-right: 4px; }
 .km-hanja__compound-en { font-size: 11px; color: var(--paper-mute); }
 .km-hanja__feature-foot {
   display: flex;
@@ -3962,7 +4013,7 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 24px;
   font-weight: 600;
 }
-.km-hanja__detail-sound { color: var(--vermilion); }
+.km-hanja__detail-sound { color: var(--vermilion-ink); }
 .km-hanja__detail-en {
   font-size: 13px;
   color: var(--paper-dim);
@@ -3992,7 +4043,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-hanja__detail-row:last-child { border-bottom: none; }
 .km-hanja__detail-compound-han { font-size: 22px; color: var(--paper); }
-.km-hanja__detail-han--studied { color: var(--vermilion); }
+.km-hanja__detail-han--studied { color: var(--vermilion-ink); }
 .km-hanja__detail-compound-reading { font-size: 14px; color: var(--paper); }
 .km-hanja__detail-compound-en { font-size: 11px; color: var(--paper-mute); }
 .km-hanja__detail-compound-with {
@@ -4040,7 +4091,7 @@ h1, h2 { font-family: var(--font-display); }
   height: 56px;
   border-radius: 999px;
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4145,7 +4196,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 12px;
   padding: 12px 14px;
   margin-bottom: 16px;
-  border-color: var(--vermilion);
+  border-color: var(--danger);
 }
 .km-images__upload-error-body {
   display: flex;
@@ -4456,11 +4507,13 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.km-resources__initial:hover { border-color: var(--vermilion); color: var(--ink); }
+/* Hover previews the active state (accent border + accent ink text) —
+ * the old `color: var(--ink)` was the bg token as text (~1.1:1, invisible). */
+.km-resources__initial:hover { border-color: var(--vermilion); color: var(--vermilion-ink); }
 .km-resources__initial.is-active {
   background: var(--vermilion-soft);
   border-color: var(--vermilion);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 .km-resources__list-open {
@@ -4544,7 +4597,7 @@ h1, h2 { font-family: var(--font-display); }
   height: 28px;
   border-radius: 3px;
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4616,7 +4669,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-settings__chanchip--active {
   border-color: var(--vermilion);
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 .km-settings__chanchip--disabled {
   opacity: 0.6;
@@ -4652,7 +4705,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-settings__thememode-opt--active {
   border-color: var(--vermilion);
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
 }
 
 /* Language-display control (Overhaul P3a) ────────────────────────────
@@ -4768,7 +4821,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-pwa-update__btn {
   border: 1px solid var(--vermilion);
   background: var(--vermilion-soft);
-  color: var(--vermilion);
+  color: var(--vermilion-ink);
   border-radius: 8px;
   padding: 6px 12px;
   font: inherit;

@@ -79,11 +79,11 @@ const ALLOWED_VARS = new Set<string>([
   // blocks; an inline `--vermilion` here would beat them in the cascade.
   // Keeping the tokens out of the allowlist guarantees no legacy blob can
   // re-freeze the accent.
-  // Correct category
+  // Correct category. (The hanji-era `--green`/`--green-light` aliases were
+  // dropped — nothing in the stylesheet reads them anymore; only --moss*
+  // are live tokens.)
   '--moss',
   '--moss-soft',
-  '--green',
-  '--green-light',
   // Wrong category
   '--danger',
   '--danger-soft',
