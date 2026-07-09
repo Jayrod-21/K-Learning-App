@@ -26,6 +26,7 @@ import {
   getTtmikLesson,
   getTtmikLessons,
 } from '../services/ttmik';
+import { mineWord } from '../services/vocab';
 import type {
   IyagiEpisode,
   IyagiEpisodeDetail,
@@ -46,6 +47,7 @@ vi.mock('../services/ttmik', async (importOriginal) => {
 vi.mock('../services/lemmatize', () => ({ lemmatize: vi.fn() }));
 vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
 vi.mock('../services/enrich', () => ({ enrich: vi.fn() }));
+vi.mock('../services/vocab', () => ({ mineWord: vi.fn() }));
 
 // Import after the mocks so the page binds the mocked fetchers.
 import Ttmik from './Ttmik';
@@ -149,6 +151,7 @@ beforeEach(() => {
   vi.mocked(lemmatize).mockReset();
   vi.mocked(defineEntry).mockReset();
   vi.mocked(enrich).mockReset();
+  vi.mocked(mineWord).mockReset();
 });
 
 describe('Ttmik page — browse', () => {
@@ -444,6 +447,71 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
 
     // The audio element survived the whole interaction untouched.
     expect(document.querySelector('audio')).not.toBeNull();
+  });
+
+  // U3c migration guard: the page-local add-to-bank abort contract (kept
+  // OUTSIDE useTapWord — see the hook's header) must survive the move off
+  // the inline machine: closing the popover aborts an in-flight mine POST.
+  it('closing the popover aborts an in-flight "Add to bank" request', async () => {
+    vi.mocked(lemmatize).mockResolvedValue([
+      { form: '안녕하세요.', lemma: '안녕하세요', tag: 'IC', start: 0, length: 6 },
+    ]);
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '안녕하세요',
+      entries: [
+        {
+          id: 7,
+          headword: '안녕하세요',
+          part_of_speech: 'interj.',
+          definition_korean: null,
+          definition_english: 'hello (polite)',
+          examples: [],
+        },
+      ],
+    });
+    vi.mocked(enrich).mockResolvedValue({
+      result: {
+        nuance: null,
+        usageNote: null,
+        examples: [],
+        dontConfuseWith: [],
+        proficiency: 'L1',
+      },
+    });
+    // Never resolves — lets the test observe the signal mid-flight.
+    let mineSignal: AbortSignal | undefined;
+    vi.mocked(mineWord).mockImplementation(
+      (_input: unknown, signal?: AbortSignal) => {
+        mineSignal = signal;
+        return new Promise(() => {
+          /* never settles */
+        });
+      },
+    );
+
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    const highlights = screen.getByRole('list', { name: 'Highlights' });
+    await user.click(
+      within(highlights).getByRole('button', { name: '안녕하세요.' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('hello (polite)');
+    await user.click(
+      within(dialog).getByRole('button', { name: /Add to vocab/i }),
+    );
+
+    expect(vi.mocked(mineWord)).toHaveBeenCalledWith(
+      expect.objectContaining({ lemma: '안녕하세요' }),
+      expect.any(AbortSignal),
+    );
+    expect(mineSignal?.aborted).toBe(false);
+
+    // Closing the popover must abort that same in-flight request.
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(mineSignal?.aborted).toBe(true);
   });
 
   it('returns to the browse list via the Browse button', async () => {

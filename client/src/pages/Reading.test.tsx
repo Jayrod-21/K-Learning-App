@@ -24,7 +24,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import type { JSX } from 'react';
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useParams,
+} from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import type { BookUpload } from '../types/domain';
@@ -382,6 +389,84 @@ describe('Reading — chapter reader (tap-to-define)', () => {
     // had nothing wired to abort here at all.
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(mineSignal?.aborted).toBe(true);
+  });
+});
+
+/**
+ * Route probe standing in for `UploadViewer` — renders the matched `:id`
+ * plus the query string verbatim, so the tests below assert the ACTUAL
+ * navigation the scan link performs (path + `?page=` param), not an
+ * implementation detail of `navigate`.
+ */
+function UploadViewerProbe(): JSX.Element {
+  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  return (
+    <div data-testid="upload-viewer-probe">{`${id ?? ''}${location.search}`}</div>
+  );
+}
+
+/** Like `renderReading`, but with a real `/uploads/:id` route to land on. */
+function renderReadingWithViewerRoute(): ReturnType<typeof render> {
+  return render(
+    <MemoryRouter initialEntries={['/learn/reading']}>
+      <ToastProvider>
+        <Routes>
+          <Route path="/learn/reading" element={<Reading />} />
+          <Route path="/uploads/:id" element={<UploadViewerProbe />} />
+        </Routes>
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe('Reading — "view original scan" deep-link (U3c)', () => {
+  it('threads the chapter start_page into the scan link as ?page=N', async () => {
+    const chapter = { ...CHAPTER_ONE, startPage: 5, endPage: 9 };
+    uploadsSvc.listUploads.mockResolvedValue([LITERATURE_READY]);
+    readingSvc.listChapters.mockResolvedValue([chapter]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...chapter, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 5 },
+      ],
+    });
+
+    const user = userEvent.setup();
+    renderReadingWithViewerRoute();
+    await openChapterOne(user);
+
+    await user.click(
+      screen.getByRole('button', { name: /view original scan/i }),
+    );
+
+    // `startPage` IS `book_pages.page_number` (the loader wrote it as such),
+    // so the value threads through unmodified — no offset correction.
+    const probe = await screen.findByTestId('upload-viewer-probe');
+    expect(probe.textContent).toBe('41?page=5');
+  });
+
+  it('falls back to the bare route (page 1) when start_page is null', async () => {
+    const chapter = { ...CHAPTER_ONE, startPage: null, endPage: null };
+    uploadsSvc.listUploads.mockResolvedValue([LITERATURE_READY]);
+    readingSvc.listChapters.mockResolvedValue([chapter]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...chapter, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: null },
+      ],
+    });
+
+    const user = userEvent.setup();
+    renderReadingWithViewerRoute();
+    await openChapterOne(user);
+
+    await user.click(
+      screen.getByRole('button', { name: /view original scan/i }),
+    );
+
+    const probe = await screen.findByTestId('upload-viewer-probe');
+    expect(probe.textContent).toBe('41');
   });
 });
 

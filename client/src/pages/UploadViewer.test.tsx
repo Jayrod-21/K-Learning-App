@@ -65,9 +65,9 @@ const PAGES: Page[] = [
   { id: '105', pageNumber: 5 },
 ];
 
-function renderViewer(id = '9'): ReturnType<typeof render> {
+function renderViewer(id = '9', search = ''): ReturnType<typeof render> {
   return render(
-    <MemoryRouter initialEntries={[`/uploads/${id}`]}>
+    <MemoryRouter initialEntries={[`/uploads/${id}${search}`]}>
       <ToastProvider>
         <Routes>
           <Route path="/uploads/:id" element={<UploadViewer />} />
@@ -127,6 +127,44 @@ describe('UploadViewer — meta + page rendering', () => {
     uploadsSvc.getUpload.mockResolvedValue(PROCESSING);
     renderViewer();
     expect(await screen.findByText(/still processing/)).toBeInTheDocument();
+  });
+});
+
+// U3c deep-link: `?page=N` seeds the initial page (the reader's "view
+// original scan" threads a chapter's start_page through it). Strictly
+// validated — invalid/absent → page 1; overshoot clamps to page_count.
+describe('UploadViewer — initial page deep-link (?page=N)', () => {
+  it('opens at the requested page', async () => {
+    renderViewer('9', '?page=3');
+    expect(await screen.findByText('3 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/3');
+  });
+
+  it('clamps an out-of-range page to the page count (never requests a nonexistent page)', async () => {
+    renderViewer('9', '?page=99');
+    expect(await screen.findByText('5 / 5')).toBeInTheDocument();
+    // The one mounted <img> is the clamped page — page 99 was never requested.
+    expect(document.querySelectorAll('img')).toHaveLength(1);
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/5');
+  });
+
+  it.each(['?page=abc', '?page=0', '?page=-2', '?page=1.5'])(
+    'defaults to page 1 for the invalid param %s',
+    async (search) => {
+      renderViewer('9', search);
+      expect(await screen.findByText('1 / 5')).toBeInTheDocument();
+      expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/1');
+    },
+  );
+
+  it('leaves normal navigation intact after a deep-linked open', async () => {
+    const user = userEvent.setup();
+    renderViewer('9', '?page=3');
+    await screen.findByText('3 / 5');
+
+    await user.click(screen.getByLabelText('Previous page'));
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/2');
   });
 });
 

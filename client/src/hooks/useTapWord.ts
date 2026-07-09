@@ -1,24 +1,27 @@
 /**
  * useTapWord — the tap-anything popover state machine.
  *
- * Extracted (U3b) from `pages/Ttmik.tsx`'s `DetailView` (~lines 596-706),
- * which had this exact machine copy-pasted alongside `pages/Reading.tsx`
- * (pre-U3b) and `pages/Images.tsx`. Owns: the open popover's data + loading
- * flag, the abortable lemmatize → define → enrich chain
- * (`lib/tapChain.resolveWordPopover`), and abort-on-unmount /
- * abort-on-new-tap / abort-on-close discipline. Any screen that renders
- * tappable Korean text via `Tapword` + `WordPopover` should consume this
- * instead of re-copying the machine.
+ * Extracted (U3b) from `pages/Ttmik.tsx`'s `DetailView`, which had this
+ * exact machine copy-pasted alongside `pages/Reading.tsx` (pre-U3b). Owns:
+ * the open popover's data + loading flag, the abortable
+ * lemmatize → define → enrich chain (`lib/tapChain.resolveWordPopover`),
+ * and abort-on-unmount / abort-on-new-tap / abort-on-close discipline. Any
+ * screen that renders tappable Korean text via `Tapword` + `WordPopover`
+ * should consume this instead of re-copying the machine. Consumers today:
+ * `pages/Reading.tsx` (U3b) and `pages/Ttmik.tsx` (U3c de-dup — its inline
+ * original is gone).
  *
  * Scope note: only the OPEN → DEFINE → CLOSE machine is extracted here.
  * "Add to bank" (mine state + `POST /vocab/mine`) stays page-local — it
  * needs a toast + a `minedIds` set the caller already owns for rendering
  * `Tapword`'s underline, so folding it into this hook would just relocate
  * the coupling, not remove it (see `pages/Reading.tsx`'s own `handleAdd`
- * for the pattern this hook composes with). Ttmik.tsx's inline copy of this
- * machine is left in place — de-dup deferred to U3c per
- * `db/docs/U3_READER_DESIGN.md` §U3c, to keep this pass's blast radius
- * small — and Images.tsx's copy is likewise untouched.
+ * for the pattern this hook composes with). `pages/Images.tsx` deliberately
+ * does NOT consume this hook: its word popover opens synchronously from OCR
+ * wire data (`wordToPopover` — the words arrive glossed with the capture),
+ * with no lemmatize→define→enrich resolve and therefore no loading state or
+ * abortable chain to share; routing it through this hook would ADD network
+ * calls, not remove duplication.
  *
  * Threat model: identical to Ttmik's inline copy — every popover field
  * renders as React text children downstream (never HTML), the chain

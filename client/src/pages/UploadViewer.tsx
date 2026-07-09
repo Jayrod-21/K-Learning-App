@@ -6,6 +6,16 @@
  * server already normalized the zip/PDF into ordered page images at upload
  * time, so the viewer's only job is "show page N of M, lazily."
  *
+ * Initial-page deep-link (U3c): an optional `?page=N` query seeds the
+ * page the viewer opens at — the reader's "view original scan" link
+ * (`pages/Reading.tsx`) threads the chapter's `start_page` through it, so
+ * a chapter opens at its own scan page instead of page 1. The param is
+ * strictly validated (`parseInitialPage`): absent / non-integer / < 1 →
+ * page 1; an overshoot is clamped to `page_count` once meta arrives (no
+ * page `<img>` mounts before then, so an out-of-range seed never requests
+ * a nonexistent page). Plain `/uploads/:id` callers (the Uploads list) are
+ * untouched — no param, page 1, exactly as before.
+ *
  * Why an `<img>`, not pdf.js (the model this replaces): pdf.js needed a
  * bundled worker + `withCredentials` fetch + its own render-cancellation
  * discipline because it was rasterizing PDF bytes client-side. A page image
@@ -59,7 +69,7 @@ import {
   type CSSProperties,
   type JSX,
 } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
@@ -78,6 +88,18 @@ const DEFAULT_SCALE = 1;
 
 type MetaState = 'loading' | 'ready' | 'error';
 type PagesState = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * Parse the optional `?page=N` deep-link (see module header). Returns a
+ * positive integer, or null for absent/invalid input (non-numeric,
+ * fractional, zero, negative) — null means "no seed, open at page 1".
+ * Upper-bound clamping happens in `loadMeta`, where `page_count` is known.
+ */
+function parseInitialPage(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}
 
 /**
  * One page's `<img>`, own load/error/retry state. Keyed by the parent on
@@ -131,7 +153,11 @@ function PageImage({
 
 export default function UploadViewer(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
+
+  // The `?page=N` deep-link seed — null when absent/invalid (→ page 1).
+  const requestedPage = parseInitialPage(searchParams.get('page'));
 
   const [meta, setMeta] = useState<BookUpload | null>(null);
   const [metaState, setMetaState] = useState<MetaState>('loading');
@@ -163,19 +189,32 @@ export default function UploadViewer(): JSX.Element {
     metaCtrlRef.current?.abort();
     metaCtrlRef.current = ctrl;
     setMetaState('loading');
-    setPageNum(1);
+    // Seed from the deep-link when present (upper-bound clamp happens on
+    // meta arrival below — `page_count` isn't known yet, and no page <img>
+    // mounts before `canView`, so an overshoot never requests a page).
+    setPageNum(requestedPage ?? 1);
     getUpload(id, ctrl.signal)
       .then((upload) => {
         if (ctrl.signal.aborted) return;
         setMeta(upload);
         setMetaState('ready');
+        // Clamp the deep-linked seed to the real page count. Batched with
+        // the `setMetaState('ready')` above (same promise handler), so the
+        // viewer never paints an out-of-range page number.
+        if (requestedPage !== null && upload.pageCount && upload.pageCount > 0) {
+          setPageNum(Math.min(requestedPage, upload.pageCount));
+        }
       })
       .catch((err: unknown) => {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         setMetaState('error');
       });
-  }, [id]);
+    // `requestedPage` is a dep so navigating to the SAME upload with a
+    // different `?page=` (e.g. two chapters of one book, back-to-back via
+    // the reader's scan link) re-runs the load and re-seeds the page —
+    // otherwise the second navigation would silently keep the first's page.
+  }, [id, requestedPage]);
 
   useEffect(() => {
     // Sync-to-external-system case (mirrors the old pdf.js viewer's mount
@@ -186,7 +225,7 @@ export default function UploadViewer(): JSX.Element {
     //
     // `eslint-plugin-react-hooks`'s `set-state-in-effect` rule fires here
     // (confirmed real, not stale, via `--report-unused-disable-directives`)
-    // on the SYNCHRONOUS `setMetaState('loading')` + `setPageNum(1)` that
+    // on the SYNCHRONOUS `setMetaState('loading')` + seed `setPageNum` that
     // `loadMeta` runs BEFORE its `await` (plus the no-`id` early
     // `setMetaState('error')` branch) — NOT on anything after the await,
     // which is a separate concern already covered by the `ctrl.signal.

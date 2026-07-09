@@ -26,8 +26,9 @@
  *      Iyagi transcript) renders through the Read tab's tap-anything path:
  *      the shared `lib/tapChain.tokeniseKorean` splitter + the same
  *      `Tapword` control, so tapping a word fires the abortable
- *      lemmatize → define → enrich chain (`resolveWordPopover`) and opens
- *      the same `WordPopover` with definition / usage / examples and
+ *      lemmatize → define → enrich chain (via the shared `useTapWord` hook —
+ *      U3c de-dup; this view carried the machine's original inline copy) and
+ *      opens the same `WordPopover` with definition / usage / examples and
  *      Add-to-bank (FU-NF-33 `POST /vocab/mine`, optimistic + rollback).
  *   4. Iyagi episode detail: same persistent player + full clickable
  *      transcript; the hosts line renders from `meta.hosts`, a real
@@ -83,11 +84,11 @@ import { useToast } from '../components/useToast';
 import {
   GLOSS_DICTIONARY_ENTRY,
   GLOSS_UNAVAILABLE,
-  resolveWordPopover,
   tokeniseKorean,
 } from '../lib/tapChain';
 import { ApiError } from '../services/api';
 import { useChatContext } from '../hooks/useChatContext';
+import { useTapWord } from '../hooks/useTapWord';
 import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
 import {
@@ -593,14 +594,36 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
   // which is what keeps the <audio> element's identity stable.
   const [lessonTab, setLessonTab] = useState<LessonTab>('highlights');
 
-  // Tap-anything popover state (same machine as Reading's).
-  const [popData, setPopData] = useState<WordPopoverData | null>(null);
-  const [popLoading, setPopLoading] = useState(false);
+  // Add-to-bank state — page-local (see `useTapWord`'s header for why the
+  // hook deliberately doesn't own it).
   const [minedIds, setMinedIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  // Popover-scoped chain controller — aborted on close, new tap, unmount.
-  const inFlightCtrlRef = useRef<AbortController | null>(null);
+  // Tap-anything popover machine — the shared `useTapWord` hook (U3c: this
+  // view's inline copy of the machine, from which the hook was extracted in
+  // U3b, is replaced by the hook itself). Same contract as before: tap opens
+  // the popover with a loading stub, runs the abortable
+  // lemmatize → define → enrich chain, and aborts it on close / new tap /
+  // unmount. The chain never touches the <audio> element, so playback is
+  // unaffected by taps, resolutions, or aborts.
+  const isMined = useCallback(
+    (word: string) => minedIds.has(word),
+    [minedIds],
+  );
+  const { popData, popLoading, onTapWord, onClose } = useTapWord({ isMined });
+
+  // Add-to-bank request controller — page-local, mirroring `Reading.tsx`'s
+  // `addCtrlRef` (`useTapWord` deliberately doesn't expose its internal
+  // controller): aborted on popover close (`handleClose` below) and on
+  // unmount, so a closed popover / left screen can never land a late
+  // `setMinedIds`/`toast` from a still-in-flight "Add to bank" POST.
+  const addCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      addCtrlRef.current?.abort();
+    },
+    [],
+  );
 
   const { toast } = useToast();
 
@@ -633,77 +656,16 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     };
   }, [selection, reloadTick]);
 
-  // Abort any in-flight tap chain when the detail view unmounts (Browse /
-  // different unit) — a late resolve must not leak a setState.
-  useEffect(
-    () => () => {
-      inFlightCtrlRef.current?.abort();
-    },
-    [],
-  );
-
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
   }, []);
 
-  /**
-   * Tap on a Korean word — the Read tab's slow path verbatim: open the
-   * popover immediately with a loading stub, run the abortable
-   * lemmatize → define → enrich chain, land the resolved payload. The
-   * chain never touches the <audio> element, so playback is unaffected
-   * by taps, resolutions, or aborts.
-   */
-  const handleTapWord = useCallback<TapWordHandler>(
-    (raw, sentenceText) => {
-      inFlightCtrlRef.current?.abort();
-      const ctrl = new AbortController();
-      inFlightCtrlRef.current = ctrl;
-
-      setPopLoading(true);
-      setPopData({
-        kr: raw,
-        en: '',
-        pos: 'word',
-        ex_kr: '',
-        ex_en: '',
-        mined: minedIds.has(raw),
-      });
-
-      void resolveWordPopover(raw, sentenceText, ctrl.signal).then(
-        (popover) => {
-          // null = aborted (closed / newer tap) — paint nothing stale.
-          if (popover === null || ctrl.signal.aborted) return;
-          popover.mined = minedIds.has(popover.kr);
-          setPopData(popover);
-          setPopLoading(false);
-        },
-        () => {
-          // The chain catches its own step failures, so a rejection here is
-          // a defect belt-and-braces path — still resolve the popover to the
-          // fixed fallback rather than stranding the spinner.
-          if (ctrl.signal.aborted) return;
-          setPopData({
-            kr: raw,
-            en: GLOSS_UNAVAILABLE,
-            pos: 'word',
-            ex_kr: '',
-            ex_en: '',
-            mined: minedIds.has(raw),
-          });
-          setPopLoading(false);
-        },
-      );
-    },
-    [minedIds],
-  );
-
-  /** Close the popover and abort any still-pending chain. */
-  const handleClosePopover = useCallback((): void => {
-    inFlightCtrlRef.current?.abort();
-    inFlightCtrlRef.current = null;
-    setPopData(null);
-    setPopLoading(false);
-  }, []);
+  /** Close the popover AND abort any in-flight "Add to bank" request. */
+  const handleClose = useCallback((): void => {
+    addCtrlRef.current?.abort();
+    addCtrlRef.current = null;
+    onClose();
+  }, [onClose]);
 
   /**
    * Add-to-bank (FU-NF-33) — same optimistic-flip + rollback + fixed-copy
@@ -720,10 +682,9 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
         return next;
       });
 
-      // Reuse the popover-scoped controller so a popover close cancels the
-      // bank too; fall back to a fresh one if the chain already cleared it.
-      const ctrl = inFlightCtrlRef.current ?? new AbortController();
-      inFlightCtrlRef.current = ctrl;
+      addCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      addCtrlRef.current = ctrl;
 
       return mineWord(
         {
@@ -891,13 +852,13 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
               <HighlightsPanel
                 rows={orderedHighlights}
                 minedIds={minedIds}
-                onTapWord={handleTapWord}
+                onTapWord={onTapWord}
               />
             ) : (
               <TranscriptPanel
                 lines={orderedTranscript}
                 minedIds={minedIds}
-                onTapWord={handleTapWord}
+                onTapWord={onTapWord}
               />
             )}
           </>
@@ -906,14 +867,14 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
         <SentencesPanel
           rows={orderedSentences}
           minedIds={minedIds}
-          onTapWord={handleTapWord}
+          onTapWord={onTapWord}
         />
       )}
 
       {popData ? (
         <WordPopover
           data={popData}
-          onClose={handleClosePopover}
+          onClose={handleClose}
           onAdd={handleAdd}
           isLoading={popLoading}
         />
