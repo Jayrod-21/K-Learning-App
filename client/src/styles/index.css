@@ -442,13 +442,10 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-1);
   border: 1px solid var(--line);
   border-left: 3px solid var(--line-strong);
-  border-radius: 4px;
-  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   /* Slide+fade in; neutralised by the global prefers-reduced-motion block. */
   animation: toastIn 220ms cubic-bezier(.2, .7, .2, 1) both;
-}
-[data-theme="dark"] .km-toast {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
 /* Tone accents reuse the palette tokens (danger / moss / ink), matching
@@ -542,12 +539,9 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-1);
   border: 1px solid var(--line);
   border-left: 3px solid var(--vermilion);
-  border-radius: 4px;
-  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   animation: toastIn 220ms cubic-bezier(.2, .7, .2, 1) both;
-}
-[data-theme="dark"] .km-install {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
 
 .km-install__body {
@@ -889,6 +883,24 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
+  /* Counter-rotation (see the --open rule below): duration + easing MUST
+   * match the hex's `rotate` transition so the label un-turns in lockstep
+   * with the body's spin — net text rotation stays 0° the whole way. */
+  rotate: 0deg;
+  transition: rotate 360ms cubic-bezier(.34, .08, .26, 1);
+}
+/* Keep the "LEARN" text upright while the hexagon spins. The hex body +
+ * icon rotate 180° on open (wanted); without a counter-turn the TEXT ends
+ * upside-down. Spinning the label -180° in sync cancels the body's
+ * rotation, so the text visually holds still (upright) at both ends and
+ * throughout the spin. Close-out mirrors automatically: `--open` drops,
+ * both properties transition back (180→0 and -180→0) on the same curve.
+ * Under prefers-reduced-motion the global block zeroes durations but the
+ * STATIC values still apply — hex snaps to 180°, label to -180°, net 0° —
+ * so the text is never upside-down even with transitions off. Visual-only:
+ * the accessible name and focus ring are untouched. */
+.km-bottomnav__hex--open .km-bottomnav__hexlabel {
+  rotate: -180deg;
 }
 
 /* LearnMenu — upward-expanding study menu over the nav ───────────────── */
@@ -1140,11 +1152,8 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.22);
+  box-shadow: var(--shadow);
   animation: fade 160ms ease-out;
-}
-[data-theme="dark"] .km-chatfab {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
 /* Presence dot — the celadon accent from the mockup maps to moss. */
 .km-chatfab::after {
@@ -1749,7 +1758,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-skillscompare__pick--active {
   background: var(--ink-1);
   color: var(--vermilion-ink);
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.06);
+  box-shadow: var(--shadow-sm);
 }
 .km-skillscompare__pick--ceiling { color: var(--indigo-ink); }
 .km-skillscompare__bars {
@@ -1984,7 +1993,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-popover__backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(27, 24, 19, 0.32);
+  background: rgba(6, 8, 12, 0.32);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
   z-index: 60;
@@ -2000,8 +2009,8 @@ h1, h2 { font-family: var(--font-display); }
   width: min(calc(100% - 24px), calc(var(--shell-max-width) - 24px));
   background: var(--ink-3);
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  box-shadow: 0 20px 50px rgba(27, 24, 19, 0.18);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
   padding: 18px 20px 16px;
   z-index: 61;
   animation: rise 200ms ease-out;
@@ -2198,8 +2207,8 @@ h1, h2 { font-family: var(--font-display); }
   -webkit-backface-visibility: hidden;
   background: var(--ink-2);
   border: 1px solid var(--line);
-  border-radius: 4px;
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.04);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 .km-flashcard__face--back { transform: rotateY(180deg); }
 
@@ -2226,10 +2235,12 @@ h1, h2 { font-family: var(--font-display); }
   width: 100%;
   margin: 0 auto;
   background: var(--ink-1);
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   border-top: 1px solid var(--line-strong);
   padding: 14px 20px max(32px, env(safe-area-inset-bottom));
-  box-shadow: 0 -20px 50px rgba(27, 24, 19, 0.18);
+  /* Upward glow — the --shadow tokens are downward-offset, so this stays a
+   * literal, but on the modern navy shadow hue (not the old sumi ink). */
+  box-shadow: 0 -20px 50px rgba(40, 55, 110, 0.18);
   animation: sheetUp 240ms cubic-bezier(.2, .7, .2, 1);
   max-height: 86dvh;
   overflow-y: auto;
@@ -2296,7 +2307,7 @@ h1, h2 { font-family: var(--font-display); }
   height: 18px;
   border-radius: 999px;
   background: var(--ink-3);
-  box-shadow: 0 1px 2px rgba(27, 24, 19, 0.18);
+  box-shadow: var(--shadow-sm);
   transition: transform 160ms cubic-bezier(.2, .7, .2, 1), background 160ms;
 }
 .km-toggle--on .km-toggle__thumb {
@@ -3192,7 +3203,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__tab--active {
   background: var(--ink-1);
   color: var(--paper);
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.06);
+  box-shadow: var(--shadow-sm);
 }
 
 .km-review__strip {
@@ -3900,7 +3911,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-chat__askpopBackdrop {
   position: fixed;
   inset: 0;
-  background: rgba(27, 24, 19, 0.32);
+  background: rgba(6, 8, 12, 0.32);
   z-index: 60;
   border: none;
   cursor: pointer;
@@ -4062,12 +4073,12 @@ h1, h2 { font-family: var(--font-display); }
   text-align: left;
   background: var(--ink-1);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   position: relative;
   font-family: inherit;
   cursor: pointer;
   color: var(--paper);
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.04);
+  box-shadow: var(--shadow);
 }
 .km-hanja__feature-seal {
   position: absolute;
@@ -4999,8 +5010,8 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-3);
   border: 1px solid var(--line-strong);
   border-left: 3px solid var(--vermilion);
-  border-radius: 4px;
-  box-shadow: 0 6px 20px rgba(27, 24, 19, 0.18);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   font-size: 14px;
   color: var(--paper);
 }

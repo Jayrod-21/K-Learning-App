@@ -320,7 +320,11 @@ Paper trail: `db/docs/reviews/redesign-v2/`. Shipped PASS.
   requiring it.
 
 ### Redesign PR2 residual (2026-07-09, P3)
-- **Remaining sumi-ink shadows/radii** — ~14 old `rgba(27,24,19,…)` shadows + a few 4px
-  radii survive in `index.css` (e.g. `.km-hanja__feature` still 4px + rustic shadow) after
-  the motif retint. Not clashing enough to block, but a future pass should convert them to
-  the modern `--shadow*`/`--radius*` tokens for full consistency.
+- **Remaining sumi-ink shadows/radii — RESOLVED (2026-07-09, `feat/redesign-polish-final`)** —
+  the leftover `rgba(27,24,19,…)` box-shadows and their stray 4px/6px radii were converted to
+  the theme-aware `--shadow*`/`--radius*` tokens (toast, install banner, chat FAB, popover,
+  flashcard face, sheet panel, toggle thumb, segmented-tab actives, `.km-hanja__feature`,
+  PWA-update banner; the two sumi scrim backgrounds re-hued to the modern near-black).
+  Intentionally kept: the LearnMenu hexwrap `drop-shadow()` filters (box-shadow tokens can't
+  feed `filter`, and the clip-path silhouette requires drop-shadow; they already have a dark
+  override) and the translucent scrollbar-thumb background (a neutral color, not elevation).
