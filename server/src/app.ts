@@ -35,6 +35,7 @@ import settingsRoutes from './routes/settings.js';
 import grammarDrillRoutes from './routes/grammarDrill.js';
 import writingRoutes from './routes/writing.js';
 import uploadsRoutes from './routes/uploads.js';
+import readingRoutes from './routes/reading.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -99,6 +100,10 @@ export function createApp(): Express {
   // added to the km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).
   app.use('/uploads', uploadsRoutes);
+  // U3b: digitized chapter reader data surface — ALSO a NEW top-level prefix, so
+  // it must be added to the km-lb nginx API allow-list (both -active.conf files)
+  // or the SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/reading', readingRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {

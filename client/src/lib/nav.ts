@@ -183,14 +183,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'hanja',
   },
   {
-    // NEW (P1.1) — placeholder page until the book scans land (P6). NOT at
-    // `/reading`: that legacy path is a live redirect to `/learn/listen`.
+    // U3b (2026-07-08) — the real digitized chapter reader (see
+    // `db/docs/U3_READER_DESIGN.md` §U3b), replacing the P1.1 placeholder.
+    // NOT at `/reading`: that legacy path is a live redirect to
+    // `/learn/listen`.
     id: 'reading',
     path: '/learn/reading',
     label: 'Reading',
     kr: '읽기',
-    eyebrow: 'Coming soon',
-    krEyebrow: '준비 중',
+    eyebrow: 'Digitized books',
+    krEyebrow: '디지털 도서',
     headerTitle: '읽기 · Reading',
     icon: 'book',
   },

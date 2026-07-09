@@ -1,0 +1,43 @@
+{
+  "source": {
+    "source_upload_id": 1,
+    "book_title": "Literature Loader Fixture",
+    "extracted_by": "fixture",
+    "extracted_at": "2026-07-08",
+    "note": "Mini fixture for the U3b literature loader test suite. source_upload_id is a placeholder — tests overwrite it with a real seeded book_uploads id before loading (the composite FK requires a real (id, user_id) pair).",
+    "extraction_complete": true
+  },
+  "chapters": [
+    {
+      "chapter_number": 1,
+      "title": "제1장",
+      "start_page": 1,
+      "end_page": 2,
+      "passages": [
+        {
+          "passage_number": 1,
+          "body": "옛날 옛적에 한 마을에 착한 나무꾼이 살고 있었습니다.",
+          "page_number": 1
+        },
+        {
+          "passage_number": 2,
+          "body": "그는 매일 산에 올라가 나무를 하며 부모님을 모셨습니다.",
+          "page_number": 2
+        }
+      ]
+    },
+    {
+      "chapter_number": 2,
+      "title": "제2장",
+      "start_page": 3,
+      "end_page": 3,
+      "passages": [
+        {
+          "passage_number": 1,
+          "body": "어느 날 나무꾼은 숲속에서 다친 사슴 한 마리를 발견했습니다.",
+          "page_number": 3
+        }
+      ]
+    }
+  ]
+}

@@ -340,3 +340,69 @@ class VocabSourceModel(StrictBase):
 class VocabDocumentModel(StrictBase):
     source: VocabSourceModel
     items: list[VocabItemModel]
+
+
+# ---------------------------------------------------------------------------
+# Literature (U3b digitized chapter reader)
+# ---------------------------------------------------------------------------
+#
+# Shape of the curated JSON `tools/ingest/loaders/load_literature.py` consumes.
+# See `tools/ingest/docs/_literature_extraction_guide.md` for the full curation
+# contract and `db/migrations/044_reading_chapters.up.sql` for the tables these
+# feed (reading_chapters / reading_passages).
+#
+# Unlike every other family above, a literature document is not one of a
+# handful of curated corpus files — it is the digitized text of exactly ONE
+# uploaded book (book_uploads.type = 'literature'), so its models carry no
+# "level"/"corpus" concept, just the owning upload id and an ordered
+# chapters -> passages tree.
+
+
+class LiteraturePassageModel(StrictBase):
+    """One paragraph/passage within a chapter (the tap-to-define unit)."""
+
+    passage_number: int
+    # Curated running text. Length/emptiness are validated by the loader (not
+    # here) so a violation can be reported with chapter/passage context — see
+    # `load_literature._validate_document`, mirroring how VocabItemModel's
+    # `korean` field defers its "required for word rows" check to the loader.
+    body: str
+    # Advisory pointer into the source scan (book_pages.page_number); NOT an
+    # FK (book_pages.page_number is mutable via the reorder tool).
+    page_number: int | None = None
+
+
+class LiteratureChapterModel(StrictBase):
+    """One chapter of an uploaded literature book, in book order."""
+
+    chapter_number: int
+    # NULL for books whose chapters are unnamed/numbered-only.
+    title: str | None = None
+    start_page: int | None = None
+    end_page: int | None = None
+    passages: list[LiteraturePassageModel] = Field(default_factory=list)
+
+
+class LiteratureSourceModel(StrictBase):
+    # The book_uploads row (type='literature') this document was extracted
+    # from. REQUIRED — unlike VocabSourceModel.source_upload_id (nullable,
+    # because most vocab is curated-corpus, not book-sourced), a literature
+    # chapter has NO meaning apart from its source upload; reading_chapters.
+    # source_upload_id is itself NOT NULL (migration 044). The loader resolves
+    # `user_id` FROM this row (never from this JSON) — see
+    # `load_literature._resolve_owner`.
+    source_upload_id: int
+    # Informational only — the canonical title lives in book_uploads.title;
+    # this is not written to any reading_* column.
+    book_title: str | None = None
+    extracted_by: str | None = None
+    extracted_at: str | None = None
+    note: str | None = None
+    total_pdf_pages: int | None = None
+    highest_book_page: int | None = None
+    extraction_complete: bool | None = None
+
+
+class LiteratureDocumentModel(StrictBase):
+    source: LiteratureSourceModel
+    chapters: list[LiteratureChapterModel]
