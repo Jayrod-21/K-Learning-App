@@ -15,6 +15,7 @@ import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
   registerUser,
+  seedBookUpload,
   seedTopikItem,
   seedVocabCard,
   seedVocabEntry,
@@ -145,6 +146,104 @@ describe('GET /vocab/entries — search (q) + total', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     expect((await agent.get('/vocab/entries?limit=200')).status).toBe(200);
     expect((await agent.get('/vocab/entries?limit=201')).status).toBe(400);
+  });
+});
+
+describe('GET /vocab/entries — source_upload_id filter (U3a)', () => {
+  // vocab_entries is shared reference data the file-level beforeEach does NOT
+  // truncate; these tests assert exact match sets, so isolate the corpus.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('narrows to entries tagged with the given owned upload', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'vocab',
+      status: 'ready',
+    });
+    await seedVocabEntry(pg.pool, {
+      korean: '출처있음',
+      english: 'tagged',
+      sourceUploadId: uploadId,
+    });
+    await seedVocabEntry(pg.pool, { korean: '출처없음', english: 'untagged' });
+
+    const res = await agent.get(`/vocab/entries?source_upload_id=${uploadId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    const koreans = (res.body.entries as Array<{ korean: string }>).map((e) => e.korean);
+    expect(koreans).toEqual(['출처있음']);
+  });
+
+  // REVIEW_u3a_tests SF-3: the prior test only pairs a tagged row with an
+  // UNTAGGED (source_upload_id IS NULL) control, which cannot catch an
+  // implementation that drops the `source_upload_id = $6` equality and keeps
+  // only the EXISTS ownership check (i.e. "any upload owned by this user
+  // matches", not "THIS upload"). This seeds two uploads the SAME user owns,
+  // tags a row to each, and asserts filtering by upload A returns only A's
+  // row — a broken equality-dropped predicate would incorrectly also return
+  // B's row (B is owned by the same requester too) and this test would fail.
+  it('excludes a row tagged to a different upload the same user owns (equality predicate, not just ownership)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const uploadB = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    await seedVocabEntry(pg.pool, { korean: 'A책단어', sourceUploadId: uploadA });
+    await seedVocabEntry(pg.pool, { korean: 'B책단어', sourceUploadId: uploadB });
+
+    const res = await agent.get(`/vocab/entries?source_upload_id=${uploadA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    const koreans = (res.body.entries as Array<{ korean: string }>).map((e) => e.korean);
+    expect(koreans).toEqual(['A책단어']);
+  });
+
+  it('omitting the filter returns both tagged and untagged entries', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    await seedVocabEntry(pg.pool, { korean: '태그', sourceUploadId: uploadId });
+    await seedVocabEntry(pg.pool, { korean: '노태그' });
+
+    const res = await agent.get('/vocab/entries');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+  });
+
+  it("cannot filter by another user's upload — ownership guard returns zero rows", async () => {
+    // Owner tags an entry with their upload…
+    const owner = await registerUser(t.app, pg.pool);
+    const ownerUpload = await seedBookUpload(pg.pool, owner.userId, {
+      status: 'ready',
+    });
+    await seedVocabEntry(pg.pool, {
+      korean: '남의책',
+      english: "other user's book word",
+      sourceUploadId: ownerUpload,
+    });
+    // …a different user filtering by that same upload id must see nothing (the
+    // EXISTS guard scopes the source to uploads the requester owns), so the
+    // shared reference row is never exposed via someone else's upload id.
+    const other = await registerUser(t.app, pg.pool);
+    const res = await other.agent.get(
+      `/vocab/entries?source_upload_id=${ownerUpload}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.entries).toEqual([]);
+  });
+
+  it('a non-existent upload id is a valid no-op filter (200, empty)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await seedVocabEntry(pg.pool, { korean: '아무거나' });
+    const res = await agent.get('/vocab/entries?source_upload_id=99999999');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+  });
+
+  it('rejects a garbage source_upload_id at the boundary (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.get('/vocab/entries?source_upload_id=abc')).status).toBe(400);
+    expect((await agent.get('/vocab/entries?source_upload_id=-1')).status).toBe(400);
   });
 });
 

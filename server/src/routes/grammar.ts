@@ -46,6 +46,13 @@ const KgiuSearchQuerySchema = z.object({
   // 400s at the boundary instead of reaching the cast in SQL.
   domain: z.enum(['general', 'research', 'business']).optional(),
   book_level: z.enum(['beginner', 'intermediate', 'advanced']).optional(),
+  // U3a (source filtering): the `book_uploads.id` an uploaded-book source filter
+  // is scoping to. Wired from the client's SourceFilterRow since U1 but inert
+  // server-side until now — the WHERE clause below finally honours it. Coerced
+  // to an int and bounded by MAX_ID (it binds to a BIGINT FK); ownership is
+  // enforced in SQL (EXISTS guard) so a user can only filter by an upload they
+  // own. Mirrors the vocab route.
+  source_upload_id: z.coerce.number().int().positive().max(MAX_ID).optional(),
   // The client's Reference "Grammar" tab requests one wide page (GRAMMAR_PAGE_SIZE
   // = 400) to list the whole corpus without a pager; the reference data is ~370
   // pattern rows, so 400 covers it. Ceiling raised from 100 → 400 to admit that.
@@ -62,6 +69,10 @@ router.get(
       const q = (req as typeof req & {
         validatedQuery: z.infer<typeof KgiuSearchQuerySchema>;
       }).validatedQuery;
+      // Session user — needed only to scope the optional source-book filter to
+      // uploads this user owns (the EXISTS guard below). The KGIU corpus itself
+      // is shared reference data, so the rest of the query is user-agnostic.
+      const userId = getUserId(req);
       const { rows } = await query(
         // Structural non-pattern rows (unit_intro / reference / introduction
         // categories carry an empty `pattern`) are excluded: they render as a
@@ -78,14 +89,25 @@ router.get(
             AND ($3::text IS NULL OR pattern = $3)
             AND ($4::content_domain IS NULL OR domain = $4::content_domain)
             AND ($5::book_level IS NULL OR book_level = $5::book_level)
+            -- U3a source filter (mirrors the vocab route): the row must be
+            -- tagged with the given source id AND that upload must belong to the
+            -- requesting user, so filtering by an unowned/deleted upload returns
+            -- zero rows rather than another user's tagged patterns.
+            AND ($6::bigint IS NULL
+                 OR (source_upload_id = $6::bigint
+                     AND EXISTS (SELECT 1 FROM book_uploads bu
+                                  WHERE bu.id = $6::bigint
+                                    AND bu.user_id = $7)))
           ORDER BY id
-          LIMIT $6 OFFSET $7`,
+          LIMIT $8 OFFSET $9`,
         [
           q.corpus ?? null,
           q.proficiency ?? null,
           q.q ?? null,
           q.domain ?? null,
           q.book_level ?? null,
+          q.source_upload_id ?? null,
+          userId,
           q.limit,
           q.offset,
         ],

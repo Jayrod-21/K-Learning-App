@@ -14,7 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedKgiuEntry } from '../helpers/seed.js';
+import { registerUser, seedBookUpload, seedKgiuEntry } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 let pg: PgHandle;
@@ -192,6 +192,94 @@ describe('GET /grammar/kgiu — domain + book_level filters (F-005)', () => {
     const res = await agent.get(`/grammar/kgiu${qs}`);
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('validation_error');
+  });
+});
+
+describe('GET /grammar/kgiu — source_upload_id filter (U3a)', () => {
+  // kgiu_entries is shared reference data the file-level beforeEach does NOT
+  // truncate; these tests assert exact match sets, so isolate the corpus.
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE kgiu_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('narrows to patterns tagged with the given owned upload', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'grammar',
+      status: 'ready',
+    });
+    await seedKgiuEntry(pg.pool, { pattern: '-출처패턴', sourceUploadId: uploadId });
+    await seedKgiuEntry(pg.pool, { pattern: '-노출처패턴' });
+
+    const res = await agent.get(`/grammar/kgiu?source_upload_id=${uploadId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(1);
+    expect(res.body.entries[0].pattern).toBe('-출처패턴');
+  });
+
+  // REVIEW_u3a_tests SF-3: the prior test only pairs a tagged row with an
+  // UNTAGGED (source_upload_id IS NULL) control, which cannot catch an
+  // implementation that drops the `source_upload_id = $6` equality and keeps
+  // only the EXISTS ownership check (i.e. "any upload owned by this user
+  // matches", not "THIS upload"). This seeds two uploads the SAME user owns,
+  // tags a row to each, and asserts filtering by upload A returns only A's
+  // row — a broken equality-dropped predicate would incorrectly also return
+  // B's row (B is owned by the same requester too) and this test would fail.
+  it('excludes a row tagged to a different upload the same user owns (equality predicate, not just ownership)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const uploadB = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    await seedKgiuEntry(pg.pool, { pattern: '-A책패턴', sourceUploadId: uploadA });
+    await seedKgiuEntry(pg.pool, { pattern: '-B책패턴', sourceUploadId: uploadB });
+
+    const res = await agent.get(`/grammar/kgiu?source_upload_id=${uploadA}`);
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(1);
+    expect(res.body.entries[0].pattern).toBe('-A책패턴');
+  });
+
+  // REVIEW_u3a_tests SF-1: mirrors vocab.test.ts's equivalent case — the
+  // grammar block was missing this boundary the vocab block already covered.
+  it('omitting the filter returns both tagged and untagged patterns', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    await seedKgiuEntry(pg.pool, { pattern: '-태그패턴', sourceUploadId: uploadId });
+    await seedKgiuEntry(pg.pool, { pattern: '-노태그패턴' });
+
+    const res = await agent.get('/grammar/kgiu');
+    expect(res.status).toBe(200);
+    expect(res.body.entries.length).toBe(2);
+  });
+
+  it("cannot filter by another user's upload — ownership guard returns zero rows", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const ownerUpload = await seedBookUpload(pg.pool, owner.userId, {
+      status: 'ready',
+    });
+    await seedKgiuEntry(pg.pool, { pattern: '-남의패턴', sourceUploadId: ownerUpload });
+
+    const other = await registerUser(t.app, pg.pool);
+    const res = await other.agent.get(
+      `/grammar/kgiu?source_upload_id=${ownerUpload}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+  });
+
+  // REVIEW_u3a_tests SF-2: mirrors vocab.test.ts's equivalent case — the
+  // grammar block was missing this boundary the vocab block already covered.
+  it('a non-existent upload id is a valid no-op filter (200, empty)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await seedKgiuEntry(pg.pool, { pattern: '-아무거나패턴' });
+    const res = await agent.get('/grammar/kgiu?source_upload_id=99999999');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+  });
+
+  it('rejects a garbage source_upload_id at the boundary (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.get('/grammar/kgiu?source_upload_id=abc')).status).toBe(400);
+    expect((await agent.get('/grammar/kgiu?source_upload_id=0')).status).toBe(400);
   });
 });
 

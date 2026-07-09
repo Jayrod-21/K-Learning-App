@@ -68,6 +68,15 @@ const VocabSearchQuerySchema = z.object({
   // value 400s at the boundary instead of reaching the cast in SQL.
   domain: z.enum(['general', 'research', 'business']).optional(),
   book_level: z.enum(['beginner', 'intermediate', 'advanced']).optional(),
+  // U3a (source filtering): the `book_uploads.id` an uploaded-book source filter
+  // is scoping to. Wired from the client's SourceFilterRow since U1 but inert
+  // server-side until now — the WHERE clause below finally honours it. Coerced
+  // from the query string to an int and bounded by MAX_ID (it binds to a BIGINT
+  // FK), so a garbage id 400s at the boundary rather than overflowing in pg.
+  // Ownership is enforced in SQL (see the EXISTS guard), so a user can only
+  // filter by an upload they own — the shared vocab_entries rows a book tags
+  // are never exposed via another user's id.
+  source_upload_id: z.coerce.number().int().positive().max(MAX_ID).optional(),
   // Browse needs a higher ceiling than the original tap-lookup default — the
   // Resources tab pages the full 3,131-row curated corpus. 200 mirrors
   // /vocab/cards/due; the client paginates with offset + the `total` count.
@@ -84,6 +93,10 @@ router.get(
       const q = (req as typeof req & {
         validatedQuery: z.infer<typeof VocabSearchQuerySchema>;
       }).validatedQuery;
+      // Session user — needed only to scope the optional source-book filter to
+      // uploads this user owns (the EXISTS guard below). The corpus itself is
+      // shared reference data, so the rest of the query is user-agnostic.
+      const userId = getUserId(req);
       // The ILIKE operand is the escaped term wrapped in %…% for substring
       // match; null when no search term is given (the filter short-circuits).
       // Escaping happens in JS, the value is still bound as a parameter — no
@@ -113,14 +126,27 @@ router.get(
             AND ($3::proficiency_level IS NULL OR proficiency = $3::proficiency_level)
             AND ($4::content_domain IS NULL OR domain = $4::content_domain)
             AND ($5::book_level IS NULL OR book_level = $5::book_level)
+            -- U3a source filter. When a source id is given, the row must be
+            -- tagged with it AND the upload must belong to the requesting user.
+            -- The EXISTS guard means a user filtering by an upload they don't
+            -- own gets zero rows (never another user's tagged entries), and a
+            -- hard-deleted upload's id likewise matches nothing (book_uploads
+            -- has no soft-delete column — migration 040 is hard-delete only).
+            AND ($6::bigint IS NULL
+                 OR (source_upload_id = $6::bigint
+                     AND EXISTS (SELECT 1 FROM book_uploads bu
+                                  WHERE bu.id = $6::bigint
+                                    AND bu.user_id = $7)))
           ORDER BY id
-          LIMIT $6 OFFSET $7`,
+          LIMIT $8 OFFSET $9`,
         [
           likePattern,
           q.corpus ?? null,
           q.proficiency ?? null,
           q.domain ?? null,
           q.book_level ?? null,
+          q.source_upload_id ?? null,
+          userId,
           q.limit,
           q.offset,
         ],
