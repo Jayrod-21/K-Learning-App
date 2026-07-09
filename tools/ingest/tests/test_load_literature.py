@@ -118,12 +118,17 @@ async def _seed_book_upload(
     async with await psycopg.AsyncConnection.connect(url) as conn:
         async with conn.transaction():
             async with conn.cursor() as cur:
+                # NOTE: book_uploads has no blob_ref column — migration 041
+                # dropped it when the model moved to per-page images (book_pages);
+                # the original zip/PDF is no longer retained. byte_size stays and
+                # records the original upload's size. (Mirrors the server-side
+                # seedBookUpload helper in server/tests/helpers/seed.ts.)
                 await cur.execute(
                     """
                     INSERT INTO book_uploads (
-                        user_id, title, type, status, blob_ref, byte_size)
+                        user_id, title, type, status, byte_size)
                     VALUES (%s, %s, %s::book_upload_type, %s::book_upload_status,
-                            %s, %s)
+                            %s)
                     RETURNING id
                     """,
                     (
@@ -131,7 +136,6 @@ async def _seed_book_upload(
                         title,
                         upload_type,
                         status,
-                        f"{user_id}/{uuid.uuid4().hex}.pdf",
                         1024,
                     ),
                 )
