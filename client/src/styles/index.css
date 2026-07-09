@@ -327,6 +327,7 @@ h1, h2 { font-family: var(--font-display); }
   to   { transform: translateY(0); opacity: 1; }
 }
 @keyframes fade   { from { opacity: 0 } to { opacity: 1 } }
+@keyframes km-fadeout { from { opacity: 1 } to { opacity: 0 } }
 @keyframes rise   { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) } }
 @keyframes sheetUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
@@ -792,6 +793,19 @@ h1, h2 { font-family: var(--font-display); }
   left: 50%;
   top: -36px;
   transform: translateX(-50%);
+  /* The spin + idle float live on the INDEPENDENT `rotate` / `translate`
+   * properties, never on `transform` (which only centers). Keeping the
+   * three on separate channels is what makes the open spin continuous:
+   * with the old single-transform approach, dropping the float animation
+   * snapped `transform` from its mid-bob animated value straight to the
+   * `--open` rotation start. Now the float animates `translate`, the spin
+   * transitions `rotate`, and neither ever owns the other's value.
+   * The `translate` transition ALSO smooths the float hand-off: when the
+   * float animation is removed (open/closing), the up-to-3px animated
+   * offset transitions back to 0 instead of jumping (the before-change
+   * style includes the animation's contribution, per CSS Transitions). */
+  rotate: 0deg;
+  translate: 0 0;
   width: 76px;
   height: 84px;
   border: none;
@@ -810,26 +824,35 @@ h1, h2 { font-family: var(--font-display); }
   gap: 3px;
   font-family: inherit;
   filter: drop-shadow(0 12px 22px color-mix(in srgb, var(--vermilion-bright) 55%, transparent));
-  transition: transform 180ms ease, filter 180ms ease;
+  /* Spin duration (360ms) matches the LearnMenu close-out total
+   * (LEARN_MENU_EXIT_MS in LearnMenu.tsx) so the closing un-spin lands on
+   * 0° right as the menu unmounts. Zeroed by the reduced-motion block. */
+  transition: filter 180ms ease, translate 240ms ease,
+    rotate 360ms cubic-bezier(.34, .08, .26, 1);
 }
 .km-bottomnav__hex--current,
 .km-bottomnav__hex:focus-visible {
   filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0))
     drop-shadow(0 0 10px var(--vermilion-bright));
 }
-/* Idle float (§11) — pauses while the menu is open so the --open rotate
- * transform below stays authoritative (the animation would otherwise own
- * `transform`). Neutralised by the global reduced-motion block. */
+/* Idle float (§11) — animates `translate` ONLY (the spin owns `rotate`,
+ * centering owns `transform`). Paused during BOTH the open and closing
+ * phases so the bob never restarts mid-spin; the `translate` transition on
+ * the hex eases the animated offset back to 0 when the float drops out.
+ * Neutralised by the global reduced-motion block. */
 @keyframes km-hexfloat {
-  0%, 100% { transform: translateX(-50%) translateY(0); }
-  50%      { transform: translateX(-50%) translateY(-3px); }
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -3px; }
 }
-.km-bottomnav__hex:not(.km-bottomnav__hex--open) {
+.km-bottomnav__hex:not(.km-bottomnav__hex--open):not(.km-bottomnav__hex--closing) {
   animation: km-hexfloat 3.6s ease-in-out infinite;
 }
-/* Mockup interaction: the hexagon rotates while the menu is open. */
+/* Mockup interaction: the hexagon spins a full half-turn (upside down)
+ * while the menu is open, and un-spins back to 0° during the LearnMenu
+ * close-out (`--closing` merely holds the float off; the rotate itself
+ * transitions back once `--open` drops). */
 .km-bottomnav__hex--open {
-  transform: translateX(-50%) rotate(90deg);
+  rotate: 180deg;
 }
 .km-bottomnav__hexlabel {
   font-family: var(--font-display);
@@ -846,6 +869,11 @@ h1, h2 { font-family: var(--font-display); }
   pointer-events: none;
 }
 .km-learnmenu > * { pointer-events: auto; }
+/* While the close-out plays the menu is display-only: tiles/scrim must not
+ * take taps mid-exit (the hexagon lives in BottomNav, outside this tree,
+ * so re-opening stays possible). */
+.km-learnmenu--closing,
+.km-learnmenu--closing > * { pointer-events: none; }
 /* The scrim stops ABOVE the BottomNav so the bar (and the hexagon) stays
  * tappable while the menu is open — re-tapping the hexagon toggles it
  * closed, and a tab tap navigates (route-change closes the menu). */
@@ -860,6 +888,14 @@ h1, h2 { font-family: var(--font-display); }
   border: none;
   cursor: pointer;
   animation: fade 160ms ease-out;
+}
+/* Close-out: scrim + title fade over the same window as the tile cascade
+ * (LEARN_MENU_EXIT_MS = 360ms) so nothing pops when the menu unmounts. */
+.km-learnmenu--closing .km-learnmenu__scrim {
+  animation: km-fadeout 360ms ease-out both;
+}
+.km-learnmenu--closing .km-learnmenu__title {
+  animation: km-fadeout 240ms ease-out both;
 }
 .km-learnmenu__panel {
   position: absolute;
@@ -908,8 +944,26 @@ h1, h2 { font-family: var(--font-display); }
   width: var(--km-hex-w);
   aspect-ratio: 112 / 126;
   filter: drop-shadow(0 10px 22px rgba(27, 24, 19, 0.28));
-  /* The global prefers-reduced-motion block zeroes duration AND delay. */
-  animation: rise 240ms cubic-bezier(.2, .8, .3, 1) both;
+  /* Deliberate one-row-at-a-time unfold (per-row delay is inline, set by
+   * LearnMenu — ROW_STAGGER_MS must stay in step with this duration). The
+   * global prefers-reduced-motion block zeroes duration AND delay. */
+  animation: km-hexrise 320ms cubic-bezier(.2, .8, .2, 1) both;
+}
+/* Close-out: reverse of the entrance (fade + drop + scale-down), reverse
+ * row order (top row leaves first). Duration + the inline reverse stagger
+ * sum to LEARN_MENU_EXIT_MS (360ms) in LearnMenu.tsx — the last tile's
+ * animationend is what tells Shell to actually unmount. `both` fill keeps
+ * finished tiles hidden until the unmount lands. */
+.km-learnmenu--closing .km-learnmenu__hexwrap {
+  animation: km-hexexit 240ms cubic-bezier(.4, .05, .7, .2) both;
+}
+@keyframes km-hexrise {
+  from { opacity: 0; transform: translateY(10px) scale(.92); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes km-hexexit {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(8px) scale(.9); }
 }
 [data-theme="dark"] .km-learnmenu__hexwrap {
   filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.55));

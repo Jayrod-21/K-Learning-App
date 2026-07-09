@@ -4,12 +4,26 @@
  *
  * A scrim + a color-coded HEX HONEYCOMB of the 7 LEARN sub-pages
  * (icon + label + kr), arranged 2-3-2 and rising from just above the
- * BottomNav. Rows reveal with a small bottom-up stagger (the row nearest
- * the hexagon lands first) — except the first tile in DOM order, which
+ * BottomNav. Rows reveal with a bottom-up stagger (the row nearest the
+ * hexagon lands first) — except the first tile in DOM order, which
  * starts its reveal immediately because it receives initial keyboard
  * focus (an invisible focus target is an a11y foot-gun); the global
  * `prefers-reduced-motion` block zeroes both durations AND delays, so
  * reduced-motion users get an instant, complete comb.
+ *
+ * CLOSE-OUT (honeycomb motion polish): closing is a two-step handshake
+ * with Shell. A close request flips Shell's phase to 'closing'; Shell
+ * keeps us MOUNTED and passes `closing=true`, which swaps every tile's
+ * entrance animation for a reverse-staggered exit (top row leaves first
+ * — last-in-first-out) and fades the scrim/title. When the LAST tile's
+ * exit animation ends (`onAnimationEnd` on the bottom-right wrapper — it
+ * carries the largest delay, so it finishes last) we call `onExited` and
+ * Shell unmounts us for real, which is when `useModalA11y` restores focus
+ * to the hexagon. Shell also arms a safety timeout in case animationend
+ * never fires, and bypasses the closing phase entirely under
+ * prefers-reduced-motion — this component never needs to know; it just
+ * unmounts. While closing, the CSS turns pointer-events off (display-only
+ * exit; the hexagon in BottomNav stays tappable to re-open).
  *
  * Honeycomb geometry / color coding:
  *   - Row 1: Reading (cyan) · Hanja (ochre)
@@ -48,12 +62,23 @@
 import { useCallback, useId, useRef, type JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useModalA11y } from '../hooks/useModalA11y';
+import { cn } from '../lib/cn';
 import { LEARN_SUBPAGE_IDS, navItem } from '../lib/nav';
 import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
 
-/** Per-row reveal stagger (ms) — bottom row first, like the mockup. */
-const ROW_STAGGER_MS = 30;
+/** Per-row ENTRANCE stagger (ms) — bottom row first, like the mockup.
+ *  Paired with the 320ms `km-hexrise` duration in index.css: 70ms is wide
+ *  enough that each row reads as its own beat, short enough that the full
+ *  comb lands in ~460ms. */
+const ROW_STAGGER_MS = 70;
+
+/** Per-row EXIT stagger (ms) — reverse order (top row leaves first). */
+const EXIT_ROW_STAGGER_MS = 60;
+
+/** EXIT animation duration per tile (ms) — must match `km-hexexit` in
+ *  index.css (exits run faster than entrances, standard motion practice). */
+const EXIT_TILE_MS = 240;
 
 type LearnSubpageId = (typeof LEARN_SUBPAGE_IDS)[number];
 
@@ -67,6 +92,15 @@ const COMB_ROWS = [
   ['reading', 'topik', 'ttmik'],
   ['writing', 'hanja'],
 ] as const satisfies ReadonlyArray<ReadonlyArray<LearnSubpageId>>;
+
+/**
+ * Total close-out length (ms): the bottom row starts last on exit and its
+ * tiles run EXIT_TILE_MS. Shell keys two things off this: the hexagon's
+ * un-spin transition duration (360ms in index.css — kept equal so the hex
+ * reaches 0° as the menu unmounts) and the stuck-closing safety timeout.
+ */
+export const LEARN_MENU_EXIT_MS =
+  (COMB_ROWS.length - 1) * EXIT_ROW_STAGGER_MS + EXIT_TILE_MS;
 
 /**
  * Category hue per sub-page — keys into the `--<hue>` / `--<hue>-ink` /
@@ -96,11 +130,28 @@ void _combComplete;
 export interface LearnMenuProps {
   /** DOM id for the dialog panel — matches BottomNav's `aria-controls`. */
   id: string;
-  /** Called when the menu should close (Esc, scrim, tile activation). */
+  /**
+   * Called when the menu should close (Esc, scrim, tile activation).
+   * This is a close REQUEST — Shell answers by flipping `closing` to true
+   * (or by unmounting immediately under prefers-reduced-motion).
+   */
   onClose: () => void;
+  /** True while the exit cascade plays; the menu stays mounted throughout. */
+  closing: boolean;
+  /**
+   * Fired when the LAST tile's exit animation ends — Shell's cue to
+   * actually unmount (Shell also carries a safety timeout in case this
+   * never fires).
+   */
+  onExited: () => void;
 }
 
-export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
+export function LearnMenu({
+  id,
+  onClose,
+  closing,
+  onExited,
+}: LearnMenuProps): JSX.Element {
   const labelId = useId();
   const navigate = useNavigate();
   const location = useLocation();
@@ -128,7 +179,10 @@ export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
   const rowCount = COMB_ROWS.length;
 
   return (
-    <div className="km-learnmenu" role="presentation">
+    <div
+      className={cn('km-learnmenu', closing && 'km-learnmenu--closing')}
+      role="presentation"
+    >
       <button
         type="button"
         className="km-learnmenu__scrim"
@@ -160,23 +214,43 @@ export function LearnMenu({ id, onClose }: LearnMenuProps): JSX.Element {
                 const it = navItem(navId);
                 const active = location.pathname === it.path;
                 const isFirst = rowIdx === 0 && colIdx === 0;
+                // The tile whose EXIT animation finishes last (bottom row
+                // carries the largest reverse-stagger delay; its final tile
+                // in DOM order is our sentinel) — its animationend drives
+                // the actual unmount via onExited.
+                const isExitSentinel =
+                  rowIdx === rowCount - 1 && colIdx === row.length - 1;
+                // ENTRANCE: bottom-up row stagger — the row nearest the
+                // hexagon reveals first. EXCEPT the first tile: it receives
+                // initial keyboard focus (useModalA11y), and with the full
+                // stagger delay the focus would sit on a still-invisible
+                // element; a zero delay starts its reveal the instant it is
+                // focused. EXIT: reverse order (top row first) so the comb
+                // folds back down toward the hexagon. Both zeroed wholesale
+                // under prefers-reduced-motion by the global CSS block
+                // (duration AND delay).
+                const delayMs = closing
+                  ? rowIdx * EXIT_ROW_STAGGER_MS
+                  : isFirst
+                    ? 0
+                    : (rowCount - 1 - rowIdx) * ROW_STAGGER_MS;
                 return (
                   <div
                     key={navId}
                     className={`km-learnmenu__hexwrap km-learnmenu__hexwrap--${HEX_HUE[navId]}`}
-                    // Bottom-up row stagger: the row nearest the hexagon
-                    // reveals first. EXCEPT the first tile — it receives
-                    // initial keyboard focus (useModalA11y), and with the
-                    // full stagger delay the focus would sit on a
-                    // still-invisible element; a zero delay starts its
-                    // reveal the instant it is focused. Zeroed wholesale
-                    // under prefers-reduced-motion by the global CSS block
-                    // (duration AND delay).
-                    style={{
-                      animationDelay: `${
-                        isFirst ? 0 : (rowCount - 1 - rowIdx) * ROW_STAGGER_MS
-                      }ms`,
-                    }}
+                    style={{ animationDelay: `${delayMs}ms` }}
+                    onAnimationEnd={
+                      isExitSentinel
+                        ? (e) => {
+                            // Only the wrapper's own EXIT animation counts —
+                            // not the entrance (guarded by `closing`) and
+                            // not a bubbled child animation (target check).
+                            if (closing && e.target === e.currentTarget) {
+                              onExited();
+                            }
+                          }
+                        : undefined
+                    }
                   >
                     <button
                       ref={isFirst ? firstItemRef : undefined}
