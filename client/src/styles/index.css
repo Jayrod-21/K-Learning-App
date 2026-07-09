@@ -877,36 +877,154 @@ h1, h2 { font-family: var(--font-display); }
   margin-bottom: 2px;
   animation: fade 200ms ease-out both;
 }
-.km-learnmenu__row {
+/* Honeycomb (Modern Seoul redesign) — the 7 sub-pages as color-coded hex
+ * tiles, 2-3-2, rows nested by a negative margin proportional to the tile
+ * size. Tile width scales down on narrow viewports (3-across + gaps must
+ * fit inside the panel) via --km-hex-w; height keeps the mockup's 112:126
+ * ratio through aspect-ratio. */
+.km-learnmenu__comb {
+  /* (min(vw, shell) - 32px panel margins - 2*12px gaps) / 3 tiles. */
+  --km-hex-w: clamp(
+    84px,
+    calc((min(100vw, var(--shell-max-width)) - 56px) / 3),
+    112px
+  );
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 13px 14px;
-  background: var(--ink-2);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--paper);
-  font-family: inherit;
-  text-align: left;
-  box-shadow: 0 10px 30px rgba(27, 24, 19, 0.22);
-  /* Staggered upward reveal — per-row animation-delay is set inline
-     (bottom row first). The global prefers-reduced-motion block zeroes
-     the duration AND the delay, so the list lands instantly. */
+  padding: 14px 0 4px;
+}
+.km-learnmenu__combrow { display: flex; gap: 12px; }
+/* Nests the rows into a honeycomb: -22px at the 112px reference width. */
+.km-learnmenu__combrow + .km-learnmenu__combrow {
+  margin-top: calc(var(--km-hex-w) * -0.196);
+}
+/* Wrapper OUTSIDE the clip: clip-path clips the element's own filter
+ * output, so elevation + the :focus-visible ring are drop-shadows here —
+ * they trace the clipped child's hex silhouette. Also carries the
+ * staggered reveal (inline animation-delay; bottom row first) so the
+ * hover transform on the tile never fights the animation's transform. */
+.km-learnmenu__hexwrap {
+  width: var(--km-hex-w);
+  aspect-ratio: 112 / 126;
+  filter: drop-shadow(0 10px 22px rgba(27, 24, 19, 0.28));
+  /* The global prefers-reduced-motion block zeroes duration AND delay. */
   animation: rise 240ms cubic-bezier(.2, .8, .3, 1) both;
 }
-[data-theme="dark"] .km-learnmenu__row {
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+[data-theme="dark"] .km-learnmenu__hexwrap {
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.55));
 }
-.km-learnmenu__row[aria-current="page"] { color: var(--vermilion-ink); }
-.km-learnmenu__rowtext {
-  flex: 1;
-  text-align: left;
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
+/* Category color coding — tile bg is the -soft chip, TEXT is the AA-safe
+ * -ink twin (never the raw hue: it fails 4.5:1 on the chips), the ICON may
+ * use the bright hue (non-text graphic). Writing + TOPIK share the accent
+ * family (only 6 category hues exist) — and therefore re-tint with the
+ * runtime accent choice, like every other --vermilion consumer. */
+.km-learnmenu__hexwrap--indigo {
+  --hx-hue: var(--indigo);
+  --hx-ink: var(--indigo-ink);
+  --hx-bg: var(--indigo-soft);
 }
-.km-learnmenu__row .km-bilingual__sub { color: var(--paper-mute); }
+.km-learnmenu__hexwrap--violet {
+  --hx-hue: var(--violet);
+  --hx-ink: var(--violet-ink);
+  --hx-bg: var(--violet-soft);
+}
+.km-learnmenu__hexwrap--ochre {
+  --hx-hue: var(--ochre);
+  --hx-ink: var(--ochre-ink);
+  --hx-bg: var(--ochre-soft);
+}
+.km-learnmenu__hexwrap--cyan {
+  --hx-hue: var(--cyan);
+  --hx-ink: var(--cyan-ink);
+  --hx-bg: var(--cyan-soft);
+}
+.km-learnmenu__hexwrap--moss {
+  --hx-hue: var(--moss);
+  --hx-ink: var(--moss-ink);
+  --hx-bg: var(--moss-soft);
+}
+.km-learnmenu__hexwrap--vermilion {
+  --hx-hue: var(--vermilion-bright);
+  --hx-ink: var(--vermilion-ink);
+  --hx-bg: var(--vermilion-soft);
+}
+.km-learnmenu__hex {
+  width: 100%;
+  height: 100%;
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  border: none;
+  padding: 8px 10px;
+  background: var(--hx-bg);
+  color: var(--hx-ink);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1),
+    background-color 160ms ease;
+}
+.km-learnmenu__hex:hover { transform: translateY(-4px) scale(1.03); }
+/* The global reduced-motion block only zeroes durations/delays — a hover
+ * transform would still JUMP. Pin it off explicitly. */
+@media (prefers-reduced-motion: reduce) {
+  .km-learnmenu__hex:hover { transform: none; }
+}
+/* Focus ring — a rect outline reads broken on a clipped hex (and any
+ * outline/box-shadow/filter ON the clipped element is clipped away), so:
+ *   1. the hex-silhouette glow renders on the unclipped wrapper via
+ *      :has(:focus-visible) (baseline-supported since 2023);
+ *   2. the tile itself tints toward its hue — a clip-safe second cue that
+ *      also covers any legacy browser without :has(). */
+.km-learnmenu__hex:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--hx-hue) 16%, var(--hx-bg));
+}
+.km-learnmenu__hexwrap:has(.km-learnmenu__hex:focus-visible) {
+  filter: drop-shadow(0 0 2px var(--hx-hue))
+    drop-shadow(0 0 12px var(--hx-hue));
+}
+/* Current page — persistent tint + soft glow (the launcher can be opened
+ * while already on a LEARN page via the hexagon). */
+.km-learnmenu__hex[aria-current="page"] {
+  background: color-mix(in srgb, var(--hx-hue) 22%, var(--hx-bg));
+}
+.km-learnmenu__hexwrap:has(.km-learnmenu__hex[aria-current="page"]) {
+  filter: drop-shadow(0 10px 22px rgba(27, 24, 19, 0.28))
+    drop-shadow(0 0 10px var(--hx-hue));
+}
+.km-learnmenu__hexicon { color: var(--hx-hue); flex: none; }
+.km-learnmenu__hexlabel {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+  max-width: calc(var(--km-hex-w) - 16px);
+}
+/* Main + sub stack inside the hex (mockup's .hx-lb over .hx-kr). The "·"
+ * separator is visually hidden sr-only-style — NOT display:none, so the
+ * computed accessible name stays exactly "kr · en". */
+.km-learnmenu__hexlabel .km-bilingual__main { display: block; }
+.km-learnmenu__hexlabel .km-bilingual__sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+.km-learnmenu__hexlabel .km-bilingual__sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ChatFab — floating chat dot, ~1/5 up the right edge ─────────────────
  * Absolutely positioned inside .km-shell (which is the fixed-height
