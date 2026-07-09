@@ -99,9 +99,14 @@ import {
 } from '../services/auth';
 import { navItem } from '../lib/nav';
 import { otpauthUriToDataUrl } from '../lib/qr';
-import { fetchPrefs, putPrefs, type Prefs } from '../services/settings';
+import {
+  fetchPrefs,
+  putPrefs,
+  LEGACY_PALETTE_DEFAULT,
+  type Prefs,
+} from '../services/settings';
 import type { User } from '../hooks/auth-context';
-import type { MfaStatus, NotifPrefs, PalettePrefs } from '../types/domain';
+import type { MfaStatus, NotifPrefs } from '../types/domain';
 
 /**
  * Mock fallback for the `/auth/me` query — returns a user-shaped fixture so
@@ -128,11 +133,6 @@ async function loadMeMock(): Promise<User> {
 import { ApiError } from '../services/api';
 import { ACCENT_OPTIONS } from '../lib/accent-presets';
 import {
-  CORRECT_PRESETS,
-  PAPER_PRESETS,
-  WRONG_PRESETS,
-} from '../lib/palette-presets';
-import {
   clampSubScale,
   DEFAULT_SETTINGS,
   LANG_SUB_SCALE_MAX,
@@ -150,21 +150,19 @@ import type {
 
 /**
  * Mock fallback for the `/settings/prefs` query. Returns the user's CURRENT
- * localStorage prefs (notif + palette) after a small delay so a server-down
- * dev session still hydrates the screen with the real local choice rather than
- * a synthetic default — and the 🅂 badge then signals the fall-back honestly.
+ * localStorage prefs after a small delay so a server-down dev session still
+ * hydrates the screen with the real local choice rather than a synthetic
+ * default — and the 🅂 badge then signals the fall-back honestly.
  *
- * The palette `string` fields from localStorage are narrowed to the domain
- * preset unions: the swatch pickers only ever write valid preset ids, and the
- * server's `PrefsSchema` enforces the same closed set, so a structural cast is
- * safe here. Any drift would surface as a 400 on the next real `putPrefs`.
+ * `palette` is wire-only since the v2 flatten (no local copy exists); the
+ * mock carries the wire default the way the pre-hydration PUT baseline does.
  */
 async function loadPrefsMock(): Promise<Prefs> {
   await new Promise((resolve) => setTimeout(resolve, 80));
   const local = loadSettings();
   return {
     notif: local.notif,
-    palette: local.palette as PalettePrefs,
+    palette: LEGACY_PALETTE_DEFAULT,
     languageDisplay: local.languageDisplay,
   };
 }
@@ -220,12 +218,12 @@ function messageFor(err: ApiError, field: keyof ProfileBuffer): string {
 }
 
 /**
- * Field-by-field equality for the two prefs slices. Compared by value (not by
- * JSON, which would be sensitive to key order between a server response and a
- * literal-built object) so the change-detector never reports a spurious diff
- * that would loop a redundant PUT. Overloaded over the two concrete shapes;
- * the slices are always passed as a matched pair (notif vs notif, palette vs
- * palette) by the callers.
+ * Field-by-field equality for the synced prefs slices (notif +
+ * languageDisplay — the wire `palette` is a passthrough echo since the v2
+ * flatten and never diffs). Compared by value (not by JSON, which would be
+ * sensitive to key order between a server response and a literal-built
+ * object) so the change-detector never reports a spurious diff that would
+ * loop a redundant PUT.
  */
 function notifEqual(a: NotifPrefs, b: NotifPrefs): boolean {
   return (
@@ -234,15 +232,6 @@ function notifEqual(a: NotifPrefs, b: NotifPrefs): boolean {
     a.reviewsDue === b.reviewsDue &&
     a.daily === b.daily &&
     a.weekly === b.weekly
-  );
-}
-
-function paletteEqual(a: PalettePrefs, b: PalettePrefs): boolean {
-  return (
-    a.paper === b.paper &&
-    a.accent === b.accent &&
-    a.correct === b.correct &&
-    a.wrong === b.wrong
   );
 }
 
@@ -572,10 +561,13 @@ export default function Settings(): JSX.Element {
   // of the last successful/attempted PUT). The change-driven effect compares
   // against this so a server-hydration write does NOT echo straight back as a
   // PUT, and an unchanged render never fires a redundant round-trip. Seeded to
-  // the current local prefs so the first paint is a no-op.
+  // the current local prefs so the first paint is a no-op. The `palette`
+  // field is wire-only (v2 flatten): it seeds to the server default and is
+  // overwritten by whatever the server reports on hydration, then echoed
+  // verbatim on every PUT so a stored legacy palette is never clobbered.
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
-    palette: settings.palette as PalettePrefs,
+    palette: LEGACY_PALETTE_DEFAULT,
     languageDisplay: settings.languageDisplay,
   });
 
@@ -657,12 +649,12 @@ export default function Settings(): JSX.Element {
     const freshLanguageDisplay =
       fresh.languageDisplay ?? DEFAULT_SETTINGS.languageDisplay;
     // Record what the server holds BEFORE writing it into the provider, so the
-    // change-driven effect below sees no diff and skips the echo PUT.
+    // change-driven effect below sees no diff and skips the echo PUT. This is
+    // also where the wire-only `palette` echo value is adopted (v2 flatten).
     lastSyncedPrefsRef.current = { ...fresh, languageDisplay: freshLanguageDisplay };
     const local = settingsRef.current;
     const samePrefs =
       notifEqual(fresh.notif, local.notif) &&
-      paletteEqual(fresh.palette, local.palette as PalettePrefs) &&
       languageDisplayEqual(freshLanguageDisplay, local.languageDisplay);
     if (samePrefs) return;
     // Sync-to-external-system case — driven by the query resolution, not by our
@@ -670,25 +662,25 @@ export default function Settings(): JSX.Element {
     // is the provider's setter, not a local setState, so the rule stays quiet.
     updateSettings({
       notif: fresh.notif,
-      palette: fresh.palette,
       languageDisplay: freshLanguageDisplay,
     });
   }, [prefsQuery.loading, prefsQuery.isMock, prefsQuery.data, updateSettings]);
 
-  // Debounced PUT on any notif/palette change. Compares against the last
-  // server-reconciled snapshot so server-hydration writes and unchanged renders
-  // are no-ops. The provider's localStorage write already happened — this is
-  // best-effort durability on top of it.
+  // Debounced PUT on any notif/languageDisplay change. Compares against the
+  // last server-reconciled snapshot so server-hydration writes and unchanged
+  // renders are no-ops. The provider's localStorage write already happened —
+  // this is best-effort durability on top of it. The wire `palette` field is
+  // echoed from the last server-reported value (v2 flatten: the server schema
+  // still requires it; the client never edits it).
   useEffect(() => {
     const current: Prefs = {
       notif: settings.notif,
-      palette: settings.palette as PalettePrefs,
+      palette: lastSyncedPrefsRef.current.palette,
       languageDisplay: settings.languageDisplay,
     };
     const last = lastSyncedPrefsRef.current;
     if (
       notifEqual(current.notif, last.notif) &&
-      paletteEqual(current.palette, last.palette) &&
       languageDisplayEqual(current.languageDisplay, last.languageDisplay)
     ) {
       return;
@@ -704,7 +696,7 @@ export default function Settings(): JSX.Element {
     }, PREFS_DEBOUNCE_MS);
     // `flushPrefs` is stable (no deps); the effect keys on the settings slices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.notif, settings.palette, settings.languageDisplay]);
+  }, [settings.notif, settings.languageDisplay]);
 
   return (
     <section
@@ -922,19 +914,9 @@ export default function Settings(): JSX.Element {
             updateSettings((prev) => ({ ...prev, languageDisplay: next }));
           }}
         />
-        <SwatchPicker
-          label="Paper"
-          hint="Background."
-          presets={PAPER_PRESETS}
-          selectedId={settings.palette.paper}
-          onSelect={(id) => {
-            updateSettings({
-              palette: { ...settings.palette, paper: id },
-            });
-          }}
-        />
-        {/* Accent (Redesign §14a) — runtime accent choice. Unlike the other
-            swatch rows this does NOT write palette prefs: it drives
+        {/* Accent (Redesign §14a) — the ONLY color choice (v2 flatten: the
+            paper/correct/wrong palette pickers were removed; surfaces and
+            the success/danger semantics are fixed theme tokens now). Drives
             AccentProvider, which stamps data-accent on <html> and persists
             to km.accent — the same per-device posture as the theme mode
             above. The [data-accent] token blocks in index.css re-tint the
@@ -944,31 +926,9 @@ export default function Settings(): JSX.Element {
           hint="Buttons, highlights, the Learn hexagon."
           presets={ACCENT_OPTIONS}
           selectedId={accent}
-          onSelect={(id) => {
-            if (isAccent(id)) setAccent(id);
-          }}
-        />
-        <SwatchPicker
-          label="Correct"
-          hint="Success — answered right."
-          presets={CORRECT_PRESETS}
-          selectedId={settings.palette.correct}
-          onSelect={(id) => {
-            updateSettings({
-              palette: { ...settings.palette, correct: id },
-            });
-          }}
-        />
-        <SwatchPicker
-          label="Incorrect"
-          hint="Wrong answers + warnings."
-          presets={WRONG_PRESETS}
-          selectedId={settings.palette.wrong}
           last
           onSelect={(id) => {
-            updateSettings({
-              palette: { ...settings.palette, wrong: id },
-            });
+            if (isAccent(id)) setAccent(id);
           }}
         />
 
@@ -977,7 +937,7 @@ export default function Settings(): JSX.Element {
           onClick={resetSettings}
           className="km-btn km-btn--ghost km-btn--sm focusring km-settings__reset"
         >
-          <Bilingual en="Reset to Hanji" kr="한지 기본값으로" />
+          <Bilingual en="Reset to defaults" kr="기본값으로" />
         </button>
       </SettingsGroup>
 

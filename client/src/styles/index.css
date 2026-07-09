@@ -18,54 +18,56 @@
 
 :root,
 [data-theme="light"] {
-  /* Surfaces — cool daylight, glassy */
-  --ink:   #E7ECF5;   /* app base bg */
+  /* Surfaces — cool daylight, glassy (mockup-exact, v2) */
+  --ink:   #EDF1F8;   /* app base bg */
   --ink-1: #FFFFFF;   /* card paper */
   --ink-2: #F4F7FC;   /* elevated */
   --ink-3: #FFFFFF;   /* highest (popovers, sheets) */
 
   /* Type — near-black navy ink */
-  --paper:       #10141F;
-  --paper-dim:   #55607A;
-  --paper-mute:  #929BB0;
+  --paper:       #131826;
+  --paper-dim:   #57617A;
+  --paper-mute:  #99A2B6;
   --paper-faint: #B7BECD;
 
-  /* Hero accent — neon coral (default preset; the [data-accent] blocks
+  /* Hero accent — NEON coral (default preset; the [data-accent] blocks
    * further down re-point this family at runtime). NOTE contrast: the solid
-   * fill is the DEEP rose so white text passes AA; the bright coral is
-   * decorative (glow/gradients/active-on-soft) only. */
-  --vermilion:        #E11D48;   /* CTA fill, active text (AA w/ white + on white) */
-  --vermilion-bright: #FF3E6C;   /* glow, gradients, chips — decorative only */
-  --vermilion-soft:   rgba(255, 62, 108, 0.10);
+   * fill IS the bright neon coral from the mockup — white text on it only
+   * reaches ≈3.4:1, so type on the fill uses the near-black --on-vermilion
+   * ink (≈5.7:1, AA) — the same dark-ink-on-bright-fill move the dark theme
+   * and the mint accent make. */
+  --vermilion:        #FF3E6C;   /* CTA fill — neon coral */
+  --vermilion-bright: #FF3E6C;   /* glow, gradients, chips */
+  --vermilion-soft:   #FFE6ED;
   /* Text colour for type that sits ON the vermilion fill — buttons, seal
    * stamp, badges. Not a surface — never apply as `background`. */
-  --on-vermilion:     #FFFFFF;
+  --on-vermilion:     #0A0C12;
   --danger:           var(--vermilion);
   --danger-soft:      var(--vermilion-soft);
 
-  /* Category / skill hues */
-  --indigo:      #4F7BFF;  --indigo-soft: rgba(79,123,255,0.10);   /* Vocab */
-  --moss:        #12C08A;  --moss-soft:   rgba(18,192,138,0.12);   /* success/correct */
-  --ochre:       #F7A424;  --ochre-soft:  rgba(247,164,36,0.12);   /* Hanja */
-  --violet:      #7C5CFC;  --violet-soft: rgba(124,92,252,0.12);   /* Grammar (NEW) */
-  --cyan:        #0EB8D6;  --cyan-soft:   rgba(14,184,214,0.12);   /* Reading (NEW) */
+  /* Category / skill hues — soft chips are the mockup's solid pastels */
+  --indigo:      #4F7BFF;  --indigo-soft: #E7EEFF;   /* Vocab */
+  --moss:        #12C08A;  --moss-soft:   #DEF7EF;   /* success/correct */
+  --ochre:       #F7A424;  --ochre-soft:  #FEF1DA;   /* Hanja */
+  --violet:      #7C5CFC;  --violet-soft: #EFEAFE;   /* Grammar */
+  --cyan:        #0EB8D6;  --cyan-soft:   #E0F6FB;   /* Reading */
 
   /* On-surface TEXT twins (§3a fix-pass) — whenever a category/accent hue
    * is the *foreground* (pill labels, eyebrows, stat counts, icons), read
    * the `-ink` twin instead of the raw hue. The light values are deepened
    * so each computes ≥4.5:1 (WCAG AA) on the darkest light-theme host it
-   * sits on — its own *-soft tint composited over --ink-2, and for the
-   * accent even the 16% ghost-hover mix. The raw hues stay bright for
-   * fills, chips, borders, glows and gradients. --moss-ink / --danger-ink
-   * are color-mix-derived so they keep tracking the user-projectable
-   * CORRECT_PRESETS / WRONG_PRESETS inline overrides. */
+   * sits on — its own *-soft chip, --ink-2, and for the accent even the
+   * 16% ghost-hover mix. The raw hues stay bright for fills, chips,
+   * borders, glows and gradients. (Static since the v2 flatten: the old
+   * user-projectable correct/wrong palette presets are gone — --moss and
+   * --danger are fixed theme tokens now.) */
   --vermilion-ink: #BB183C;   /* coral accent as text (light) */
   --indigo-ink:    #1C55FF;
-  --moss-ink:      color-mix(in srgb, var(--moss) 62%, #000);  /* #0B7756 */
+  --moss-ink:      #0B7756;
   --ochre-ink:     #965D05;
   --violet-ink:    #643EFB;
   --cyan-ink:      #097285;
-  --danger-ink:    color-mix(in srgb, var(--danger) 90%, #000); /* #CA1A41 */
+  --danger-ink:    #BB183C;
 
   /* Legacy accent aliases — a few dev-panel styles still read --gold*.
    * Var-chained so they track whatever accent is active. (NEW) */
@@ -78,16 +80,16 @@
   --line-strong: rgba(20, 30, 60, 0.16);
 
   /* NEW — shape scale */
-  --radius-sm:   12px;
+  --radius-sm:   15px;
   --radius:      16px;
   --radius-lg:   22px;   /* cards */
   --radius-pill: 999px;
 
   /* NEW — elevation (soft daytime float, accent-tinted) */
-  --shadow-sm:   0 1px 0 rgba(20,30,60,0.05), 0 6px 16px -10px rgba(30,45,90,0.20);
-  --shadow:      0 1px 0 rgba(20,30,60,0.06), 0 14px 34px -16px rgba(40,55,110,0.22), 0 4px 12px -8px rgba(40,55,110,0.14);
+  --shadow-sm:   0 1px 0 rgba(20,35,80,0.05), 0 6px 16px -10px rgba(30,45,90,0.20);
+  --shadow:      0 1px 0 rgba(20,35,80,0.06), 0 14px 34px -16px rgba(40,55,110,0.22), 0 4px 12px -8px rgba(40,55,110,0.14);
   --shadow-lift: 0 24px 50px -18px rgba(255,62,108,0.28), 0 8px 18px -10px rgba(40,55,110,0.20);
-  --glow:        0 10px 26px -10px var(--vermilion-bright);
+  --glow:        0 10px 26px -10px var(--vermilion);
 
   /* NEW — rounded display face for headings/buttons/chrome labels (§10).
    * Korean display titles keep .kr-display's Noto Serif KR. */
@@ -114,18 +116,19 @@
   /* Dark: bright coral fill + DARK ink text = high-contrast neon look */
   --vermilion:        #FF4D74;
   --vermilion-bright: #FF6B8A;
-  --vermilion-soft:   rgba(255, 77, 116, 0.14);
+  --vermilion-soft:   #2C1420;
   --on-vermilion:     #0A0C12;
 
-  --indigo: #5B8CFF;  --indigo-soft: rgba(91,140,255,0.14);
-  --moss:   #2BE0A6;  --moss-soft:   rgba(43,224,166,0.14);
-  --ochre:  #FFB43D;  --ochre-soft:  rgba(255,180,61,0.14);
-  --violet: #9B7CFF;  --violet-soft: rgba(155,124,255,0.14);
-  --cyan:   #33D6EF;  --cyan-soft:   rgba(51,214,239,0.14);
+  /* Soft chips are the mockup's solid deep tints */
+  --indigo: #5B8CFF;  --indigo-soft: #131F3D;
+  --moss:   #2BE0A6;  --moss-soft:   #0C2B22;
+  --ochre:  #FFB43D;  --ochre-soft:  #2B2110;
+  --violet: #9B7CFF;  --violet-soft: #1D1638;
+  --cyan:   #33D6EF;  --cyan-soft:   #0C2530;
 
   /* On-surface TEXT twins (§3a fix-pass) — dark counterparts. Brightened
    * (or passed through) so each clears ≥4.5:1 even on the LIGHTEST dark
-   * host: its *-soft tint composited over --ink-3 (popovers/sheets).
+   * host: its *-soft chip and --ink-3 (popovers/sheets).
    * moss/ochre/cyan already clear that bar as-is and pass through. */
   --vermilion-ink: #FF7190;   /* coral accent as text (dark) */
   --indigo-ink:    #7AA2FF;
@@ -133,9 +136,9 @@
   --ochre-ink:     var(--ochre);
   --violet-ink:    #AE96FF;
   --cyan-ink:      var(--cyan);
-  --danger-ink:    color-mix(in srgb, var(--danger) 80%, #fff); /* #FF7190 */
+  --danger-ink:    #FF7190;
 
-  --line:        rgba(150, 180, 255, 0.08);
+  --line:        rgba(150, 180, 255, 0.10);
   --line-strong: rgba(150, 180, 255, 0.16);
 
   --shadow-sm:   0 0 0 1px rgba(150,180,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.7);
@@ -158,15 +161,15 @@
  * matter which accent hue is active (the base `--danger: var(--vermilion)`
  * would otherwise follow the accent).
  *
- * Contrast (§3a): each light solid fill carries its --on-vermilion at
- * ≥4.5:1 — coral #E11D48 + white ≈ 4.7:1, blue #2563EB + white ≈ 5.1:1;
- * mint's #0F9E7A only reaches ≈3.4:1 with white, so mint-light uses the
- * dark navy ink (≈5.4:1) — the same dark-ink-on-bright-fill move every
- * dark-theme fill makes. Dark fills all pair with #0A0C12 at ≥6:1.
+ * Contrast (§3a, recomputed for the v2 neon values): each solid fill
+ * carries its --on-vermilion at ≥4.5:1 — coral #FF3E6C + near-black ink
+ * ≈ 5.7:1 (white would be ≈3.4:1 and fail), blue #2563EB + white ≈ 5.1:1,
+ * mint #0F9E7A + near-black ink ≈ 5.8:1. Dark fills all pair with
+ * #0A0C12 at ≥6:1.
  * The accent AS TEXT (ghost buttons, gold pills, active nav) never reads
  * --vermilion directly — it reads --vermilion-ink, deepened (light) /
  * brightened (dark) per accent so small text clears AA on every host
- * surface it can sit on (verified in the fix-pass contrast matrix).
+ * surface it can sit on (verified in the v2 contrast matrix).
  *
  * Cascade note: the light accent blocks are LATER in the sheet than
  * [data-theme="dark"] at equal specificity, so every dark combo needs (and
@@ -174,16 +177,16 @@
  * token the light block sets — otherwise light values would leak into dark.
  * ──────────────────────────────────────────────────────────────────────── */
 [data-accent="coral"] {
-  --vermilion:        #E11D48;
+  --vermilion:        #FF3E6C;
   --vermilion-bright: #FF3E6C;
-  --vermilion-soft:   rgba(255, 62, 108, 0.10);
+  --vermilion-soft:   #FFE6ED;
   --vermilion-ink:    #BB183C;
-  --on-vermilion:     #FFFFFF;
+  --on-vermilion:     #0A0C12;
 }
 [data-theme="dark"][data-accent="coral"] {
   --vermilion:        #FF4D74;
   --vermilion-bright: #FF6B8A;
-  --vermilion-soft:   rgba(255, 77, 116, 0.14);
+  --vermilion-soft:   #2C1420;
   --vermilion-ink:    #FF7190;
   --on-vermilion:     #0A0C12;
 }
@@ -193,8 +196,8 @@
   --vermilion-soft:   rgba(79, 123, 255, 0.10);
   --vermilion-ink:    #1554DF;
   --on-vermilion:     #FFFFFF;
-  --danger:           #E11D48;
-  --danger-soft:      rgba(255, 62, 108, 0.10);
+  --danger:           #FF3E6C;
+  --danger-soft:      #FFE6ED;
 }
 [data-theme="dark"][data-accent="blue"] {
   --vermilion:        #5B8CFF;
@@ -203,16 +206,16 @@
   --vermilion-ink:    #7AA2FF;
   --on-vermilion:     #0A0C12;
   --danger:           #FF4D74;
-  --danger-soft:      rgba(255, 77, 116, 0.14);
+  --danger-soft:      #2C1420;
 }
 [data-accent="mint"] {
   --vermilion:        #0F9E7A;
   --vermilion-bright: #10C79A;
   --vermilion-soft:   rgba(16, 199, 154, 0.10);
   --vermilion-ink:    #0B7258;
-  --on-vermilion:     #10141F;  /* see contrast note above */
-  --danger:           #E11D48;
-  --danger-soft:      rgba(255, 62, 108, 0.10);
+  --on-vermilion:     #0A0C12;  /* see contrast note above */
+  --danger:           #FF3E6C;
+  --danger-soft:      #FFE6ED;
 }
 [data-theme="dark"][data-accent="mint"] {
   --vermilion:        #2BE0A6;
@@ -221,7 +224,7 @@
   --vermilion-ink:    #5BF0C0;
   --on-vermilion:     #0A0C12;
   --danger:           #FF4D74;
-  --danger-soft:      rgba(255, 77, 116, 0.14);
+  --danger-soft:      #2C1420;
 }
 
 /* Reset + ambient glow. */
@@ -430,8 +433,8 @@ h1, h2 { font-family: var(--font-display); }
 
 /* Tone accents reuse the palette tokens (danger / moss / ink), matching
    the ErrorCard idiom. Error tones read --danger, NOT --vermilion: --danger
-   is pinned red under the blue/mint accents (and tracks the user's
-   WRONG_PRESETS choice), so errors never re-hue to the brand accent. */
+   is pinned red under the blue/mint accents, so errors never re-hue to the
+   brand accent. */
 .km-toast--error {
   border-left-color: var(--danger);
   background: var(--danger-soft);

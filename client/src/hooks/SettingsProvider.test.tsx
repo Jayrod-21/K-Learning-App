@@ -4,7 +4,8 @@
  *   - `useSettings` outside the Provider throws (loud failure mode).
  *   - Provider hydrates from localStorage on mount.
  *   - `updateSettings` debounces a write to localStorage.
- *   - Selected palette is applied via `setProperty` on <html>.
+ *   - NO palette CSS vars are ever inline-projected (v2 flatten removed the
+ *     paper/correct/wrong feature — theme/accent tokens own all color).
  *   - `resetSettings` returns to DEFAULT_SETTINGS.
  */
 import {
@@ -61,10 +62,11 @@ describe('SettingsProvider', () => {
     expect(result.current.settings.name).toBe('Jared');
   });
 
-  it('applies NO palette vars for the DEFAULT palette (Seoul Neon)', () => {
-    // The default presets declare no vars — default users render the
-    // theme+accent-aware token blocks from index.css untouched. Only the
-    // language-display scale (its own non-palette projection) may land.
+  it('never inline-projects palette/theme tokens (v2 flatten)', () => {
+    // The paper/correct/wrong palette feature is gone. The ONLY <html>
+    // custom property the Provider may write is --lang-sub-scale — surface,
+    // type, accent, success and danger tokens all come from the
+    // [data-theme]/[data-accent] blocks in index.css untouched.
     const spy = vi.spyOn(
       document.documentElement.style,
       'setProperty',
@@ -80,63 +82,35 @@ describe('SettingsProvider', () => {
     expect(touched.has('--vermilion')).toBe(false);
     expect(touched.has('--moss')).toBe(false);
     expect(touched.has('--danger')).toBe(false);
-  });
-
-  it('applies a stored non-default palette to documentElement on mount', () => {
-    window.localStorage.setItem(
-      SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        palette: { paper: 'linen', accent: 'plum', correct: 'pine', wrong: 'amber' },
-      }),
-    );
-    const spy = vi.spyOn(
-      document.documentElement.style,
-      'setProperty',
-    );
-    render(
-      <SettingsProvider>
-        <div>app</div>
-      </SettingsProvider>,
-    );
-    const calls = spy.mock.calls.map(([k, v]) => [k, v] as const);
-    const set = new Map(calls);
-    expect(set.get('--ink')).toBe('#E2D9C2');
-    expect(set.get('--moss')).toBe('#2E5B3E');
-    expect(set.get('--danger')).toBe('#A66A1F');
-    // Accent is NEVER inline-projected — data-accent CSS owns --vermilion.
-    expect(set.has('--vermilion')).toBe(false);
-  });
-
-  it('does not set tokens outside the allowlist', () => {
-    window.localStorage.setItem(
-      SETTINGS_STORAGE_KEY,
-      JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        palette: { paper: 'linen', accent: 'plum', correct: 'pine', wrong: 'amber' },
-      }),
-    );
-    const spy = vi.spyOn(
-      document.documentElement.style,
-      'setProperty',
-    );
-    render(
-      <SettingsProvider>
-        <div>app</div>
-      </SettingsProvider>,
-    );
-    for (const [key] of spy.mock.calls) {
-      expect(key.startsWith('--')).toBe(true);
+    for (const key of touched) {
+      expect(key).toBe('--lang-sub-scale');
     }
-    // No surface-only token leaks from a non-paper category — if the
-    // allowlist were broken, an extraneous unknown key would appear.
+  });
+
+  it('ignores a legacy stored palette blob instead of projecting it', () => {
+    // A pre-v2 localStorage blob still carries `palette` — it must neither
+    // crash the merge nor reach the DOM as inline CSS variables.
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        palette: { paper: 'linen', accent: 'plum', correct: 'pine', wrong: 'amber' },
+      }),
+    );
+    const spy = vi.spyOn(
+      document.documentElement.style,
+      'setProperty',
+    );
+    render(
+      <SettingsProvider>
+        <div>app</div>
+      </SettingsProvider>,
+    );
     const touched = new Set(spy.mock.calls.map(([k]) => k));
-    // Spot-check: --moss-soft comes from correct; the accent's legacy
-    // --gold* tokens AND the dead --green* aliases were removed from the
-    // allowlist/presets and must NOT land.
-    expect(touched.has('--moss-soft')).toBe(true);
-    expect(touched.has('--green-light')).toBe(false);
-    expect(touched.has('--gold-light')).toBe(false);
+    expect(touched.has('--ink')).toBe(false);
+    expect(touched.has('--moss')).toBe(false);
+    expect(touched.has('--moss-soft')).toBe(false);
+    expect(touched.has('--danger')).toBe(false);
     expect(touched.has('--vermilion')).toBe(false);
   });
 

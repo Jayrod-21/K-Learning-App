@@ -1,13 +1,10 @@
 /**
- * settings — pure I/O. Tests cover the three behaviours the rest of the
- * app trusts:
+ * settings — pure I/O. Tests cover the behaviours the rest of the app trusts:
  *   1. `loadSettings` is total — DEFAULT_SETTINGS on missing or corrupt.
  *   2. `saveSettings` round-trips through `loadSettings`.
- *   3. `paletteVars` flattens the projected presets correctly: the DEFAULT
- *      combo projects NOTHING (Seoul Neon — theme/accent-aware tokens from
- *      index.css render untouched), a non-default combo projects only its
- *      own category's keys, and the ACCENT category is never projected
- *      (the runtime `data-accent` blocks own `--vermilion`).
+ *   3. Legacy `palette` keys in pre-v2 blobs are dropped, not merged
+ *      (v2 flatten: the paper/correct/wrong palette feature — and its
+ *      `paletteVars` projection — was removed; appearance is theme + accent).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -17,7 +14,6 @@ import {
   LANG_SUB_SCALE_MIN,
   SETTINGS_STORAGE_KEY,
   loadSettings,
-  paletteVars,
   saveSettings,
   type Settings,
 } from './settings';
@@ -45,20 +41,20 @@ describe('loadSettings', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
   });
 
-  it('deep-merges partial blobs over defaults', () => {
+  it('deep-merges partial blobs over defaults (legacy palette key dropped)', () => {
     window.localStorage.setItem(
       SETTINGS_STORAGE_KEY,
       JSON.stringify({
         name: 'Jared',
+        // Pre-v2 blobs carried a palette — it must be ignored, not crash.
         palette: { paper: 'linen' },
         notif: { channel: { sms: true } },
       }),
     );
     const got = loadSettings();
     expect(got.name).toBe('Jared');
-    expect(got.palette.paper).toBe('linen');
-    // Untouched palette keys fall back to defaults
-    expect(got.palette.accent).toBe(DEFAULT_SETTINGS.palette.accent);
+    // v2 flatten: the legacy palette key is dropped from the merged shape.
+    expect('palette' in got).toBe(false);
     // Channel patched, siblings preserved
     expect(got.notif.channel.sms).toBe(true);
     expect(got.notif.channel.email).toBe(
@@ -93,7 +89,7 @@ describe('loadSettings — languageDisplay (P3a)', () => {
     const got = loadSettings();
     expect(got.languageDisplay).toEqual({ mode: 'both', primary: 'ko', subScale: 0.7 });
     // ...and the pre-P3a fields still merged normally.
-    expect(got.palette.paper).toBe('linen');
+    expect(got.name).toBe('Jared');
   });
 
   it('deep-merges a partial languageDisplay (field-by-field, not all-or-nothing)', () => {
@@ -157,7 +153,7 @@ describe('saveSettings', () => {
       ...DEFAULT_SETTINGS,
       name: 'Jared',
       email: 'j@example.com',
-      palette: { paper: 'sumi', accent: 'plum', correct: 'pine', wrong: 'amber' },
+      languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
     };
     saveSettings(next);
     expect(loadSettings()).toEqual(next);
@@ -179,59 +175,5 @@ describe('saveSettings', () => {
   });
 });
 
-describe('paletteVars', () => {
-  it('produces NO overrides for the DEFAULT combo (Seoul Neon)', () => {
-    // The default presets (hanji / moss / vermilion-wrong) declare no vars:
-    // default users render the theme+accent-aware token blocks in index.css
-    // untouched. An inline default projection would beat [data-theme] and
-    // [data-accent] in the cascade and freeze the app theme-blind.
-    const vars = paletteVars(DEFAULT_SETTINGS.palette);
-    expect(vars).toEqual({});
-  });
-
-  it('produces a non-default combo (linen+plum+pine+amber)', () => {
-    const vars = paletteVars({
-      paper: 'linen',
-      accent: 'plum',
-      correct: 'pine',
-      wrong: 'amber',
-    });
-    expect(vars['--ink']).toBe('#E2D9C2');
-    // Accent is NEVER projected — the data-accent CSS blocks own --vermilion.
-    expect(vars['--vermilion']).toBeUndefined();
-    expect(vars['--gold']).toBeUndefined();
-    expect(vars['--moss']).toBe('#2E5B3E');
-    // Dead hanji-era aliases were removed from the presets — nothing in the
-    // stylesheet reads --green/--green-light anymore.
-    expect(vars['--green']).toBeUndefined();
-    expect(vars['--green-light']).toBeUndefined();
-    expect(vars['--danger']).toBe('#A66A1F');
-  });
-
-  it('falls back to empty section when a preset id is unknown', () => {
-    const vars = paletteVars({
-      paper: 'bogus',
-      accent: 'vermilion',
-      correct: 'pine',
-      wrong: 'amber',
-    });
-    // Paper section omitted entirely — no ink/paper keys set
-    expect(vars['--ink']).toBeUndefined();
-    expect(vars['--paper']).toBeUndefined();
-    // Other sections still resolve
-    expect(vars['--moss']).toBe('#2E5B3E');
-    expect(vars['--danger']).toBe('#A66A1F');
-  });
-
-  it('later categories win for shared keys', () => {
-    // The wrong category owns --danger; an accent preset never sets --danger
-    // directly, but verify the ordering contract holds.
-    const vars = paletteVars({
-      paper: 'hanji',
-      accent: 'indigo',
-      correct: 'moss',
-      wrong: 'slate',
-    });
-    expect(vars['--danger']).toBe('#4A4A55');
-  });
-});
+// v2 flatten: the `paletteVars` suite was removed with the feature — no
+// inline palette projection exists anymore (appearance = theme + accent).

@@ -414,30 +414,31 @@ export function Today(): JSX.Element {
       )}
 
       {/* Reading / Listening / Writing carousel ──────────────── */}
+      {/* v2 flatten: no Card around the carousel — TaskCards are themselves
+          elevated cards, so they float directly on the page background under
+          a bare section eyebrow (a card must never contain another card). */}
       {taskTiles.length > 0 ? (
         <section style={{ marginBottom: 16 }}>
-          <Card variant="default" style={{ padding: '20px 22px' }}>
-            <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-              <Bilingual en="Today’s tasks" kr="오늘의 과제" />
-            </div>
-            <SwipeCarousel ariaLabel="Today's tasks">
-              {taskTiles.map((tile) => (
-                <div key={tile.task.tag} className="km-today__taskPage">
-                  <TaskCard
-                    skill={`${tile.skill} · ${tile.task.level}`}
-                    krTag={tile.krTag}
-                    title={tile.task.title}
-                    mins={tile.task.mins}
-                    tone={tileTone(tile.task.tag, gapTag)}
-                    tag={tileTag(tile.task.tag, gapTag)}
-                    onClick={() => {
-                      navigate(tile.nav);
-                    }}
-                  />
-                </div>
-              ))}
-            </SwipeCarousel>
-          </Card>
+          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+            <Bilingual en="Today’s tasks" kr="오늘의 과제" />
+          </div>
+          <SwipeCarousel ariaLabel="Today's tasks">
+            {taskTiles.map((tile) => (
+              <div key={tile.task.tag} className="km-today__taskPage">
+                <TaskCard
+                  skill={`${tile.skill} · ${tile.task.level}`}
+                  krTag={tile.krTag}
+                  title={tile.task.title}
+                  mins={tile.task.mins}
+                  tone={tileTone(tile.task.tag, gapTag)}
+                  tag={tileTag(tile.task.tag, gapTag)}
+                  onClick={() => {
+                    navigate(tile.nav);
+                  }}
+                />
+              </div>
+            ))}
+          </SwipeCarousel>
         </section>
       ) : null}
 

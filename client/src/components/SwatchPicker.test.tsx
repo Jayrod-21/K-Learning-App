@@ -16,7 +16,20 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState, type JSX } from 'react';
 import { SwatchPicker } from './SwatchPicker';
-import { ACCENT_PRESETS } from '../lib/palette-presets';
+import type { PresetMap } from '../lib/palette-presets';
+
+/**
+ * Local 4-swatch fixture (the legacy ACCENT_PRESETS map was deleted with the
+ * v2 palette-feature removal — SwatchPicker itself is generic over any
+ * PresetMap, so the interaction contract is tested against a stand-in with
+ * the same ids/order the old map had).
+ */
+const ACCENT_PRESETS: PresetMap = {
+  vermilion: { name: 'Vermilion', kr: '단청', swatch: '#B83A2E' },
+  indigo: { name: 'Indigo', kr: '청', swatch: '#2E4F70' },
+  plum: { name: 'Plum', kr: '자주', swatch: '#7B3358' },
+  ochre: { name: 'Ochre', kr: '황토', swatch: '#B07A1F' },
+};
 
 function Harness({
   initial = 'vermilion',

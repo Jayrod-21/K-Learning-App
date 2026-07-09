@@ -45,8 +45,15 @@
   white-space: nowrap;
 }
 
+/* v2 flatten: formerly a nested <Card variant="flat"> — now a plain inset
+ * panel INSIDE the mistake card (a card must never contain another card).
+ * Same elevated-surface tint, but no shadow and a smaller radius, so it
+ * reads as a recessed section of the card rather than a floating tile. */
 .km-mistakes__explain {
   margin-top: 2px;
+  padding: 14px 16px;
+  background: var(--ink-2);
+  border-radius: var(--radius-sm);
 }
 
 .km-mistakes__answer {

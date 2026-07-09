@@ -1,10 +1,15 @@
 /**
- * Settings — pure I/O for user preferences (profile + notif + palette).
+ * Settings — pure I/O for user preferences (profile + notif + languageDisplay).
  *
- * Mirrors `loadSettings` / `saveSettings` / `paletteVars` from the design
- * handoff (`Claude Design/.../shared.jsx`). Pure: no React, no DOM. The
- * Provider (`hooks/SettingsProvider.tsx`) wires these into context, applies
- * the CSS variables, and persists.
+ * Mirrors `loadSettings` / `saveSettings` from the design handoff
+ * (`Claude Design/.../shared.jsx`). Pure: no React, no DOM. The Provider
+ * (`hooks/SettingsProvider.tsx`) wires these into context and persists.
+ *
+ * v2 flatten: the user-changeable paper/correct/wrong palette (and its
+ * `paletteVars` inline-CSS projection) was removed — appearance is theme +
+ * accent only, both owned by their own providers. A legacy blob's `palette`
+ * key is simply dropped by the merge below; the WIRE `palette` field lives
+ * on in `services/settings.ts` for server back-compat.
  *
  * Storage shape (`localStorage["km.settings"]`):
  *   JSON-serialised `Settings`. We deep-merge missing keys against
@@ -22,11 +27,6 @@
  * (no breaking shape change yet), server sync (Pass 9 alongside auth).
  */
 
-import {
-  PAPER_PRESETS,
-  CORRECT_PRESETS,
-  WRONG_PRESETS,
-} from './palette-presets';
 import type {
   BilingualLanguage,
   LanguageDisplayMode,
@@ -86,25 +86,12 @@ export interface NotifSettings {
   weekly: boolean;
 }
 
-export interface PaletteSettings {
-  /** Key into `PAPER_PRESETS`. */
-  paper: string;
-  /** Key into `ACCENT_PRESETS`. */
-  accent: string;
-  /** Key into `CORRECT_PRESETS`. */
-  correct: string;
-  /** Key into `WRONG_PRESETS`. */
-  wrong: string;
-}
-
 export interface Settings {
   name: string;
   email: string;
   phone: string;
   notif: NotifSettings;
-  palette: PaletteSettings;
-  /** Bilingual-chrome rendering (P3a). Typed straight off the domain shape —
-   *  unlike `palette` there is no preset-registry indirection to keep loose. */
+  /** Bilingual-chrome rendering (P3a). Typed straight off the domain shape. */
   languageDisplay: LanguageDisplayPrefs;
 }
 
@@ -117,12 +104,6 @@ export const DEFAULT_SETTINGS: Settings = {
     reviewsDue: true,
     daily: false,
     weekly: true,
-  },
-  palette: {
-    paper: 'hanji',
-    accent: 'vermilion',
-    correct: 'moss',
-    wrong: 'vermilion',
   },
   // 'both' + Korean-first matches the previously-baked "kr · en" titles
   // exactly, so headings look unchanged at the default. BottomNav is the
@@ -155,13 +136,13 @@ function pickBool(v: unknown, fallback: boolean): boolean {
 /**
  * Merge a parsed JSON blob over `DEFAULT_SETTINGS`. Never throws.
  * Unknown fields on the blob are dropped (we only persist the documented
- * shape, so extras would just bloat the next save).
+ * shape, so extras would just bloat the next save) — including the legacy
+ * `palette` key from pre-v2 blobs.
  */
 function mergeSettings(raw: unknown): Settings {
   if (!isRecord(raw)) return DEFAULT_SETTINGS;
   const notifRaw = isRecord(raw.notif) ? raw.notif : {};
   const channelRaw = isRecord(notifRaw.channel) ? notifRaw.channel : {};
-  const paletteRaw = isRecord(raw.palette) ? raw.palette : {};
   const langRaw = isRecord(raw.languageDisplay) ? raw.languageDisplay : {};
   return {
     name: pickString(raw.name, DEFAULT_SETTINGS.name),
@@ -175,12 +156,6 @@ function mergeSettings(raw: unknown): Settings {
       reviewsDue: pickBool(notifRaw.reviewsDue, DEFAULT_SETTINGS.notif.reviewsDue),
       daily: pickBool(notifRaw.daily, DEFAULT_SETTINGS.notif.daily),
       weekly: pickBool(notifRaw.weekly, DEFAULT_SETTINGS.notif.weekly),
-    },
-    palette: {
-      paper: pickString(paletteRaw.paper, DEFAULT_SETTINGS.palette.paper),
-      accent: pickString(paletteRaw.accent, DEFAULT_SETTINGS.palette.accent),
-      correct: pickString(paletteRaw.correct, DEFAULT_SETTINGS.palette.correct),
-      wrong: pickString(paletteRaw.wrong, DEFAULT_SETTINGS.palette.wrong),
     },
     // P3a: a pre-P3a snapshot has no `languageDisplay` at all — every field
     // falls back to the default independently (deep-merge, not all-or-nothing),
@@ -236,35 +211,6 @@ export function saveSettings(s: Settings): void {
   }
 }
 
-/**
- * Flatten the selected presets into one dict of CSS custom-property
- * overrides. Later categories win (paper → correct → wrong).
- *
- * IMPORTANT: only forwards `vars` that the chosen preset actually declares.
- * A non-paper category will never touch `--ink-*` / `--paper-*` / `--line*`
- * because none of those presets list them. We never inject "empty" tokens.
- * The DEFAULT preset in each category declares no vars at all, so a
- * default user gets the pure theme-aware token blocks from index.css.
- *
- * Seoul Neon redesign: the ACCENT category is deliberately NOT projected.
- * The accent is now a runtime `data-accent` attribute owned by
- * `AccentProvider` + the `[data-accent]` CSS blocks — inline `--vermilion`
- * overrides here would beat those blocks in the cascade and freeze the
- * accent to a single theme-blind hex. `palette.accent` is retained in the
- * stored/synced blob purely for server-schema parity.
- */
-export function paletteVars(
-  palette: PaletteSettings,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  const sources = [
-    PAPER_PRESETS[palette.paper]?.vars,
-    CORRECT_PRESETS[palette.correct]?.vars,
-    WRONG_PRESETS[palette.wrong]?.vars,
-  ];
-  for (const src of sources) {
-    if (!src) continue;
-    for (const [k, v] of Object.entries(src)) out[k] = v;
-  }
-  return out;
-}
+// v2 flatten: `paletteVars` (the paper/correct/wrong inline-CSS projection)
+// was removed with the palette feature. Appearance is theme + accent only —
+// both attribute-driven (`data-theme` / `data-accent`), never inline styles.
