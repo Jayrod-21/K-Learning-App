@@ -63,9 +63,9 @@ type LearnSubpageId = (typeof LEARN_SUBPAGE_IDS)[number];
  * the accent pair (writing + TOPIK) sits nearest the hexagon.
  */
 const COMB_ROWS = [
-  ['reading', 'hanja'],
-  ['flashcards', 'grammar', 'ttmik'],
-  ['writing', 'topik'],
+  ['flashcards', 'grammar'],
+  ['reading', 'topik', 'ttmik'],
+  ['writing', 'hanja'],
 ] as const satisfies ReadonlyArray<ReadonlyArray<LearnSubpageId>>;
 
 /**
