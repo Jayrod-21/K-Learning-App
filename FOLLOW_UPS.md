@@ -287,3 +287,22 @@ Paper trail: `db/docs/reviews/u3b-reader/`. All non-blocking; U3b shipped PASS.
 - **"View original scan" deep-link** — `UploadViewer` has no page-number route param, so
   the reader's scan link opens at page 1 instead of the chapter's `start_page`. Add a
   page param to `UploadViewer` + thread `chapter.start_page` through.
+
+## Redesign (Modern Seoul restyle) — PR1 /fixpass residuals + later slices
+Paper trail: `db/docs/reviews/redesign-pr1/`. PR1 shipped PASS (all AA-contrast BLOCKERs fixed).
+- **Accent cross-device sync (deferred, P3)** — the accent picker persists to
+  `localStorage["km.accent"]` only; it does not sync across devices because the server
+  `PrefsSchema.accent` is pinned to a legacy enum (`vermilion|indigo|plum|ochre`). Matches
+  the existing theme-toggle precedent (also localStorage-only). To sync: extend the server
+  prefs enum to accept `coral|blue|mint` and POST it, then read it back on load.
+- **Mint focus-ring contrast (new, P3)** — under the non-default Mint accent in light
+  theme, the focus-ring outline measures ~2.86:1 against the raw page background (below the
+  WCAG 1.4.11 3:1 non-text floor); it passes (3.39:1) on the more common card/nav surfaces.
+  Pre-existing shape (unchanged by the fix-pass). Deepen the Mint focus-ring hue in light.
+- **PR2 — misc surfaces + ink-motif retint (§8 of the brief)** — toast/sheet/popover/input
+  radii already done in PR1; the rustic ink motifs (`.hr-gold`, `.km-seal`, SealStamp,
+  GoldRule, CornerMark, TianGrid) now geometrically clash with the rounded system and
+  non-default paper/correct/wrong palette presets still project legacy hanji-era surface
+  vars over the new design — retint or retire per screen.
+- **PR3 — LearnMenu honeycomb launcher (§7 Phase 2 of the brief)** — upgrade the vertical
+  `LearnMenu` row list to the color-coded hex-tile honeycomb per the mockup.
