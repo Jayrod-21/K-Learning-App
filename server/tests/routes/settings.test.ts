@@ -31,13 +31,13 @@ const DEFAULT_LANGUAGE_DISPLAY = { mode: 'both', primary: 'ko', subScale: 0.7 };
 
 const DEFAULT_PREFS = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
-  palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
 };
 
 const CUSTOM_PREFS = {
   notif: { channel: { email: false, sms: true }, reviewsDue: false, daily: true, weekly: false },
-  palette: { paper: 'sumi', accent: 'indigo', correct: 'pine', wrong: 'amber' },
+  palette: { paper: 'sumi', accent: 'mint', correct: 'pine', wrong: 'amber' },
   languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
 };
 
@@ -132,6 +132,61 @@ describe('PUT /settings/prefs', () => {
     await agent.put('/settings/prefs').send(DEFAULT_PREFS).expect(200);
     const res = await agent.get('/settings/prefs');
     expect(res.body).toEqual(DEFAULT_PREFS);
+  });
+});
+
+describe('accent (Seoul-neon cross-device sync)', () => {
+  it("GET coerces a stored LEGACY accent ('ochre') to 'coral' WITHOUT wiping the rest of the blob", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // A pre-redesign stored blob: legacy accent id, everything else custom.
+    const legacyBlob = {
+      ...CUSTOM_PREFS,
+      palette: { ...CUSTOM_PREFS.palette, accent: 'ochre' },
+    };
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(legacyBlob),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // The legacy accent coerces to the default; the user's OTHER stored
+    // choices survive (this must NOT be the DEFAULT_PREFS fallback).
+    expect(res.body).toEqual({
+      ...CUSTOM_PREFS,
+      palette: { ...CUSTOM_PREFS.palette, accent: 'coral' },
+    });
+  });
+
+  it("PUT round-trips a valid new accent ('mint') via echo + GET", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = { ...DEFAULT_PREFS, palette: { ...DEFAULT_PREFS.palette, accent: 'mint' } };
+    const put = await agent.put('/settings/prefs').send(body);
+    expect(put.status).toBe(200);
+    expect(put.body.palette.accent).toBe('mint');
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual(body);
+  });
+
+  it("PUT from a stale client carrying a LEGACY accent ('indigo') is accepted, coerced to 'coral' (not a 400)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = { ...CUSTOM_PREFS, palette: { ...CUSTOM_PREFS.palette, accent: 'indigo' } };
+    const res = await agent.put('/settings/prefs').send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.palette.accent).toBe('coral');
+    // The coerced value is what persisted — the next GET serves a valid id.
+    const get = await agent.get('/settings/prefs');
+    expect(get.body.palette.accent).toBe('coral');
+    // ...and the rest of the PUT body persisted untouched.
+    expect(get.body.notif).toEqual(CUSTOM_PREFS.notif);
+    expect(get.body.palette.paper).toBe('sumi');
+  });
+
+  it("a totally unknown accent value also coerces to 'coral' (catch posture, never 400/500)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = { ...DEFAULT_PREFS, palette: { ...DEFAULT_PREFS.palette, accent: 'neon-zebra' } };
+    const res = await agent.put('/settings/prefs').send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.palette.accent).toBe('coral');
   });
 });
 

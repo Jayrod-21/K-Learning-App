@@ -78,11 +78,11 @@ vi.mock('../lib/qr', () => ({
 vi.mock('../services/settings', () => ({
   fetchPrefs: mocks.fetchPrefs,
   putPrefs: mocks.putPrefs,
-  // Real constant (v2 flatten): the wire-only palette echo the page seeds
-  // its PUT baseline with before hydration. Mirrors the module's export.
+  // Real constant (v2 flatten + accent sync): the wire palette echo the page
+  // seeds its PUT baseline with before hydration. Mirrors the module's export.
   LEGACY_PALETTE_DEFAULT: {
     paper: 'hanji',
-    accent: 'vermilion',
+    accent: 'coral',
     correct: 'moss',
     wrong: 'vermilion',
   },
@@ -142,7 +142,7 @@ const DEFAULT_PREFS = {
     daily: false,
     weekly: true,
   },
-  palette: { paper: 'hanji', accent: 'vermilion', correct: 'moss', wrong: 'vermilion' },
+  palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
 };
 
@@ -622,7 +622,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     mocks.fetchPrefs.mockResolvedValue({
       ...DEFAULT_PREFS,
       notif: { ...DEFAULT_PREFS.notif, daily: true },
-      palette: { paper: 'linen', accent: 'indigo', correct: 'pine', wrong: 'amber' },
+      palette: { paper: 'linen', accent: 'coral', correct: 'pine', wrong: 'amber' },
     });
 
     renderSettings();
@@ -642,10 +642,12 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       email: 'jay@example.com',
       display_name: 'Jay',
     } satisfies User);
-    // Server prefs: defaults except a stored LEGACY palette → mount hydration
-    // is a notif/language no-op, and the PUT must echo that stored palette
-    // back verbatim (v2 flatten: the client never edits it).
-    const storedPalette = { paper: 'linen', accent: 'indigo', correct: 'pine', wrong: 'amber' };
+    // Server prefs: defaults except a stored palette → mount hydration is a
+    // notif/language no-op, and the PUT must echo the stored paper/correct/
+    // wrong back verbatim (v2 flatten: the client never edits them). The
+    // stored accent ('mint') is ADOPTED on hydrate, which doubles as a
+    // deterministic hydration-settled marker for the pre-hydration PUT guard.
+    const storedPalette = { paper: 'linen', accent: 'mint', correct: 'pine', wrong: 'amber' };
     mocks.fetchPrefs.mockResolvedValue({
       ...DEFAULT_PREFS,
       palette: storedPalette,
@@ -653,9 +655,10 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
 
     renderSettings();
 
-    // Let the (no-op) hydration settle first so it doesn't race the change PUT.
+    // Hydration has landed once the server accent is adopted (the PUT guard
+    // stays closed until then).
     await waitFor(() => {
-      expect(mocks.fetchPrefs).toHaveBeenCalled();
+      expect(document.documentElement.dataset.accent).toBe('mint');
     });
 
     await user.click(screen.getByRole('switch', { name: 'Daily reminder' }));
@@ -693,8 +696,13 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
 
     renderSettings();
 
+    // Let hydration fully SETTLE (fetch resolve + effect commit) — the change
+    // PUT is suppressed until it does (pre-hydration guard).
     await waitFor(() => {
       expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
     });
 
     const daily = screen.getByRole('switch', { name: 'Daily reminder' });
@@ -756,23 +764,21 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     expect(mocks.putPrefs).not.toHaveBeenCalled();
   });
 
-  it('an edit made BEFORE a slow hydration resolves is synced, then server-wins-on-load without an echo loop', async () => {
-    // SF-3 (client review): pin the ordering when the user edits WHILE the server
-    // hydration is still in flight. Contract A5 is explicit: "server wins on load
-    // — last-writer-wins", so a late real settle is authoritative and replaces the
-    // in-flight local slice. What MUST hold regardless of refactors to the
-    // provider's merge semantics:
-    //   1. The user's pre-hydration edit is NOT lost: it applies instantly to the
-    //      provider AND debounces exactly one PUT carrying that edit (best-effort
-    //      sync, durability already in localStorage). Pre-hydration the wire
-    //      palette echo is the LEGACY default (v2 flatten).
-    //   2. The late real settle wins on load: the toggle ends on the SERVER value,
-    //      fully reconciled — no crash.
-    //   3. The hydration write does NOT spawn an echo PUT, and the pre-hydration
-    //      edit does NOT leave a stale baseline that loops PUTs every render — so
-    //      total PUTs == the single user-edit PUT, with none added by the settle.
-    //   4. AFTER hydration, the next edit's PUT echoes the palette the SERVER
-    //      reported (the stored legacy value is never clobbered).
+  it('a pre-hydration edit never PUTs (clobber guard); server wins on load; post-hydration edits sync promptly', async () => {
+    // SF-3 rework (pre-hydration PUT guard): pin the ordering when the user
+    // edits WHILE the server hydration is still in flight. Contract A5 stays:
+    // "server wins on load — last-writer-wins". What MUST hold now:
+    //   1. A pre-hydration edit applies instantly to the provider (offline-
+    //      cache UX, durable in localStorage) but NEVER fires a PUT — a PUT at
+    //      that point would carry the seeded LEGACY_PALETTE_DEFAULT/default
+    //      baselines and clobber the server-stored blob.
+    //   2. The late real settle wins on load: the toggle ends on the SERVER
+    //      value AND the server's accent is adopted (data-accent + km.accent).
+    //   3. Neither the settle nor the hydrate-adopt spawns an echo PUT — the
+    //      PUT count stays at zero until a real post-hydration edit.
+    //   4. A post-hydration edit saves promptly and echoes the server-stored
+    //      palette (paper/correct/wrong) verbatim with the adopted accent —
+    //      nothing is clobbered back to defaults.
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
       id: 1,
@@ -791,30 +797,20 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     renderSettings();
 
     // User flips Daily while hydration is still pending. The local provider
-    // applies it instantly (offline-cache UX), and the debounce fires the
-    // best-effort sync PUT for that edit.
+    // applies it instantly (offline-cache UX)…
     const daily = screen.getByRole('switch', { name: 'Daily reminder' });
     await user.click(daily);
     expect(daily).toHaveAttribute('aria-checked', 'true');
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-    });
 
-    // (1) The edit was synced, not lost: exactly one PUT, carrying daily=true
-    //     and the pre-hydration LEGACY palette echo.
-    await waitFor(() => {
-      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    // …but (1) the debounced PUT is SUPPRESSED — flush well past the window.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
     });
-    const firstBody = mocks.putPrefs.mock.calls[0][0] as {
-      notif: { daily: boolean };
-      palette: { paper: string };
-    };
-    expect(firstBody.notif.daily).toBe(true);
-    expect(firstBody.palette.paper).toBe('hanji');
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
 
     // Now the slow server settle lands holding DIFFERENT prefs (daily=false)
-    // plus a stored legacy palette (Ivory-era blob).
-    const storedPalette = { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' };
+    // plus a stored palette with a non-default accent.
+    const storedPalette = { paper: 'ivory', accent: 'mint', correct: 'teal', wrong: 'slate' };
     await act(async () => {
       releaseHydration({
         notif: DEFAULT_PREFS.notif,
@@ -823,31 +819,152 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       });
     });
 
-    // (2) Server wins on load: the toggle reflects the server's daily=false,
-    //     fully settled — no half-merged state.
+    // (2) Server wins on load: the toggle reflects the server's daily=false and
+    //     the server's accent is adopted locally.
     await waitFor(() => {
       expect(daily).toHaveAttribute('aria-checked', 'false');
     });
+    await waitFor(() => {
+      expect(document.documentElement.dataset.accent).toBe('mint');
+    });
+    expect(window.localStorage.getItem('km.accent')).toBe('mint');
 
-    // (3) Flush every timer: the hydration write must NOT echo a PUT, and the
-    //     pre-hydration edit must NOT leave a stale baseline that loops PUTs — so
-    //     the PUT count stays at the single user-edit PUT from step (1).
+    // (3) Flush every timer: neither the hydration write nor the hydrate-adopt
+    //     may spawn a PUT — the count stays at zero.
     await act(async () => {
       vi.advanceTimersByTime(1000);
     });
-    expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
 
-    // (4) A post-hydration edit echoes the server's stored palette verbatim.
+    // (4) A post-hydration edit saves promptly and echoes the server's stored
+    //     palette verbatim (adopted accent included).
     await user.click(daily);
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
     await waitFor(() => {
-      expect(mocks.putPrefs).toHaveBeenCalledTimes(2);
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
     });
-    expect(
-      (mocks.putPrefs.mock.calls[1][0] as { palette: unknown }).palette,
-    ).toEqual(storedPalette);
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      notif: { daily: boolean };
+      palette: unknown;
+    };
+    expect(body.notif.daily).toBe(true);
+    expect(body.palette).toEqual(storedPalette);
+  });
+});
+
+describe('Settings — accent cross-device sync', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('adopts the server accent on hydrate — data-accent + km.accent update, no echo PUT, no palette-var projection', async () => {
+    meOk();
+    // Another device stored 'blue'; this device's localStorage is empty, so
+    // the fast path painted coral first.
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      palette: { ...DEFAULT_PREFS.palette, accent: 'blue' },
+    });
+
+    renderSettings();
+
+    // The real settle adopts the server's accent: attribute + localStorage +
+    // the picker selection all converge on 'blue'.
+    await waitFor(() => {
+      expect(document.documentElement.dataset.accent).toBe('blue');
+    });
+    expect(window.localStorage.getItem('km.accent')).toBe('blue');
+    expect(screen.getByRole('radio', { name: 'Cyber Blue' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // Adopt is a local state update, NOT a user change — flush the debounce
+    // window and confirm no echo PUT (no loop).
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+
+    // The accent is a data-accent attribute ONLY. The PR-v2 clobber bug
+    // (projecting palette colors as inline CSS vars on <html>) must stay
+    // dead — the only inline var the app owns is --lang-sub-scale.
+    const inlineStyle = document.documentElement.getAttribute('style') ?? '';
+    expect(inlineStyle).not.toContain('--vermilion');
+    expect(inlineStyle).not.toContain('--paper');
+    expect(inlineStyle).not.toContain('--moss');
+  });
+
+  it('a user accent pick stamps data-accent + km.accent instantly AND PUTs palette.accent (rest echoed)', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    // Server holds 'blue' → adoption is the deterministic hydration marker.
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      palette: { ...DEFAULT_PREFS.palette, accent: 'blue' },
+    });
+
+    renderSettings();
+    await waitFor(() => {
+      expect(document.documentElement.dataset.accent).toBe('blue');
+    });
+
+    // The user picks Han Mint: the local fast path applies instantly…
+    await user.click(screen.getByRole('radio', { name: 'Han Mint' }));
+    expect(document.documentElement.dataset.accent).toBe('mint');
+    expect(window.localStorage.getItem('km.accent')).toBe('mint');
+
+    // …and the debounced full-object PUT carries palette.accent='mint' with
+    // the server-reported paper/correct/wrong echoed verbatim.
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      notif: unknown;
+      palette: unknown;
+    };
+    expect(body.palette).toEqual({
+      ...DEFAULT_PREFS.palette,
+      accent: 'mint',
+    });
+    expect(body.notif).toEqual(DEFAULT_PREFS.notif);
+  });
+
+  it('a LEGACY accent from an old server (rolling deploy) is not adopted and never loops a PUT', async () => {
+    meOk();
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
+    });
+
+    renderSettings();
+    await waitFor(() => {
+      expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    // The un-adoptable legacy id is ignored: the local accent keeps ruling the
+    // attribute and localStorage stays untouched.
+    expect(document.documentElement.dataset.accent).toBe('coral');
+    expect(window.localStorage.getItem('km.accent')).toBeNull();
+
+    // The baseline was pinned to the LOCAL accent, so no self-initiated
+    // "correcting" PUT ever fires.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
   });
 });
 

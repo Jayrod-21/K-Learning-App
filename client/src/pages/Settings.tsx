@@ -542,17 +542,24 @@ export default function Settings(): JSX.Element {
     ],
   );
 
-  // ───── Preferences (notif + palette) server-sync ─────
+  // ───── Preferences (notif + languageDisplay + accent) server-sync ─────
   //
-  // The provider stays pure (localStorage cache + instant palette apply); the
-  // server round-trip is owned HERE, at the screen, alongside the 🅂 badge.
+  // The providers stay pure (localStorage cache + instant apply); the server
+  // round-trip is owned HERE, at the screen, alongside the 🅂 badge.
   //
   //   - On mount: hydrate `/settings/prefs`. On a real (non-mock) settle that
-  //     differs from the current local prefs, write it into the provider —
-  //     server wins on load (last-writer-wins).
-  //   - On every notif/palette change: debounce a full `putPrefs`. Failure is
-  //     non-fatal: localStorage already holds the change, so a failed PUT only
-  //     surfaces an inline `role=alert`; the screen never breaks.
+  //     differs from the current local prefs, write it into the providers —
+  //     server wins on load (last-writer-wins). This includes the ACCENT
+  //     (cross-device sync): the localStorage fast-path + index.html no-flash
+  //     bootstrap paint instantly, then the server's accent is adopted here if
+  //     it differs (a change made on another device propagates in).
+  //   - On every notif/languageDisplay/accent change: debounce a full
+  //     `putPrefs`. Failure is non-fatal: localStorage already holds the
+  //     change, so a failed PUT only surfaces a non-blocking toast; the screen
+  //     never breaks.
+  //   - Never PUT before the hydration GET settles (see the guard on the
+  //     change effect) — a pre-hydration PUT would clobber the stored blob
+  //     with client defaults.
   const prefsQuery = useEndpointOrMock<Prefs>('settings:prefs', loadPrefsMock, {
     realFn: fetchPrefs,
   });
@@ -561,13 +568,16 @@ export default function Settings(): JSX.Element {
   // of the last successful/attempted PUT). The change-driven effect compares
   // against this so a server-hydration write does NOT echo straight back as a
   // PUT, and an unchanged render never fires a redundant round-trip. Seeded to
-  // the current local prefs so the first paint is a no-op. The `palette`
-  // field is wire-only (v2 flatten): it seeds to the server default and is
-  // overwritten by whatever the server reports on hydration, then echoed
-  // verbatim on every PUT so a stored legacy palette is never clobbered.
+  // the current local prefs so the first paint is a no-op. The palette's
+  // `paper`/`correct`/`wrong` are wire-only (v2 flatten): they seed to the
+  // server default, are overwritten by whatever the server reports on
+  // hydration, then echoed verbatim on every PUT so a stored legacy palette is
+  // never clobbered. `accent` is LIVE (cross-device sync): it seeds to the
+  // AccentProvider's current value (localStorage fast-path) and is owned by
+  // the accent picker from then on.
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
-    palette: LEGACY_PALETTE_DEFAULT,
+    palette: { ...LEGACY_PALETTE_DEFAULT, accent },
     languageDisplay: settings.languageDisplay,
   });
 
@@ -634,6 +644,13 @@ export default function Settings(): JSX.Element {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+  // Current accent via a ref so the hydration effect can read it without
+  // re-running on every accent change (the hydrated latch would make a re-run
+  // harmless, but keeping the dep list settle-driven is the cleaner contract).
+  const accentRef = useRef(accent);
+  useEffect(() => {
+    accentRef.current = accent;
+  }, [accent]);
 
   useEffect(() => {
     if (prefsHydratedRef.current) return;
@@ -648,10 +665,33 @@ export default function Settings(): JSX.Element {
     // `undefined` into the provider.
     const freshLanguageDisplay =
       fresh.languageDisplay ?? DEFAULT_SETTINGS.languageDisplay;
+    // Accent cross-device sync — the server's accent is authoritative on load
+    // (same server-wins-on-load posture as notif). A current server only ever
+    // reports `coral|blue|mint` (its schema coerces legacy ids), but an OLD
+    // server mid-rolling-deploy may still echo a legacy id — not adoptable, so
+    // keep the local accent and record IT as the baseline instead.
+    const localAccent = accentRef.current;
+    const freshAccent = isAccent(fresh.palette.accent)
+      ? fresh.palette.accent
+      : localAccent;
     // Record what the server holds BEFORE writing it into the provider, so the
     // change-driven effect below sees no diff and skips the echo PUT. This is
-    // also where the wire-only `palette` echo value is adopted (v2 flatten).
-    lastSyncedPrefsRef.current = { ...fresh, languageDisplay: freshLanguageDisplay };
+    // also where the wire-only paper/correct/wrong echo values are adopted
+    // (v2 flatten) and the accent baseline is pinned — the setAccent below can
+    // therefore never loop a PUT.
+    lastSyncedPrefsRef.current = {
+      ...fresh,
+      palette: { ...fresh.palette, accent: freshAccent },
+      languageDisplay: freshLanguageDisplay,
+    };
+    if (freshAccent !== localAccent) {
+      // Adopt = a plain provider update (stamps `data-accent` on <html> +
+      // persists localStorage["km.accent"]), NOT a user-initiated change: the
+      // baseline above already carries the server's accent, so the change
+      // effect diffs to nothing — no echo PUT, no flash loop. The accent stays
+      // an attribute; no CSS vars are projected here.
+      setAccent(freshAccent);
+    }
     const local = settingsRef.current;
     const samePrefs =
       notifEqual(fresh.notif, local.notif) &&
@@ -664,23 +704,42 @@ export default function Settings(): JSX.Element {
       notif: fresh.notif,
       languageDisplay: freshLanguageDisplay,
     });
-  }, [prefsQuery.loading, prefsQuery.isMock, prefsQuery.data, updateSettings]);
+  }, [
+    prefsQuery.loading,
+    prefsQuery.isMock,
+    prefsQuery.data,
+    updateSettings,
+    setAccent,
+  ]);
 
-  // Debounced PUT on any notif/languageDisplay change. Compares against the
-  // last server-reconciled snapshot so server-hydration writes and unchanged
-  // renders are no-ops. The provider's localStorage write already happened —
-  // this is best-effort durability on top of it. The wire `palette` field is
-  // echoed from the last server-reported value (v2 flatten: the server schema
-  // still requires it; the client never edits it).
+  // Debounced PUT on any notif/languageDisplay/accent change. Compares against
+  // the last server-reconciled snapshot so server-hydration writes and
+  // unchanged renders are no-ops. The provider's localStorage write already
+  // happened — this is best-effort durability on top of it. The wire palette's
+  // paper/correct/wrong are echoed from the last server-reported value (v2
+  // flatten: the server schema still requires them; the client never edits
+  // them); `accent` carries the AccentProvider's current choice so it syncs
+  // across devices.
   useEffect(() => {
+    // PRE-HYDRATION PUT GUARD: never PUT before the initial GET has settled.
+    // A PUT fired here would carry the seeded baselines (LEGACY_PALETTE_DEFAULT
+    // + local defaults) and overwrite the server-stored blob — the known
+    // palette/accent clobber. Suppress instead: the change is already durable
+    // in localStorage, hydration then lands server-wins (the locked load
+    // semantic), and every post-hydration change syncs normally. A mock settle
+    // (server unreachable) keeps the guard closed too — a PUT could not
+    // succeed anyway, and localStorage preserves the choice for the next
+    // reachable session.
+    if (!prefsHydratedRef.current) return;
     const current: Prefs = {
       notif: settings.notif,
-      palette: lastSyncedPrefsRef.current.palette,
+      palette: { ...lastSyncedPrefsRef.current.palette, accent },
       languageDisplay: settings.languageDisplay,
     };
     const last = lastSyncedPrefsRef.current;
     if (
       notifEqual(current.notif, last.notif) &&
+      current.palette.accent === last.palette.accent &&
       languageDisplayEqual(current.languageDisplay, last.languageDisplay)
     ) {
       return;
@@ -694,9 +753,9 @@ export default function Settings(): JSX.Element {
       prefsTimerRef.current = null;
       void flushPrefs(current);
     }, PREFS_DEBOUNCE_MS);
-    // `flushPrefs` is stable (no deps); the effect keys on the settings slices.
+    // `flushPrefs` is stable (no deps); the effect keys on the synced slices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.notif, settings.languageDisplay]);
+  }, [settings.notif, settings.languageDisplay, accent]);
 
   return (
     <section
@@ -918,9 +977,12 @@ export default function Settings(): JSX.Element {
             paper/correct/wrong palette pickers were removed; surfaces and
             the success/danger semantics are fixed theme tokens now). Drives
             AccentProvider, which stamps data-accent on <html> and persists
-            to km.accent — the same per-device posture as the theme mode
-            above. The [data-accent] token blocks in index.css re-tint the
-            whole --vermilion family instantly, light AND dark. */}
+            to km.accent for the instant same-device path; the screen-level
+            prefs sync above ALSO carries the pick to /settings/prefs
+            (palette.accent) so it follows the user across devices. The
+            [data-accent] token blocks in index.css re-tint the whole
+            --vermilion family instantly, light AND dark — attribute only,
+            never inline CSS-var projection. */}
         <SwatchPicker
           label="Accent"
           hint="Buttons, highlights, the Learn hexagon."

@@ -44,23 +44,29 @@ import type {
  */
 export interface Prefs {
   notif: NotifPrefs;
-  /** WIRE-ONLY since the v2 flatten: the paper/correct/wrong palette UI was
-   *  removed and nothing renders or projects these ids anymore, but the
-   *  server `PrefsSchema` still requires the field (back-compat with stored
-   *  blobs). The client echoes the last value the server reported — or
-   *  `LEGACY_PALETTE_DEFAULT` before hydration — on every PUT. */
+  /** `paper`/`correct`/`wrong` are WIRE-ONLY since the v2 flatten: those
+   *  pickers were removed and nothing renders or projects the ids anymore,
+   *  but the server `PrefsSchema` still requires them (back-compat with
+   *  stored blobs) — the client echoes the last value the server reported,
+   *  or `LEGACY_PALETTE_DEFAULT` before hydration, on every PUT.
+   *  `accent` is LIVE again (accent cross-device sync): it carries the
+   *  Seoul-neon accent id (`coral|blue|mint`) the AccentProvider stamps as
+   *  `data-accent`. The Settings screen adopts the server's accent on
+   *  hydration and PUTs the user's picks back — the value is only ever a
+   *  `data-accent` attribute, never an inline CSS-var projection. */
   palette: PalettePrefs;
   languageDisplay: LanguageDisplayPrefs;
 }
 
 /**
  * Default palette ids for the wire `palette` field (mirrors the server's
- * DEFAULT_PREFS.palette). Used only to seed the PUT body before the first
- * successful GET hydration; after that the client echoes the stored value.
+ * DEFAULT_PREFS.palette). Used only to seed the PUT baseline before the first
+ * successful GET hydration; after that the client echoes the stored
+ * paper/correct/wrong and owns `accent`.
  */
 export const LEGACY_PALETTE_DEFAULT: PalettePrefs = {
   paper: 'hanji',
-  accent: 'vermilion',
+  accent: 'coral',
   correct: 'moss',
   wrong: 'vermilion',
 };
