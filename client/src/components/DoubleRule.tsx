@@ -1,7 +1,8 @@
 /**
- * DoubleRule — two hairlines with a 4px gap; an optional vermilion diamond
- * marker centered between them. Traditional Korean book detail; used as a
- * section divider on long surfaces (Settings, Diagnostic intro, sheets).
+ * DoubleRule — a hairline with an optional small round accent dot centered
+ * between its halves. The name is legacy (hanji-era twin rules + rotated
+ * diamond); since the Seoul restyle it reads as a single modern divider.
+ * Used on long surfaces (Settings, Diagnostic intro, Login, sheets).
  */
 import type { HTMLAttributes, JSX } from 'react';
 import { cn } from '../lib/cn';

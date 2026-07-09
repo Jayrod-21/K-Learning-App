@@ -24,10 +24,15 @@
   --ink-2: #F4F7FC;   /* elevated */
   --ink-3: #FFFFFF;   /* highest (popovers, sheets) */
 
-  /* Type — near-black navy ink */
+  /* Type — near-black navy ink.
+   * --paper-mute carries secondary/meta/eyebrow TEXT, so it must clear
+   * WCAG AA (>= 4.5:1) on every light surface it can host on — the darkest
+   * is the page base --ink #EDF1F8. #626C84 computes 4.64:1 on --ink and
+   * 5.25:1 on --ink-1 white while staying visibly lighter than --paper-dim
+   * (guarded by tokensContrast.test.ts). */
   --paper:       #131826;
   --paper-dim:   #57617A;
-  --paper-mute:  #99A2B6;
+  --paper-mute:  #626C84;
   --paper-faint: #B7BECD;
 
   /* Hero accent — NEON coral (default preset; the [data-accent] blocks
@@ -44,6 +49,12 @@
   --on-vermilion:     #0A0C12;
   --danger:           var(--vermilion);
   --danger-soft:      var(--vermilion-soft);
+  /* Focus indicator color (`.focusring` outline). Var-chained so it tracks
+   * the active accent + theme, EXCEPT where the raw accent fails the WCAG
+   * 1.4.11 3:1 non-text floor against the page bg — mint-light re-points
+   * it to a deepened mint below. Coral #FF3E6C is 3.01:1 and blue #2563EB
+   * is 4.56:1 vs --ink #EDF1F8; all dark fills clear 6:1. */
+  --focus-ring:       var(--vermilion);
 
   /* Category / skill hues — soft chips are the mockup's solid pastels */
   --indigo:      #4F7BFF;  --indigo-soft: #E7EEFF;   /* Vocab */
@@ -108,9 +119,13 @@
   --ink-2: #1B2233;
   --ink-3: #222B40;
 
+  /* --paper-mute is AA-checked against the LIGHTEST dark host it can sit
+   * on (--ink-3 popovers/sheets): #8A95B3 computes 4.73:1 there and
+   * 5.82:1 on --ink-1 cards (the old #6A7593 only reached 3.79:1 on
+   * cards). Guarded by tokensContrast.test.ts. */
   --paper:       #EDF2FF;
   --paper-dim:   #A0ABC9;
-  --paper-mute:  #6A7593;
+  --paper-mute:  #8A95B3;
   --paper-faint: #49536E;
 
   /* Dark: bright coral fill + DARK ink text = high-contrast neon look */
@@ -216,6 +231,10 @@
   --on-vermilion:     #0A0C12;  /* see contrast note above */
   --danger:           #FF3E6C;
   --danger-soft:      #FFE6ED;
+  /* Mint fill #0F9E7A is only 2.99:1 vs --ink #EDF1F8 — below the WCAG
+   * 1.4.11 3:1 non-text floor for focus indicators. The ring alone reads
+   * this deepened mint (3.58:1); fills/glows keep the brand hue. */
+  --focus-ring:       #0D8F6F;
 }
 [data-theme="dark"][data-accent="mint"] {
   --vermilion:        #2BE0A6;
@@ -225,6 +244,9 @@
   --on-vermilion:     #0A0C12;
   --danger:           #FF4D74;
   --danger-soft:      #2C1420;
+  /* Restore the var chain: dark mint #2BE0A6 is 11.6:1 vs --ink — the
+   * light-only deepening above must not dim the neon night ring. */
+  --focus-ring:       var(--vermilion);
 }
 
 /* Reset + ambient glow. */
@@ -304,21 +326,18 @@ h1, h2 { font-family: var(--font-display); }
 .km-diagnostic__section-label .km-bilingual__sub,
 .km-diagnostic__skills-title .km-bilingual__sub { color: var(--paper-mute); }
 
-/* Hairlines + double-rule + gold-rule (Korean book detail). */
+/* Hairlines. `.hr-double` / `.hr-gold` are LEGACY class names from the
+ * hanji-era double-rule / vermilion-gradient motifs — the names survive
+ * (callers keep them) but both now render as plain Modern Seoul hairlines,
+ * `.hr-gold` a touch stronger for section breaks inside popovers. */
 .hr { height: 1px; background: var(--line); border: none; }
-.hr-double {
-  height: 4px; border: none; background: transparent;
-  border-top: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line-strong);
-}
-.hr-gold {
-  height: 1px; border: none;
-  background: linear-gradient(90deg, transparent, var(--vermilion) 30%, var(--vermilion) 70%, transparent);
-  opacity: 0.65;
-}
+.hr-double { height: 1px; border: none; background: var(--line); }
+.hr-gold { height: 1px; border: none; background: var(--line-strong); }
 
-/* Focus ring — every interactive bone calls `.focusring`. */
-.focusring:focus-visible { outline: 1.5px solid var(--vermilion); outline-offset: 2px; }
+/* Focus ring — every interactive bone calls `.focusring`. Reads
+ * --focus-ring (not --vermilion) so accents whose raw fill misses the
+ * 3:1 non-text floor can deepen the ring alone (mint-light does). */
+.focusring:focus-visible { outline: 1.5px solid var(--focus-ring); outline-offset: 2px; }
 
 /* Page transition. */
 .screen { animation: screen-in 220ms ease-out; }
@@ -661,25 +680,31 @@ h1, h2 { font-family: var(--font-display); }
 .km-pill--green { color: var(--moss-ink);   background: var(--moss-soft); }
 .km-pill--ochre { color: var(--ochre-ink);  background: var(--ochre-soft); }
 
-/* SealStamp ──────────────────────────────────────────────────────────── */
+/* SealStamp — Modern Seoul restyle. The old 낙관 look (sharp 2px corners,
+ * −3° tilt, sumi-ink shadow) is gone; the glyph now sits in a rounded
+ * accent badge (app-icon squircle proportions, ~30% radius per size) with
+ * the theme's soft elevation. Fill/text read the accent pair, so the badge
+ * re-tints with the runtime accent like every other accent surface. */
 .km-seal {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: var(--vermilion);
   color: var(--on-vermilion);
-  border-radius: 2px;
   font-family: 'Noto Serif KR', serif;
   font-weight: 700;
-  box-shadow: 0 0.5px 0 rgba(27, 24, 19, 0.18);
+  box-shadow: var(--shadow-sm);
   letter-spacing: 0;
   user-select: none;
 }
-.km-seal--sm { width: 18px; height: 18px; font-size: 11px; line-height: 18px; }
-.km-seal--md { width: 28px; height: 28px; font-size: 16px; line-height: 28px; }
-.km-seal--lg { width: 44px; height: 44px; font-size: 24px; line-height: 44px; }
+.km-seal--sm { width: 18px; height: 18px; font-size: 11px; line-height: 18px; border-radius: 6px; }
+.km-seal--md { width: 28px; height: 28px; font-size: 16px; line-height: 28px; border-radius: 9px; }
+.km-seal--lg { width: 44px; height: 44px; font-size: 24px; line-height: 44px; border-radius: 14px; }
 
-/* DoubleRule ─────────────────────────────────────────────────────────── */
+/* DoubleRule — Modern Seoul restyle. Was the hanji-era twin-hairline +
+ * rotated vermilion diamond; now a single hairline with an optional small
+ * round accent dot between the halves. Class names kept (`__line`,
+ * `__diamond`) so callers and any styling hooks survive. */
 .km-doublerule {
   display: flex;
   align-items: center;
@@ -687,16 +712,14 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-doublerule__line {
   flex: 1;
-  height: 4px;
-  border-top: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line-strong);
+  height: 1px;
+  background: var(--line-strong);
 }
 .km-doublerule__diamond {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   background: var(--vermilion);
-  border-radius: 2px;
-  transform: rotate(45deg);
+  border-radius: 50%;
 }
 
 /* Shell ──────────────────────────────────────────────────────────────── */
@@ -1548,41 +1571,20 @@ h1, h2 { font-family: var(--font-display); }
  * Pass 2 — Composite components.
  *
  * SkillsCompare + SkillBar (Today/Diagnostic chart), TaskCard (Today grid),
- * TianGrid + HanjaCell (Hanja screen), GoldRule + CornerMark (editorial
- * accents). Reduced-motion behavior inherits from the global *::before/after
+ * TianGrid + HanjaCell (Hanja screen), GoldRule (section divider).
+ * Reduced-motion behavior inherits from the global *::before/after
  * rule above (transition-duration collapsed to ~0ms) — no per-component
  * `prefers-reduced-motion` blocks needed.
  * ──────────────────────────────────────────────────────────────────────── */
 
-/* GoldRule ───────────────────────────────────────────────────────────── */
+/* GoldRule — Modern Seoul restyle. The vermilion-gradient hanji rule is
+ * now a plain strong hairline (the component keeps the legacy name so
+ * callers don't churn). ─────────────────────────────────────────────── */
 .km-goldrule {
   height: 1px;
   border: none;
   margin: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--vermilion) 30%,
-    var(--vermilion) 70%,
-    transparent
-  );
-  opacity: 0.65;
-}
-
-/* CornerMark ─────────────────────────────────────────────────────────── */
-.km-cornermark {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 14px;
-  height: 14px;
-  pointer-events: none;
-  /* Two 1.5px strokes forming an L-bracket: top edge + right edge. Borders
-   * paint inside the box, so the bracket reads as a corner notch rather than
-   * a square. Vermilion currentColor keeps it theme-aware. */
-  color: var(--vermilion-ink);
-  border-top: 1.5px solid currentColor;
-  border-right: 1.5px solid currentColor;
+  background: var(--line-strong);
 }
 
 /* TianGrid ───────────────────────────────────────────────────────────── */
@@ -1593,13 +1595,16 @@ h1, h2 { font-family: var(--font-display); }
   /* Default opacity if the component prop isn't set. */
   --km-tian-opacity: 0.18;
 }
+/* Guide strokes read the neutral text-mute ink (Seoul restyle — was the
+ * hanji vermilion): at the default 0.18 opacity they sit at hairline
+ * weight, like faint pencil guides, and re-tint with the theme. */
 .km-tian__v {
   position: absolute;
   left: 50%;
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--vermilion);
+  background: var(--paper-mute);
   opacity: var(--km-tian-opacity);
 }
 .km-tian__h {
@@ -1608,7 +1613,7 @@ h1, h2 { font-family: var(--font-display); }
   left: 0;
   right: 0;
   height: 1px;
-  background: var(--vermilion);
+  background: var(--paper-mute);
   opacity: var(--km-tian-opacity);
 }
 .km-tian__diag {
@@ -1617,7 +1622,7 @@ h1, h2 { font-family: var(--font-display); }
    * inside the parent (cos 45° ≈ 0.707). */
   position: absolute;
   inset: 0;
-  border: 1px dashed var(--vermilion);
+  border: 1px dashed var(--paper-mute);
   opacity: calc(var(--km-tian-opacity) * 0.85);
   transform: rotate(45deg) scale(0.71);
 }
@@ -4080,7 +4085,9 @@ h1, h2 { font-family: var(--font-display); }
   flex-shrink: 0;
   background: var(--ink-3);
   border: 1px solid var(--line-strong);
-  border-radius: 2px;
+  /* Seoul restyle: rounded practice square (was a sharp 2px hanji frame).
+   * The TianGrid strokes only cross mid-edge, so no corner clipping. */
+  border-radius: var(--radius);
   position: relative;
   display: flex;
   align-items: center;

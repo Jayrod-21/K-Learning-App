@@ -105,3 +105,60 @@ describe('category token contrast (ink on soft, WCAG AA)', () => {
     }
   }
 });
+
+describe('secondary text contrast (--paper-mute, WCAG AA)', () => {
+  // --paper-mute carries small secondary/meta/eyebrow text app-wide, so it
+  // must clear 4.5:1 on EVERY surface token it can sit on, in both themes.
+  const themes: ReadonlyArray<[string, Map<string, string>]> = [
+    ['light (:root)', tokenBlock(LIGHT_SEL)],
+    ['dark ([data-theme="dark"])', tokenBlock(DARK_SEL)],
+  ];
+  const SURFACES = ['ink', 'ink-1', 'ink-2', 'ink-3'] as const;
+
+  for (const [label, own] of themes) {
+    const vars = new Map([...tokenBlock(LIGHT_SEL), ...own]);
+
+    for (const surface of SURFACES) {
+      it(`${label}: --paper-mute on --${surface} >= 4.5:1`, () => {
+        const mute = resolve(vars, 'paper-mute');
+        const host = resolve(vars, surface);
+        expect(contrast(mute, host)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+
+    it(`${label}: --paper-mute stays visually muted (weaker than --paper-dim)`, () => {
+      const card = resolve(vars, 'ink-1');
+      const mute = contrast(resolve(vars, 'paper-mute'), card);
+      const dim = contrast(resolve(vars, 'paper-dim'), card);
+      expect(dim).toBeGreaterThan(mute);
+    });
+  }
+});
+
+describe('focus ring contrast (--focus-ring vs page bg, WCAG 1.4.11)', () => {
+  // The `.focusring` outline is a non-text UI indicator — it needs >= 3:1
+  // against the raw page background (--ink) for every theme x accent combo.
+  // Merge order mirrors the cascade: light base -> dark base (1-attr blocks,
+  // dark first in the sheet) -> light accent -> dark+accent (2 attrs win).
+  const accentSel = (a: string): string => String.raw`\[data-accent="${a}"\]`;
+  const darkAccentSel = (a: string): string =>
+    String.raw`\[data-theme="dark"\]${accentSel(a)}`;
+  const ACCENTS = ['coral', 'blue', 'mint'] as const;
+
+  for (const accent of ACCENTS) {
+    for (const dark of [false, true]) {
+      const label = `${dark ? 'dark' : 'light'} + ${accent}`;
+      it(`${label}: --focus-ring vs --ink >= 3:1`, () => {
+        const vars = new Map([
+          ...tokenBlock(LIGHT_SEL),
+          ...(dark ? tokenBlock(DARK_SEL) : []),
+          ...tokenBlock(accentSel(accent)),
+          ...(dark ? tokenBlock(darkAccentSel(accent)) : []),
+        ]);
+        const ring = resolve(vars, 'focus-ring');
+        const bg = resolve(vars, 'ink');
+        expect(contrast(ring, bg)).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+});
