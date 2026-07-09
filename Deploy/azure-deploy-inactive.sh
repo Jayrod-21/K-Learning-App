@@ -163,6 +163,16 @@ main() {
         return 1
     fi
 
+    # Upload body-cap smoke check: the LB once capped bodies at nginx's 1 MB
+    # default and silently 413'd book uploads before they reached the server.
+    # A >1 MB POST must traverse km-lb to the app (401 unauth = reached the
+    # auth layer); a 413 means the client_max_body_size fix regressed.
+    if ! verify_upload_body_limit "km-test" "$TEST_PORT"; then
+        log_err "inactive color failed the upload body-size smoke check on the TEST port (${TEST_PORT})."
+        log_err "production is untouched; do NOT switch."
+        return 1
+    fi
+
     # --- Step 8: re-confirm active is still unchanged -----------------------
     bash "${DEPLOY_DIR}/check-active-env.sh"
 

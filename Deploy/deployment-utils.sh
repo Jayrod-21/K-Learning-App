@@ -678,6 +678,45 @@ verify_local_app() {
 }
 
 # =============================================================================
+# verify_upload_body_limit NAME PORT — smoke-check the LB's upload body cap.
+# -----------------------------------------------------------------------------
+# Regression guard: the km-lb nginx once sat at its 1 MB client_max_body_size
+# DEFAULT and silently 413'd book uploads before they ever reached the server
+# (fixed by setting 320m in nginx.conf + both nginx-{blue,green}-active.conf).
+# This POSTs a ~2 MiB body to /uploads on the given port and FAILS if the
+# response is 413 — proof the cap regressed. The expected result is 401 (the
+# unauthenticated request TRAVERSED nginx and reached the app's auth layer);
+# any non-413 code passes the gate, with a warn if it isn't the expected 401.
+# The body is piped from /dev/zero (curl --data-binary @- buffers stdin and
+# sends a Content-Length, which nginx checks against the cap up front), so no
+# temp file is created. NAME is a label for logs only. Returns 0 unless 413.
+# =============================================================================
+verify_upload_body_limit() {
+    local name="$1"
+    local port="$2"
+    require_cmd curl
+
+    local url="http://localhost:${port}/uploads"
+    local code
+    code="$(head -c 2097152 /dev/zero \
+        | curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              -X POST -H 'Content-Type: application/octet-stream' \
+              --data-binary @- "$url" 2>/dev/null || true)"
+
+    if [[ "$code" == "413" ]]; then
+        log_err "verify ${name}: 2 MiB POST ${url} returned 413 — the LB is capping request bodies at nginx's 1 MB default again."
+        log_err "client_max_body_size must be 320m in Deploy/nginx.conf AND both Deploy/nginx-{blue,green}-active.conf (all server blocks). Do NOT switch."
+        return 1
+    fi
+    if [[ "$code" == "401" ]]; then
+        log_info "verify ${name}: 2 MiB POST ${url} -> 401 (reached the app's auth layer; body-size cap OK)"
+    else
+        log_warn "verify ${name}: 2 MiB POST ${url} -> '${code:-no-response}' (expected 401; not 413, so the body cap is OK — but the route may not be reaching the server as expected)"
+    fi
+    return 0
+}
+
+# =============================================================================
 # wait_healthy CONTAINER — block until a container's healthcheck is healthy.
 # -----------------------------------------------------------------------------
 # Polls `docker inspect --format '{{.State.Health.Status}}'`. Succeeds on

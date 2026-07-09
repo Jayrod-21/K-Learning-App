@@ -176,3 +176,32 @@ non-zero if the assertion fails so CI catches drift.
   and lets the operator restart. If we see retryable Postgres errors in
   practice, we'll add `tenacity` with exponential backoff at the batch
   boundary.
+
+## Addendum (2026-07-09): the literature loader is deliberately OUTSIDE the orchestrator
+
+`tools/ingest/loaders/load_literature.py` (U3b, digitized chapter reader —
+writes `reading_chapters` + `reading_passages`, migration 044) is **not**
+wired into `load_to_postgres.py`'s `--corpus` dispatch, and that is a
+decision, not an omission:
+
+- **No `corpus` enum slot.** D1's dispatch — and D3/D4's upsert + checkpoint
+  machinery — key on the `corpus` Postgres enum. A literature book is not one
+  of a fixed set of curated corpus files: it is the digitized text of a single
+  user-owned `book_uploads` row, addressed by `source_upload_id`. There is no
+  `corpus_sources` catalog row either — the `reading_chapters` rows themselves
+  are the catalog.
+- **No `load_state` checkpoint.** D4's resume table is keyed
+  `(corpus, source_path)`, which literature cannot populate. The loader's
+  idempotency is STRUCTURAL instead: one transaction per invocation that
+  deletes the upload's existing chapters (CASCADE to passages) and re-inserts
+  from the curated JSON, so re-runs converge and a crash rolls back to the
+  prior complete state. Batching (D5) is likewise unnecessary at
+  one-book-per-invocation scale.
+- **Invocation.** It is run directly, one book at a time —
+  `python -m tools.ingest.loaders.load_literature <curated.json> [--dry-run]`
+  (or inside the km-loader container via `run_loader`, Deploy) — never via
+  `load_to_postgres.py --corpus …`. See the loader's module docstring and
+  `tools/ingest/docs/_literature_extraction_guide.md` for the JSON contract.
+
+Adding a new CURATED corpus still follows this ADR ("a new loader module + a
+new corpus enum value"); per-upload user content like literature does not.

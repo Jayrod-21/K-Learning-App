@@ -268,19 +268,32 @@ From the F-UP-010-full re-review (PASS WITH CONDITIONS — not blockers):
 
 ## U3b (digitized chapter reader) — /fixpass re-review residuals (2026-07-08, all P3)
 Paper trail: `db/docs/reviews/u3b-reader/`. All non-blocking; U3b shipped PASS.
-- **README migration-table backfill** — `db/migrations/README.md`'s table was missing
-  040/042/043 (U3b added 044). Backfill the three older rows.
-- **Constraint-guard idempotency sweep** — migration 044 wrapped its `ADD CONSTRAINT`
-  in a `DO $$ … IF NOT EXISTS (pg_constraint) … $$` guard; migrations 029 and 038 have
-  the same un-guarded gap. Sweep + guard them so a manual re-apply doesn't error.
-- **ADR-019 addendum** — document why `load_literature.py` is deliberately NOT wired
-  into `load_to_postgres.py`'s corpus-enum dispatch (literature has no `corpus` enum
-  slot / no `load_state` checkpoint).
-- **reading.ts header cross-reference (NIT)** — `server/src/routes/reading.ts`'s header
-  doesn't mention migration 044's `COMMENT ON CONSTRAINT` caveat that the composite FK
-  does NOT enforce `book_uploads.type = 'literature'` (loader/route enforced). Add a
-  one-line cross-reference.
-
+- **README migration-table backfill — RESOLVED (2026-07-09, `feat/docs-migration-hygiene`)** —
+  `db/migrations/README.md`'s table was missing every row after 017 except 041/044;
+  backfilled 018–040 + 042/043 (descriptions sourced from each migration's own header
+  comment).
+- **Constraint-guard idempotency sweep — WON'T DO (2026-07-09)** — retrofitting the 044
+  `DO $$ … IF NOT EXISTS $$` guard onto the ALREADY-APPLIED migrations 029/038 was
+  attempted then reverted: editing an applied migration file changes its checksum, and
+  `migrate.py` re-hashes applied migrations on every deploy, so it would raise
+  `ChecksumMismatch` on the next prod `up` — not worth breaking the deploy pipeline for
+  re-apply idempotency that only matters to dev re-runs. New migrations already use the
+  guard (044); the old applied ones are left untouched.
+- **ADR-019 addendum — RESOLVED (2026-07-09, `feat/docs-migration-hygiene`)** — addendum
+  documents why `load_literature.py` is deliberately NOT wired into
+  `load_to_postgres.py`'s corpus-enum dispatch (no `corpus` enum slot / no `load_state`
+  checkpoint; structural delete-then-reinsert idempotency; invoked directly per book).
+- **reading.ts header cross-reference (NIT) — RESOLVED (2026-07-09,
+  `feat/docs-migration-hygiene`)** — header SECURITY block now cross-references
+  migration 044's `COMMENT ON CONSTRAINT` caveat (composite FK pins ownership but does
+  NOT enforce `book_uploads.type = 'literature'`; loader/routes own that invariant).
+- **Upload body-cap deploy smoke test — RESOLVED (2026-07-09, `feat/docs-migration-hygiene`)** —
+  the km-lb 1 MB-default `client_max_body_size` regression (silent 413 on book uploads,
+  fixed at 320m) is now guarded in deploy verification: `verify_upload_body_limit`
+  (Deploy/deployment-utils.sh) POSTs a ~2 MiB body to `/uploads` on the test port after
+  the inactive color health-checks (Deploy/azure-deploy-inactive.sh Step 7) and fails
+  the deploy on a 413 (expected result 401 = traversed nginx to the app's auth layer;
+  verified live against prod :1840 → 401).
 ## U3c (fast-follow — already planned in db/docs/U3_READER_DESIGN.md)
 - **Tap-handler de-dup — RESOLVED (2026-07-09, `feat/u3c-dedup-deeplink`)** — `Ttmik.tsx`'s
   `DetailView` migrated onto `client/src/hooks/useTapWord.ts` (its inline copy of the

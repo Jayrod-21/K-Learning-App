@@ -28,7 +28,32 @@ Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
 | 015 | `topik_responses` | P6A | TOPIK Prep answer log: append-only graded attempts (Study mode live + Mock route) |
 | 016 | `hanja` | P7A | Hanja reference corpus (`hanja_characters` + `hanja_compounds`) + per-user `hanja_progress` (Hanja screen live); extends `corpus` enum with `'hanja'` |
 | 017 | `image_captures` | P8A | Per-user image OCR mining: `image_captures` (uploaded photo + caption, soft-deleted) + `image_words` (the OCR'd content words, no bounding boxes) — Images screen live |
+| 018 | `user_preferences` | P9 | `users.preferences` JSONB column — Settings server-sync (notification + palette prefs, Zod-validated whole-blob read/write) |
+| 019 | `grammar_drill_attempts` | P9 | `grammar_drill_attempts` — one row per generated production drill, UPDATEd in place at submit/score time (server-only `item` JSONB holds the reference answer, answer-stripped on the wire) |
+| 020 | `grammar_production_card_uniq` | FU-NF-42 | Partial UNIQUE index on `vocab_cards (user_id, grammar_entry_id)` scoped to the production face — one production card per (user, grammar pattern); double-submit race defense |
+| 021 | `user_mined_corpus` | FU-NF-33 | Extends the `corpus` enum with `'user_mined'` ("tap anything → bank"); value-only migration — first USE deferred to 022 per the enum same-transaction gotcha (mirrors 016) |
+| 022 | `user_mined_vocab` | FU-NF-33 | Relaxes both `vocab_entries` CHECKs to admit `'user_mined'` + seeds its `corpus_sources` row (route-populated corpus, so no loader creates the row) |
+| 023 | `user_totp` | Login | `user_totp` — single TOTP factor per user (1:1): AES-256-GCM-encrypted base32 secret, replay-guard high-water-mark time-step, per-account lockout counters |
+| 024 | `user_recovery_codes` | Login | `user_recovery_codes` — single-use SHA-256-hashed backup codes (`used_at IS NULL` = spendable; atomic rowCount-gated spend) |
+| 025 | `mfa_login_challenges` | Login | `mfa_login_challenges` — short-lived, single-use, purpose-scoped pending tokens bridging login step 1 (password) and step 2 (TOTP / enroll) |
+| 026 | `krdict_vocabulary_level` | Corpus fix | `krdict_entries.vocabulary_level` (초급/중급/고급, nullable + CHECK) — KRDICT vocabulary grade feeding app proficiency tagging for dictionary-mined words |
+| 027 | `kgiu_pattern_allow_reference` | Corpus fix | Relaxes `ck_kgiu_entries_pattern_required` so `reference` rows (appendices / answer keys) may omit a grammar pattern; `grammar` rows still require one |
+| 028 | `vocab_entry_type_add_values` | Corpus fix | Extends the `vocab_entry_type` enum with `'lets_check'` + `'hanja_extension'` — the two non-word 2000-Words section types the loader was rejecting |
+| 029 | `topik_tests_level_unique` | Corpus fix | Widens the `topik_tests` natural key to `UNIQUE (test_number, topik_level, section)` — TOPIK I vs TOPIK II papers of the same sitting no longer overwrite each other |
+| 030 | `topik_tests_provenance` | Corpus fix | `topik_tests.provenance` JSONB — sparse source-import provenance (`note` / `transcript_available` / `transcript_source`) the loader previously dropped |
+| 031 | `claude_route_grammar_drill` | Proxy fix | Extends the `claude_route` enum with `generate_grammar_drill` + `score_grammar_drill` — drill calls were failing the `claude_cache`/`claude_usage` writes (uncached + untracked spend) |
+| 032 | `claude_route_complete` | Proxy fix | Extends `claude_route` with `image_ocr` + `diagnostic_item` — the enum now mirrors the code's `RouteName` union exactly (`'anon'` deliberately excluded) |
+| 033 | `grammar_entry_graduation` | Grammar | `grammar_entries.graduated_at` — mark a banked pattern KNOWN; graduated patterns leave the drill pool + due queue until re-admitted (lossless NULL-out, FSRS state untouched) |
+| 034 | `grammar_entry_category_freetext` | Grammar | Replaces the 18-value `grammar_entries.category` whitelist CHECK with a 1–40-char length bound — KGIU corpus categories are free text; fixes the Bank-click 500 |
+| 035 | `ttmik_audio` | F-012 | `audio_path` on `ttmik_lessons` + `iyagi_episodes` — RELATIVE keys under `CORPUS_AUDIO_DIR` backing the audio streaming routes (path re-anchored + traversal-checked at the route) |
+| 036 | `ttmik_transcript` | F-012 | `ttmik_transcript_lines` — FULL lesson-notes transcript (232 lessons), one row per rendered line with a `kind` render model (header/pair/romanization/prose/dialog) |
+| 037 | `topik_attempts` | F-007 | `topik_attempts` — ONE resumable in-progress mock exam per user (picks / current index / remaining time); items re-fetched deterministically on resume, grading stays in `topik_responses` |
+| 038 | `writing_attempts` | F-014 | `writing_attempts` (append-only log of graded essays, feeds the F-017 Writing chart) + `writing_prompts.rubric` (TOPIK II Q53/Q54 tagging) + seeds the 6 real TOPIK-style prompts |
+| 039 | `proficiency_level_l1_l2` | F-002 | Extends the `proficiency_level` enum with `'L1'` / `'L2'` (positioned BEFORE `'L3'`) so the diagnostic can place beginners at a real level instead of collapsing to `'basic'` |
+| 040 | `book_uploads` | U1a | `book_uploads` (user-owned scanned-PDF metadata + relative blob pointer, hard-deleted) + nullable `source_upload_id` FK on `vocab_entries` / `kgiu_entries` for U2's "sort by source" |
 | 041 | `book_pages` | U1a | Book-upload rework: `book_pages` (ordered per-page images, normalized from an uploaded zip-of-images or PDF) + drops `book_uploads.blob_ref` (the original file is no longer retained — see `db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION (2026-07-08)") |
+| 042 | `vocab_2000_advanced_corpus` | U2 | Extends the `corpus` enum with `'vocab_2000_advanced'` (uploaded "2000 Essential Korean Words — Advanced"); value-only migration — first USE deferred to 043 per the enum same-transaction gotcha (mirrors 021/016) |
+| 043 | `vocab_2000_advanced_vocab` | U2 | Relaxes both `vocab_entries` CHECKs to admit `'vocab_2000_advanced'` paired with `book_level = 'advanced'`; `corpus_sources` row created by the loader at load time (contrast 022) |
 | 044 | `reading_chapters` | U3b | Digitized chapter reader content store: `reading_chapters` + `reading_passages` (OCR'd + curated literature text, per-paragraph rows) + `UNIQUE(id, user_id)` on `book_uploads` backing the composite ownership FK — see `db/docs/U3_READER_DESIGN.md` §U3b |
 
 ## Transaction ownership (ADR-013)
