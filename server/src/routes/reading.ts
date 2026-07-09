@@ -30,6 +30,10 @@
  *     parameter — never string-interpolated into SQL.
  *   - READ-ONLY: these routes never write; ingestion is the loader's job
  *     (tools/ingest/load_literature.py), not an API surface.
+ *   - NOTE (migration 044's COMMENT ON CONSTRAINT caveat): the composite FK
+ *     guarantees a chapter's user_id = its upload's owner, but does NOT enforce
+ *     book_uploads.type = 'literature' — the loader and these routes own that
+ *     invariant, not the FK.
  */
 import { Router } from 'express';
 import { z } from 'zod';
