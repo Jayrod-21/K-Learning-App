@@ -127,7 +127,7 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
   it('moves initial focus into the menu (first tile, top-left of the comb)', () => {
     renderMenu();
     expect(document.activeElement).toBe(
-      screen.getByRole('button', { name: /Reading/ }),
+      screen.getByRole('button', { name: /Vocab flashcards/ }),
     );
   });
 
