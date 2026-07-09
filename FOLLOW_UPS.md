@@ -306,3 +306,15 @@ Paper trail: `db/docs/reviews/redesign-pr1/`. PR1 shipped PASS (all AA-contrast 
   vars over the new design — retint or retire per screen.
 - **PR3 — LearnMenu honeycomb launcher (§7 Phase 2 of the brief)** — upgrade the vertical
   `LearnMenu` row list to the color-coded hex-tile honeycomb per the mockup.
+
+### Redesign v2 (mockup-exact colors + flatten) — verify residuals (2026-07-09, P3)
+Paper trail: `db/docs/reviews/redesign-v2/`. Shipped PASS.
+- **`--paper-mute` on white ≈2.56:1 (pre-existing)** — the muted meta/eyebrow text hue fails
+  AA as small text on white; it's decorative secondary text and predates the redesign, but
+  deepen it (or bump weight/size) for a clean AA sweep.
+- **Settings pre-hydration PUT can clobber the legacy `palette` blob** — `Settings.tsx`'s
+  debounced prefs PUT can fire before `GET /settings/prefs` hydration completes and overwrite
+  the server-stored (now-dead) `palette` field with `LEGACY_PALETTE_DEFAULT`. Harmless today
+  (nothing reads it), but a real data-clobber if that field is ever consumed. Guard the PUT
+  until hydration lands, or drop the wire `palette` field once the server schema stops
+  requiring it.
