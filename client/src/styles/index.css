@@ -791,15 +791,22 @@ h1, h2 { font-family: var(--font-display); }
 .km-bottomnav__hex {
   position: absolute;
   left: 50%;
+  /* Centering uses a static negative margin (half of `width`), NOT
+   * `transform: translateX(-50%)`. The 180° open spin lives on the
+   * independent `rotate` property, which composes BEFORE the `transform`
+   * property — so a centering translate on `transform` gets re-applied in
+   * the flipped frame at rotate:180deg and shoves the hexagon ~one width to
+   * the right, onto the Review tab. A margin is immune to the rotation, so
+   * the hexagon stays centered and spins IN PLACE. */
+  margin-left: -38px; /* -(width 76px / 2) */
   top: -36px;
-  transform: translateX(-50%);
   /* The spin + idle float live on the INDEPENDENT `rotate` / `translate`
-   * properties, never on `transform` (which only centers). Keeping the
-   * three on separate channels is what makes the open spin continuous:
-   * with the old single-transform approach, dropping the float animation
-   * snapped `transform` from its mid-bob animated value straight to the
-   * `--open` rotation start. Now the float animates `translate`, the spin
-   * transitions `rotate`, and neither ever owns the other's value.
+   * properties, never on `transform` (unused now — centering is the margin
+   * above). Keeping the channels separate is what makes the open spin
+   * continuous: with the old single-transform approach, dropping the float
+   * animation snapped `transform` from its mid-bob animated value straight
+   * to the `--open` rotation start. Now the float animates `translate`, the
+   * spin transitions `rotate`, and neither ever owns the other's value.
    * The `translate` transition ALSO smooths the float hand-off: when the
    * float animation is removed (open/closing), the up-to-3px animated
    * offset transitions back to 0 instead of jumping (the before-change
