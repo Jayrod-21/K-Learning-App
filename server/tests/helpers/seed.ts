@@ -81,6 +81,12 @@ export async function seedVocabEntry(
     exampleEnglish?: string;
     sourceBook?: string;
     proficiency?: 'basic' | 'L3' | 'L4' | 'L5+';
+    /**
+     * U2/U3 source tag — the `book_uploads.id` this entry was extracted from
+     * (nullable FK, defaults to NULL for the ordinary curated-corpus rows).
+     * Pass it to exercise the U3a source-book filter.
+     */
+    sourceUploadId?: number;
   } = {},
 ): Promise<number> {
   const corpus = opts.corpus ?? 'vocab_2000_intermediate';
@@ -89,9 +95,10 @@ export async function seedVocabEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO vocab_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
-        source_book, korean, english, example_korean, example_english, proficiency)
+        source_book, korean, english, example_korean, example_english, proficiency,
+        source_upload_id)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'word'::vocab_entry_type,
-             $4, $5, $6, $7, $8, $9::proficiency_level)
+             $4, $5, $6, $7, $8, $9::proficiency_level, $10)
      RETURNING id`,
     [
       corpusSourceId,
@@ -103,6 +110,7 @@ export async function seedVocabEntry(
       opts.exampleKorean ?? null,
       opts.exampleEnglish ?? null,
       opts.proficiency ?? 'L3',
+      opts.sourceUploadId ?? null,
     ],
   );
   return Number(rows[0]!.id);
@@ -128,6 +136,12 @@ export async function seedKgiuEntry(
     sourceId?: string;
     /** Chapter/unit label (nullable TEXT column; defaults to NULL). */
     unit?: string;
+    /**
+     * U2/U3 source tag — the `book_uploads.id` this pattern was extracted from
+     * (nullable FK, defaults to NULL). Pass it to exercise the U3a source-book
+     * filter on the grammar route.
+     */
+    sourceUploadId?: number;
   } = {},
 ): Promise<number> {
   const corpus = opts.corpus ?? 'kgiu_intermediate';
@@ -137,9 +151,10 @@ export async function seedKgiuEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO kgiu_entries (
         corpus_source_id, corpus, source_id, book_level, entry_type,
-        source_book, pattern, title_en, category, proficiency, unit)
+        source_book, pattern, title_en, category, proficiency, unit,
+        source_upload_id)
      VALUES ($1, $2::corpus, $3, 'intermediate'::book_level, 'grammar'::kgiu_entry_type,
-             'test-book', $4, 'mock title', $6, $5::proficiency_level, $7)
+             'test-book', $4, 'mock title', $6, $5::proficiency_level, $7, $8)
      RETURNING id`,
     [
       corpusSourceId,
@@ -149,6 +164,7 @@ export async function seedKgiuEntry(
       opts.proficiency ?? 'L3',
       opts.category ?? 'mock category',
       opts.unit ?? null,
+      opts.sourceUploadId ?? null,
     ],
   );
   return Number(rows[0]!.id);
