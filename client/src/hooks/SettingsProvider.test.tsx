@@ -61,7 +61,10 @@ describe('SettingsProvider', () => {
     expect(result.current.settings.name).toBe('Jared');
   });
 
-  it('applies palette vars to documentElement on mount', () => {
+  it('applies NO palette vars for the DEFAULT palette (Seoul Neon)', () => {
+    // The default presets declare no vars — default users render the
+    // theme+accent-aware token blocks from index.css untouched. Only the
+    // language-display scale (its own non-palette projection) may land.
     const spy = vi.spyOn(
       document.documentElement.style,
       'setProperty',
@@ -71,18 +74,48 @@ describe('SettingsProvider', () => {
         <div>app</div>
       </SettingsProvider>,
     );
-    // DEFAULT palette is hanji+vermilion+moss+vermilion — at least these
-    // canonical keys must hit setProperty.
+    const touched = new Set(spy.mock.calls.map(([k]) => k));
+    expect(touched.has('--ink')).toBe(false);
+    expect(touched.has('--paper')).toBe(false);
+    expect(touched.has('--vermilion')).toBe(false);
+    expect(touched.has('--moss')).toBe(false);
+    expect(touched.has('--danger')).toBe(false);
+  });
+
+  it('applies a stored non-default palette to documentElement on mount', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        palette: { paper: 'linen', accent: 'plum', correct: 'pine', wrong: 'amber' },
+      }),
+    );
+    const spy = vi.spyOn(
+      document.documentElement.style,
+      'setProperty',
+    );
+    render(
+      <SettingsProvider>
+        <div>app</div>
+      </SettingsProvider>,
+    );
     const calls = spy.mock.calls.map(([k, v]) => [k, v] as const);
     const set = new Map(calls);
-    expect(set.get('--ink')).toBe('#E8DFC5');
-    expect(set.get('--paper')).toBe('#1B1813');
-    expect(set.get('--vermilion')).toBe('#B83A2E');
-    expect(set.get('--moss')).toBe('#5C7548');
-    expect(set.get('--danger')).toBe('#B83A2E');
+    expect(set.get('--ink')).toBe('#E2D9C2');
+    expect(set.get('--moss')).toBe('#2E5B3E');
+    expect(set.get('--danger')).toBe('#A66A1F');
+    // Accent is NEVER inline-projected — data-accent CSS owns --vermilion.
+    expect(set.has('--vermilion')).toBe(false);
   });
 
   it('does not set tokens outside the allowlist', () => {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_SETTINGS,
+        palette: { paper: 'linen', accent: 'plum', correct: 'pine', wrong: 'amber' },
+      }),
+    );
     const spy = vi.spyOn(
       document.documentElement.style,
       'setProperty',
@@ -95,14 +128,16 @@ describe('SettingsProvider', () => {
     for (const [key] of spy.mock.calls) {
       expect(key.startsWith('--')).toBe(true);
     }
-    // No surface-only token leaks from a non-paper category — we only
-    // know `--paper` was set by the paper preset itself; if the allowlist
-    // were broken, an extraneous unknown key would appear. Verify the
-    // touched set is exactly the union of the four preset var maps.
+    // No surface-only token leaks from a non-paper category — if the
+    // allowlist were broken, an extraneous unknown key would appear.
     const touched = new Set(spy.mock.calls.map(([k]) => k));
-    // Spot-check: --gold-light comes from accent, --green-light from correct.
-    expect(touched.has('--gold-light')).toBe(true);
-    expect(touched.has('--green-light')).toBe(true);
+    // Spot-check: --moss-soft comes from correct; the accent's legacy
+    // --gold* tokens AND the dead --green* aliases were removed from the
+    // allowlist/presets and must NOT land.
+    expect(touched.has('--moss-soft')).toBe(true);
+    expect(touched.has('--green-light')).toBe(false);
+    expect(touched.has('--gold-light')).toBe(false);
+    expect(touched.has('--vermilion')).toBe(false);
   });
 
   it('debounces persistence and writes after 200ms', () => {

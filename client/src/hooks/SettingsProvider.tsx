@@ -74,17 +74,16 @@ const ALLOWED_VARS = new Set<string>([
   '--paper-faint',
   '--line',
   '--line-strong',
-  // Accent category
-  '--vermilion',
-  '--vermilion-soft',
-  '--gold',
-  '--gold-light',
-  '--gold-soft',
-  // Correct category
+  // Accent category — REMOVED (Seoul Neon redesign). The accent is owned
+  // by AccentProvider's `data-accent` attribute + the `[data-accent]` CSS
+  // blocks; an inline `--vermilion` here would beat them in the cascade.
+  // Keeping the tokens out of the allowlist guarantees no legacy blob can
+  // re-freeze the accent.
+  // Correct category. (The hanji-era `--green`/`--green-light` aliases were
+  // dropped — nothing in the stylesheet reads them anymore; only --moss*
+  // are live tokens.)
   '--moss',
   '--moss-soft',
-  '--green',
-  '--green-light',
   // Wrong category
   '--danger',
   '--danger-soft',

@@ -10,8 +10,8 @@
     -->
     <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#E8DFC5" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#15110D" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#E7ECF5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#080A11" media="(prefers-color-scheme: dark)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <!--
@@ -40,15 +40,22 @@
             window.matchMedia('(prefers-color-scheme: dark)').matches;
           var theme = (s === 'light' || s === 'dark') ? s : (pref ? 'dark' : 'light');
           document.documentElement.dataset.theme = theme;
+          /* Accent bootstrap — same no-flash contract as the theme above.
+             Reads localStorage["km.accent"] (the key AccentProvider writes)
+             and stamps data-accent before first paint. Unknown/absent
+             values fall back to the default coral. */
+          var a = localStorage.getItem('km.accent');
+          document.documentElement.dataset.accent =
+            (a === 'coral' || a === 'blue' || a === 'mint') ? a : 'coral';
         } catch (_) {
-          /* localStorage may throw in privacy mode; leave attribute unset. */
+          /* localStorage may throw in privacy mode; leave attributes unset. */
         }
       })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&family=Nunito:wght@600;700;800&display=swap"
       rel="stylesheet"
     />
     <title>한국어 마스터 | Korean Master</title>

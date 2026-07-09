@@ -87,6 +87,8 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { useTheme } from '../hooks/useTheme';
 import type { ThemeMode } from '../hooks/useTheme';
+import { useAccent } from '../hooks/useAccent';
+import { isAccent } from '../hooks/accent-context';
 import {
   fetchMe,
   fetchMfaStatus,
@@ -124,8 +126,8 @@ async function loadMeMock(): Promise<User> {
   };
 }
 import { ApiError } from '../services/api';
+import { ACCENT_OPTIONS } from '../lib/accent-presets';
 import {
-  ACCENT_PRESETS,
   CORRECT_PRESETS,
   PAPER_PRESETS,
   WRONG_PRESETS,
@@ -257,6 +259,7 @@ export default function Settings(): JSX.Element {
   const { user, refresh } = useAuth();
   const { settings, updateSettings, resetSettings } = useSettings();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
+  const { accent, setAccent } = useAccent();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -930,15 +933,19 @@ export default function Settings(): JSX.Element {
             });
           }}
         />
+        {/* Accent (Redesign §14a) — runtime accent choice. Unlike the other
+            swatch rows this does NOT write palette prefs: it drives
+            AccentProvider, which stamps data-accent on <html> and persists
+            to km.accent — the same per-device posture as the theme mode
+            above. The [data-accent] token blocks in index.css re-tint the
+            whole --vermilion family instantly, light AND dark. */}
         <SwatchPicker
-          label="Highlight"
-          hint="Accents, links, active states."
-          presets={ACCENT_PRESETS}
-          selectedId={settings.palette.accent}
+          label="Accent"
+          hint="Buttons, highlights, the Learn hexagon."
+          presets={ACCENT_OPTIONS}
+          selectedId={accent}
           onSelect={(id) => {
-            updateSettings({
-              palette: { ...settings.palette, accent: id },
-            });
+            if (isAccent(id)) setAccent(id);
           }}
         />
         <SwatchPicker

@@ -108,14 +108,17 @@ describe('SettingsProvider — --lang-sub-scale projection', () => {
     act(() => {
       result.current.updateSettings((prev) => ({
         ...prev,
-        palette: { ...prev.palette, accent: 'indigo' },
+        // Seoul Neon: accent presets no longer project — use the wrong
+        // category, which still writes inline overrides, to force a
+        // palette projection pass.
+        palette: { ...prev.palette, wrong: 'slate' },
       }));
     });
 
-    // The palette projection ran (accent vars rewritten)…
+    // The palette projection ran (wrong-category vars rewritten)…
     expect(
-      document.documentElement.style.getPropertyValue('--vermilion'),
-    ).toBe('#2E4F70');
+      document.documentElement.style.getPropertyValue('--danger'),
+    ).toBe('#4A4A55');
     // …and the language-display scale survived untouched.
     expect(
       document.documentElement.style.getPropertyValue(LANG_SUB_SCALE_CSS_VAR),

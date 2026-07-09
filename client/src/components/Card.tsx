@@ -1,14 +1,17 @@
 /**
- * Card — the main "paper on table" shape.
+ * Card — the main elevated surface (Seoul Neon restyle).
  *
- * `--ink-1` paper, 1px `--line` border, 4px radius, hairline top shadow.
- * Squared corners are deliberate; widening past 4px breaks the aesthetic
- * (see design README: "Don't soften the corners").
+ * `--ink-1` surface, `--radius-lg` corners, depth from the theme-aware
+ * shadow tokens — no hairline borders. Rounded + elevated is deliberate:
+ * light theme floats glassy white cards on soft daylight shadows, dark
+ * theme edges them with a faint glass ring. (The old "don't soften the
+ * corners" hanji rule is retired.)
  *
  * Variants:
- *   - `default`   — paper background, hairline border.
- *   - `flat`      — transparent, hairline border. Used inside other cards.
- *   - `accent`    — vermilion-soft tint with vermilion left border;
+ *   - `default`   — card surface, full elevation (`--shadow`).
+ *   - `flat`      — elevated-surface tint, small shadow. Used inside
+ *                   other cards.
+ *   - `accent`    — accent-soft tint with an inset accent left bar;
  *                   for the "Review queue" CTA card on Today.
  */
 import type { HTMLAttributes, JSX, ReactNode } from 'react';

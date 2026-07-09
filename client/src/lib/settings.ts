@@ -24,7 +24,6 @@
 
 import {
   PAPER_PRESETS,
-  ACCENT_PRESETS,
   CORRECT_PRESETS,
   WRONG_PRESETS,
 } from './palette-presets';
@@ -238,14 +237,21 @@ export function saveSettings(s: Settings): void {
 }
 
 /**
- * Flatten the four selected presets into one dict of CSS custom-property
- * overrides. Later categories win (mirrors shared.jsx ordering: paper →
- * accent → correct → wrong) — wrong's `--danger` will override an accent
- * preset that happens to also touch `--danger`.
+ * Flatten the selected presets into one dict of CSS custom-property
+ * overrides. Later categories win (paper → correct → wrong).
  *
  * IMPORTANT: only forwards `vars` that the chosen preset actually declares.
  * A non-paper category will never touch `--ink-*` / `--paper-*` / `--line*`
  * because none of those presets list them. We never inject "empty" tokens.
+ * The DEFAULT preset in each category declares no vars at all, so a
+ * default user gets the pure theme-aware token blocks from index.css.
+ *
+ * Seoul Neon redesign: the ACCENT category is deliberately NOT projected.
+ * The accent is now a runtime `data-accent` attribute owned by
+ * `AccentProvider` + the `[data-accent]` CSS blocks — inline `--vermilion`
+ * overrides here would beat those blocks in the cascade and freeze the
+ * accent to a single theme-blind hex. `palette.accent` is retained in the
+ * stored/synced blob purely for server-schema parity.
  */
 export function paletteVars(
   palette: PaletteSettings,
@@ -253,7 +259,6 @@ export function paletteVars(
   const out: Record<string, string> = {};
   const sources = [
     PAPER_PRESETS[palette.paper]?.vars,
-    ACCENT_PRESETS[palette.accent]?.vars,
     CORRECT_PRESETS[palette.correct]?.vars,
     WRONG_PRESETS[palette.wrong]?.vars,
   ];
