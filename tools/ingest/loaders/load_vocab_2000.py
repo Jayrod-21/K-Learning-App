@@ -41,6 +41,7 @@ logger = structlog.get_logger(__name__)
 _LEVEL_TO_CORPUS = {
     "beginner": "vocab_2000_beginner",
     "intermediate": "vocab_2000_intermediate",
+    "advanced": "vocab_2000_advanced",
 }
 
 # Terminal per-row proficiency fallback when BOTH the row value and the source
@@ -52,6 +53,10 @@ _LEVEL_TO_CORPUS = {
 _LEVEL_TO_FALLBACK_PROFICIENCY = {
     "beginner": "basic",
     "intermediate": "L3",
+    # Advanced book default (the 2000-series Advanced volume). Mirrors the
+    # advanced extraction guide's "L4 default, bump to L5+ when marked" — a flat
+    # L3 fallback would mis-tag advanced words into the intermediate SRS queue.
+    "advanced": "L4",
 }
 
 
@@ -153,6 +158,7 @@ async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) 
                         corpus_source_id=corpus_source_id,
                         book_level=doc.source.level,
                         default_proficiency=default_proficiency_norm,
+                        source_upload_id=doc.source.source_upload_id,
                         batch=batch,
                     )
                     last_id = batch[-1].id
@@ -193,6 +199,19 @@ async def load(pool: AsyncConnectionPool, source_path: Path, cfg: LoaderConfig) 
         async with pool.connection() as conn:
             async with conn.transaction():
                 await mark_complete(conn, corpus=corpus, source_path=str(source_path))
+                # U2: when this document was extracted from an uploaded book,
+                # flip that upload processing -> ready now that its content is
+                # loaded (atomic with mark_complete). Idempotent: re-running a
+                # completed load re-asserts 'ready'. Guarded so the pre-existing
+                # beginner/intermediate corpus files (no upload) are untouched.
+                if doc.source.source_upload_id is not None:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE book_uploads "
+                            "SET status = 'ready'::book_upload_status "
+                            "WHERE id = %s",
+                            (doc.source.source_upload_id,),
+                        )
         return {
             "loaded": loaded_running,
             "skipped": skipped_running,
@@ -253,6 +272,7 @@ async def _insert_item_batch(
     corpus_source_id: int,
     book_level: str,
     default_proficiency: str | None,
+    source_upload_id: int | None,
     batch: list[VocabItemModel],
 ) -> None:
     if not batch:
@@ -357,6 +377,7 @@ async def _insert_item_batch(
                 notes_json,
                 prof,
                 it.domain,
+                source_upload_id,
             )
         )
     async with conn.cursor() as cur:
@@ -370,7 +391,7 @@ async def _insert_item_batch(
                 example_korean, example_english,
                 passive_form, causative_form, basic_form,
                 honorific_form, humble_form, contracted_form,
-                tips, cross_refs, notes, proficiency, domain)
+                tips, cross_refs, notes, proficiency, domain, source_upload_id)
             VALUES (
                 %s, %s::corpus, %s, %s::book_level,
                 %s::vocab_entry_type, %s, %s, %s, %s, %s,
@@ -380,7 +401,7 @@ async def _insert_item_batch(
                 %s, %s, %s,
                 %s, %s, %s,
                 %s::jsonb, %s::jsonb, %s::jsonb,
-                %s::proficiency_level, %s::content_domain)
+                %s::proficiency_level, %s::content_domain, %s)
             ON CONFLICT (corpus, source_id) DO UPDATE
               SET entry_type      = EXCLUDED.entry_type,
                   theme           = EXCLUDED.theme,
@@ -408,6 +429,7 @@ async def _insert_item_batch(
                   notes           = EXCLUDED.notes,
                   proficiency     = EXCLUDED.proficiency,
                   domain          = EXCLUDED.domain,
+                  source_upload_id = EXCLUDED.source_upload_id,
                   version         = vocab_entries.version + 1
             """,
             values,

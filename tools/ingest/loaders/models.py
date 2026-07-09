@@ -323,8 +323,12 @@ class VocabSourceModel(StrictBase):
     book: str
     publisher: str | None = None
     authors: str | None = None
-    level: Literal["beginner", "intermediate"]
+    level: Literal["beginner", "intermediate", "advanced"]
     default_proficiency: str = "basic"
+    # The uploaded book (book_uploads.id) this document was extracted from, for
+    # U2 source-tagging; None for the pre-existing beginner/intermediate corpus
+    # files that were not uploaded. Threaded into vocab_entries.source_upload_id.
+    source_upload_id: int | None = None
     extracted_by: str | None = None
     extracted_at: str | None = None
     note: str | None = None

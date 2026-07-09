@@ -31,6 +31,11 @@ FIXTURE_DUP_IDS = FIXTURES / "vocab_mini_dup_ids.json"
 # header's default_proficiency is BLANK -> the word-row proficiency fallback is
 # the LEVEL-AWARE terminal branch, not the source default. See SF-1 test below.
 FIXTURE_FALLBACK = FIXTURES / "vocab_mini_beginner_fallback.json"
+# U2: an 'advanced'-level document → the new vocab_2000_advanced corpus. Loading
+# it exercises migrations 042 (the corpus enum value) and 043 (the relaxed
+# corpus + level CHECKs); source_upload_id is omitted (None) so no book_uploads
+# FK is needed for this schema-path test.
+FIXTURE_ADVANCED = FIXTURES / "vocab_mini_advanced.json"
 
 
 @pytest.fixture(scope="module")
@@ -150,6 +155,73 @@ def test_vocab_word_missing_proficiency_gets_source_default(schema):
         )
     )
     assert prof == "basic", f"expected source-default proficiency 'basic', got {prof!r}"
+
+
+def test_vocab_advanced_corpus_loads(schema):
+    """U2: an 'advanced'-level document loads under the new vocab_2000_advanced
+    corpus with book_level 'advanced' — end-to-end proof that migration 042 (the
+    corpus enum value) and 043 (the relaxed ck_vocab_entries_corpus_vocab_only +
+    ck_vocab_entries_level_matches_corpus) are correct. If either CHECK were
+    wrong, the vocab_entries INSERT below would fail the constraint and the load
+    would come back 'failed' rather than 'complete'.
+
+    (The source_upload_id tagging + book_uploads status->ready flip is covered by
+    a separate test that first seeds a book_uploads row — see the U2 follow-up;
+    this fixture omits source_upload_id so it needs no FK setup.)
+    """
+    url = schema
+    fixture = json.loads(FIXTURE_ADVANCED.read_text(encoding="utf-8"))
+    expected = len(fixture["items"])
+
+    result = _load(url, FIXTURE_ADVANCED)
+    assert result["status"] == "complete"
+    assert result["actual"] == expected
+
+    # All rows landed under the new corpus.
+    assert (
+        asyncio.run(
+            _count(
+                url,
+                "SELECT COUNT(*) FROM vocab_entries WHERE corpus = 'vocab_2000_advanced'",
+            )
+        )
+        == expected
+    )
+    # Every advanced row carries book_level 'advanced' (the relaxed level CHECK
+    # admits exactly this pairing).
+    assert (
+        asyncio.run(
+            _count(
+                url,
+                "SELECT COUNT(*) FROM vocab_entries "
+                "WHERE corpus = 'vocab_2000_advanced' AND book_level <> 'advanced'",
+            )
+        )
+        == 0
+    )
+    # Word rows got a non-null proficiency: 'vocab-adv-0003' omits it in the
+    # fixture and must be backfilled from the source default ('L4'), never NULL
+    # (ck_vocab_entries_proficiency_required) and never the flat 'L3'.
+    assert (
+        asyncio.run(
+            _count(
+                url,
+                "SELECT COUNT(*) FROM vocab_entries "
+                "WHERE corpus = 'vocab_2000_advanced' AND entry_type = 'word' "
+                "AND proficiency IS NULL",
+            )
+        )
+        == 0
+    )
+    prof = asyncio.run(
+        _scalar(
+            url,
+            "SELECT proficiency::text FROM vocab_entries "
+            "WHERE corpus = 'vocab_2000_advanced' AND source_id = %s",
+            ("vocab-adv-0003",),
+        )
+    )
+    assert prof == "L4", f"expected advanced source-default proficiency 'L4', got {prof!r}"
 
 
 def test_vocab_word_missing_proficiency_uses_level_fallback_when_source_default_blank(

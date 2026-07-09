@@ -1,0 +1,22 @@
+-- =============================================================================
+-- Migration 042 — vocab_2000_advanced corpus enum value (DOWN)
+--   Reverses 042_vocab_2000_advanced_corpus.up.sql.
+--
+-- DELIBERATE NO-OP — PostgreSQL cannot remove an enum value (`ALTER TYPE …
+--   DROP VALUE` does not exist). Leaving 'vocab_2000_advanced' in the `corpus`
+--   enum is harmless once migration 043's down has restored the CHECKs and no
+--   vocab_entries / corpus_sources row references it; re-applying 042 is a no-op
+--   (`ADD VALUE IF NOT EXISTS`). Removing it would mean dropping and recreating
+--   the entire `corpus` enum and re-pointing every dependent column — far out of
+--   scope for a down migration. This mirrors 021 (user_mined) and 016 (hanja):
+--   the down leaves the type a superset of where it started; the schema is
+--   functionally reverted.
+--
+-- TRANSACTION OWNERSHIP (ADR-013):
+--   No top-level transaction control — migrate.py owns the transaction. An empty
+--   body is valid.
+-- =============================================================================
+
+-- (intentionally empty — see the header.)
+
+-- End of 042_vocab_2000_advanced_corpus.down.sql.
