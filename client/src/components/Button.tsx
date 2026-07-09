@@ -1,10 +1,12 @@
 /**
- * Button — gold (vermilion fill) primary or ghost (hairline border) secondary.
+ * Button — gold (solid accent fill + glow) primary or ghost (soft accent
+ * tint) secondary.
  *
- * 3px radius (3–4px is the design's "squared, not pillowy" range).
- * Renders a real `<button>` with `type="button"` by default; setting
- * `type="submit"` opts in to form submission. Disabled state lowers opacity
- * and removes pointer events.
+ * Pill radius — the radius/fill/glow values live in the `.km-btn*` rules
+ * in styles/index.css, keyed off the runtime accent tokens. Renders a real
+ * `<button>` with `type="button"` by default; setting `type="submit"` opts
+ * in to form submission. Disabled state lowers opacity and removes pointer
+ * events.
  */
 import {
   forwardRef,

@@ -94,26 +94,30 @@ vi.mock('../hooks/useAuth', () => ({
 
 // We import Settings AFTER the mocks above so the module sees them.
 import Settings from './Settings';
+import { AccentProvider } from '../hooks/AccentProvider';
 import { SettingsProvider } from '../hooks/SettingsProvider';
 import { ThemeProvider } from '../hooks/ThemeProvider';
 import { ToastProvider } from '../components/ToastProvider';
 
 /**
- * Settings now consumes `useTheme` (A4 theme-mode control), `useToast`
- * (A3 prefs-sync-failure surface + U1b upload toast), and `useNavigate`
- * (U1b "See all uploads" link), so every render needs ThemeProvider +
- * ToastProvider + a Router in the tree alongside SettingsProvider. This
- * helper wraps the page in the same provider order App.tsx uses.
+ * Settings now consumes `useTheme` (A4 theme-mode control), `useAccent`
+ * (Redesign §14a accent picker), `useToast` (A3 prefs-sync-failure surface
+ * + U1b upload toast), and `useNavigate` (U1b "See all uploads" link), so
+ * every render needs ThemeProvider + AccentProvider + ToastProvider + a
+ * Router in the tree alongside SettingsProvider. This helper wraps the
+ * page in the same provider order App.tsx uses.
  */
 function renderSettings(): ReturnType<typeof render> {
   return render(
     <MemoryRouter>
       <ThemeProvider>
-        <ToastProvider>
-          <SettingsProvider>
-            <Settings />
-          </SettingsProvider>
-        </ToastProvider>
+        <AccentProvider>
+          <ToastProvider>
+            <SettingsProvider>
+              <Settings />
+            </SettingsProvider>
+          </ToastProvider>
+        </AccentProvider>
       </ThemeProvider>
     </MemoryRouter>,
   );
@@ -170,6 +174,8 @@ afterEach(() => {
   // A4: ThemeProvider writes data-theme on <html>; reset between tests so a
   // theme-mode test's choice doesn't bleed into the next render.
   delete document.documentElement.dataset.theme;
+  // §14a: AccentProvider writes data-accent the same way.
+  delete document.documentElement.dataset.accent;
 });
 
 // ─── Tests ────────────────────────────────────────────────────

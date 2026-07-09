@@ -37,6 +37,7 @@ import {
 import { AuthProvider } from './hooks/AuthProvider';
 import { useAuth } from './hooks/useAuth';
 import { ThemeProvider } from './hooks/ThemeProvider';
+import { AccentProvider } from './hooks/AccentProvider';
 import { SettingsProvider } from './hooks/SettingsProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -70,9 +71,13 @@ export default function App(): JSX.Element {
   return (
     <ErrorBoundary>
       <ThemeProvider>
+        {/* AccentProvider mirrors ThemeProvider — stamps `data-accent` on
+            <html> (Seoul Neon accent presets) and persists to km.accent.
+            Independent of both the theme and the palette settings. */}
+        <AccentProvider>
         <SettingsProvider>
           {/* PF-A: ToastProvider wraps the app so every screen can surface a
-              transient hanji toast. Placed inside SettingsProvider (so toasts
+              transient toast. Placed inside SettingsProvider (so toasts
               inherit the palette tokens) and outside the router (so a toast
               survives navigation). PF-B parent: reconcile this with the
               InstallPrompt mount — both live at App root; nesting order here
@@ -162,6 +167,7 @@ export default function App(): JSX.Element {
             <PwaUpdatePrompt />
           </ToastProvider>
         </SettingsProvider>
+        </AccentProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

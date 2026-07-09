@@ -3,9 +3,11 @@
  * app trusts:
  *   1. `loadSettings` is total — DEFAULT_SETTINGS on missing or corrupt.
  *   2. `saveSettings` round-trips through `loadSettings`.
- *   3. `paletteVars` flattens the four presets correctly, including the
- *      default combo and a non-default combo, and produces ONLY keys that
- *      come from the presets (no spurious `--ink-*` from an accent pick).
+ *   3. `paletteVars` flattens the projected presets correctly: the DEFAULT
+ *      combo projects NOTHING (Seoul Neon — theme/accent-aware tokens from
+ *      index.css render untouched), a non-default combo projects only its
+ *      own category's keys, and the ACCENT category is never projected
+ *      (the runtime `data-accent` blocks own `--vermilion`).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -178,20 +180,13 @@ describe('saveSettings', () => {
 });
 
 describe('paletteVars', () => {
-  it('produces the DEFAULT combo (hanji+vermilion+moss+vermilion)', () => {
+  it('produces NO overrides for the DEFAULT combo (Seoul Neon)', () => {
+    // The default presets (hanji / moss / vermilion-wrong) declare no vars:
+    // default users render the theme+accent-aware token blocks in index.css
+    // untouched. An inline default projection would beat [data-theme] and
+    // [data-accent] in the cascade and freeze the app theme-blind.
     const vars = paletteVars(DEFAULT_SETTINGS.palette);
-    // Paper preset writes ink + paper + line tokens
-    expect(vars['--ink']).toBe('#E8DFC5');
-    expect(vars['--paper']).toBe('#1B1813');
-    expect(vars['--line']).toBe('rgba(27,24,19,0.10)');
-    // Accent writes vermilion + gold aliases
-    expect(vars['--vermilion']).toBe('#B83A2E');
-    expect(vars['--gold-light']).toBe('#C8503F');
-    // Correct writes moss + green aliases
-    expect(vars['--moss']).toBe('#5C7548');
-    expect(vars['--green']).toBe('#5C7548');
-    // Wrong writes danger (vermilion preset under wrong → same hex as accent)
-    expect(vars['--danger']).toBe('#B83A2E');
+    expect(vars).toEqual({});
   });
 
   it('produces a non-default combo (linen+plum+pine+amber)', () => {
@@ -202,8 +197,9 @@ describe('paletteVars', () => {
       wrong: 'amber',
     });
     expect(vars['--ink']).toBe('#E2D9C2');
-    expect(vars['--vermilion']).toBe('#7B3358');
-    expect(vars['--gold']).toBe('#7B3358');
+    // Accent is NEVER projected — the data-accent CSS blocks own --vermilion.
+    expect(vars['--vermilion']).toBeUndefined();
+    expect(vars['--gold']).toBeUndefined();
     expect(vars['--moss']).toBe('#2E5B3E');
     expect(vars['--green']).toBe('#2E5B3E');
     expect(vars['--danger']).toBe('#A66A1F');
@@ -213,15 +209,15 @@ describe('paletteVars', () => {
     const vars = paletteVars({
       paper: 'bogus',
       accent: 'vermilion',
-      correct: 'moss',
-      wrong: 'vermilion',
+      correct: 'pine',
+      wrong: 'amber',
     });
     // Paper section omitted entirely — no ink/paper keys set
     expect(vars['--ink']).toBeUndefined();
     expect(vars['--paper']).toBeUndefined();
     // Other sections still resolve
-    expect(vars['--vermilion']).toBe('#B83A2E');
-    expect(vars['--moss']).toBe('#5C7548');
+    expect(vars['--moss']).toBe('#2E5B3E');
+    expect(vars['--danger']).toBe('#A66A1F');
   });
 
   it('later categories win for shared keys', () => {

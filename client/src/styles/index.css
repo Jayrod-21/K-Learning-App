@@ -1,89 +1,191 @@
 @import "tailwindcss";
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Korean Master — hanji & sumi ink design tokens.
+ * Korean Master — "Modern Seoul" design tokens.
  *
- * The palette is hanji (한지) cream paper with sumi (먹) ink type, accented
- * by the vermilion (단청) red of Korean temple eaves, indigo (청) for grammar
- * gestures, moss for success, and ochre for hanja. Light is the default;
- * `data-theme="dark"` on `<html>` flips to the Sumi inversion (mahogany
- * surfaces, cream type, accents brightened 1–2 stops).
+ * "A skyline by day. Neon by night." Light is airy daylight — cool
+ * blue-tinted whites, glassy white cards, soft floating shadows. Dark is a
+ * neon night city — near-black navy, glass-edged surfaces, colored glow
+ * shadows. One confident neon accent (user-selectable — see the
+ * `[data-accent]` blocks below), color-coded skill hues, real depth on
+ * every box. Light is the default; `data-theme="dark"` on `<html>` flips
+ * to the night palette.
  *
- * Token names mirror `Claude Design/design_handoff_korean_master/styles.css`
- * one-for-one so prototype CSS can be copied with minimal changes during
- * Pass 2.
+ * Token NAMES are retained verbatim from the original hanji-era sheet
+ * (`--ink*`, `--paper*`, `--vermilion*`, …) — every component keys off
+ * them; only the VALUES moved to the Seoul palette.
  * ──────────────────────────────────────────────────────────────────────── */
 
 :root,
 [data-theme="light"] {
-  /* Surfaces — warm to bright. Names retained so prototype CSS ports verbatim. */
-  --ink:   #E8DFC5;            /* base table — dusty hanji */
-  --ink-1: #F3ECD5;            /* card paper */
-  --ink-2: #F8F2DD;            /* elevated paper */
-  --ink-3: #FBF6E6;            /* highest (popovers, sheets) */
+  /* Surfaces — cool daylight, glassy */
+  --ink:   #E7ECF5;   /* app base bg */
+  --ink-1: #FFFFFF;   /* card paper */
+  --ink-2: #F4F7FC;   /* elevated */
+  --ink-3: #FFFFFF;   /* highest (popovers, sheets) */
 
-  /* Type — sumi ink, fading to faint marker. */
-  --paper:       #1B1813;
-  --paper-dim:   #4A4036;
-  --paper-mute:  #7C7058;
-  --paper-faint: #A89B7E;
+  /* Type — near-black navy ink */
+  --paper:       #10141F;
+  --paper-dim:   #55607A;
+  --paper-mute:  #929BB0;
+  --paper-faint: #B7BECD;
 
-  /* Accents. */
-  --vermilion:      #B83A2E;
-  --vermilion-soft: rgba(184, 58, 46, 0.10);
+  /* Hero accent — neon coral (default preset; the [data-accent] blocks
+   * further down re-point this family at runtime). NOTE contrast: the solid
+   * fill is the DEEP rose so white text passes AA; the bright coral is
+   * decorative (glow/gradients/active-on-soft) only. */
+  --vermilion:        #E11D48;   /* CTA fill, active text (AA w/ white + on white) */
+  --vermilion-bright: #FF3E6C;   /* glow, gradients, chips — decorative only */
+  --vermilion-soft:   rgba(255, 62, 108, 0.10);
   /* Text colour for type that sits ON the vermilion fill — buttons, seal
-   * stamp, the diagnostic Done badge in Pass 5+, the OCR camera circle in
-   * Pass 8. Light theme uses the cream ink so the contrast reads as
-   * temple-eave red on hanji. Not a surface — never apply as `background`. */
-  --on-vermilion:   #FBF6E6;
-  --indigo:         #2E4F70;
-  --indigo-soft:    rgba(46, 79, 112, 0.10);
-  --moss:           #5C7548;
-  --moss-soft:      rgba(92, 117, 72, 0.10);
-  --ochre:          #B07A1F;
-  --ochre-soft:     rgba(176, 122, 31, 0.10);
-  --danger:         var(--vermilion);
-  --danger-soft:    var(--vermilion-soft);
+   * stamp, badges. Not a surface — never apply as `background`. */
+  --on-vermilion:     #FFFFFF;
+  --danger:           var(--vermilion);
+  --danger-soft:      var(--vermilion-soft);
 
-  /* Hairlines. */
-  --line:        rgba(27, 24, 19, 0.10);
-  --line-strong: rgba(27, 24, 19, 0.22);
+  /* Category / skill hues */
+  --indigo:      #4F7BFF;  --indigo-soft: rgba(79,123,255,0.10);   /* Vocab */
+  --moss:        #12C08A;  --moss-soft:   rgba(18,192,138,0.12);   /* success/correct */
+  --ochre:       #F7A424;  --ochre-soft:  rgba(247,164,36,0.12);   /* Hanja */
+  --violet:      #7C5CFC;  --violet-soft: rgba(124,92,252,0.12);   /* Grammar (NEW) */
+  --cyan:        #0EB8D6;  --cyan-soft:   rgba(14,184,214,0.12);   /* Reading (NEW) */
 
-  /* Reusable layout constants. */
+  /* Legacy accent aliases — a few dev-panel styles still read --gold*.
+   * Var-chained so they track whatever accent is active. (NEW) */
+  --gold:       var(--vermilion);
+  --gold-light: var(--vermilion-bright);
+  --gold-soft:  var(--vermilion-soft);
+
+  /* Hairlines — glass, cool */
+  --line:        rgba(20, 30, 60, 0.08);
+  --line-strong: rgba(20, 30, 60, 0.16);
+
+  /* NEW — shape scale */
+  --radius-sm:   12px;
+  --radius:      16px;
+  --radius-lg:   22px;   /* cards */
+  --radius-pill: 999px;
+
+  /* NEW — elevation (soft daytime float, accent-tinted) */
+  --shadow-sm:   0 1px 0 rgba(20,30,60,0.05), 0 6px 16px -10px rgba(30,45,90,0.20);
+  --shadow:      0 1px 0 rgba(20,30,60,0.06), 0 14px 34px -16px rgba(40,55,110,0.22), 0 4px 12px -8px rgba(40,55,110,0.14);
+  --shadow-lift: 0 24px 50px -18px rgba(255,62,108,0.28), 0 8px 18px -10px rgba(40,55,110,0.20);
+  --glow:        0 10px 26px -10px var(--vermilion-bright);
+
+  /* NEW — rounded display face for headings/buttons/chrome labels (§10).
+   * Korean display titles keep .kr-display's Noto Serif KR. */
+  --font-display: 'Nunito', ui-rounded, 'Segoe UI', system-ui, sans-serif;
+
+  /* Reusable layout constants — unchanged. */
   --shell-statusbar-h: 54px;
   --shell-bottomnav-h: 64px;
   --shell-max-width:   480px;
 }
 
 [data-theme="dark"] {
-  --ink:   #15110D;
-  --ink-1: #1E1812;
-  --ink-2: #28211A;
-  --ink-3: #322A22;
+  /* Neon night city. Radius/font/layout tokens cascade from the block above. */
+  --ink:   #080A11;
+  --ink-1: #141A28;
+  --ink-2: #1B2233;
+  --ink-3: #222B40;
 
-  --paper:       #EFE7D0;
-  --paper-dim:   #C7BCA3;
-  --paper-mute:  #8C8270;
-  --paper-faint: #665E4E;
+  --paper:       #EDF2FF;
+  --paper-dim:   #A0ABC9;
+  --paper-mute:  #6A7593;
+  --paper-faint: #49536E;
 
-  --vermilion:      #D9594A;
-  --vermilion-soft: rgba(217, 89, 74, 0.14);
-  /* On the dark mahogany background, vermilion is the brightest accent — but
-   * type on the *fill* still needs to be dark so the seal reads as a stamped
-   * impression rather than a glowing button. Matches `--ink` exactly. */
-  --on-vermilion:   #15110D;
-  --indigo:         #6FA2D4;
-  --indigo-soft:    rgba(111, 162, 212, 0.12);
-  --moss:           #A6C690;
-  --moss-soft:      rgba(166, 198, 144, 0.12);
-  --ochre:          #D6A33E;
-  --ochre-soft:     rgba(214, 163, 62, 0.12);
+  /* Dark: bright coral fill + DARK ink text = high-contrast neon look */
+  --vermilion:        #FF4D74;
+  --vermilion-bright: #FF6B8A;
+  --vermilion-soft:   rgba(255, 77, 116, 0.14);
+  --on-vermilion:     #0A0C12;
 
-  --line:        rgba(239, 231, 208, 0.08);
-  --line-strong: rgba(239, 231, 208, 0.18);
+  --indigo: #5B8CFF;  --indigo-soft: rgba(91,140,255,0.14);
+  --moss:   #2BE0A6;  --moss-soft:   rgba(43,224,166,0.14);
+  --ochre:  #FFB43D;  --ochre-soft:  rgba(255,180,61,0.14);
+  --violet: #9B7CFF;  --violet-soft: rgba(155,124,255,0.14);
+  --cyan:   #33D6EF;  --cyan-soft:   rgba(51,214,239,0.14);
+
+  --line:        rgba(150, 180, 255, 0.08);
+  --line-strong: rgba(150, 180, 255, 0.16);
+
+  --shadow-sm:   0 0 0 1px rgba(150,180,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.7);
+  --shadow:      0 0 0 1px rgba(150,180,255,0.10), 0 20px 44px -18px rgba(0,0,0,0.75);
+  --shadow-lift: 0 0 0 1px rgba(255,77,116,0.35), 0 26px 60px -18px rgba(0,0,0,0.85), 0 0 34px -6px rgba(255,77,116,0.45);
+  --glow:        0 0 26px -4px var(--vermilion-bright);
 }
 
-/* Reset + paper grain. */
+/* ─────────────────────────────────────────────────────────────────────────
+ * Accent presets — a RUNTIME user choice (Settings ▸ Appearance ▸ Accent).
+ *
+ * `AccentProvider` stamps `data-accent="coral|blue|mint"` on `<html>`
+ * (persisted in localStorage["km.accent"], same pattern as km.theme), and
+ * these blocks re-point the --vermilion family so everything downstream —
+ * CTA fill, --glow (var-chained to --vermilion-bright), soft chips, the
+ * hexagon gradient — switches instantly with no reload.
+ *
+ * Coral restates the base values for explicitness. --danger is PINNED to
+ * the coral red in the blue/mint blocks: error semantics stay red no
+ * matter which accent hue is active (the base `--danger: var(--vermilion)`
+ * would otherwise follow the accent).
+ *
+ * Contrast (§3a): each light solid fill carries its --on-vermilion at
+ * ≥4.5:1 — coral #E11D48 + white ≈ 4.7:1, blue #2563EB + white ≈ 5.1:1;
+ * mint's #0F9E7A only reaches ≈3.4:1 with white, so mint-light uses the
+ * dark navy ink (≈5.4:1) — the same dark-ink-on-bright-fill move every
+ * dark-theme fill makes. Dark fills all pair with #0A0C12 at ≥6:1.
+ *
+ * Cascade note: the light accent blocks are LATER in the sheet than
+ * [data-theme="dark"] at equal specificity, so every dark combo needs (and
+ * has) an explicit [data-theme="dark"][data-accent] block covering every
+ * token the light block sets — otherwise light values would leak into dark.
+ * ──────────────────────────────────────────────────────────────────────── */
+[data-accent="coral"] {
+  --vermilion:        #E11D48;
+  --vermilion-bright: #FF3E6C;
+  --vermilion-soft:   rgba(255, 62, 108, 0.10);
+  --on-vermilion:     #FFFFFF;
+}
+[data-theme="dark"][data-accent="coral"] {
+  --vermilion:        #FF4D74;
+  --vermilion-bright: #FF6B8A;
+  --vermilion-soft:   rgba(255, 77, 116, 0.14);
+  --on-vermilion:     #0A0C12;
+}
+[data-accent="blue"] {
+  --vermilion:        #2563EB;
+  --vermilion-bright: #4F7BFF;
+  --vermilion-soft:   rgba(79, 123, 255, 0.10);
+  --on-vermilion:     #FFFFFF;
+  --danger:           #E11D48;
+  --danger-soft:      rgba(255, 62, 108, 0.10);
+}
+[data-theme="dark"][data-accent="blue"] {
+  --vermilion:        #5B8CFF;
+  --vermilion-bright: #7AA2FF;
+  --vermilion-soft:   rgba(91, 140, 255, 0.14);
+  --on-vermilion:     #0A0C12;
+  --danger:           #FF4D74;
+  --danger-soft:      rgba(255, 77, 116, 0.14);
+}
+[data-accent="mint"] {
+  --vermilion:        #0F9E7A;
+  --vermilion-bright: #10C79A;
+  --vermilion-soft:   rgba(16, 199, 154, 0.10);
+  --on-vermilion:     #10141F;  /* see contrast note above */
+  --danger:           #E11D48;
+  --danger-soft:      rgba(255, 62, 108, 0.10);
+}
+[data-theme="dark"][data-accent="mint"] {
+  --vermilion:        #2BE0A6;
+  --vermilion-bright: #5BF0C0;
+  --vermilion-soft:   rgba(43, 224, 166, 0.14);
+  --on-vermilion:     #0A0C12;
+  --danger:           #FF4D74;
+  --danger-soft:      rgba(255, 77, 116, 0.14);
+}
+
+/* Reset + ambient glow. */
 * { box-sizing: border-box; }
 html, body, #root {
   margin: 0;
@@ -95,18 +197,20 @@ html, body, #root {
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
-  /* Hanji fiber — almost invisible paper grain. */
+  /* Faint ambient city-light glow (§9) — a whisper, not a picture. The
+   * gradients read off the accent + indigo tokens, so they re-tint with
+   * both the theme AND the runtime accent choice. Replaces the old hanji
+   * paper-grain dots. */
   background-image:
-    radial-gradient(rgba(27, 24, 19, 0.035) 1px, transparent 1.2px),
-    radial-gradient(rgba(27, 24, 19, 0.025) 1.5px, transparent 1.6px);
-  background-size: 22px 22px, 38px 38px;
-  background-position: 0 0, 11px 19px;
+    radial-gradient(1100px 460px at 82% -8%, color-mix(in srgb, var(--vermilion-bright) 10%, transparent), transparent 70%),
+    radial-gradient(900px 420px at -5% 8%, color-mix(in srgb, var(--indigo) 10%, transparent), transparent 70%);
+  background-attachment: fixed;
 }
-[data-theme="dark"] body {
-  background-image:
-    radial-gradient(rgba(239, 231, 208, 0.025) 1px, transparent 1.2px),
-    radial-gradient(rgba(239, 231, 208, 0.018) 1.5px, transparent 1.6px);
-}
+
+/* Rounded display face (§10) — headings + chrome. Korean display titles
+ * keep their serif: `.kr-display` is a class selector, so it beats these
+ * element selectors wherever both apply. */
+h1, h2 { font-family: var(--font-display); }
 
 /* Korean type — body sans, display serif. */
 .kr {
@@ -409,7 +513,7 @@ body {
 
 /* Eyebrow ──────────────────────────────────────────────────────────────── */
 .km-eyebrow {
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-display);
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.22em;
@@ -418,60 +522,68 @@ body {
   line-height: 1.4;
 }
 
-/* Card ────────────────────────────────────────────────────────────────── */
+/* Card ──────────────────────────────────────────────────────────────────
+ * Outlined → elevated (§5): hairline borders are gone; depth comes from
+ * the theme-aware shadow tokens. */
 .km-card {
-  border-radius: 4px;
-  padding: 22px 24px;
+  border-radius: var(--radius-lg);
+  padding: 22px 22px;
   position: relative;
 }
 .km-card--default {
   background: var(--ink-1);
-  border: 1px solid var(--line);
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.04);
+  border: none;
+  box-shadow: var(--shadow);
 }
 .km-card--flat {
-  background: transparent;
-  border: 1px solid var(--line);
+  background: var(--ink-2);
+  border: none;
+  box-shadow: var(--shadow-sm);
 }
 .km-card--accent {
   background: var(--vermilion-soft);
-  border: 1px solid var(--vermilion);
+  border: none;
+  box-shadow: var(--shadow-sm), inset 3px 0 0 var(--vermilion-bright);
 }
 
-/* Button ──────────────────────────────────────────────────────────────── */
+/* Button ──────────────────────────────────────────────────────────────────
+ * Pill-shaped, borderless (§6): the gold CTA is a solid accent fill with a
+ * neon glow; ghost is a soft accent tint. Press feedback is a scale-down
+ * (neutralised by the global reduced-motion block). */
 .km-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  font-family: inherit;
-  border-radius: 3px;
-  border: 1px solid var(--line-strong);
+  font-family: var(--font-display);
+  font-weight: 650;
+  border-radius: var(--radius-pill);
+  border: none;
   color: var(--paper);
   background: transparent;
   cursor: pointer;
   letter-spacing: -0.005em;
-  transition: background 140ms, border-color 140ms, color 140ms, opacity 140ms;
+  transition: transform .12s, filter .12s, background .14s, box-shadow .14s;
 }
-.km-btn:hover:not(:disabled) { border-color: var(--paper); }
+.km-btn:active:not(:disabled) { transform: scale(.96); }
 .km-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .km-btn--full { width: 100%; }
 .km-btn--sm { padding: 6px 10px; font-size: 12px; }
-.km-btn--md { padding: 10px 16px; font-size: 14px; }
-.km-btn--lg { padding: 14px 20px; font-size: 15px; }
+.km-btn--md { padding: 12px 18px; font-size: 14px; }
+.km-btn--lg { padding: 15px 22px; font-size: 15px; }
 .km-btn--gold {
   background: var(--vermilion);
   color: var(--on-vermilion);
-  border-color: var(--vermilion);
-  font-weight: 600;
   letter-spacing: 0;
+  box-shadow: var(--glow);
 }
-.km-btn--gold:hover:not(:disabled) { background: #9F2E24; border-color: #9F2E24; }
-[data-theme="dark"] .km-btn--gold:hover:not(:disabled) {
-  background: #E97968; border-color: #E97968;
+.km-btn--gold:hover:not(:disabled) { filter: brightness(1.06); }
+.km-btn--ghost {
+  background: var(--vermilion-soft);
+  color: var(--vermilion);
+  border: none;
 }
-.km-btn--ghost { background: transparent; border-color: var(--line); }
-.km-btn--ghost:hover:not(:disabled) { background: var(--ink-2); border-color: var(--line-strong); }
+.km-btn--ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--vermilion) 16%, transparent); }
 .km-btn__icon { display: inline-flex; align-items: center; }
 .km-btn__label { display: inline-flex; align-items: center; }
 
@@ -482,18 +594,19 @@ body {
   gap: 6px;
   font-family: 'Inter', sans-serif;
   font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid var(--line);
+  border: none;
   color: var(--paper-mute);
 }
-.km-pill--default { color: var(--paper-mute); border-color: var(--line); }
-.km-pill--gold  { color: var(--vermilion); border-color: var(--vermilion); background: var(--vermilion-soft); }
-.km-pill--red   { color: var(--indigo);    border-color: var(--indigo);    background: var(--indigo-soft); }
-.km-pill--green { color: var(--moss);      border-color: var(--moss);      background: var(--moss-soft); }
-.km-pill--ochre { color: var(--ochre);     border-color: var(--ochre);     background: var(--ochre-soft); }
+.km-pill--default { color: var(--paper-mute); background: var(--ink-2); }
+.km-pill--gold  { color: var(--vermilion); background: var(--vermilion-soft); }
+.km-pill--red   { color: var(--indigo);    background: var(--indigo-soft); }
+.km-pill--green { color: var(--moss);      background: var(--moss-soft); }
+.km-pill--ochre { color: var(--ochre);     background: var(--ochre-soft); }
 
 /* SealStamp ──────────────────────────────────────────────────────────── */
 .km-seal {
@@ -567,15 +680,19 @@ body {
   z-index: 10;
 }
 
-/* BottomNav ──────────────────────────────────────────────────────────── */
+/* BottomNav ────────────────────────────────────────────────────────────
+ * Floating glass bar (§7): the hairline top border is gone — the bar is
+ * rounded at the top and lifted by the theme shadow instead. */
 .km-bottomnav {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 0;
   height: var(--shell-bottomnav-h);
   padding: 8px 4px max(8px, env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--ink-1) 88%, transparent);
-  border-top: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--ink-1) 82%, transparent);
+  border-top: none;
+  border-radius: 24px 24px 0 0;
+  box-shadow: var(--shadow);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
@@ -595,6 +712,7 @@ body {
 }
 .km-bottomnav__cell--active { color: var(--vermilion); }
 .km-bottomnav__label {
+  font-family: var(--font-display);
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.06em;
@@ -620,14 +738,18 @@ body {
 .km-bottomnav__hex {
   position: absolute;
   left: 50%;
-  top: -34px;
+  top: -36px;
   transform: translateX(-50%);
-  width: 72px;
-  height: 80px;
+  width: 76px;
+  height: 84px;
   border: none;
   cursor: pointer;
-  background: var(--vermilion);
-  color: var(--on-vermilion);
+  /* Accent → violet gradient with a colored glow (§7). The gradient reads
+   * the live accent tokens, so it re-tints with the runtime accent choice.
+   * Text stays white in both themes: it sits on the gradient (not the flat
+   * accent fill), whose coral/violet blend is deep enough either way. */
+  background: linear-gradient(150deg, var(--vermilion-bright), var(--violet));
+  color: #FFFFFF;
   clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
   display: flex;
   flex-direction: column;
@@ -635,22 +757,30 @@ body {
   justify-content: center;
   gap: 3px;
   font-family: inherit;
-  filter: drop-shadow(0 8px 18px rgba(27, 24, 19, 0.32));
+  filter: drop-shadow(0 12px 22px color-mix(in srgb, var(--vermilion-bright) 55%, transparent));
   transition: transform 180ms ease, filter 180ms ease;
-}
-[data-theme="dark"] .km-bottomnav__hex {
-  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55));
 }
 .km-bottomnav__hex--current,
 .km-bottomnav__hex:focus-visible {
   filter: drop-shadow(0 0 0 rgba(0, 0, 0, 0))
-    drop-shadow(0 0 6px var(--vermilion));
+    drop-shadow(0 0 10px var(--vermilion-bright));
+}
+/* Idle float (§11) — pauses while the menu is open so the --open rotate
+ * transform below stays authoritative (the animation would otherwise own
+ * `transform`). Neutralised by the global reduced-motion block. */
+@keyframes km-hexfloat {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50%      { transform: translateX(-50%) translateY(-3px); }
+}
+.km-bottomnav__hex:not(.km-bottomnav__hex--open) {
+  animation: km-hexfloat 3.6s ease-in-out infinite;
 }
 /* Mockup interaction: the hexagon rotates while the menu is open. */
 .km-bottomnav__hex--open {
   transform: translateX(-50%) rotate(90deg);
 }
 .km-bottomnav__hexlabel {
+  font-family: var(--font-display);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -1446,14 +1576,19 @@ body {
   cursor: pointer;
   padding: 20px 22px;
   background: var(--ink-1);
-  border: 1px solid var(--line);
-  border-radius: 4px;
+  border: none;
+  border-radius: var(--radius-lg);
   font-family: inherit;
   color: var(--paper);
-  box-shadow: 0 1px 0 rgba(27, 24, 19, 0.04);
-  transition: border-color 160ms, transform 160ms;
+  box-shadow: var(--shadow);
+  /* Interactive card — hover lift (§5). Reduced-motion zeroes the
+   * transition durations, so the lift lands instantly there. */
+  transition: transform .18s cubic-bezier(.2, .8, .2, 1), box-shadow .18s;
 }
-.km-taskcard:hover { border-color: var(--vermilion); }
+.km-taskcard:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lift);
+}
 .km-taskcard__head {
   display: flex;
   justify-content: space-between;
