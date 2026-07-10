@@ -164,7 +164,7 @@ export type RouteName =
   | 'generate_grammar_drill'
   | 'score_grammar_drill'
   | 'generate_writing_prompt'
-  | 'generate_story';
+  | 'generate_story'
   | 'name_conversation';
 
 /**

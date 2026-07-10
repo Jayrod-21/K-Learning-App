@@ -610,6 +610,18 @@ class ClaudeProxyImpl implements ClaudeProxy {
     };
     const model = resolveModel(cfg, route, input.model);
     const request = buildStoryRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.generate_story,
+      outputSchema: StoryResultSchema,
+      parser: parseToolResult('submit_story'),
+    });
+  }
+
   async nameConversation(
     rawInput: NameConversationInput,
     ctx: CallContext = {},
@@ -637,10 +649,6 @@ class ClaudeProxyImpl implements ClaudeProxy {
       route,
       model,
       ctx,
-      request,
-      cacheTtl: cfg.cacheTtlSeconds.generate_story,
-      outputSchema: StoryResultSchema,
-      parser: parseToolResult('submit_story'),
       request: req,
       cacheTtl: cfg.cacheTtlSeconds.name_conversation,
       outputSchema: ConversationTitleSchema,
