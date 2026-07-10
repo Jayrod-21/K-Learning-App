@@ -208,6 +208,37 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    generateWritingPrompt: async (input) => ({
+      // Deterministic prompt per mode/rubric. Lets the /writing/generate route
+      // test assert the wire shape without touching Anthropic. lengthHint is
+      // present for topik mode and absent for general — exercising the route's
+      // null coercion for the optional field.
+      result:
+        input.mode === 'topik'
+          ? {
+              promptKr: `모의 TOPIK 쓰기 과제입니다 (${input.rubric ?? 'topik_ii_54'}).`,
+              promptEn: `mock TOPIK writing task (${input.rubric ?? 'topik_ii_54'}).`,
+              lengthHint: (input.rubric ?? 'topik_ii_54') === 'topik_ii_53' ? '200-300자' : '600-700자',
+            }
+          : {
+              promptKr: '모의 자유 글쓰기 주제입니다.',
+              promptEn: 'mock free-write prompt.',
+            },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
+    generateStory: async (input) => ({
+      // Deterministic story echoing the requested level (+ topic when given).
+      // Lets the /reading/generate route test assert persistence + the wire
+      // shape without touching Anthropic.
+      result: {
+        title: `모의 이야기 (${input.level})`,
+        bodyKo:
+          input.topic !== undefined
+            ? `${input.topic}에 대한 모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.`
+            : '모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.',
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     generateConversation: (input) => {
       // Default stub: a deterministic single-delta stream + a complete event.
       // Tests that need failure or chunked behaviour pass an override via

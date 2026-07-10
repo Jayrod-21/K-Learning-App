@@ -64,6 +64,10 @@ import {
   ImageOcrInputSchema,
   ImageOcrResultSchema,
   PatternResultSchema,
+  StoryGenInputSchema,
+  StoryResultSchema,
+  WritingPromptGenInputSchema,
+  WritingPromptResultSchema,
   type CallMetadata,
   type ConversationInput,
   type ConversationStreamEvent,
@@ -83,6 +87,10 @@ import {
   type ImageOcrResult,
   type PatternResult,
   type ProxyResult,
+  type StoryGenInput,
+  type StoryResult,
+  type WritingPromptGenInput,
+  type WritingPromptResult,
 } from './models';
 import { buildConversationRequest } from './prompts/conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
@@ -92,6 +100,7 @@ import {
   buildGrammarDrillGenRequest,
   buildGrammarDrillScoreRequest,
 } from './prompts/grammar_drill';
+import { buildStoryRequest, buildWritingPromptRequest } from './prompts/generation';
 import { buildImageOcrRequest } from './prompts/image_ocr';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
 import { sanitizeUserInput } from './prompts/sanitize';
@@ -129,6 +138,12 @@ export type {
   PatternResult,
   ProficiencyLevel,
   ProxyResult,
+  StoryGenInput,
+  StoryLevel,
+  StoryResult,
+  WritingPromptGenInput,
+  WritingPromptMode,
+  WritingPromptResult,
 } from './models';
 export type { ClaudeModelId, RouteName } from './config';
 
@@ -218,6 +233,25 @@ export interface ClaudeProxy {
     input: GrammarDrillScoreInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<GrammarDrillScore>>;
+  /**
+   * Author ONE writing prompt (F-027/F-073): TOPIK II Q53/Q54-style when
+   * mode='topik' (per the rubric), else a general free-write prompt. Tool-use
+   * forced; EPHEMERAL — the caller returns it inline and persists nothing (the
+   * learner's response persists later via writing_attempts).
+   */
+  generateWritingPrompt(
+    input: WritingPromptGenInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<WritingPromptResult>>;
+  /**
+   * Author ONE short Korean story at a proficiency band, optionally about a
+   * user-supplied topic (F-068). Tool-use forced; the ROUTE persists the
+   * result to generated_stories (migration 054) — this method only generates.
+   */
+  generateStory(
+    input: StoryGenInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<StoryResult>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -508,6 +542,61 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.score_grammar_drill,
       outputSchema: GrammarDrillScoreSchema,
       parser: parseToolResult('submit_drill_score'),
+    });
+  }
+
+  async generateWritingPrompt(
+    rawInput: WritingPromptGenInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<WritingPromptResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_writing_prompt';
+    // mode/rubric are closed enums — the Zod parse IS the sanitization (no
+    // free-text field rides this input, so nothing to run through
+    // sanitizeUserInput; the inputCap exists for a hypothetical future field).
+    const input = parseInput(WritingPromptGenInputSchema, rawInput, route);
+    const model = resolveModel(cfg, route, input.model);
+    const request = buildWritingPromptRequest(input, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.generate_writing_prompt,
+      outputSchema: WritingPromptResultSchema,
+      parser: parseToolResult('submit_writing_prompt'),
+    });
+  }
+
+  async generateStory(
+    rawInput: StoryGenInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<StoryResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'generate_story';
+    const input = parseInput(StoryGenInputSchema, rawInput, route);
+    // The topic is the only free-text (user-controlled) field — run it through
+    // the shared injection guard + length cap. level is a closed enum.
+    const topic =
+      input.topic !== undefined
+        ? sanitizeUserInput(input.topic, { maxLength: cfg.inputCaps.generate_story })
+        : undefined;
+    const cleaned: StoryGenInput = {
+      ...input,
+      ...(topic !== undefined ? { topic } : {}),
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const request = buildStoryRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.generate_story,
+      outputSchema: StoryResultSchema,
+      parser: parseToolResult('submit_story'),
     });
   }
 

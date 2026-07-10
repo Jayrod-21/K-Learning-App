@@ -1,0 +1,31 @@
+-- 053 (up): add 'generate_writing_prompt' and 'generate_story' to claude_route.
+--
+-- The Claude GENERATION engine (F-027 Today-writing-tile generate, F-073
+-- Writing-page generate, F-068 reading short-story generate) adds two new
+-- proxy routes to the code's RouteName union
+-- (server/src/services/claude/config.ts):
+--   * generate_writing_prompt — POST /writing/generate (TOPIK-style or general
+--                               free-write prompt authoring; ephemeral, never
+--                               persisted server-side)
+--   * generate_story          — POST /reading/generate (short Korean story
+--                               authoring; persisted to generated_stories, 054)
+-- Without these enum values every generation call would succeed against
+-- Anthropic but then fail its claude_cache / claude_usage write with
+-- `invalid input value for enum claude_route` — uncached (full paid call each
+-- time) and invisible to the cost tracker, the exact defect 031/032 fixed for
+-- the grammar-drill / image-OCR / diagnostic routes. This migration is the
+-- "intentional friction" 004 promised: a new Claude-touching route requires a
+-- reviewed migration, authored HERE alongside the code instead of after the
+-- fact.
+--
+-- ADD VALUE is safe inside migrate.py's per-migration transaction on PG12+:
+-- the value just cannot be USED until commit. Nothing here uses it; the
+-- server (separate runtime transactions) does. Mirrors 031/032/028.
+--
+-- DRIFT GUARD: server/tests/db/claude_route_enum.test.ts asserts, against a
+-- freshly-migrated database, that claude_route equals the RouteName union
+-- exactly (both directions) — this migration lands together with the two new
+-- ROUTE_NAMES entries so the guard stays green.
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_writing_prompt';
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'generate_story';

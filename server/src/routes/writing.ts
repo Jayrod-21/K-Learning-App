@@ -1,30 +1,45 @@
 /**
- * /writing routes — Writing prompt bank + per-day grade series (F-014).
+ * /writing routes — Writing prompt bank + per-day grade series (F-014) +
+ * on-demand prompt GENERATION (F-027 Today tile / F-073 Writing page).
  *
  * Flow:
- *   GET /writing/prompts?rubric= → the active TOPIK II prompt bank (Writing
- *                                  screen; replaces the client's hardcoded
- *                                  WRITING_TASKS list)
- *   GET /writing/series?days=    → daily normalized grade series (F-017 chart)
+ *   GET  /writing/prompts?rubric= → the active TOPIK II prompt bank (Writing
+ *                                   screen; replaces the client's hardcoded
+ *                                   WRITING_TASKS list)
+ *   GET  /writing/series?days=    → daily normalized grade series (F-017 chart)
+ *   POST /writing/generate        → Claude authors ONE fresh writing prompt
+ *                                   (TOPIK Q53/Q54-style or a general
+ *                                   free-write). EPHEMERAL: returned inline,
+ *                                   never persisted — the learner's response
+ *                                   persists later via /grade-writing's
+ *                                   writing_attempts write.
  *
  * The attempts themselves are WRITTEN by POST /grade-writing (a persist
- * side-effect of a successful grade — see gradeWriting.ts); this module only
- * reads.
+ * side-effect of a successful grade — see gradeWriting.ts); this module's
+ * bank/series endpoints only read, and /generate writes nothing.
  *
  * SECURITY:
- *   - requireAuth on the whole router; cheapLimiter per route (both endpoints
- *     are single indexed SELECTs — no upstream calls).
+ *   - requireAuth on the whole router; cheapLimiter on the read routes (single
+ *     indexed SELECTs). /generate is a PAID upstream call → expensiveLimiter
+ *     (per-user burst) PLUS the proxy's own per-route per-minute limiter.
  *   - IDOR: /series is scoped to `getUserId(req)` — never a client-supplied
- *     id. /prompts is shared reference data (no ownership to scope).
- *   - Input validation at the boundary via zod (rubric enum, days 1..90);
- *     every query is parameterized.
+ *     id. /prompts is shared reference data (no ownership to scope);
+ *     /generate persists nothing, so there is nothing to own.
+ *   - Input validation at the boundary via zod (rubric enum, days 1..90;
+ *     /generate's body is `.strict()` with closed enums — NO free text rides
+ *     this route, so its prompt-injection surface is nil); every query is
+ *     parameterized.
+ *   - CLAUDE FAILURE → 502 UpstreamError via mapClaudeError; upstream
+ *     status/detail is never forwarded to the wire (SECURITY.md §13.7).
  */
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter } from '../middleware/rateLimits.js';
-import { validateQuery } from '../middleware/validate.js';
+import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
+import { validateBody, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
+import { UpstreamError } from '../middleware/errors.js';
+import { getClaudeProxy } from '../services/claudeProxy.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -172,5 +187,88 @@ router.get(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// POST /writing/generate — Claude authors one writing prompt (F-027 / F-073)
+// ---------------------------------------------------------------------------
+
+/**
+ * Body contract. `.strict()` rejects unknown keys (probing `model` or a typo'd
+ * key fails loud). Both fields are closed enums — no free text enters this
+ * route. The refine pins `rubric` to TOPIK mode: a general free-write has no
+ * rubric, so a rubric alongside mode='general' is a client bug surfaced as a
+ * 400, never silently ignored.
+ */
+const GenerateBodySchema = z
+  .object({
+    mode: z.enum(['topik', 'general']),
+    rubric: WritingRubricSchema.optional(),
+  })
+  .strict()
+  .refine((b) => b.mode === 'topik' || b.rubric === undefined, {
+    message: 'rubric is only valid with mode=topik',
+  });
+
+/**
+ * POST /writing/generate — generate ONE fresh writing prompt via Claude.
+ *
+ *   { mode: 'topik', rubric?: 'topik_ii_53' | 'topik_ii_54' } → a TOPIK II
+ *     Q53/Q54-style task (rubric defaults to Q54, mirroring /grade-writing).
+ *   { mode: 'general' } → a general free-write prompt.
+ *
+ * Returns 200 { prompt: { promptKr, promptEn, lengthHint, mode, rubric } }.
+ * NOTHING is persisted (deliberate: a prompt is consumed the moment the
+ * learner starts writing; the response persists later via writing_attempts).
+ * The proxy Zod-validates the model output (WritingPromptResultSchema) — a
+ * malformed model reply is a 502, never a malformed 200. Cache/usage rows are
+ * written by the proxy under route 'generate_writing_prompt' (migration 053).
+ */
+router.post(
+  '/generate',
+  expensiveLimiter(),
+  validateBody(GenerateBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof GenerateBodySchema>;
+      // TOPIK mode defaults to the more general Q54 rubric (same default as
+      // /grade-writing); the rubric echo below reflects what was actually used.
+      const rubric = body.mode === 'topik' ? (body.rubric ?? 'topik_ii_54') : undefined;
+
+      const proxy = getClaudeProxy();
+      const { result } = await proxy.generateWritingPrompt(
+        { mode: body.mode, ...(rubric !== undefined ? { rubric } : {}) },
+        { ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}), userId },
+      );
+
+      res.status(200).json({
+        prompt: {
+          promptKr: result.promptKr,
+          promptEn: result.promptEn,
+          lengthHint: result.lengthHint ?? null,
+          mode: body.mode,
+          rubric: rubric ?? null,
+        },
+      });
+    } catch (err) {
+      next(mapClaudeError(err));
+    }
+  },
+);
+
+/**
+ * Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
+ * Mirrors grammarDrill.ts / diagnostic.ts / images.ts mapClaudeError — we never
+ * forward the upstream status or provider-specific details to the wire
+ * (SECURITY.md §13.7). Non-proxy errors pass through unchanged.
+ */
+function mapClaudeError(err: unknown): unknown {
+  if (err && typeof err === 'object' && 'httpStatus' in err) {
+    const code = (err as { code?: string }).code ?? 'upstream_error';
+    const message = (err as { message?: string }).message ?? 'claude error';
+    return new UpstreamError(`${code}: ${message}`);
+  }
+  return err;
+}
 
 export default router;

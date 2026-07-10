@@ -34,6 +34,12 @@ import type {
   ImageOcrWord,
   PatternResult,
   ProxyResult,
+  StoryGenInput,
+  StoryLevel,
+  StoryResult,
+  WritingPromptGenInput,
+  WritingPromptMode,
+  WritingPromptResult,
 } from './claude/index.js';
 
 export type {
@@ -56,6 +62,12 @@ export type {
   ImageOcrWord,
   PatternResult,
   ProxyResult,
+  StoryGenInput,
+  StoryLevel,
+  StoryResult,
+  WritingPromptGenInput,
+  WritingPromptMode,
+  WritingPromptResult,
 };
 
 let _proxy: ClaudeProxy | null = null;
