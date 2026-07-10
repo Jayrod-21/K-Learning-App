@@ -149,14 +149,23 @@ auth/authz is in the `server/` SECURITY.md (out of scope here).
 
 - **Vector:** The application connects as the Postgres superuser, so any SQLi
   flaw in app code can `DROP TABLE` or `COPY FROM PROGRAM`.
-- **Defense (current):** App connects with the role created by
-  `POSTGRES_USER`, which the official image grants superuser. **This is a
-  known gap** to close before any multi-user / public exposure.
-- **Defense (planned, ADR-pending):** Add a migration that creates a
-  least-privileged `korean_master_app` role and have the Express server
-  connect as that role. Migrations continue to run as superuser via a
-  separate connection. Tracked as a TODO in this file — promote to a ticket
-  before opening to anyone besides Jared.
+- **Defense (current — B-030, migration `047_km_app_role`):** The Express
+  server connects as the least-privileged `km_app` role: DML
+  (SELECT/INSERT/UPDATE/DELETE) + sequence USAGE on schema `public` only. No
+  DDL (no CREATE on the schema, no ownership of any object), no TRUNCATE /
+  REFERENCES / TRIGGER, no CREATEROLE/CREATEDB/REPLICATION/BYPASSRLS, and
+  `schema_migrations` is read-only to it — `COPY FROM PROGRAM` and `DROP
+  TABLE` both fail with `42501`. `ALTER DEFAULT PRIVILEGES` keeps future
+  migration-created tables auto-granted. The role's password is set
+  out-of-band (`Deploy/set-km-app-password.sh` — stdin only, never committed,
+  never argv); the compose files inject it via `KM_APP_USER`/`KM_APP_PASSWORD`
+  (`Deploy/.env`). Migrations continue to run as the `POSTGRES_USER` superuser
+  via `run_migrate`'s separate connection. Enforced by
+  `db/tests/test_km_app_role.py` (DML-allowed / DDL-denied assertions).
+- **Residual:** `POSTGRES_USER` remains a superuser (the official image's
+  bootstrap role) — used only by the migration runner, backups, and operator
+  psql. The dev stack (`docker-compose.yml` at repo root) still connects as
+  the bootstrap superuser; acceptable for local dev, out of scope for B-030.
 
 ### T10. Dependency vulnerabilities (Python side)
 
@@ -181,7 +190,8 @@ auth/authz is in the `server/` SECURITY.md (out of scope here).
 
 ## TODOs to promote to tickets
 
-- [ ] Add least-privileged `korean_master_app` role (T9).
+- [x] Add least-privileged app role (T9) — done as `km_app`, migration
+      `047_km_app_role` + `Deploy/set-km-app-password.sh` (B-030).
 - [ ] Wire `pip-audit` into CI for the `db/` Python deps (T10).
 - [ ] Decide encrypted offsite backup approach (extension to T5).
 - [ ] Add `db/backups/` to root `.gitignore` if not already present.
