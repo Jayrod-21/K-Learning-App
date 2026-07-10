@@ -47,11 +47,11 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The migration immediately before 055 in this chain (052 — slots 053/054 are
-# assigned to parallel work and may not exist here; the runner orders by
-# version number, not contiguity). `down --target PRE_055` rolls back 055
-# alone; its down is DROP COLUMN, which does not trip the destructive gate.
-PRE_055 = "052"
+# The migration immediately before 055 in the merged chain is 054
+# (generated_stories). `down --target PRE_055` rolls back 055 alone — its down
+# is DROP COLUMN, which does not trip the destructive gate. Targeting an earlier
+# version would traverse 054's DROP TABLE down and require --allow-destructive.
+PRE_055 = "054"
 
 # A syntactically valid argon2id-shaped hash satisfying
 # ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
