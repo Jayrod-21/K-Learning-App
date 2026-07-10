@@ -13,7 +13,12 @@
 # =============================================================================
 
 # ----- build -----------------------------------------------------------------
-FROM node:20-alpine AS build
+# node:22-alpine (current LTS): Node 20 reached EOL 2026-04-30, and uuid@14
+# (ESM-only, no `engines` field) needs Node >= 20.19 for require(esm) — an
+# under-versioned base fails only at runtime (ERR_REQUIRE_ESM crash-loop), not
+# at build. Pinning the major keeps base-tag drift from silently moving the
+# runtime below that floor. Both stages MUST use the same base.
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -25,7 +30,8 @@ COPY . .
 RUN npm run build
 
 # ----- runtime ---------------------------------------------------------------
-FROM node:20-alpine AS runtime
+# Same base as the build stage — see the note above the build FROM.
+FROM node:22-alpine AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
