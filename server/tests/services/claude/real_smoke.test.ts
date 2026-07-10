@@ -14,7 +14,7 @@
  * Skipped unless ANTHROPIC_SMOKE=1 so a normal `vitest run` (and CI) never
  * spends tokens or requires network. Costs a handful of small calls.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import type { Pool } from 'pg';
 
 import { createClaudeProxy } from '../../../src/services/claude';
@@ -41,7 +41,16 @@ function makeProxy(): ReturnType<typeof createClaudeProxy> {
 const T = 30_000;
 
 describe.skipIf(!RUN)('real Claude smoke', () => {
-  const proxy = makeProxy();
+  // Constructed lazily in beforeAll (which never runs for a skipped suite):
+  // makeProxy() → loadConfig() throws unless ANTHROPIC_API_KEY / DATABASE_URL
+  // are set. Building it at collection time only worked under vitest 2's
+  // singleFork because sibling test files' env stubs leaked through the shared
+  // process; under vitest 4's per-file forks a skipped suite must not read the
+  // environment at all.
+  let proxy!: ReturnType<typeof createClaudeProxy>;
+  beforeAll(() => {
+    proxy = makeProxy();
+  });
 
   it('enrich → valid EnrichmentResult', async () => {
     const { result, metadata } = await proxy.enrich({

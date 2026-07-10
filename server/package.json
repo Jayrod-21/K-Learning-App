@@ -17,7 +17,7 @@
     "mfa:reset": "node -r ts-node/register/transpile-only src/scripts/mfa-reset.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "^0.110.0",
     "@node-rs/argon2": "^2.0.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -31,7 +31,7 @@
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
     "undici": "^6.20.0",
-    "uuid": "^10.0.0",
+    "uuid": "^14.0.1",
     "yauzl": "^3.4.0",
     "zod": "^3.23.8"
   },
@@ -43,7 +43,6 @@
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
-    "@types/uuid": "^10.0.0",
     "@types/yauzl": "^3.4.0",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
@@ -53,6 +52,6 @@
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.10"
   }
 }
