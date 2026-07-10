@@ -1,21 +1,27 @@
 /*
- * Today — page-scoped styles for the action hub (Overhaul P1.2, Slice A).
+ * Today — page-scoped styles for the action hub (Overhaul P1.2, Slice A;
+ * reworked in P3a for F-026/F-027/F-028/F-029 + B-018).
  *
- * The F-017 per-skill trend styles that used to live here moved to
- * Progress.css with the "Progress by skill" carousel. What remains styles
- * the action-hub pieces: the task-carousel pages, the coming-soon
- * placeholder panels, the open-exam panel, and the review-mistakes shortcut
- * row. (The review-queue CTA's .km-today__queue* rules stay in
- * styles/index.css, untouched by this slice.)
+ * What lives here: the carousel page wrappers, the ActionTile accent tiles
+ * (the F-026 vocab/grammar lead carousel + the F-028 TOPIK carousel), and
+ * the resume-exam corner banner. The P1.2 coming-soon panel, open-exam
+ * panel, and review-shortcut row styles were removed WITH their components
+ * (B-018/F-028 replaced them — no orphaned rules left behind). The retired
+ * .km-today__queue* rules in styles/index.css are now unreferenced; they
+ * stay untouched there for the app-wide dead-rule sweep (the global sheet
+ * is shared mutable state across parallel feature branches).
  *
- * Colocated with Today.tsx instead of appended to styles/index.css (the
- * global sheet is shared mutable state across parallel feature branches).
- * Same design tokens as the rest of the app, so both themes come free.
+ * Colocated with Today.tsx. Same design tokens as the rest of the app, so
+ * both themes and every accent preset come free.
  */
 
-/* Task carousel page — the TaskCard fills the page width; the small inset
-   keeps its focus ring inside the carousel viewport's overflow clip. */
+/* Carousel page wrappers — the small inset keeps a tile's focus ring inside
+   the carousel viewport's overflow clip. The task page stacks the TaskCard
+   with the F-027 topic generator on the Writing page. */
 .km-today__taskPage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 2px 2px 4px;
 }
 
@@ -23,123 +29,144 @@
   width: 100%;
 }
 
-/* Coming-soon placeholder panel (grammar practice, TOPIK recommendation).
-   Dashed border matches the app's other intentional empty states (e.g. the
-   trend panels' empty placeholder on Progress). */
-.km-today__soon {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 96px;
-  padding: 12px 14px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 8px;
-  color: var(--paper-mute);
-}
-
-.km-today__soonIcon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.km-today__soonMeta {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.km-today__soonTitle {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--paper);
-}
-
-.km-today__soonKr {
-  font-weight: 400;
-  color: var(--paper-mute);
-  margin-left: 2px;
-}
-
-.km-today__soonCopy {
-  font-size: 12.5px;
-}
-
-/* Open-exam panel (TOPIK carousel page 1). Matches the placeholder panel's
-   min-height so the carousel doesn't jump between pages. */
-.km-today__examPanel {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 8px;
-  min-height: 96px;
+.km-today__tilePage {
   padding: 2px 2px 4px;
 }
 
-.km-today__examTitle {
-  font-size: 15px;
-  font-weight: 600;
+/* Clear the corner-slot resume banner (top:8px + ~28px pill) so it never
+   overlaps the tile's icon chip while pages slide underneath it. */
+.km-today__tilePage--banner {
+  padding-top: 44px;
 }
 
-.km-today__examKr {
-  color: var(--paper-mute);
-  font-weight: 400;
-  margin-left: 2px;
-}
-
-.km-today__examMeta {
-  font-size: 12.5px;
-  color: var(--paper-mute);
-}
-
-/* Review shortcut row → /review/mistakes. Mirrors the Review library's row
-   shape so the gesture reads the same on both screens. */
-.km-today__shortcut {
+/* ActionTile — full-width accent tile (icon chip · pill/headline/meta ·
+   arrow). The whole tile is the gesture, mirroring TaskCard. */
+.km-today__tile {
   display: flex;
-  width: 100%;
   align-items: center;
   gap: 14px;
-  padding: 15px 14px;
+  width: 100%;
+  min-height: 118px;
+  padding: 18px 20px;
+  text-align: left;
   background: var(--ink-1);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  cursor: pointer;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
   color: var(--paper);
   font-family: inherit;
-  text-align: left;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
-.km-today__shortcutMeta {
+.km-today__tile:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-today__tile {
+    transition: none;
+  }
+  .km-today__tile:hover {
+    transform: none;
+  }
+}
+
+.km-today__tile--vermilion {
+  background: var(--vermilion-soft);
+  border-color: var(--vermilion);
+}
+
+.km-today__tile--violet {
+  background: var(--violet-soft);
+  border-color: var(--violet);
+}
+
+.km-today__tile--ochre {
+  background: var(--ochre-soft);
+  border-color: var(--ochre);
+}
+
+.km-today__tileIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  background: var(--ink-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  color: var(--paper-dim);
+}
+
+.km-today__tile--vermilion .km-today__tileIcon {
+  border-color: var(--vermilion);
+  color: var(--vermilion-ink);
+}
+
+.km-today__tile--violet .km-today__tileIcon {
+  border-color: var(--violet);
+  color: var(--violet-ink);
+}
+
+.km-today__tile--ochre .km-today__tileIcon {
+  border-color: var(--ochre);
+  color: var(--ochre-ink);
+}
+
+.km-today__tileBody {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-.km-today__shortcutLabel {
-  font-size: 15px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
+.km-today__tileHeadline {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.km-today__shortcutKr {
-  font-size: 11px;
-  color: var(--paper-mute);
-  margin-top: 1px;
+/* Stat treatment — the vocab due count keeps the old queue CTA's display
+   face + size (§10: stat numbers use the display face). */
+.km-today__tileHeadline--stat {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: -0.015em;
 }
 
-/* P3b Batch B — mute the secondary language of bilingual chrome on this
-   page (the primary keeps the element's own ink). .km-today__examKr and
-   .km-today__shortcutKr above are orphaned by the <Bilingual/> rewiring;
-   left for the app-wide dead-rule sweep (Batch A precedent). */
-.km-today__examTitle .km-bilingual__sub,
-.km-today__shortcutLabel .km-bilingual__sub {
+.km-today__tileMeta {
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+
+/* Mute the secondary language of bilingual tile chrome (P3b convention —
+   the primary keeps the element's own ink). */
+.km-today__tileHeadline .km-bilingual__sub,
+.km-today__tileMeta .km-bilingual__sub {
   color: var(--paper-mute);
   font-weight: 400;
+}
+
+/* Resume-exam corner banner (F-028) — rides SwipeCarousel's cornerSlot,
+   pinned top-left over BOTH pages. Chrome-sized: it is a shortcut, not a
+   page-level CTA. */
+.km-today__resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--gold-soft);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-sm);
+  color: var(--vermilion-ink);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
 }

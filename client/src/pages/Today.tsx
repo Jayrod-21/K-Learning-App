@@ -1,5 +1,6 @@
 /**
- * Today screen — the daily ACTION hub (Overhaul P1.2, Slice A).
+ * Today screen — the daily ACTION hub (Overhaul P1.2, Slice A; reworked in
+ * P3a for F-026/F-027/F-028/F-029 + B-018).
  *
  * P1.2 rebalanced Today/Progress: every "where am I" surface (the compact
  * SkillsCompare TOPIK-level snapshot and the F-017 per-skill trends
@@ -7,20 +8,29 @@
  * DO right now. Layout, top to bottom:
  *
  *   1. Topbar: date eyebrow + 오늘 · Today serif title.
- *   2. **Review queue** accent card (lead action) — live "{n} cards due",
- *      FSRS meta → `/learn/vocab` (the flashcards page, re-homed in P1.1).
+ *   2. **Review & drills carousel** (lead action, F-026 + B-018) — a looping
+ *      `SwipeCarousel` of two accent tiles: the live "{n} cards due" FSRS
+ *      vocab queue → `/learn/vocab`, and the grammar drills tile →
+ *      `/learn/grammar` (the REAL Learn → Grammar practice page — the P1.2
+ *      "coming soon" grammar placeholder is gone; B-018 folded it into this
+ *      carousel as F-026's grammar page).
  *   3. **Today's tasks carousel** — the Reading / Listening / Writing
- *      TaskCards, reshaped from a grid into a `SwipeCarousel` (one task per
- *      page). Real targets: `/learn/listen` (Reading + Listening — the
- *      retired Read screen's content lives there) and `/learn/writing`.
- *      Listening = "Largest gap" (gold). Writing = "Register drill".
- *   4. **Grammar practice** — designed "coming soon" placeholder (the
- *      grammar-due carousel backing is P4).
- *   5. **TOPIK carousel** — page 1 surfaces the F-007 saved mock attempt
- *      when one exists ("Resume exam" → `/learn/topik`, where MockMode's
- *      resume banner takes over); with no attempt it offers the TOPIK page
- *      directly. Page 2 is the recommendation placeholder (heuristic is P4).
- *   6. **Review shortcut** row → `/review/mistakes`.
+ *      TaskCards (one task per page). Real targets: `/learn/listen`
+ *      (Reading + Listening — the retired Read screen's content lives
+ *      there) and `/learn/writing`. Listening = "Largest gap" (gold).
+ *      Writing = "Register drill". The Writing page also mounts the F-027
+ *      `WritingTopicGenerator` (Claude authors a fresh topic, TOPIK-style
+ *      or free-write, via `POST /writing/generate`).
+ *   4. **TOPIK carousel** (F-028) — page 1 is the recommended-study tile →
+ *      `/learn/topik` (the Topik screen defaults to STUDY mode); page 2 is
+ *      the review-mistakes tile → `/review/mistakes` (the old standalone
+ *      shortcut row folded in here). When a saved F-007 mock attempt
+ *      exists, a small "Resume exam" banner renders in the carousel's
+ *      top-left corner (`cornerSlot` — pinned across BOTH pages) →
+ *      `/learn/topik`, where MockMode's resume banner takes over.
+ *
+ * All three carousels loop (F-029). F-024 (BackButton on nested sub-views)
+ * does not apply here — Today is a top-level tab with no nested views.
  *
  * Data:
  *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })          → TodayPlan
@@ -31,14 +41,18 @@
  * independently in the UI. The attempt mock resolves `null` on purpose — a
  * fabricated resumable attempt would paint a resume CTA for an exam that
  * doesn't exist, so the dev fallback (and any prod failure) degrades to the
- * honest "no exam in progress" panel instead.
+ * honest "no banner" state instead. A plan failure degrades to an ErrorCard
+ * on the vocab page ONLY — the grammar tile has no data dependency and must
+ * keep working.
  *
  * Threat model:
  *   Fixture/server text rendered as React children → escaped by React. Pass
- *   3+ wire must keep this contract (text fields, not HTML strings).
+ *   3+ wire must keep this contract (text fields, not HTML strings). The
+ *   F-027 generator's Claude output is handled inside WritingTopicGenerator
+ *   (same escaped-text contract).
  */
 import { useNavigate } from 'react-router-dom';
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
@@ -47,18 +61,18 @@ import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { TaskCard } from '../components/TaskCard';
 import { MockBadge } from '../components/MockBadge';
-import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
 import { SwipeCarousel } from '../components/SwipeCarousel';
+import { WritingTopicGenerator } from '../components/WritingTopicGenerator';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
-import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
 import { mockDelay } from '../data/mocks/_delay';
 import { fetchToday } from '../services/plan';
 import { fetchAttempt } from '../services/topik';
 import type { AttemptState } from '../services/topik';
 import type { TodayPlan, TodayTask } from '../types/domain';
+import { cn } from '../lib/cn';
 import './Today.css';
 
 /**
@@ -133,9 +147,9 @@ interface TaskTile {
 /**
  * Mock fallback for the open-exam lookup — resolves "no exam in progress".
  * Deliberately null: fabricating a resumable attempt would paint a resume
- * CTA for an exam that doesn't exist (the same honesty rule as the Progress
- * page's empty history mock). Module scope per the useEndpointOrMock
- * contract.
+ * banner for an exam that doesn't exist (the same honesty rule as the
+ * Progress page's empty history mock). Module scope per the
+ * useEndpointOrMock contract.
  */
 async function loadOpenAttemptMock(): Promise<AttemptState | null> {
   await mockDelay();
@@ -148,130 +162,69 @@ const SECTION_LABELS: Record<AttemptState['section'], { label: string; kr: strin
   listening: { label: 'Listening', kr: '듣기' },
 };
 
-/**
- * TOPIK carousel page 1 — the open-exam entry. With a saved F-007 attempt
- * it reads as a resume CTA (MockMode's own resume banner takes over on
- * arrival); otherwise it offers the TOPIK page directly. A failed lookup
- * degrades to the no-attempt copy (`data` stays null) — the same "no resume
- * banner when offline" behaviour MockMode itself uses, never a fake resume.
- */
-function OpenExamPanel({
-  attempt,
-  onOpen,
-}: {
-  attempt: UseEndpointOrMockResult<AttemptState | null>;
-  onOpen: () => void;
-}): JSX.Element {
-  if (attempt.loading) {
-    return (
-      <div className="km-today__examPanel" aria-busy="true">
-        <div className="km-today__examMeta">
-          <Bilingual
-            en="Checking for an exam in progress…"
-            kr="진행 중인 시험 확인 중…"
-          />
-        </div>
-      </div>
-    );
-  }
-  const open = attempt.data;
-  if (open !== null) {
-    const section = SECTION_LABELS[open.section];
-    return (
-      <div className="km-today__examPanel">
-        <Pill tone="gold">
-          <Bilingual en="Exam in progress" kr="진행 중인 시험" />
-        </Pill>
-        <div className="km-today__examTitle">
-          <Bilingual
-            en={`${section.label} mock`}
-            kr={`${section.kr} 모의고사`}
-          />
-        </div>
-        <div className="km-today__examMeta">
-          <Bilingual
-            en={`${String(open.answered)} answered · picks and timer saved`}
-            kr={`${String(open.answered)}문항 답변 · 선택과 타이머 저장됨`}
-          />
-        </div>
-        <Button
-          variant="gold"
-          size="sm"
-          onClick={onOpen}
-          trailingIcon={<Icon name="arrow-right" size={14} />}
-        >
-          <Bilingual en="Resume exam" kr="이어서 하기" />
-        </Button>
-      </div>
-    );
-  }
-  return (
-    <div className="km-today__examPanel">
-      <div className="km-today__examTitle">
-        <Bilingual en="Mock exams" kr="모의고사" />
-      </div>
-      <div className="km-today__examMeta">
-        <Bilingual
-          en="No exam in progress — take a timed reading or listening mock."
-          kr="진행 중인 시험이 없어요 — 읽기·듣기 모의고사를 시작해 보세요."
-        />
-      </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={onOpen}
-        trailingIcon={<Icon name="arrow-right" size={14} />}
-      >
-        <Bilingual en="Open TOPIK practice" kr="모의고사 열기" />
-      </Button>
-    </div>
-  );
-}
-
 // ─────────────────────────────────────────────────────────────
-// Coming-soon placeholder panel (P1.2 — filled in P4)
+// ActionTile — the polished accent tile the F-026/F-028 carousels page
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Designed placeholder for a P4 feature slot — an intentional empty-state
- * panel (icon + bilingual title + one terse copy line + "Coming soon" pill),
- * never a blank or broken card.
- *
- * P3b (Batch A owns this component): the title/kr pair and the pill render
- * through `<Bilingual/>` so the language-display setting applies; `krCopy`
- * is an ADDITIVE optional prop (existing call sites stay valid) — when
- * absent the primitive's fallback renders the English copy in ko-mode.
+ * One full-width action tile: accent-tinted surface, icon chip, optional
+ * pill, headline (+ optional stat treatment), meta line, trailing arrow.
+ * The whole tile is the gesture (a real `<button>`, mirroring TaskCard).
+ * Local to Today on purpose — it exists to make these carousel pages read
+ * as designed surfaces, not bare boxes (F-026's whole complaint); promote
+ * it to components/ only when a second page needs it.
  */
-function ComingSoonPanel({
+function ActionTile({
+  accent,
   icon,
-  title,
-  kr,
-  copy,
-  krCopy,
+  pill,
+  headline,
+  stat = false,
+  meta,
+  ariaLabel,
+  onClick,
 }: {
+  accent: 'vermilion' | 'violet' | 'ochre' | 'neutral';
   icon: IconName;
-  title: string;
-  kr: string;
-  copy: string;
-  krCopy?: string;
+  /** Optional pre-built `<Pill/>` above the headline. */
+  pill?: ReactNode;
+  headline: ReactNode;
+  /** Stat treatment — headline in the display face (e.g. the due count). */
+  stat?: boolean;
+  meta?: ReactNode;
+  /** Explicit accessible name; omit to let the tile's text serve. */
+  ariaLabel?: string;
+  onClick: () => void;
 }): JSX.Element {
   return (
-    <div className="km-today__soon">
-      <span className="km-today__soonIcon" aria-hidden="true">
+    <button
+      type="button"
+      className={cn(
+        'km-today__tile focusring',
+        accent !== 'neutral' && `km-today__tile--${accent}`,
+      )}
+      aria-label={ariaLabel}
+      onClick={onClick}
+    >
+      <span className="km-today__tileIcon" aria-hidden="true">
         <Icon name={icon} size={20} />
       </span>
-      <span className="km-today__soonMeta">
-        <span className="km-today__soonTitle">
-          <Bilingual en={title} kr={kr} />
+      <span className="km-today__tileBody">
+        {pill}
+        <span
+          className={cn(
+            'km-today__tileHeadline',
+            stat && 'km-today__tileHeadline--stat',
+          )}
+        >
+          {headline}
         </span>
-        <span className="km-today__soonCopy">
-          <Bilingual en={copy} kr={krCopy} />
-        </span>
+        {meta !== undefined ? (
+          <span className="km-today__tileMeta">{meta}</span>
+        ) : null}
       </span>
-      <Pill>
-        <Bilingual en="Coming soon" kr="준비 중" />
-      </Pill>
-    </div>
+      <Icon name="arrow-right" size={18} />
+    </button>
   );
 }
 
@@ -339,6 +292,9 @@ export function Today(): JSX.Element {
     const candidates: Array<{ task: TodayTask | null } & Omit<TaskTile, 'task'>> = [
       // Reading + Listening tiles both land on Listen (`/learn/listen`) —
       // the retired Read screen's content lives there (TTMIK + Iyagi).
+      // B-019 (Reading tile → the rebuilt Reading page) stays BLOCKED on
+      // F-067–F-070: `/learn/reading` is a placeholder until that group
+      // lands, so the Reading tile deliberately keeps this target.
       { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/learn/listen' },
       { task: today.data.listening, krTag: '듣기', skill: 'Listening', nav: '/learn/listen' },
       { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/learn/writing' },
@@ -347,6 +303,28 @@ export function Today(): JSX.Element {
       if (c.task) taskTiles.push({ task: c.task, krTag: c.krTag, skill: c.skill, nav: c.nav });
     }
   }
+
+  // F-028: the saved F-007 attempt surfaces as a small clickable banner in
+  // the TOPIK carousel's top-left corner (SwipeCarousel `cornerSlot` — the
+  // overlay is viewport-level, so it is present over BOTH pages). While the
+  // lookup is pending or failed there is honestly no attempt to offer, so
+  // no banner renders — never a fabricated resume.
+  const openAttempt = attempt.data ?? null;
+  const resumeBanner =
+    openAttempt !== null ? (
+      <button
+        type="button"
+        className="km-today__resume focusring"
+        aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${String(openAttempt.answered)} answered`}
+        onClick={() => {
+          // MockMode's own resume banner takes over on arrival.
+          navigate('/learn/topik');
+        }}
+      >
+        <Icon name="play" size={12} />
+        <Bilingual en="Resume exam" kr="이어서 하기" compact />
+      </button>
+    ) : undefined;
 
   return (
     <section
@@ -363,54 +341,83 @@ export function Today(): JSX.Element {
         eyebrow={<Bilingual en={dateEn} kr={dateKr} />}
       />
 
-      {/* Review queue CTA — the lead action ──────────────────── */}
+      {/* Review & drills carousel — the lead action (F-026 + B-018) ── */}
       {today.loading ? (
         <div style={{ marginBottom: 16 }}>
           <SkeletonCard />
         </div>
-      ) : today.data ? (
-        <button
-          type="button"
-          onClick={() => {
-            // Vocab-flashcards intent — the FSRS review queue moved to
-            // /learn/vocab in P1.1 (/review is the library index now).
-            navigate('/learn/vocab');
-          }}
-          className="km-today__queue focusring"
-          aria-label={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
-        >
-          <div>
-            <Pill tone="gold">
-              <Bilingual en="Due now" kr="지금 복습" />
-            </Pill>
-            <div className="km-today__queueCount">
-              <Bilingual
-                en={`${String(today.data.reviewCount)} ${
-                  today.data.reviewCount === 1 ? 'card' : 'cards'
-                } due`}
-                kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
-              />
-            </div>
-            {/* No fabricated grammar/vocab split or minute estimate here —
-                /plan/today returns only `dueCount`, so any breakdown would
-                contradict the live count above (it would always read the
-                fixture's "24"). Keep the meta honest to the data we have. */}
-            <div className="km-today__queueMeta">
-              <Bilingual
-                en="FSRS scheduling · due for review"
-                kr="FSRS 스케줄링 · 복습 예정"
-              />
-            </div>
-          </div>
-          <Icon name="arrow-right" size={22} />
-        </button>
       ) : (
-        <div style={{ marginBottom: 16 }}>
-          <ErrorCard
-            message="Today's plan is unavailable."
-            onRetry={retryToday}
-          />
-        </div>
+        <section style={{ marginBottom: 16 }}>
+          <SwipeCarousel ariaLabel="Review and drills" loop>
+            <div className="km-today__tilePage">
+              {today.data ? (
+                <ActionTile
+                  accent="vermilion"
+                  icon="cards"
+                  stat
+                  ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
+                  pill={
+                    <Pill tone="gold">
+                      <Bilingual en="Due now" kr="지금 복습" />
+                    </Pill>
+                  }
+                  headline={
+                    <Bilingual
+                      en={`${String(today.data.reviewCount)} ${
+                        today.data.reviewCount === 1 ? 'card' : 'cards'
+                      } due`}
+                      kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
+                    />
+                  }
+                  meta={
+                    <Bilingual
+                      en="FSRS scheduling · due for review"
+                      kr="FSRS 스케줄링 · 복습 예정"
+                    />
+                  }
+                  onClick={() => {
+                    // Vocab-flashcards intent — the FSRS review queue moved
+                    // to /learn/vocab in P1.1 (/review is the library now).
+                    navigate('/learn/vocab');
+                  }}
+                />
+              ) : (
+                // Plan failed: only the vocab count depends on it. The
+                // grammar page below keeps working — never a dead carousel.
+                <ErrorCard
+                  message="Today's plan is unavailable."
+                  onRetry={retryToday}
+                />
+              )}
+            </div>
+            <div className="km-today__tilePage">
+              {/* B-018: the real Learn → Grammar practice page (drill +
+                  bank), not a "coming soon" placeholder. No due-count is
+                  fabricated here — /plan/today carries only the vocab
+                  dueCount (a grammar-due queue is P4). */}
+              <ActionTile
+                accent="violet"
+                icon="grammar"
+                ariaLabel="Open grammar drills"
+                pill={
+                  <Pill tone="red">
+                    <Bilingual en="Drill" kr="드릴" />
+                  </Pill>
+                }
+                headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
+                meta={
+                  <Bilingual
+                    en="Production practice on banked patterns"
+                    kr="저장한 문형으로 생산 연습"
+                  />
+                }
+                onClick={() => {
+                  navigate('/learn/grammar');
+                }}
+              />
+            </div>
+          </SwipeCarousel>
+        </section>
       )}
 
       {/* Reading / Listening / Writing carousel ──────────────── */}
@@ -422,7 +429,7 @@ export function Today(): JSX.Element {
           <div className="km-eyebrow" style={{ marginBottom: 10 }}>
             <Bilingual en="Today’s tasks" kr="오늘의 과제" />
           </div>
-          <SwipeCarousel ariaLabel="Today's tasks">
+          <SwipeCarousel ariaLabel="Today's tasks" loop>
             {taskTiles.map((tile) => (
               <div key={tile.task.tag} className="km-today__taskPage">
                 <TaskCard
@@ -436,70 +443,84 @@ export function Today(): JSX.Element {
                     navigate(tile.nav);
                   }}
                 />
+                {tile.task.tag === 'Writing' ? (
+                  // F-027: Claude authors a fresh topic (TOPIK-style or
+                  // free-write) right on the writing tile. The generated
+                  // topic is ephemeral display — carrying it into
+                  // /learn/writing for grading is F-073's page-side half.
+                  <WritingTopicGenerator />
+                ) : null}
               </div>
             ))}
           </SwipeCarousel>
         </section>
       ) : null}
 
-      {/* Grammar practice — placeholder (backing lands in P4) ── */}
+      {/* TOPIK carousel — recommended study first, mistakes second (F-028);
+          the saved-attempt resume banner rides the corner slot. */}
       <section style={{ marginBottom: 16 }}>
-        <Card variant="default" style={{ padding: '20px 22px' }}>
-          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-            <Bilingual en="Grammar practice" kr="문법 연습" />
-          </div>
-          {/* P3b verbage trim — copy cut to one terse line. */}
-          <ComingSoonPanel
-            icon="grammar"
-            title="Daily grammar drills"
-            kr="문법"
-            copy="Due grammar patterns queue here."
-            krCopy="복습 예정 문형이 여기에 모여요."
-          />
-        </Card>
-      </section>
-
-      {/* TOPIK — open exam + recommendation carousel ─────────── */}
-      <section style={{ marginBottom: 16 }}>
-        <Card variant="default" style={{ padding: '20px 22px' }}>
-          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
-            <Bilingual en="TOPIK" kr="시험" />
-          </div>
-          <SwipeCarousel ariaLabel="TOPIK exams">
-            <OpenExamPanel
-              attempt={attempt}
-              onOpen={() => {
+        <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+          <Bilingual en="TOPIK" kr="시험" />
+        </div>
+        <SwipeCarousel ariaLabel="TOPIK exams" loop cornerSlot={resumeBanner}>
+          <div
+            className={cn(
+              'km-today__tilePage',
+              openAttempt !== null && 'km-today__tilePage--banner',
+            )}
+          >
+            {/* The Topik screen opens in STUDY mode by default, so this
+                lands on the study half directly. Copy stays honest to what
+                study mode IS (a shuffled past-question draw) — the P4
+                personalised-recommendation heuristic doesn't exist yet and
+                is not faked here. */}
+            <ActionTile
+              accent="ochre"
+              icon="spark"
+              ariaLabel="Open TOPIK study practice"
+              pill={
+                <Pill tone="ochre">
+                  <Bilingual en="Recommended" kr="추천" />
+                </Pill>
+              }
+              headline={<Bilingual en="TOPIK study practice" kr="토픽 학습" />}
+              meta={
+                <Bilingual
+                  en="Shuffled past questions, one at a time"
+                  kr="기출 문제를 한 문항씩 랜덤으로"
+                />
+              }
+              onClick={() => {
                 navigate('/learn/topik');
               }}
             />
-            {/* P3b verbage trim — copy cut to one terse line. */}
-            <ComingSoonPanel
-              icon="spark"
-              title="Recommended for you"
-              kr="추천"
-              copy="Mock-exam picks based on your practice."
-              krCopy="맞춤 모의고사 추천이 여기에 나와요."
+          </div>
+          <div
+            className={cn(
+              'km-today__tilePage',
+              openAttempt !== null && 'km-today__tilePage--banner',
+            )}
+          >
+            {/* The old standalone review-mistakes shortcut row folded into
+                this carousel as page 2 (F-028's ordering). */}
+            <ActionTile
+              accent="neutral"
+              icon="history"
+              ariaLabel="Review mistakes"
+              headline={<Bilingual en="Review mistakes" kr="오답 복습" />}
+              meta={
+                <Bilingual
+                  en="Revisit questions you missed"
+                  kr="틀린 문제 다시 보기"
+                />
+              }
+              onClick={() => {
+                navigate('/review/mistakes');
+              }}
             />
-          </SwipeCarousel>
-        </Card>
+          </div>
+        </SwipeCarousel>
       </section>
-
-      {/* Review shortcut ──────────────────────────────────────── */}
-      <button
-        type="button"
-        className="km-today__shortcut focusring"
-        onClick={() => {
-          navigate('/review/mistakes');
-        }}
-      >
-        <Icon name="history" size={20} />
-        <span className="km-today__shortcutMeta">
-          <span className="km-today__shortcutLabel">
-            <Bilingual en="Review mistakes" kr="오답 복습" />
-          </span>
-        </span>
-        <Icon name="chevron-right" size={16} />
-      </button>
     </section>
   );
 }
