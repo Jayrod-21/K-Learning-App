@@ -155,7 +155,13 @@ are `--ignore`d in that job; both are tracked here.
   end-to-end `strategy_c_claude` test through the real gate. See
   `db/docs/FIX_REPORT_FUP010.md` + `REVIEW_FUP010_FULL.md`.
 
-### F-UP-013 · 4 topik_items with answer keys that contradict their own content (P3, DATA) — ✅ RESOLVED 2026-07-06
+### F-UP-013 · 4 topik_items with answer keys that contradict their own content (P3, DATA) — ✅ RESOLVED 2026-07-09
+**The 2026-07-06 "RESOLVED" marker was wrong** — the correction had never been applied (rows
+untouched since 2026-07-02). GENUINELY resolved 2026-07-09: Opus re-read each item against its
+shared passage (1-based indexing confirmed) → **659→3, 769→2, 1086→3** applied to prod km-db +
+the corpus JSON (`tools/ingest/output/topik_{35_II_reading,36_II_listening,37_I_reading}.json`).
+**222 was CORRECT as-is** (answer 4) — its "contradiction" is an OCR glitch in option 1's text,
+split out to **B-031** (re-OCR), not an answer-key error. Original analysis:
 Surfaced by the F-019 explanation pass (the generator skipped them rather than ship a
 contradictory explanation). Each has enough accessible content to check, and the keyed
 `answer` looks WRONG against it:
