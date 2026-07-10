@@ -353,6 +353,47 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+/* ── F-041 — hanja mastery tab ────────────────────────────────────────── */
+/* The hanja bands reuse the mastery bar family; banked/practicing get their
+ * own segment colors (matching the Hanja screen's moss/ochre state tones),
+ * and `new` reuses .is-new's muted fill above. */
+.km-mastery__seg.is-banked { background: var(--moss); }
+.km-mastery__seg.is-practicing { background: var(--ochre); }
+
+/* Static band stats — chip-shaped for family resemblance with the word
+ * filters, but <span>s (nothing to filter here), so no cursor/hover grammar. */
+.km-mastery__stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--paper-mute);
+  font-size: 13px;
+}
+.km-mastery__stat b { color: var(--paper); font-weight: 700; }
+.km-mastery__stat.is-banked .km-mastery__dot { background: var(--moss); }
+.km-mastery__stat.is-practicing .km-mastery__dot { background: var(--ochre); }
+
+.km-hmastery__band {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.km-hmastery__bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--line);
+  margin-top: 8px;
+}
+.km-hmastery__fill {
+  height: 100%;
+  background: var(--moss);
+  border-radius: inherit;
+}
+
 .km-mastery__stale { color: var(--ochre-ink); font-size: 12px; margin: 0 0 8px; }
 .km-mastery__retry {
   background: none;
@@ -371,15 +412,24 @@
   margin-top: 12px;
 }
 
-/* Attempt-vs-attempt folded into the compare card as a sub-block — a hairline
- * divider separates it from the SkillsCompare headline above. */
-.km-progress__attemptcompare {
+/* ── F-030 — attempt-history carousel inside the compare card ──────────── */
+/* A hairline divider separates the history carousel from the SkillsCompare
+ * headline above (same seam the old attempt-vs-attempt sub-block used). */
+.km-progress__historyblock {
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
 }
-.km-progress__attemptcompare .km-progress__selects {
-  margin-top: 10px;
+
+/* One carousel page — small inset so focus rings inside the page aren't
+ * clipped by the viewport's overflow. */
+.km-progress__historyPage {
+  padding: 2px 2px 0;
+}
+
+.km-progress__historyTitle {
+  font-weight: 600;
+  margin: 2px 0 10px;
 }
 
 /* ── F-017 per-skill trend panels (moved from Today.css in P1.2) ────────── */
@@ -417,9 +467,11 @@
 }
 
 /* P3b Batch B — mute the secondary language of bilingual chrome on this
-   page (card titles + trend-panel skill heads). .km-progress__trendKr above
-   is orphaned by the <Bilingual/> rewiring; left for the dead-rule sweep. */
+   page (card titles + trend-panel skill heads + F-030 history-page titles).
+   .km-progress__trendKr above is orphaned by the <Bilingual/> rewiring; left
+   for the dead-rule sweep. */
 .km-progress__card-title .km-bilingual__sub,
+.km-progress__historyTitle .km-bilingual__sub,
 .km-progress__trendSkill .km-bilingual__sub {
   color: var(--paper-mute);
   font-weight: 400;
@@ -447,19 +499,14 @@
   text-align: center;
 }
 
-/* ── Grammar-mastery placeholder (real section lands in P4) ─────────────── */
+/* ── Grammar-mastery placeholder (real route lands in P4) ───────────────── */
+/* F-032 — the placeholder now lives in the Grammar tab; the head row holds
+   only the coming-soon pill (the tab itself carries the section name). */
 .km-progress__soonhead {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
-}
-
-/* P3b — the head row hosts the card title (the redundant eyebrow was cut);
-   the title's own bottom margin would skew the pill's centering. */
-.km-progress__soonhead .km-progress__card-title {
-  margin: 0;
 }
 
 .km-progress__soonbody {
