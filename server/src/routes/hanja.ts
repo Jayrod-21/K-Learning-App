@@ -9,6 +9,13 @@
  *   GET  /hanja/progress      → the user's banked/practicing/new counts + target
  *   POST /hanja/:char/state   → set this user's state for one character (upsert)
  *
+ * FSRS cards (F-075, migration 050 — hanja rides the SAME scheduler + review
+ * log as vocab/grammar cards; feeds the Settings hanja-mastery carousel F-041):
+ *   POST /hanja/:char/card          → seed a recognition card (idempotent)
+ *   GET  /hanja/cards/due           → this user's due hanja cards
+ *   POST /hanja/cards/:cardId/reviews → self-rate a due card (shared FSRS
+ *                                     engine via services/cardReview.ts)
+ *
  * DTO — matches the client `Hanja` shape (see client domain types):
  *   { id, ch, sound, gloss, en, level, strokes, state, note, compounds }
  *   where compounds = { kr, han, en, with }[]. Field mapping:
@@ -42,6 +49,8 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
+import { NotFoundError } from '../middleware/errors.js';
+import { applyCardReview } from '../services/cardReview.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -450,6 +459,277 @@ router.post(
       res.status(200).json({
         char: row?.char ?? params.char,
         state: toHanjaState(row?.state),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// FSRS cards (F-075) — hanja recognition cards on the shared scheduler.
+//
+// SECURITY (same posture as /vocab/cards/*):
+//   - Every card read/write is scoped to the SESSION user (getUserId); a
+//     cross-user card id 404s (no existence leak — mirrors FU-NF-8).
+//   - Scheduling is server-authoritative (ADR-003 amendment 2026-07-02): the
+//     client submits only its rating + expected_version; the FSRS transition
+//     and due_at are computed in services/cardReview.ts from the locked DB
+//     row. A tampered client cannot park or rush a card.
+//   - The rate endpoint REQUIRES a hanja-target card (requireHanjaTarget) so
+//     this route is not a side door for rating other card families.
+//   - Ids are Zod-bounded to MAX_SAFE_INTEGER / INT4 before they bind to
+//     BIGINT/INTEGER params (routes sweep #3 — no 22003 → 500 on garbage).
+//   - cheapLimiter on every route; no upstream calls (no cost amplification).
+// ---------------------------------------------------------------------------
+
+/** Bounds mirroring routes/vocab.ts: ids bind to BIGINT (int8) columns —
+ *  MAX_SAFE_INTEGER ≪ int8 max — and version/duration bind to INTEGER. */
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+const INT4_MAX = 2_147_483_647;
+
+/** Wire shape of one hanja card (due queue + seed response). BIGINT ids are
+ *  converted to JSON numbers; NUMERIC stability/difficulty stay strings
+ *  (precision-safe — the same convention as /vocab/cards/due). */
+interface HanjaCardDTO {
+  readonly id: number;
+  readonly face: string;
+  readonly due_at: Date;
+  readonly fsrs_state: string;
+  readonly stability: string;
+  readonly difficulty: string;
+  readonly version: number;
+  readonly hanja_character_id: number;
+  readonly ch: string;
+  readonly sound: string;
+  readonly gloss: string;
+  readonly en: string;
+  readonly level: string;
+  readonly strokes: number;
+}
+
+interface HanjaCardRow {
+  id: string;
+  face: string;
+  due_at: Date;
+  fsrs_state: string;
+  stability: string;
+  difficulty: string;
+  version: number;
+  hanja_character_id: string;
+  char: string;
+  sound: string;
+  gloss_kr: string | null;
+  gloss_en: string;
+  level: string;
+  strokes: number;
+}
+
+function mapCardRowToDTO(row: HanjaCardRow): HanjaCardDTO {
+  return {
+    id: Number(row.id),
+    face: row.face,
+    due_at: row.due_at,
+    fsrs_state: row.fsrs_state,
+    stability: row.stability,
+    difficulty: row.difficulty,
+    version: row.version,
+    hanja_character_id: Number(row.hanja_character_id),
+    ch: row.char,
+    sound: row.sound,
+    gloss: row.gloss_kr ?? '',
+    en: row.gloss_en,
+    level: row.level,
+    strokes: row.strokes,
+  };
+}
+
+/**
+ * POST /hanja/:char/card — seed a recognition card for one character.
+ *
+ * Idempotent: `uq_vocab_cards_user_hanja_face` (migration 050) makes the
+ * INSERT an `ON CONFLICT … DO NOTHING` upsert, so a double-tap (or a
+ * concurrent double-submit) converges on ONE live card per (user, character,
+ * face) instead of splitting the FSRS history. 201 + `created: true` on a
+ * fresh card; 200 + `created: false` with the existing card otherwise.
+ *
+ * UNLIKE /hanja/:char/state (which deliberately accepts corpus-unknown
+ * characters — see migration 016), the card target is a real FK: an unknown
+ * character 404s. A card without a corpus row could never be reviewed.
+ */
+router.post(
+  '/:char/card',
+  cheapLimiter(),
+  validateParams(CharParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const params = (req as typeof req & {
+        validatedParams: z.infer<typeof CharParamsSchema>;
+      }).validatedParams;
+
+      const character = await query<{ id: string }>(
+        `SELECT id FROM hanja_characters WHERE char = $1`,
+        [params.char],
+      );
+      const characterRow = character.rows[0];
+      if (characterRow === undefined) {
+        throw new NotFoundError('hanja character not found');
+      }
+      const characterId = Number(characterRow.id);
+
+      // The conflict target names the partial unique index's columns AND
+      // predicate (both required for pg to infer a partial index). due_at
+      // defaults to now() — a fresh card is immediately due (same behavior
+      // as /vocab/cards/init); proficiency keeps its column DEFAULT ('L3' —
+      // the hanja L2..L5 banding is a different axis, see migration 016).
+      const ins = await query<{ id: string; version: number; due_at: Date }>(
+        `INSERT INTO vocab_cards (user_id, face, hanja_character_id)
+         VALUES ($1, 'recognition'::card_face, $2)
+         ON CONFLICT (user_id, hanja_character_id, face)
+           WHERE hanja_character_id IS NOT NULL AND deleted_at IS NULL
+           DO NOTHING
+         RETURNING id, version, due_at`,
+        [userId, characterId],
+      );
+
+      let card = ins.rows[0];
+      const created = card !== undefined;
+      if (card === undefined) {
+        // Conflict path: the live card already exists — return it. (It cannot
+        // vanish between the two statements: only this user writes their own
+        // cards, and hard deletes don't exist on this path.)
+        const existing = await query<{ id: string; version: number; due_at: Date }>(
+          `SELECT id, version, due_at
+             FROM vocab_cards
+            WHERE user_id = $1
+              AND hanja_character_id = $2
+              AND face = 'recognition'::card_face
+              AND deleted_at IS NULL`,
+          [userId, characterId],
+        );
+        card = existing.rows[0];
+      }
+      if (card === undefined) {
+        // Defensive: unreachable unless the card was hard-deleted mid-flight.
+        throw new NotFoundError('hanja card not found');
+      }
+
+      res.status(created ? 201 : 200).json({
+        card_id: Number(card.id),
+        character_id: characterId,
+        ch: params.char,
+        face: 'recognition',
+        due_at: card.due_at,
+        version: card.version,
+        created,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const CardsDueQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+});
+
+/**
+ * GET /hanja/cards/due — `{ cards: HanjaCardDTO[] }`, oldest-due first.
+ *
+ * The hanja twin of /vocab/cards/due (same WHERE shape: user-scoped, live,
+ * not suspended, due) restricted to hanja-target cards and joined to
+ * hanja_characters for the fields the review UI renders. Vocab's due queue
+ * excludes hanja cards for exactly this split — no card is served twice.
+ * INNER JOIN is safe: hanja_character_id is a real FK, the corpus row must
+ * exist. `version` is REQUIRED on the wire — the client echoes it back as
+ * `expected_version` (optimistic concurrency), mirroring the vocab queue.
+ */
+router.get(
+  '/cards/due',
+  cheapLimiter(),
+  validateQuery(CardsDueQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (req as typeof req & {
+        validatedQuery: z.infer<typeof CardsDueQuerySchema>;
+      }).validatedQuery;
+
+      const { rows } = await query<HanjaCardRow>(
+        `SELECT c.id, c.face, c.due_at, c.fsrs_state, c.stability, c.difficulty,
+                c.version, c.hanja_character_id,
+                hc.char, hc.sound, hc.gloss_kr, hc.gloss_en, hc.level, hc.strokes
+           FROM vocab_cards c
+           JOIN hanja_characters hc
+             ON hc.id = c.hanja_character_id
+          WHERE c.user_id = $1
+            AND c.hanja_character_id IS NOT NULL
+            AND c.deleted_at IS NULL
+            AND c.suspended_at IS NULL
+            AND c.due_at <= now()
+          ORDER BY c.due_at
+          LIMIT $2`,
+        [userId, q.limit],
+      );
+      res.status(200).json({ cards: rows.map(mapCardRowToDTO) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const CardReviewParamsSchema = z.object({
+  cardId: z.coerce.number().int().positive().max(MAX_ID),
+});
+
+// .strict() — unlike vocab's ReviewBodySchema (which tolerates legacy
+// pre-cutover snapshot fields by stripping them), this endpoint is NEW with
+// no legacy clients: unknown keys are a bug or a probe and 400.
+const CardReviewBodySchema = z
+  .object({
+    rating: z.enum(['again', 'hard', 'good', 'easy']),
+    duration_ms: z.number().int().nonnegative().max(INT4_MAX).optional(),
+    expected_version: z.number().int().positive().max(INT4_MAX),
+  })
+  .strict();
+
+/**
+ * POST /hanja/cards/:cardId/reviews — self-rate a hanja card.
+ *
+ * Same contract as POST /vocab/cards/:cardId/reviews — `{ rating,
+ * duration_ms?, expected_version }` → `{ version, due_at, scheduled_days }` —
+ * because it IS the same write path: services/cardReview.ts locks the row,
+ * derives the FSRS transition via the shared engine (services/fsrs.ts),
+ * advances the card, and appends the BEFORE/AFTER snapshot to card_reviews.
+ * 404 unknown / cross-user / non-hanja card; 409 stale expected_version.
+ */
+router.post(
+  '/cards/:cardId/reviews',
+  cheapLimiter(),
+  validateParams(CardReviewParamsSchema),
+  validateBody(CardReviewBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const cardId = (req as typeof req & {
+        validatedParams: z.infer<typeof CardReviewParamsSchema>;
+      }).validatedParams.cardId;
+      const body = req.body as z.infer<typeof CardReviewBodySchema>;
+
+      const out = await applyCardReview({
+        cardId,
+        userId,
+        rating: body.rating,
+        durationMs: body.duration_ms,
+        expectedVersion: body.expected_version,
+        requireHanjaTarget: true,
+        cardNoun: 'hanja card',
+      });
+      res.status(200).json({
+        version: out.version,
+        due_at: out.dueAt,
+        scheduled_days: out.scheduledDays,
       });
     } catch (err) {
       next(err);
