@@ -56,7 +56,9 @@
  *   - GENERATED STORIES (F-068): /generate is a PAID upstream call →
  *     expensiveLimiter (per-user burst) PLUS the proxy's own per-route
  *     per-minute limiter. The Claude call runs BEFORE the INSERT, so a Claude
- *     failure (502 via mapClaudeError) writes NO story row (no half-state).
+ *     failure (mapped by the shared mapClaudeError in middleware/errors.ts:
+ *     injection → 400, proxy limiter → 429, upstream failure → 502) writes
+ *     NO story row (no half-state).
  *     The optional topic is the route's only free text — bounded here and
  *     sanitized + <user_input>-wrapped again inside the proxy. Story reads are
  *     user-scoped (IDOR: a missing or foreign id is a uniform 404).
@@ -67,7 +69,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
-import { NotFoundError, UpstreamError } from '../middleware/errors.js';
+import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 
 const router = Router();
@@ -587,20 +589,5 @@ router.get(
     }
   },
 );
-
-/**
- * Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
- * Mirrors grammarDrill.ts / diagnostic.ts / images.ts mapClaudeError — we never
- * forward the upstream status or provider-specific details to the wire
- * (SECURITY.md §13.7). Non-proxy errors pass through unchanged.
- */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
-}
 
 export default router;

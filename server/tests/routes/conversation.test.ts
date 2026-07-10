@@ -959,6 +959,62 @@ describe('POST /conversation/:id/file — document attach (F-035 backend)', () =
     expect(res.body.turn.content.length).toBeLessThanOrEqual(4000);
   });
 
+  it('truncates on a code point boundary — an astral char straddling the 4000-unit cap never strands a lone surrogate (would 500 at the jsonb INSERT)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/conversation').send({ mode: 'casual' });
+    const id = start.body.conversation.id;
+    // 3999 BMP chars, then two emoji (2 UTF-16 units each): unit 4000 is the
+    // HIGH surrogate of the first emoji, so a naive .slice(0, 4000) ends in a
+    // lone surrogate — Postgres rejects unpaired surrogates in ::jsonb input
+    // and the INSERT 500s on a perfectly legitimate document.
+    const doc = 'a'.repeat(3999) + '😀😀';
+    const res = await agent
+      .post(`/conversation/${id}/file`)
+      .field('expected_version', '1')
+      .attach('file', Buffer.from(doc, 'utf8'), {
+        filename: 'emoji.txt',
+        contentType: 'text/plain',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.turn.file.truncated).toBe(true);
+    // The dangling high surrogate is dropped, not stranded (an exact-match
+    // against a pure-BMP string also proves the content is well-formed UTF-16).
+    expect(res.body.turn.content).toBe('a'.repeat(3999));
+
+    // The persisted turn must not wedge the conversation: the next send
+    // re-sanitizes the stored history turn (docAttach.ts header) and the
+    // stored jsonb round-trips.
+    const send = await agent
+      .post(`/conversation/${id}/messages`)
+      .send({ content: '이 문서에 대해 이야기해요', expected_version: 2 });
+    expect(send.status).toBe(200);
+  });
+
+  it('accepts a clean document whose NFC normalization EXPANDS past the cap (was an injection-flavored 400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const start = await agent.post('/conversation').send({ mode: 'casual' });
+    const id = start.body.conversation.id;
+    // U+0958 is a composition exclusion: NFC expands it to U+0915 U+093C, so
+    // this 4000-char document is 4001 chars post-NFC. sanitizeUserInput
+    // length-checks the NORMALIZED text, so truncating pre-NFC let its
+    // maxLength fire and misreport clean content as an injection rejection
+    // (400 "cannot be sent to the tutor"). Normalize-then-truncate → 201.
+    const doc = 'a'.repeat(3999) + 'क़';
+    const res = await agent
+      .post(`/conversation/${id}/file`)
+      .field('expected_version', '1')
+      .attach('file', Buffer.from(doc, 'utf8'), {
+        filename: 'expanding.txt',
+        contentType: 'text/plain',
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.turn.file.truncated).toBe(true);
+    expect(res.body.turn.content.length).toBeLessThanOrEqual(4000);
+    // Stored text is the NFC-normalized prefix: the base consonant (U+0915)
+    // survives the cut; the combining nukta (U+093C) is what's truncated.
+    expect(res.body.turn.content).toBe('a'.repeat(3999) + 'क');
+  });
+
   it('strips path components from the display filename (traversal hygiene)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const start = await agent.post('/conversation').send({ mode: 'casual' });

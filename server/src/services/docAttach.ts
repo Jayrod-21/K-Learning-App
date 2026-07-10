@@ -145,11 +145,23 @@ export function ingestAttachedDocument(
     throw new ValidationError('document contains no text');
   }
 
-  // Bound FIRST, then run the injection guard on exactly what will persist.
-  // The guard also NFC-normalizes and strips stray control characters; its
-  // maxLength can't fire (we just truncated) but is passed for correctness.
-  const excerpt = trimmed.slice(0, DOC_TURN_MAX_CHARS);
-  const truncated = trimmed.length > excerpt.length;
+  // NFC-normalize BEFORE bounding. sanitizeUserInput re-normalizes and checks
+  // length on the NORMALIZED text, and NFC can EXPAND certain code points
+  // (composition exclusions, e.g. U+0958 → U+0915 U+093C) — so truncating
+  // pre-NFC does NOT guarantee the guard's length check passes, and a clean
+  // oversized document would 400 with an injection-flavored message.
+  // Normalizing here first makes the guard's re-normalization a no-op (NFC is
+  // idempotent), so its maxLength genuinely cannot fire on the excerpt below.
+  const normalized = trimmed.normalize('NFC');
+
+  // Bound on a CODE POINT boundary, then run the injection guard on exactly
+  // what will persist. A raw .slice() cuts on UTF-16 code units and can
+  // strand a lone high surrogate when the cap lands mid-astral-char (emoji,
+  // CJK Extension B hanja — plausible in Korean-learning material); Postgres
+  // rejects unpaired surrogates in ::jsonb input, so the route's INSERT would
+  // 500 on a perfectly legitimate document.
+  const excerpt = truncateAtCodePointBoundary(normalized, DOC_TURN_MAX_CHARS);
+  const truncated = normalized.length > excerpt.length;
   let text: string;
   try {
     text = sanitizeUserInput(excerpt, { maxLength: DOC_TURN_MAX_CHARS });
@@ -168,6 +180,21 @@ export function ingestAttachedDocument(
     text,
     truncated,
   };
+}
+
+/**
+ * Truncate to at most `maxUnits` UTF-16 code units without splitting a
+ * surrogate pair. The input is well-formed UTF-16 here (it came from a strict
+ * `fatal: true` UTF-8 decode, which cannot produce lone surrogates), so the
+ * only possible stranding is OUR cut leaving the HIGH half of a pair at the
+ * end — drop it. Never returns more than `maxUnits` units.
+ */
+function truncateAtCodePointBoundary(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  const sliced = text.slice(0, maxUnits);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  // 0xD800–0xDBFF = high surrogate: its low half was cut off — drop it.
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
 }
 
 /**

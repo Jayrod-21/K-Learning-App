@@ -86,6 +86,40 @@ export class UpstreamError extends AppError {
   }
 }
 
+/**
+ * Map an error thrown by the Claude proxy (it carries `httpStatus`/`code` —
+ * see services/claude/errors.ts) to a wire-safe UpstreamError.
+ *
+ * Proxy-ORIGIN client-fault statuses pass through: a prompt-injection
+ * rejection (`PromptInjectionRejectedError`, 400) or the proxy's own
+ * per-route limiter (`ClaudeRateLimitError`, 429) is the CALLER's fault, not
+ * an upstream outage — flattening them to 502 misclassifies attacker/typo
+ * input as an outage (5xx alert noise) and tells the client "retry later"
+ * when the correct signal is "fix your input" / "back off". These 4xx are
+ * statuses WE minted; SECURITY.md §13.7's "never forward the upstream
+ * status" is about the Anthropic response, which stays hidden — every
+ * 5xx-class proxy error (unavailable, output-schema, auth/persistence
+ * misconfig) still flattens to a blanket 502 with no provider detail.
+ * Non-proxy errors (NotFound/Conflict/…) pass through unchanged.
+ *
+ * Shared by the generation routes (writing.ts / reading.ts). grammarDrill /
+ * diagnostic / imageIngest / conversation still carry private flatten-to-502
+ * copies — migrating them is a wire-contract change tracked as F-094 in
+ * BUGS_AND_FEATURES.md.
+ */
+export function mapClaudeError(err: unknown): unknown {
+  if (err && typeof err === 'object' && 'httpStatus' in err) {
+    const status = (err as { httpStatus?: unknown }).httpStatus;
+    const code = (err as { code?: string }).code ?? 'upstream_error';
+    const message = (err as { message?: string }).message ?? 'claude error';
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      return new UpstreamError(`${code}: ${message}`, { status });
+    }
+    return new UpstreamError(`${code}: ${message}`);
+  }
+  return err;
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,

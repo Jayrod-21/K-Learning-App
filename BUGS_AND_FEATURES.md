@@ -1157,6 +1157,38 @@ New tickets from Phase 0:
 - **Fix hint:** Point the Settings notification section at GET/PUT `/notifications/schedules` (note: `weekday` must be *omitted*, not `null`, for daily kinds), then retire the blob's notification keys from `NotifPrefsSchema` in a follow-up once nothing reads them.
 - **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3).
 
+### F-094 · Migrate the remaining private `mapClaudeError` copies to the shared 4xx-aware helper
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **What:** The P2-G3 fix-pass hoisted `mapClaudeError` into `server/src/middleware/errors.ts` with the corrected behavior (proxy-origin client faults keep their status: injection → 400, proxy per-route limiter → 429; everything else flattens to 502) and wired the generation routes (`writing.ts`, `reading.ts`) to it. Four private flatten-to-502 copies remain: `server/src/routes/grammarDrill.ts` (~533), `server/src/routes/diagnostic.ts` (~1596), `server/src/routes/conversation.ts` (~1107), and `server/src/services/imageIngest.ts` (~407). On those surfaces an injection rejection or the proxy's own limiter still reads as a 502 outage.
+- **Fix hint:** Swap each to the shared helper and delete the local copy. This is a wire-contract change per route (400/429 instead of 502) — do each with its route suite run + a status-mapping test, same as `tests/routes/generation.test.ts` now pins for the generation pair. `gradeWriting.ts`/`enrich.ts` already pass status through inline and can adopt the helper for free.
+- **Notes:** Deferred from the P2-G3 /fixpass (generation review SF-1 coordination note + writing/chat review NIT-6: five-plus copies past the rule-of-three).
+
+### B-034 · B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Where:** `client/src/pages/Grammar.tsx` (~1573-1578); stale copy also pinned by `client/src/pages/Grammar.test.tsx` (~914-937) and described in `client/src/types/domain.ts` doc comments (~1014, ~1379, ~1395).
+- **Root cause:** After the B-021 FSRS retune (server-only, deliberate), a scheduledDays-0 transition is either an `again` step (<1 minute) or a `hard` learning step (6 minutes) — the hardcoded "~10 minutes" label is false either way. The drill response already carries `schedule.rating`, so the client can distinguish "<1m" from "~6m" without an API change.
+- **Fix hint:** One-file copy change keyed on `schedule.rating` + re-pin the test + update the three domain.ts comments. B-021 is not fully closed until this lands.
+- **Notes:** Deferred from the P2-G3 /fixpass (anki review SF-1 — client slice, Phase-3).
+
+### B-035 · B-027 client slice — Writing.tsx still indexes the deterministic prompt list
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Where:** `client/src/pages/Writing.tsx` (~167-170 rotation-cursor init, ~228 indexes the `/prompts` list; the Q53/Q54 header hardcode lives in the same screen).
+- **Root cause:** The B-027 backend (`GET /writing/prompts/random?rubric=`) shipped in P2-G3 but has no caller — the client still fetches the deterministic `/prompts` list and opens a fixed index, so the user-visible symptom (same prompt every visit) persists.
+- **Fix hint:** Consume `/writing/prompts/random` per draw; fold the Q53/Q54 header hardcode into the same change. Do not close B-027 until this lands.
+- **Notes:** Deferred from the P2-G3 /fixpass (writing/chat review coordination item — client slice, Phase-3).
+
+### F-095 · Chat client slice for F-035/F-036 — "+" attach button + auto-name trigger
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** The F-035/F-036 backends are live (`POST /conversation/:id/file` document attach; `POST /conversation/:id/name` auto-title — idempotent, race-safe, never clobbers a user rename; `PATCH /conversation/:id` rename) but the chat UI has neither the "+" attach button nor any auto-name call.
+- **Fix hint:** Add the "+" attach control (document branch → `/file` with `expected_version`; the image path already exists), and call `POST /conversation/:id/name` once after the first assistant reply. Repeat `/name` calls are free (no Claude spend) but still debit the expensive limiter — see the NIT in `db/docs/REVIEW_phase2g3_writing_chat.md` before wiring name-on-open.
+- **Notes:** Deferred from the P2-G3 /fixpass (Phase-3 client work by design).
+
+### F-096 · Writing-prompt content depth — seed more prompts per rubric
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA · **Beta:** —
+- **What:** The active writing-prompt bank is only ~3 prompts/rubric (migration 038 seed), so even with server-side random selection (B-027 backend) the rotation is shallow. Seed a substantially larger bank per rubric (Q53 memo/graph tasks, Q54 essay topics), optionally curating outputs from `POST /writing/generate`.
+- **Fix hint:** New seed migration (add-only INSERTs into `writing_prompts` with `rubric` + `is_active`) — content work, not code. Keep prompt lengths well under the DB CHECK ceilings.
+- **Notes:** Deferred from the P2-G3 /fixpass (B-027 Phase-0 note: "add prompt content depth").
+
 ---
 
 <!-- Templates — copy when adding items.
