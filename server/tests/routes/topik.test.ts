@@ -30,6 +30,10 @@
  *   - shared reading passages (B-008): topik_tests.passages resolved onto the
  *     browse/study/mock DTOs by item_number range; the mock wire keeps the
  *     passage (question content) while staying answer-stripped
+ *   - attempt lifecycle (046 / A1): GET/PUT/DELETE /topik/attempt against the
+ *     status column — one ACTIVE attempt per user (partial unique), completed/
+ *     abandoned rows retained as history, /mock/submit stamps responses'
+ *     attempt_id, F-UP-014 resurrect race guarded by the fresh-completed check
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -1716,7 +1720,7 @@ describe('served-but-unanswerable exclusions (data sweep D-2 / D-5)', () => {
   });
 });
 
-describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tombstone)', () => {
+describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (fresh-completed guard)', () => {
   /** Seed a 1-item reading paper + save an in-progress attempt for it. */
   async function seedAndSave(
     agent: Awaited<ReturnType<typeof registerUser>>['agent'],
@@ -1744,7 +1748,7 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
     const { agent } = await registerUser(t.app, pg.pool);
     const itemId = await seedAndSave(agent, 2400);
 
-    // Submit the exam (grades + closes the attempt in one tx).
+    // Submit the exam (grades + marks the attempt completed in one tx).
     const submit = await agent.post('/topik/mock/submit').send({
       sourceTest: 2400,
       section: 'reading',
@@ -1753,7 +1757,8 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
     expect(submit.status).toBe(200);
     expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
 
-    // The client's clearAttempt() mop-up — must NOT evict the tombstone guard.
+    // The client's clearAttempt() mop-up — must NOT evict the completed row
+    // whose freshness is the anti-resurrect guard (it only abandons ACTIVE rows).
     expect((await agent.delete('/topik/attempt')).status).toBe(204);
 
     // The racing save the server processed AFTER both deletes (the F-UP-014
@@ -1794,7 +1799,7 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
     });
   });
 
-  it('a STALE tombstone yields — retaking the same paper later saves normally', async () => {
+  it('a STALE completed attempt yields — retaking the same paper later saves normally', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const itemId = await seedAndSave(agent, 2403);
     await agent.post('/topik/mock/submit').send({
@@ -1803,8 +1808,8 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
       answers: [{ itemId, picked: 'b' }],
     });
 
-    // Age the tombstone past the grace window. The updated_at trigger would
-    // stamp now() on any UPDATE, so it is disabled around the backdate.
+    // Age the completed attempt past the grace window. The updated_at trigger
+    // would stamp now() on any UPDATE, so it is disabled around the backdate.
     await pg.pool.query(
       `ALTER TABLE topik_attempts DISABLE TRIGGER trg_topik_attempts_updated_at`,
     );
@@ -1835,7 +1840,9 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
     });
   });
 
-  it('the tombstone key cannot be forged from the wire (picks keys are numeric-only)', async () => {
+  it('non-numeric picks keys cannot be smuggled from the wire (the pre-046 tombstone key shape)', async () => {
+    // Lifecycle now lives in the status column, but the picks-key regex guard
+    // (^\d+$) remains load-bearing: picks must stay a pure itemId→choice map.
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.put('/topik/attempt').send({
       section: 'reading',
@@ -1845,5 +1852,190 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (tomb
       remainingMs: 1,
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('A1 (046) — attempt history: completed/abandoned attempts are retained', () => {
+  /** Seed a 1-item reading paper + save an in-progress attempt for it. */
+  async function seedAndSave(
+    agent: Awaited<ReturnType<typeof registerUser>>['agent'],
+    testNumber: number,
+  ): Promise<number> {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+      extra: { explanation: 'x' },
+    });
+    const save = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: testNumber,
+      currentIdx: 0,
+      picks: { [String(id)]: 'b' },
+      remainingMs: 999_000,
+    });
+    expect(save.status).toBe(204);
+    return id;
+  }
+
+  it('a submitted mock is RETAINED as a completed attempt — the whole point of A1', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 3100);
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 3100,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+    expect(submit.status).toBe(200);
+
+    // The resume banner no longer offers it…
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+    // …but the row SURVIVES as history: status='completed', no tombstone key
+    // in picks (the lifecycle is a column now, not payload).
+    const { rows } = await pg.pool.query<{
+      status: string;
+      source_test: number;
+      picks: Record<string, string>;
+    }>(
+      `SELECT status, source_test, picks FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'completed', source_test: 3100 });
+    expect(Object.keys(rows[0]!.picks)).not.toContain('__closed__');
+  });
+
+  it('completed attempts ACCUMULATE across mocks, with only ever one active row per user', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Two full save→submit cycles on different papers.
+    const item1 = await seedAndSave(agent, 3101);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 3101,
+      section: 'reading',
+      answers: [{ itemId: item1, picked: 'b' }],
+    });
+    const item2 = await seedAndSave(agent, 3102);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 3102,
+      section: 'reading',
+      answers: [{ itemId: item2, picked: 'a' }],
+    });
+
+    const { rows } = await pg.pool.query<{ status: string; source_test: number }>(
+      `SELECT status, source_test FROM topik_attempts
+        WHERE user_id = $1 ORDER BY source_test`,
+      [userId],
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({ status: 'completed', source_test: 3101 }),
+      expect.objectContaining({ status: 'completed', source_test: 3102 }),
+    ]);
+
+    // A third mock in progress: exactly ONE active row, alongside the history.
+    await seedAndSave(agent, 3103);
+    const counts = await pg.pool.query<{ status: string; n: string }>(
+      `SELECT status, count(*)::text AS n FROM topik_attempts
+        WHERE user_id = $1 GROUP BY status`,
+      [userId],
+    );
+    const byStatus = Object.fromEntries(counts.rows.map((r) => [r.status, Number(r.n)]));
+    expect(byStatus).toEqual({ active: 1, completed: 2 });
+  });
+
+  it("submit stamps the responses' attempt_id — answers group into their sitting", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 3104);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 3104,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+
+    const attempt = await pg.pool.query<{ id: string }>(
+      `SELECT id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
+      [userId],
+    );
+    expect(attempt.rows).toHaveLength(1);
+    const responses = await pg.pool.query<{ attempt_id: string | null; mode: string }>(
+      `SELECT attempt_id, mode FROM topik_responses WHERE user_id = $1`,
+      [userId],
+    );
+    expect(responses.rows).toHaveLength(1);
+    expect(responses.rows[0]!.mode).toBe('mock');
+    expect(responses.rows[0]!.attempt_id).toBe(attempt.rows[0]!.id);
+  });
+
+  it('a submit with NO saved progress still records a completed attempt (responses never orphaned)', async () => {
+    const itemId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 3105,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Straight to submit — the progress PUT never fired.
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 3105,
+      section: 'reading',
+      answers: [{ itemId, picked: 'b' }],
+    });
+    expect(submit.status).toBe(200);
+
+    const attempt = await pg.pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(attempt.rows).toHaveLength(1);
+    expect(attempt.rows[0]!.status).toBe('completed');
+    const responses = await pg.pool.query<{ attempt_id: string | null }>(
+      `SELECT attempt_id FROM topik_responses WHERE user_id = $1`,
+      [userId],
+    );
+    expect(responses.rows).toEqual([{ attempt_id: attempt.rows[0]!.id }]);
+  });
+
+  it('DELETE abandons (status=abandoned, retained as history) and never blocks an immediate retake', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedAndSave(agent, 3106);
+    expect((await agent.delete('/topik/attempt')).status).toBe(204);
+
+    // Gone from the resume banner, but kept as an abandoned history row.
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+    const { rows } = await pg.pool.query<{ status: string }>(
+      `SELECT status FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toEqual([{ status: 'abandoned' }]);
+
+    // Abandon must NOT arm the F-UP-014 guard — restarting the SAME paper
+    // immediately is a legitimate flow and saves normally.
+    const resave = await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 3106,
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 3_600_000,
+    });
+    expect(resave.status).toBe(204);
+    expect((await agent.get('/topik/attempt')).body.attempt).toMatchObject({
+      sourceTest: 3106,
+    });
+  });
+
+  it('the DB itself rejects a second active attempt per user (partial unique index)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedAndSave(agent, 3107);
+    await expect(
+      pg.pool.query(
+        `INSERT INTO topik_attempts
+           (user_id, section, source_test, current_idx, picks, remaining_ms)
+         VALUES ($1, 'reading'::topik_section, 3108, 0, '{}'::jsonb, 100)`,
+        [userId],
+      ),
+    ).rejects.toMatchObject({ code: '23505' }); // unique_violation
   });
 });

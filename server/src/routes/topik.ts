@@ -705,42 +705,38 @@ router.get(
 const AttemptSectionSchema = z.enum(['reading', 'listening']);
 
 // ---------------------------------------------------------------------------
-// Submitted-attempt tombstone (F-UP-014 — the resurrect race).
+// Attempt lifecycle (migration 046 — A1, TOPIK attempt history).
 //
-// The race: a progress PUT /topik/attempt can still be on the wire when the
-// exam submits. The client aborts it and fires a clearAttempt() mop-up, but the
-// abort is client-side only — a PUT the server processes AFTER both the
-// /mock/submit DELETE and the mop-up DELETE would re-INSERT the row and
-// resurface a resume banner for a graded test.
+// topik_attempts carries an explicit `status` column:
+//   - 'active'    — the in-progress attempt. AT MOST ONE per user, enforced by
+//                   the partial unique uq_topik_attempts_user_active; the
+//                   resume banner (F-007) reads exactly this row.
+//   - 'completed' — submitted + graded via POST /topik/mock/submit. RETAINED
+//                   as attempt history (F-078/F-082); its topik_responses rows
+//                   are stamped with the attempt's id in the same transaction.
+//   - 'abandoned' — discarded via DELETE /topik/attempt. Also retained.
+// This replaces the pre-046 single-slot model where "submitted" was a
+// '__closed__' tombstone key smuggled inside the picks JSONB (F-UP-014).
 //
-// Server-side closure, with NO schema change (topik_attempts has no status
-// column): submitting a mock no longer deletes the attempt row — it UPSERTS a
-// TOMBSTONE (picks = {"__closed__": true}, remaining_ms/current_idx zeroed,
-// the submitted source_test/section kept). Then:
-//   - GET  /topik/attempt treats a tombstone as "no attempt" (returns null),
-//   - PUT  /topik/attempt refuses (silent 204 no-op) to overwrite a FRESH
-//     tombstone for the SAME (source_test, section) — exactly the shape of the
-//     delayed racing save. A save for a DIFFERENT paper (a new mock) always
-//     wins, and after the grace window a retake of the same paper saves
-//     normally again (retakes are never permanently blocked),
-//   - DELETE /topik/attempt preserves a fresh tombstone (the mop-up must not
-//     evict the guard the submit just planted) but still deletes live attempts
-//     (abandon) and stale tombstones (cleanup).
+// The F-UP-014 resurrect race still exists and is still guarded: a progress
+// PUT /topik/attempt can be on the wire when the exam submits; the client
+// aborts it and fires a clearAttempt() mop-up, but the abort is client-side
+// only — a PUT the server processes AFTER the submit would otherwise INSERT a
+// fresh 'active' row and resurface a resume banner for a graded test. The
+// guard: PUT refuses (silent 204 no-op) to create/overwrite an attempt for a
+// (source_test, section) whose COMPLETED attempt is fresher than the grace
+// window — exactly the shape of the delayed racing save. A save for a
+// DIFFERENT paper (a new mock) always wins; after the window a retake of the
+// same paper saves normally (retakes are never permanently blocked); and an
+// ABANDONED attempt never blocks anything (abandon + immediately restart the
+// same paper is a legitimate flow, not a race artifact).
 //
-// The '__closed__' key cannot be forged from the wire: AttemptBodySchema's
-// picks keys are regex-bound to ^\d+$, so no client payload can carry it.
 // Grace window: the racing PUT lands within (milli)seconds of the submit —
 // 15s is generous for a delayed request while keeping an immediate same-paper
 // retake's save-blackout short (each refused save is silently absorbed and the
 // next tick after the window lands; picks are re-sent cumulatively).
 // ---------------------------------------------------------------------------
-const ATTEMPT_TOMBSTONE_KEY = '__closed__';
-const ATTEMPT_TOMBSTONE_GRACE_SECONDS = 15;
-
-/** True when a topik_attempts.picks value is the submitted-attempt tombstone. */
-function isAttemptTombstone(picks: Record<string, string>): boolean {
-  return Object.prototype.hasOwnProperty.call(picks, ATTEMPT_TOMBSTONE_KEY);
-}
+const ATTEMPT_COMPLETED_GRACE_SECONDS = 15;
 
 // source_test / current_idx / remaining_ms are INTEGER columns — INT4-bounded
 // at the boundary (INT4_MAX, defined with the domain constants above).
@@ -773,9 +769,9 @@ interface AttemptRow {
  * GET /topik/attempt — the caller's single in-progress mock attempt, or null.
  *
  * User-scoped (`getUserId` — no IDOR); feeds the mock-select screen's resume
- * banner (F-007). Returns `{ attempt: null }` when there is none — including
- * when the stored row is a submitted-attempt tombstone (F-UP-014): a graded
- * test must never resurface as resumable.
+ * banner (F-007). "In progress" is exactly `status = 'active'` (046): at most
+ * one such row exists per user (uq_topik_attempts_user_active), and completed/
+ * abandoned history rows never resurface as resumable.
  */
 router.get('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
@@ -784,12 +780,13 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
       `SELECT section::text AS section, source_test, current_idx, picks,
               remaining_ms, updated_at
          FROM topik_attempts
-        WHERE user_id = $1`,
+        WHERE user_id = $1
+          AND status = 'active'`,
       [userId],
     );
     const row = rows[0];
     res.status(200).json({
-      attempt: row && !isAttemptTombstone(row.picks)
+      attempt: row
         ? {
             section: row.section,
             sourceTest: row.source_test,
@@ -809,16 +806,20 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
 /**
  * PUT /topik/attempt — save (upsert) the caller's in-progress mock attempt.
  *
- * ONE row per user (`ON CONFLICT (user_id)`) — advancing/starting a mock replaces
- * any prior in-progress attempt. `user_id` is the SESSION id, never client-
- * supplied. The client calls this as the user answers + on unmount.
+ * ONE ACTIVE row per user: the upsert arbiters on the 046 partial unique via
+ * `ON CONFLICT (user_id) WHERE status = 'active'`, so advancing/starting a
+ * mock updates the single active attempt in place (completed/abandoned history
+ * rows are never touched). `user_id` is the SESSION id, never client-supplied.
+ * The client calls this as the user answers + on unmount.
  *
- * F-UP-014 resurrect guard: the upsert's DO UPDATE carries a WHERE that refuses
- * to overwrite a FRESH submitted-attempt tombstone for the SAME
- * (source_test, section) — the exact shape of a racing save the server delayed
- * past the submit. The refused save is a silent 204 no-op (the attempt it was
- * saving is already graded; there is nothing to keep). Any other save — a
- * different paper, or the same paper after the grace window — proceeds.
+ * F-UP-014 resurrect guard: the INSERT ... SELECT's WHERE refuses to save when
+ * a COMPLETED attempt for the SAME (source_test, section) is fresher than the
+ * grace window — the exact shape of a racing save the server delayed past the
+ * submit (post-submit there is no active row, so the race would otherwise
+ * insert a fresh one and resurrect the banner). The refused save is a silent
+ * 204 no-op (the attempt it was saving is already graded; there is nothing to
+ * keep). Any other save — a different paper, the same paper after the window,
+ * or a retake after an ABANDON (abandoned rows never block) — proceeds.
  */
 router.put(
   '/attempt',
@@ -831,19 +832,22 @@ router.put(
       await query(
         `INSERT INTO topik_attempts
            (user_id, section, source_test, current_idx, picks, remaining_ms)
-         VALUES ($1, $2::topik_section, $3, $4, $5::jsonb, $6)
-         ON CONFLICT (user_id) DO UPDATE SET
+         SELECT $1, $2::topik_section, $3, $4, $5::jsonb, $6
+          WHERE NOT EXISTS (
+                SELECT 1
+                  FROM topik_attempts
+                 WHERE user_id = $1
+                   AND status = 'completed'
+                   AND source_test = $3
+                   AND section = $2::topik_section
+                   AND updated_at > now() - make_interval(secs => $7))
+         ON CONFLICT (user_id) WHERE status = 'active' DO UPDATE SET
            section      = EXCLUDED.section,
            source_test  = EXCLUDED.source_test,
            current_idx  = EXCLUDED.current_idx,
            picks        = EXCLUDED.picks,
            remaining_ms = EXCLUDED.remaining_ms,
-           version      = topik_attempts.version + 1
-         WHERE NOT (topik_attempts.picks ? '${ATTEMPT_TOMBSTONE_KEY}'
-                    AND topik_attempts.source_test = EXCLUDED.source_test
-                    AND topik_attempts.section = EXCLUDED.section
-                    AND topik_attempts.updated_at >
-                        now() - make_interval(secs => $7))`,
+           version      = topik_attempts.version + 1`,
         [
           userId,
           b.section,
@@ -851,7 +855,7 @@ router.put(
           b.currentIdx,
           JSON.stringify(b.picks),
           b.remainingMs,
-          ATTEMPT_TOMBSTONE_GRACE_SECONDS,
+          ATTEMPT_COMPLETED_GRACE_SECONDS,
         ],
       );
       res.status(204).end();
@@ -862,27 +866,29 @@ router.put(
 );
 
 /**
- * DELETE /topik/attempt — discard the caller's in-progress mock attempt.
+ * DELETE /topik/attempt — abandon the caller's in-progress mock attempt.
  *
- * Used when the user abandons a test / starts fresh. Idempotent (204 whether or
- * not a row existed). Submitting a mock also closes the attempt inside
- * /mock/submit's transaction (as a tombstone — F-UP-014).
+ * Used when the user abandons a test / starts fresh. Not a row DELETE since
+ * 046: the active attempt is marked `status = 'abandoned'` and RETAINED as
+ * attempt history (A1). Idempotent (204 whether or not an active row existed).
+ * Submitting a mock closes the attempt separately, inside /mock/submit's
+ * transaction (status = 'completed').
  *
- * A FRESH tombstone is preserved, not deleted: the client fires this as a
- * mop-up right after submit, and deleting the tombstone would evict the very
- * guard that keeps a delayed racing save from resurrecting the graded attempt.
- * Live attempts (abandon) and stale tombstones (cleanup) delete normally, so
+ * The post-submit mop-up call the client fires is now a natural no-op — the
+ * submit already moved the row out of 'active', and completed rows are never
+ * touched here — so the F-UP-014 guard the submit planted (the fresh completed
+ * attempt) survives by construction. Abandoned rows never block a resave, so
  * abandoning + immediately restarting a test is unaffected.
  */
 router.delete('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     await query(
-      `DELETE FROM topik_attempts
+      `UPDATE topik_attempts
+          SET status = 'abandoned', version = version + 1
         WHERE user_id = $1
-          AND NOT (picks ? '${ATTEMPT_TOMBSTONE_KEY}'
-                   AND updated_at > now() - make_interval(secs => $2))`,
-      [userId, ATTEMPT_TOMBSTONE_GRACE_SECONDS],
+          AND status = 'active'`,
+      [userId],
     );
     res.status(204).end();
   } catch (err) {
@@ -1172,34 +1178,51 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
     // Persist every graded answer in ONE transaction (all-or-nothing): a mock is
     // scored atomically, so a mid-write failure never logs a partial section.
     await withTransaction(async (client) => {
+      // The section is now submitted — close the attempt FIRST so its id can
+      // stamp the response rows below (A1: responses group into the attempt
+      // that produced them — F-078/F-082). Marking it 'completed' both retains
+      // it as history AND arms the F-UP-014 guard: PUT /topik/attempt refuses
+      // a delayed racing save for this same paper while the completed row is
+      // fresh, and GET only ever reports status='active', so the resume banner
+      // never re-offers a finished test (F-007). Same tx as the score write: a
+      // graded section and a closed attempt commit together.
+      //
+      // Only the SAME paper's active attempt is closed — if the user somehow
+      // has an active attempt for a different paper, it stays resumable. When
+      // no active attempt exists (e.g. a submit before the first progress
+      // save ever landed), a completed row is created directly so the sitting
+      // still enters history and the responses still have an attempt to group
+      // under. The saved picks/current_idx of a closed attempt are left as the
+      // last persisted progress; the authoritative graded answers live in the
+      // topik_responses rows stamped below.
+      const closed = await client.query<{ id: string }>(
+        `UPDATE topik_attempts
+            SET status = 'completed', version = version + 1
+          WHERE user_id = $1
+            AND status = 'active'
+            AND source_test = $2
+            AND section = $3::topik_section
+          RETURNING id`,
+        [userId, resolved.sourceTest, body.section],
+      );
+      let attemptId = closed.rows[0]?.id;
+      if (attemptId === undefined) {
+        const created = await client.query<{ id: string }>(
+          `INSERT INTO topik_attempts
+             (user_id, section, source_test, current_idx, picks, remaining_ms, status)
+           VALUES ($1, $2::topik_section, $3, 0, '{}'::jsonb, 0, 'completed')
+           RETURNING id`,
+          [userId, body.section, resolved.sourceTest],
+        );
+        attemptId = created.rows[0]!.id;
+      }
       for (const row of toInsert) {
         await client.query(
-          `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, time_ms)
-           VALUES ($1, $2, $3, $4, 'mock', $5)`,
-          [userId, row.itemId, row.picked, row.isCorrect, row.timeMs],
+          `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, time_ms, attempt_id)
+           VALUES ($1, $2, $3, $4, 'mock', $5, $6)`,
+          [userId, row.itemId, row.picked, row.isCorrect, row.timeMs, attemptId],
         );
       }
-      // The section is now submitted — close the in-progress attempt so the
-      // resume banner doesn't offer to re-take a finished test (F-007). Not a
-      // DELETE but a TOMBSTONE upsert (F-UP-014): the tombstone is what lets
-      // PUT /topik/attempt refuse a delayed racing save for this same paper
-      // (see the tombstone block above); GET already reports it as null. Same
-      // tx as the score write: a graded section and a closed attempt commit
-      // together.
-      await client.query(
-        `INSERT INTO topik_attempts
-           (user_id, section, source_test, current_idx, picks, remaining_ms)
-         VALUES ($1, $2::topik_section, $3, 0,
-                 jsonb_build_object('${ATTEMPT_TOMBSTONE_KEY}', true), 0)
-         ON CONFLICT (user_id) DO UPDATE SET
-           section      = EXCLUDED.section,
-           source_test  = EXCLUDED.source_test,
-           current_idx  = 0,
-           picks        = EXCLUDED.picks,
-           remaining_ms = 0,
-           version      = topik_attempts.version + 1`,
-        [userId, body.section, resolved.sourceTest],
-      );
     });
 
     const totalItems = reveals.length;
