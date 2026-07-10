@@ -63,6 +63,8 @@ import {
   GrammarRecognitionInputSchema,
   ImageOcrInputSchema,
   ImageOcrResultSchema,
+  NameConversationInputSchema,
+  ConversationTitleSchema,
   PatternResultSchema,
   StoryGenInputSchema,
   StoryResultSchema,
@@ -71,6 +73,7 @@ import {
   type CallMetadata,
   type ConversationInput,
   type ConversationStreamEvent,
+  type ConversationTitle,
   type ConversationTurn,
   type DiagnosticItemInput,
   type DiagnosticItemResult,
@@ -85,6 +88,7 @@ import {
   type GrammarRecognitionInput,
   type ImageOcrInput,
   type ImageOcrResult,
+  type NameConversationInput,
   type PatternResult,
   type ProxyResult,
   type StoryGenInput,
@@ -93,6 +97,7 @@ import {
   type WritingPromptResult,
 } from './models';
 import { buildConversationRequest } from './prompts/conversation';
+import { buildNameConversationRequest } from './prompts/name_conversation';
 import { buildDiagnosticItemRequest } from './prompts/diagnostic_item';
 import { buildEnrichRequest } from './prompts/enrich';
 import { buildGradeWritingRequest } from './prompts/grade_writing';
@@ -117,6 +122,7 @@ export type {
   CallMetadata,
   ConversationInput,
   ConversationStreamEvent,
+  ConversationTitle,
   ConversationTurn,
   DiagnosticItemInput,
   DiagnosticItemResult,
@@ -135,6 +141,7 @@ export type {
   ImageOcrInput,
   ImageOcrResult,
   ImageOcrWord,
+  NameConversationInput,
   PatternResult,
   ProficiencyLevel,
   ProxyResult,
@@ -146,6 +153,11 @@ export type {
   WritingPromptResult,
 } from './models';
 export type { ClaudeModelId, RouteName } from './config';
+// Shared prompt-injection guard — exported so route layers that PERSIST
+// user-supplied text into future Claude history (e.g. the chat document-attach
+// path) can reject poisoned content at the boundary instead of storing a turn
+// that would make every later generateConversation call fail its sanitize.
+export { sanitizeUserInput } from './prompts/sanitize';
 
 export {
   ClaudeAuthError,
@@ -259,6 +271,16 @@ export interface ClaudeProxy {
     events: AsyncIterable<ConversationStreamEvent>;
     final: Promise<ProxyResult<ConversationTurn>>;
   };
+  /**
+   * F-036: derive a concise, content-based title for a conversation from its
+   * opening exchange (Claude-web style). Non-streaming, haiku-tier default,
+   * not cached (unique key per conversation; the route's title-IS-NULL guard
+   * makes repeats free).
+   */
+  nameConversation(
+    input: NameConversationInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<ConversationTitle>>;
   /** Periodic eviction. Idempotent; safe to call from a cron handler. */
   evictExpiredCache(): Promise<number>;
 }
@@ -588,6 +610,28 @@ class ClaudeProxyImpl implements ClaudeProxy {
     };
     const model = resolveModel(cfg, route, input.model);
     const request = buildStoryRequest(cleaned, model);
+  async nameConversation(
+    rawInput: NameConversationInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<ConversationTitle>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'name_conversation';
+    const input = parseInput(NameConversationInputSchema, rawInput, route);
+    // Every turn is free user/assistant text — run each through the shared
+    // injection guard + length cap. The route truncates before calling, so the
+    // cap here is the hard ceiling, not the working size.
+    const cleanedHistory = input.history.map((h) => ({
+      role: h.role,
+      content: sanitizeUserInput(h.content, {
+        maxLength: cfg.inputCaps.name_conversation,
+      }),
+    }));
+    const cleaned: NameConversationInput = {
+      ...input,
+      history: cleanedHistory,
+    };
+    const model = resolveModel(cfg, route, input.model);
+    const req = buildNameConversationRequest(cleaned, model);
 
     return this.runJsonRoute({
       route,
@@ -597,6 +641,10 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.generate_story,
       outputSchema: StoryResultSchema,
       parser: parseToolResult('submit_story'),
+      request: req,
+      cacheTtl: cfg.cacheTtlSeconds.name_conversation,
+      outputSchema: ConversationTitleSchema,
+      parser: parseJsonContent,
     });
   }
 

@@ -72,5 +72,16 @@ describe('claude_route enum ⇄ RouteName drift guard', () => {
     const enumValues = rows.map((r) => r.value);
     expect(enumValues).toContain('generate_writing_prompt');
     expect(enumValues).toContain('generate_story');
+  it("055's 'name_conversation' value is present in the migrated enum (F-036)", async () => {
+    // The set-equality test above would catch this too, but an explicit probe
+    // pins migration 055's ADD VALUE independently of ROUTE_NAMES — if the
+    // code-side entry were ever reverted, this still fails loudly with the
+    // migration name attached.
+    const { rows } = await pg.pool.query<{ present: boolean }>(
+      `SELECT 'name_conversation' = ANY(
+                ARRAY(SELECT e::text FROM unnest(enum_range(NULL::claude_route)) AS e)
+              ) AS present`,
+    );
+    expect(rows[0]?.present).toBe(true);
   });
 });

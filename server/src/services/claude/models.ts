@@ -541,6 +541,40 @@ export const ConversationTurnSchema = z.object({
 });
 export type ConversationTurn = z.infer<typeof ConversationTurnSchema>;
 
+// ---- 4b. nameConversation ----------------------------------------------------
+// F-036 conversation auto-naming: given the opening exchange of a conversation,
+// produce a concise content-derived title (Claude-web style, never "mode +
+// date"). Non-streaming, haiku-tier by default. The route truncates history
+// before calling; these caps are the hard ceiling.
+
+export const NameConversationInputSchema = z.object({
+  /** The turns to derive the title from — typically the first exchange.
+   *  At least one turn (naming an empty conversation is a route-level 409). */
+  history: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: NonEmptyText.max(4000),
+      }),
+    )
+    .min(1)
+    .max(12),
+  /** Conversation mode — a hint only (a business chat titles differently from
+   *  a TOPIK drill). Optional so callers without it still get a title. */
+  mode: ConversationModeSchema.optional(),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type NameConversationInput = z.infer<typeof NameConversationInputSchema>;
+
+export const ConversationTitleSchema = z.object({
+  /** The generated title. Short by instruction; the cap is the enforcement.
+   *  Bounded WELL below the DB CHECK (200 chars, migration 055) so a stored
+   *  title can never trip the constraint. */
+  title: NonEmptyText.max(80),
+});
+export type ConversationTitle = z.infer<typeof ConversationTitleSchema>;
+
 /** Streaming event union returned by `generateConversation`. */
 export const ConversationStreamEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('start'), register: RegisterSchema }),

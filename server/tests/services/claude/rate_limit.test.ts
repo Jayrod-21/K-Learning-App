@@ -17,6 +17,7 @@ const limits = {
   score_grammar_drill: 2,
   generate_writing_prompt: 2,
   generate_story: 2,
+  name_conversation: 2,
 } as const;
 
 describe('TokenBucketLimiter', () => {

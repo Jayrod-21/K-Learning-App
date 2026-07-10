@@ -36,6 +36,7 @@ import {
   ValidationError,
 } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
+import { UpstreamError } from '../middleware/errors.js';
 import type {
   ConversationInput,
   ConversationTurn,
@@ -46,6 +47,10 @@ import {
   persistCapture,
   type IngestedImage,
 } from '../services/imageIngest.js';
+import {
+  ingestAttachedDocument,
+  multerDocUpload,
+} from '../services/docAttach.js';
 
 // Optional image reference on a stored turn (chat rework Slice 1). Present
 // when the turn is an uploaded photo that went through the Vision OCR
@@ -63,17 +68,35 @@ interface StoredTurnImage {
   caption_en: string;
 }
 
+// Optional document reference on a stored turn (F-035 attach backend).
+// Present when the turn is an attached text document: `content` carries the
+// (bounded) document text — so projectHistory feeds it to Claude unchanged —
+// and this block carries display metadata. All fields are server-authored
+// (the filename is sanitized display text, never a path).
+interface StoredTurnFile {
+  /** Sanitized display filename (basename only). */
+  name: string;
+  /** Declared mime from the docAttach allowlist (bytes verified separately). */
+  media_type: string;
+  /** Original upload size in bytes. */
+  size_bytes: number;
+  /** True when the stored text is a truncated excerpt of a longer document. */
+  truncated: boolean;
+}
+
 // Shape: a user turn or assistant turn appended to conversations.messages
 // JSONB array. `request_id` is recorded on assistant turns to enable retry-
 // idempotency (see streamMessage below). `image` is present only on turns
-// created by POST /:conversationId/image — plain text turns stay exactly as
-// before (both fields optional ⇒ every pre-existing row remains valid).
+// created by POST /:conversationId/image; `file` only on turns created by
+// POST /:conversationId/file — plain text turns stay exactly as before
+// (all optional ⇒ every pre-existing row remains valid).
 interface StoredTurn {
   role: 'user' | 'assistant';
   content: string;
   sent_at: string;
   request_id?: string;
   image?: StoredTurnImage;
+  file?: StoredTurnFile;
 }
 
 // Inbound idempotency-id shape: same alphabet as our correlation id. Caps
@@ -689,7 +712,7 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     }
 
     const { rows } = await query(
-      `SELECT id, mode, target_register, version, updated_at,
+      `SELECT id, title, mode, target_register, version, updated_at,
               jsonb_array_length(messages) AS message_count
          FROM conversations
         WHERE user_id = $1 AND deleted_at IS NULL
@@ -733,6 +756,7 @@ router.get(
 
       const { rows } = await query<{
         id: string;
+        title: string | null;
         mode: string;
         target_register: string | null;
         version: number;
@@ -740,7 +764,7 @@ router.get(
         created_at: Date;
         updated_at: Date;
       }>(
-        `SELECT id, mode::text AS mode,
+        `SELECT id, title, mode::text AS mode,
                 target_register::text AS target_register,
                 version, messages, created_at, updated_at
            FROM conversations
@@ -755,6 +779,7 @@ router.get(
           // pg returns BIGINT as a string; the API contract documents the
           // conversation id as a JSON number (matches POST + GET list).
           id: Number(conv.id),
+          title: conv.title,
           mode: conv.mode,
           target_register: conv.target_register,
           version: conv.version,
@@ -908,5 +933,294 @@ function imageTurnContent(img: IngestedImage): string {
   if (en !== '') return en;
   return '(이미지)';
 }
+
+// ---------------------------------------------------------------------------
+// Conversation titles (F-036) — rename + auto-name.
+// ---------------------------------------------------------------------------
+
+const TitleBodySchema = z
+  .object({
+    // App-layer cap is tighter than the DB CHECK (200, migration 055) so a
+    // valid request can never trip the constraint. `.strict()` rejects any
+    // extra field (mass-assignment guard — title is the ONLY writable field).
+    title: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+/**
+ * PATCH /conversation/:conversationId — user rename. Sets `title`
+ * unconditionally (the user's choice always wins, including overwriting an
+ * auto-generated title). Deliberately does NOT bump `version`: that column is
+ * the MESSAGES optimistic-concurrency token — bumping it here would 409 any
+ * in-flight message append for a cosmetic rename.
+ *
+ * 404 for missing/foreign/swept ids (IDOR posture of every route here).
+ */
+router.patch(
+  '/:conversationId',
+  cheapLimiter(),
+  validateParams(MessageParamsSchema),
+  validateBody(TitleBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const conversationId = (req as typeof req & {
+        validatedParams: z.infer<typeof MessageParamsSchema>;
+      }).validatedParams.conversationId;
+      const body = req.body as z.infer<typeof TitleBodySchema>;
+
+      const { rows } = await query<{ title: string }>(
+        `UPDATE conversations
+            SET title = $2
+          WHERE id = $1 AND user_id = $3 AND deleted_at IS NULL
+          RETURNING title`,
+        [conversationId, body.title, userId],
+      );
+      if (rows.length === 0) throw new NotFoundError('conversation not found');
+      res.status(200).json({ title: rows[0]!.title });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/** How many leading turns feed the namer, and the per-turn excerpt cap. The
+ *  OPENING exchange carries the topic; later turns add cost, not signal. */
+const NAME_HISTORY_TURNS = 6;
+const NAME_TURN_MAX_CHARS = 500;
+
+/**
+ * POST /conversation/:conversationId/name — F-036 auto-naming trigger. The
+ * client calls this after the first assistant reply lands (Phase-3 wiring);
+ * the endpoint derives a concise content-based title via Claude
+ * (route=name_conversation) and stores it.
+ *
+ * Contract:
+ *   - Already-named conversation (user rename OR earlier auto-name) → 200
+ *     with the EXISTING title, `generated:false`, and NO Claude call —
+ *     idempotent, never clobbers (the title-IS-NULL guard is enforced in the
+ *     UPDATE itself, so a concurrent rename also wins the race).
+ *   - No messages yet → 409 (nothing to derive a title from).
+ *   - Missing/foreign/swept id → 404 (IDOR posture; no Claude spend).
+ *
+ * No `expected_version` gate and no version bump — same rationale as PATCH
+ * above: `version` guards the messages array, which this route never touches.
+ */
+router.post(
+  '/:conversationId/name',
+  expensiveLimiter(),
+  validateParams(MessageParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const conversationId = (req as typeof req & {
+        validatedParams: z.infer<typeof MessageParamsSchema>;
+      }).validatedParams.conversationId;
+
+      const { rows } = await query<{
+        title: string | null;
+        mode: string;
+        messages: unknown;
+      }>(
+        `SELECT title, mode::text AS mode, messages
+           FROM conversations
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [conversationId, userId],
+      );
+      const conv = rows[0];
+      if (!conv) throw new NotFoundError('conversation not found');
+      if (conv.title !== null) {
+        res.status(200).json({ title: conv.title, generated: false });
+        return;
+      }
+
+      // Opening excerpt: first N non-empty turns, each bounded. projectHistory
+      // already drops malformed entries, so this is safe against JSONB drift.
+      const history = projectHistory(conv.messages)
+        .slice(0, NAME_HISTORY_TURNS)
+        .map((t) => ({
+          role: t.role,
+          content: t.content.slice(0, NAME_TURN_MAX_CHARS),
+        }));
+      if (history.length === 0) {
+        throw new ConflictError('conversation has no messages to name');
+      }
+
+      // Claude call OUTSIDE any transaction (Bar §"Concurrency").
+      const proxy = getClaudeProxy();
+      let generatedTitle: string;
+      try {
+        const out = await proxy.nameConversation(
+          {
+            history,
+            mode: conv.mode as 'casual' | 'business' | 'research' | 'topik_prep' | 'register_drill',
+          },
+          { requestId: req.correlationId, userId },
+        );
+        generatedTitle = out.result.title;
+      } catch (err) {
+        next(mapClaudeError(err));
+        return;
+      }
+
+      // Store ONLY if still unnamed — a concurrent rename/auto-name between
+      // the read above and here wins, and we return the surviving title.
+      const upd = await query<{ title: string }>(
+        `UPDATE conversations
+            SET title = $2
+          WHERE id = $1 AND user_id = $3 AND title IS NULL AND deleted_at IS NULL
+          RETURNING title`,
+        [conversationId, generatedTitle, userId],
+      );
+      if (upd.rows.length > 0) {
+        res.status(200).json({ title: upd.rows[0]!.title, generated: true });
+        req.log.info(
+          { conversationId, userId },
+          'conversation auto-named (F-036)',
+        );
+        return;
+      }
+      // Lost the race (or the row was swept mid-flight). Re-read; a swept row
+      // is a 404, a concurrently-set title is returned as-is.
+      const reread = await query<{ title: string | null }>(
+        `SELECT title FROM conversations
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [conversationId, userId],
+      );
+      const survivor = reread.rows[0];
+      if (!survivor || survivor.title === null) {
+        throw new NotFoundError('conversation not found');
+      }
+      res.status(200).json({ title: survivor.title, generated: false });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
+ * Mirrors grammarDrill.ts / diagnostic.ts / images.ts mapClaudeError — we
+ * never forward upstream status or provider detail to the wire (SECURITY.md
+ * §13.7). Non-proxy errors pass through unchanged.
+ */
+function mapClaudeError(err: unknown): unknown {
+  if (err && typeof err === 'object' && 'httpStatus' in err) {
+    const code = (err as { code?: string }).code ?? 'upstream_error';
+    const message = (err as { message?: string }).message ?? 'claude error';
+    return new UpstreamError(`${code}: ${message}`);
+  }
+  return err;
+}
+
+// ---------------------------------------------------------------------------
+// POST /conversation/:conversationId/file — document-in-chat (F-035 backend).
+// ---------------------------------------------------------------------------
+
+const FileBodySchema = z
+  .object({
+    // Multipart text field — coerce; bounded to INT4 like ImageBodySchema.
+    expected_version: z.coerce.number().int().positive().max(2_147_483_647),
+  })
+  .strict();
+
+/**
+ * POST /conversation/:conversationId/file — multipart upload of one `file`
+ * field (+ `expected_version`) attaching a TEXT document to a conversation.
+ *
+ * The document's (bounded) text becomes the appended user turn's `content` —
+ * so projectHistory feeds it to Claude on the NEXT send with zero pipeline
+ * changes — and the `file` block carries display metadata (name/size/type/
+ * truncated). No blob store, no new table: see services/docAttach.ts's
+ * header for the storage rationale and threat model (UTF-8 byte authority,
+ * upload-time injection guard, 4000-char excerpt cap matching the proxy's
+ * per-turn history limit). Images keep their dedicated /image path (Vision
+ * OCR); PDFs are unsupported here by design.
+ *
+ * Mirrors /image's gates and ordering: ownership + version pre-check first
+ * (404 IDOR / 409 stale before reading the payload does any work), document
+ * validation next (typed 400/413, nothing persisted on failure), then ONE
+ * version-gated UPDATE. No assistant turn is generated — the user sends a
+ * message about the document next, exactly like the image flow.
+ */
+router.post(
+  '/:conversationId/file',
+  expensiveLimiter(),
+  validateParams(MessageParamsSchema),
+  multerDocUpload,
+  validateBody(FileBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const conversationId = (req as typeof req & {
+        validatedParams: z.infer<typeof MessageParamsSchema>;
+      }).validatedParams.conversationId;
+      const body = req.body as z.infer<typeof FileBodySchema>;
+      const file = (req as Request & { file?: Express.Multer.File }).file;
+
+      // Cheap gates first (same order as /image): the conversation must exist,
+      // be the caller's, and be at the expected version.
+      const { rows } = await query<{ version: number }>(
+        `SELECT version
+           FROM conversations
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [conversationId, userId],
+      );
+      const conv = rows[0];
+      if (!conv) throw new NotFoundError('conversation not found');
+      if (conv.version !== body.expected_version) {
+        throw new ConflictError('stale conversation version');
+      }
+
+      // Validate + bound + injection-check the document (typed 400s; nothing
+      // persisted on failure). Pure CPU — no external I/O, no transaction.
+      const doc = ingestAttachedDocument(file);
+
+      const fileTurn: StoredTurn = {
+        role: 'user',
+        content: doc.text,
+        sent_at: new Date().toISOString(),
+        file: {
+          name: doc.name,
+          media_type: doc.mediaType,
+          size_bytes: doc.sizeBytes,
+          truncated: doc.truncated,
+        },
+      };
+
+      const out = await withTransaction(async (client) => {
+        const upd = await client.query<{ version: number; messages: unknown }>(
+          `UPDATE conversations
+              SET messages = messages || $2::jsonb,
+                  version  = version + 1
+            WHERE id = $1 AND user_id = $3 AND version = $4 AND deleted_at IS NULL
+            RETURNING version, messages`,
+          [
+            conversationId,
+            JSON.stringify([fileTurn]),
+            userId,
+            body.expected_version,
+          ],
+        );
+        if (upd.rowCount === 0) {
+          throw new ConflictError('stale conversation version');
+        }
+        return {
+          version: upd.rows[0]!.version,
+          messages: upd.rows[0]!.messages,
+          turn: fileTurn,
+        };
+      });
+
+      res.status(201).json(out);
+      req.log.info(
+        { conversationId, userId, version: out.version, sizeBytes: doc.sizeBytes },
+        'conversation file turn appended',
+      );
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

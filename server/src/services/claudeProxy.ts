@@ -16,6 +16,7 @@ import type { Logger } from 'pino';
 import { createClaudeProxy as createClaudeProxyImpl } from './claude/index.js';
 import type {
   ClaudeProxy,
+  ConversationTitle,
   DiagnosticItemInput,
   DiagnosticItemResult,
   DrillType,
@@ -32,6 +33,7 @@ import type {
   ImageOcrInput,
   ImageOcrResult,
   ImageOcrWord,
+  NameConversationInput,
   PatternResult,
   ProxyResult,
   StoryGenInput,
@@ -44,6 +46,7 @@ import type {
 
 export type {
   ClaudeProxy,
+  ConversationTitle,
   DiagnosticItemInput,
   DiagnosticItemResult,
   DrillType,
@@ -60,6 +63,7 @@ export type {
   ImageOcrInput,
   ImageOcrResult,
   ImageOcrWord,
+  NameConversationInput,
   PatternResult,
   ProxyResult,
   StoryGenInput,
@@ -69,6 +73,12 @@ export type {
   WritingPromptMode,
   WritingPromptResult,
 };
+
+// Shared prompt-injection guard (see services/claude/index.ts for why it is
+// exported): route layers that persist user text into future Claude history
+// import it through this adapter, keeping the "routes import only from
+// claudeProxy.ts" boundary intact.
+export { sanitizeUserInput } from './claude/index.js';
 
 let _proxy: ClaudeProxy | null = null;
 

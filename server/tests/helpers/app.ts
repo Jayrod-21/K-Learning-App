@@ -194,6 +194,15 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
               };
       return { result: item, metadata: { ...baseMeta, requestId: randomUUID() } };
     },
+    nameConversation: async (input) => ({
+      // Deterministic content-derived title: echoes a fragment of the first
+      // turn so route tests can assert the title came from CONTENT (F-036's
+      // whole point — never "mode + date"). Bounded to the schema's 80 cap.
+      result: {
+        title: `Chat about ${input.history[0]!.content.slice(0, 40)}`.slice(0, 80),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     scoreGrammarDrill: async () => ({
       // Deterministic score: a passing grade with one correction. Lets the submit
       // route test assert the row update + reference reveal without Anthropic.
