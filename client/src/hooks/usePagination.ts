@@ -33,6 +33,14 @@ export interface UsePaginationResult<T> {
   showMore: () => void;
   /** Collapse back to `initial` (e.g. after a filter change). */
   reset: () => void;
+  /**
+   * How many items the NEXT `showMore()` will actually reveal —
+   * `min(step, cap/list-end headroom)`, 0 when exhausted. This (not
+   * `total - visible.length`) is the number to surface in the expander
+   * label: under the `max` cap the naive difference over-promises items
+   * `showMore()` can never reach. Wire straight to `<ShowMore remaining>`.
+   */
+  remaining: number;
   /** Total items in the source list (NOT the visible count). */
   total: number;
 }
@@ -64,6 +72,9 @@ export function usePagination<T>(
   );
 
   const canShowMore = visibleCount < limit;
+  // What the next showMore() truly reveals: one `step`, shrunk by whatever
+  // headroom is left below the cap / list end. Never negative.
+  const remaining = Math.min(step, limit - visibleCount);
 
   const showMore = useCallback((): void => {
     setCount((prev) => Math.min(prev + step, max));
@@ -73,5 +84,5 @@ export function usePagination<T>(
     setCount(initial);
   }, [initial]);
 
-  return { visible, canShowMore, showMore, reset, total: items.length };
+  return { visible, canShowMore, showMore, reset, remaining, total: items.length };
 }

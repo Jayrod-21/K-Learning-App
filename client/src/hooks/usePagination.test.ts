@@ -6,7 +6,10 @@
  *   - reset collapses back to `initial`,
  *   - short lists never over-report (visible ≤ items, no phantom button),
  *   - a shrinking items array re-clamps without an effect (filter change),
- *   - degenerate opts (0/negative) floor to a 1-item window, never empty.
+ *   - degenerate opts (0/negative) floor to a 1-item window, never empty,
+ *   - `remaining` reports the TRUE next-batch size (min(step, headroom)),
+ *     never the naive `total - visible.length` cap over-promise,
+ *   - exact boundaries: length === initial, length === max, empty list.
  */
 import { describe, expect, it } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -115,6 +118,84 @@ describe('usePagination', () => {
     // Growing again re-opens the window up to the retained count (30).
     rerender({ items: range(50) });
     expect(result.current.visible).toHaveLength(30);
+  });
+
+  it('remaining is the true next-batch count, not total - visible (cap over-promise)', () => {
+    // 50 items, cap 30: after the initial 15, only 15 more are EVER
+    // reachable. The naive `total - visible.length` would claim 35.
+    const items = range(50);
+    const { result } = renderHook(() => usePagination(items));
+    expect(result.current.remaining).toBe(15);
+
+    act(() => {
+      result.current.showMore();
+    });
+    // At the cap: nothing more to reveal.
+    expect(result.current.remaining).toBe(0);
+    expect(result.current.canShowMore).toBe(false);
+  });
+
+  it('remaining shrinks to the cap headroom when a step overshoots it', () => {
+    // initial 10, step 15, max 20 → the next click reveals only 10.
+    const items = range(50);
+    const { result } = renderHook(() =>
+      usePagination(items, { initial: 10, step: 15, max: 20 }),
+    );
+    expect(result.current.remaining).toBe(10);
+  });
+
+  it('remaining shrinks to the list end when fewer than a step are left', () => {
+    // 18 items: 15 visible, only 3 left — not a full step of 15.
+    const items = range(18);
+    const { result } = renderHook(() => usePagination(items));
+    expect(result.current.remaining).toBe(3);
+
+    act(() => {
+      result.current.showMore();
+    });
+    expect(result.current.visible).toHaveLength(18);
+    expect(result.current.remaining).toBe(0);
+  });
+
+  it('boundary: items.length exactly equals initial (15)', () => {
+    const items = range(15);
+    const { result } = renderHook(() => usePagination(items));
+    expect(result.current.visible).toEqual(range(15));
+    expect(result.current.canShowMore).toBe(false);
+    expect(result.current.remaining).toBe(0);
+    expect(result.current.total).toBe(15);
+  });
+
+  it('boundary: items.length exactly equals max (30)', () => {
+    const items = range(30);
+    const { result } = renderHook(() => usePagination(items));
+    expect(result.current.visible).toHaveLength(15);
+    expect(result.current.canShowMore).toBe(true);
+    expect(result.current.remaining).toBe(15);
+
+    act(() => {
+      result.current.showMore();
+    });
+    // Cap and list end coincide — fully revealed, nothing phantom.
+    expect(result.current.visible).toEqual(range(30));
+    expect(result.current.canShowMore).toBe(false);
+    expect(result.current.remaining).toBe(0);
+  });
+
+  it('boundary: fewer items than initial (14)', () => {
+    const items = range(14);
+    const { result } = renderHook(() => usePagination(items));
+    expect(result.current.visible).toEqual(range(14));
+    expect(result.current.canShowMore).toBe(false);
+    expect(result.current.remaining).toBe(0);
+  });
+
+  it('boundary: empty list', () => {
+    const { result } = renderHook(() => usePagination([]));
+    expect(result.current.visible).toEqual([]);
+    expect(result.current.canShowMore).toBe(false);
+    expect(result.current.remaining).toBe(0);
+    expect(result.current.total).toBe(0);
   });
 
   it('floors degenerate opts to a 1-item window instead of an empty list', () => {

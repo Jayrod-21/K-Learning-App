@@ -23,7 +23,12 @@ export interface ShowMoreProps {
   canShowMore: boolean;
   /** Reveal the next window (wire to `usePagination().showMore`). */
   onShowMore: () => void;
-  /** Items left to reveal — appended to the label when provided. */
+  /**
+   * How many items the next click reveals — appended to the label when
+   * provided. Wire to `usePagination().remaining`; do NOT derive it as
+   * `total - visible.length`, which over-promises items the capped window
+   * will never reach.
+   */
   remaining?: number;
   /** Button copy (default "Show more"). */
   label?: string;

@@ -1833,7 +1833,11 @@ function TextSizeControl({
       <div className="km-settings__row-head">
         <span className="km-settings__row-label">Text size</span>
         <span className="km-settings__row-hint">
-          Scales all text and spacing app-wide.
+          {/* Honest v1 copy: only rem-sized text follows the root scale
+              today; most screens are still px-pinned until the F-086
+              px→rem migration lands. Don't promise "all text". */}
+          Scales the base text size. More of the app follows it as screens
+          are updated.
         </span>
       </div>
       <SegmentedRadioGroup

@@ -56,6 +56,36 @@ describe('Tabs', () => {
     expect(panel).toHaveAttribute('tabindex', '0');
   });
 
+  it('puts aria-controls only on the selected tab (no dangling id refs)', () => {
+    renderTabs();
+
+    const tabs = screen.getAllByRole('tab');
+    // Only the active panel is rendered, so inactive tabs must NOT reference
+    // panel ids that don't exist in the DOM (axe: aria-valid-attr-value).
+    expect(tabs[1]).not.toHaveAttribute('aria-controls');
+    expect(tabs[2]).not.toHaveAttribute('aria-controls');
+    // The one aria-controls present resolves to a real element: the panel.
+    const controls = tabs[0]?.getAttribute('aria-controls');
+    expect(controls).toBeTruthy();
+    expect(document.getElementById(controls as string)).toBe(
+      screen.getByRole('tabpanel'),
+    );
+  });
+
+  it('moves aria-controls with the selection', async () => {
+    const user = userEvent.setup();
+    renderTabs();
+
+    await user.click(screen.getByRole('tab', { name: 'Hanja' }));
+
+    expect(screen.getByRole('tab', { name: 'Words' })).not.toHaveAttribute(
+      'aria-controls',
+    );
+    expect(
+      screen.getByRole('tab', { name: 'Hanja' }).getAttribute('aria-controls'),
+    ).toBe(screen.getByRole('tabpanel').id);
+  });
+
   it('switches tab and panel on click (uncontrolled)', async () => {
     const user = userEvent.setup();
     renderTabs();
@@ -194,6 +224,33 @@ describe('Tabs', () => {
       'true',
     );
     expect(screen.getByRole('tabpanel')).toHaveTextContent('PANEL HANJA');
+  });
+
+  it('arrows move relative to the FOCUSED tab, not the selection (APG)', async () => {
+    // Controlled parent that never accepts the change: clicking "Grammar"
+    // leaves selection on "Words" but focus on "Grammar". ArrowRight must
+    // then move from Grammar → Hanja (the focused tab's neighbour), not
+    // from Words → Grammar (the selected tab's neighbour).
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <Tabs
+        tabs={THREE_TABS}
+        ariaLabel="Library sections"
+        active="words"
+        onChange={onChange}
+      >
+        {(activeId) => <div>PANEL {activeId.toUpperCase()}</div>}
+      </Tabs>,
+    );
+
+    await user.click(screen.getByRole('tab', { name: 'Grammar' }));
+    onChange.mockClear();
+
+    await user.keyboard('{ArrowRight}');
+
+    expect(onChange).toHaveBeenCalledWith('hanja');
+    expect(screen.getByRole('tab', { name: 'Hanja' })).toHaveFocus();
   });
 
   it('fires onChange in uncontrolled mode too (notification)', async () => {

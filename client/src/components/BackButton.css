@@ -21,7 +21,7 @@
   border-radius: var(--radius-pill);
   background: transparent;
   color: var(--paper-dim);
-  font-size: 13px;
+  font-size: 0.8125rem; /* 13px @ md root — rem so F-025 text-size scales it */
   font-weight: 600;
   line-height: 1;
   cursor: pointer;

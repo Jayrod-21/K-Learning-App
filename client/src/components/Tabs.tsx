@@ -20,9 +20,12 @@
  *
  * A11y (W3C APG "Tabs with Automatic Activation"):
  *   - `role="tablist"` (labelled via required `ariaLabel`) of `role="tab"`
- *     buttons with `aria-selected` + `aria-controls`; the panel is
- *     `role="tabpanel"` + `aria-labelledby`, with `tabIndex={0}` so
- *     keyboard users can land in panels whose content has no focusable.
+ *     buttons with `aria-selected`; the panel is `role="tabpanel"` +
+ *     `aria-labelledby`, with `tabIndex={0}` so keyboard users can land in
+ *     panels whose content has no focusable. Because only the ACTIVE panel
+ *     is in the DOM, `aria-controls` rides only the selected tab — APG
+ *     treats it as optional, and a dangling id reference on inactive tabs
+ *     would be an ARIA validity violation (axe `aria-valid-attr-value`).
  *   - Roving tabindex: exactly one tab sits in the tab order. ArrowLeft/
  *     ArrowRight move selection with wrap; Home/End jump to the ends.
  *     Selection follows focus (automatic activation — same choice as
@@ -46,7 +49,7 @@ export interface TabItem {
 
 export interface TabsProps {
   /** The tabs, in display order. Must be non-empty to render anything. */
-  tabs: TabItem[];
+  tabs: ReadonlyArray<TabItem>;
   /** Accessible name for the tablist. */
   ariaLabel: string;
   /** Controlled active tab id. Omit for uncontrolled mode. */
@@ -91,11 +94,18 @@ export function Tabs({
     onChange?.(id);
   };
 
-  const onTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>): void => {
+  // `from` is the index of the tab that RECEIVED the key event — per APG,
+  // arrows move relative to the focused tab, not the selected one. The two
+  // only differ in controlled mode when the parent defers/rejects onChange
+  // (focus sits on the clicked tab while selection stayed put).
+  const onTabKeyDown = (
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    from: number,
+  ): void => {
     const last = tabs.length - 1;
     let next: number | null = null;
-    if (e.key === 'ArrowRight') next = rovingIndex === last ? 0 : rovingIndex + 1;
-    else if (e.key === 'ArrowLeft') next = rovingIndex === 0 ? last : rovingIndex - 1;
+    if (e.key === 'ArrowRight') next = from === last ? 0 : from + 1;
+    else if (e.key === 'ArrowLeft') next = from === 0 ? last : from - 1;
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = last;
     if (next === null) return;
@@ -127,12 +137,17 @@ export function Tabs({
             )}
             role="tab"
             aria-selected={tab.id === activeId}
-            aria-controls={panelId(tab.id)}
+            // Only the active panel exists in the DOM (render-one design),
+            // so only the selected tab may carry aria-controls — a dangling
+            // reference on the others fails axe aria-valid-attr-value.
+            aria-controls={tab.id === activeId ? panelId(tab.id) : undefined}
             tabIndex={i === rovingIndex ? 0 : -1}
             onClick={() => {
               select(tab.id);
             }}
-            onKeyDown={onTabKeyDown}
+            onKeyDown={(e) => {
+              onTabKeyDown(e, i);
+            }}
           >
             {tab.label}
           </button>

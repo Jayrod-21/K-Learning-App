@@ -19,7 +19,7 @@
 }
 
 .km-filterselect__label {
-  font-size: 11px;
+  font-size: 0.6875rem; /* 11px @ md root — rem so F-025 text-size scales it */
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -38,7 +38,7 @@
   width: 100%;
   padding: 9px 34px 9px 12px;
   font: inherit;
-  font-size: 13.5px;
+  font-size: 0.84375rem; /* 13.5px @ md root — rem so F-025 scales it */
   color: var(--paper);
   background: var(--ink-1);
   border: 1px solid var(--line-strong);

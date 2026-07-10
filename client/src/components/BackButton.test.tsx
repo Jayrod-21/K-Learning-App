@@ -76,6 +76,33 @@ describe('BackButton', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/first');
   });
 
+  it('routes to the default fallback (/) instead of exiting when the page is the first history entry', async () => {
+    // Deep-link scenario: the sub-page is the FIRST entry in the tab's
+    // history (react-router keys it "default"), so navigate(-1) would be a
+    // raw browser back out of the app. The guard must route home instead.
+    const user = userEvent.setup();
+    renderWithRouter(<BackButton />, { entries: ['/learn/hanja'] });
+    expect(screen.getByTestId('location')).toHaveTextContent('/learn/hanja');
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+
+    // Exact match — toHaveTextContent substring-matches, and "/" is a
+    // substring of the buggy no-op outcome "/learn/hanja".
+    expect(screen.getByTestId('location').textContent).toBe('/');
+  });
+
+  it('honours a custom fallbackTo on an empty history', async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<BackButton fallbackTo="/review" />, {
+      entries: ['/review/mistakes'],
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+
+    // Exact — "/review" is a substring of the buggy outcome "/review/mistakes".
+    expect(screen.getByTestId('location').textContent).toBe('/review');
+  });
+
   it('forwards className onto the button', () => {
     renderWithRouter(<BackButton to="/parent" className="extra-class" />);
     expect(screen.getByRole('button', { name: 'Back' })).toHaveClass(

@@ -23,7 +23,7 @@
   background: transparent;
   color: var(--paper);
   font: inherit;
-  font-size: 14px;
+  font-size: 0.875rem; /* 14px @ md root — rem so F-025 text-size scales it */
   font-weight: 700;
   text-align: left;
   cursor: pointer;

@@ -6,9 +6,13 @@
  * tokens, so both themes and every accent preset come free.
  *
  * Contrast: rest-state tab text is `--paper-dim` (AA for text on the card
- * surfaces in both themes — validated by styles/tokensContrast.test.ts);
- * the active tab promotes to full `--paper` and adds the accent underline
- * (accent vs surface clears the 3:1 non-text minimum in both themes).
+ * surfaces in both themes — transitively validated by
+ * styles/tokensContrast.test.ts: mute >= 4.5:1 on every surface and
+ * dim > mute). The active tab's PRIMARY indicator is the text promotion to
+ * full `--paper`; the accent underline is a secondary cue with NO automated
+ * contrast guarantee — accent presets re-point `--vermilion`, and not every
+ * preset clears the 3:1 non-text minimum on every surface (light + mint
+ * measures 2.99:1 vs the page bg). Selection never relies on it alone.
  */
 
 .km-tabs__list {
@@ -24,7 +28,7 @@
   background: transparent;
   color: var(--paper-dim);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem; /* 13px @ md root — rem so F-025 text-size scales it */
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
