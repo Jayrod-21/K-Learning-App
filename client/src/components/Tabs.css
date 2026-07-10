@@ -1,0 +1,66 @@
+/*
+ * Tabs (F-032) — component-scoped styles.
+ *
+ * Colocated with Tabs.tsx (never index.css — the global sheet is shared
+ * mutable state across parallel feature branches). Only shared design
+ * tokens, so both themes and every accent preset come free.
+ *
+ * Contrast: rest-state tab text is `--paper-dim` (AA for text on the card
+ * surfaces in both themes — validated by styles/tokensContrast.test.ts);
+ * the active tab promotes to full `--paper` and adds the accent underline
+ * (accent vs surface clears the 3:1 non-text minimum in both themes).
+ */
+
+.km-tabs__list {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.km-tabs__tab {
+  position: relative;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--paper-dim);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  transition: color 160ms ease;
+}
+
+/* Selection underline — sits ON the tablist's hairline (bottom: -1px) so
+ * active state reads as the tab fusing with its panel. */
+.km-tabs__tab::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background 160ms ease;
+}
+
+.km-tabs__tab--active {
+  color: var(--paper);
+}
+
+.km-tabs__tab--active::after {
+  background: var(--vermilion);
+}
+
+.km-tabs__panel {
+  padding-top: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-tabs__tab,
+  .km-tabs__tab::after {
+    transition: none;
+  }
+}

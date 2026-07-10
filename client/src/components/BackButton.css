@@ -1,0 +1,44 @@
+/*
+ * BackButton (F-024) — component-scoped styles.
+ *
+ * Colocated with BackButton.tsx (never index.css — the global sheet is
+ * shared mutable state across parallel feature branches). Only shared
+ * design tokens, so both themes and every accent preset come free.
+ *
+ * Contrast: `--paper-dim` on the app background passes WCAG AA for text in
+ * both themes (validated by styles/tokensContrast.test.ts); hover promotes
+ * to full `--paper`.
+ */
+
+.km-backbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* Left padding is tighter than right — the chevron carries visual weight
+     toward the leading edge, so equal padding would look right-shifted. */
+  padding: 6px 12px 6px 8px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--paper-dim);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.km-backbtn:hover {
+  background: var(--ink-2);
+  color: var(--paper);
+}
+
+.km-backbtn:active {
+  color: var(--paper);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-backbtn {
+    transition: none;
+  }
+}
