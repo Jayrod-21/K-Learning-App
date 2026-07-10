@@ -22,9 +22,11 @@
  *                                               (default vocab, back-compat)
  *
  * Membership model (migration 049): `vocab_list_entries` carries a target XOR
- * — exactly one of vocab_entry_id / kgiu_entry_id / hanja_character_id is set
- * per row (mirrors the vocab_cards pattern). Per-target partial UNIQUE
- * indexes make a duplicate add a 409. `vocab_lists.kind` stays an advisory
+ * — exactly one of entry_id / kgiu_entry_id / hanja_character_id is set per
+ * row (mirrors the vocab_cards pattern; the vocab column keeps its 012 name
+ * `entry_id` — 049 is an add-only expand, see the migration header).
+ * Per-target uniqueness (the 012 UNIQUE for vocab, partial UNIQUE indexes for
+ * grammar/hanja) makes a duplicate add a 409. `vocab_lists.kind` stays an advisory
  * display hint — the API does not force memberships to match it (a 'vocab'
  * list may hold the odd hanja; 'mixed' exists for deliberate cross-track
  * lists).
@@ -85,7 +87,7 @@ type ItemType = z.infer<typeof ITEM_TYPE>;
  * supply a column name (threat model §type confusion).
  */
 const TARGET_COLUMN: Record<ItemType, string> = {
-  vocab: 'vocab_entry_id',
+  vocab: 'entry_id', // 012's name, kept by 049 (add-only expand — no rename)
   grammar: 'kgiu_entry_id',
   hanja: 'hanja_character_id',
 };
@@ -231,7 +233,7 @@ router.post(
           // the same order the client supplied — predictable for clients.
           const result = await client.query<{ count: string }>(
             `WITH ins AS (
-                INSERT INTO vocab_list_entries (list_id, vocab_entry_id, position)
+                INSERT INTO vocab_list_entries (list_id, entry_id, position)
                 SELECT $1, s.entry_id, s.ord - 1
                   FROM unnest($2::bigint[]) WITH ORDINALITY AS s(entry_id, ord)
                   -- Skip ids that don't exist or are already in the list.
@@ -241,7 +243,7 @@ router.post(
                        )
                    AND NOT EXISTS (
                           SELECT 1 FROM vocab_list_entries x
-                           WHERE x.list_id = $1 AND x.vocab_entry_id = s.entry_id
+                           WHERE x.list_id = $1 AND x.entry_id = s.entry_id
                        )
                 RETURNING 1
              )
@@ -329,10 +331,10 @@ router.get(
         hanja_gloss_en: string | null;
         hanja_level: string | null;
       }>(
-        `SELECT COALESCE(e.vocab_entry_id, e.kgiu_entry_id, e.hanja_character_id)
+        `SELECT COALESCE(e.entry_id, e.kgiu_entry_id, e.hanja_character_id)
                   AS entry_id,
-                CASE WHEN e.vocab_entry_id IS NOT NULL THEN 'vocab'
-                     WHEN e.kgiu_entry_id  IS NOT NULL THEN 'grammar'
+                CASE WHEN e.entry_id      IS NOT NULL THEN 'vocab'
+                     WHEN e.kgiu_entry_id IS NOT NULL THEN 'grammar'
                      ELSE 'hanja' END AS item_type,
                 e.position,
                 e.added_at,
@@ -346,7 +348,7 @@ router.get(
                 h.gloss_en AS hanja_gloss_en,
                 h.level AS hanja_level
            FROM vocab_list_entries e
-           LEFT JOIN vocab_entries    v ON v.id = e.vocab_entry_id
+           LEFT JOIN vocab_entries    v ON v.id = e.entry_id
            LEFT JOIN kgiu_entries     g ON g.id = e.kgiu_entry_id
            LEFT JOIN hanja_characters h ON h.id = e.hanja_character_id
           WHERE e.list_id = $1
@@ -566,14 +568,14 @@ router.post(
         // there"). The per-target partial UNIQUE indexes (049) back this up
         // at the DB level against races.
         const existing = await client.query<{ t: ItemType; target_id: string }>(
-          `SELECT CASE WHEN vocab_entry_id IS NOT NULL THEN 'vocab'
-                       WHEN kgiu_entry_id  IS NOT NULL THEN 'grammar'
+          `SELECT CASE WHEN entry_id      IS NOT NULL THEN 'vocab'
+                       WHEN kgiu_entry_id IS NOT NULL THEN 'grammar'
                        ELSE 'hanja' END AS t,
-                  COALESCE(vocab_entry_id, kgiu_entry_id, hanja_character_id)
+                  COALESCE(entry_id, kgiu_entry_id, hanja_character_id)
                     AS target_id
              FROM vocab_list_entries
             WHERE list_id = $1
-              AND (vocab_entry_id     = ANY($2::bigint[])
+              AND (entry_id           = ANY($2::bigint[])
                 OR kgiu_entry_id      = ANY($3::bigint[])
                 OR hanja_character_id = ANY($4::bigint[]))`,
           [listId, vocabIds, grammarIds, hanjaIds],
@@ -605,7 +607,7 @@ router.post(
           added_at: Date;
         }>(
           `INSERT INTO vocab_list_entries
-                  (list_id, vocab_entry_id, kgiu_entry_id, hanja_character_id, position)
+                  (list_id, entry_id, kgiu_entry_id, hanja_character_id, position)
                 SELECT $1,
                        CASE WHEN s.t = 'vocab'   THEN s.target_id END,
                        CASE WHEN s.t = 'grammar' THEN s.target_id END,
@@ -613,10 +615,10 @@ router.post(
                        $4 + (s.ord - 1)::int
                   FROM unnest($2::text[], $3::bigint[])
                        WITH ORDINALITY AS s(t, target_id, ord)
-             RETURNING COALESCE(vocab_entry_id, kgiu_entry_id, hanja_character_id)
+             RETURNING COALESCE(entry_id, kgiu_entry_id, hanja_character_id)
                          AS entry_id,
-                       CASE WHEN vocab_entry_id IS NOT NULL THEN 'vocab'
-                            WHEN kgiu_entry_id  IS NOT NULL THEN 'grammar'
+                       CASE WHEN entry_id      IS NOT NULL THEN 'vocab'
+                            WHEN kgiu_entry_id IS NOT NULL THEN 'grammar'
                             ELSE 'hanja' END AS item_type,
                        position, added_at`,
           [

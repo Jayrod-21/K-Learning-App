@@ -28,10 +28,12 @@ DETERMINISM:
     Mirrors test_migration_046.py — the real migration files are copied
     into a tmp_path-scoped directory and the runner is pointed at it via
     `--migrations-dir`; the `dsn` fixture gives each test a fresh schema.
-    Every `up` (full or --target 047) traverses migration 045
-    (hygiene_cleanup, DROP TABLE) and therefore needs --allow-destructive;
-    the 050 down does not (its data loss is a DELETE + DROP COLUMN, which
-    the destructive gate deliberately does not match — see 050.down).
+    Every `up` (full or --target 049) traverses migration 045
+    (hygiene_cleanup, DROP TABLE) and therefore needs --allow-destructive.
+    The 050 down's own data loss is a DELETE + DROP COLUMN (which the
+    destructive gate deliberately does not match — see 050.down), but a
+    `down --target 049` in the merged chain first traverses 052's and 051's
+    gated DROP TABLE downs, so the flag is required there in practice.
 """
 
 from __future__ import annotations
@@ -61,12 +63,15 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The seed target: the last migration before 050 (048/049 are reserved by
-# parallel tickets and do not exist on this branch, so 047 IS the pre-050
-# schema). Unlike test_migration_046.py's PRE_046=044, stopping here cannot
-# dodge --allow-destructive: 045 (hygiene_cleanup, DROP TABLE) already sits
-# below 047, so the seed-stage up passes the flag too.
-PRE_050 = "047"
+# The seed target: the migration immediately before 050 in the merged Group-2
+# chain (049_vocab_list_entries_multitype), so `down --target PRE_050` peels
+# back exactly 052/051/050 and the seed stage stops on the true pre-050
+# schema. Neither 048 nor 049 touches vocab_cards, so the table under test is
+# in its pre-050 shape here regardless. Unlike test_migration_046.py's
+# PRE_046=044, stopping here cannot dodge --allow-destructive: 045
+# (hygiene_cleanup, DROP TABLE) already sits below 049, so the seed-stage up
+# passes the flag too.
+PRE_050 = "049"
 
 # A syntactically valid argon2id-shaped hash satisfying
 # ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
@@ -432,8 +437,8 @@ def test_050_down_deletes_hanja_cards_and_restores_four_leg_xor(
 
     # --allow-destructive: 050.down itself is only a DELETE + DROP COLUMN (not
     # gate-matched), but in the full merged chain this `--target PRE_050 down`
-    # rolls back past LATER migrations' destructive downs (052 DROP TABLE), which
-    # the runner's gate requires the flag to confirm.
+    # rolls back past LATER migrations' destructive downs (052 and 051 both
+    # DROP TABLE), which the runner's gate requires the flag to confirm.
     rc = migrate.main(
         ["--migrations-dir", str(full_dir), "--allow-destructive", "--target", PRE_050, "down"]
     )

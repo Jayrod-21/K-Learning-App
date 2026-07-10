@@ -379,6 +379,15 @@ describe('PUT /reading/position/:uploadId — resume position upsert (F-069)', (
       [uploadId],
     );
     expect(rows[0].n).toBe(1);
+
+    // Optimistic-concurrency convention (ADR-001 §D6): the UPDATE arm of the
+    // upsert must bump `version` — first write leaves the DEFAULT 1, the
+    // overwrite advances it to 2 (the 001 trigger only touches updated_at).
+    const versionRow = await pg.pool.query<{ version: number }>(
+      'SELECT version FROM reading_positions WHERE source_upload_id = $1',
+      [uploadId],
+    );
+    expect(versionRow.rows[0]!.version).toBe(2);
   });
 
   it('positions are per-book: writing book B leaves book A untouched', async () => {

@@ -6,7 +6,8 @@
  *
  * Coverage:
  *   - auth required (401 unauthenticated)
- *   - dueCount counts only live, due, non-suspended, non-deleted cards
+ *   - dueCount counts only live, due, non-suspended, non-deleted, non-hanja
+ *     cards (hanja excluded until the F-075 review UI can drain them)
  *   - reading / listening / writing tasks are surfaced from the corpora
  *   - reading band-preference follows the diagnostic reading estimate
  *   - largestGap is the weakest of reading/listening/writing
@@ -23,6 +24,7 @@ import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
   registerUser,
+  seedHanjaCharacter,
   seedTtmikLesson,
   seedIyagiEpisode,
   seedVocabCard,
@@ -130,6 +132,27 @@ describe('GET /plan/today — dueCount filters', () => {
 
     const res = await a.agent.get('/plan/today');
     expect((res.body as { dueCount: number }).dueCount).toBe(0);
+  });
+
+  it('excludes due hanja cards — the Review queue cannot drain them yet', async () => {
+    // /vocab/cards/due filters hanja cards out and no client consumes
+    // /hanja/cards/due, so counting them in dueCount would show phantom
+    // workload the Review screen can never clear. Re-visit with the F-075
+    // hanja review UI (see plan.ts).
+    await seedTtmikLesson(pg.pool);
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    await seedVocabCard(pg.pool, userId, { dueOffsetMs: -60_000 }); // counts
+    const hanjaId = await seedHanjaCharacter(pg.pool, { char: '計', sound: '계' });
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, hanja_character_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')`,
+      [userId, hanjaId],
+    ); // due, live — but hanja → must NOT count
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    expect((res.body as { dueCount: number }).dueCount).toBe(1);
   });
 });
 

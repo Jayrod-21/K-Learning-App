@@ -53,9 +53,12 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The migration immediately before 052 in the chain — the down-target that
-# rolls back exactly 052 and nothing else.
-PRE_052 = "047"
+# The migration immediately before 052 in the merged Group-2 chain
+# (051_reading_positions) — the down-target that rolls back exactly 052 and
+# nothing else. This is what makes the gate-refusal assertion below isolate
+# 052's OWN DROP TABLE (with a deeper target, an earlier migration's gated
+# down could satisfy the refusal and mask a regression in 052.down).
+PRE_052 = "051"
 
 # A syntactically valid argon2id-shaped hash satisfying
 # ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).

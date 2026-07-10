@@ -22,10 +22,10 @@
 --   Reverse: 050_hanja_cards.down.sql
 --   Depends on: 001_core_schema (vocab_cards, card_face), 016_hanja
 --               (hanja_characters), 020 (the partial-unique idiom mirrored).
---   NOTE: numbering jumps 047 → 050. Slots 048/049 are reserved by parallel
---   in-flight tickets on other branches; the runner does not require
---   contiguous numbering (see migration 007's header) and minting placeholder
---   files here would collide with those branches at merge time.
+--   NOTE: authored in parallel with 048 (tickets) and 049 (list multi-type)
+--   on sibling branches — all three now coexist in the merged Group-2 chain.
+--   Neither 048 nor 049 touches vocab_cards, so 047's schema is still the
+--   effective pre-050 shape of the table this migration alters.
 --
 -- DESIGN NOTES
 --   * FK is `ON DELETE CASCADE` — deliberately DIFFERENT from the grammar

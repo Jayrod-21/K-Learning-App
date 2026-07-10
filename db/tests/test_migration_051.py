@@ -57,9 +57,12 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The last migration before 051 (048–050 are unassigned gaps; the runner
-# sorts and tolerates them). `down --target PRE_051` rolls back exactly 051.
-PRE_051 = "047"
+# The migration immediately before 051 in the merged Group-2 chain
+# (050_hanja_cards). `down --target PRE_051` rolls back 052 then 051 —
+# nothing below — so the 051 assertions stay focused. (052's DROP TABLE down
+# is what makes the descent require --allow-destructive; 051's own down is
+# gated in its own right too.)
+PRE_051 = "050"
 
 # A syntactically valid argon2id-shaped hash satisfying
 # ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).

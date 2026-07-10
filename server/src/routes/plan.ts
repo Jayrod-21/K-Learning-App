@@ -6,6 +6,8 @@
  *
  *   {
  *     dueCount:   number,                      // FSRS cards due as of now()
+ *                                              // (hanja cards excluded until
+ *                                              // the F-075 review UI ships)
  *     reading:    TodayTask | null,            // one TTMIK lesson
  *     listening:  TodayTask | null,            // one Iyagi episode
  *     writing:    TodayTask | null,            // one writing_prompts row
@@ -202,13 +204,19 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
     const userId = getUserId(req);
 
     // 1. FSRS due count — live, non-suspended, non-deleted cards due now.
+    //    Hanja cards (050) are EXCLUDED to match what the Review screen can
+    //    actually drain: /vocab/cards/due filters them out (vocab.ts) and no
+    //    client consumes /hanja/cards/due yet, so counting them here would
+    //    show phantom workload the user cannot clear. Re-include (or report
+    //    the split) when the hanja review UI ships (F-075 client wiring).
     const due = await query<{ due_count: number }>(
       `SELECT count(*)::int AS due_count
          FROM vocab_cards
         WHERE user_id = $1
           AND due_at <= now()
           AND suspended_at IS NULL
-          AND deleted_at IS NULL`,
+          AND deleted_at IS NULL
+          AND hanja_character_id IS NULL`,
       [userId],
     );
     const dueCount = due.rows[0]?.due_count ?? 0;

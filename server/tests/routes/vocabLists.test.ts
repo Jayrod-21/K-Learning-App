@@ -308,14 +308,15 @@ describe('POST /vocab/lists/:id/entries — multi-type items (migration 049)', (
     expect(res.body.entries).toHaveLength(1);
     expect(res.body.entries[0].item_type).toBe('grammar');
     expect(res.body.entries[0].entry_id).toBe(g1);
-    // XOR column routing proven at the row level.
+    // XOR column routing proven at the row level. (The vocab column keeps
+    // its 012 name `entry_id` — 049 is an add-only expand, no rename.)
     const { rows } = await pg.pool.query(
-      `SELECT vocab_entry_id, kgiu_entry_id, hanja_character_id
+      `SELECT entry_id, kgiu_entry_id, hanja_character_id
          FROM vocab_list_entries WHERE list_id = $1`,
       [id],
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0].vocab_entry_id).toBeNull();
+    expect(rows[0].entry_id).toBeNull();
     expect(Number(rows[0].kgiu_entry_id)).toBe(g1);
     expect(rows[0].hanja_character_id).toBeNull();
   });
@@ -331,11 +332,11 @@ describe('POST /vocab/lists/:id/entries — multi-type items (migration 049)', (
     expect(res.status).toBe(201);
     expect(res.body.entries[0].item_type).toBe('hanja');
     const { rows } = await pg.pool.query(
-      `SELECT vocab_entry_id, kgiu_entry_id, hanja_character_id
+      `SELECT entry_id, kgiu_entry_id, hanja_character_id
          FROM vocab_list_entries WHERE list_id = $1`,
       [id],
     );
-    expect(rows[0].vocab_entry_id).toBeNull();
+    expect(rows[0].entry_id).toBeNull();
     expect(rows[0].kgiu_entry_id).toBeNull();
     expect(Number(rows[0].hanja_character_id)).toBe(h1);
   });
@@ -555,7 +556,7 @@ describe('vocab_list_entries XOR CHECK (migration 049, DB level)', () => {
     await expect(
       pg.pool.query(
         `INSERT INTO vocab_list_entries
-                (list_id, vocab_entry_id, kgiu_entry_id, position)
+                (list_id, entry_id, kgiu_entry_id, position)
          VALUES ($1, $2, $3, 0)`,
         [id, v1, g1],
       ),

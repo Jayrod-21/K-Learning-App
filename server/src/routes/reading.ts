@@ -367,6 +367,9 @@ router.put(
       // 051 owner-guard FK makes a cross-user write structurally impossible
       // even if this handler were wrong. updated_at is refreshed by the row
       // trigger on the UPDATE arm (and defaults to now() on first insert).
+      // version increments on the UPDATE arm per the ADR-001 §D6 convention —
+      // the app, not a trigger, owns the optimistic-concurrency counter
+      // (mirrors notifications.ts's schedule upsert).
       const { rows } = await query<{
         source_upload_id: string;
         chapter_id: string | null;
@@ -380,7 +383,8 @@ router.put(
          ON CONFLICT (user_id, source_upload_id) DO UPDATE
             SET chapter_id     = EXCLUDED.chapter_id,
                 passage_number = EXCLUDED.passage_number,
-                page_number    = EXCLUDED.page_number
+                page_number    = EXCLUDED.page_number,
+                version        = reading_positions.version + 1
          RETURNING ${POSITION_COLUMNS}`,
         [userId, uploadId, chapterId, passageNumber, pageNumber],
       );
