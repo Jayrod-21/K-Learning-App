@@ -7,29 +7,39 @@
  *   1. **Where you stand** — `SkillsCompare` (variant `full`) over the LATEST
  *      diagnostic attempt, with the TOPIK-1→Native reference picker. This is
  *      the single headline compare surface (moved off Today, where it was the
- *      `compact` snapshot). The old standalone "Comparison" card was folded in
- *      here as the **Attempt vs attempt** sub-block (two pickers + a signed
- *      delta table, shown when ≥ 2 attempts) so there is ONE compare card,
- *      not two competing ones. A **Retake diagnostic** button lives in this
- *      populated card (previously the CTA existed only in the empty state).
- *   2. **Trend** — the inline-SVG line chart of diagnostic scores across
- *      attempts (one 2px line per dimension + a neutral Overall line),
- *      with its keyboard-reachable hover readout.
- *   3. **All attempts table** — the chart's accessible twin; every plotted
- *      value is readable without a pointer.
- *   4. **Progress by skill** (F-017, moved from Today) — a `SwipeCarousel`
+ *      `compact` snapshot). A **Retake diagnostic** button lives in this
+ *      populated card. Below it, the card's bottom section is the **attempt
+ *      history carousel** (F-030): a looping `SwipeCarousel` (F-029) of
+ *      (1) **Trend** — the inline-SVG line chart of diagnostic scores across
+ *      attempts with its keyboard-reachable hover readout, (2) **Attempt vs
+ *      attempt** — two pickers + a signed delta table (page present only
+ *      with ≥ 2 attempts), and (3) **All attempts** — the chart's accessible
+ *      twin table; every plotted value readable without a pointer. The old
+ *      standalone Trend / All-attempts cards were folded into this carousel
+ *      so the page reads as one history surface, not three stacked cards.
+ *   2. **Progress by skill** (F-017, moved from Today) — a `SwipeCarousel`
  *      of five `SkillTrendPanel` pages (Reading / Listening / Vocab /
  *      Grammar / Writing), each a `LineChart` of that skill's 30-day series.
  *      Independent of the diagnostic history — it renders (or errors) on its
  *      own fetch, so a user with practice activity but no diagnostic still
  *      sees their trends.
- *   5. **Word mastery** (F-013) — per-word FSRS buckets, filterable list.
- *   6. **Grammar mastery** — a designed "coming soon" placeholder (the real
- *      route + section land in P4).
+ *   3. **Mastery** (F-032) — ONE tabbed card (`Tabs` primitive) with three
+ *      panels sharing the same area instead of stacked cards:
+ *        - **Words** (F-013) — per-word FSRS buckets, filterable list,
+ *          windowed client-side with `usePagination` + `ShowMore` (F-031:
+ *          15 initial, +15 per click, 30 max) on top of the existing
+ *          30-per-page server pager.
+ *        - **Grammar** — a designed "coming soon" placeholder (the real
+ *          route + section land in P4).
+ *        - **Hanja** (F-041) — the aggregate banked/practicing/new counts +
+ *          the Encountered-vs-L4 band from `GET /hanja/progress`, with a
+ *          graceful invitation when the user hasn't touched any hanja yet.
  *
  * Data:
  *   useEndpointOrMock('diagnostic.history', …, { realFn: getHistory })       → DiagnosticHistoryResponse
  *   useEndpointOrMock('progress.series', …, { realFn: fetchSkillSeries })    → AllSkillSeries (F-017)
+ *   fetchMastery (direct, abortable)                                         → MasteryPage (F-013/F-031)
+ *   fetchHanjaProgress (direct, abortable)                                   → HanjaProgress (F-041)
  *
  * The series fan-out degrades per skill (`fetchSkillSeries` never rejects on
  * a route failure — a failed skill becomes an honest "Couldn't load this
@@ -49,7 +59,8 @@
  *     children too.
  *   - **Read-only surface.** The page issues authenticated GETs only; no
  *     mutation, no client-supplied identifiers (no IDOR surface). Server
- *     scopes every query to the session user.
+ *     scopes every query to the session user (including `/hanja/progress`,
+ *     whose templated `note` string renders as a React child — escaped).
  *   - **Mock fallback honesty.** The history mock loader resolves an EMPTY
  *     history (mirroring the Diagnostic screen's empty fixture) so a
  *     real-endpoint failure can never paint fabricated progress; when the
@@ -57,7 +68,7 @@
  *     a fake state. The series source can't trip the mock fallback at all —
  *     its realFn never rejects (per-skill degradation).
  */
-import { useEffect, useState, type JSX } from 'react';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
@@ -68,14 +79,19 @@ import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { LineChart } from '../components/LineChart';
 import { Pill } from '../components/Pill';
+import { ShowMore } from '../components/ShowMore';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillReference, SkillRow } from '../components/SkillsCompare';
 import { SwipeCarousel } from '../components/SwipeCarousel';
+import { Tabs } from '../components/Tabs';
+import type { TabItem } from '../components/Tabs';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
+import { usePagination } from '../hooks/usePagination';
 import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
+import { fetchHanjaProgress } from '../services/hanja';
 import { fetchSkillSeries } from '../services/stats';
 import { fetchMastery } from '../services/vocab';
 import { ApiError } from '../services/api';
@@ -87,9 +103,11 @@ import type {
   DiagnosticHistoryResponse,
   DiagnosticHistorySnapshot,
   DiagnosticSnapshot,
+  HanjaProgress,
   MasteryBucket,
   MasteryPage,
   MasterySummary,
+  MasteryWord,
   SkillSeries,
 } from '../types/domain';
 import './Progress.css';
@@ -505,9 +523,7 @@ function Progress(): JSX.Element {
 
       <SkillTrendsCard series={series} />
 
-      <WordMasterySection />
-
-      <GrammarMasterySection />
+      <MasterySection />
     </section>
   );
 }
@@ -550,41 +566,37 @@ interface HistoryProps {
 }
 
 function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
-  const n = snapshots.length;
+  return <CompareCard snapshots={snapshots} />;
+}
+
+/**
+ * One page of the attempt-history carousel (F-030) — the per-page chrome
+ * (meta eyebrow + title) that the standalone cards used to carry, so a
+ * swiper always knows which of the three history surfaces they're on.
+ */
+function HistoryPage({
+  metaEn,
+  metaKr,
+  titleEn,
+  titleKr,
+  children,
+}: {
+  metaEn: string;
+  metaKr: string;
+  titleEn: string;
+  titleKr: string;
+  children: ReactNode;
+}): JSX.Element {
   return (
-    <>
-      <CompareCard snapshots={snapshots} />
-
-      <Card className="km-progress__card">
-        <Eyebrow>
-          <Bilingual en="Score over attempts · 0–100" kr="회차별 점수 · 0–100" />
-        </Eyebrow>
-        <div className="km-progress__card-title">
-          <Bilingual en="Trend" kr="추이" />
-        </div>
-        <TrendChart snapshots={snapshots} />
-        {n === 1 ? (
-          <p className="km-progress__note">
-            <Bilingual
-              en="One attempt so far — retake the diagnostic and the trend lines appear."
-              kr="아직 한 번뿐이에요 — 진단을 다시 하면 추이 선이 나타나요."
-            />
-          </p>
-        ) : null}
-      </Card>
-
-      <Card className="km-progress__card">
-        {/* P3b trim — "Every attempt" repeated the title; the eyebrow keeps
-            only the ordering meta. */}
-        <Eyebrow>
-          <Bilingual en="Oldest first" kr="오래된 순" />
-        </Eyebrow>
-        <div className="km-progress__card-title">
-          <Bilingual en="All attempts" kr="전체 회차" />
-        </div>
-        <AttemptsTable snapshots={snapshots} />
-      </Card>
-    </>
+    <div className="km-progress__historyPage">
+      <Eyebrow>
+        <Bilingual en={metaEn} kr={metaKr} />
+      </Eyebrow>
+      <div className="km-progress__historyTitle">
+        <Bilingual en={titleEn} kr={titleKr} />
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -595,18 +607,66 @@ function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
 /**
  * "Where you stand" — the headline compare. `SkillsCompare full` over the
  * LATEST attempt (the TOPIK-level snapshot moved off Today), the retake CTA,
- * and — with ≥ 2 attempts — the attempt-vs-attempt delta table folded in as
- * a sub-block. One card answers both compare questions ("vs TOPIK levels
- * now" and "vs my earlier attempts") instead of two competing widgets.
+ * and the attempt-history carousel (F-030) as the card's bottom section:
+ * Trend → Attempt vs attempt (≥ 2 attempts only) → All attempts, looping
+ * (F-029). One card answers every history question instead of three stacked
+ * cards competing for the page.
  */
 function CompareCard({ snapshots }: HistoryProps): JSX.Element {
   const navigate = useNavigate();
+  const n = snapshots.length;
   const latest = snapshots[snapshots.length - 1];
   if (latest === undefined) {
     // Unreachable: the caller renders HistoryBlocks only when n >= 1.
     // Guarded for noUncheckedIndexedAccess.
     return <></>;
   }
+
+  // F-030 page order is fixed by the ticket: trend → attempt-vs-attempt →
+  // all attempts. The compare page needs two attempts to compare, so with a
+  // single attempt the carousel simply has two pages — never a broken one.
+  const pages: JSX.Element[] = [
+    <HistoryPage
+      key="trend"
+      metaEn="Score over attempts · 0–100"
+      metaKr="회차별 점수 · 0–100"
+      titleEn="Trend"
+      titleKr="추이"
+    >
+      <TrendChart snapshots={snapshots} />
+      {n === 1 ? (
+        <p className="km-progress__note">
+          <Bilingual
+            en="One attempt so far — retake the diagnostic and the trend lines appear."
+            kr="아직 한 번뿐이에요 — 진단을 다시 하면 추이 선이 나타나요."
+          />
+        </p>
+      ) : null}
+    </HistoryPage>,
+    ...(n >= 2
+      ? [
+          <HistoryPage
+            key="compare"
+            metaEn="Pick any two attempts"
+            metaKr="두 회차 선택"
+            titleEn="Attempt vs attempt"
+            titleKr="회차 비교"
+          >
+            <AttemptCompare snapshots={snapshots} />
+          </HistoryPage>,
+        ]
+      : []),
+    <HistoryPage
+      key="attempts"
+      metaEn="Oldest first"
+      metaKr="오래된 순"
+      titleEn="All attempts"
+      titleKr="전체 회차"
+    >
+      <AttemptsTable snapshots={snapshots} />
+    </HistoryPage>,
+  ];
+
   return (
     <Card className="km-progress__card">
       {/* P3b: the old eyebrow paired two UNRELATED halves ("Latest attempt" /
@@ -635,13 +695,17 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
           <Bilingual en="Retake diagnostic" kr="진단 다시 하기" />
         </Button>
       </div>
-      {snapshots.length >= 2 ? <AttemptCompare snapshots={snapshots} /> : null}
+      <div className="km-progress__historyblock">
+        <SwipeCarousel ariaLabel="Attempt history" loop>
+          {pages}
+        </SwipeCarousel>
+      </div>
     </Card>
   );
 }
 
-/** The attempt-vs-attempt pickers + signed delta table (previously its own
- *  "Comparison" card; now a sub-block of the single compare surface). */
+/** The attempt-vs-attempt pickers + signed delta table — one page of the
+ *  attempt-history carousel (F-030); its title chrome lives on HistoryPage. */
 function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
   const n = snapshots.length;
   // Stored selection may outlive a history refetch; clamp during render
@@ -660,11 +724,7 @@ function AttemptCompare({ snapshots }: HistoryProps): JSX.Element {
   }
 
   return (
-    <div className="km-progress__attemptcompare">
-      <Eyebrow>
-        <Bilingual en="Attempt vs attempt" kr="회차 비교" />
-      </Eyebrow>
-
+    <div>
       <div className="km-progress__selects">
         <label className="km-progress__select-label">
           <Bilingual en="From" kr="시작" />
@@ -1151,8 +1211,14 @@ function MasteryBar({
   );
 }
 
-/** Progress-page section: per-word FSRS mastery — summary + a filterable list. */
-function WordMasterySection(): JSX.Element {
+/** Referentially-stable empty list so `usePagination` gets the same array
+ *  every render while the mastery page is still loading. */
+const NO_WORDS: readonly MasteryWord[] = [];
+
+/** Mastery-tab panel (F-013/F-031): per-word FSRS mastery — summary + a
+ *  filterable list, windowed client-side (15 → +15 → 30) over the 30-word
+ *  server page. */
+function WordMasteryPanel(): JSX.Element {
   const [bucket, setBucket] = useState<MasteryBucket | null>(null);
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<MasteryPage | null>(null);
@@ -1160,11 +1226,19 @@ function WordMasterySection(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
+  // F-031 — the visible window over the CURRENT server page. usePagination's
+  // defaults (15 initial / +15 step / 30 max) are exactly the ticket's spec,
+  // and the 30 cap equals MASTERY_PAGE, so "Show more" can always reveal the
+  // whole loaded page and never promises words that weren't fetched.
+  const pager = usePagination(page?.words ?? NO_WORDS);
+
   // Selecting a bucket (or toggling it off) always returns to page 1 — done in
   // the handler, NOT a separate effect, so one tap triggers ONE fetch not two.
+  // The F-031 window collapses back to 15 with it.
   function selectBucket(next: MasteryBucket | null): void {
     setBucket(next);
     setOffset(0);
+    pager.reset();
   }
   function retry(): void {
     setNonce((n) => n + 1);
@@ -1205,13 +1279,7 @@ function WordMasterySection(): JSX.Element {
   }, [bucket, offset, nonce]);
 
   return (
-    <Card className="km-progress__card">
-      {/* P3b trim — the "Vocabulary · 단어 숙달" eyebrow repeated the title;
-          the Korean lives on the title itself now. */}
-      <div className="km-progress__card-title">
-        <Bilingual en="Word mastery" kr="단어 숙달" />
-      </div>
-
+    <div>
       {page === null ? (
         loading ? (
           <div className="km-progress__state">
@@ -1258,28 +1326,36 @@ function WordMasterySection(): JSX.Element {
               />
             </p>
           ) : (
-            <ul className="km-mastery__list">
-              {page.words.map((w) => (
-                <li key={w.id} className="km-mastery__row">
-                  <span className="kr km-mastery__kr">{w.korean}</span>
-                  <span className="km-mastery__en">{w.english ?? ''}</span>
-                  <span
-                    className={`km-mastery__badge ${BUCKET_META[w.bucket].cls}`}
-                  >
-                    <Bilingual
-                      en={BUCKET_META[w.bucket].label}
-                      kr={BUCKET_META[w.bucket].kr}
-                      compact
-                    />
-                  </span>
-                  <span className="km-mastery__stab">
-                    {w.bucket === 'new'
-                      ? '—'
-                      : `${String(Math.round(w.stability))}d`}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <>
+              <ul className="km-mastery__list">
+                {pager.visible.map((w) => (
+                  <li key={w.id} className="km-mastery__row">
+                    <span className="kr km-mastery__kr">{w.korean}</span>
+                    <span className="km-mastery__en">{w.english ?? ''}</span>
+                    <span
+                      className={`km-mastery__badge ${BUCKET_META[w.bucket].cls}`}
+                    >
+                      <Bilingual
+                        en={BUCKET_META[w.bucket].label}
+                        kr={BUCKET_META[w.bucket].kr}
+                        compact
+                      />
+                    </span>
+                    <span className="km-mastery__stab">
+                      {w.bucket === 'new'
+                        ? '—'
+                        : `${String(Math.round(w.stability))}d`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {/* F-031 — reveal the rest of the loaded page in +15 windows. */}
+              <ShowMore
+                canShowMore={pager.canShowMore}
+                onShowMore={pager.showMore}
+                remaining={pager.remaining}
+              />
+            </>
           )}
           {page.total > MASTERY_PAGE ? (
             <div className="km-mastery__pager">
@@ -1288,17 +1364,20 @@ function WordMasterySection(): JSX.Element {
                 disabled={offset === 0}
                 onClick={() => {
                   setOffset((o) => Math.max(0, o - MASTERY_PAGE));
+                  pager.reset();
                 }}
               >
                 <Bilingual en="Prev" kr="이전" compact />
               </Button>
               <span className="km-mastery__pageinfo">
+                {/* The upper bound is what's actually SHOWN (the F-031
+                    window), not the fetched page size — never over-claims. */}
                 <Bilingual
                   en={`${String(offset + 1)}–${String(
-                    Math.min(offset + MASTERY_PAGE, page.total),
+                    offset + pager.visible.length,
                   )} of ${String(page.total)}`}
                   kr={`${String(page.total)}개 중 ${String(offset + 1)}–${String(
-                    Math.min(offset + MASTERY_PAGE, page.total),
+                    offset + pager.visible.length,
                   )}`}
                   compact
                 />
@@ -1308,6 +1387,7 @@ function WordMasterySection(): JSX.Element {
                 disabled={offset + MASTERY_PAGE >= page.total}
                 onClick={() => {
                   setOffset((o) => o + MASTERY_PAGE);
+                  pager.reset();
                 }}
               >
                 <Bilingual en="Next" kr="다음" compact />
@@ -1316,30 +1396,24 @@ function WordMasterySection(): JSX.Element {
           ) : null}
         </>
       )}
-    </Card>
+    </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Grammar mastery — designed placeholder (real section lands in P4)
+// Grammar mastery — designed placeholder (real route lands in P4)
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Grammar mastery placeholder — sits beside Word mastery so the page's
- * mastery area already reads as "vocab + grammar". The backing read route
- * (mirroring `/vocab/mastery` over the grammar production-card FSRS state)
- * is a P4 feature; until then this is an intentional coming-soon card,
- * never a blank or broken panel.
+ * Grammar mastery placeholder — the Grammar tab of the F-032 mastery area.
+ * The backing read route (mirroring `/vocab/mastery` over the grammar
+ * production-card FSRS state) is a P4 feature; until then this is an
+ * intentional coming-soon panel, never a blank or broken one.
  */
-function GrammarMasterySection(): JSX.Element {
+function GrammarMasteryPanel(): JSX.Element {
   return (
-    <Card className="km-progress__card">
-      {/* P3b trim — the "Grammar · 문법 숙달" eyebrow repeated the title; the
-          head row now pairs the bilingual title with the coming-soon pill. */}
+    <div>
       <div className="km-progress__soonhead">
-        <div className="km-progress__card-title">
-          <Bilingual en="Grammar mastery" kr="문법 숙달" />
-        </div>
         <Pill>
           <Bilingual en="Coming soon" kr="준비 중" />
         </Pill>
@@ -1356,6 +1430,201 @@ function GrammarMasterySection(): JSX.Element {
           />
         </p>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Hanja mastery (F-041) — aggregate bands from GET /hanja/progress
+// ─────────────────────────────────────────────────────────────
+
+/** Hanja band chrome — mirrors the Hanja screen's state labels (P3b:
+ *  `banked` uses the 담기/담김 family per the glossary). */
+const HANJA_BAND_META: ReadonlyArray<{
+  key: 'banked' | 'practicing' | 'new';
+  label: string;
+  kr: string;
+  cls: string;
+}> = [
+  { key: 'banked', label: 'Banked', kr: '담김', cls: 'is-banked' },
+  { key: 'practicing', label: 'Practicing', kr: '연습 중', cls: 'is-practicing' },
+  { key: 'new', label: 'New', kr: '신규', cls: 'is-new' },
+];
+
+/**
+ * Mastery-tab panel (F-041): the user's aggregate hanja standing from
+ * `GET /hanja/progress` — a banked/practicing/new proportion bar (same
+ * visual family as the word-mastery bar) plus the Encountered-vs-L4 band.
+ * The route aggregates counts (per-character FSRS lands with F-075), so
+ * this reads as the mastery summary, not a character list.
+ *
+ * Same direct-fetch pattern as WordMasteryPanel (real-data-only, abortable,
+ * never a mock fallback — fake mastery numbers would misrepresent real
+ * progress). A user who hasn't touched any hanja gets an invitation, not a
+ * crash or an all-zero bar.
+ */
+function HanjaMasteryPanel(): JSX.Element {
+  const [progress, setProgress] = useState<HanjaProgress | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  function retry(): void {
+    setNonce((n) => n + 1);
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetchHanjaProgress(ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setProgress(res);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load hanja mastery.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [nonce]);
+
+  if (loading) {
+    return (
+      <div className="km-progress__state">
+        <Bilingual en="Loading hanja mastery…" kr="불러오는 중…" />
+      </div>
+    );
+  }
+  if (error !== null || progress === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load hanja mastery.'}
+        onRetry={retry}
+      />
+    );
+  }
+
+  // "Empty for this user" = no progress rows at all (encountered counts ANY
+  // row; banked/practicing are its stateful subsets). `new` alone can be the
+  // whole corpus for a fresh user, so it must NOT count as activity.
+  if (progress.banked + progress.practicing + progress.encountered === 0) {
+    return (
+      <p className="km-progress__note">
+        <Bilingual
+          en="No hanja studied yet — mark characters as practicing or banked in Learn → Hanja and your mastery shows here."
+          kr="아직 학습한 한자가 없어요 — 한자 페이지에서 연습 중/담김으로 표시하면 숙달도가 여기에 나와요."
+        />
+      </p>
+    );
+  }
+
+  const denom = Math.max(
+    1,
+    progress.banked + progress.practicing + progress.new,
+  );
+  const encounteredPct =
+    progress.targetL4 > 0
+      ? Math.min(100, (progress.encountered / progress.targetL4) * 100)
+      : 0;
+
+  return (
+    <div className="km-mastery__summary">
+      <div
+        className="km-mastery__bar"
+        role="img"
+        aria-label={`${String(progress.banked)} banked, ${String(
+          progress.practicing,
+        )} practicing, ${String(progress.new)} new`}
+      >
+        {HANJA_BAND_META.map((b) =>
+          progress[b.key] > 0 ? (
+            <span
+              key={b.key}
+              className={`km-mastery__seg ${b.cls}`}
+              style={{ width: `${String((progress[b.key] / denom) * 100)}%` }}
+            />
+          ) : null,
+        )}
+      </div>
+      <div className="km-mastery__legend">
+        {/* Static stats, not filter chips — this panel has no list to
+            filter (per-character cards land with F-075). */}
+        {HANJA_BAND_META.map((b) => (
+          <span key={b.key} className={`km-mastery__stat ${b.cls}`}>
+            <span className="km-mastery__dot" aria-hidden="true" />
+            <Bilingual en={b.label} kr={b.kr} compact /> <b>{progress[b.key]}</b>
+          </span>
+        ))}
+      </div>
+      <div className="km-hmastery__band">
+        <Eyebrow>
+          <Bilingual
+            en={`Encountered · ${String(progress.encountered)} of ~${String(progress.targetL4)} at L4`}
+            kr={`접한 한자 · ${String(progress.encountered)} / 약 ${String(progress.targetL4)} (L4 기준)`}
+          />
+        </Eyebrow>
+        <div
+          className="km-hmastery__bar"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={progress.targetL4}
+          aria-valuenow={progress.encountered}
+          aria-label="Hanja encountered out of L4 target"
+        >
+          <div
+            className="km-hmastery__fill"
+            style={{ width: `${encounteredPct.toFixed(1)}%` }}
+          />
+        </div>
+        {/* Server-templated status line — rendered as a React child. */}
+        <p className="km-progress__note">{progress.note}</p>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Mastery area (F-032) — Words / Grammar / Hanja as one tabbed card
+// ─────────────────────────────────────────────────────────────
+
+const MASTERY_TABS: ReadonlyArray<TabItem> = [
+  { id: 'words', label: <Bilingual en="Words" kr="단어" compact /> },
+  { id: 'grammar', label: <Bilingual en="Grammar" kr="문법" compact /> },
+  { id: 'hanja', label: <Bilingual en="Hanja" kr="한자" compact /> },
+];
+
+/**
+ * The F-032 mastery card: Word / Grammar / Hanja mastery share ONE area
+ * behind the Phase-1 `Tabs` primitive instead of stacking three cards.
+ * Panels are lazy (Tabs renders only the active one) and re-keyed per tab,
+ * so each panel owns its fetch lifecycle — an aborted switch never leaks a
+ * request or state into the next tab.
+ */
+function MasterySection(): JSX.Element {
+  return (
+    <Card className="km-progress__card">
+      <div className="km-progress__card-title">
+        <Bilingual en="Mastery" kr="숙달" />
+      </div>
+      <Tabs tabs={MASTERY_TABS} ariaLabel="Mastery">
+        {(activeId) =>
+          activeId === 'grammar' ? (
+            <GrammarMasteryPanel />
+          ) : activeId === 'hanja' ? (
+            <HanjaMasteryPanel />
+          ) : (
+            <WordMasteryPanel />
+          )
+        }
+      </Tabs>
     </Card>
   );
 }

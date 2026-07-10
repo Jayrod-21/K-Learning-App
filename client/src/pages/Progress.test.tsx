@@ -1,7 +1,8 @@
 /**
- * Progress page (the P1.2 stats hub) — compare surface + trend chart +
- * per-skill trends carousel + mastery over a mocked `useEndpointOrMock`
- * (same harness style as Hanja/Diagnostic page tests).
+ * Progress page (the P1.2 stats hub, reworked in Phase 3a) — compare surface
+ * + attempt-history carousel + per-skill trends carousel + tabbed mastery,
+ * over a mocked `useEndpointOrMock` (same harness style as Hanja/Diagnostic
+ * page tests).
  *
  * The hook is mocked with a per-key dispatch so each test controls the
  * `diagnostic.history` and `progress.series` reads directly; the page's
@@ -10,17 +11,29 @@
  * comparison + attempts tables, carousel tabs/panels), which is also what
  * makes the charts usable without a pointer.
  *
- * P1.2 contract pinned here: Progress DOES render the moved F-017 "Progress
- * by skill" carousel and the SkillsCompare `full` headline compare (both
- * moved off Today), the retake-diagnostic button in the POPULATED state, and
- * the grammar-mastery placeholder beside Word mastery. The attempt-vs-attempt
- * delta table is folded into the single compare card, not a second card.
+ * Phase-3a contract pinned here:
+ *   - F-030: the compare card's bottom section is a LOOPING attempt-history
+ *     SwipeCarousel ordered Trend → Attempt vs attempt → All attempts (the
+ *     compare page exists only with ≥ 2 attempts).
+ *   - F-031: the word list is windowed 15 → +15 → 30 via ShowMore on top of
+ *     the 30-per-page server pager, and the window collapses on filter/page
+ *     changes.
+ *   - F-032: Word / Grammar / Hanja mastery are tabs sharing ONE card.
+ *   - F-041: the Hanja tab renders GET /hanja/progress bands, with a
+ *     graceful invitation for a user with no hanja activity and a real
+ *     error/retry path.
  *
  * Fixtures pass through `vi.hoisted` so the Vitest-hoisted `vi.mock` factory
  * can reference them.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
@@ -183,6 +196,29 @@ const { MASTERY_DEFAULT } = vi.hoisted(() => ({
   },
 }));
 
+// F-041 — the Hanja mastery tab fetches directly (not via useEndpointOrMock).
+const hanjaSvc = vi.hoisted(() => ({ fetchHanjaProgress: vi.fn() }));
+const { HANJA_DEFAULT, HANJA_EMPTY } = vi.hoisted(() => ({
+  HANJA_DEFAULT: {
+    banked: 12,
+    practicing: 8,
+    new: 80,
+    targetL4: 100,
+    encountered: 25,
+    note: '12 banked · 8 practicing · 25/100 encountered',
+  },
+  // A fresh user: `new` is the whole corpus but there is ZERO activity
+  // (no progress rows) — must render the invitation, not an all-new bar.
+  HANJA_EMPTY: {
+    banked: 0,
+    practicing: 0,
+    new: 150,
+    targetL4: 100,
+    encountered: 0,
+    note: '0 banked · 0 practicing · 0/150 encountered',
+  },
+}));
+
 // Per-test overrides, one per hook key — `{}` means "use the default".
 type HookResult = UseEndpointOrMockResult<unknown>;
 const hookOverride = vi.hoisted(() => ({ current: {} as Partial<HookResult> }));
@@ -216,6 +252,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
   ),
 }));
 vi.mock('../services/vocab', () => masterySvc);
+vi.mock('../services/hanja', () => hanjaSvc);
 // The page imports `fetchSkillSeries` for its realFn; with the hook mocked
 // it is never invoked, but mock the module anyway so no test path can reach
 // the real axios layer.
@@ -242,6 +279,24 @@ function renderPage(): void {
   );
 }
 
+/** The F-030 attempt-history carousel region (inside the compare card). */
+function historyRegion(): HTMLElement {
+  return screen.getByRole('region', { name: 'Attempt history' });
+}
+
+/** Activate one attempt-history page via its dot (1-based). */
+async function goToHistoryPage(
+  user: ReturnType<typeof userEvent.setup>,
+  page: number,
+  of = 3,
+): Promise<void> {
+  await user.click(
+    within(historyRegion()).getByRole('tab', {
+      name: `Page ${String(page)} of ${String(of)}`,
+    }),
+  );
+}
+
 beforeEach(() => {
   refetchSpy.mockClear();
   seriesRefetchSpy.mockClear();
@@ -249,12 +304,16 @@ beforeEach(() => {
   seriesOverride.current = {};
   masterySvc.fetchMastery.mockReset();
   masterySvc.fetchMastery.mockResolvedValue(MASTERY_DEFAULT);
+  hanjaSvc.fetchHanjaProgress.mockReset();
+  hanjaSvc.fetchHanjaProgress.mockResolvedValue(HANJA_DEFAULT);
 });
 
 describe('Progress page — trend', () => {
-  it('renders the chart, legend, and the all-attempts table from history', () => {
+  it('renders the chart + legend on the first history page, the attempts table on the last', async () => {
+    const user = userEvent.setup();
     renderPage();
 
+    // F-030 — the trend chart is the carousel's FIRST page, active by default.
     expect(
       screen.getByRole('img', {
         name: /Line chart of diagnostic scores across 3 attempts/,
@@ -275,7 +334,9 @@ describe('Progress page — trend', () => {
       expect(legend).toHaveTextContent(pair);
     }
 
-    // The table twin carries every plotted value, oldest first.
+    // The table twin lives on the carousel's LAST page (F-030 order) and
+    // carries every plotted value, oldest first.
+    await goToHistoryPage(user, 3);
     const table = screen.getByRole('table', { name: /All diagnostic attempts/ });
     const rows = within(table).getAllByRole('row');
     // header + 3 attempts
@@ -311,7 +372,8 @@ describe('Progress page — trend', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders a dash for a dimension missing from one attempt (no crash)', () => {
+  it('renders a dash for a dimension missing from one attempt (no crash)', async () => {
+    const user = userEvent.setup();
     const partial = historyOf(2);
     // Attempt 2 loses grammar (an empty item pool can drop a dimension).
     const second = partial.snapshots[1] as DiagnosticHistorySnapshot;
@@ -322,9 +384,66 @@ describe('Progress page — trend', () => {
     hookOverride.current = { data: partial };
     renderPage();
 
+    await goToHistoryPage(user, 3);
     const table = screen.getByRole('table', { name: /All diagnostic attempts/ });
     const rows = within(table).getAllByRole('row');
     expect(within(rows[2]!).getByText('—')).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — attempt-history carousel (F-030)', () => {
+  it('orders the pages Trend → Attempt vs attempt → All attempts', () => {
+    renderPage();
+
+    const region = historyRegion();
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(region).getAllByRole('tab')).toHaveLength(3);
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels).toHaveLength(3);
+    // Page 1 (active): the trend chart.
+    expect(panels[0]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels[0]).toHaveTextContent('Trend');
+    expect(panels[0]).toHaveTextContent('Score over attempts · 0–100');
+    // Page 2: attempt vs attempt. Page 3: all attempts.
+    expect(panels[1]).toHaveTextContent('Attempt vs attempt');
+    expect(panels[2]).toHaveTextContent('All attempts');
+    expect(panels[2]).toHaveTextContent('Oldest first');
+  });
+
+  it('loops: swiping back from the first page wraps to the last (F-029)', () => {
+    renderPage();
+
+    const region = historyRegion();
+    const viewport = region.querySelector('.km-carousel__viewport');
+    expect(viewport).not.toBeNull();
+
+    // A full rightward (previous) swipe on page 1 — with `loop` this wraps
+    // to the LAST page instead of damping against a hard edge.
+    const pointer = { pointerId: 7, isPrimary: true };
+    fireEvent.pointerDown(viewport!, {
+      ...pointer, button: 0, clientX: 80, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 140, clientY: 52 });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 200, clientY: 55 });
+    fireEvent.pointerUp(viewport!, { ...pointer, clientX: 200, clientY: 55 });
+
+    expect(
+      within(region).getByRole('tab', { name: 'Page 3 of 3' }),
+    ).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('omits the attempt-vs-attempt page with a single attempt (2 pages, no broken compare)', () => {
+    hookOverride.current = { data: historyOf(1) };
+    renderPage();
+
+    const region = historyRegion();
+    expect(within(region).getAllByRole('tab')).toHaveLength(2);
+    expect(screen.queryByText('Attempt vs attempt')).not.toBeInTheDocument();
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(panels[0]).toHaveTextContent('Trend');
+    expect(panels[1]).toHaveTextContent('All attempts');
   });
 });
 
@@ -354,11 +473,13 @@ describe('Progress page — compare surface (P1.2 reconciliation)', () => {
     expect(screen.getByText('At / above')).toBeInTheDocument();
   });
 
-  it('folds attempt-vs-attempt into the compare card with signed per-dimension deltas', () => {
+  it('carries attempt-vs-attempt on the carousel with signed per-dimension deltas', async () => {
+    const user = userEvent.setup();
     renderPage();
 
-    // The sub-block lives under the headline compare, defaulting to
-    // previous vs latest.
+    // F-030 — the compare surface is the carousel's SECOND page, defaulting
+    // to previous vs latest.
+    await goToHistoryPage(user, 2);
     expect(screen.getByText('Attempt vs attempt')).toBeInTheDocument();
     const table = screen.getByRole('table', {
       name: /Score change from attempt 2 to attempt 3/,
@@ -375,6 +496,7 @@ describe('Progress page — compare surface (P1.2 reconciliation)', () => {
     const user = userEvent.setup();
     renderPage();
 
+    await goToHistoryPage(user, 2);
     // P3b: the label is bilingual — the accessible name carries both halves.
     await user.selectOptions(screen.getByRole('combobox', { name: /From/ }), '0');
 
@@ -610,13 +732,16 @@ describe('Progress page — empty / sparse / loading / error states', () => {
     expect(
       screen.getByRole('button', { name: /Take the diagnostic/ }),
     ).toBeInTheDocument();
-    // No history-fed surfaces: neither the attempts/delta tables nor the
-    // compare card render without an attempt.
-    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    // No history-fed surfaces: neither the compare card nor the F-030
+    // history carousel render without an attempt.
     expect(screen.queryByText('Where you stand')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('region', { name: 'Attempt history' }),
+    ).not.toBeInTheDocument();
   });
 
-  it('renders a single attempt (markers only) with a retake note and no attempt-vs-attempt', () => {
+  it('renders a single attempt (markers only) with a retake note and no attempt-vs-attempt', async () => {
+    const user = userEvent.setup();
     hookOverride.current = { data: historyOf(1) };
     renderPage();
 
@@ -631,9 +756,10 @@ describe('Progress page — empty / sparse / loading / error states', () => {
     expect(
       screen.getByRole('button', { name: /Retake diagnostic/ }),
     ).toBeInTheDocument();
-    // …but the attempt-vs-attempt sub-block needs two attempts.
+    // …but the attempt-vs-attempt page needs two attempts (F-030: 2 pages).
     expect(screen.queryByText('Attempt vs attempt')).not.toBeInTheDocument();
-    // The attempts table still lists the one attempt.
+    // The attempts table (now page 2 of 2) still lists the one attempt.
+    await goToHistoryPage(user, 2, 2);
     const table = screen.getByRole('table', { name: /All diagnostic attempts/ });
     expect(within(table).getAllByRole('row')).toHaveLength(2);
   });
@@ -679,12 +805,15 @@ describe('Progress page — empty / sparse / loading / error states', () => {
   });
 });
 
-describe('Progress page — word mastery (F-013)', () => {
+describe('Progress page — word mastery (F-013, Words tab)', () => {
   it('renders the bucket summary + word list and filters on a chip tap', async () => {
     const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByText('Word mastery')).toBeInTheDocument();
+    // F-032 — the Words tab is the mastery card's default panel.
+    expect(
+      screen.getByRole('tab', { name: /Words/, selected: true }),
+    ).toBeInTheDocument();
     expect(await screen.findByText('사랑')).toBeInTheDocument();
     expect(screen.getByText('먹다')).toBeInTheDocument();
 
@@ -799,23 +928,187 @@ describe('Progress page — word mastery (F-013)', () => {
   });
 });
 
-describe('Progress page — grammar mastery placeholder (P1.2, filled in P4)', () => {
-  it('renders a designed coming-soon card beside Word mastery', async () => {
+describe('Progress page — word list windowing (F-031)', () => {
+  /** A 20-word server page — enough to exercise the 15-item window. */
+  function twentyWords(): typeof MASTERY_DEFAULT {
+    const words = Array.from({ length: 20 }, (_, i) => ({
+      id: i + 1,
+      korean: `단어${String(i + 1)}`,
+      english: `word ${String(i + 1)}`,
+      bucket: 'new' as const,
+      stability: 0,
+      reps: 0,
+      lapses: 0,
+      dueAt: null,
+    }));
+    return {
+      summary: { new: 20, learning: 0, reviewing: 0, mastered: 0, total: 20 },
+      words,
+      total: 20,
+    };
+  }
+
+  it('shows 15 words initially, reveals the rest via Show more, then hides the control', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockResolvedValue(twentyWords());
+    renderPage();
+    await screen.findByText('단어1');
+
+    const panel = screen.getByRole('tabpanel', { name: /Words/ });
+    // The window: first 15 of the 20 loaded words, in order.
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(15);
+    expect(within(panel).getByText('단어15')).toBeInTheDocument();
+    expect(within(panel).queryByText('단어16')).not.toBeInTheDocument();
+
+    // The expander announces how many the click actually reveals (5 — the
+    // list end, NOT the naive step of 15).
+    await user.click(screen.getByRole('button', { name: 'Show more (5)' }));
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(20);
+    expect(within(panel).getByText('단어20')).toBeInTheDocument();
+    // Exhausted → the control unmounts rather than rendering disabled.
+    expect(
+      within(panel).queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('collapses the window back to 15 when a bucket filter changes', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockResolvedValue(twentyWords());
+    renderPage();
+    await screen.findByText('단어1');
+
+    const panel = screen.getByRole('tabpanel', { name: /Words/ });
+    await user.click(screen.getByRole('button', { name: 'Show more (5)' }));
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(20);
+
+    // Filtering refetches AND resets the F-031 window — the new group starts
+    // back at 15, never inheriting the old expansion.
+    await user.click(screen.getByRole('button', { name: /New/ }));
+    await waitFor(() => {
+      expect(within(panel).getAllByRole('listitem')).toHaveLength(15);
+    });
+    expect(
+      screen.getByRole('button', { name: 'Show more (5)' }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — mastery tabs (F-032)', () => {
+  it('renders ONE mastery card with Words / Grammar / Hanja tabs (Words active)', async () => {
+    renderPage();
+    await screen.findByText('사랑');
+
+    const tablist = screen.getByRole('tablist', { name: 'Mastery' });
+    const tabs = within(tablist).getAllByRole('tab');
+    expect(tabs).toHaveLength(3);
+    expect(tabs[0]).toHaveTextContent('Words');
+    expect(tabs[1]).toHaveTextContent('Grammar');
+    expect(tabs[2]).toHaveTextContent('Hanja');
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+
+    // One shared area: only the active panel is in the DOM.
+    expect(screen.getByRole('tabpanel', { name: /Words/ })).toBeInTheDocument();
+    expect(
+      screen.queryByText('Per-pattern grammar mastery will chart here.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the designed grammar coming-soon panel on the Grammar tab (P4 fills it)', async () => {
+    const user = userEvent.setup();
     renderPage();
 
-    // Both mastery sections co-exist: the real vocab one…
-    expect(await screen.findByText('Word mastery')).toBeInTheDocument();
-    // …and the intentional grammar placeholder (title + pill + real copy,
-    // never a blank panel).
-    expect(screen.getByText('Grammar mastery')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: /Grammar/ }));
     expect(screen.getByText('Coming soon')).toBeInTheDocument();
-    // P3b verbage trim — the three-clause sentence became one terse
-    // bilingual line.
+    // P3b verbage trim — one terse bilingual line, never a blank panel.
     expect(
       screen.getByText('Per-pattern grammar mastery will chart here.'),
     ).toBeInTheDocument();
     expect(
       screen.getByText('문형별 숙달도가 여기에 표시될 거예요.'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps tab switching non-destructive: Words → Grammar → Words refetches cleanly', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('사랑');
+
+    await user.click(screen.getByRole('tab', { name: /Grammar/ }));
+    expect(screen.queryByText('사랑')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: /Words/ }));
+    // The re-keyed panel refetches — the list comes back, not a stale blank.
+    expect(await screen.findByText('사랑')).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — hanja mastery tab (F-041)', () => {
+  it('renders the banked/practicing/new bands + the L4 encountered bar from /hanja/progress', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Hanja/ }));
+    expect(
+      await screen.findByRole('img', {
+        name: '12 banked, 8 practicing, 80 new',
+      }),
+    ).toBeInTheDocument();
+    expect(hanjaSvc.fetchHanjaProgress).toHaveBeenCalledWith(
+      expect.any(AbortSignal),
+    );
+
+    const panel = screen.getByRole('tabpanel', { name: /Hanja/ });
+    // Each band's count is readable text, not just a colored segment.
+    expect(within(panel).getByText('12')).toBeInTheDocument();
+    expect(within(panel).getByText('8')).toBeInTheDocument();
+    expect(within(panel).getByText('80')).toBeInTheDocument();
+    // The Encountered-vs-L4 band mirrors the Hanja screen's semantics.
+    const bar = within(panel).getByRole('progressbar', {
+      name: 'Hanja encountered out of L4 target',
+    });
+    expect(bar).toHaveAttribute('aria-valuenow', '25');
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
+    // The server-templated status line renders as literal text.
+    expect(
+      within(panel).getByText('12 banked · 8 practicing · 25/100 encountered'),
+    ).toBeInTheDocument();
+  });
+
+  it('invites a user with zero hanja activity instead of an all-new bar', async () => {
+    const user = userEvent.setup();
+    hanjaSvc.fetchHanjaProgress.mockResolvedValue(HANJA_EMPTY);
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Hanja/ }));
+    expect(
+      await screen.findByText(/No hanja studied yet/),
+    ).toBeInTheDocument();
+    // `new: 150` alone is NOT activity — no bands, no progressbar (scoped
+    // to the panel: SkillsCompare owns the page's other progressbars).
+    const panel = screen.getByRole('tabpanel', { name: /Hanja/ });
+    expect(within(panel).queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(within(panel).queryByText('150')).not.toBeInTheDocument();
+  });
+
+  it('surfaces a fetch failure as an error card and recovers on retry', async () => {
+    const user = userEvent.setup();
+    hanjaSvc.fetchHanjaProgress
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue(HANJA_DEFAULT);
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Hanja/ }));
+    // Fixed copy (F-UP-018) — never the raw error prose.
+    expect(
+      await screen.findByText('Could not load hanja mastery.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByRole('img', {
+        name: '12 banked, 8 practicing, 80 new',
+      }),
     ).toBeInTheDocument();
   });
 });
@@ -838,18 +1131,14 @@ describe('Progress page — P3b bilingual chrome + verbage trims', () => {
   it('trims the eyebrow/title redundancy: one bilingual label per card', () => {
     renderPage();
 
-    // Word mastery — the "Vocabulary · 단어 숙달" eyebrow is gone; the
-    // Korean lives ONCE, on the title itself.
-    expect(screen.getAllByText('단어 숙달')).toHaveLength(1);
+    // Mastery (F-032) — ONE bilingual card title over the tab strip; the
+    // section names live on the tabs, not on stacked per-section titles.
+    expect(screen.getAllByText('숙달')).toHaveLength(1);
     expect(
-      screen.getByText('단어 숙달').closest('.km-progress__card-title'),
+      screen.getByText('숙달').closest('.km-progress__card-title'),
     ).not.toBeNull();
-
-    // Grammar mastery — same trim.
-    expect(screen.getAllByText('문법 숙달')).toHaveLength(1);
-    expect(
-      screen.getByText('문법 숙달').closest('.km-progress__card-title'),
-    ).not.toBeNull();
+    expect(screen.queryByText('단어 숙달')).not.toBeInTheDocument();
+    expect(screen.queryByText('문법 숙달')).not.toBeInTheDocument();
 
     // Progress by skill — the eyebrow keeps only the window meta; "실력
     // 추이" is the title's Korean, once.
@@ -860,7 +1149,8 @@ describe('Progress page — P3b bilingual chrome + verbage trims', () => {
     expect(screen.getByText('Last 30 days')).toBeInTheDocument();
     expect(screen.getByText('최근 30일')).toBeInTheDocument();
 
-    // All attempts — "Every attempt" no longer duplicates the title.
+    // All attempts (an F-030 carousel page) — "Every attempt" no longer
+    // duplicates the title; the meta eyebrow keeps only the ordering.
     expect(screen.queryByText(/Every attempt/)).not.toBeInTheDocument();
     expect(screen.getByText('All attempts')).toBeInTheDocument();
     expect(screen.getByText('전체 회차')).toBeInTheDocument();
