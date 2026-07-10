@@ -430,10 +430,13 @@ def test_050_down_deletes_hanja_cards_and_restores_four_leg_xor(
         _seed_review(conn, hanja_card, user)
         vocab_review = _seed_review(conn, vocab_card, user)
 
-    # No --allow-destructive needed: 050.down's data loss is a DELETE + DROP
-    # COLUMN, neither of which the destructive gate matches (documented in the
-    # down file's header — the warning lives there instead).
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--target", PRE_050, "down"])
+    # --allow-destructive: 050.down itself is only a DELETE + DROP COLUMN (not
+    # gate-matched), but in the full merged chain this `--target PRE_050 down`
+    # rolls back past LATER migrations' destructive downs (052 DROP TABLE), which
+    # the runner's gate requires the flag to confirm.
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--allow-destructive", "--target", PRE_050, "down"]
+    )
     assert rc == 0, f"down --target {PRE_050} returned {rc}"
 
     with psycopg.connect(dsn, autocommit=True) as conn:
