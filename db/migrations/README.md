@@ -55,6 +55,7 @@ Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
 | 042 | `vocab_2000_advanced_corpus` | U2 | Extends the `corpus` enum with `'vocab_2000_advanced'` (uploaded "2000 Essential Korean Words — Advanced"); value-only migration — first USE deferred to 043 per the enum same-transaction gotcha (mirrors 021/016) |
 | 043 | `vocab_2000_advanced_vocab` | U2 | Relaxes both `vocab_entries` CHECKs to admit `'vocab_2000_advanced'` paired with `book_level = 'advanced'`; `corpus_sources` row created by the loader at load time (contrast 022) |
 | 044 | `reading_chapters` | U3b | Digitized chapter reader content store: `reading_chapters` + `reading_passages` (OCR'd + curated literature text, per-paragraph rows) + `UNIQUE(id, user_id)` on `book_uploads` backing the composite ownership FK — see `db/docs/U3_READER_DESIGN.md` §U3b |
+| 045 | `hygiene_cleanup` | F-083 | Schema hygiene: drops 6 redundant indexes (each duplicating a same-table UNIQUE), drops the 2 orphan ad-hoc `topik_items_explanation_bak_*` sweep-backup tables (lossy — down recreates empty shells), adds `fk_grammar_drill_attempts_entry` (composite FK to `grammar_entries(user_id, pattern_key)`, orphans deleted first). **Up contains `DROP TABLE` → apply with `--allow-destructive`** |
 
 ## Transaction ownership (ADR-013)
 
