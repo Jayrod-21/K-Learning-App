@@ -1,6 +1,6 @@
 -- =============================================================================
 -- Migration 045 — schema hygiene cleanup (F-083)
---   UP — three independent hygiene fixes surfaced by the F-083 schema audit:
+--   UP — two independent hygiene fixes surfaced by the F-083 schema audit:
 --        1. Drops 6 redundant non-unique indexes, each an exact duplicate of a
 --           UNIQUE constraint's backing index on the same table (same columns,
 --           same order). The UNIQUE index already serves every query the
@@ -11,17 +11,21 @@
 --           `topik_items_explanation_bak_20260706` and
 --           `topik_items_explanation_bak_followup`. Both sweeps are complete
 --           and verified; the snapshots are superseded.
---        3. Adds the missing FK from `grammar_drill_attempts (user_id,
---           pattern_key)` to `grammar_entries (user_id, pattern_key)` (target
---           UNIQUE: `uq_grammar_entries_user_pattern`, migration 001), after
---           first deleting the orphan attempt rows that would violate it
---           (audit found ~5 — drills generated for patterns later removed
---           from the user's bank).
 --   Reverse: 045_hygiene_cleanup.down.sql
---   Depends on: 001 (grammar_entries + uq_grammar_entries_user_pattern),
---               003 (krdict_* tables), 005 (topik_items), 014
---               (diagnostic_responses), 017 (image_words), 019
---               (grammar_drill_attempts).
+--   Depends on: 003 (krdict_* tables), 005 (topik_items), 014
+--               (diagnostic_responses), 017 (image_words).
+--
+--   SCOPE NOTE — the F-083 audit also proposed an FK from
+--   `grammar_drill_attempts (user_id, pattern_key)` to
+--   `grammar_entries (user_id, pattern_key)`. That item was DROPPED from this
+--   migration: the audit finding was wrong. POST /grammar-drill inserts the
+--   attempt row at GENERATION time, while the grammar_entries row is only
+--   created at SUBMIT time (the auto-bank in the submit transaction — see
+--   server/src/routes/grammarDrill.ts). An attempt for a not-yet-banked
+--   pattern is therefore a LEGITIMATE state by design (migration 019/020),
+--   not corruption — the FK would make the live drill route 500 on every
+--   first drill of an unbanked pattern. The "~5 orphan rows" the audit found
+--   were exactly this state.
 --
 -- DESTRUCTIVE — REQUIRES --allow-destructive ON UP:
 --   This up body contains `DROP TABLE`, so migrate.py's destructive gate
@@ -40,29 +44,8 @@
 --     down/up round-trip is structurally clean. The snapshots they held were
 --     working copies from completed, verified sweeps; the corrected values
 --     live in `topik_items.extra` and the source JSONs.
---   * The ~5 deleted orphan `grammar_drill_attempts` rows are NOT restorable.
---     They were unreachable practice attempts for patterns absent from the
---     user's grammar bank (transient practice data per migration 019's design
---     — no audit row ever references an attempt).
 --   * The 6 dropped indexes ARE fully restorable — the down recreates them
 --     with their original definitions and COMMENTs verbatim.
---
--- WHY THE FK (item 3): `grammar_drill_attempts.pattern_key` is carried
---   verbatim from the client's pattern-list item (019 design note). Nothing
---   at the DB level tied it to the user's actual grammar bank, so attempts
---   could exist for patterns never (or no longer) present in it. The
---   composite FK closes the never-banked class and keeps the ~5-orphan class
---   from recurring. Scope honestly stated: the app UNBANKS by SOFT delete
---   (grammar_entries.deleted_at is set; no route hard-DELETEs a bank row), so
---   the ON DELETE CASCADE never fires on the app's unbank path — a soft-
---   deleted entry's attempts are intentionally RETAINED, still FK-valid and
---   unreachable through the drill routes (which start from banked patterns).
---   The CASCADE fires only on HARD deletion: user-account removal (019's
---   users CASCADE chain) or a manual psql hard delete — attempts are
---   transient practice (019), so purging them there is correct. ON UPDATE
---   RESTRICT matches the house FK convention. The existing
---   `idx_gda_user_pattern_created (user_id, pattern_key, created_at DESC)`
---   prefix-covers the referencing columns, so the CASCADE scan is indexed.
 --
 -- TRANSACTION OWNERSHIP (ADR-013):
 --   No top-level BEGIN/COMMIT — migrate.py wraps this file's body in a single
@@ -105,51 +88,5 @@ DROP INDEX IF EXISTS ix_krdict_inflections_entry;
 -- -----------------------------------------------------------------------------
 DROP TABLE IF EXISTS topik_items_explanation_bak_20260706;
 DROP TABLE IF EXISTS topik_items_explanation_bak_followup;
-
--- -----------------------------------------------------------------------------
--- 3. Tie grammar_drill_attempts to the grammar bank.
---    Guarded the same way 044/002 guard cross-table ADD CONSTRAINT (Postgres
---    has no `ADD CONSTRAINT IF NOT EXISTS`): a pg_constraint existence check
---    inside DO $$ ... $$. The orphan-row DELETE lives INSIDE the guard — if
---    the constraint already exists there can be no orphans, and a manual
---    re-apply skips both steps.
---
---    The DELETE must precede ADD CONSTRAINT: the audit found ~5 attempt rows
---    whose (user_id, pattern_key) no longer exists in grammar_entries, and
---    ADD CONSTRAINT validates existing rows. Deleting them is safe: with no
---    bank row, they are unreachable through the drill routes (the rotation
---    lookup and the Grammar screen both start from banked patterns) and 019
---    classifies attempts as transient practice with no audit value.
--- -----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                   WHERE conname = 'fk_grammar_drill_attempts_entry') THEN
-        -- Purge orphans that would fail the FK validation.
-        DELETE FROM grammar_drill_attempts gda
-         WHERE NOT EXISTS (SELECT 1
-                             FROM grammar_entries ge
-                            WHERE ge.user_id     = gda.user_id
-                              AND ge.pattern_key = gda.pattern_key);
-
-        ALTER TABLE grammar_drill_attempts
-            ADD CONSTRAINT fk_grammar_drill_attempts_entry
-            FOREIGN KEY (user_id, pattern_key)
-            REFERENCES grammar_entries(user_id, pattern_key)
-            ON DELETE CASCADE ON UPDATE RESTRICT;
-    END IF;
-END $$;
-
-COMMENT ON CONSTRAINT fk_grammar_drill_attempts_entry ON grammar_drill_attempts IS
-    'An attempt always belongs to a grammar_entries row: (user_id, '
-    'pattern_key) must exist there (target UNIQUE: '
-    'uq_grammar_entries_user_pattern). NB: app-level unbanking is a SOFT '
-    'delete (grammar_entries.deleted_at), so this CASCADE never fires on the '
-    'app''s unbank path — those attempts are intentionally retained. CASCADE '
-    'purges attempts only on HARD deletion (user-account CASCADE via 019, or '
-    'a manual hard DELETE) — attempts are transient practice (see 019), '
-    'never referenced by audit rows. Referencing-side scans are covered by '
-    'the idx_gda_user_pattern_created prefix. Added by 045 (F-083) after '
-    'deleting the pre-FK orphan rows.';
 
 -- End of 045_hygiene_cleanup.up.sql — runner owns the transaction (ADR-013).

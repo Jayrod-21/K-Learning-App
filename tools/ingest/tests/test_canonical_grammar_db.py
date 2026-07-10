@@ -6,7 +6,8 @@ explicitly forbidden by SENIOR_ENGINEER_BAR §2.testing — it lies about
 enums, FKs, JSONB, and triggers).
 
 Strategy:
-    1. Apply migrations 001 through 006 via the runner.
+    1. Apply the FULL migration chain via the runner (--allow-destructive:
+       045's DROP TABLE trips the destructive gate on a fresh DB otherwise).
     2. Seed the corpus_sources catalog + a handful of `kgiu_entries` rows
        across all three KGIU levels — chosen so a known overlap
        (e.g. -아/어도 appears in Beginner + Intermediate) AND a singleton
@@ -87,13 +88,20 @@ def dsn(pg_container) -> str:
 
 @pytest.fixture()
 def applied_db(dsn, monkeypatch):
-    """Apply migrations 001…006 against the fresh DB."""
+    """Apply the FULL migration chain against the fresh DB.
+
+    --allow-destructive: migration 045 (hygiene_cleanup) contains DROP TABLE,
+    so migrate.py's destructive gate aborts a plain `up` mid-chain. Passing
+    the flag on a fresh CI database is safe — there is no data to lose.
+    """
     from db import migrate  # type: ignore[import-not-found]
 
     monkeypatch.setenv("DATABASE_URL", dsn)
     migrations_dir = REPO_ROOT / "db" / "migrations"
-    rc = migrate.main(["--migrations-dir", str(migrations_dir), "up"])
-    assert rc == 0, "migration runner failed to apply 001…006"
+    rc = migrate.main(
+        ["--migrations-dir", str(migrations_dir), "--allow-destructive", "up"]
+    )
+    assert rc == 0, "migration runner failed to apply the full chain"
     return dsn
 
 
@@ -605,7 +613,10 @@ def test_migration_006_down_then_up_round_trip(applied_db, monkeypatch):
     )
 
     # Re-apply forward. Schema should be identical to where we started.
-    rc = migrate.main(["--migrations-dir", str(migrations_dir), "up"])
+    # --allow-destructive: the re-apply traverses 045 (DROP TABLE) again.
+    rc = migrate.main(
+        ["--migrations-dir", str(migrations_dir), "--allow-destructive", "up"]
+    )
     assert rc == 0, "migrate up from 005 failed"
 
     assert _has_canonical_grammar_table()

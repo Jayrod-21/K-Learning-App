@@ -1,5 +1,5 @@
--- 045 (down): reverse the F-083 hygiene cleanup — drop the new FK, recreate
--- the two bak-table SHELLS, recreate the 6 dropped indexes.
+-- 045 (down): reverse the F-083 hygiene cleanup — recreate the two bak-table
+-- SHELLS, recreate the 6 dropped indexes.
 --
 -- BEST-EFFORT REVERSIBILITY (see the up header's "REVERSIBILITY" section):
 --   * The 6 indexes are recreated exactly as originally defined (definitions
@@ -13,19 +13,10 @@
 --     FIX_followups_explanations.md ("id, original jsonb value, timestamp").
 --     Deliberately NO PK / audit columns — mirroring the ad-hoc originals,
 --     which never met the migration conventions (they were psql one-offs).
---   * The ~5 orphan grammar_drill_attempts rows deleted before the FK was
---     added are NOT restored (transient practice data, permanently gone).
 --
--- Order mirrors the up in reverse: FK first, then bak shells, then indexes.
+-- Order mirrors the up in reverse: bak shells first, then indexes.
 --
 -- ADR-013: no top-level BEGIN/COMMIT — the runner owns the transaction.
-
--- -----------------------------------------------------------------------------
--- 3'. Drop the grammar-bank FK (returns grammar_drill_attempts.pattern_key to
---     its pre-045 free-floating posture).
--- -----------------------------------------------------------------------------
-ALTER TABLE grammar_drill_attempts
-    DROP CONSTRAINT IF EXISTS fk_grammar_drill_attempts_entry;
 
 -- -----------------------------------------------------------------------------
 -- 2'. Recreate the bak tables as empty shells (data NOT restorable).
