@@ -1,0 +1,77 @@
+/*
+ * CollapsibleTile (F-038) — component-scoped styles.
+ *
+ * Colocated with CollapsibleTile.tsx (never index.css — the global sheet is
+ * shared mutable state across parallel feature branches). Only shared design
+ * tokens, so both themes and every accent preset come free.
+ */
+
+/* The Card provides radius/surface/elevation; the tile zeroes its padding
+ * so the header button can be the full-bleed hit target. */
+.km-collapsible {
+  padding: 0;
+}
+
+.km-collapsible__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 16px 22px;
+  border: none;
+  background: transparent;
+  color: var(--paper);
+  font: inherit;
+  font-size: 0.875rem; /* 14px @ md root — rem so F-025 text-size scales it */
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  /* Match the Card's corners so the focus ring hugs the tile shape. */
+  border-radius: var(--radius-lg);
+}
+
+.km-collapsible__title {
+  min-width: 0;
+}
+
+.km-collapsible__chevron {
+  flex: none;
+  color: var(--paper-dim);
+  transition: transform 240ms ease;
+}
+
+.km-collapsible__chevron--open {
+  transform: rotate(180deg);
+}
+
+/* Collapse animation — grid-row 1fr ↔ 0fr (the robust max-height form:
+ * animates the true content height, no JS measurement, no px cap). */
+.km-collapsible__body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 240ms ease;
+}
+
+.km-collapsible__body--collapsed {
+  grid-template-rows: 0fr;
+}
+
+/* min-height: 0 lets the row actually shrink the item; overflow clips the
+ * content during the shrink. Padding lives one level deeper — on this
+ * element it would outlive the collapse and paint a stray strip. */
+.km-collapsible__clip {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.km-collapsible__content {
+  padding: 0 22px 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-collapsible__chevron,
+  .km-collapsible__body {
+    transition: none;
+  }
+}

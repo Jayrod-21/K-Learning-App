@@ -8,6 +8,8 @@
 
 .km-carousel__viewport {
   overflow: hidden;
+  /* Anchor for the corner-slot overlay (F-029). */
+  position: relative;
   /* The browser owns vertical pans (page scroll); horizontal pans come to
      us as pointer events. Without this, touch drags on the carousel would
      either hijack scrolling or never reach our handlers. */
@@ -38,6 +40,19 @@
 .km-carousel__page {
   flex: 0 0 100%;
   min-width: 0;
+}
+
+/* Corner slot (F-029) ────────────────────────────────────────
+ * Pinned top-left, painted above the sliding track. Sized to its content
+ * so it only intercepts pointers where it actually paints — the rest of
+ * the viewport still swipes. The slot's content brings its own surface
+ * styling (it is a generic mount point, not a banner). */
+.km-carousel__corner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  max-width: calc(100% - 16px);
 }
 
 /* Dot indicators ─────────────────────────────────────────── */

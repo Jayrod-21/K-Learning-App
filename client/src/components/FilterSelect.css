@@ -1,0 +1,67 @@
+/*
+ * FilterSelect — component-scoped styles (F-049/F-055).
+ *
+ * Colocated per the LineChart.css convention (the global sheet is shared
+ * mutable state across parallel feature branches). Only shared design tokens
+ * (--ink/--paper/--line/--radius families), so both themes and every accent
+ * come free.
+ *
+ * The chevron is CSS-drawn (two borders, rotated 45°) instead of a
+ * background-image data-URI so it can read `currentColor`-adjacent tokens
+ * and re-tint with the theme.
+ */
+
+.km-filterselect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.km-filterselect__label {
+  font-size: 0.6875rem; /* 11px @ md root — rem so F-025 text-size scales it */
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper-mute);
+}
+
+.km-filterselect__control {
+  position: relative;
+  display: block;
+}
+
+.km-filterselect__select {
+  /* Skin the CLOSED control only — the open popup stays native (a11y). */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  padding: 9px 34px 9px 12px;
+  font: inherit;
+  font-size: 0.84375rem; /* 13.5px @ md root — rem so F-025 scales it */
+  color: var(--paper);
+  background: var(--ink-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+.km-filterselect__select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.km-filterselect__chevron {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
+  border-right: 1.5px solid var(--paper-mute);
+  border-bottom: 1.5px solid var(--paper-mute);
+  /* -70%: visually centers the glyph once rotated (pure translate(-50%)
+   * sits the point too low because the box pivots around its center). */
+  transform: translateY(-70%) rotate(45deg);
+}

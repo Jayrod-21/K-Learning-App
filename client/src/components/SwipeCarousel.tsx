@@ -30,6 +30,19 @@
  *   - **Reduced motion.** The slide transition is disabled under
  *     `prefers-reduced-motion: reduce` (pure CSS — the page still changes,
  *     it just doesn't animate).
+ *   - **Loop (F-029, opt-in).** `loop` wraps next/prev/swipe last→first and
+ *     first→last, and disables the edge damping (a looping carousel has no
+ *     edges). The wrap is a "rewind" — the track animates back across the
+ *     intermediate pages rather than seamlessly continuing, which is the
+ *     honest trade for keeping ONE DOM node per page (a seamless loop needs
+ *     leading/trailing page clones plus a mid-transition index snap, and no
+ *     current consumer justifies that machinery). Default false: the
+ *     existing Progress.tsx usage keeps its solid edges untouched.
+ *   - **Corner slot (F-029, opt-in).** `cornerSlot` renders inside the
+ *     viewport as a top-left overlay ABOVE the track (for a future resume
+ *     banner). It stays fixed while pages slide underneath; it is sized to
+ *     its content, so it only intercepts pointers where it actually paints —
+ *     swipes on the rest of the viewport are unaffected.
  *
  * Accessibility: the container is a labeled `<section>` (implicit `region`)
  * with `aria-roledescription="carousel"`; each page is a `tabpanel` wired to
@@ -54,6 +67,16 @@ export interface SwipeCarouselProps {
   ariaLabel: string;
   /** Page shown first (clamped into range). Defaults to 0. */
   initialIndex?: number;
+  /**
+   * Wrap navigation last→first and first→last (next/prev/swipe). Default
+   * false — existing consumers keep hard edges with overscroll damping.
+   */
+  loop?: boolean;
+  /**
+   * Optional overlay pinned to the viewport's top-left corner, rendered
+   * above the slides (e.g. a resume banner). Omitted → nothing renders.
+   */
+  cornerSlot?: ReactNode;
 }
 
 /** Movement (px) before a gesture commits to an axis. */
@@ -82,6 +105,8 @@ export function SwipeCarousel({
   children,
   ariaLabel,
   initialIndex = 0,
+  loop = false,
+  cornerSlot,
 }: SwipeCarouselProps): JSX.Element {
   const count = children.length;
   const maxIndex = Math.max(0, count - 1);
@@ -102,7 +127,12 @@ export function SwipeCarousel({
   const id = useId();
 
   const goTo = (next: number, focusDot = false): void => {
-    const target = clamp(next, 0, maxIndex);
+    // Looping wraps via a double modulo (handles the -1 from a prev on page
+    // 0); non-looping clamps to the hard edges as before.
+    const target =
+      loop && count > 0
+        ? ((next % count) + count) % count
+        : clamp(next, 0, maxIndex);
     setRawIndex(target);
     if (focusDot) tabRefs.current[target]?.focus();
   };
@@ -163,8 +193,10 @@ export function SwipeCarousel({
     if (d.axis !== 'h') return;
 
     // Damp overscroll beyond the first/last page so the edge feels solid.
+    // A looping carousel has no edges — never damp there, or the wrap swipe
+    // would feel like it was fighting the user.
     const overscroll =
-      (index === 0 && dx > 0) || (index === maxIndex && dx < 0);
+      !loop && ((index === 0 && dx > 0) || (index === maxIndex && dx < 0));
     setDragX(overscroll ? dx / EDGE_DAMPING : dx);
   };
 
@@ -236,6 +268,9 @@ export function SwipeCarousel({
         // externally, drop the gesture rather than stranding dragX mid-track.
         onLostPointerCapture={endDrag}
       >
+        {cornerSlot != null ? (
+          <div className="km-carousel__corner">{cornerSlot}</div>
+        ) : null}
         <div
           className={`km-carousel__track${dragging ? ' km-carousel__track--dragging' : ''}`}
           style={{

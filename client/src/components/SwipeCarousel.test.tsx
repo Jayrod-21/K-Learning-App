@@ -6,14 +6,22 @@
  * Failure/edge side: stuck-drag recovery (off-element release, vertical
  * surrender), pointercancel cleanup, edge overscroll, multi-touch and
  * non-primary/right-button rejection.
+ * F-029 additions: `loop` wrap in both directions (swipe + dot state) with
+ * the non-loop edge behavior preserved by default, and the `cornerSlot`
+ * overlay (renders above the slides; absent when omitted).
  */
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactNode } from 'react';
 import { SwipeCarousel } from './SwipeCarousel';
 
 function renderCarousel(
-  props: Partial<{ initialIndex: number }> = {},
+  props: Partial<{
+    initialIndex: number;
+    loop: boolean;
+    cornerSlot: ReactNode;
+  }> = {},
 ): ReturnType<typeof render> {
   return render(
     <SwipeCarousel ariaLabel="Progress by skill" {...props}>
@@ -55,6 +63,22 @@ function swipeLeft(viewport: HTMLElement, pointerId = 9): void {
   });
   fireEvent.pointerUp(viewport, {
     pointerId, isPrimary: true, clientX: 80, clientY: 55,
+  });
+}
+
+/** The mirror gesture — a full valid rightward swipe (previous page). */
+function swipeRight(viewport: HTMLElement, pointerId = 9): void {
+  fireEvent.pointerDown(viewport, {
+    pointerId, isPrimary: true, button: 0, clientX: 80, clientY: 50,
+  });
+  fireEvent.pointerMove(viewport, {
+    pointerId, isPrimary: true, clientX: 140, clientY: 52,
+  });
+  fireEvent.pointerMove(viewport, {
+    pointerId, isPrimary: true, clientX: 200, clientY: 55,
+  });
+  fireEvent.pointerUp(viewport, {
+    pointerId, isPrimary: true, clientX: 200, clientY: 55,
   });
 }
 
@@ -377,5 +401,70 @@ describe('SwipeCarousel', () => {
     // And neither dead press blocks a real swipe afterwards.
     swipeLeft(viewport, 3);
     expectSelectedPage(2);
+  });
+
+  // ── Loop (F-029) ────────────────────────────────────────────
+
+  it('wraps last→first on a forward swipe when loop is set', () => {
+    const { container } = renderCarousel({ loop: true, initialIndex: 2 });
+    const viewport = viewportOf(container);
+
+    swipeLeft(viewport, 1);
+
+    // The dot state follows the wrap — page 1 is now selected + exposed.
+    expectSelectedPage(1);
+    expect(panels()[0]).toHaveAttribute('aria-hidden', 'false');
+    expect(panels()[2]).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('wraps first→last on a backward swipe when loop is set', () => {
+    const { container } = renderCarousel({ loop: true });
+    const viewport = viewportOf(container);
+
+    swipeRight(viewport, 1);
+
+    expectSelectedPage(3);
+    expect(panels()[2]).toHaveAttribute('aria-hidden', 'false');
+  });
+
+  it('keeps looping across repeated forward swipes (1 → 2 → 3 → 1)', () => {
+    const { container } = renderCarousel({ loop: true });
+    const viewport = viewportOf(container);
+
+    swipeLeft(viewport, 1);
+    expectSelectedPage(2);
+    swipeLeft(viewport, 2);
+    expectSelectedPage(3);
+    swipeLeft(viewport, 3);
+    expectSelectedPage(1);
+  });
+
+  it('still hard-stops at the edges by default (loop unset)', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    // Backward on page 1 must NOT wrap to page 3.
+    swipeRight(viewport, 1);
+    expectSelectedPage(1);
+  });
+
+  // ── Corner slot (F-029) ─────────────────────────────────────
+
+  it('renders cornerSlot content as an overlay inside the viewport', () => {
+    const { container } = renderCarousel({
+      cornerSlot: <button type="button">Resume session</button>,
+    });
+
+    const slot = screen.getByRole('button', { name: 'Resume session' });
+    const corner = slot.closest('.km-carousel__corner');
+    expect(corner).not.toBeNull();
+    // The overlay lives inside the viewport, alongside (not inside) a page.
+    expect(viewportOf(container).contains(corner)).toBe(true);
+    expect(slot.closest('.km-carousel__page')).toBeNull();
+  });
+
+  it('renders no corner container when cornerSlot is omitted', () => {
+    const { container } = renderCarousel();
+    expect(container.querySelector('.km-carousel__corner')).toBeNull();
   });
 });

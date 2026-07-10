@@ -1,0 +1,36 @@
+/*
+ * ShowMore — component-scoped styles (F-031/F-051/F-072).
+ *
+ * Colocated per the LineChart.css convention. A quiet, full-width ghost
+ * button: list expanders should read as "there is more", not compete with
+ * the list's own CTAs — so it wears hairline + muted-text tokens rather
+ * than the accent fill. Shared tokens only; themes and accents come free.
+ */
+
+.km-showmore {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 0.8125rem; /* 13px @ md root — rem so F-025 text-size scales it */
+  font-weight: 600;
+  font-family: var(--font-display);
+  color: var(--vermilion-ink);
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.km-showmore:hover {
+  background: color-mix(in srgb, var(--vermilion) 8%, transparent);
+}
+
+/* Set consistency: every primitive stylesheet stills its transitions under
+ * reduced motion, even color-only ones. */
+@media (prefers-reduced-motion: reduce) {
+  .km-showmore {
+    transition: none;
+  }
+}

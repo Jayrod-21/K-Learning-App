@@ -29,6 +29,7 @@ import type {
   LanguageDisplayPrefs,
   NotifPrefs,
   PalettePrefs,
+  TextSizePreset,
 } from '../types/domain';
 
 /**
@@ -56,6 +57,15 @@ export interface Prefs {
    *  `data-accent` attribute, never an inline CSS-var projection. */
   palette: PalettePrefs;
   languageDisplay: LanguageDisplayPrefs;
+  /** App-wide text size (F-025) — the id `TextSizeProvider` stamps as
+   *  `data-text-size` on `<html>` (root font-size scale). Same two-tier
+   *  posture as `palette.accent`: localStorage["km.textSize"] is the
+   *  same-device fast path; this field is the cross-device truth. The
+   *  server enum `.catch`es a missing/unknown value to 'md', so a pre-F-025
+   *  stored blob hydrates cleanly — but a pre-F-025 SERVER mid-rolling-
+   *  deploy omits the field on GET, so the hydration path guards with the
+   *  local value before adopting. */
+  textSize: TextSizePreset;
 }
 
 /**

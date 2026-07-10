@@ -707,7 +707,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 ### F-025 · App-wide text-size setting + smaller default
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** Add an app-wide S/M/L text-size setting (root rem scaling) and generally reduce the default text size.
-- **Notes:** Approach details flagged **discuss** (user: "perhaps smaller text?").
+- **Notes:** Approach details flagged **discuss** (user: "perhaps smaller text?"). Setting + sync plumbing shipped on `feat/phase1-ui-primitives`; visible effect is limited to rem-sized text until the **F-086** px→rem migration lands (most styles pin px). The "smaller default" half is deliberately not shipped (default stays md=16px).
 
 #### ▸ Today
 
@@ -1106,6 +1106,16 @@ New tickets from Phase 0:
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** CONFIG · **Beta:** —
 - **What:** The server Dockerfile moved to `node:22-alpine` (dep-vuln fix). For consistency + because Node 20 is EOL: bump CI `node-version: 20`→22 (`.github/workflows/*`), move the client Dockerfile(s) node:20→22, update stale `node:20-alpine` mentions in the compose healthcheck comments, and add an `"engines": { "node": ">=20.19" }` guard to `server/package.json` (uuid@14's undeclared ESM floor).
 - **Notes:** Surfaced by the dep-vuln /fixpass re-review. Non-blocking (CI currently runs Node 20.20.2 ≥20.19, so tests pass). Sibling of B-032.
+
+### F-086 · App-wide px→rem font-size migration (makes the F-025 text-size setting fully effective)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** CONFIG (UI) · **Beta:** —
+- **What:** The F-025 text-size setting re-points the ROOT font-size, but almost all app text is pinned in px and ignores it: `client/src/styles/index.css` alone has ~256 `font-size: …px` declarations (0 rem) plus px font-sizes in the page/component CSS files (`Today.css`, `Progress.css`, `LineChart.css`, …) and ~20 inline `fontSize:` numbers in TSX. Migrate font-size declarations px→rem (÷16, keep the same rendered md size) so S/M/L visibly scales the whole app.
+- **Notes:** Unblocks F-025's real effect — today the setting only moves the rem-migrated Phase-1 primitives (BackButton/CollapsibleTile/Tabs/FilterSelect/ShowMore, converted in the Phase-1 fix-pass). Known-limitation notes live in `client/src/lib/text-size-presets.ts` and the index.css text-size block; Settings hint copy already worded honestly. Surfaced by the Phase-1 /fixpass text-size review (S1). New text should be authored in rem from day one.
+
+### F-087 · Accent-as-text/indicator contrast test coverage
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** `client/src/**/tokensContrast.test.ts` validates accent-on-surface (non-text 3:1) but not accent-used-as-a-selection-INDICATOR / accent-as-text at the AA text bar. The Phase-1 fix-pass measured the light-theme **mint** `--vermilion` at **2.99:1 vs `--ink`** (below 3:1) and **coral** at 3.01:1 (barely passing) — currently masked by redundant cues (underline/`--paper` promotion). Add explicit accent-as-indicator + accent-as-text assertions so a future token tweak or a component that leans on accent color alone can't silently drop below AA.
+- **Notes:** Surfaced + ruled non-blocking by the Phase-1 /fixpass re-review; the mint 2.99:1 gap predates Phase-1 (in `rebuild`'s own token comments). Do this **before the overhaul mounts Tabs / accent-driven selection at scale**.
 
 ---
 

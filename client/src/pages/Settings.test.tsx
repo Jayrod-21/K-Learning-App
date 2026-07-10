@@ -103,6 +103,7 @@ vi.mock('../hooks/useAuth', () => ({
 // We import Settings AFTER the mocks above so the module sees them.
 import Settings from './Settings';
 import { AccentProvider } from '../hooks/AccentProvider';
+import { TextSizeProvider } from '../hooks/TextSizeProvider';
 import { SettingsProvider } from '../hooks/SettingsProvider';
 import { ThemeProvider } from '../hooks/ThemeProvider';
 import { ToastProvider } from '../components/ToastProvider';
@@ -120,11 +121,13 @@ function renderSettings(): ReturnType<typeof render> {
     <MemoryRouter>
       <ThemeProvider>
         <AccentProvider>
-          <ToastProvider>
-            <SettingsProvider>
-              <Settings />
-            </SettingsProvider>
-          </ToastProvider>
+          <TextSizeProvider>
+            <ToastProvider>
+              <SettingsProvider>
+                <Settings />
+              </SettingsProvider>
+            </ToastProvider>
+          </TextSizeProvider>
         </AccentProvider>
       </ThemeProvider>
     </MemoryRouter>,
@@ -144,6 +147,7 @@ const DEFAULT_PREFS = {
   },
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
+  textSize: 'md',
 };
 
 beforeEach(() => {
@@ -184,6 +188,8 @@ afterEach(() => {
   delete document.documentElement.dataset.theme;
   // §14a: AccentProvider writes data-accent the same way.
   delete document.documentElement.dataset.accent;
+  // F-025: TextSizeProvider writes data-text-size the same way.
+  delete document.documentElement.dataset.textSize;
 });
 
 // ─── Tests ────────────────────────────────────────────────────
@@ -816,6 +822,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
         notif: DEFAULT_PREFS.notif,
         palette: storedPalette,
         languageDisplay: DEFAULT_PREFS.languageDisplay,
+        textSize: DEFAULT_PREFS.textSize,
       });
     });
 
@@ -961,6 +968,164 @@ describe('Settings — accent cross-device sync', () => {
 
     // The baseline was pinned to the LOCAL accent, so no self-initiated
     // "correcting" PUT ever fires.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+  });
+});
+
+describe('Settings — text size (F-025 cross-device sync)', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('renders an S/M/L radiogroup with real accessible names, Medium checked by default', () => {
+    meOk();
+    renderSettings();
+    const group = screen.getByRole('radiogroup', { name: 'Text size' });
+    expect(within(group).getByRole('radio', { name: 'Small' })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: 'Large' })).toBeInTheDocument();
+    // Default = md — the CURRENT app size. Shipping F-025 must not shrink
+    // the app; Small is opt-in.
+    expect(within(group).getByRole('radio', { name: 'Medium' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // The glyph labels stay compact.
+    expect(within(group).getByRole('radio', { name: 'Small' })).toHaveTextContent('S');
+  });
+
+  it('a user pick stamps data-text-size + km.textSize instantly AND PUTs textSize (rest echoed)', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    // Server holds a non-default accent → adoption is the deterministic
+    // hydration marker (the PUT guard stays closed until it lands).
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      palette: { ...DEFAULT_PREFS.palette, accent: 'blue' },
+    });
+
+    renderSettings();
+    await waitFor(() => {
+      expect(document.documentElement.dataset.accent).toBe('blue');
+    });
+
+    // The user picks Large: the local fast path applies instantly…
+    await user.click(screen.getByRole('radio', { name: 'Large' }));
+    expect(document.documentElement.dataset.textSize).toBe('lg');
+    expect(window.localStorage.getItem('km.textSize')).toBe('lg');
+
+    // …and the debounced full-object PUT carries textSize='lg' with
+    // everything else echoed verbatim.
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
+    });
+    const body = mocks.putPrefs.mock.calls[0][0] as {
+      textSize: string;
+      notif: unknown;
+    };
+    expect(body.textSize).toBe('lg');
+    expect(body.notif).toEqual(DEFAULT_PREFS.notif);
+  });
+
+  it('adopts the server textSize on hydrate — data-text-size + km.textSize update, no echo PUT', async () => {
+    meOk();
+    // Another device stored 'lg'; this device's localStorage is empty, so
+    // the fast path painted md first.
+    mocks.fetchPrefs.mockResolvedValue({ ...DEFAULT_PREFS, textSize: 'lg' });
+
+    renderSettings();
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.textSize).toBe('lg');
+    });
+    expect(window.localStorage.getItem('km.textSize')).toBe('lg');
+    expect(screen.getByRole('radio', { name: 'Large' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+
+    // Adopt is a local state update, NOT a user change — flush the debounce
+    // window and confirm no echo PUT (no loop).
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+  });
+
+  it('a pre-F-025 server response (no textSize field) is not adopted and never loops a PUT', async () => {
+    meOk();
+    // Rolling deploy: an old server omits the field entirely.
+    mocks.fetchPrefs.mockResolvedValue({
+      notif: DEFAULT_PREFS.notif,
+      palette: DEFAULT_PREFS.palette,
+      languageDisplay: DEFAULT_PREFS.languageDisplay,
+    });
+
+    renderSettings();
+    await waitFor(() => {
+      expect(mocks.fetchPrefs).toHaveBeenCalled();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+
+    // The missing field is ignored: the local size keeps ruling the
+    // attribute and localStorage stays untouched.
+    expect(document.documentElement.dataset.textSize).toBe('md');
+    expect(window.localStorage.getItem('km.textSize')).toBeNull();
+
+    // The baseline was pinned to the LOCAL size, so no self-initiated
+    // "correcting" PUT ever fires.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+  });
+
+  it('a pre-hydration pick never PUTs (clobber guard) — server wins on load', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    // Hold the hydration open until after the user's pick.
+    let releaseHydration!: (prefs: typeof DEFAULT_PREFS) => void;
+    mocks.fetchPrefs.mockReturnValue(
+      new Promise<typeof DEFAULT_PREFS>((resolve) => {
+        releaseHydration = resolve;
+      }),
+    );
+
+    renderSettings();
+
+    // Pick Small while hydration is in flight — instant locally…
+    await user.click(screen.getByRole('radio', { name: 'Small' }));
+    expect(document.documentElement.dataset.textSize).toBe('sm');
+    expect(window.localStorage.getItem('km.textSize')).toBe('sm');
+
+    // …but the debounced PUT is SUPPRESSED (it would carry seeded baselines
+    // and clobber the stored blob).
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+
+    // The late settle lands holding 'lg' → server wins on load.
+    await act(async () => {
+      releaseHydration({ ...DEFAULT_PREFS, textSize: 'lg' });
+    });
+    await waitFor(() => {
+      expect(document.documentElement.dataset.textSize).toBe('lg');
+    });
+    expect(window.localStorage.getItem('km.textSize')).toBe('lg');
+
+    // Neither the settle nor the adopt spawns an echo PUT.
     await act(async () => {
       vi.advanceTimersByTime(1000);
     });

@@ -38,6 +38,7 @@ import { AuthProvider } from './hooks/AuthProvider';
 import { useAuth } from './hooks/useAuth';
 import { ThemeProvider } from './hooks/ThemeProvider';
 import { AccentProvider } from './hooks/AccentProvider';
+import { TextSizeProvider } from './hooks/TextSizeProvider';
 import { SettingsProvider } from './hooks/SettingsProvider';
 import { ToastProvider } from './components/ToastProvider';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -75,6 +76,10 @@ export default function App(): JSX.Element {
             <html> (Seoul Neon accent presets) and persists to km.accent.
             Independent of both the theme and the palette settings. */}
         <AccentProvider>
+        {/* TextSizeProvider (F-025) mirrors AccentProvider — stamps
+            `data-text-size` on <html> (root font-size scale) and persists
+            to km.textSize. Independent of theme, accent, and settings. */}
+        <TextSizeProvider>
         <SettingsProvider>
           {/* PF-A: ToastProvider wraps the app so every screen can surface a
               transient toast. Placed inside SettingsProvider (so toasts
@@ -167,6 +172,7 @@ export default function App(): JSX.Element {
             <PwaUpdatePrompt />
           </ToastProvider>
         </SettingsProvider>
+        </TextSizeProvider>
         </AccentProvider>
       </ThemeProvider>
     </ErrorBoundary>
