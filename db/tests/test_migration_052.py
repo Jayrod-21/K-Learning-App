@@ -1,0 +1,346 @@
+"""Migration 052 (notification schedules + delivery log, F-040) — real-chain tests.
+
+WHY THIS FILE EXISTS:
+    052 is pure net-new schema (no data transform), but it carries a dense set
+    of DECLARATIVE rules the route layer leans on — the (user, kind, channel)
+    upsert key, the weekday⟷kind CHECK, the status set on the delivery log,
+    the sent⇒sent_at invariant, and the users→schedules→deliveries CASCADE
+    chain (per-user erasure). The synthetic harness tests (test_migrations.py)
+    prove the RUNNER; these tests apply the REAL migration chain against a
+    real Postgres-16 testcontainer via `migrate.main()` and prove each of
+    those rules with actual rows — the constraint text in the .sql file is
+    prose until a violating INSERT bounces off it.
+
+SCOPE:
+    - up: both tables + trigger exist; every CHECK/UNIQUE/FK proven by a
+      violating row (kind, channel, weekday-by-kind both directions, tz shape,
+      delivery status, sent⇒sent_at, uq (user,kind,channel)); updated_at
+      trigger fires; CASCADE user→schedules→deliveries.
+    - down: both tables dropped (REQUIRES --allow-destructive — 052.down
+      contains real DROP TABLE, unlike 046.down's unmatched DELETEs), the
+      rest of the schema intact; re-up is clean.
+
+DETERMINISM:
+    Mirrors test_migration_046.py — the real migration files are copied into a
+    tmp_path-scoped directory and the runner is pointed at it via
+    `--migrations-dir`; the `dsn` fixture gives each test a fresh schema.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import shutil
+
+import psycopg
+import pytest
+from psycopg import errors
+from psycopg.rows import dict_row, tuple_row
+
+from db import migrate  # type: ignore[import-not-found]
+
+try:
+    from testcontainers.postgres import PostgresContainer  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    PostgresContainer = None  # type: ignore[assignment]
+
+
+pytestmark = pytest.mark.skipif(
+    PostgresContainer is None,
+    reason="testcontainers not installed — `pip install testcontainers[postgres]`",
+)
+
+REAL_MIGRATIONS_DIR: pathlib.Path = (
+    pathlib.Path(__file__).resolve().parents[1] / "migrations"
+)
+
+# The migration immediately before 052 in the chain — the down-target that
+# rolls back exactly 052 and nothing else.
+PRE_052 = "047"
+
+# A syntactically valid argon2id-shaped hash satisfying
+# ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
+FAKE_HASH = "$argon2id$" + "x" * 70
+
+
+# ---------------------------------------------------------------------------
+# Fixtures — one container per session, a fresh DB + full migration dir per test
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def pg_container():
+    with PostgresContainer("postgres:16-alpine") as pg:
+        yield pg
+
+
+@pytest.fixture()
+def dsn(pg_container) -> str:
+    raw = pg_container.get_connection_url()
+    raw = raw.replace("postgresql+psycopg2://", "postgres://")
+    raw = raw.replace("postgresql://", "postgres://")
+    with psycopg.connect(raw, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("DROP SCHEMA public CASCADE")
+        cur.execute("CREATE SCHEMA public")
+    return raw
+
+
+@pytest.fixture()
+def env(monkeypatch, dsn) -> None:
+    monkeypatch.setenv("DATABASE_URL", dsn)
+
+
+@pytest.fixture()
+def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A tmp directory containing EVERY production migration file."""
+    d = tmp_path / "migrations_full"
+    d.mkdir(parents=True)
+    copied = 0
+    for src in REAL_MIGRATIONS_DIR.iterdir():
+        if src.suffix == ".sql" and src.is_file():
+            shutil.copy2(src, d / src.name)
+            copied += 1
+    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _full_up(full_dir: pathlib.Path) -> None:
+    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
+    # the chain, so any full `up` traverses it and trips migrate.py's
+    # destructive gate without the flag.
+    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
+    assert rc == 0, f"full up returned {rc}"
+
+
+def _seed_user(conn: psycopg.Connection, email: str) -> int:
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute(
+            "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+            (email, FAKE_HASH),
+        )
+        return cur.fetchone()[0]
+
+
+def _seed_schedule(
+    conn: psycopg.Connection,
+    user_id: int,
+    kind: str = "daily_reminder",
+    channel: str = "push",
+    time_of_day: str = "07:30",
+    tz: str = "Asia/Seoul",
+    weekday: int | None = None,
+    enabled: bool = True,
+) -> int:
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute(
+            """
+            INSERT INTO notification_schedules
+                    (user_id, kind, channel, time_of_day, tz, weekday, enabled)
+            VALUES (%s, %s, %s, %s::time, %s, %s, %s)
+            RETURNING id
+            """,
+            (user_id, kind, channel, time_of_day, tz, weekday, enabled),
+        )
+        return cur.fetchone()[0]
+
+
+def _table_exists(conn: psycopg.Connection, table: str) -> bool:
+    with conn.cursor(row_factory=tuple_row) as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+             WHERE table_schema = 'public' AND table_name = %s
+            """,
+            (table,),
+        )
+        return cur.fetchone() is not None
+
+
+# ---------------------------------------------------------------------------
+# 1. UP — schema shape + every declarative rule proven with real rows
+# ---------------------------------------------------------------------------
+
+def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
+    """Apply the full real chain, then prove 052's contract row by row:
+    valid shapes insert; every CHECK / UNIQUE bounces its violation; the
+    updated_at trigger fires; user deletion cascades through schedules into
+    deliveries."""
+    _full_up(full_dir)
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert _table_exists(conn, "notification_schedules")
+        assert _table_exists(conn, "notification_deliveries")
+
+        user_id = _seed_user(conn, "f040@example.com")
+
+        # -- Valid rows: a daily (no weekday), a weekly (weekday required),
+        #    and the sms placeholder channel all store cleanly.
+        daily_id = _seed_schedule(conn, user_id)
+        _seed_schedule(conn, user_id, kind="weekly_report", channel="email",
+                       time_of_day="18:00", tz="America/Denver", weekday=0)
+        _seed_schedule(conn, user_id, channel="sms")
+
+        # -- CHECK violations, one per rule. Each statement runs in its own
+        #    implicit tx (autocommit) so a bounce leaves the connection clean.
+        with pytest.raises(errors.CheckViolation):
+            _seed_schedule(conn, user_id, kind="hourly_nag", channel="email")
+        with pytest.raises(errors.CheckViolation):
+            _seed_schedule(conn, user_id, kind="reviews_due",
+                           channel="carrier_pigeon")
+        with pytest.raises(errors.CheckViolation):  # weekday on a daily kind
+            _seed_schedule(conn, user_id, kind="reviews_due", weekday=1)
+        with pytest.raises(errors.CheckViolation):  # weekly without weekday
+            _seed_schedule(conn, user_id, kind="weekly_report", channel="push",
+                           weekday=None)
+        with pytest.raises(errors.CheckViolation):  # weekday out of range
+            _seed_schedule(conn, user_id, kind="weekly_report", channel="sms",
+                           weekday=7)
+        with pytest.raises(errors.CheckViolation):  # tz shape (empty)
+            _seed_schedule(conn, user_id, kind="reviews_due", channel="email",
+                           tz="")
+
+        # -- UNIQUE (user_id, kind, channel): the F-040 upsert key.
+        with pytest.raises(errors.UniqueViolation):
+            _seed_schedule(conn, user_id, time_of_day="09:00")
+        # ...but the same (kind, channel) under ANOTHER user is fine.
+        other_id = _seed_user(conn, "f040-other@example.com")
+        _seed_schedule(conn, other_id)
+
+        # -- updated_at trigger (001's set_updated_at) fires on UPDATE.
+        with conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute(
+                """
+                UPDATE notification_schedules SET enabled = false
+                 WHERE id = %s
+                RETURNING updated_at > created_at
+                """,
+                (daily_id,),
+            )
+            assert cur.fetchone()[0] is True, "trigger must bump updated_at"
+
+        # -- Delivery log: pending needs no sent_at; sent REQUIRES one.
+        with conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_deliveries (schedule_id, status)
+                VALUES (%s, 'pending') RETURNING id
+                """,
+                (daily_id,),
+            )
+        with pytest.raises(errors.CheckViolation):  # unknown status
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO notification_deliveries (schedule_id, status)
+                    VALUES (%s, 'bounced')
+                    """,
+                    (daily_id,),
+                )
+        with pytest.raises(errors.CheckViolation):  # sent without sent_at
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO notification_deliveries (schedule_id, status)
+                    VALUES (%s, 'sent')
+                    """,
+                    (daily_id,),
+                )
+        with conn.cursor() as cur:  # sent WITH sent_at is the valid shape
+            cur.execute(
+                """
+                INSERT INTO notification_deliveries
+                        (schedule_id, status, sent_at, provider_ref)
+                VALUES (%s, 'sent', now(), 'ses-msg-0001')
+                """,
+                (daily_id,),
+            )
+        with pytest.raises(errors.ForeignKeyViolation):  # orphan delivery
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO notification_deliveries (schedule_id, status)
+                    VALUES (%s, 'pending')
+                    """,
+                    (daily_id + 100000,),
+                )
+
+        # -- Erasure chain: deleting the user cascades through schedules into
+        #    deliveries (users → schedules → deliveries, both CASCADE).
+        with conn.cursor(row_factory=tuple_row) as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            cur.execute(
+                "SELECT count(*) FROM notification_schedules WHERE user_id = %s",
+                (user_id,),
+            )
+            assert cur.fetchone()[0] == 0
+            cur.execute("SELECT count(*) FROM notification_deliveries")
+            assert cur.fetchone()[0] == 0, (
+                "deliveries must cascade away with their schedules"
+            )
+            # The other user's schedule is untouched.
+            cur.execute(
+                "SELECT count(*) FROM notification_schedules WHERE user_id = %s",
+                (other_id,),
+            )
+            assert cur.fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# 2. DOWN — clean drop (destructive-gated), rest of schema intact, clean re-up
+# ---------------------------------------------------------------------------
+
+def test_052_down_drops_both_tables_then_reups(env, dsn: str, full_dir) -> None:
+    """Roll back exactly 052 and prove: both tables gone, neighboring schema
+    untouched, and a re-up applies cleanly. Unlike 046.down (whose data loss
+    is via DELETE/DROP COLUMN, unmatched by the runner's gate), 052.down
+    contains real DROP TABLE — the flag is REQUIRED, and the gate refusing
+    without it is asserted first."""
+    _full_up(full_dir)
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(conn, "f040-down@example.com")
+        sched_id = _seed_schedule(conn, user_id)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO notification_deliveries (schedule_id, status)
+                VALUES (%s, 'pending')
+                """,
+                (sched_id,),
+            )
+
+    # The destructive gate must refuse a 052 rollback without the flag...
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--target", PRE_052, "down"]
+    )
+    assert rc != 0, "052.down contains DROP TABLE — the gate must refuse it"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert _table_exists(conn, "notification_schedules"), (
+            "a refused rollback must leave the schema untouched"
+        )
+
+    # ...and perform it with the flag.
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--target", PRE_052,
+         "--allow-destructive", "down"]
+    )
+    assert rc == 0, f"down --target {PRE_052} returned {rc}"
+
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+        assert not _table_exists(conn, "notification_schedules")
+        assert not _table_exists(conn, "notification_deliveries")
+        # Neighboring schema intact — the seeded user survives the rollback.
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS n FROM users WHERE id = %s", (user_id,))
+            assert cur.fetchone()["n"] == 1
+
+    # Re-up: 052 applies cleanly again and comes back empty.
+    _full_up(full_dir)
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
+        assert _table_exists(conn, "notification_schedules")
+        assert _table_exists(conn, "notification_deliveries")
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) AS n FROM notification_schedules")
+            assert cur.fetchone()["n"] == 0
