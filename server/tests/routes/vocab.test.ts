@@ -720,12 +720,13 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
       .send({ rating: 'good', expected_version: version });
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(version + 1);
-    // good on a new card seeds stability 3 → 3 whole days out.
-    expect(res.body.scheduled_days).toBe(3);
+    // good on a new card seeds stability 1 → 1 whole day out (true Anki
+    // graduating interval, B-021 — matches the UI's `1d` label).
+    expect(res.body.scheduled_days).toBe(1);
     const dueAt = new Date(res.body.due_at as string).getTime();
     expect(dueAt).toBeGreaterThan(before); // the headline assertion: in the future
-    expect(dueAt).toBeGreaterThan(before + 2 * 86_400_000); // ≈3 days, not minutes
-    expect(dueAt).toBeLessThan(before + 4 * 86_400_000);
+    expect(dueAt).toBeGreaterThan(before + 0.5 * 86_400_000); // ≈1 day, not minutes
+    expect(dueAt).toBeLessThan(before + 1.5 * 86_400_000);
 
     // The card row itself advanced (server-computed, not client-claimed).
     const row = await pg.pool.query<{
@@ -743,8 +744,8 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
     );
     const card = row.rows[0]!;
     expect(card.fsrs_state).toBe('learning');
-    expect(Number(card.stability)).toBe(3);
-    expect(card.scheduled_days).toBe(3);
+    expect(Number(card.stability)).toBe(1);
+    expect(card.scheduled_days).toBe(1);
     expect(card.reps).toBe(1);
     expect(card.lapses).toBe(0);
     expect(card.version).toBe(version + 1);
@@ -754,19 +755,32 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
     expect((due.body.cards as Array<{ id: number }>).map((c) => c.id)).not.toContain(cardId);
   });
 
-  it('Again/Hard/Good/Easy yield different, ordered intervals (~10min / 1d / 3d / 6d on a fresh card)', async () => {
+  it('Again/Hard/Good/Easy yield the advertised true-Anki intervals (<1m / ~6m / 1d / 4d on a fresh card, B-021)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const ratings = ['again', 'hard', 'good', 'easy'] as const;
+    // again AND hard are minute-scale learning steps (scheduled_days 0);
+    // good graduates at 1 day, easy at 4 — the intervals the UI labels promise.
+    // The pre-retune engine (0/1/3/6 days) fails these assertions by design.
     const expectedDays: Record<(typeof ratings)[number], number> = {
       again: 0,
-      hard: 1,
-      good: 3,
-      easy: 6,
+      hard: 0,
+      good: 1,
+      easy: 4,
+    };
+    // [min, max] window (ms after `before`) each rating's due_at must land in.
+    const MIN = 60_000;
+    const DAY = 86_400_000;
+    const SLACK = 5 * MIN; // request latency headroom on the day-scale windows
+    const expectedWindow: Record<(typeof ratings)[number], [number, number]> = {
+      again: [0, MIN], // `<1m` — literally under a minute
+      hard: [MIN, 10 * MIN], // `6m` learning step
+      good: [0.5 * DAY, DAY + SLACK], // `1d`
+      easy: [3.5 * DAY, 4 * DAY + SLACK], // `4d`
     };
     const dueTimes: number[] = [];
-    const before = Date.now();
     for (const rating of ratings) {
       const { cardId, version } = await bankFreshCard(agent);
+      const before = Date.now();
       const res = await agent
         .post(`/vocab/cards/${cardId}/reviews`)
         .send({ rating, expected_version: version })
@@ -774,15 +788,18 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
       expect(res.body.scheduled_days).toBe(expectedDays[rating]);
       const dueAt = new Date(res.body.due_at as string).getTime();
       expect(dueAt).toBeGreaterThan(before); // every rating lands in the future
+      const [lo, hi] = expectedWindow[rating];
+      expect(dueAt).toBeGreaterThanOrEqual(before + lo);
+      expect(dueAt).toBeLessThanOrEqual(before + hi);
       dueTimes.push(dueAt);
     }
-    // Strictly increasing: again (~10 min) < hard (1d) < good (3d) < easy (6d).
+    // Strictly increasing: again (<1m) < hard (~6m) < good (1d) < easy (4d).
     for (let i = 1; i < dueTimes.length; i += 1) {
       expect(dueTimes[i]!).toBeGreaterThan(dueTimes[i - 1]!);
     }
   });
 
-  it('"again" re-queues ~10 minutes out (relearning + lapse), never due-now', async () => {
+  it('"again" re-queues under a minute out (relearning + lapse), never due-now', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const { cardId, version } = await bankFreshCard(agent);
 
@@ -794,7 +811,7 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
     expect(res.body.scheduled_days).toBe(0);
     const dueAt = new Date(res.body.due_at as string).getTime();
     expect(dueAt).toBeGreaterThan(before); // strictly in the future…
-    expect(dueAt).toBeLessThanOrEqual(before + 60 * 60 * 1000); // …but within the hour (10-min relearn)
+    expect(dueAt).toBeLessThan(before + 60_000); // …but under the `<1m` the UI advertises
 
     const row = await pg.pool.query<{ fsrs_state: string; lapses: number }>(
       `SELECT fsrs_state, lapses FROM vocab_cards WHERE id = $1`,
@@ -841,15 +858,15 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
     expect(Number(r.stability_before)).toBe(0);
     expect(Number(r.difficulty_before)).toBe(5);
     expect(r.elapsed_days_before).toBe(-1); // never-reviewed sentinel
-    // AFTER = the engine's transition for good-on-new.
+    // AFTER = the engine's transition for good-on-new (1-day graduation, B-021).
     expect(r.state_after).toBe('learning');
-    expect(Number(r.stability_after)).toBe(3);
+    expect(Number(r.stability_after)).toBe(1);
     expect(Number(r.difficulty_after)).toBe(5);
-    expect(r.scheduled_days_after).toBe(3);
+    expect(r.scheduled_days_after).toBe(1);
     expect(r.duration_ms).toBe(4200);
   });
 
-  it('a second review compounds from the first (good → good: 3d → 6d), and the log chains', async () => {
+  it('a second review compounds from the first (good → good: 1d → 2d), and the log chains', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const { cardId, version } = await bankFreshCard(agent);
 
@@ -861,8 +878,8 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
       .post(`/vocab/cards/${cardId}/reviews`)
       .send({ rating: 'good', expected_version: first.body.version })
       .expect(200);
-    // 3-day stability × 2.0 (good) = 6 days, and the card graduates to review.
-    expect(second.body.scheduled_days).toBe(6);
+    // 1-day stability × 2.0 (good) = 2 days, and the card graduates to review.
+    expect(second.body.scheduled_days).toBe(2);
     expect(second.body.version).toBe(version + 2);
 
     const row = await pg.pool.query<{ fsrs_state: string; stability: string; reps: number }>(
@@ -870,7 +887,7 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
       [cardId],
     );
     expect(row.rows[0]!.fsrs_state).toBe('review');
-    expect(Number(row.rows[0]!.stability)).toBe(6);
+    expect(Number(row.rows[0]!.stability)).toBe(2);
     expect(row.rows[0]!.reps).toBe(2);
 
     // Append-only chain: the 2nd row's *_before equals the 1st row's *_after.
@@ -911,9 +928,9 @@ describe('POST /vocab/cards/:cardId/reviews — server-authoritative FSRS schedu
         scheduled_days_after: 0, // the stub/tamper value — must be ignored
       })
       .expect(200);
-    expect(res.body.scheduled_days).toBe(3); // server-computed, not the client's 0
+    expect(res.body.scheduled_days).toBe(1); // server-computed, not the client's 0
     expect(new Date(res.body.due_at as string).getTime()).toBeGreaterThan(
-      before + 2 * 86_400_000,
+      before + 0.5 * 86_400_000,
     );
   });
 

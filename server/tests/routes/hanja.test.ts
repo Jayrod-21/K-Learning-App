@@ -29,7 +29,7 @@
  *     future / suspended / deleted / cross-user / non-hanja cards; and the
  *     vocab due queue excludes hanja cards (no double-present)
  *   - POST /cards/:cardId/reviews: real future due_at via the shared FSRS
- *     engine, card_reviews BEFORE/AFTER row logged, again → ~10 min relearn,
+ *     engine, card_reviews BEFORE/AFTER row logged, again → <1 min relearn,
  *     409 stale version writes nothing, 404 unknown / cross-user (IDOR) /
  *     non-hanja card, 400 bad rating / missing version / unknown key (strict)
  *   - migration 050 constraints through the applied chain: five-leg XOR
@@ -517,7 +517,7 @@ describe('GET /hanja/cards/due — the hanja due queue (F-075)', () => {
 });
 
 describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () => {
-  it('good on a new card → learning, stability 3, due ~3 days out, card_reviews logged', async () => {
+  it('good on a new card → learning, stability 1, due ~1 day out, card_reviews logged', async () => {
     await seedHanjaCharacter(pg.pool, { char: '學' });
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const { cardId, version } = await seedCardViaApi(agent, '學');
@@ -530,10 +530,10 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     });
     expect(res.status).toBe(200);
     expect(res.body.version).toBe(version + 1);
-    expect(res.body.scheduled_days).toBe(3); // BASE_STABILITY.good — server-computed
-    // A REAL future due_at (> 2 days out), not the "due immediately" stub bug.
+    expect(res.body.scheduled_days).toBe(1); // BASE_STABILITY.good (B-021: 1d graduation) — server-computed
+    // A REAL future due_at (> half a day out), not the "due immediately" stub bug.
     expect(new Date(res.body.due_at as string).getTime()).toBeGreaterThan(
-      before + 2 * 86_400_000,
+      before + 0.5 * 86_400_000,
     );
 
     // The card advanced through the SAME storage shape as every other family.
@@ -543,7 +543,7 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
       [cardId],
     );
     expect(card.rows[0].fsrs_state).toBe('learning');
-    expect(card.rows[0].stability).toBe(3);
+    expect(card.rows[0].stability).toBe(1);
     expect(card.rows[0].reps).toBe(1);
     expect(card.rows[0].lapses).toBe(0);
     expect(card.rows[0].version).toBe(2);
@@ -562,13 +562,13 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     expect(log.rows[0].state_before).toBe('new');
     expect(log.rows[0].sb).toBe(0);
     expect(log.rows[0].state_after).toBe('learning');
-    expect(log.rows[0].sa).toBe(3);
+    expect(log.rows[0].sa).toBe(1);
     expect(log.rows[0].elapsed_days_before).toBe(-1); // never-reviewed sentinel
-    expect(log.rows[0].scheduled_days_after).toBe(3);
+    expect(log.rows[0].scheduled_days_after).toBe(1);
     expect(log.rows[0].duration_ms).toBe(4200);
   });
 
-  it('again → relearning, ~10-minute re-queue (never due-now)', async () => {
+  it('again → relearning, <1-minute re-queue (never due-now)', async () => {
     await seedHanjaCharacter(pg.pool, { char: '學' });
     const { agent } = await registerUser(t.app, pg.pool);
     const { cardId, version } = await seedCardViaApi(agent, '學');
@@ -581,8 +581,9 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     expect(res.status).toBe(200);
     expect(res.body.scheduled_days).toBe(0);
     const dueAt = new Date(res.body.due_at as string).getTime();
-    expect(dueAt).toBeGreaterThan(before + 9 * 60_000);
-    expect(dueAt).toBeLessThan(before + 11 * 60_000 + 5_000);
+    // B-021: the again re-queue is <1 minute (the UI's `<1m` label), not 10 min.
+    expect(dueAt).toBeGreaterThan(before);
+    expect(dueAt).toBeLessThan(before + 60_000);
 
     const card = await pg.pool.query(
       `SELECT fsrs_state, lapses FROM vocab_cards WHERE id = $1`,
