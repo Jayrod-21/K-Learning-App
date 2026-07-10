@@ -72,7 +72,9 @@ export interface NextFsrs {
   stability: number;
   /** Difficulty on the canonical FSRS 1.0–10.0 scale (clamped to [1,10]). */
   difficulty: number;
-  /** Whole-day interval until next review. 0 ⇒ the route schedules ~10 min out. */
+  /** Whole-day interval until next review. 0 ⇒ a minute-scale step: the route
+   *  schedules RELEARN_DELAY_MS (<1 min, again) or HARD_STEP_DELAY_MS (~6 min,
+   *  hard) out via dueDelayMs. */
   scheduledDays: number;
   /** The rating this transition was computed from (echoed for the review log). */
   rating: FsrsRating;
@@ -81,9 +83,27 @@ export interface NextFsrs {
 /** One day in milliseconds — the unit `scheduledDays` converts through. */
 export const MS_PER_DAY = 86_400_000;
 
-/** Milliseconds added to now() when a lapse (rating 'again') re-queues a card.
- *  scheduledDays 0 + relearning ⇒ "see it again very soon" rather than now+0d. */
-export const RELEARN_DELAY_MS = 10 * 60 * 1000;
+/**
+ * Milliseconds added to now() when a lapse (rating 'again') re-queues a card.
+ * scheduledDays 0 + relearning ⇒ "see it again very soon" rather than now+0d.
+ *
+ * B-021: tuned to just under a minute so the client's Anki-convention `<1m`
+ * rating label is literally true (Anki's default again step renders as "<1m").
+ * Was 10 minutes, which contradicted the advertised label.
+ */
+export const RELEARN_DELAY_MS = 50 * 1000;
+
+/**
+ * Milliseconds added to now() for a `hard` LEARNING STEP — a hard answer on a
+ * card with no accumulated stability (brand-new, or relearning after a lapse).
+ * Anki convention: hard on a new card repeats the learning step ~6 minutes out
+ * rather than seeding a day-scale interval (B-021 — matches the client's `6m`
+ * label). Like RELEARN_DELAY_MS, this is clock policy, NOT memory stability:
+ * learning steps are minute-scale delays outside the stability-days model
+ * (ADR-003 storage is unchanged — the card simply persists stability 0 /
+ * scheduled_days 0 while it is still inside its learning steps).
+ */
+export const HARD_STEP_DELAY_MS = 6 * 60 * 1000;
 
 /** Canonical FSRS difficulty floor / ceiling (matches ck_vocab_cards_difficulty_range).
  *  A brand-new card starts at difficulty 5.0 via the vocab_cards column DEFAULT;
@@ -118,14 +138,21 @@ const DIFFICULTY_DELTA: Readonly<Record<FsrsRating, number>> = {
 
 /**
  * Base stability (days) for a card with NO prior successful exposure (reps === 0
- * or coming back from a lapse). `again` parks at 0 so the route re-queues it in
- * ~10 minutes; the others seed the first real interval.
+ * or coming back from a lapse). Tuned to true Anki graduation intervals (B-021,
+ * matching the client's `<1m / 6m / 1d / 4d` rating labels):
+ *
+ *   - `again` parks at 0 → relearning step, re-queued RELEARN_DELAY_MS (<1 min) out;
+ *   - `hard` ALSO stays at 0 → the card repeats its learning step ~6 minutes out
+ *     (HARD_STEP_DELAY_MS) instead of graduating — hard on unlearned material is
+ *     a learning step, not a day-scale interval;
+ *   - `good` graduates at 1 day (Anki's default graduating interval);
+ *   - `easy` graduates at 4 days (Anki's default easy interval).
  */
 const BASE_STABILITY: Readonly<Record<FsrsRating, number>> = {
   again: 0,
-  hard: 1,
-  good: 3,
-  easy: 6,
+  hard: 0,
+  good: 1,
+  easy: 4,
 };
 
 /**
@@ -160,19 +187,23 @@ function clamp(value: number, lo: number, hi: number): number {
  *
  * STABILITY (days):
  *   - First successful exposure (reps === 0, or any time the prior stability is
- *     0): seed from BASE_STABILITY[rating].
+ *     0): seed from BASE_STABILITY[rating] — good graduates at 1 day, easy at
+ *     4 days; hard stays at 0 (still inside its minute-scale learning steps).
  *   - Subsequent successful exposure: multiply the PRIOR stability by
  *     STABILITY_MULTIPLIER[rating] (hard ×1.2, good ×2.0, easy ×3.0) — monotone
  *     growth on success.
  *   - `again` (a lapse): reset stability to 0 and enter `relearning`.
  *
  * STATE:
- *   - again        → relearning   (the card lapsed; re-queue shortly)
- *   - else reps==0 → learning     (first pass through the material)
- *   - else         → review       (graduated; on the normal review schedule)
+ *   - again                  → relearning  (the card lapsed; re-queue shortly)
+ *   - hard, no prior stability → learning (reps==0) / relearning (reps>0)
+ *                                          (still stepping; not graduated)
+ *   - else reps==0           → learning    (first pass through the material)
+ *   - else                   → review      (graduated; normal review schedule)
  *
  * INTERVAL: scheduledDays = (rating === 'again') ? 0 : ceil(stability). 0 signals
- * the route to schedule the card ~10 minutes out (relearning), not "now+0 days".
+ * a minute-scale step: dueDelayMs maps it to RELEARN_DELAY_MS (<1 min) on
+ * `again` or HARD_STEP_DELAY_MS (~6 min) on `hard`, never "now+0 days".
  *
  * COUNTERS: reps += 1 always; lapses += 1 only on `again` (applied by the
  * route's UPDATE, mirroring these semantics).
@@ -194,11 +225,18 @@ export function schedule(current: CardFsrs, rating: FsrsRating): NextFsrs {
     stability = 0;
     state = 'relearning';
   } else if (!hasPriorStability) {
-    // First real success: seed the initial interval. A brand-new card graduates
-    // to `learning`; a card with prior reps (e.g. recovering after relearning)
-    // moves on to `review`.
+    // No accumulated memory yet: seed from the base band. `hard` seeds 0 — the
+    // card repeats its learning step (~6 min via dueDelayMs) without
+    // graduating, so it stays in learning/relearning; `good`/`easy` graduate
+    // it onto a day-scale interval. A brand-new card (reps 0) is `learning`;
+    // a card with prior reps is recovering from a lapse, so a non-graduating
+    // hard keeps it `relearning` while good/easy move it on to `review`.
     stability = BASE_STABILITY[rating];
-    state = current.reps === 0 ? 'learning' : 'review';
+    if (stability === 0) {
+      state = current.reps === 0 ? 'learning' : 'relearning';
+    } else {
+      state = current.reps === 0 ? 'learning' : 'review';
+    }
   } else {
     // Subsequent success: grow stability and keep it on the review schedule.
     stability = current.stability * STABILITY_MULTIPLIER[rating];
@@ -208,7 +246,7 @@ export function schedule(current: CardFsrs, rating: FsrsRating): NextFsrs {
   // Clamp into [0, STABILITY_MAX]: floor at 0 (never negative), cap at the
   // ~100-year ceiling so the value always fits NUMERIC(10,4) (no 22003 overflow
   // on write), and — via the NaN-safe clamp — collapse any non-finite input to
-  // 0. again → 0 by construction (route maps 0 → ~10 min).
+  // 0. again → 0 by construction (dueDelayMs maps 0 to a minute-scale step).
   const safeStability = clamp(stability, 0, STABILITY_MAX);
   const scheduledDays = rating === 'again' ? 0 : Math.max(0, Math.ceil(safeStability));
 
@@ -225,13 +263,19 @@ export function schedule(current: CardFsrs, rating: FsrsRating): NextFsrs {
  * Milliseconds from "now" until the transition's `due_at` — the ONE place the
  * scheduledDays→clock policy lives, shared by both review-writing routes:
  *
- *   - a lapse (`again`, scheduledDays 0) re-queues RELEARN_DELAY_MS (~10 min)
+ *   - a lapse (`again`, scheduledDays 0) re-queues RELEARN_DELAY_MS (<1 min)
  *     out, never "now + 0 days" (which would make the card immediately due
  *     again — the exact stub bug this engine replaces);
+ *   - any other scheduledDays-0 transition is a `hard` learning step (the only
+ *     rating that seeds stability 0 — see BASE_STABILITY) → HARD_STEP_DELAY_MS
+ *     (~6 min). This branch also fail-safes the degenerate non-finite-stability
+ *     row (clamped to 0) to a minute-scale re-queue instead of due-now;
  *   - every other rating schedules scheduledDays whole days out.
  *
  * Pure: the caller applies it to its own clock (`new Date(Date.now() + …)`).
  */
 export function dueDelayMs(next: NextFsrs): number {
-  return next.rating === 'again' ? RELEARN_DELAY_MS : next.scheduledDays * MS_PER_DAY;
+  if (next.rating === 'again') return RELEARN_DELAY_MS;
+  if (next.scheduledDays === 0) return HARD_STEP_DELAY_MS;
+  return next.scheduledDays * MS_PER_DAY;
 }

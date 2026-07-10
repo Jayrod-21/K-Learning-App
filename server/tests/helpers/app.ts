@@ -194,6 +194,15 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
               };
       return { result: item, metadata: { ...baseMeta, requestId: randomUUID() } };
     },
+    nameConversation: async (input) => ({
+      // Deterministic content-derived title: echoes a fragment of the first
+      // turn so route tests can assert the title came from CONTENT (F-036's
+      // whole point — never "mode + date"). Bounded to the schema's 80 cap.
+      result: {
+        title: `Chat about ${input.history[0]!.content.slice(0, 40)}`.slice(0, 80),
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     scoreGrammarDrill: async () => ({
       // Deterministic score: a passing grade with one correction. Lets the submit
       // route test assert the row update + reference reveal without Anthropic.
@@ -205,6 +214,37 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
         corrections: [
           { span: '___', issue: 'mock issue', fix: 'mock fix' },
         ],
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
+    generateWritingPrompt: async (input) => ({
+      // Deterministic prompt per mode/rubric. Lets the /writing/generate route
+      // test assert the wire shape without touching Anthropic. lengthHint is
+      // present for topik mode and absent for general — exercising the route's
+      // null coercion for the optional field.
+      result:
+        input.mode === 'topik'
+          ? {
+              promptKr: `모의 TOPIK 쓰기 과제입니다 (${input.rubric ?? 'topik_ii_54'}).`,
+              promptEn: `mock TOPIK writing task (${input.rubric ?? 'topik_ii_54'}).`,
+              lengthHint: (input.rubric ?? 'topik_ii_54') === 'topik_ii_53' ? '200-300자' : '600-700자',
+            }
+          : {
+              promptKr: '모의 자유 글쓰기 주제입니다.',
+              promptEn: 'mock free-write prompt.',
+            },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
+    generateStory: async (input) => ({
+      // Deterministic story echoing the requested level (+ topic when given).
+      // Lets the /reading/generate route test assert persistence + the wire
+      // shape without touching Anthropic.
+      result: {
+        title: `모의 이야기 (${input.level})`,
+        bodyKo:
+          input.topic !== undefined
+            ? `${input.topic}에 대한 모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.`
+            : '모의 이야기입니다. 옛날 옛적에 이야기가 시작되었습니다.',
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),

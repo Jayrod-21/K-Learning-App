@@ -17,6 +17,14 @@
  *                                              for one owned book, or null
  *   PUT /reading/position/:uploadId          → upsert the resume position
  *                                              (F-069; reading_positions, 051)
+ *   POST /reading/generate                   → Claude authors a short Korean
+ *                                              story at a level (optional
+ *                                              topic), persists it to
+ *                                              generated_stories (054), and
+ *                                              returns it (F-068)
+ *   GET /reading/generated                   → the user's generated-story
+ *                                              library, newest first
+ *   GET /reading/generated/:id               → one generated story (full body)
  *
  * SECURITY:
  *   - IDOR: reading_chapters.user_id is the book owner (pinned to it by the
@@ -45,14 +53,24 @@
  *     guarantees a chapter's user_id = its upload's owner, but does NOT enforce
  *     book_uploads.type = 'literature' — the loader and these routes own that
  *     invariant, not the FK.
+ *   - GENERATED STORIES (F-068): /generate is a PAID upstream call →
+ *     expensiveLimiter (per-user burst) PLUS the proxy's own per-route
+ *     per-minute limiter. The Claude call runs BEFORE the INSERT, so a Claude
+ *     failure (mapped by the shared mapClaudeError in middleware/errors.ts:
+ *     injection → 400, proxy limiter → 429, upstream failure → 502) writes
+ *     NO story row (no half-state).
+ *     The optional topic is the route's only free text — bounded here and
+ *     sanitized + <user_input>-wrapped again inside the proxy. Story reads are
+ *     user-scoped (IDOR: a missing or foreign id is a uniform 404).
  */
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter } from '../middleware/rateLimits.js';
+import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
-import { NotFoundError } from '../middleware/errors.js';
+import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
+import { getClaudeProxy } from '../services/claudeProxy.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -390,6 +408,182 @@ router.put(
       );
 
       res.status(200).json({ position: toPositionDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Generated stories (F-068; generated_stories, migration 054) ---------- */
+
+/** Story target bands (mirrors the proxy's StoryLevelSchema): 'basic' is a
+ *  legacy corpus content tag, never a generation target. */
+const StoryLevelBodySchema = z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']);
+
+/**
+ * POST /reading/generate body. `.strict()` rejects unknown keys (probing
+ * `model` or a typo'd key fails loud). level defaults to L3 (the app's
+ * intermediate center of gravity); topic is the route's ONLY free text —
+ * bounded 1..500 here (under the proxy's generate_story input cap) and
+ * sanitized + wrapped as untrusted data again inside the proxy.
+ */
+const GenerateStoryBodySchema = z
+  .object({
+    level: StoryLevelBodySchema.default('L3'),
+    topic: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict();
+
+/** Wire shape of one generated story (BIGINT id coerced to a JSON number). */
+interface GeneratedStoryDto {
+  id: number;
+  title: string;
+  bodyKo: string;
+  level: string;
+  prompt: string | null;
+  createdAt: Date;
+}
+
+interface GeneratedStoryRow {
+  id: string; // BIGINT arrives as string from pg
+  title: string;
+  body_ko: string;
+  level: string;
+  prompt: string | null;
+  created_at: Date;
+}
+
+function toStoryDto(row: GeneratedStoryRow): GeneratedStoryDto {
+  return {
+    id: Number(row.id),
+    title: row.title,
+    bodyKo: row.body_ko,
+    level: row.level,
+    prompt: row.prompt,
+    createdAt: row.created_at,
+  };
+}
+
+const STORY_COLUMNS =
+  'id::text AS id, title, body_ko, level::text AS level, prompt, created_at';
+
+/**
+ * POST /reading/generate — Claude authors a short Korean story, the route
+ * PERSISTS it to generated_stories, and returns it (201).
+ *
+ * Ordering is deliberate: the Claude call runs BEFORE the INSERT, so a Claude
+ * failure (→ 502) writes no row — no half-state, mirroring grammarDrill.ts.
+ * Unlike gradeWriting's best-effort persist, a persist failure here IS a route
+ * failure (500): the story's whole purpose is to live in the library, so
+ * returning a story that silently never persisted would be a lie the user
+ * discovers on their next visit. The stored `level` is the SERVER-chosen
+ * request value (never a model echo); `prompt` stores the user's topic.
+ * Cache/usage rows are written by the proxy under route 'generate_story'
+ * (migration 053; cacheTtl 0 — variety on regenerate).
+ */
+router.post(
+  '/generate',
+  expensiveLimiter(),
+  validateBody(GenerateStoryBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof GenerateStoryBodySchema>;
+
+      // 1. Generate via Claude BEFORE any INSERT — a failure writes no row.
+      //    The proxy Zod-validates the model output (StoryResultSchema), so a
+      //    malformed model reply is a 502, never a malformed row.
+      const proxy = getClaudeProxy();
+      const { result: story } = await proxy.generateStory(
+        {
+          level: body.level,
+          ...(body.topic !== undefined ? { topic: body.topic } : {}),
+        },
+        { ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}), userId },
+      );
+
+      // 2. Persist. user_id comes from the session (never the client); level
+      //    is the server-chosen request value; all values are bound parameters.
+      //    StoryResultSchema's caps (title 200 / body 6000) sit UNDER the DB
+      //    CHECK ceilings (300 / 20000), so a schema-valid story always fits.
+      const { rows } = await query<GeneratedStoryRow>(
+        `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt)
+         VALUES ($1, $2, $3, $4::proficiency_level, $5)
+         RETURNING ${STORY_COLUMNS}`,
+        [userId, story.title, story.bodyKo, body.level, body.topic ?? null],
+      );
+
+      res.status(201).json({ story: toStoryDto(rows[0]!) });
+    } catch (err) {
+      next(mapClaudeError(err));
+    }
+  },
+);
+
+/**
+ * GET /reading/generated — the user's generated-story library, newest first.
+ * List items carry metadata only (no body_ko — a story body can be multi-KB
+ * and the library screen never renders it); GET /generated/:id serves the
+ * full story. Served by ix_generated_stories_user_created
+ * (user_id, created_at DESC); LIMIT 200 bounds the payload (single-user app —
+ * far beyond any realistic library size, and a paging param can come later
+ * without breaking the shape).
+ */
+router.get('/generated', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<Omit<GeneratedStoryRow, 'body_ko'>>(
+      `SELECT id::text AS id, title, level::text AS level, prompt, created_at
+         FROM generated_stories
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 200`,
+      [userId],
+    );
+    res.status(200).json({
+      stories: rows.map((r) => ({
+        id: Number(r.id),
+        title: r.title,
+        level: r.level,
+        prompt: r.prompt,
+        createdAt: r.created_at,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const StoryParamsSchema = z.object({
+  id: z.coerce.number().int().positive().max(MAX_ID),
+});
+
+/**
+ * GET /reading/generated/:id — one generated story, full body. User-scoped in
+ * a single query: a missing id and another user's id are the same uniform 404
+ * (IDOR — never confirm a foreign id).
+ */
+router.get(
+  '/generated/:id',
+  cheapLimiter(),
+  validateParams(StoryParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof StoryParamsSchema> }
+      ).validatedParams;
+      const { rows } = await query<GeneratedStoryRow>(
+        `SELECT ${STORY_COLUMNS}
+           FROM generated_stories
+          WHERE id = $1 AND user_id = $2
+          LIMIT 1`,
+        [id, userId],
+      );
+      if (rows.length === 0) {
+        throw new NotFoundError('story not found');
+      }
+      res.status(200).json({ story: toStoryDto(rows[0]!) });
     } catch (err) {
       next(err);
     }

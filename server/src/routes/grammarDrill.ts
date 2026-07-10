@@ -423,8 +423,9 @@ router.post(
         };
         const next = schedule(current, rating);
 
-        // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
-        // re-queues ~10 min from now (relearning) rather than immediately.
+        // due_at: scheduled_days out, except minute-scale steps (scheduledDays
+        // 0): a lapse (again) re-queues <1 min out and a hard learning step
+        // ~6 min out, rather than immediately.
         // The policy lives in the shared engine so vocab reviews match exactly.
         const dueAt = new Date(Date.now() + dueDelayMs(next));
 
@@ -501,7 +502,8 @@ router.post(
 
       // 5. Reveal the reference model answer NOW (post-submit) and surface the
       //    derived schedule so the client can show "next review in N days"
-      //    (~10 min when again/scheduledDays 0). Existing fields are unchanged.
+      //    (minute-scale when scheduledDays 0: <1 min again / ~6 min hard).
+      //    Existing fields are unchanged.
       res.status(200).json({
         score,
         verdict: scored.verdict,

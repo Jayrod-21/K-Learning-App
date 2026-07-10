@@ -252,6 +252,37 @@ snapshot before any manual rollback.
 
 ---
 
+## Shipping Phase-2 Group 3 (migrations 053–055) — standard zero-downtime flow
+
+Group 3 needs **no special protocol**: all three ups are add-only (053 adds
+two `claude_route` enum values via `ADD VALUE IF NOT EXISTS`; 054 creates the
+new `generated_stories` table; 055 adds one more enum value plus a nullable
+`conversations.title` column — no default, so no table rewrite). Nothing is
+renamed and nothing in use is dropped, so the still-serving old color keeps
+working while the migrations apply. Ship with the normal scripted sequence at
+the top of this file: `azure-deploy-inactive.sh` (applies 053–055 unflagged —
+nothing trips the destructive gate on the way up) → health-check →
+`azure-switch-production.sh`. **Rollback-by-flip remains valid**: pre-Group-3
+code runs correctly against the post-055 schema (it never references
+`generated_stories` or `conversations.title`, and unused enum values are
+harmless). No `set-km-app-password.sh` step either — 047's `ALTER DEFAULT
+PRIVILEGES` auto-grants `km_app` DML on `generated_stories`. No nginx change
+needed: every new endpoint lives under the existing `/writing`, `/reading`,
+and `/conversation` prefixes already in the km-lb allow-list (the F-012
+`/ttmik`-class trap does not apply here).
+
+The only Group-3-specific caution is a **schema rollback** (down, not flip):
+`run_migrate --allow-destructive --target 052 down` is required to cross
+054's `DROP TABLE generated_stories` (destroys the generated-story library),
+and 055's down discards all conversation titles via `DROP COLUMN` — data
+loss the destructive gate does not mechanically match (same caveat as the
+049/050 downs above; see the down headers). 053's down is a documented no-op
+(enum values are retained — removal would need a type rewrite over the
+`claude_cache`/`claude_usage` route columns). Take a `db-backup.sh` snapshot
+before any manual rollback.
+
+---
+
 ## Reading and flipping the active color
 
 The active color lives in two places that must agree:

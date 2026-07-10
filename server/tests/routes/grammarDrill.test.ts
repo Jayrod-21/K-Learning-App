@@ -327,10 +327,11 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
       .expect(200);
 
     // Response carries the schedule block. The stub scores verdict 'good' +
-    // usesPattern true → rating 'good' → a NEW card seeds stability 3 → 3 days.
+    // usesPattern true → rating 'good' → a NEW card seeds stability 1 → 1 day
+    // (true Anki graduating interval, B-021).
     expect(res.body.schedule).toBeDefined();
     expect(res.body.schedule.rating).toBe('good');
-    expect(res.body.schedule.scheduledDays).toBe(3);
+    expect(res.body.schedule.scheduledDays).toBe(1);
     expect(typeof res.body.schedule.dueAt).toBe('string');
     expect(Number.isNaN(Date.parse(res.body.schedule.dueAt))).toBe(false);
     // Existing fields are preserved alongside the new block.
@@ -355,7 +356,7 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
     expect(entry.rows[0]!.discovered_via).toBe('drill');
     expect(entry.rows[0]!.category).toBe('other');
 
-    // Production card created, face 'production', advanced (reps 1), due ~3d out.
+    // Production card created, face 'production', advanced (reps 1), due ~1d out.
     const card = await pg.pool.query<{
       id: string;
       face: string;
@@ -374,11 +375,11 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
     expect(card.rows[0]!.face).toBe('production');
     expect(card.rows[0]!.fsrs_state).toBe('learning');
     expect(card.rows[0]!.reps).toBe(1);
-    expect(card.rows[0]!.scheduled_days).toBe(3);
+    expect(card.rows[0]!.scheduled_days).toBe(1);
     expect(card.rows[0]!.version).toBe(2); // 1 (insert) → +1 (advance)
     const dueMs = new Date(card.rows[0]!.due_at).getTime() - Date.now();
-    expect(dueMs).toBeGreaterThan(2.5 * 86_400_000);
-    expect(dueMs).toBeLessThan(3.5 * 86_400_000);
+    expect(dueMs).toBeGreaterThan(0.5 * 86_400_000);
+    expect(dueMs).toBeLessThan(1.5 * 86_400_000);
 
     // A card_reviews snapshot was appended (rating good, before → after).
     const reviews = await pg.pool.query<{ rating: string }>(
@@ -404,8 +405,8 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
       .send({ answer: '다 써 버렸어요.' })
       .expect(200);
 
-    // Second good review multiplies prior stability (3 → ×2.0 = 6) → 6 days.
-    expect(res2.body.schedule.scheduledDays).toBe(6);
+    // Second good review multiplies prior stability (1 → ×2.0 = 2) → 2 days.
+    expect(res2.body.schedule.scheduledDays).toBe(2);
 
     // Exactly ONE production card for this pattern (the unique index holds).
     const cards = await pg.pool.query<{ n: string }>(
@@ -464,7 +465,7 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
       expect(res.body.schedule.rating).toBe('again');
       expect(res.body.schedule.scheduledDays).toBe(0);
 
-      // The card lapsed into relearning and is due ~10 min out, not days.
+      // The card lapsed into relearning and is due <1 min out, not days.
       const card = await pg.pool.query<{ fsrs_state: string; lapses: number; due_at: Date }>(
         `SELECT c.fsrs_state, c.lapses, c.due_at
            FROM vocab_cards c

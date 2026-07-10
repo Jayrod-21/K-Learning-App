@@ -349,7 +349,8 @@ router.post(
         cardNoun: 'vocab card',
       });
       // `scheduled_days` lets the client render "next review in N days"
-      // (0 ⇒ the ~10-minute relearn re-queue) without re-deriving anything.
+      // (0 ⇒ a minute-scale step: <1-min again re-queue / ~6-min hard learning
+      // step) without re-deriving anything.
       res.status(200).json({
         version: out.version,
         due_at: out.dueAt,

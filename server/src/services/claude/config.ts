@@ -48,6 +48,14 @@ const EnvSchema = z.object({
   // Korean reasoning (drill authoring + nuanced production grading).
   CLAUDE_DEFAULT_MODEL_GENERATE_GRAMMAR_DRILL: ModelEnum.default('claude-sonnet-4-6'),
   CLAUDE_DEFAULT_MODEL_SCORE_GRAMMAR_DRILL: ModelEnum.default('claude-sonnet-4-6'),
+  // Generation engine (F-027/F-073/F-068). Both routes author level-calibrated
+  // Korean content — sonnet-grade Korean by default.
+  CLAUDE_DEFAULT_MODEL_GENERATE_WRITING_PROMPT: ModelEnum.default('claude-sonnet-4-6'),
+  CLAUDE_DEFAULT_MODEL_GENERATE_STORY: ModelEnum.default('claude-sonnet-4-6'),
+  // Conversation auto-naming (F-036) is a trivial summarization task (a
+  // 2-6 word title from the first exchange) — haiku tier is plenty and keeps
+  // the per-conversation naming cost negligible.
+  CLAUDE_DEFAULT_MODEL_NAME_CONVERSATION: ModelEnum.default('claude-haiku-4-5'),
 
   // Input length caps (in characters) — prompt-injection defense.
   CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
@@ -67,6 +75,16 @@ const EnvSchema = z.object({
   // (but still bounded) ceiling.
   CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(2_000),
   CLAUDE_MAX_INPUT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(4_000),
+  // Generation engine: writing-prompt gen carries NO free text (mode + rubric
+  // are closed enums) — the cap only bounds a hypothetical future field. Story
+  // gen carries an optional short user topic; a tight cap bounds the prompt
+  // and the injection surface.
+  CLAUDE_MAX_INPUT_GENERATE_WRITING_PROMPT: z.coerce.number().int().positive().default(500),
+  CLAUDE_MAX_INPUT_GENERATE_STORY: z.coerce.number().int().positive().default(1_000),
+  // Naming needs only the opening exchange; the route already truncates each
+  // turn before calling, so this per-field cap is a hard injection/cost
+  // ceiling, not the working size.
+  CLAUDE_MAX_INPUT_NAME_CONVERSATION: z.coerce.number().int().positive().default(4_000),
 
   // Cache TTLs (seconds). 0 = DO NOT cache (the CacheStore skips the write and
   // every lookup misses). Forever-caching requires the explicit
@@ -90,6 +108,17 @@ const EnvSchema = z.object({
   // learner's free-text answer, so the key is effectively unique per submit.
   CLAUDE_CACHE_TTL_GENERATE_GRAMMAR_DRILL_S: z.coerce.number().int().nonnegative().default(0),
   CLAUDE_CACHE_TTL_SCORE_GRAMMAR_DRILL_S: z.coerce.number().int().nonnegative().default(0),
+  // Generation engine: 0 = no caching for BOTH routes — variety is the point.
+  // A regenerated writing prompt / story for the same (mode, rubric) or
+  // (level, topic) must be FRESH, not a cache replay (exactly the
+  // diagnostic_item / grammar-drill-generation rationale).
+  CLAUDE_CACHE_TTL_GENERATE_WRITING_PROMPT_S: z.coerce.number().int().nonnegative().default(0),
+  CLAUDE_CACHE_TTL_GENERATE_STORY_S: z.coerce.number().int().nonnegative().default(0),
+  // Naming: 0 = no caching. The key is the conversation's own opening
+  // exchange — effectively unique per conversation — and the route's
+  // title-IS-NULL guard already makes repeat naming calls free (they never
+  // reach the proxy), so a cache row would never be read back.
+  CLAUDE_CACHE_TTL_NAME_CONVERSATION_S: z.coerce.number().int().nonnegative().default(0),
 
   // Rate-limit (per-minute, per-bucket-key).
   CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
@@ -107,6 +136,14 @@ const EnvSchema = z.object({
   // runaway loop. Same ceiling for gen + score.
   CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
   CLAUDE_RATE_LIMIT_SCORE_GRAMMAR_DRILL: z.coerce.number().int().positive().default(20),
+  // Generation engine: a learner requests one prompt / one story at a time.
+  // Story generation is the most expensive text route in the app (multi-KB
+  // Korean output) — a lower per-minute ceiling caps a runaway loop's spend.
+  CLAUDE_RATE_LIMIT_GENERATE_WRITING_PROMPT: z.coerce.number().int().positive().default(20),
+  CLAUDE_RATE_LIMIT_GENERATE_STORY: z.coerce.number().int().positive().default(6),
+  // Naming fires at most once per conversation (title-IS-NULL guard), so
+  // 10/min per user is generous for real use while capping a runaway loop.
+  CLAUDE_RATE_LIMIT_NAME_CONVERSATION: z.coerce.number().int().positive().default(10),
 
   // Logging. 'silent' is a valid pino level (disables all output) and is what
   // the test harness sets; include it so loadConfig() accepts it rather than
@@ -125,7 +162,10 @@ export type RouteName =
   | 'generate_conversation'
   | 'image_ocr'
   | 'generate_grammar_drill'
-  | 'score_grammar_drill';
+  | 'score_grammar_drill'
+  | 'generate_writing_prompt'
+  | 'generate_story'
+  | 'name_conversation';
 
 /**
  * Every `RouteName`, as a runtime array — the canonical source of truth for the
@@ -153,6 +193,9 @@ export const ROUTE_NAMES = [
   'image_ocr',
   'generate_grammar_drill',
   'score_grammar_drill',
+  'generate_writing_prompt',
+  'generate_story',
+  'name_conversation',
 ] as const satisfies readonly RouteName[];
 
 // Compile-time exhaustiveness: if a RouteName is added to the union above but
@@ -228,6 +271,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       image_ocr: e.CLAUDE_DEFAULT_MODEL_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_DEFAULT_MODEL_GENERATE_GRAMMAR_DRILL,
       score_grammar_drill: e.CLAUDE_DEFAULT_MODEL_SCORE_GRAMMAR_DRILL,
+      generate_writing_prompt: e.CLAUDE_DEFAULT_MODEL_GENERATE_WRITING_PROMPT,
+      generate_story: e.CLAUDE_DEFAULT_MODEL_GENERATE_STORY,
+      name_conversation: e.CLAUDE_DEFAULT_MODEL_NAME_CONVERSATION,
     },
     inputCaps: {
       enrich: e.CLAUDE_MAX_INPUT_ENRICH,
@@ -238,6 +284,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       image_ocr: e.CLAUDE_MAX_INPUT_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_MAX_INPUT_GENERATE_GRAMMAR_DRILL,
       score_grammar_drill: e.CLAUDE_MAX_INPUT_SCORE_GRAMMAR_DRILL,
+      generate_writing_prompt: e.CLAUDE_MAX_INPUT_GENERATE_WRITING_PROMPT,
+      generate_story: e.CLAUDE_MAX_INPUT_GENERATE_STORY,
+      name_conversation: e.CLAUDE_MAX_INPUT_NAME_CONVERSATION,
     },
     cacheTtlSeconds: {
       enrich: e.CLAUDE_CACHE_TTL_ENRICH_S,
@@ -248,6 +297,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       image_ocr: e.CLAUDE_CACHE_TTL_IMAGE_OCR_S,
       generate_grammar_drill: e.CLAUDE_CACHE_TTL_GENERATE_GRAMMAR_DRILL_S,
       score_grammar_drill: e.CLAUDE_CACHE_TTL_SCORE_GRAMMAR_DRILL_S,
+      generate_writing_prompt: e.CLAUDE_CACHE_TTL_GENERATE_WRITING_PROMPT_S,
+      generate_story: e.CLAUDE_CACHE_TTL_GENERATE_STORY_S,
+      name_conversation: e.CLAUDE_CACHE_TTL_NAME_CONVERSATION_S,
     },
     rateLimitPerMinute: {
       enrich: e.CLAUDE_RATE_LIMIT_ENRICH,
@@ -258,6 +310,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       image_ocr: e.CLAUDE_RATE_LIMIT_IMAGE_OCR,
       generate_grammar_drill: e.CLAUDE_RATE_LIMIT_GENERATE_GRAMMAR_DRILL,
       score_grammar_drill: e.CLAUDE_RATE_LIMIT_SCORE_GRAMMAR_DRILL,
+      generate_writing_prompt: e.CLAUDE_RATE_LIMIT_GENERATE_WRITING_PROMPT,
+      generate_story: e.CLAUDE_RATE_LIMIT_GENERATE_STORY,
+      name_conversation: e.CLAUDE_RATE_LIMIT_NAME_CONVERSATION,
     },
     logLevel: e.LOG_LEVEL,
     nodeEnv: e.NODE_ENV,

@@ -58,4 +58,32 @@ describe('claude_route enum ⇄ RouteName drift guard', () => {
     // Belt-and-braces exact-set assertion.
     expect(enumValues).toEqual(routeNames);
   });
+
+  it("053's generation-engine routes are present in the migrated enum", async () => {
+    // Explicit pin for migration 053 (F-027/F-073/F-068): the two generation
+    // routes must exist as enum values, independent of what ROUTE_NAMES says —
+    // this fails even if BOTH sides of the drift guard above were edited to
+    // drop the routes (e.g. a bad revert that removed the RouteName entries
+    // together with the migration).
+    const { rows } = await pg.pool.query<{ value: string }>(
+      `SELECT e::text AS value
+         FROM unnest(enum_range(NULL::claude_route)) AS e`,
+    );
+    const enumValues = rows.map((r) => r.value);
+    expect(enumValues).toContain('generate_writing_prompt');
+    expect(enumValues).toContain('generate_story');
+  });
+
+  it("055's 'name_conversation' value is present in the migrated enum (F-036)", async () => {
+    // The set-equality test above would catch this too, but an explicit probe
+    // pins migration 055's ADD VALUE independently of ROUTE_NAMES — if the
+    // code-side entry were ever reverted, this still fails loudly with the
+    // migration name attached.
+    const { rows } = await pg.pool.query<{ present: boolean }>(
+      `SELECT 'name_conversation' = ANY(
+                ARRAY(SELECT e::text FROM unnest(enum_range(NULL::claude_route)) AS e)
+              ) AS present`,
+    );
+    expect(rows[0]?.present).toBe(true);
+  });
 });

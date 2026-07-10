@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   dueDelayMs,
+  HARD_STEP_DELAY_MS,
   MS_PER_DAY,
   RELEARN_DELAY_MS,
   schedule,
@@ -24,8 +25,11 @@ function newCard(): CardFsrs {
   return { state: 'new', stability: 0, difficulty: 5, reps: 0, lapses: 0 };
 }
 
-describe('schedule — new-card stability bands', () => {
-  it('seeds again → stability 0, relearning, scheduledDays 0', () => {
+// B-021: the fresh-card bands are the TRUE Anki intervals the client's rating
+// labels advertise (`<1m / 6m / 1d / 4d`). The pre-retune engine (10m/1d/3d/6d)
+// FAILS these assertions by design.
+describe('schedule — new-card stability bands (true Anki intervals, B-021)', () => {
+  it('seeds again → stability 0, relearning, scheduledDays 0 (<1-minute re-queue)', () => {
     const next = schedule(newCard(), 'again');
     expect(next.stability).toBe(0);
     expect(next.state).toBe('relearning');
@@ -33,24 +37,24 @@ describe('schedule — new-card stability bands', () => {
     expect(next.rating).toBe('again');
   });
 
-  it('seeds hard → stability 1 day, learning', () => {
+  it('seeds hard → stability 0, learning, scheduledDays 0 (~6-minute learning step, NOT 1 day)', () => {
     const next = schedule(newCard(), 'hard');
+    expect(next.stability).toBe(0); // hard does not graduate — still stepping
+    expect(next.scheduledDays).toBe(0);
+    expect(next.state).toBe('learning');
+  });
+
+  it('seeds good → stability 1 day, learning (Anki graduating interval, NOT 3 days)', () => {
+    const next = schedule(newCard(), 'good');
     expect(next.stability).toBe(1);
     expect(next.scheduledDays).toBe(1);
     expect(next.state).toBe('learning');
   });
 
-  it('seeds good → stability 3 days, learning', () => {
-    const next = schedule(newCard(), 'good');
-    expect(next.stability).toBe(3);
-    expect(next.scheduledDays).toBe(3);
-    expect(next.state).toBe('learning');
-  });
-
-  it('seeds easy → stability 6 days, learning', () => {
+  it('seeds easy → stability 4 days, learning (Anki easy interval, NOT 6 days)', () => {
     const next = schedule(newCard(), 'easy');
-    expect(next.stability).toBe(6);
-    expect(next.scheduledDays).toBe(6);
+    expect(next.stability).toBe(4);
+    expect(next.scheduledDays).toBe(4);
     expect(next.state).toBe('learning');
   });
 });
@@ -94,8 +98,19 @@ describe('schedule — multiplicative progression on subsequent reps', () => {
     // would never recover, so we re-seed from the base band and graduate to review.
     const recovering: CardFsrs = { state: 'relearning', stability: 0, difficulty: 6, reps: 4, lapses: 1 };
     const next = schedule(recovering, 'good');
-    expect(next.stability).toBe(3);
+    expect(next.stability).toBe(1);
     expect(next.state).toBe('review');
+  });
+
+  it('hard on a recovering card (reps > 0, stability 0) repeats the step in relearning, not review', () => {
+    // Anki relearning-step semantics: hard does not graduate a lapsed card —
+    // it stays minute-scale (scheduledDays 0) and remains in relearning.
+    const recovering: CardFsrs = { state: 'relearning', stability: 0, difficulty: 6, reps: 4, lapses: 1 };
+    const next = schedule(recovering, 'hard');
+    expect(next.stability).toBe(0);
+    expect(next.scheduledDays).toBe(0);
+    expect(next.state).toBe('relearning');
+    expect(dueDelayMs(next)).toBe(HARD_STEP_DELAY_MS);
   });
 });
 
@@ -210,11 +225,19 @@ describe('schedule — invariants hold across the rating space', () => {
     }
   });
 
-  it('scheduledDays is 0 if and only if the rating is again', () => {
+  it('on a GRADUATED card (prior stability > 0) scheduledDays is 0 iff the rating is again', () => {
     const current: CardFsrs = { state: 'review', stability: 10, difficulty: 5, reps: 3, lapses: 0 };
     for (const r of ratings) {
       const next = schedule(current, r);
       expect(next.scheduledDays === 0).toBe(r === 'again');
+    }
+  });
+
+  it('scheduledDays is 0 exactly for the minute-scale steps: again anywhere, hard without prior stability', () => {
+    // Fresh card: again AND hard are learning steps (0); good/easy graduate (>0).
+    for (const r of ratings) {
+      const next = schedule(newCard(), r);
+      expect(next.scheduledDays === 0).toBe(r === 'again' || r === 'hard');
     }
   });
 });
@@ -222,17 +245,35 @@ describe('schedule — invariants hold across the rating space', () => {
 describe('dueDelayMs — the shared scheduledDays→clock policy', () => {
   const current: CardFsrs = { state: 'review', stability: 10, difficulty: 5, reps: 3, lapses: 0 };
 
-  it('a lapse (again) re-queues RELEARN_DELAY_MS (~10 min) out, never now+0d', () => {
+  it('a lapse (again) re-queues RELEARN_DELAY_MS (<1 min) out, never now+0d', () => {
     const next = schedule(current, 'again');
     expect(dueDelayMs(next)).toBe(RELEARN_DELAY_MS);
-    // The whole point of the policy: strictly in the future.
+    // The label contract (B-021): "Again" genuinely means under a minute…
+    expect(RELEARN_DELAY_MS).toBeLessThan(60_000);
+    // …but the whole point of the policy still holds: strictly in the future.
     expect(dueDelayMs(next)).toBeGreaterThan(0);
   });
 
-  it('non-lapse ratings schedule scheduledDays whole days out', () => {
+  it('non-lapse ratings on a graduated card schedule scheduledDays whole days out', () => {
     expect(dueDelayMs(schedule(current, 'hard'))).toBe(12 * MS_PER_DAY);
     expect(dueDelayMs(schedule(current, 'good'))).toBe(20 * MS_PER_DAY);
     expect(dueDelayMs(schedule(current, 'easy'))).toBe(30 * MS_PER_DAY);
+  });
+
+  it('a FRESH card yields the advertised Anki intervals: again <1m, hard ~6m, good 1d, easy 4d (B-021)', () => {
+    const again = dueDelayMs(schedule(newCard(), 'again'));
+    const hard = dueDelayMs(schedule(newCard(), 'hard'));
+    const good = dueDelayMs(schedule(newCard(), 'good'));
+    const easy = dueDelayMs(schedule(newCard(), 'easy'));
+    expect(again).toBeLessThan(60_000); // `<1m` label is literally true
+    expect(hard).toBe(HARD_STEP_DELAY_MS);
+    expect(hard).toBe(6 * 60_000); // `6m`
+    expect(good).toBe(1 * MS_PER_DAY); // `1d`
+    expect(easy).toBe(4 * MS_PER_DAY); // `4d`
+    // Strictly ordered: again < hard < good < easy.
+    expect(again).toBeLessThan(hard);
+    expect(hard).toBeLessThan(good);
+    expect(good).toBeLessThan(easy);
   });
 
   it('is strictly positive for every rating on a fresh card (no card is ever re-due immediately)', () => {

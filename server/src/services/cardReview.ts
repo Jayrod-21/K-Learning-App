@@ -55,7 +55,8 @@ export interface ApplyCardReviewResult {
   version: number;
   /** Server-computed next due timestamp. */
   dueAt: Date;
-  /** Whole-day interval (0 ⇒ the ~10-minute relearn re-queue). */
+  /** Whole-day interval (0 ⇒ a minute-scale step: <1-min again re-queue or
+   *  ~6-min hard learning step — see fsrs.dueDelayMs). */
   scheduledDays: number;
 }
 
@@ -120,9 +121,9 @@ export async function applyCardReview(input: ApplyCardReviewInput): Promise<Appl
     };
     const next = schedule(current, rating);
 
-    // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
-    // re-queues ~10 min from now (relearning) rather than immediately —
-    // never "due now" again (the pre-cutover stub bug).
+    // due_at: scheduled_days out, except minute-scale steps (scheduledDays 0):
+    // a lapse (again) re-queues <1 min out and a hard learning step ~6 min out
+    // — never "due now" again (the pre-cutover stub bug).
     const dueAt = new Date(Date.now() + dueDelayMs(next));
 
     // Optimistic concurrency: bump only if version matches.

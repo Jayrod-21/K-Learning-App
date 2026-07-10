@@ -438,6 +438,68 @@ export const GrammarDrillScoreSchema = z.object({
 });
 export type GrammarDrillScore = z.infer<typeof GrammarDrillScoreSchema>;
 
+// ---- 3e. generateWritingPrompt / generateStory -------------------------------
+// The Claude GENERATION engine (F-027 Today-writing-tile, F-073 Writing-page
+// generate, F-068 reading short-story generate). Writing prompts are EPHEMERAL
+// (returned inline, never persisted — the learner's response persists later via
+// writing_attempts); stories are persisted to generated_stories (migration 054)
+// by the route, so the reading page can list and re-open them.
+
+/** The two prompt-generation modes: 'topik' authors a TOPIK II Q53/Q54-style
+ *  task against the given rubric; 'general' authors a free-write prompt. */
+export const WritingPromptModeSchema = z.enum(['topik', 'general']);
+export type WritingPromptMode = z.infer<typeof WritingPromptModeSchema>;
+
+export const WritingPromptGenInputSchema = z.object({
+  /** Which flavor of prompt to author. */
+  mode: WritingPromptModeSchema,
+  /** TOPIK rubric to target when mode='topik' (defaults to Q54 at the route).
+   *  Meaningless for mode='general' — the route rejects that combination. */
+  rubric: TopikRubricSchema.optional(),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type WritingPromptGenInput = z.infer<typeof WritingPromptGenInputSchema>;
+
+export const WritingPromptResultSchema = z.object({
+  /** The writing prompt itself (Korean) — what the learner writes toward. */
+  promptKr: NonEmptyText.max(1000),
+  /** English gloss of the prompt (so the learner can confirm understanding). */
+  promptEn: NonEmptyText.max(1000),
+  /** Target-length hint, e.g. '200-300자'. `.optional()` (not `.default('')`)
+   *  so the inferred result type matches `runJsonRoute`'s output; the route
+   *  coerces a missing hint to null on the wire. */
+  lengthHint: z.string().trim().max(100).optional(),
+});
+export type WritingPromptResult = z.infer<typeof WritingPromptResultSchema>;
+
+/** Story target bands: the generatable proficiency levels. 'basic' is a legacy
+ *  corpus CONTENT tag, never a generation target (same stance as
+ *  DiagnosticTargetLevelSchema) — though the DB column (proficiency_level)
+ *  could store it, the API never asks for it. */
+export const StoryLevelSchema = z.enum(['L1', 'L2', 'L3', 'L4', 'L5+']);
+export type StoryLevel = z.infer<typeof StoryLevelSchema>;
+
+export const StoryGenInputSchema = z.object({
+  /** Proficiency band to write the story at. */
+  level: StoryLevelSchema,
+  /** Optional user-supplied topic ("a cat who runs a café"). Free text —
+   *  sanitized + wrapped as untrusted data by the proxy. */
+  topic: z.string().trim().min(1).max(500).optional(),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type StoryGenInput = z.infer<typeof StoryGenInputSchema>;
+
+export const StoryResultSchema = z.object({
+  /** Story title (Korean). Bounded UNDER the DB CHECK ceiling (300) so a
+   *  schema-valid result can always persist. */
+  title: NonEmptyText.max(200),
+  /** The story body (Korean). Bounded UNDER the DB CHECK ceiling (20000). */
+  bodyKo: NonEmptyText.max(6000),
+});
+export type StoryResult = z.infer<typeof StoryResultSchema>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 
@@ -478,6 +540,40 @@ export const ConversationTurnSchema = z.object({
   register: RegisterSchema,
 });
 export type ConversationTurn = z.infer<typeof ConversationTurnSchema>;
+
+// ---- 4b. nameConversation ----------------------------------------------------
+// F-036 conversation auto-naming: given the opening exchange of a conversation,
+// produce a concise content-derived title (Claude-web style, never "mode +
+// date"). Non-streaming, haiku-tier by default. The route truncates history
+// before calling; these caps are the hard ceiling.
+
+export const NameConversationInputSchema = z.object({
+  /** The turns to derive the title from — typically the first exchange.
+   *  At least one turn (naming an empty conversation is a route-level 409). */
+  history: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: NonEmptyText.max(4000),
+      }),
+    )
+    .min(1)
+    .max(12),
+  /** Conversation mode — a hint only (a business chat titles differently from
+   *  a TOPIK drill). Optional so callers without it still get a title. */
+  mode: ConversationModeSchema.optional(),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type NameConversationInput = z.infer<typeof NameConversationInputSchema>;
+
+export const ConversationTitleSchema = z.object({
+  /** The generated title. Short by instruction; the cap is the enforcement.
+   *  Bounded WELL below the DB CHECK (200 chars, migration 055) so a stored
+   *  title can never trip the constraint. */
+  title: NonEmptyText.max(80),
+});
+export type ConversationTitle = z.infer<typeof ConversationTitleSchema>;
 
 /** Streaming event union returned by `generateConversation`. */
 export const ConversationStreamEventSchema = z.discriminatedUnion('type', [
