@@ -124,6 +124,110 @@ Deploy/azure-switch-production.sh "$(git rev-parse --short HEAD)"   # 3. flip pr
 
 ---
 
+## Shipping Phase-2 Group 1 (migrations 045–047) — ONE-TIME brief-downtime release
+
+**The standard zero-downtime flow above does NOT work for this release. Do not
+run `azure-deploy-inactive.sh` first.** Two reasons:
+
+1. **045 is deliberately destructive** (`DROP TABLE` of two superseded ad-hoc
+   `topik_items_explanation_bak_*` snapshot tables). `migrate.py`'s destructive
+   gate blocks it, and the scripted deploy never passes `--allow-destructive`
+   (by design — see `SECURITY.md` §7). The apply must be a one-time, manual,
+   flagged `run_migrate` call.
+2. **046 is not expand/contract.** It drops `uq_topik_attempts_user`, the full
+   unique index the OLD (pre-046) server code's
+   `ON CONFLICT (user_id) DO UPDATE` upserts arbitrate on. The replacement is a
+   *partial* unique (`WHERE status = 'active'`) that an unqualified
+   `ON CONFLICT (user_id)` cannot infer — so from the moment 046 applies, the
+   still-running old color 500s (`42P10`) on every TOPIK save and mock submit,
+   and mis-renders migrated history rows as resumable attempts. The
+   old-code-on-new-schema overlap the blue/green flow depends on is therefore
+   UNSAFE for this release. The 046 schema end-state is correct; the accepted
+   trade (single-user app) is a **brief downtime window** instead of a
+   two-phase migration.
+
+**Consequence for rollback-by-flip:** once 046 is applied, flipping the LB back
+to a color running pre-046 code is NOT a valid recovery — it lands old code on
+the new schema, the exact `42P10` breakage above. `azure-switch-production.sh`'s
+post-flip auto-rollback is off the table for this release window; recovery is
+the migration rollback (below) or the pre-deploy backup.
+
+### Release procedure (stop → migrate → password → new color → verify → flip)
+
+Run on the host, from the repo checkout root, during an idle window:
+
+```bash
+# 0. Preconditions — add the km_app credentials to Deploy/.env FIRST:
+#        KM_APP_USER=km_app
+#        KM_APP_PASSWORD=<openssl rand -hex 32>     # hex = URL-safe, required
+#    Both color compose files hard-fail (`${KM_APP_PASSWORD:?}`) on EVERY
+#    compose command — including teardown and rebuild-environment.sh — until
+#    these exist. See Deploy/.env.example for the full commentary.
+
+# 1. Build the release images + export the tag for run_migrate
+Deploy/local-build.sh "$(git rev-parse --short HEAD)"
+export DEPLOY_TAG="$(git rev-parse --short HEAD)"
+
+# 2. Pre-migration backup (a manual flagged apply must NOT skip the safety
+#    net the scripted deploy would have taken)
+bash Deploy/db-backup.sh
+
+# 3. DOWNTIME BEGINS — stop the ACTIVE color so no old code runs against the
+#    post-046 schema (check-active-env.sh --get-active prints the color)
+source Deploy/deployment-utils.sh && load_environment
+compose_color "$(bash Deploy/check-active-env.sh --get-active)" down
+
+# 4. One-time flagged migration apply (045 + 046 + 047)
+run_migrate --allow-destructive up
+
+# 5. One-time km_app password provisioning (047 creates the role with a NULL
+#    verifier; nothing can authenticate as km_app until this runs)
+bash Deploy/set-km-app-password.sh
+
+# 6. Stage the NEW color (migrations are now a no-op; the idle color starts
+#    with the km_app DATABASE_URL, authenticates, and must pass health on :1841)
+Deploy/azure-deploy-inactive.sh "$DEPLOY_TAG"
+
+# 7. Flip prod to the new color and verify :1840 — DOWNTIME ENDS
+Deploy/azure-switch-production.sh "$DEPLOY_TAG"
+```
+
+If step 6 or 7 fails: do **not** restart the old color against the migrated
+schema. Fix forward on the new color, or roll the schema back (below) and only
+then restart the old color.
+
+### Rollback (also brief-downtime; DESTROYS attempt history)
+
+```bash
+source Deploy/deployment-utils.sh && load_environment
+compose_color <new-color> down                       # stop the new color
+run_migrate --allow-destructive --target 044 down    # roll 047, 046, 045 back
+compose_color <old-color> up                         # restart the old build
+# then re-point the LB: bash -c 'source Deploy/deployment-utils.sh; load_environment; nginx_switch <old-color>'
+```
+
+> **DATA LOSS:** `046.down` collapses attempt history to one row per user
+> (all other TOPIK attempts are DELETEd — irrecoverably, short of the step-2
+> backup) and drops `topik_responses.attempt_id`. Note the runner's destructive
+> gate does **not** catch this mechanically (it matches `DROP TABLE`/`TRUNCATE`
+> etc., not `DELETE`/`DROP COLUMN` — see 046.down's header); pass
+> `--allow-destructive` anyway, as above, because the loss is real.
+> `047.down` drops the `km_app` role — the color you restart must use a
+> pre-047 `DATABASE_URL` (the superuser), i.e. a pre-047 compose file/checkout.
+
+### After this release
+
+Subsequent releases return to the normal **zero-downtime** blue/green flow at
+the top of this section — migrations are expand/contract again, the scripted
+deploy's dry-run gate (which now fails fast on destructive SQL) stays
+unflagged, and rollback-by-flip is valid again. The one *permanent* change:
+any **fresh database** (first-time host setup, cold stand-up) always traverses
+045, so cold schema initialization needs the flag once — use
+`Deploy/local-standup.sh --allow-destructive` (safe on an empty DB; the
+destructive statements are `IF EXISTS` no-ops there).
+
+---
+
 ## Reading and flipping the active color
 
 The active color lives in two places that must agree:
@@ -182,7 +286,12 @@ Deploy/db-restore.sh "$BACKUP_DIR/km-20260531T030000Z.dump" --force
 # Reconcile the schema AFTER a restore (a restored older dump can be behind the
 # deployed code — see the restore script's closing log lines):
 python db/migrate.py status             # 1. is the restored dump behind?
-python db/migrate.py up                 # 2. IF behind: forward-migrate (expand/contract = safe)
+python db/migrate.py up                 # 2. IF behind: forward-migrate
+#    CAVEATS for step 2: (a) a pre-045 dump traverses 045 (deliberately
+#    destructive) — the plain `up` aborts with DestructiveBlocked; read 045's
+#    header, then re-run with `--allow-destructive`. (b) forward-migrating
+#    through 046 is NOT old-code-safe: do it only with the serving color
+#    STOPPED or already running post-046 code (see §"Shipping Phase-2 Group 1").
 #                                       # 3. restart the active color so it reconnects:
 Deploy/rebuild-environment.sh           #    (or `compose_color <active> up` to recreate just that trio)
 ```
@@ -240,7 +349,14 @@ port other than 1840/1841 is exposed off-loopback.
    `km_book_uploads`, `km_backups`).
 4. Bring up shared + the active color (the deploy script does this on first run,
    or `compose_shared up` + `compose_color <active> up`).
-5. `python db/migrate.py up` to initialize the schema.
+5. Initialize the schema: `python db/migrate.py --allow-destructive up` — the
+   flag is required because the chain contains 045 (deliberate `DROP TABLE`;
+   its statements are `IF EXISTS` no-ops on an empty DB, so this is safe on a
+   fresh database). Or run the whole cold bring-up with
+   `Deploy/local-standup.sh --allow-destructive`, which scripts steps 3–5.
+   Then provision the app role's password once: `bash Deploy/set-km-app-password.sh`
+   (migration 047 creates `km_app` without one; the app cannot authenticate
+   until this runs).
 6. Start `cloudflared` pointing at `:1840`.
 
 > The production flip is a **manual operator step** — a human runs
@@ -278,6 +394,8 @@ needs.
 | `local-build.sh`            | build the 5 images into the local Docker store    |
 | `azure-deploy-inactive.sh`  | deploy+migrate+validate the inactive color (:1841) |
 | `azure-switch-production.sh`| flip the LB to the new color (:1840), auto-rollback |
+| `local-standup.sh`          | first-time cold bring-up (`--allow-destructive` for a fresh DB) |
+| `set-km-app-password.sh`    | one-time/rotation km_app password provisioning (047) |
 | `db-backup.sh`              | pg_dump the shared DB, prune, optional offsite     |
 | `db-restore.sh`             | restore a dump (path-guarded, active-color gated)  |
 | `db-validate.sh`            | prove a dump restores + matches live (scratch DB)  |

@@ -19,6 +19,18 @@
 # Idempotent: re-running converges on the same active steady state (migrations
 # already applied are no-ops; compose up recreates only what changed). If the
 # stack is merely wedged, prefer rebuild-environment.sh (it also bounces the DB).
+#
+# USAGE:
+#     Deploy/local-standup.sh [--allow-destructive]
+#
+# --allow-destructive: pass migrate.py's destructive flag through to the
+# schema-init step. REQUIRED on any fresh (empty) database: the migration
+# chain contains 045 (hygiene_cleanup, deliberate DROP TABLE of superseded
+# ad-hoc bak tables), so a plain `up` — and, since the ADR-010 amendment, the
+# dry-run too — aborts with DestructiveBlocked at 045. On an EMPTY database
+# the flag is safe by construction (there is no data to lose; 045's DROPs are
+# `IF EXISTS` no-ops there). On a database that already carries data, read
+# the pending migrations' headers before passing it.
 # =============================================================================
 set -Eeuo pipefail
 # shellcheck source=Deploy/deployment-utils.sh
@@ -28,6 +40,20 @@ trap _on_err ERR
 readonly PROD_PORT=1840
 
 main() {
+    # Optional migrate.py passthrough (see USAGE in the header). Kept as an
+    # array so the empty case expands to nothing under `set -u`.
+    local migrate_flags=()
+    if [[ "${1:-}" == "--allow-destructive" ]]; then
+        migrate_flags+=(--allow-destructive)
+        shift
+        log_warn "destructive migrations PERMITTED for this stand-up (--allow-destructive)"
+    fi
+    if [[ $# -gt 0 ]]; then
+        log_err "local-standup: unknown argument(s): $*"
+        log_err "usage: $(basename "$0") [--allow-destructive]"
+        return 2
+    fi
+
     log_info "=== local-standup START (first-time cold bring-up) ==="
     load_environment
 
@@ -105,13 +131,18 @@ main() {
     # --- Initialize the schema on the empty shared DB -----------------------
     # First boot: the DB is empty. Dry-run gates (should be a clean forward
     # migration on an empty DB), then apply. Same runner the deploy uses.
+    # NB: a fresh chain traverses 045 (deliberately destructive), so a cold
+    # stand-up needs the --allow-destructive passthrough — see the header.
     log_info "migration dry-run"
-    if ! run_migrate --dry-run up; then
+    if ! run_migrate "${migrate_flags[@]}" --dry-run up; then
         log_err "migration DRY-RUN failed on the empty DB. Aborting before any change."
+        log_err "If the error is DestructiveBlocked: the chain contains migration 045"
+        log_err "(deliberate DROP TABLE — safe on an empty DB). Re-run:"
+        log_err "    $(basename "$0") --allow-destructive"
         return 1
     fi
     log_info "applying migrations to the shared DB"
-    if ! run_migrate up; then
+    if ! run_migrate "${migrate_flags[@]}" up; then
         log_err "migration APPLY failed. Inspect km-db; the stack is not yet serving."
         return 1
     fi

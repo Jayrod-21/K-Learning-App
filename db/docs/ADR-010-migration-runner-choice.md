@@ -3,6 +3,18 @@
 **Status:** Accepted
 **Date:** 2026-05-28
 
+> **Amendment (2026-07-10):** `--dry-run` now evaluates the destructive-SQL
+> gate on the planned bodies (up and down) and exits non-zero on a pending
+> destructive migration without `--allow-destructive`, instead of deferring
+> the `DestructiveBlocked` to the apply step. Rationale: the blue/green deploy
+> (`Deploy/azure-deploy-inactive.sh` step 4) documents its `--dry-run up` as
+> the expand/contract safety gate, but the gate previously fired only in
+> `apply_one` — so a destructive release aborted mid-deploy with misleading
+> restore advice rather than at the plan stage. Found by the Phase-2 Group-1
+> integration review (S-1). No new flags or features; the existing gate is
+> evaluated one step earlier. Covered by
+> `db/tests/test_migrations.py::test_dry_run_evaluates_destructive_gate`.
+
 ## Context
 
 ADR-001 §D11 commits us to numbered forward/reverse SQL migration files. Any

@@ -91,10 +91,17 @@ services:
 
     environment:
       - PORT=4000
-      # Shared DB on km-internal. DATABASE_URL composed from the .env creds — the
-      # host is the shared km-db, identical for both colors (the switch is a pure
-      # nginx flip; no per-color DB).
-      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@km-db:5432/${POSTGRES_DB}
+      # Shared DB on km-internal — the host is the shared km-db, identical for
+      # both colors (the switch is a pure nginx flip; no per-color DB).
+      # B-030 (migration 047): the APP authenticates as the least-privileged
+      # km_app role (DML only — no DDL/TRUNCATE/superuser), NOT the
+      # POSTGRES_USER superuser. Only the migration runner (run_migrate in
+      # deployment-utils.sh) and backup/psql tooling keep POSTGRES_USER.
+      # ${KM_APP_PASSWORD:?…} makes ANY compose command fail loudly while the
+      # .env still lacks the var — better than starting a server that cannot
+      # authenticate. One-time password setup after 047 applies (and rotation):
+      # Deploy/set-km-app-password.sh. See Deploy/.env.example.
+      - DATABASE_URL=postgres://${KM_APP_USER:-km_app}:${KM_APP_PASSWORD:?KM_APP_PASSWORD not set in Deploy/.env - required since migration 047 (B-030), see Deploy/.env.example}@km-db:5432/${POSTGRES_DB}
       - PGAPPNAME=km-server-green
       # Same-color kiwi — NOT cross-color. KIWI_URL is set here by compose, never
       # in the .env (the .env is color-agnostic; the URL is per-color).

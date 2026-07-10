@@ -1084,8 +1084,8 @@ New tickets from Phase 0:
 
 ### F-083 · DB hygiene cleanup migration
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
-- **What:** New migration: drop 6 redundant indexes (ix_diagnostic_responses_run_ordinal, ix_topik_items_test_number, ix_image_words_capture, ix_krdict_examples_sense, ix_krdict_senses_entry, ix_krdict_inflections_entry); export + drop the 2 orphan backup tables (topik_items_explanation_bak_20260706, _followup); add the missing FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` after clearing its 5 orphan rows.
-- **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply.
+- **What:** New migration: drop 6 redundant indexes (ix_diagnostic_responses_run_ordinal, ix_topik_items_test_number, ix_image_words_capture, ix_krdict_examples_sense, ix_krdict_senses_entry, ix_krdict_inflections_entry); export + drop the 2 orphan backup tables (topik_items_explanation_bak_20260706, _followup).
+- **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply. **Scope change (migration 045):** the audit's proposed FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` was DROPPED — the audit finding was wrong. `POST /grammar-drill` inserts the attempt row at generation time, but the grammar_entries row is only auto-banked at submit time, so a drill attempt for a not-yet-banked pattern is a legitimate state by design (the "5 orphan rows" were this state, not corruption); the FK would 500 the live drill route on every first drill of an unbanked pattern. The index/bak-table hygiene stands.
 
 ### B-031 · TOPIK item 222 option-1 text OCR glitch
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA · **Beta:** —
@@ -1116,6 +1116,21 @@ New tickets from Phase 0:
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** `client/src/**/tokensContrast.test.ts` validates accent-on-surface (non-text 3:1) but not accent-used-as-a-selection-INDICATOR / accent-as-text at the AA text bar. The Phase-1 fix-pass measured the light-theme **mint** `--vermilion` at **2.99:1 vs `--ink`** (below 3:1) and **coral** at 3.01:1 (barely passing) — currently masked by redundant cues (underline/`--paper` promotion). Add explicit accent-as-indicator + accent-as-text assertions so a future token tweak or a component that leans on accent color alone can't silently drop below AA.
 - **Notes:** Surfaced + ruled non-blocking by the Phase-1 /fixpass re-review; the mint 2.99:1 gap predates Phase-1 (in `rebuild`'s own token comments). Do this **before the overhaul mounts Tabs / accent-driven selection at scale**.
+
+### F-088 · Per-migration explicit destructive marker (vs pattern-sniffing)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** CONFIG (DATABASE) · **Beta:** —
+- **What:** `migrate.py`'s destructive gate detects `DROP TABLE`/`TRUNCATE` by SQL-pattern. It does NOT catch mass `DELETE FROM` (046.down) or `DROP COLUMN` (041) — and widening the patterns would force `--allow-destructive` onto legitimate additive migrations (e.g. 045's `DELETE`, 041's `DROP COLUMN`). Cleaner: an explicit per-migration marker (e.g. a header directive `-- migrate: destructive`) the runner reads, so destructiveness is declared, not sniffed.
+- **Notes:** Surfaced by the P2-G1 /fixpass (gate-widening deferred with rationale). Would also make 046.down's history-DELETE properly gated.
+
+### F-089 · Revoke default TEMP privilege from `km_app`
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE (CONFIG) · **Beta:** —
+- **What:** `km_app` (migration 047) is least-privilege for DML but still holds Postgres's default `TEMP` privilege on the database (temp-table creation). Tighten to true least-privilege: `REVOKE TEMP ON DATABASE ... FROM km_app` (+ from PUBLIC). Low risk; completes the B-030 hardening.
+- **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030.
+
+### F-090 · F-078 pre-046 attempt-history gap decision
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
+- **What:** Before migration 046, `topik_attempts` was a single overwrite-in-place slot per user, so **no historical attempts exist prior to 046** — the "Previous attempts" view (F-078/F-082) will start empty and only accrue history going forward. When building F-078, decide how to present this (e.g. accept the clean-start, or backfill a synthetic history row from `topik_responses` if desired).
+- **Notes:** Surfaced by the P2-G1 /fixpass re-review. Not a bug — a product decision for the F-078 build.
 
 ---
 

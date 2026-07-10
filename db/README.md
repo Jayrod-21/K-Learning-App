@@ -96,12 +96,23 @@ python db/migrate.py --allow-destructive down          # roll back 1
 python db/migrate.py --allow-destructive down --target 002  # roll back to 002
 ```
 
+> **Fresh database?** A full apply traverses 045 (`hygiene_cleanup`, deliberate
+> `DROP TABLE`), so a plain `up` — and its `--dry-run` — aborts with
+> `DestructiveBlocked`. Pass `--allow-destructive` on the fresh apply (safe on
+> an empty DB: 045's drops are `IF EXISTS` no-ops there).
+
 ### Destructive-statement guard
 
-Migrations whose SQL (comments stripped) contains `DROP TABLE`, `DROP SCHEMA`,
-`DROP TYPE`, `DROP INDEX`, `TRUNCATE`, or `DROP DATABASE` require
-`--allow-destructive`. This is paired-keystroke insurance against rolling out
-an irreversible change without meaning to.
+Migrations whose SQL (comments stripped — but NOT string literals, see
+`strip_sql_noise`'s docstring) contains `DROP TABLE`, `DROP SCHEMA`,
+`TRUNCATE`, or `DROP DATABASE` require `--allow-destructive`; `--dry-run`
+evaluates the same gate (ADR-010 amendment). Dropping *recreatable* schema
+objects (`DROP INDEX`, `DROP TYPE`, `DROP CONSTRAINT`) is deliberately NOT
+gated — no rows are lost, and our forward migrations use the drop-and-recreate
+pattern routinely. This is paired-keystroke insurance against rolling out an
+irreversible change without meaning to. Known limitation: data loss via
+`DELETE FROM` / `DROP COLUMN` is not detected (see 046's down header for why
+widening was rejected) — down-migration headers must declare it.
 
 ### Why not Alembic / Sqitch / Flyway?
 

@@ -115,22 +115,30 @@ main() {
     # migrate.py runs in the pre-built km-migrate container on km-internal
     # (run_migrate, deployment-utils.sh) — deps baked in, no host Python deps and
     # no runtime pip (km-internal is egress-blocked). --dry-run is a GLOBAL flag
-    # and MUST precede the `up` subcommand. The dry-run is the safety
-    # gate: if it reports a destructive/non-additive change we ABORT, because the
+    # and MUST precede the `up` subcommand. The dry-run IS the safety gate:
+    # since the ADR-010 amendment (2026-07-10) migrate.py's --dry-run evaluates
+    # the destructive gate itself, so a pending destructive/non-additive
+    # migration fails HERE (DestructiveBlocked, nothing applied), because the
     # still-live ACTIVE color's code expects the old schema on this shared DB.
+    # This script NEVER passes --allow-destructive: a deliberately-destructive
+    # release is an out-of-band, operator-run procedure — see Deploy/README.md
+    # §"Shipping Phase-2 Group 1" and Deploy/SECURITY.md §7.
     log_info "migration dry-run (expand/contract gate)"
     if ! run_migrate --dry-run up; then
-        log_err "migration DRY-RUN failed. Aborting BEFORE any change."
-        log_err "If this is a non-additive (destructive) migration it MUST NOT run on the shared blue/green DB:"
-        log_err "the still-live ACTIVE color's code expects the old schema. Rework the migration to be"
-        log_err "expand/contract (backward compatible). Production is untouched."
+        log_err "migration DRY-RUN failed. Aborting BEFORE any change (nothing was applied; no restore needed)."
+        log_err "If this is a non-additive (destructive) migration it MUST NOT run via this script on the"
+        log_err "shared blue/green DB: the still-live ACTIVE color's code expects the old schema. Rework the"
+        log_err "migration to be expand/contract, or — for a deliberate destructive release — follow the"
+        log_err "brief-downtime procedure in Deploy/README.md. Production is untouched."
         return 1
     fi
 
     log_info "applying migrations to the shared DB"
     if ! run_migrate up; then
         log_err "migration APPLY failed. Production (active=${ACTIVE_ENVIRONMENT}) is untouched."
-        log_err "Investigate; restore from the pre-deploy backup if the schema is in a bad state."
+        log_err "Each migration is atomic (body + bookkeeping in one tx), so the failed one left no partial"
+        log_err "state; earlier migrations in this run stay applied. Investigate the logged SQL error;"
+        log_err "restore from the pre-deploy backup only if the schema is actually in a bad state."
         return 1
     fi
     log_info "migrations applied to the shared DB"

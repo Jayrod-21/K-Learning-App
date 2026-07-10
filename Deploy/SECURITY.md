@@ -135,9 +135,24 @@ the composed `DATABASE_URL`).
   **Defense:** migrations are **expand/contract / additive** by contract — the
   active old color keeps reading/writing while new migrations apply. The deploy
   runs `python db/migrate.py up` against the shared DB *before* the switch; a
-  pre-deploy backup is taken first. A **non-additive** migration is a release
-  engineering error and aborts the deploy (`migrate.py` refuses destructive SQL
-  without `--allow-destructive`, which the deploy never passes).
+  pre-deploy backup is taken first. An **undeclared** non-additive migration is
+  a release engineering error and aborts the deploy at the dry-run step
+  (`migrate.py` refuses destructive SQL without `--allow-destructive` — since
+  the ADR-010 amendment the `--dry-run` gate evaluates this too — and the
+  scripted deploy never passes the flag).
+  **Sanctioned exception — deliberate destructive release:** a release whose
+  migrations are *knowingly* non-additive (e.g. Phase-2 Group 1: 045's
+  `DROP TABLE`, 046's old-code-incompatible index swap) does NOT go through the
+  scripted zero-downtime flow at all. It follows the operator-run
+  **brief-downtime** procedure in `README.md` §"Shipping Phase-2 Group 1":
+  pre-migration backup → stop the active color → one manual
+  `run_migrate --allow-destructive up` → any out-of-band steps (047's
+  `set-km-app-password.sh`) → bring up the new color → health gate → flip.
+  The flag is typed by a human against a stopped stack, never wired into a
+  script — so the "never passes" property of the automated path is preserved,
+  and old code never runs against the new schema. Rollback-by-flip is invalid
+  inside such a window (old code + new schema); recovery is the migration
+  rollback or the pre-deploy backup, per the runbook.
 * **Vector:** a migration corrupts the DB mid-deploy.
   **Defense:** `migrate.py` wraps each migration body + its bookkeeping row in
   ONE transaction (partial application is impossible), and a pre-deploy dump
