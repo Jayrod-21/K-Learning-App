@@ -47,6 +47,14 @@
           var a = localStorage.getItem('km.accent');
           document.documentElement.dataset.accent =
             (a === 'coral' || a === 'blue' || a === 'mint') ? a : 'coral';
+          /* Text-size bootstrap (F-025) — same no-flash contract. Reads
+             localStorage["km.textSize"] (the key TextSizeProvider writes)
+             and stamps data-text-size before first paint so the root
+             font-size never jumps after React mounts. Unknown/absent
+             values fall back to the default md (= the classic 16px root). */
+          var ts = localStorage.getItem('km.textSize');
+          document.documentElement.dataset.textSize =
+            (ts === 'sm' || ts === 'md' || ts === 'lg') ? ts : 'md';
         } catch (_) {
           /* localStorage may throw in privacy mode; leave attributes unset. */
         }

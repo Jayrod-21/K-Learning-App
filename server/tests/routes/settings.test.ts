@@ -33,12 +33,14 @@ const DEFAULT_PREFS = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
+  textSize: 'md',
 };
 
 const CUSTOM_PREFS = {
   notif: { channel: { email: false, sms: true }, reviewsDue: false, daily: true, weekly: false },
   palette: { paper: 'sumi', accent: 'mint', correct: 'pine', wrong: 'amber' },
   languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
+  textSize: 'lg',
 };
 
 beforeAll(async () => {
@@ -200,11 +202,13 @@ describe('languageDisplay (Overhaul P3a)', () => {
     ]);
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
-    // The user's stored choices survive; only the missing field defaults.
+    // The user's stored choices survive; only the missing fields default
+    // (textSize catches to 'md' the same way — F-025).
     expect(res.body).toEqual({
       notif: CUSTOM_PREFS.notif,
       palette: CUSTOM_PREFS.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
+      textSize: 'md',
     });
   });
 
@@ -223,7 +227,11 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const legacyBody = { notif: CUSTOM_PREFS.notif, palette: CUSTOM_PREFS.palette };
     const res = await agent.put('/settings/prefs').send(legacyBody);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ...legacyBody, languageDisplay: DEFAULT_LANGUAGE_DISPLAY });
+    expect(res.body).toEqual({
+      ...legacyBody,
+      languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
+      textSize: 'md',
+    });
     const get = await agent.get('/settings/prefs');
     expect(get.body.languageDisplay).toEqual(DEFAULT_LANGUAGE_DISPLAY);
   });
@@ -259,6 +267,55 @@ describe('languageDisplay (Overhaul P3a)', () => {
       .put('/settings/prefs')
       .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, extra: true } });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('textSize (F-025 app-wide text size)', () => {
+  it("GET coerces a stored bad textSize to 'md' WITHOUT wiping the rest of the blob", async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const poisoned = { ...CUSTOM_PREFS, textSize: 'gigantic' };
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(poisoned),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // The bad size coerces to the default; the user's OTHER stored choices
+    // survive (this must NOT be the DEFAULT_PREFS fallback).
+    expect(res.body).toEqual({ ...CUSTOM_PREFS, textSize: 'md' });
+  });
+
+  it("PUT round-trips a valid new textSize ('sm') via echo + GET", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = { ...DEFAULT_PREFS, textSize: 'sm' };
+    const put = await agent.put('/settings/prefs').send(body);
+    expect(put.status).toBe(200);
+    expect(put.body.textSize).toBe('sm');
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual(body);
+  });
+
+  it("PUT from a pre-F-025 client (no textSize) is accepted and stores 'md' (not a 400)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = {
+      notif: CUSTOM_PREFS.notif,
+      palette: CUSTOM_PREFS.palette,
+      languageDisplay: CUSTOM_PREFS.languageDisplay,
+    };
+    const res = await agent.put('/settings/prefs').send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.textSize).toBe('md');
+    // ...and the rest of the PUT body persisted untouched.
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual({ ...body, textSize: 'md' });
+  });
+
+  it("a totally unknown textSize value also coerces to 'md' (catch posture, never 400/500)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const body = { ...DEFAULT_PREFS, textSize: 'xl' };
+    const res = await agent.put('/settings/prefs').send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.textSize).toBe('md');
   });
 });
 

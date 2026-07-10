@@ -621,6 +621,12 @@ export type PaperPreset = 'hanji' | 'ivory' | 'linen' | 'sumi';
  *  keep them in lockstep. Legacy stored ids (vermilion|indigo|plum|ochre)
  *  are coerced to 'coral' by the server schema, never 400'd. */
 export type AccentPreset = 'coral' | 'blue' | 'mint';
+/** Text-size preset (F-025) — the app-wide root font-size scale,
+ *  server-synced via `/settings/prefs` so the choice follows the user
+ *  across devices. Structurally identical to `hooks/text-size-context.ts`'s
+ *  `TextSize` union — keep them in lockstep. A missing/unknown stored value
+ *  is coerced to 'md' by the server schema, never 400'd. */
+export type TextSizePreset = 'sm' | 'md' | 'lg';
 /** Correct-state preset — success/affirmative color family. */
 export type CorrectPreset = 'moss' | 'pine' | 'teal';
 /** Wrong-state preset — danger/incorrect color family. */

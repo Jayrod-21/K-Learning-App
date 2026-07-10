@@ -24,8 +24,8 @@
  *     never a 500 — the user's own bad data must not break their Settings screen.
  *   - Cost: no Claude, no external I/O — the standard cheap limiter is sufficient.
  *   - No secrets here: profile name/email/phone live in their own columns (edited
- *     via PATCH /auth/me); this blob is notif + palette + languageDisplay only,
- *     so there is nothing sensitive to leak.
+ *     via PATCH /auth/me); this blob is notif + palette + languageDisplay +
+ *     textSize only, so there is nothing sensitive to leak.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -62,6 +62,22 @@ const PaperPreset = z.enum(['hanji', 'ivory', 'linen', 'sumi']);
  * blob on both paths; the next PUT then persists a valid id.
  */
 const AccentPreset = z.enum(['coral', 'blue', 'mint']).catch('coral');
+
+/**
+ * Text size (F-025) — the app-wide root font-size scale (sm|md|lg),
+ * server-synced so the choice follows the user across devices (the client
+ * stamps the value as `data-text-size` on `<html>`; the server only stores
+ * the id).
+ *
+ * `.catch('md')` for the same reason `accent` catches: every blob stored
+ * before F-025 has NO `textSize` key at all, and a stale client
+ * mid-rolling-deploy PUTs without one. A hard-required enum would make the
+ * GET-side safeParse fail on the user's own stored blob — wiping their WHOLE
+ * prefs back to DEFAULT_PREFS — and would 400 the stale client's PUT.
+ * Coercing missing/unknown to the 'md' default (= the classic 16px root)
+ * preserves the rest of the blob on both paths.
+ */
+const TextSizePreset = z.enum(['sm', 'md', 'lg']).catch('md');
 const CorrectPreset = z.enum(['moss', 'pine', 'teal']);
 const WrongPreset = z.enum(['vermilion', 'amber', 'slate']);
 
@@ -135,6 +151,7 @@ export const PrefsSchema = z
     notif: NotifPrefsSchema,
     palette: PalettePrefsSchema,
     languageDisplay: LanguageDisplayPrefsSchema.default(DEFAULT_LANGUAGE_DISPLAY),
+    textSize: TextSizePreset,
   })
   .strict();
 export type Prefs = z.infer<typeof PrefsSchema>;
@@ -150,6 +167,7 @@ const DEFAULT_PREFS: Prefs = {
   notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
+  textSize: 'md',
 };
 
 // ---------------------------------------------------------------------------

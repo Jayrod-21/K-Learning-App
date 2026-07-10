@@ -249,6 +249,23 @@
   --focus-ring:       var(--vermilion);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Text size — a RUNTIME user choice (Settings ▸ Appearance ▸ Text size,
+ * F-025).
+ *
+ * `TextSizeProvider` stamps `data-text-size="sm|md|lg"` on `<html>`
+ * (persisted in localStorage["km.textSize"], same pattern as km.accent) and
+ * these blocks re-point the ROOT font-size, so every rem-derived length in
+ * the app — Tailwind utilities, rem paddings, inherited body text — scales
+ * together with no reload. md restates the browser default (16px) for
+ * explicitness: it IS the size the app has always rendered at, so shipping
+ * this setting changes nothing until the user opts into Small or Large.
+ * Values are documented in `lib/text-size-presets.ts` — keep in lockstep.
+ * ──────────────────────────────────────────────────────────────────────── */
+:root { font-size: 100%; }                          /* md — 16px */
+:root[data-text-size="sm"] { font-size: 93.75%; }   /* 15px */
+:root[data-text-size="lg"] { font-size: 112.5%; }   /* 18px */
+
 /* Reset + ambient glow. */
 * { box-sizing: border-box; }
 html, body, #root {

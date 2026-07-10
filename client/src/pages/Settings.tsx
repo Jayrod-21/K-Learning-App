@@ -89,6 +89,8 @@ import { useTheme } from '../hooks/useTheme';
 import type { ThemeMode } from '../hooks/useTheme';
 import { useAccent } from '../hooks/useAccent';
 import { isAccent } from '../hooks/accent-context';
+import { useTextSize } from '../hooks/useTextSize';
+import { isTextSize, DEFAULT_TEXT_SIZE, type TextSize } from '../hooks/text-size-context';
 import {
   fetchMe,
   fetchMfaStatus,
@@ -132,6 +134,7 @@ async function loadMeMock(): Promise<User> {
 }
 import { ApiError } from '../services/api';
 import { ACCENT_OPTIONS } from '../lib/accent-presets';
+import { TEXT_SIZE_OPTIONS } from '../lib/text-size-presets';
 import {
   clampSubScale,
   DEFAULT_SETTINGS,
@@ -164,6 +167,9 @@ async function loadPrefsMock(): Promise<Prefs> {
     notif: local.notif,
     palette: LEGACY_PALETTE_DEFAULT,
     languageDisplay: local.languageDisplay,
+    // Like the wire palette: the mock is never adopted (isMock guard), so the
+    // default id is an honest stand-in for the provider-owned local value.
+    textSize: DEFAULT_TEXT_SIZE,
   };
 }
 
@@ -249,6 +255,7 @@ export default function Settings(): JSX.Element {
   const { settings, updateSettings, resetSettings } = useSettings();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const { accent, setAccent } = useAccent();
+  const { textSize, setTextSize } = useTextSize();
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -575,10 +582,13 @@ export default function Settings(): JSX.Element {
   // never clobbered. `accent` is LIVE (cross-device sync): it seeds to the
   // AccentProvider's current value (localStorage fast-path) and is owned by
   // the accent picker from then on.
+  // `textSize` mirrors `accent` exactly (F-025): seeded from the provider's
+  // localStorage fast-path, owned by the Text size control from then on.
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
     palette: { ...LEGACY_PALETTE_DEFAULT, accent },
     languageDisplay: settings.languageDisplay,
+    textSize,
   });
 
   const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -651,6 +661,12 @@ export default function Settings(): JSX.Element {
   useEffect(() => {
     accentRef.current = accent;
   }, [accent]);
+  // Same ref discipline for the text size (F-025) — the hydration effect
+  // reads the current value without re-running on every size change.
+  const textSizeRef = useRef(textSize);
+  useEffect(() => {
+    textSizeRef.current = textSize;
+  }, [textSize]);
 
   useEffect(() => {
     if (prefsHydratedRef.current) return;
@@ -674,6 +690,14 @@ export default function Settings(): JSX.Element {
     const freshAccent = isAccent(fresh.palette.accent)
       ? fresh.palette.accent
       : localAccent;
+    // Text-size cross-device sync (F-025) — same server-wins-on-load posture
+    // as the accent. A pre-F-025 server omits the field entirely on GET
+    // (rolling deploy), which is not adoptable: keep the local size and
+    // record IT as the baseline instead.
+    const localTextSize = textSizeRef.current;
+    const freshTextSize = isTextSize(fresh.textSize)
+      ? fresh.textSize
+      : localTextSize;
     // Record what the server holds BEFORE writing it into the provider, so the
     // change-driven effect below sees no diff and skips the echo PUT. This is
     // also where the wire-only paper/correct/wrong echo values are adopted
@@ -683,7 +707,15 @@ export default function Settings(): JSX.Element {
       ...fresh,
       palette: { ...fresh.palette, accent: freshAccent },
       languageDisplay: freshLanguageDisplay,
+      textSize: freshTextSize,
     };
+    if (freshTextSize !== localTextSize) {
+      // Adopt = a plain provider update (stamps `data-text-size` on <html> +
+      // persists localStorage["km.textSize"]), NOT a user-initiated change:
+      // the baseline above already carries the server's size, so the change
+      // effect diffs to nothing — no echo PUT, no flash loop.
+      setTextSize(freshTextSize);
+    }
     if (freshAccent !== localAccent) {
       // Adopt = a plain provider update (stamps `data-accent` on <html> +
       // persists localStorage["km.accent"]), NOT a user-initiated change: the
@@ -710,6 +742,7 @@ export default function Settings(): JSX.Element {
     prefsQuery.data,
     updateSettings,
     setAccent,
+    setTextSize,
   ]);
 
   // Debounced PUT on any notif/languageDisplay/accent change. Compares against
@@ -735,12 +768,14 @@ export default function Settings(): JSX.Element {
       notif: settings.notif,
       palette: { ...lastSyncedPrefsRef.current.palette, accent },
       languageDisplay: settings.languageDisplay,
+      textSize,
     };
     const last = lastSyncedPrefsRef.current;
     if (
       notifEqual(current.notif, last.notif) &&
       current.palette.accent === last.palette.accent &&
-      languageDisplayEqual(current.languageDisplay, last.languageDisplay)
+      languageDisplayEqual(current.languageDisplay, last.languageDisplay) &&
+      current.textSize === last.textSize
     ) {
       return;
     }
@@ -755,7 +790,7 @@ export default function Settings(): JSX.Element {
     }, PREFS_DEBOUNCE_MS);
     // `flushPrefs` is stable (no deps); the effect keys on the synced slices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.notif, settings.languageDisplay, accent]);
+  }, [settings.notif, settings.languageDisplay, accent, textSize]);
 
   return (
     <section
@@ -967,6 +1002,14 @@ export default function Settings(): JSX.Element {
         mock={prefsQuery.isMock}
       >
         <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
+        {/* Text size (F-025) — drives TextSizeProvider, which stamps
+            data-text-size on <html> and persists to km.textSize for the
+            instant same-device path; the screen-level prefs sync above ALSO
+            carries the pick to /settings/prefs (textSize) so it follows the
+            user across devices. The :root[data-text-size] blocks in
+            index.css re-point the ROOT font-size — attribute only, never an
+            inline style projection. */}
+        <TextSizeControl value={textSize} onSelect={setTextSize} />
         <LanguageDisplayControl
           value={settings.languageDisplay}
           onChange={(next) => {
@@ -1668,7 +1711,9 @@ function SegmentedRadioGroup<T extends string>({
   onSelect,
   ariaLabel,
 }: {
-  options: ReadonlyArray<{ id: T; label: string }>;
+  /** `ariaLabel` overrides an option's accessible name — for segments whose
+   *  visible label is a compact glyph (the Text size control's S/M/L). */
+  options: ReadonlyArray<{ id: T; label: string; ariaLabel?: string }>;
   value: T;
   onSelect: (next: T) => void;
   ariaLabel: string;
@@ -1732,6 +1777,7 @@ function SegmentedRadioGroup<T extends string>({
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-label={o.ariaLabel}
             tabIndex={selected ? 0 : -1}
             ref={(el) => {
               if (el) optRefs.current.set(o.id, el);
@@ -1749,6 +1795,53 @@ function SegmentedRadioGroup<T extends string>({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Text-size control (F-025) — the app-wide root font-size scale.
+ *
+ * A compact S / M / L segmented radiogroup riding `SegmentedRadioGroup`
+ * (per-option `ariaLabel` gives the glyph segments real accessible names:
+ * "Small" / "Medium" / "Large"). Selection goes straight to
+ * `TextSizeProvider` (instant `data-text-size` stamp + km.textSize); the
+ * screen-level prefs change-effect syncs it to the server like the accent.
+ */
+const TEXT_SIZE_CONTROL_OPTIONS: ReadonlyArray<{
+  id: TextSize;
+  label: string;
+  ariaLabel: string;
+}> = (['sm', 'md', 'lg'] as const).map((id) => ({
+  id,
+  label: TEXT_SIZE_OPTIONS[id].label,
+  ariaLabel: TEXT_SIZE_OPTIONS[id].name,
+}));
+
+function TextSizeControl({
+  value,
+  onSelect,
+}: {
+  value: TextSize;
+  onSelect: (next: TextSize) => void;
+}): JSX.Element {
+  return (
+    // Reuses the thememode section class — like the SegmentedRadioGroup's
+    // row/opt classes, it styles a generic bordered segment section, nothing
+    // theme-specific (folding these onto a neutral name is P3b cleanup).
+    <div className="km-settings__thememode">
+      <div className="km-settings__row-head">
+        <span className="km-settings__row-label">Text size</span>
+        <span className="km-settings__row-hint">
+          Scales all text and spacing app-wide.
+        </span>
+      </div>
+      <SegmentedRadioGroup
+        ariaLabel="Text size"
+        options={TEXT_SIZE_CONTROL_OPTIONS}
+        value={value}
+        onSelect={onSelect}
+      />
     </div>
   );
 }
