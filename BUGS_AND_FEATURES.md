@@ -672,6 +672,443 @@ Launch one focused session per group; cross-cutting items noted.
 
 ---
 
+## 🌊 Wave 1 — Pre-beta redesign (2026-07-09)
+
+Full pre-beta wave: every item below ships before friends begin beta testing. Tickets are
+grouped by page/area in the order the edit list was given; IDs continue from B-016/F-021.
+Confirmed decisions baked in: B-019 reverses B-005 (Reading tile → Reading page); B-018 is
+Today-tile-only; F-034 removes the just-built F-016 chat dictionary; B-026 is an
+audio-missing *investigation*. "Discuss" items (F-025 text-size, F-037 chat response style,
+F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided.
+
+#### ▸ Backend / DB
+
+### F-022 · Database integrity + security audit, schema readiness for Wave 1
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATABASE (BACKEND) · **Beta:** —
+- **What:** Verify the DB follows proper procedures and normalization: no duplications, no loopholes, nothing cheap or security-breachable. Confirm the schema will hold up under and support all newly added + Wave-1 features.
+- **Notes:** Run before/alongside the new-table work (ticketing F-023, lists F-048/F-061, uploads sub-pages F-053/F-056, writing history F-046/F-074).
+
+### B-017 · Placeholders shown where real database data should render
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** No placeholders on pages for areas that actually need to show database data. Sweep all pages and wire every such area to real data.
+- **Notes:** Same failure class as the earlier `useEndpointOrMock` fixture-as-real finding — treat as silently-broken, not cosmetic.
+
+#### ▸ All Pages
+
+### F-023 · In-app ticketing / feedback system for beta testers
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (DATABASE, UI) · **Beta:** 🚩 blocker
+- **What:** A ticketing place so beta-testing friends can report issues, concerns, bugs, suggestions, and requests. Users see their own previous tickets plus community tickets shown anonymously; tickets have date/time-stamped comments, an edit option for your own tickets, a type (bug/concern/suggestion/request), and a status field.
+- **Notes:** In-app feature, separate from this dev doc. Author IS stored (moderation) but hidden in the UI.
+
+### F-024 · Back buttons on nested/sub-pages
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI · **Beta:** 🚩 blocker
+- **What:** Add an in-app back control on pages that are inside pages (all nested/sub-pages), rather than relying on browser/OS navigation.
+
+### F-025 · App-wide text-size setting + smaller default
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Add an app-wide S/M/L text-size setting (root rem scaling) and generally reduce the default text size.
+- **Notes:** Approach details flagged **discuss** (user: "perhaps smaller text?").
+
+#### ▸ Today
+
+### F-026 · Vocab tile rework → vocab/grammar carousel
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Rework the vocab card tile — it's just a box and needs to look cooler. Make it a carousel that swipes between grammar and vocab.
+
+### B-018 · Today grammar tile says "coming soon" instead of opening Grammar practice
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Point the Today-page grammar drills tile at the real Learn → Grammar practice page; it must not show "coming soon."
+- **Notes:** Confirmed scope: Today-page tile only — the Grammar practice page itself exists (not a global regression).
+
+### B-019 · Today Reading tile routes to listening lessons, not Reading
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** The Reading tile must hot-link to the Reading page, not to the listening lessons.
+- **Notes:** REVERSES B-005's resolution ("Reading + Listening both → Listen by design"; `Reading.tsx` was deleted when Read folded into Listen — see B-001). Depends on the rebuilt Reading page (F-067…F-070).
+
+### F-027 · Writing tile: generate-new-topic via Claude API (TOPIK or general)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** API (BACKEND, UI) · **Beta:** —
+- **What:** The entire Today writing part needs a "generate new topic" powered by the Claude API, with an option to choose TOPIK-style questions if wanted or just a general prompt.
+- **Notes:** Same generation engine as the Learn → Writing generate selection (F-073) — build once, surface twice.
+
+### F-028 · TOPIK-recommended carousel rework (study link, order, resume banner)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** TOPIK-recommended tile must bring the user to the study part of TOPIK and sit first in the carousel; Review Mistakes goes second in the same carousel. Resume-exam becomes a small clickable banner in the top-left of the carousel, present on both tiles.
+
+### F-029 · All carousels loop back to the first tile
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Every carousel in the app must loop infinitely — after the last tile it wraps around to the first original tile.
+
+#### ▸ Progress
+
+### F-030 · "Where you stand" bottom section → carousel (trend / attempt-vs-attempt / all attempts)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Turn the bottom part of Where You Stand (the attempt-vs-attempt area) into a carousel ordered: trend (score over attempts) → attempt vs attempt → all attempts.
+- **Notes:** Builds on F-010/F-017 carousel + history infrastructure.
+
+### F-031 · Word mastery pagination — words per page
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Word mastery is too long — rework it to show only a set number of words per page.
+
+### F-032 · Word Mastery + Grammar Mastery as tabs in one area
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Word Mastery and Grammar Mastery become clickable tabs sharing the same area, instead of being stacked on top of each other.
+
+#### ▸ Chat
+
+### F-033 · Chat page formatting overhaul
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** The chat page needs major formatting changes overall.
+- **Notes:** Specific changes tracked in F-034/F-035/B-020/F-036/F-037; this covers the general layout pass.
+
+### F-034 · Remove in-chat dictionary + suggested words
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Remove the dictionary part and the suggested words from the chat page.
+- **Notes:** Deliberate removal — this tears out the recently built F-016 in-chat dictionary. Confirmed decision.
+
+### F-035 · "+" attach button in chat box (camera / image / document upload)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add a clickable "+" symbol in the bottom-left of the chat box housing camera, upload image, and upload document/file.
+
+### B-020 · English on/off slider has no label
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** The add-English on/off slider needs an actual label — it is not easy to tell what it is.
+
+### F-036 · Auto-name chats (Claude-web style)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** Chats need to be auto-named from their content, not the same name with a date — similar to how Claude does it in the web interface.
+
+### F-037 · Rework Claude response style in chat
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** API (BACKEND) · **Beta:** —
+- **What:** Update how Claude responds — currently very long and blocky.
+- **Notes:** Response style/format flagged **discuss** before implementing.
+
+#### ▸ Settings
+
+### F-038 · Collapsible settings tiles, collapsed by default
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Make each Settings tile/box collapsible and start collapsed.
+
+### F-039 · Move Uploads out of Settings → Review → Uploads
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Physically migrate the current Settings Uploads section to the Review → Uploads area; it no longer lives in Settings.
+- **Notes:** Destination behavior specced in F-057/F-058/F-059.
+
+### F-040 · Notifications rework — user-selectable timing + SMS placeholder
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (UI, CONFIG) · **Beta:** —
+- **What:** Revisit the notifications section: for daily reminder, reviews-due, and weekly report, the user must be able to select when each notification happens. Add a placeholder SMS channel with the same notification types (placeholder only for now).
+- **Notes:** SUPERSEDES/EXPANDS F-006 (email notifications — no mail infra exists; net-new build).
+
+### F-041 · Hanja Mastery carousel
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add a new Hanja Mastery carousel, similar to the existing vocab and grammar ones.
+- **Notes:** Pairs with the Hanja flashcard/anki work (F-075).
+
+#### ▸ Review
+
+### F-042 · Restructure Review landing (sections + removals)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Remove Flashcards and Grammar Drill from the top. Section order becomes: Vocabulary, Grammar, TOPIK Exams (where mistakes and past TOPIK exams will live), Uploads. Remove anything else — but only after the page merges/moves land (some pages are being put inside others or combined).
+- **Notes:** Sequence after F-039 (Uploads move) and the Mistakes/TOPIK rework (F-044…F-046, F-082).
+
+### F-043 · Rename "Review" → "Library"
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Change the page title from Review to Library.
+
+#### ▸ Review → Mistakes
+
+### F-044 · Session selector + collapsible questions in Mistakes
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** User selects which session (TOPIK exam) to review, and questions within it are collapsible — currently everything is shown at once, so the page is very long and cluttered.
+- **Notes:** Builds on F-021 (wrong-answer review log).
+
+### F-045 · Show score out of total questions per TOPIK exam
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Each TOPIK exam in Mistakes needs to show how many questions the user got right out of the total.
+
+### F-046 · Writing review — past written responses (TOPIK + generated prompts)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** Add a writing review so users can revisit past writing practice, in two parts: (1) TOPIK-exam writing responses, collapsible like Mistakes, with score-out-of-max grade; (2) "Prompts" — responses written against app-generated (Claude) prompts.
+- **Notes:** Consumes the same history as the Learn → Writing responses tab (F-074).
+
+#### ▸ Review → Vocabulary
+
+### F-047 · Remove grammar from the Vocabulary tab
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Remove grammar content from this tab since Review now has a separate Grammar tab.
+
+### F-048 · Add-word list selection + Create List button
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** When adding a word, the user must be able to select which list it goes to. Add a Create List button so a user can make and choose a list.
+- **Notes:** SUPERSEDES B-013 (disabled per-list "Study this list"/"Add all to bank" buttons) together with F-060/F-061.
+
+### F-049 · Genre + difficulty dropdown filters at top of Vocabulary
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Move the genre filter to the top, before the list, as a dropdown of all genre types; add a dropdown for the 3 difficulty levels.
+- **Notes:** "Genre" = the existing `domain` field. Relates to F-003 (filters columns exist, unwired).
+
+### F-050 · Rename Dictionary → "All Words" with first-character + genre search
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Change the Dictionary button to All Words, searchable by the first Hangul character as well as by genre (same genres as normal vocabulary).
+
+### F-051 · Limit word list to 15 with show-more (up to 30)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Limit displayed words to 15, with an option to show more up to 30.
+
+### F-052 · Move My Lists to the top
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Move the My Lists section up to the top of the Vocabulary page.
+
+### F-053 · "My Uploads" sub-page inside Vocabulary
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** A My Uploads page inside Vocabulary holding vocab words the user chose to study from their uploads (clicking a word in an upload and adding it to a list files it here), separable/grouped by the source upload on the user's profile.
+- **Notes:** Only shown if such saved items exist. Grammar twin = F-056.
+
+#### ▸ Review → Grammar
+
+### F-054 · Prune Grammar page (remove vocab/dictionary, search-all, genre filter)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Remove vocabulary and dictionary from the Grammar page, remove the search-all-grammar-patterns feature, and remove the genre filter (can't really sort grammar by genre).
+- **Notes:** Confirmed: grammar drops genre entirely.
+
+### F-055 · Grammar difficulty filter → dropdown
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Keep the difficulty filter but make it a dropdown.
+- **Notes:** Relates to F-005 (grammar filter columns exist, unwired).
+
+### F-056 · Grammar "Uploads" sub-page
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add an Uploads page mirroring the Vocabulary one (F-053): user-saved grammar pulled from their uploads, grouped by source upload — only populated when a grammar-bearing upload/selection exists.
+
+#### ▸ Review → Uploads
+
+### F-057 · PDF viewer: rotation option + auto fit-width
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** When viewing an upload's PDF version, add a rotation option and auto fit-width.
+- **Notes:** Lives in the migrated Uploads area (F-039).
+
+### F-058 · Uploads listing shows only PDF versions
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** The Uploads area only shows the PDF versions of uploads.
+
+### F-059 · Manual OCR trigger button
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add a clickable OCR button (or another term understandable to a normal user) that starts the OCR process for an upload.
+
+#### ▸ Learn → Vocab flashcards
+
+### F-060 · Flashcards landing rework — lists-first, remove sessions + All Cards
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Remove the session part and the All Cards section. Landing shows all lists; clicking a list shows its vocab words with a Study button at the top that launches the flashcards. Add a create-new-list section on the landing page.
+- **Notes:** Create-list shares plumbing with F-048. Part of the set superseding B-013.
+
+### F-061 · Edit-lists inside a list (rename, remove words, add-words flow)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** Inside a list, an Edit Lists button lets the user change the title, remove words, or add words — the add button routes to the Review → Vocabulary section, and any word selected via that route is automatically added to the list that was originally open.
+- **Notes:** With F-048/F-060, supersedes B-013.
+
+### F-062 · List-completion page with stats
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** After completing a flashcard list, show a completion page with some of the session's stats.
+
+### B-021 · Verify FSRS/anki intervals are actually honored
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (DATABASE) · **Beta:** —
+- **What:** Verify the anki system really works at runtime: Again < 1 m, Hard < 6 m, Good < 1 d, Easy < 4 d must be genuinely respected by the scheduler, not just displayed.
+- **Notes:** Verify-class item — could be silently broken. Test against real card data, not mocks.
+
+### B-022 · "More examples" overlays rating row; no close; doesn't reset
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Clicking More Examples overlays the Again/Hard/Good/Easy row; it should instead expand the initial tile underneath. Add a close button, and auto-close/reset whenever the page is tapped or the card is flipped.
+- **Notes:** REOPENS F-UP-008 (more-examples drawer) as a bug.
+
+### B-023 · Card has pointed corner + square box over a rounded tile
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Cards still show a point and a square box while the tile underneath is round — formatting error; make the shapes consistent.
+
+#### ▸ Grammar practice
+
+### F-063 · Rework banked/graduate/known terminology → grammar mastery model
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Replace the words "banked," "graduate," and "known" — probably with something similar to vocabulary so grammar mastery works the same way.
+- **Notes:** Mastery model flagged **discuss/brainstorm** before implementing. Pairs with F-066.
+
+### B-024 · Saved-grammar list formatting is cluttered; forms wrap lines
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** The saved-grammar list has no real separation and feels cluttered — needs better organization, and all grammar forms must stay on one line.
+
+### F-064 · Move drill button to top-right, rename "Practice"
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Move the drill button to the top-right of the page and relabel it "Practice."
+
+### F-065 · View past drill entries
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** Provide a way to see past grammar drill entries.
+
+### F-066 · Anki-style scheduling for grammar
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (DATABASE, UI) · **Beta:** —
+- **What:** Apply the same anki approach to grammar. The self-graduate concept is acceptable, but its current formatting is not.
+- **Notes:** Depends on the mastery-model discussion in F-063.
+
+#### ▸ Learn → Reading
+
+### F-067 · Reading sections by type (literature, dialogue) + uploaded docs
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add sections for reading type (literature, dialogue); this is where uploaded documents will live.
+- **Notes:** The Reading page must be rebuilt — it was deleted when Read folded into Listen (see B-001/B-019).
+
+### F-068 · AI short-story generation section
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** API (BACKEND, UI) · **Beta:** —
+- **What:** A Generate section where AI can generate a short story to read.
+
+### F-069 · Per-upload reading resume
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** A Resume button that saves where the user was when reading, tracked per upload.
+
+### F-070 · Passage selection → translation popup (Google-Translate style)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (API) · **Beta:** —
+- **What:** In the digitized-books area, keep single-word definition lookup, but selecting a whole passage translates it in a popup, Google-Translate style, via the Claude API.
+
+#### ▸ Learn → Listen
+
+### F-071 · Listen landing → square tile grid (2 across)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Change the Listen landing page to square tiles, 2 across and flowing down — ready for if/when more audio is added.
+
+### B-025 · Verify TTMIK transcripts + highlights
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (UI) · **Beta:** —
+- **What:** Verify the transcripts and the read-along highlights actually work for the TTMIK lessons.
+- **Notes:** Verify-class — check against real corpus content, not fixtures.
+
+### B-026 · Missing audio investigation — ~10 TTMIK lessons + ~48 Iyagi episodes
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (BACKEND, CONFIG) · **Beta:** —
+- **What:** All lessons/episodes are expected to have audio, but roughly 10 TTMIK lessons and 48 Iyagi episodes have no `audio_path`. Investigate why (missing source files vs bad ingest vs path mismatch) and restore the audio.
+- **Notes:** Investigation ticket — root-cause first, then repair. Corpus at `~/data/korean-master/corpus/`.
+
+### F-072 · Limit Listen listing to 15 files per page
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** Limit the number of files shown per page to 15.
+
+#### ▸ Learn → Writing
+
+### F-073 · Generate selection — AI-created non-TOPIK prompts
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** API (UI) · **Beta:** —
+- **What:** Add a new Generate selection where AI creates a writing prompt for the user, different from the TOPIK ones.
+- **Notes:** Same Claude-API generation engine as the Today writing tile (F-027): TOPIK-style question OR general prompt.
+
+### B-027 · Verify writing questions aren't hard-locked to Q53/Q54 and randomize
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (UI) · **Beta:** —
+- **What:** Verify the writing page is not hard-locked to Q53/Q54 in the headers and that it genuinely randomly selects writing questions.
+- **Notes:** Verify-class — could be silently broken.
+
+### F-074 · Responses tab — past writing responses
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add a Responses tab showing the responses the user submitted for past prompts.
+- **Notes:** Shares history/storage with the Review writing review (F-046).
+
+#### ▸ Learn → Hanja
+
+### B-028 · Verify Hanja drill / recall actually works
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Actually verify the Hanja drill/recall flow works end-to-end.
+- **Notes:** Verify-class; F-015 history says route/tests existed while data/UI lagged — exercise with real data.
+
+### F-075 · Hanja flashcard system (lists + anki)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **What:** Add a flashcard system for Hanja similar to vocab: lists, new-list creation, and the anki flashcard scheduling system.
+- **Notes:** Feeds the Settings Hanja Mastery carousel (F-041).
+
+### F-076 · Hanja drawing drill
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Create the drawing drill for Hanja.
+
+### F-077 · Hanja page reword
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **What:** The Hanja page needs a reword.
+- **Notes:** Flagged **discuss** — possibilities to be brainstormed with the user first.
+
+#### ▸ Learn → TOPIK
+
+### B-029 · TOPIK landing wrongly limited to 10 items
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Don't limit the initial landing page to just 10 — 10 is only the daily recommended amount for study, not a hard cap.
+
+### F-078 · Daily right/wrong counter
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Add a daily counter of right and wrong answers on the TOPIK page.
+- **Notes:** User wrote "write and wrong" — interpreted as right/wrong; confirm.
+
+### F-079 · Mock exam chooser with done-checkmarks + start page with attempts
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** In the mock exam section, the user chooses which exam to take — e.g. clicking Reading lists the TOPIK exams; previously-completed ones show a green checkmark. Selecting one leads to a start page requiring a Start click; if already done, the same start page additionally shows previous attempts and the grade.
+
+### F-080 · Listening mock exams — playable per-question audio
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (DATA, BACKEND) · **Beta:** —
+- **What:** The listening mock exams need work: add the option to play the audio for each question.
+- **Notes:** Check whether TOPIK question audio exists in the corpus at all — may surface a data gap like B-026.
+
+### F-081 · Show question-paired images where possible
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA (UI) · **Beta:** —
+- **What:** If possible, show the images that some TOPIK questions are paired with.
+- **Notes:** User flagged this may be hard. `has_image` items currently render text-only.
+
+### F-082 · TOPIK landing "Previous attempts" review view
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** Landing page gets a Previous Attempts list of completed TOPIK exams with grade and correct-out-of-total. Wrong questions show red in the mock-exam tile format; clicking a question shows it with the user's previous answer (no explanation), plus a button that jumps to that exact question + explanation in the current Review → Mistakes view.
+- **Notes:** Builds on F-021 attempt history; links into F-044/F-045.
+
+#### ▸ Carryover (pre-Wave-1, still open)
+
+Existing items that ship with this wave — referenced by existing ID, not re-ticketed:
+
+- **Dependency-vuln bumps** — 🟢 **/fixpass COMPLETE — PASS (all 4 phases)** in worktree `worktree-agent-a866a005817c1f492`: 2 independent reviewers → 0 blockers → independent fix-pass → independent re-review PASS (0 not-fixed, 0 regressions). 7 vulns (1 crit/1 high) → **0**; @anthropic-ai/sdk 0.80→0.110, uuid 10→14, vitest 2→4; SF-1 done (Docker both stages → `node:22-alpine`, `docker build --check` clean), NIT done, SF-2→**B-032**, consistency follow-ups→**F-085**. Gates green (audit 0, tsc 0, lint 0, 980 tests). Paper trail: REVIEW_deps_{runtime,tests}.md + FIX_REPORT.md + REVIEW_FIXES.md (worktree). **Ready to merge to `rebuild`; deploy held** (node:22-alpine pulls fresh on first idle-color build). · **P1** · **Beta:** 🚩 blocker
+- **F-UP-013** — 🟢 done (2026-07-09) — 659→3, 769→2, 1086→3 applied to prod km-db + corpus JSON; item 222 was correct-as-is (→ B-031 for its option-1 OCR). · **P1** · **Beta:** 🚩 blocker
+- **B-012** — vocab-2000 ~400/level short + 214 navigational rows to restore · **P2**
+- **F-UP-018** — residual explanations + Claude-spend monitoring + `topik_level`-not-persisted · **P3**
+- **CI/hygiene nits** — pin docker images by digest; re-enable ignored ingest integration test + pytest-randomly; loader count-assertion cumulative-awareness · **P3**
+
+#### ▸ Phase 0 outcomes + follow-on tickets (2026-07-09)
+
+Phase-0 verify sweep results (annotations on the tickets above):
+- **B-021** (anki) — scheduler works + is server-authoritative (verified vs 70 real reviews), but labels lie (`<1m/6m/1d/4d` shown vs `10m/1d/3d/6d` actual). **DECIDED: retune the FSRS-lite engine so grades genuinely yield true Anki `1m/6m/1d/4d`** (not just relabel). Engine `server/src/services/fsrs.ts` (BASE_STABILITY + RELEARN_DELAY_MS); do in the flashcards phase.
+- **B-027** (writing) — confirmed BROKEN: hard-locked Q53/Q54 (client+server enum+DB CHECK) + deterministic selection (same prompt every visit); only 6 active prompts. Fix = randomize/seed selection + widen beyond Q53/54 (schema) + add prompt content depth.
+- **B-028** (hanja drill) — confirmed: "Drill" button is dead (no onClick/endpoint/grading; `hanja_progress` 0 rows). Real build (pairs with F-075/F-076).
+- **B-025** (transcripts/highlight) — transcripts fully work; read-along **highlight doesn't exist** (no per-line timestamps in corpus). Needs forced-alignment to add timestamps (a project) or drop the karaoke ask — **decision deferred**.
+- **B-026** (missing audio) — root cause: all 58 mp3s (TTMIK L9 5–14; Iyagi 147–150/201–235/237–239/241–246) are **absent from disk**; loader is correct. Repair = **user sources the files** → drop into corpus → re-run idempotent loader.
+- **B-017** (placeholders) — fixture-as-real class fully remediated; only real finding folds into F-042 (Review "Uploads — coming soon" stub hides the live `/uploads`).
+
+New tickets from Phase 0:
+
+### B-030 · App DB connection runs as a Postgres SUPERUSER
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATABASE (CONFIG) · **Beta:** —
+- **What:** `korean_master` is `rolsuper=t` and is the role Express connects as. Create a non-superuser `km_app` role (SELECT/INSERT/UPDATE/DELETE on app tables only — no DDL/TRUNCATE) for the app; keep the superuser for the migration runner only.
+- **Notes:** F-022 finding C1. Contained today (km-db has no host port, all SQL parameterized, single-user) but a latent RCE-class escalation if any SQL-exec leak ever appears.
+
+### F-083 · DB hygiene cleanup migration
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **What:** New migration: drop 6 redundant indexes (ix_diagnostic_responses_run_ordinal, ix_topik_items_test_number, ix_image_words_capture, ix_krdict_examples_sense, ix_krdict_senses_entry, ix_krdict_inflections_entry); export + drop the 2 orphan backup tables (topik_items_explanation_bak_20260706, _followup); add the missing FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` after clearing its 5 orphan rows.
+- **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply.
+
+### B-031 · TOPIK item 222 option-1 text OCR glitch
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA · **Beta:** —
+- **What:** `topik83-I-read-042` option[0] ("수미 씨는 공항에 왔습니다") reads as unsupported, making two options look false. The answer key (4) is correct; re-OCR option 1 against the original 83rd TOPIK PDF + patch `tools/ingest/output/topik_83_I_reading.json` + DB.
+- **Notes:** F-UP-013 spinoff.
+
+### F-084 · Iyagi 51–100 transcript load — numbering-mismatch investigation
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA · **Beta:** —
+- **What:** `tools/ingest/output/iyagi_51_100.json` is unloaded and could add ~51 audio-backed episodes, BUT its units are numbered 101+ and the source is "TTMIK **Talking** 51-100.pdf" (possibly a different series than 이야기). Reconcile the numbering against the on-disk Iyagi audio (51–100) and existing DB episodes (101–118) BEFORE loading, to avoid collisions/mis-mapping.
+- **Notes:** B-026 spinoff. Do not load until the numbering is understood.
+
+### B-032 · `withRetry` never retries plain connection errors (dead error-name check)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **What:** `server/src/services/claude/retry.ts` gates a retry on `err.name === 'APIConnectionError'`, but the Anthropic SDK reports `.name === 'Error'` on connection failures (verified against both 0.80 and 0.110), so that branch is dead — a transient network drop to Claude isn't retried.
+- **Notes:** Pre-existing (NOT introduced by the dep bump); surfaced by the dep-vuln /fixpass runtime review (SF-2). Fix = duck-type on the SDK's actual connection-error shape (e.g. `status`/cause), add a test.
+
+### F-085 · Node 22 upgrade consistency sweep (CI + client Dockerfile + compose + engines guard)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** CONFIG · **Beta:** —
+- **What:** The server Dockerfile moved to `node:22-alpine` (dep-vuln fix). For consistency + because Node 20 is EOL: bump CI `node-version: 20`→22 (`.github/workflows/*`), move the client Dockerfile(s) node:20→22, update stale `node:20-alpine` mentions in the compose healthcheck comments, and add an `"engines": { "node": ">=20.19" }` guard to `server/package.json` (uuid@14's undeclared ESM floor).
+- **Notes:** Surfaced by the dep-vuln /fixpass re-review. Non-blocking (CI currently runs Node 20.20.2 ≥20.19, so tests pass). Sibling of B-032.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
