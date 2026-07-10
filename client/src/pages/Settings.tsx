@@ -1,14 +1,29 @@
 /**
- * Settings screen — profile (server) · notifications (local) · appearance (local).
+ * Settings screen — profile (server) · notification schedules (server) ·
+ * appearance (localStorage cache + server sync).
  *
- * Split substrate (Pass 3 wiring):
+ * Phase 3a layout (F-038): every group renders inside a `CollapsibleTile`
+ * that STARTS COLLAPSED — the page is a stack of four folded tiles
+ * (Profile / 2FA / Notifications / Appearance) the user opens on demand.
+ *
+ * Split substrate:
  *   - **Profile (name / email / phone)** persists to the server via
  *     `PATCH /auth/me`. Hydrates from `GET /auth/me` on mount through
  *     `useEndpointOrMock('settings:me', loadSettingsMock, { realFn: fetchMe })`.
  *     `useAuth().user` is the seeded initial value so the form never
  *     paints empty during the first network round-trip.
- *   - **Notifications + Appearance** still persist to `localStorage` via
- *     `useSettings()` — server sync lands in Pass 9.
+ *   - **Notifications (F-040)** persist to `/notifications/schedules` —
+ *     per-kind timing rows (time-of-day + weekday for the weekly report),
+ *     NOT the old timing-less intent booleans. The `notif` slice of
+ *     `/settings/prefs` is wire-echo-only now (like the legacy palette
+ *     fields): still round-tripped verbatim so older blobs survive, but no
+ *     UI reads or writes it.
+ *   - **Appearance** persists to `localStorage` via `useSettings()` /
+ *     the theme+accent+text-size providers, with a debounced
+ *     `/settings/prefs` PUT for cross-device sync.
+ *   - **Uploads (F-039)**: REMOVED from Settings — the section migrates to
+ *     Review→Uploads (F-057–F-059, a later group). Until that lands the
+ *     upload flow is only reachable via the /uploads route directly.
  *
  * Auto-save UX (profile only):
  *   - Controlled inputs feed an edit buffer.
@@ -23,10 +38,10 @@
  *     `<ErrorCard/>` surfaces — the input keeps focus so the user can
  *     try again.
  *
- * One-way coupling (kept from Pass 2):
- *   - Clearing the profile Email → also clears local `notif.channel.email`.
- *   - Clearing the profile Phone → also clears local `notif.channel.sms`.
- *   - Re-typing does NOT auto-re-enable. The user opts back in explicitly.
+ * Coupling note: the old Pass-2 one-way coupling (clearing profile Email/
+ * Phone force-cleared `notif.channel.*`) was RETIRED with F-040 — those
+ * intent booleans no longer drive anything, so mutating them on profile
+ * edits would be writing to a dead store.
  *
  * Threat model — Pass 3 wire-up:
  *   - **Email-change account takeover.** A hijacked session can change
@@ -69,9 +84,8 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
-import { Card } from '../components/Card';
+import { CollapsibleTile } from '../components/CollapsibleTile';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
@@ -80,7 +94,6 @@ import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
 import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { Topbar } from '../components/Topbar';
-import { UploadTypeModal } from '../components/UploadTypeModal';
 import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -107,8 +120,17 @@ import {
   LEGACY_PALETTE_DEFAULT,
   type Prefs,
 } from '../services/settings';
+import {
+  fetchSchedules,
+  putSchedules,
+  isNotificationKind,
+  type NotificationKind,
+  type NotificationScheduleInput,
+  type NotificationSchedulesResponse,
+} from '../services/notifications';
 import type { User } from '../hooks/auth-context';
 import type { MfaStatus, NotifPrefs } from '../types/domain';
+import './Settings.css';
 
 /**
  * Mock fallback for the `/auth/me` query — returns a user-shaped fixture so
@@ -197,6 +219,112 @@ const PREFS_DEBOUNCE_MS = 400;
  *  paint-before-fetch window. */
 const VERSION_DEFAULT = 1;
 
+// ─────────────────────────────────────────────────────────────
+// Notification schedules (F-040) — module-scope shapes
+// ─────────────────────────────────────────────────────────────
+
+/** Editable slice of one schedule row. `weekday` is carried for every kind
+ *  (so a kind switch never loses the pick) but only SENT for weekly_report —
+ *  the server's `.strict()` schema forbids it elsewhere. */
+interface ScheduleDraft {
+  /** Zero-padded 24h 'HH:MM'. */
+  timeOfDay: string;
+  /** 0=Sunday .. 6=Saturday. */
+  weekday: number;
+  enabled: boolean;
+}
+
+type ScheduleDrafts = Record<NotificationKind, ScheduleDraft>;
+
+/**
+ * Suggested defaults painted before the user has ever stored a schedule.
+ * The server holds NOTHING until the first PUT (nothing is implicitly on),
+ * so these are client-side suggestions, not adopted state. Times match the
+ * pre-F-040 copy (daily nudge at 08:00, weekly report on Sunday).
+ */
+const SCHEDULE_DEFAULTS: Readonly<Record<NotificationKind, ScheduleDraft>> = {
+  daily_reminder: { timeOfDay: '08:00', weekday: 0, enabled: false },
+  reviews_due: { timeOfDay: '18:00', weekday: 0, enabled: false },
+  weekly_report: { timeOfDay: '09:00', weekday: 0, enabled: false },
+};
+
+/** Row order + user-facing copy for the three schedule kinds. */
+const SCHEDULE_KIND_META: ReadonlyArray<{
+  kind: NotificationKind;
+  label: string;
+  hint: string;
+}> = [
+  {
+    kind: 'daily_reminder',
+    label: 'Daily reminder',
+    hint: 'A daily nudge to study.',
+  },
+  {
+    kind: 'reviews_due',
+    label: 'Reviews due',
+    hint: 'When 10+ cards are ready.',
+  },
+  {
+    kind: 'weekly_report',
+    label: 'Weekly report',
+    hint: 'Skills snapshot + counts.',
+  },
+];
+
+/** Index = the server's weekday encoding (0=Sunday, JS `Date.getDay()`). */
+const WEEKDAY_LABELS: ReadonlyArray<string> = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+
+/** Same coarse-tap debounce rationale as the prefs PUT. */
+const SCHEDULES_DEBOUNCE_MS = 400;
+
+/**
+ * The device's IANA zone — the wall-clock a schedule anchors to. Resolved
+ * once per session; the server re-validates against its own zone database.
+ * The catch arm covers pathological embedders whose Intl lacks a zone; the
+ * app's own domain makes KST the honest fallback.
+ */
+const DEVICE_TZ: string = (() => {
+  try {
+    const tz = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz !== '' ? tz : 'Asia/Seoul';
+  } catch {
+    return 'Asia/Seoul';
+  }
+})();
+
+/** Draft → wire row. Omits `weekday` (never sends `undefined`) for kinds
+ *  where the server's `.strict()` schema forbids it. Always the EMAIL
+ *  channel — sms is a disabled placeholder and push has no sender yet. */
+function toScheduleInput(
+  kind: NotificationKind,
+  draft: ScheduleDraft,
+): NotificationScheduleInput {
+  const base = {
+    kind,
+    channel: 'email' as const,
+    timeOfDay: draft.timeOfDay,
+    tz: DEVICE_TZ,
+    enabled: draft.enabled,
+  };
+  return kind === 'weekly_report' ? { ...base, weekday: draft.weekday } : base;
+}
+
+/** Mock fallback for the schedules query — a fresh user's honest shape
+ *  (empty: nothing is implicitly on). Rows stay disabled on a mock settle,
+ *  so a dev session can't fabricate edits that will never persist. */
+async function loadSchedulesMock(): Promise<NotificationSchedulesResponse> {
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  return { schedules: [] };
+}
+
 /** User → buffer projection. `undefined` server fields surface as empty strings. */
 function bufferFromUser(user: User | null): ProfileBuffer {
   return {
@@ -257,13 +385,6 @@ export default function Settings(): JSX.Element {
   const { accent, setAccent } = useAccent();
   const { textSize, setTextSize } = useTextSize();
   const { toast } = useToast();
-  const navigate = useNavigate();
-
-  // U1b — Uploads group. The modal itself owns the upload flow; Settings
-  // just needs to know when to open it and to acknowledge a success. The
-  // Uploads page (not this screen) is the list of honest truth, so a
-  // successful upload here doesn't try to maintain its own copy of the list.
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
   // Hydrate from /auth/me. Mock fallback keeps the screen rendering during
   // dev when the server route is down; `isMock` flips the corner badge.
@@ -502,25 +623,8 @@ export default function Settings(): JSX.Element {
       setBuffer(next);
       scheduleSave(next);
       clearFieldError('email');
-      // One-way coupling — clearing the profile email also clears the
-      // local notif.channel.email. Same as Pass 2.
-      if (value.trim() === '' && settings.notif.channel.email) {
-        updateSettings((prev) => ({
-          ...prev,
-          notif: {
-            ...prev.notif,
-            channel: { ...prev.notif.channel, email: false },
-          },
-        }));
-      }
     },
-    [
-      buffer,
-      scheduleSave,
-      clearFieldError,
-      settings.notif.channel.email,
-      updateSettings,
-    ],
+    [buffer, scheduleSave, clearFieldError],
   );
 
   const onPhoneChange = useCallback(
@@ -530,23 +634,8 @@ export default function Settings(): JSX.Element {
       setBuffer(next);
       scheduleSave(next);
       clearFieldError('phone');
-      if (value.trim() === '' && settings.notif.channel.sms) {
-        updateSettings((prev) => ({
-          ...prev,
-          notif: {
-            ...prev.notif,
-            channel: { ...prev.notif.channel, sms: false },
-          },
-        }));
-      }
     },
-    [
-      buffer,
-      scheduleSave,
-      clearFieldError,
-      settings.notif.channel.sms,
-      updateSettings,
-    ],
+    [buffer, scheduleSave, clearFieldError],
   );
 
   // ───── Preferences (notif + languageDisplay + accent) server-sync ─────
@@ -792,13 +881,160 @@ export default function Settings(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.notif, settings.languageDisplay, accent, textSize]);
 
+  // ───── Notification schedules (F-040) server-sync ─────
+  //
+  // Two-way sync with `/notifications/schedules`:
+  //   - On mount: GET, adopt the stored EMAIL-channel rows into the drafts
+  //     (exactly once, on the first REAL settle — a mock settle is never
+  //     adopted). Kinds the server has never stored keep the client-side
+  //     suggested defaults.
+  //   - On change: debounce a PARTIAL PUT of only the dirty kinds (the route
+  //     upserts per (kind, channel) row).
+  //   - PUT-before-hydrate is structurally impossible: the rows render
+  //     DISABLED until `schedulesHydrated` flips — unlike prefs there is no
+  //     localStorage durability behind these controls, so letting the user
+  //     edit un-persistable state would silently lose the choice.
+  //   - No rollback dance on failure: the dirty set survives a failed PUT, so
+  //     the error toast's Retry re-sends the freshest drafts.
+  const schedulesQuery = useEndpointOrMock<NotificationSchedulesResponse>(
+    'settings:notif-schedules',
+    loadSchedulesMock,
+    { realFn: fetchSchedules },
+  );
+
+  const [scheduleDrafts, setScheduleDrafts] = useState<ScheduleDrafts>(
+    () => ({ ...SCHEDULE_DEFAULTS }),
+  );
+  const [schedulesHydrated, setSchedulesHydrated] = useState(false);
+  // Ref mirror so the debounced flush reads the freshest drafts without
+  // re-arming on every keystroke — same discipline as `serverProfileRef`.
+  const scheduleDraftsRef = useRef<ScheduleDrafts>(scheduleDrafts);
+  // Kinds edited since the last successful PUT. Survives a failed PUT (the
+  // Retry path re-reads it); cleared per-kind only when the exact draft
+  // object that was sent is still current (identity compare — drafts are
+  // replaced immutably, so a mid-flight edit keeps its kind dirty).
+  const dirtyKindsRef = useRef<Set<NotificationKind>>(
+    new Set<NotificationKind>(),
+  );
+  const schedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedCtrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (schedTimerRef.current !== null) clearTimeout(schedTimerRef.current);
+      schedCtrlRef.current?.abort();
+    };
+  }, []);
+
+  // Hydrate once per real settle. Runs while the rows are still disabled, so
+  // `scheduleDraftsRef.current` cannot have diverged from the defaults —
+  // adopting over it never clobbers a user edit.
+  useEffect(() => {
+    if (schedulesHydrated) return;
+    if (schedulesQuery.loading) return;
+    if (schedulesQuery.isMock) return;
+    const fresh = schedulesQuery.data;
+    if (!fresh) return;
+    const adopted: ScheduleDrafts = { ...scheduleDraftsRef.current };
+    for (const row of fresh.schedules) {
+      // Only the editable email rows hydrate the drafts; sms placeholder
+      // rows are static UI and push has no UI yet. Unknown kinds (a future
+      // server) are ignored, never a crash.
+      if (row.channel !== 'email' || !isNotificationKind(row.kind)) continue;
+      adopted[row.kind] = {
+        timeOfDay: row.timeOfDay,
+        weekday: row.weekday ?? SCHEDULE_DEFAULTS[row.kind].weekday,
+        enabled: row.enabled,
+      };
+    }
+    scheduleDraftsRef.current = adopted;
+    // Sync-to-external-system case — driven by the query resolution, not by
+    // our own state (same pattern as the meQuery/prefs hydration effects).
+    setScheduleDrafts(adopted);
+    setSchedulesHydrated(true);
+  }, [
+    schedulesHydrated,
+    schedulesQuery.loading,
+    schedulesQuery.isMock,
+    schedulesQuery.data,
+  ]);
+
+  const flushSchedules = useCallback(async (): Promise<void> => {
+    const kinds = Array.from(dirtyKindsRef.current);
+    if (kinds.length === 0) return;
+    const drafts = scheduleDraftsRef.current;
+    const sent = new Map<NotificationKind, ScheduleDraft>(
+      kinds.map((k) => [k, drafts[k]]),
+    );
+    const inputs = kinds.map((k) => toScheduleInput(k, drafts[k]));
+
+    schedCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    schedCtrlRef.current = ctrl;
+    try {
+      await putSchedules(inputs, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      // Success — un-dirty each sent kind unless the user edited it again
+      // while the PUT was in flight (identity compare, see dirtyKindsRef).
+      for (const [k, sentDraft] of sent) {
+        if (scheduleDraftsRef.current[k] === sentDraft) {
+          dirtyKindsRef.current.delete(k);
+        }
+      }
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      // A canceled PUT (unmount / superseded flush) is not a real failure —
+      // a superseding flush re-sends the still-dirty kinds anyway.
+      if (err instanceof ApiError && err.code === 'canceled') return;
+      // Unlike prefs there is NO localStorage durability here: be explicit
+      // that the change did not persist. The dirty set was kept, so Retry
+      // re-sends the freshest drafts. Author-controlled copy — never an
+      // echo of the server string.
+      toast({
+        message: 'Your notification schedule could not be saved.',
+        tone: 'error',
+        action: {
+          label: 'Retry',
+          onClick: () => {
+            void flushSchedules();
+          },
+        },
+      });
+    }
+  }, [toast]);
+
+  const onScheduleChange = useCallback(
+    (kind: NotificationKind, patch: Partial<ScheduleDraft>): void => {
+      // Defence in depth — the rows are disabled pre-hydration, so this
+      // cannot fire; the guard keeps PUT-before-hydrate impossible even if
+      // a future row forgets its `disabled` prop.
+      if (!schedulesHydrated) return;
+      const prev = scheduleDraftsRef.current;
+      const next: ScheduleDrafts = {
+        ...prev,
+        [kind]: { ...prev[kind], ...patch },
+      };
+      scheduleDraftsRef.current = next;
+      setScheduleDrafts(next);
+      dirtyKindsRef.current.add(kind);
+      if (schedTimerRef.current !== null) clearTimeout(schedTimerRef.current);
+      schedTimerRef.current = setTimeout(() => {
+        schedTimerRef.current = null;
+        void flushSchedules();
+      }, SCHEDULES_DEBOUNCE_MS);
+    },
+    [schedulesHydrated, flushSchedules],
+  );
+
   return (
     <section
       className="screen km-settings"
       style={{ position: 'relative' }}
       aria-labelledby="km-settings-title"
     >
-      {meQuery.isMock || prefsQuery.isMock ? <MockBadge /> : null}
+      {meQuery.isMock || prefsQuery.isMock || schedulesQuery.isMock ? (
+        <MockBadge />
+      ) : null}
       <Topbar
         krTitle="설정"
         title="Settings"
@@ -874,122 +1110,76 @@ export default function Settings(): JSX.Element {
       {/* ───── Two-Factor Authentication (server-backed) ───── */}
       <TwoFactorSection />
 
-      {/* ───── Uploads (U1b — PDF book-upload feature) ───── */}
-      <SettingsGroup icon="upload" eyebrow="업로드" title="Uploads">
-        <div className="km-settings__row-head">
-          <span className="km-settings__row-label">Upload a book</span>
-          <span className="km-settings__row-hint">
-            Add a scanned PDF — vocab, grammar, dialogue, or literature.
-          </span>
-        </div>
-        <div className="km-mfa__actions">
-          <Button
-            variant="gold"
-            size="sm"
-            leadingIcon={<Icon name="upload" size={14} />}
-            onClick={() => {
-              setUploadModalOpen(true);
-            }}
-          >
-            <Bilingual en="Upload a book" kr="책 업로드" compact />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              navigate('/uploads');
-            }}
-          >
-            <Bilingual en="See all uploads" kr="모든 업로드 보기" compact />
-          </Button>
-        </div>
-      </SettingsGroup>
-
-      {/* Prefs (notif + palette) cross-device sync failure is surfaced via a
+      {/* Prefs (appearance) cross-device sync failure is surfaced via a
           non-blocking toast (see flushPrefs) — the change is already durable in
           localStorage, so it never blanks the screen with an inline ErrorCard. */}
 
-      {/* ───── Notifications (localStorage cache + server sync) ───── */}
+      {/* ───── Notifications (F-040 — /notifications/schedules) ───── */}
       <SettingsGroup
         icon="bell"
         eyebrow="알림"
         title="Notifications"
-        mock={prefsQuery.isMock}
+        mock={schedulesQuery.isMock}
       >
-        <Eyebrow className="km-settings__group-eyebrow">
-          <Bilingual en="Channels" kr="채널" />
-        </Eyebrow>
-        <div className="km-settings__channels">
-          <ChannelChip
-            label="Email"
-            icon="info"
-            active={settings.notif.channel.email}
-            disabled={!buffer.email}
-            onToggle={() => {
-              updateSettings({
-                notif: {
-                  ...settings.notif,
-                  channel: {
-                    ...settings.notif.channel,
-                    email: !settings.notif.channel.email,
-                  },
-                },
-              });
+        {schedulesQuery.error && schedulesQuery.data === null ? (
+          // Blocking load failure → ErrorCard with a real retry (contract).
+          // A mock settle is a soft state: rows render, but stay disabled.
+          <ErrorCard
+            message="Couldn’t load your notification schedule. Check your connection and retry."
+            onRetry={() => {
+              schedulesQuery.refetch();
             }}
           />
-          <ChannelChip
-            label="SMS"
-            icon="bell"
-            active={settings.notif.channel.sms}
-            disabled={!buffer.phone}
-            onToggle={() => {
-              updateSettings({
-                notif: {
-                  ...settings.notif,
-                  channel: {
-                    ...settings.notif.channel,
-                    sms: !settings.notif.channel.sms,
-                  },
-                },
-              });
-            }}
-          />
-        </div>
+        ) : (
+          <>
+            <p className="km-settings__sched-note">
+              Pick when each notification lands. Times follow your device time
+              zone ({DEVICE_TZ}).
+            </p>
 
-        <Eyebrow className="km-settings__group-eyebrow">
-          <Bilingual en="Send me" kr="받을 알림" />
-        </Eyebrow>
-        <ToggleRow
-          label="Reviews due"
-          hint="When 10+ cards are ready."
-          checked={settings.notif.reviewsDue}
-          onChange={(next) => {
-            updateSettings({
-              notif: { ...settings.notif, reviewsDue: next },
-            });
-          }}
-        />
-        <ToggleRow
-          label="Daily reminder"
-          hint="A nudge at 8:00 KST."
-          checked={settings.notif.daily}
-          onChange={(next) => {
-            updateSettings({
-              notif: { ...settings.notif, daily: next },
-            });
-          }}
-        />
-        <ToggleRow
-          label="Weekly report"
-          hint="Sundays. Skills snapshot + counts."
-          checked={settings.notif.weekly}
-          last
-          onChange={(next) => {
-            updateSettings({
-              notif: { ...settings.notif, weekly: next },
-            });
-          }}
-        />
+            <Eyebrow className="km-settings__group-eyebrow">
+              <Bilingual en="Email" kr="이메일" />
+            </Eyebrow>
+            {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
+              <ScheduleRow
+                key={kind}
+                kind={kind}
+                label={label}
+                hint={hint}
+                draft={scheduleDrafts[kind]}
+                disabled={!schedulesHydrated}
+                last={i === SCHEDULE_KIND_META.length - 1}
+                onChange={onScheduleChange}
+              />
+            ))}
+
+            {/* SMS placeholder (F-040) — same three types, deliberately
+                inert. The server can store sms rows, but nothing sends them
+                yet, so offering live controls would be a lie; a labelled
+                preview is honest. */}
+            <Eyebrow className="km-settings__group-eyebrow">
+              <Bilingual en="SMS" kr="문자" />{' '}
+              <span className="km-settings__sched-badge">Coming soon</span>
+            </Eyebrow>
+            <p className="km-settings__sched-note">
+              SMS delivery isn’t available yet — this channel is a placeholder
+              and can’t be turned on.
+            </p>
+            {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
+              <ScheduleRow
+                key={kind}
+                kind={kind}
+                label={label}
+                hint={hint}
+                draft={SCHEDULE_DEFAULTS[kind]}
+                disabled
+                placeholder
+                last={i === SCHEDULE_KIND_META.length - 1}
+                onChange={ignoreScheduleChange}
+              />
+            ))}
+          </>
+        )}
       </SettingsGroup>
 
       {/* ───── Appearance (localStorage cache + server sync) ───── */}
@@ -1047,16 +1237,6 @@ export default function Settings(): JSX.Element {
       </SettingsGroup>
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>
-
-      <UploadTypeModal
-        open={uploadModalOpen}
-        onClose={() => {
-          setUploadModalOpen(false);
-        }}
-        onUploaded={() => {
-          toast({ message: 'Uploaded — now processing.', tone: 'success' });
-        }}
-      />
     </section>
   );
 }
@@ -1065,6 +1245,12 @@ export default function Settings(): JSX.Element {
 // Pieces
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * One Settings group = one `CollapsibleTile` (F-038), starting COLLAPSED.
+ * The tile's header button carries the group's bilingual title (through the
+ * `<Bilingual/>` primitive so the language-display setting applies) and the
+ * disclosure a11y contract (aria-expanded/controls) comes from the primitive.
+ */
 function SettingsGroup({
   icon,
   eyebrow,
@@ -1084,31 +1270,30 @@ function SettingsGroup({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <Card className="km-settings__group">
-      <header className="km-settings__group-head">
-        <span className="km-settings__group-icon" aria-hidden="true">
-          <Icon name={icon} size={14} />
-        </span>
-        <div>
-          {/* P3b: the old Korean-eyebrow-over-English-title stack was the
-              hand-composed bilingual pattern — one heading through the
-              primitive lets the language-display setting apply. */}
-          <div className="km-settings__group-title">
-            <Bilingual kr={eyebrow} en={title} />
-          </div>
-        </div>
-        {mock ? (
-          <span
-            className="km-settings__group-mock"
-            aria-label="Preferences not synced from server"
-            style={{ marginLeft: 'auto', fontSize: 11, opacity: 0.6 }}
-          >
-            🅂
+    <CollapsibleTile
+      className="km-settings__group"
+      defaultCollapsed
+      title={
+        <span className="km-settings__group-head">
+          <span className="km-settings__group-icon" aria-hidden="true">
+            <Icon name={icon} size={14} />
           </span>
-        ) : null}
-      </header>
+          <span className="km-settings__group-title">
+            <Bilingual kr={eyebrow} en={title} />
+          </span>
+          {mock ? (
+            <span
+              className="km-settings__group-mock"
+              aria-label="Preferences not synced from server"
+            >
+              🅂
+            </span>
+          ) : null}
+        </span>
+      }
+    >
       {children}
-    </Card>
+    </CollapsibleTile>
   );
 }
 
@@ -2002,64 +2187,97 @@ function SettingsRow({
   );
 }
 
-function ChannelChip({
-  label,
-  icon,
-  active,
-  disabled,
-  onToggle,
-}: {
-  label: string;
-  icon: IconName;
-  active: boolean;
-  disabled: boolean;
-  onToggle: () => void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      disabled={disabled}
-      aria-pressed={active}
-      className={
-        'km-settings__chanchip focusring' +
-        (active ? ' km-settings__chanchip--active' : '') +
-        (disabled ? ' km-settings__chanchip--disabled' : '')
-      }
-    >
-      <Icon name={icon} size={13} />
-      <span>{label}</span>
-    </button>
-  );
+/** No-op change handler for the static SMS placeholder rows — their controls
+ *  are disabled, so this can never fire; it exists to keep the prop honest. */
+function ignoreScheduleChange(): void {
+  // Intentionally empty (F-040 placeholder rows are inert).
 }
 
-function ToggleRow({
+/**
+ * One notification-schedule row (F-040): label/hint on the left; the timing
+ * controls (weekday for the weekly report, time-of-day, enable switch) on
+ * the right. Controls carry explicit aria-labels derived from the visible
+ * row label ("Weekly report day", "Weekly report time") — the placeholder
+ * variant suffixes "(SMS)" so the two channels' controls never share an
+ * accessible name.
+ */
+function ScheduleRow({
+  kind,
   label,
   hint,
-  checked,
-  onChange,
+  draft,
+  disabled,
   last = false,
+  placeholder = false,
+  onChange,
 }: {
+  kind: NotificationKind;
   label: string;
   hint?: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
+  draft: ScheduleDraft;
+  /** True until the schedules hydration lands (and always for placeholders):
+   *  there is no localStorage behind these controls, so an edit that cannot
+   *  PUT would be silently lost. */
+  disabled: boolean;
   last?: boolean;
+  /** The inert SMS-channel variant — see the F-040 placeholder note. */
+  placeholder?: boolean;
+  onChange: (kind: NotificationKind, patch: Partial<ScheduleDraft>) => void;
 }): JSX.Element {
+  const name = placeholder ? `${label} (SMS)` : label;
   return (
     <div
       className={
-        'km-settings__toggle-row' +
-        (last ? ' km-settings__toggle-row--last' : '')
+        'km-settings__sched-row' +
+        (last ? ' km-settings__sched-row--last' : '') +
+        (placeholder ? ' km-settings__sched-row--placeholder' : '')
       }
     >
       <div className="km-settings__toggle-meta">
         <div className="km-settings__toggle-label">{label}</div>
-        {hint ? (
-          <div className="km-settings__toggle-hint">{hint}</div>
-        ) : null}
+        {hint ? <div className="km-settings__toggle-hint">{hint}</div> : null}
       </div>
-      <Toggle checked={checked} onChange={onChange} ariaLabel={label} />
+      <div className="km-settings__sched-controls">
+        {kind === 'weekly_report' ? (
+          <select
+            className="km-settings__sched-field focusring"
+            aria-label={`${name} day`}
+            value={draft.weekday}
+            disabled={disabled}
+            onChange={(e) => {
+              onChange(kind, { weekday: Number(e.target.value) });
+            }}
+          >
+            {WEEKDAY_LABELS.map((day, i) => (
+              <option key={day} value={i}>
+                {day}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <input
+          type="time"
+          className="km-settings__sched-field focusring"
+          aria-label={`${name} time`}
+          value={draft.timeOfDay}
+          disabled={disabled}
+          onChange={(e) => {
+            // A cleared native time input reports '' — not a schedulable
+            // value (the wire wants zero-padded HH:MM); keep the previous
+            // time instead of sending garbage the server would 400.
+            if (e.target.value === '') return;
+            onChange(kind, { timeOfDay: e.target.value });
+          }}
+        />
+        <Toggle
+          checked={draft.enabled}
+          disabled={disabled}
+          ariaLabel={name}
+          onChange={(next) => {
+            onChange(kind, { enabled: next });
+          }}
+        />
+      </div>
     </div>
   );
 }
