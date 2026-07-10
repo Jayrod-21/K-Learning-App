@@ -2,8 +2,9 @@
  * Per-route tests for src/routes/writing.ts (F-014).
  *
  * Routes:
- *   GET /writing/prompts?rubric=  — active, rubric-tagged prompt bank
- *   GET /writing/series?days=     — daily normalized grade series (F-017)
+ *   GET /writing/prompts?rubric=        — active, rubric-tagged prompt bank
+ *   GET /writing/prompts/random?rubric= — one random active prompt (B-027)
+ *   GET /writing/series?days=           — daily normalized grade series (F-017)
  *
  * The prompt bank under test is the REAL migration-038 seed (the six TOPIK II
  * prompts ported from the client's WRITING_TASKS) — no mocked reference data,
@@ -133,6 +134,118 @@ describe('GET /writing/prompts — rubric-filtered active bank', () => {
       const res = await agent.get('/writing/prompts?rubric=topik_ii_53');
       expect(res.status).toBe(200);
       expect((res.body as { prompts: PromptDTO[] }).prompts).toHaveLength(2);
+    } finally {
+      await pg.pool.query(
+        `UPDATE writing_prompts SET is_active = TRUE WHERE source_id = 'wp-topik53-01'`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /writing/prompts/random (B-027)
+// ---------------------------------------------------------------------------
+
+describe('GET /writing/prompts/random — one random active prompt per rubric (B-027)', () => {
+  interface PromptDTO {
+    id: number;
+    promptKr: string;
+    promptEn: string | null;
+    level: string;
+    rubric: 'topik_ii_53' | 'topik_ii_54';
+    estMinutes: number | null;
+  }
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/writing/prompts/random?rubric=topik_ii_53');
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it.each([['topik_ii_53'], ['topik_ii_54']] as const)(
+    'rubric=%s → 200 with exactly one active prompt of that rubric, from the seeded pool',
+    async (rubric) => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      // The legitimate pool is whatever the deterministic list endpoint serves.
+      const bank = await agent.get(`/writing/prompts?rubric=${rubric}`);
+      const poolIds = (bank.body as { prompts: PromptDTO[] }).prompts.map((p) => p.id);
+      expect(poolIds).toHaveLength(3); // real 038 seed
+
+      const res = await agent.get(`/writing/prompts/random?rubric=${rubric}`);
+      expect(res.status).toBe(200);
+      const prompt = (res.body as { prompt: PromptDTO }).prompt;
+      expect(prompt.rubric).toBe(rubric);
+      expect(poolIds).toContain(prompt.id);
+      expect(typeof prompt.promptKr).toBe('string');
+      expect(prompt.promptKr.length).toBeGreaterThan(0);
+      expect(['L3', 'L4', 'L5+']).toContain(prompt.level);
+      expect(typeof prompt.estMinutes).toBe('number');
+    },
+  );
+
+  it('is genuinely randomized — repeated calls are not pinned to one prompt', async () => {
+    // B-027's symptom: the client always landed on the lowest-id prompt of
+    // each rubric. With a 3-prompt pool and 40 uniform draws, P(all 40
+    // identical) = 3 * (1/3)^40 ≈ 8e-19 — a flake would mean the RNG is
+    // broken, which is exactly what this test exists to catch.
+    const { agent } = await registerUser(t.app, pg.pool);
+    for (const rubric of ['topik_ii_53', 'topik_ii_54'] as const) {
+      const seen = new Set<number>();
+      for (let i = 0; i < 40; i++) {
+        const res = await agent.get(`/writing/prompts/random?rubric=${rubric}`);
+        expect(res.status).toBe(200);
+        seen.add((res.body as { prompt: PromptDTO }).prompt.id);
+      }
+      expect(seen.size).toBeGreaterThan(1);
+    }
+  });
+
+  it('missing rubric → 400 (a random pick is per question type)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/writing/prompts/random');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('invalid rubric → 400 (never a silent fallback)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/writing/prompts/random?rubric=topik_ii_99');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('empty pool (every prompt of the rubric retired) → 404, not a null 200', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Retire the whole Q53 pool, then restore — writing_prompts is shared
+    // reference data other tests read.
+    await pg.pool.query(
+      `UPDATE writing_prompts SET is_active = FALSE WHERE rubric = 'topik_ii_53'`,
+    );
+    try {
+      const res = await agent.get('/writing/prompts/random?rubric=topik_ii_53');
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('not_found');
+    } finally {
+      await pg.pool.query(
+        `UPDATE writing_prompts SET is_active = TRUE WHERE rubric = 'topik_ii_53'`,
+      );
+    }
+  });
+
+  it('never serves an inactive prompt even when the pool shrinks', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Retire one seeded Q53 row; over repeated draws its id must never appear.
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `UPDATE writing_prompts SET is_active = FALSE
+        WHERE source_id = 'wp-topik53-01' RETURNING id`,
+    );
+    const retiredId = Number(rows[0]!.id);
+    try {
+      for (let i = 0; i < 15; i++) {
+        const res = await agent.get('/writing/prompts/random?rubric=topik_ii_53');
+        expect(res.status).toBe(200);
+        expect((res.body as { prompt: PromptDTO }).prompt.id).not.toBe(retiredId);
+      }
     } finally {
       await pg.pool.query(
         `UPDATE writing_prompts SET is_active = TRUE WHERE source_id = 'wp-topik53-01'`,

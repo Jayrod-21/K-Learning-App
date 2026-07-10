@@ -3,16 +3,21 @@
  * on-demand prompt GENERATION (F-027 Today tile / F-073 Writing page).
  *
  * Flow:
- *   GET  /writing/prompts?rubric= → the active TOPIK II prompt bank (Writing
- *                                   screen; replaces the client's hardcoded
- *                                   WRITING_TASKS list)
- *   GET  /writing/series?days=    → daily normalized grade series (F-017 chart)
- *   POST /writing/generate        → Claude authors ONE fresh writing prompt
- *                                   (TOPIK Q53/Q54-style or a general
- *                                   free-write). EPHEMERAL: returned inline,
- *                                   never persisted — the learner's response
- *                                   persists later via /grade-writing's
- *                                   writing_attempts write.
+ *   GET  /writing/prompts?rubric=        → the active TOPIK II prompt bank
+ *                                          (Writing screen; replaces the
+ *                                          client's hardcoded WRITING_TASKS list)
+ *   GET  /writing/prompts/random?rubric= → ONE random active prompt for the
+ *                                          rubric (B-027: the list endpoint is
+ *                                          deterministic and the client pinned
+ *                                          index 0, so every visit opened the
+ *                                          same prompt)
+ *   GET  /writing/series?days=           → daily normalized grade series (F-017)
+ *   POST /writing/generate               → Claude authors ONE fresh writing
+ *                                          prompt (TOPIK Q53/Q54-style or a
+ *                                          general free-write). EPHEMERAL:
+ *                                          returned inline, never persisted —
+ *                                          the response persists later via
+ *                                          /grade-writing's writing_attempts.
  *
  * The attempts themselves are WRITTEN by POST /grade-writing (a persist
  * side-effect of a successful grade — see gradeWriting.ts); this module's
@@ -38,7 +43,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
-import { UpstreamError } from '../middleware/errors.js';
+import { NotFoundError, UpstreamError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 
 const router = Router();
@@ -81,6 +86,18 @@ interface WritingPromptDTO {
   estMinutes: number | null;
 }
 
+/** DB row → wire DTO (shared by /prompts and /prompts/random). */
+function toPromptDTO(r: PromptRow): WritingPromptDTO {
+  return {
+    id: Number(r.id),
+    promptKr: r.prompt_kr,
+    promptEn: r.prompt_en,
+    level: r.level,
+    rubric: r.rubric,
+    estMinutes: r.est_minutes,
+  };
+}
+
 /**
  * GET /writing/prompts?rubric=topik_ii_53|topik_ii_54
  *
@@ -109,15 +126,64 @@ router.get(
           ORDER BY id`,
         [q.rubric ?? null],
       );
-      const prompts: WritingPromptDTO[] = rows.map((r) => ({
-        id: Number(r.id),
-        promptKr: r.prompt_kr,
-        promptEn: r.prompt_en,
-        level: r.level,
-        rubric: r.rubric,
-        estMinutes: r.est_minutes,
-      }));
+      const prompts: WritingPromptDTO[] = rows.map(toPromptDTO);
       res.status(200).json({ prompts });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /writing/prompts/random — one random active prompt for a rubric (B-027)
+// ---------------------------------------------------------------------------
+
+// Unlike /prompts, `rubric` is REQUIRED here: a random pick only makes sense
+// within one question type (Q53 memos and Q54 essays are graded on different
+// rubrics and lengths). Missing or invalid → 400 at the boundary.
+const RandomPromptQuerySchema = z.object({
+  rubric: WritingRubricSchema,
+});
+
+/**
+ * GET /writing/prompts/random?rubric=topik_ii_53|topik_ii_54
+ *
+ * B-027: /prompts returns a deterministic ascending-id list and the Writing
+ * screen always opens index 0, so every visit served the SAME prompt. This
+ * endpoint moves the pick server-side: one uniformly random ACTIVE prompt for
+ * the requested rubric per call (`ORDER BY random() LIMIT 1` — the active
+ * pool is single-digit rows per rubric, so the scan is trivial). Same
+ * active+tagged predicates and wire DTO as /prompts; the deterministic list
+ * endpoint is kept unchanged for back-compat.
+ *
+ * Empty pool (e.g. an operator retired every prompt of a rubric) → 404, never
+ * a 200 with a null body the client can't render.
+ */
+router.get(
+  '/prompts/random',
+  cheapLimiter(),
+  validateQuery(RandomPromptQuerySchema),
+  async (req, res, next) => {
+    try {
+      const q = (
+        req as typeof req & {
+          validatedQuery: z.infer<typeof RandomPromptQuerySchema>;
+        }
+      ).validatedQuery;
+      const { rows } = await query<PromptRow>(
+        `SELECT id, prompt_kr, prompt_en, level::text AS level, rubric, est_minutes
+           FROM writing_prompts
+          WHERE is_active
+            AND rubric = $1
+          ORDER BY random()
+          LIMIT 1`,
+        [q.rubric],
+      );
+      const row = rows[0];
+      if (!row) {
+        throw new NotFoundError('no active prompts for this rubric');
+      }
+      res.status(200).json({ prompt: toPromptDTO(row) });
     } catch (err) {
       next(err);
     }
