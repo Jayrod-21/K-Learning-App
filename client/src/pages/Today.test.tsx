@@ -23,7 +23,7 @@
  *     corner slot — present only when an attempt exists.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { TodayPlan } from '../types/domain';
@@ -39,33 +39,35 @@ const hoisted = vi.hoisted(() => {
     | { kind: 'data'; data: unknown }
     | { kind: 'error' };
   return {
-    today: { state: { kind: 'loading' } as HookState },
-    attempt: { state: { kind: 'loading' } as HookState },
+    today: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
+    attempt: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
   };
 });
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: (key: string) => {
-    const s = key === 'today' ? hoisted.today.state : hoisted.attempt.state;
+    const source = key === 'today' ? hoisted.today : hoisted.attempt;
+    const s = source.state;
     if (s.kind === 'loading') {
       return {
         data: null,
         loading: true,
         error: null,
         isMock: false,
-        refetch: () => undefined,
+        refetch: source.refetch,
       };
     }
     if (s.kind === 'error') {
       // PROD-shaped failure: no mock fallback — data stays null, the screen
       // shows its error state. (Plain Error: the screen branches on `data`,
-      // never on the error's type.)
+      // never on the error's type.) `refetch` is a live spy so tests can
+      // assert the Retry button is actually WIRED, not merely rendered.
       return {
         data: null,
         loading: false,
         error: new Error('plan failed'),
         isMock: false,
-        refetch: () => undefined,
+        refetch: source.refetch,
       };
     }
     return {
@@ -73,7 +75,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       loading: false,
       error: null,
       isMock: true,
-      refetch: () => undefined,
+      refetch: source.refetch,
     };
   },
 }));
@@ -178,6 +180,8 @@ describe('Today', () => {
     // Every fetch starts pending; each test opts specific keys into data.
     hoisted.today.state = { kind: 'loading' };
     hoisted.attempt.state = { kind: 'loading' };
+    hoisted.today.refetch.mockClear();
+    hoisted.attempt.refetch.mockClear();
     generateMock.mockReset();
     generateMock.mockRejectedValue(new Error('not wired in tests'));
   });
@@ -257,6 +261,34 @@ describe('Today', () => {
     expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
   });
 
+  it('loops the lead carousel: a real forward swipe on the last page wraps to page 1 (F-029)', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    const viewport = lead.querySelector('.km-carousel__viewport');
+    expect(viewport).not.toBeNull();
+
+    // Drive Today.tsx's OWN carousel through the primitive's pointer state
+    // machine (same gesture as SwipeCarousel.test.tsx's swipeLeft helper) so
+    // dropping the `loop` prop from Today.tsx fails this test — the ticket's
+    // acceptance criterion is that THESE carousels loop, not just that the
+    // primitive can. Start on the LAST page (2 of 2), swipe forward…
+    fireEvent.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    const pointer = { pointerId: 7, isPrimary: true };
+    fireEvent.pointerDown(viewport!, {
+      ...pointer, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 140, clientY: 52 });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 80, clientY: 55 });
+    fireEvent.pointerUp(viewport!, { ...pointer, clientX: 80, clientY: 55 });
+
+    // …and land wrapped on page 1 (without `loop` this damps at the edge).
+    expect(
+      within(lead).getByRole('tab', { name: 'Page 1 of 2' }),
+    ).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('renders NO coming-soon placeholder anywhere (B-018)', () => {
     loadDefaults();
     renderTodayAt();
@@ -276,7 +308,12 @@ describe('Today', () => {
     expect(
       screen.getByText("Today's plan is unavailable."),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    // The Retry button must be WIRED, not merely rendered: clicking it fires
+    // the plan hook's refetch (and only the plan's — the attempt lookup is a
+    // separate concern and must not be retried collaterally).
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
+    expect(hoisted.attempt.refetch).not.toHaveBeenCalled();
 
     // The grammar tile has no plan dependency — still fully functional.
     const lead = screen.getByRole('region', { name: 'Review and drills' });
@@ -440,8 +477,10 @@ describe('Today', () => {
     expect(alert).toHaveTextContent(
       'Rate-limited. Try again in about 42 seconds.',
     );
-    // The button is the retry — it must stay enabled.
+    // The button is the retry — it must stay enabled (no hard OR soft
+    // disable survives the failure).
     expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute('aria-disabled');
   });
 
   // ── TOPIK carousel (F-028 / F-029) ──────────────────────────

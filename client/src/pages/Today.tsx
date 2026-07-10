@@ -54,6 +54,7 @@
 import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
 import { Bilingual } from '../components/Bilingual';
+import { Eyebrow } from '../components/Eyebrow';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
@@ -426,9 +427,9 @@ export function Today(): JSX.Element {
           a bare section eyebrow (a card must never contain another card). */}
       {taskTiles.length > 0 ? (
         <section style={{ marginBottom: 16 }}>
-          <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+          <Eyebrow style={{ marginBottom: 10 }}>
             <Bilingual en="Today’s tasks" kr="오늘의 과제" />
-          </div>
+          </Eyebrow>
           <SwipeCarousel ariaLabel="Today's tasks" loop>
             {taskTiles.map((tile) => (
               <div key={tile.task.tag} className="km-today__taskPage">
@@ -459,9 +460,9 @@ export function Today(): JSX.Element {
       {/* TOPIK carousel — recommended study first, mistakes second (F-028);
           the saved-attempt resume banner rides the corner slot. */}
       <section style={{ marginBottom: 16 }}>
-        <div className="km-eyebrow" style={{ marginBottom: 10 }}>
+        <Eyebrow style={{ marginBottom: 10 }}>
           <Bilingual en="TOPIK" kr="시험" />
-        </div>
+        </Eyebrow>
         <SwipeCarousel ariaLabel="TOPIK exams" loop cornerSlot={resumeBanner}>
           <div
             className={cn(

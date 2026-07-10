@@ -50,13 +50,13 @@
   border-bottom: none;
 }
 
-/* The inert SMS preview — dimmed as a block; the per-control :disabled rule
- * below still applies on top. Text keeps its full-contrast tokens so the
- * labels stay readable (WCAG 1.4.3 exempts disabled CONTROLS, not the copy
- * explaining them). */
-.km-settings__sched-row--placeholder {
-  opacity: 0.75;
-}
+/* The inert SMS preview (.km-settings__sched-row--placeholder) deliberately
+ * gets NO row-level opacity: dimming the whole subtree would drag the 11px
+ * --paper-mute hint text below the 4.5:1 AA threshold (WCAG 1.4.3 exempts
+ * disabled CONTROLS, not the copy explaining them). Its disabled look comes
+ * from the per-control :disabled rule below plus the "Coming soon" badge —
+ * the label and hint text keep their full-contrast tokens. The class stays
+ * on the row in Settings.tsx as the semantic hook for that state. */
 
 .km-settings__sched-controls {
   display: flex;

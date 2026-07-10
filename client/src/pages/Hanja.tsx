@@ -70,6 +70,7 @@ import {
   loadHanjaTodayMock,
 } from '../data/mocks/hanja';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { encounteredBarAria } from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
 import {
   fetchHanjaList,
@@ -381,13 +382,11 @@ function EncounteredBand({
         />
         <StateChip label="New" kr="신규" count={progress.new} tone="mute" />
       </div>
+      {/* Clamped/degenerate-safe ARIA — shared with the Progress page's
+          Hanja mastery tab via lib/encounteredBar. */}
       <div
         className="km-hanja__bar"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={progress.targetL4}
-        aria-valuenow={progress.encountered}
-        aria-label="Hanja encountered out of L4 target"
+        {...encounteredBarAria(progress.encountered, progress.targetL4)}
       >
         <div
           className="km-hanja__bar-fill"

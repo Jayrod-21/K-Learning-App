@@ -143,6 +143,39 @@ describe('Hanja page', () => {
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
+  it('clamps the encountered bar aria-valuenow to the L4 target (ARIA 1.2)', () => {
+    // encountered spans ALL levels; targetL4 counts only L4 characters — a
+    // long-run user legitimately exceeds the target. The visual fill already
+    // clamps; the exposed ARIA value must too (valuenow ≤ valuemax). Kept in
+    // lockstep with the Progress page's Hanja tab via lib/encounteredBar.
+    hookOverrides['hanja:progress'] = {
+      data: { ...FIXTURE_PROGRESS, encountered: 900 },
+    };
+    render(<Hanja />);
+
+    const bar = screen.getByRole('progressbar', {
+      name: 'Hanja encountered out of L4 target',
+    });
+    expect(bar).toHaveAttribute('aria-valuemax', '800');
+    expect(bar).toHaveAttribute('aria-valuenow', '800');
+  });
+
+  it('drops progressbar semantics when the L4 target is zero (no aria-valuemax=0)', () => {
+    // aria-valuemax={0} would violate ARIA's valuemax > valuemin rule; with
+    // no fraction to report the bar hides from AT (the eyebrow line still
+    // states the raw counts as text).
+    hookOverrides['hanja:progress'] = {
+      data: { ...FIXTURE_PROGRESS, targetL4: 0 },
+    };
+    render(<Hanja />);
+
+    expect(
+      screen.queryByRole('progressbar', {
+        name: 'Hanja encountered out of L4 target',
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it('P3b: adopts the terse nav eyebrow pair (the flowery line is gone)', () => {
     render(<Hanja />);
     expect(screen.getByText('Word roots')).toBeInTheDocument();

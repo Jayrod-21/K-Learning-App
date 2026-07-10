@@ -14,9 +14,13 @@
  * Interaction model:
  *   - Style choice is a WAI-ARIA radiogroup (roving tabindex, arrow keys
  *     wrap) — the same segmented-control pattern as Topik's ModeToggle.
- *   - Generate button: disabled + "Generating…" while the call is in
- *     flight (`aria-busy` on the panel). A fresh generation replaces the
- *     previous topic; the button relabels to "New topic" once one exists.
+ *   - Generate button: `aria-disabled` + "Generating…" while the call is in
+ *     flight (`aria-busy` on the panel). NOT the `disabled` attribute — that
+ *     would silently drop keyboard focus to <body> mid-generation and leave
+ *     a keyboard user stranded at the top of the page when the call settles
+ *     (WCAG 2.4.3). Re-entry is blocked by a busy guard in the click handler
+ *     instead. A fresh generation replaces the previous topic; the button
+ *     relabels to "New topic" once one exists.
  *   - The result renders in an `aria-live="polite"` region so screen
  *     readers hear the new topic without a focus jump.
  *
@@ -172,9 +176,13 @@ export function WritingTopicGenerator(): JSX.Element {
         <Button
           variant="gold"
           size="sm"
-          disabled={busy}
+          // aria-disabled, NOT disabled: the hard attribute would move
+          // keyboard focus to <body> the instant the call starts. The busy
+          // guard below is the real re-entry gate.
+          aria-disabled={busy || undefined}
           leadingIcon={<Icon name="pen" size={14} />}
           onClick={() => {
+            if (busy) return; // aria-disabled doesn't block clicks — we do.
             void generate();
           }}
         >

@@ -3154,36 +3154,9 @@ h1, h2 { font-family: var(--font-display); }
  * ──────────────────────────────────────────────────────────────────────── */
 
 /* Today ───────────────────────────────────────────────────────────────── */
-.km-today__queue {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  width: 100%;
-  text-align: left;
-  padding: 20px 22px;
-  margin-bottom: 16px;
-  background: var(--vermilion-soft);
-  border: 1px solid var(--vermilion);
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--paper);
-  font-family: inherit;
-  transition: background 160ms, border-color 160ms;
-}
-.km-today__queue:hover { background: rgba(184, 58, 46, 0.16); }
-.km-today__queueCount {
-  font-family: var(--font-display); /* §10 — stat numbers use the display face */
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  margin-top: 8px;
-}
-.km-today__queueMeta {
-  font-size: 12px;
-  color: var(--paper-dim);
-  margin-top: 4px;
-}
+/* (The P1.2 .km-today__queue* review-queue rules were removed in the P3a
+   fix-pass — their component was replaced by the F-026 lead carousel, whose
+   styles are colocated in Today.css.) */
 .km-today__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -4866,41 +4839,13 @@ h1, h2 { font-family: var(--font-display); }
   font-family: inherit;
 }
 .km-settings__input:focus { border-color: var(--vermilion); }
-.km-settings__channels {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.km-settings__chanchip {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 3px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--paper-dim);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.km-settings__chanchip--active {
-  border-color: var(--vermilion);
-  background: var(--vermilion-soft);
-  color: var(--vermilion-ink);
-}
-.km-settings__chanchip--disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  color: var(--paper-faint);
-}
+/* (The .km-settings__channels / __chanchip* rules that lived here were
+   removed in the P3a fix-pass — F-040 replaced the channel chips with
+   per-schedule rows, whose styles are colocated in Settings.css.) */
 
-/* Theme-mode segmented control (PF-A A4) — Light / Dark / System. Mirrors
-   the channel-chip visual language (segmented, equal-width, vermilion active
-   state) so the Appearance group reads as one family. */
+/* Theme-mode segmented control (PF-A A4) — Light / Dark / System. Segmented,
+   equal-width, vermilion active state, so the Appearance group reads as one
+   family. */
 .km-settings__thememode {
   padding-bottom: 16px;
   margin-bottom: 4px;
@@ -4974,15 +4919,9 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-settings__langpreview-sample { font-size: 20px; }
 
-.km-settings__toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.km-settings__toggle-row--last { border-bottom: none; }
+/* (.km-settings__toggle-row / --last removed in the P3a fix-pass — F-040
+   replaced the intent-toggle rows with schedule rows in Settings.css. The
+   __toggle-meta/label/hint pieces below are still consumed by those rows.) */
 .km-settings__toggle-meta { flex: 1; min-width: 0; }
 .km-settings__toggle-label { font-size: 13px; color: var(--paper); font-weight: 500; }
 .km-settings__toggle-hint { font-size: 11px; color: var(--paper-mute); margin-top: 2px; }

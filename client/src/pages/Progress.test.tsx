@@ -991,6 +991,135 @@ describe('Progress page — word list windowing (F-031)', () => {
       screen.getByRole('button', { name: 'Show more (5)' }),
     ).toBeInTheDocument();
   });
+
+  /** A paged 50-word corpus: offset 0 → 단어1–30, offset 30 → 단어31–50. */
+  function fiftyWordPage(offset: number): typeof MASTERY_DEFAULT {
+    const count = offset === 0 ? 30 : 20;
+    const words = Array.from({ length: count }, (_, i) => ({
+      id: offset + i + 1,
+      korean: `단어${String(offset + i + 1)}`,
+      english: `word ${String(offset + i + 1)}`,
+      bucket: 'new' as const,
+      stability: 0,
+      reps: 0,
+      lapses: 0,
+      dueAt: null,
+    }));
+    return {
+      summary: { new: 50, learning: 0, reviewing: 0, mastered: 0, total: 50 },
+      words,
+      total: 50,
+    };
+  }
+
+  it('collapses the window back to 15 and re-ranges the pager text on Next (F-031)', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery.mockImplementation(
+      (params: { offset?: number }) =>
+        Promise.resolve(fiftyWordPage(params.offset ?? 0)),
+    );
+    renderPage();
+    await screen.findByText('단어1');
+
+    const panel = screen.getByRole('tabpanel', { name: /Words/ });
+    // The range text claims exactly the 15-item window, not the 30 fetched.
+    expect(screen.getByText('1–15 of 50')).toBeInTheDocument();
+
+    // Expand to the full loaded page…
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(30);
+    expect(screen.getByText('1–30 of 50')).toBeInTheDocument();
+
+    // …then page forward: the window resets to 15 (Prev/Next reset, not just
+    // the bucket-change reset) and the range tracks the shown page — the
+    // "never over-claims" contract.
+    await user.click(screen.getByRole('button', { name: /Next/ }));
+    await screen.findByText('단어31');
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(15);
+    expect(within(panel).getByText('단어45')).toBeInTheDocument();
+    expect(within(panel).queryByText('단어46')).not.toBeInTheDocument();
+    expect(screen.getByText('31–45 of 50')).toBeInTheDocument();
+  });
+
+  it('keeps the range text + pager buttons on the SHOWN page when a Next refetch fails (keep-stale)', async () => {
+    const user = userEvent.setup();
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery
+      .mockResolvedValueOnce(fiftyWordPage(0))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockImplementation((params: { offset?: number }) =>
+        Promise.resolve(fiftyWordPage(params.offset ?? 0)),
+      );
+    renderPage();
+    await screen.findByText('단어1');
+
+    await user.click(screen.getByRole('button', { name: /Next/ }));
+    expect(
+      await screen.findByText(/showing the last loaded mastery/),
+    ).toBeInTheDocument();
+
+    // Words 1–15 are still what is shown, so the range must still SAY so —
+    // never "31–45 of 50" over page-1 words — and Prev/Next disabled states
+    // must derive from the shown page too (Prev stays disabled on page 1).
+    expect(screen.getByText('단어1')).toBeInTheDocument();
+    expect(screen.getByText('1–15 of 50')).toBeInTheDocument();
+    expect(screen.queryByText('31–45 of 50')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Prev/ })).toBeDisabled();
+
+    // Retrying the hop re-requests the SAME target (offset 30) — a failed
+    // Next must never compound to offset 60.
+    await user.click(screen.getByRole('button', { name: /Next/ }));
+    await screen.findByText('단어31');
+    expect(masterySvc.fetchMastery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ offset: 30 }),
+      expect.anything(),
+    );
+    expect(screen.getByText('31–45 of 50')).toBeInTheDocument();
+  });
+
+  it('clamps a stale offset when the data shrinks server-side (no stranded empty view)', async () => {
+    const user = userEvent.setup();
+    const shrunk = {
+      summary: { new: 25, learning: 0, reviewing: 0, mastered: 0, total: 25 },
+      words: [] as ReturnType<typeof fiftyWordPage>['words'],
+      total: 25,
+    };
+    const shrunkFirstPage = {
+      ...shrunk,
+      words: fiftyWordPage(0).words.slice(0, 25),
+    };
+    masterySvc.fetchMastery.mockReset();
+    masterySvc.fetchMastery
+      .mockResolvedValueOnce(fiftyWordPage(0)) // initial: 50 words exist
+      .mockResolvedValueOnce(shrunk) // Next lands past the new end (25 total)
+      .mockResolvedValue(shrunkFirstPage); // clamped refetch at offset 0
+    renderPage();
+    await screen.findByText('단어1');
+
+    await user.click(screen.getByRole('button', { name: /Next/ }));
+
+    // The out-of-range empty page is never adopted: the offset clamps back
+    // to the last valid page and refetches, so the user lands on real words
+    // instead of an inescapable "No words in this group." with no pager.
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalledTimes(3);
+    });
+    expect(masterySvc.fetchMastery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ offset: 0 }),
+      expect.anything(),
+    );
+    expect(await screen.findByText('단어1')).toBeInTheDocument();
+    expect(
+      screen.queryByText('No words in this group.'),
+    ).not.toBeInTheDocument();
+    const panel = screen.getByRole('tabpanel', { name: /Words/ });
+    expect(within(panel).getAllByRole('listitem')).toHaveLength(15);
+    // 25 words fit one server page at offset 0 — the pager unmounts.
+    expect(
+      screen.queryByRole('button', { name: /Next/ }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe('Progress page — mastery tabs (F-032)', () => {
@@ -1088,6 +1217,49 @@ describe('Progress page — hanja mastery tab (F-041)', () => {
     const panel = screen.getByRole('tabpanel', { name: /Hanja/ });
     expect(within(panel).queryByRole('progressbar')).not.toBeInTheDocument();
     expect(within(panel).queryByText('150')).not.toBeInTheDocument();
+  });
+
+  it('clamps the encountered bar aria-valuenow to the L4 target (ARIA 1.2)', async () => {
+    const user = userEvent.setup();
+    // encountered spans ALL levels; targetL4 counts only L4 characters — a
+    // long-run user legitimately exceeds the target. The visual fill already
+    // clamps; the exposed ARIA value must too (valuenow ≤ valuemax).
+    hanjaSvc.fetchHanjaProgress.mockResolvedValue({
+      ...HANJA_DEFAULT,
+      encountered: 240,
+      note: '12 banked · 8 practicing · 240/100 encountered',
+    });
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Hanja/ }));
+    const bar = await screen.findByRole('progressbar', {
+      name: 'Hanja encountered out of L4 target',
+    });
+    expect(bar).toHaveAttribute('aria-valuemax', '100');
+    expect(bar).toHaveAttribute('aria-valuenow', '100');
+  });
+
+  it('drops progressbar semantics when the L4 target is zero (no aria-valuemax=0)', async () => {
+    const user = userEvent.setup();
+    // Degenerate corpus: aria-valuemax={0} would violate ARIA's
+    // valuemax > valuemin rule; there is no fraction to report, so the bar
+    // hides from AT (the eyebrow line still states the raw counts).
+    hanjaSvc.fetchHanjaProgress.mockResolvedValue({
+      banked: 3,
+      practicing: 1,
+      new: 0,
+      targetL4: 0,
+      encountered: 4,
+      note: 'zero L4 target',
+    });
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Hanja/ }));
+    const panel = screen.getByRole('tabpanel', { name: /Hanja/ });
+    await within(panel).findByText('zero L4 target');
+    expect(
+      within(panel).queryByRole('progressbar'),
+    ).not.toBeInTheDocument();
   });
 
   it('surfaces a fetch failure as an error card and recovers on retry', async () => {

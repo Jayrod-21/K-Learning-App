@@ -89,6 +89,7 @@ import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
+import { encounteredBarAria } from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
 import { fetchHanjaProgress } from '../services/hanja';
@@ -1215,13 +1216,23 @@ function MasteryBar({
  *  every render while the mastery page is still loading. */
 const NO_WORDS: readonly MasteryWord[] = [];
 
+/** The last successfully-loaded server page PLUS the offset it was fetched
+ *  at. Prev/Next move the REQUESTED offset immediately, but on a failed
+ *  refetch the stale page stays up (keep-stale-on-failure) — so the range
+ *  text and the Prev/Next disabled states must describe what is actually
+ *  SHOWN, i.e. this offset, never the phantom requested one. */
+interface LoadedMasteryPage {
+  data: MasteryPage;
+  offset: number;
+}
+
 /** Mastery-tab panel (F-013/F-031): per-word FSRS mastery — summary + a
  *  filterable list, windowed client-side (15 → +15 → 30) over the 30-word
  *  server page. */
 function WordMasteryPanel(): JSX.Element {
   const [bucket, setBucket] = useState<MasteryBucket | null>(null);
   const [offset, setOffset] = useState(0);
-  const [page, setPage] = useState<MasteryPage | null>(null);
+  const [page, setPage] = useState<LoadedMasteryPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -1230,7 +1241,11 @@ function WordMasteryPanel(): JSX.Element {
   // defaults (15 initial / +15 step / 30 max) are exactly the ticket's spec,
   // and the 30 cap equals MASTERY_PAGE, so "Show more" can always reveal the
   // whole loaded page and never promises words that weren't fetched.
-  const pager = usePagination(page?.words ?? NO_WORDS);
+  const pager = usePagination(page?.data.words ?? NO_WORDS);
+
+  // What the list is actually showing (see LoadedMasteryPage). Before the
+  // first load there is nothing shown, so 0 is the honest default.
+  const shownOffset = page?.offset ?? 0;
 
   // Selecting a bucket (or toggling it off) always returns to page 1 — done in
   // the handler, NOT a separate effect, so one tap triggers ONE fetch not two.
@@ -1242,6 +1257,16 @@ function WordMasteryPanel(): JSX.Element {
   }
   function retry(): void {
     setNonce((n) => n + 1);
+  }
+  // Prev/Next navigate relative to the SHOWN page (a failed hop must not
+  // compound — Next after a failed Next re-requests the same target, not one
+  // page further). The nonce bump forces a refetch even when the failed hop
+  // already left `offset` at the target value. The F-031 window resets with
+  // every page move.
+  function goToOffset(target: number): void {
+    setOffset(target);
+    setNonce((n) => n + 1);
+    pager.reset();
   }
 
   // Real-data-only on purpose — NOT wired through useEndpointOrMock: (1) that
@@ -1262,7 +1287,19 @@ function WordMasteryPanel(): JSX.Element {
     )
       .then((res) => {
         if (ctrl.signal.aborted) return;
-        setPage(res);
+        // Stale-offset guard: the data shrank server-side and this offset now
+        // points past the end (e.g. offset 30 against a total of 25). Showing
+        // "No words in this group." with the pager hidden would strand the
+        // user in an inescapable empty view — clamp to the last valid page
+        // instead; the offset change refires this effect (loading stays on).
+        // The clamp strictly decreases the offset, so it terminates.
+        if (offset > 0 && offset >= res.total) {
+          setOffset(
+            Math.max(0, (Math.ceil(res.total / MASTERY_PAGE) - 1) * MASTERY_PAGE),
+          );
+          return;
+        }
+        setPage({ data: res, offset });
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -1288,7 +1325,7 @@ function WordMasteryPanel(): JSX.Element {
         ) : error !== null ? (
           <ErrorCard message={error} onRetry={retry} />
         ) : null
-      ) : page.summary.total === 0 ? (
+      ) : page.data.summary.total === 0 ? (
         <p className="km-progress__note">
           {/* P3b verbage trim — was a two-clause tour of the add-word flow. */}
           <Bilingual
@@ -1314,11 +1351,11 @@ function WordMasteryPanel(): JSX.Element {
             </p>
           ) : null}
           <MasteryBar
-            summary={page.summary}
+            summary={page.data.summary}
             selected={bucket}
             onSelect={selectBucket}
           />
-          {page.words.length === 0 ? (
+          {page.data.words.length === 0 ? (
             <p className="km-progress__note">
               <Bilingual
                 en="No words in this group."
@@ -1357,37 +1394,39 @@ function WordMasteryPanel(): JSX.Element {
               />
             </>
           )}
-          {page.total > MASTERY_PAGE ? (
+          {/* The pager also stays visible whenever the SHOWN page sits past
+              the start — even if a refetch reported a shrunken total — so
+              the user always has a Prev to escape with. */}
+          {page.data.total > MASTERY_PAGE || page.offset > 0 ? (
             <div className="km-mastery__pager">
               <Button
                 variant="ghost"
-                disabled={offset === 0}
+                disabled={shownOffset === 0}
                 onClick={() => {
-                  setOffset((o) => Math.max(0, o - MASTERY_PAGE));
-                  pager.reset();
+                  goToOffset(Math.max(0, shownOffset - MASTERY_PAGE));
                 }}
               >
                 <Bilingual en="Prev" kr="이전" compact />
               </Button>
               <span className="km-mastery__pageinfo">
-                {/* The upper bound is what's actually SHOWN (the F-031
-                    window), not the fetched page size — never over-claims. */}
+                {/* Both bounds describe what is actually SHOWN: the window's
+                    length (F-031) over the shown page's fetched-at offset —
+                    never the phantom offset of a failed Prev/Next hop. */}
                 <Bilingual
-                  en={`${String(offset + 1)}–${String(
-                    offset + pager.visible.length,
-                  )} of ${String(page.total)}`}
-                  kr={`${String(page.total)}개 중 ${String(offset + 1)}–${String(
-                    offset + pager.visible.length,
-                  )}`}
+                  en={`${String(shownOffset + 1)}–${String(
+                    shownOffset + pager.visible.length,
+                  )} of ${String(page.data.total)}`}
+                  kr={`${String(page.data.total)}개 중 ${String(
+                    shownOffset + 1,
+                  )}–${String(shownOffset + pager.visible.length)}`}
                   compact
                 />
               </span>
               <Button
                 variant="ghost"
-                disabled={offset + MASTERY_PAGE >= page.total}
+                disabled={shownOffset + MASTERY_PAGE >= page.data.total}
                 onClick={() => {
-                  setOffset((o) => o + MASTERY_PAGE);
-                  pager.reset();
+                  goToOffset(shownOffset + MASTERY_PAGE);
                 }}
               >
                 <Bilingual en="Next" kr="다음" compact />
@@ -1571,13 +1610,11 @@ function HanjaMasteryPanel(): JSX.Element {
             kr={`접한 한자 · ${String(progress.encountered)} / 약 ${String(progress.targetL4)} (L4 기준)`}
           />
         </Eyebrow>
+        {/* Clamped/degenerate-safe ARIA — shared with Hanja's
+            EncounteredBand via lib/encounteredBar. */}
         <div
           className="km-hmastery__bar"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={progress.targetL4}
-          aria-valuenow={progress.encountered}
-          aria-label="Hanja encountered out of L4 target"
+          {...encounteredBarAria(progress.encountered, progress.targetL4)}
         >
           <div
             className="km-hmastery__fill"

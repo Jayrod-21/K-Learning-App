@@ -116,7 +116,7 @@ describe('WritingTopicGenerator', () => {
     expect(document.querySelectorAll('.km-topicgen__tags .km-pill')).toHaveLength(1);
   });
 
-  it('disables the button and marks the panel busy while the call is in flight', async () => {
+  it('marks the button aria-disabled and the panel busy while the call is in flight', async () => {
     let resolveCall: (p: GeneratedWritingPrompt) => void = () => undefined;
     generateMock.mockImplementation(
       () =>
@@ -129,14 +129,56 @@ describe('WritingTopicGenerator', () => {
 
     await user.click(screen.getByRole('button', { name: /Generate topic/ }));
 
-    expect(screen.getByRole('button', { name: /Generating/ })).toBeDisabled();
+    // aria-disabled, never the hard `disabled` attribute — that would drop
+    // keyboard focus to <body> mid-generation (WCAG 2.4.3).
+    const busyButton = screen.getByRole('button', { name: /Generating/ });
+    expect(busyButton).toHaveAttribute('aria-disabled', 'true');
+    expect(busyButton).not.toHaveAttribute('disabled');
     expect(
       container.querySelector('.km-topicgen[aria-busy="true"]'),
     ).not.toBeNull();
 
     resolveCall(TOPIK_PROMPT);
     expect(await screen.findByText(TOPIK_PROMPT.promptKr)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /New topic/ })).toBeEnabled();
+    const doneButton = screen.getByRole('button', { name: /New topic/ });
+    expect(doneButton).toBeEnabled();
+    expect(doneButton).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('keeps keyboard focus on the button across the busy window and blocks re-entry', async () => {
+    let resolveCall: (p: GeneratedWritingPrompt) => void = () => undefined;
+    generateMock.mockImplementation(
+      () =>
+        new Promise<GeneratedWritingPrompt>((resolve) => {
+          resolveCall = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<WritingTopicGenerator />);
+
+    const button = screen.getByRole('button', { name: /Generate topic/ });
+    button.focus();
+    await user.click(button);
+
+    // Focus never leaves the button while it is busy — a `disabled` attribute
+    // here would silently park focus on <body> in real browsers and strand a
+    // keyboard user. happy-dom does not emulate that blur, so the hard pin is
+    // the attribute itself: soft-disabled only, focus provably retained.
+    const busyButton = screen.getByRole('button', { name: /Generating/ });
+    expect(busyButton).toHaveFocus();
+    expect(busyButton).not.toHaveAttribute('disabled');
+    expect(busyButton).toHaveAttribute('aria-disabled', 'true');
+
+    // aria-disabled doesn't block events, so the handler's busy guard must:
+    // hammering the button mid-flight fires no second request.
+    await user.click(screen.getByRole('button', { name: /Generating/ }));
+    await user.click(screen.getByRole('button', { name: /Generating/ }));
+    expect(generateMock).toHaveBeenCalledTimes(1);
+
+    resolveCall(TOPIK_PROMPT);
+    expect(await screen.findByText(TOPIK_PROMPT.promptKr)).toBeInTheDocument();
+    // The settled button is still where the keyboard user left it.
+    expect(screen.getByRole('button', { name: /New topic/ })).toHaveFocus();
   });
 
   it('renders the structured 429 retry copy and keeps the button as the retry', async () => {
@@ -158,6 +200,7 @@ describe('WritingTopicGenerator', () => {
       'Rate-limited. Try again in about 30 seconds.',
     );
     expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute('aria-disabled');
 
     // Retrying after the window clears the error and lands the topic.
     generateMock.mockResolvedValue(TOPIK_PROMPT);

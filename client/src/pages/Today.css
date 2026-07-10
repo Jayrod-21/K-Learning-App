@@ -7,9 +7,8 @@
  * the resume-exam corner banner. The P1.2 coming-soon panel, open-exam
  * panel, and review-shortcut row styles were removed WITH their components
  * (B-018/F-028 replaced them — no orphaned rules left behind). The retired
- * .km-today__queue* rules in styles/index.css are now unreferenced; they
- * stay untouched there for the app-wide dead-rule sweep (the global sheet
- * is shared mutable state across parallel feature branches).
+ * .km-today__queue* rules in styles/index.css were deleted in the P3a
+ * fix-pass once the parallel P3a branches had merged.
  *
  * Colocated with Today.tsx. Same design tokens as the rest of the app, so
  * both themes and every accent preset come free.

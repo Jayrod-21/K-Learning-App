@@ -61,6 +61,14 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* The Generate button goes aria-disabled (not `disabled`) while a call is in
+   flight so keyboard focus stays put; mirror the shared .km-btn:disabled
+   paint here so busy still LOOKS inert. Re-entry is blocked in the handler. */
+.km-topicgen .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Generated topic — Korean task line, English gloss, tag pills. */
 .km-topicgen__result {
   display: flex;
