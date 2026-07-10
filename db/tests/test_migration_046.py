@@ -198,7 +198,12 @@ def test_046_up_migrates_tombstone_and_live_rows(env, dsn: str, full_dir) -> Non
             )
             closed_updated_at_before = cur.fetchone()[0]
 
-    rc = migrate.main(["--migrations-dir", str(full_dir), "up"])
+    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
+    # the chain ahead of 046, so a full `up` traverses it and trips migrate.py's
+    # destructive gate without the flag.
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--allow-destructive", "up"]
+    )
     assert rc == 0, f"up (through 046) returned {rc}"
 
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
@@ -268,7 +273,12 @@ def test_046_down_collapses_history_and_reencodes_then_reups(
     tombstone — and restore the 037 schema exactly. A subsequent `up`
     must apply 046 cleanly again."""
     # Full up applies 046 against EMPTY topik_attempts — the 0-row case.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "up"])
+    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
+    # the chain ahead of 046, so a full `up` traverses it and trips migrate.py's
+    # destructive gate without the flag.
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--allow-destructive", "up"]
+    )
     assert rc == 0, f"initial full up returned {rc}"
 
     with psycopg.connect(dsn, autocommit=True) as conn:
@@ -282,7 +292,7 @@ def test_046_down_collapses_history_and_reencodes_then_reups(
         _seed_attempt(conn, user_d, 20, {"4": "d"}, status="completed")
 
     rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_046, "down"]
+        ["--migrations-dir", str(full_dir), "--target", PRE_046, "--allow-destructive", "down"]
     )
     assert rc == 0, f"down --target {PRE_046} returned {rc}"
 
@@ -319,7 +329,12 @@ def test_046_down_collapses_history_and_reencodes_then_reups(
         assert d["remaining_ms"] == 0
 
     # Re-up: 046 applies cleanly on the collapsed state and re-derives status.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "up"])
+    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
+    # the chain ahead of 046, so a full `up` traverses it and trips migrate.py's
+    # destructive gate without the flag.
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--allow-destructive", "up"]
+    )
     assert rc == 0, f"re-apply of 046 after rollback returned {rc}"
 
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
