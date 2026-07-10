@@ -133,3 +133,83 @@ export async function gradeWriting(
     ...(signal !== undefined ? { signal } : {}),
   });
 }
+
+// ─────────────────────────────────────────────────────────────
+// POST /writing/generate — Claude-authored topic (F-027 / F-073)
+// ─────────────────────────────────────────────────────────────
+
+/** The two generation modes `POST /writing/generate` accepts. */
+export type WritingGenerateMode = 'topik' | 'general';
+
+/**
+ * Body for `POST /writing/generate`. The server schema is `.strict()` with a
+ * refine that rejects `rubric` unless `mode === 'topik'` — this type mirrors
+ * that closed contract (both fields are closed enums; no free text rides
+ * this route). Omitting `rubric` in topik mode defaults to Q54 server-side,
+ * the same default `/grade-writing` uses.
+ */
+export interface GenerateWritingPromptBody {
+  mode: WritingGenerateMode;
+  rubric?: TopikWritingRubric;
+}
+
+/**
+ * One Claude-authored writing topic, as `POST /writing/generate` returns it
+ * (`{ prompt: … }` envelope, unwrapped by `generateWritingPrompt`). The
+ * server persists NOTHING for this call — a generated topic is ephemeral
+ * until the learner's graded attempt lands via `/grade-writing`.
+ */
+export interface GeneratedWritingPrompt {
+  /** The Korean task text the learner writes toward. */
+  promptKr: string;
+  /** English gloss so the learner can confirm they understood the task. */
+  promptEn: string;
+  /** Target-length hint (e.g. `'600-700자'`); `null` when Claude gave none. */
+  lengthHint: string | null;
+  /** Echo of the mode that was generated. */
+  mode: WritingGenerateMode;
+  /** The rubric actually used (topik mode; server-defaulted), else `null`. */
+  rubric: TopikWritingRubric | null;
+}
+
+/** Envelope returned by `POST /writing/generate`. */
+interface GenerateWritingPromptEnvelope {
+  prompt: GeneratedWritingPrompt;
+}
+
+/**
+ * Per-call ceiling for the generate leg. Authoring ONE short prompt is the
+ * lightest Claude call in the writing feature — drill-leg sized (the 30s the
+ * grammar-drill legs use) plus headroom, well under the grade leg's 65s.
+ * Still a deliberate override of api.ts's 10s synchronous default, per its
+ * "Claude-wrapping routes MUST pass their own timeout" contract.
+ */
+const WRITING_GENERATE_TIMEOUT_MS = 35_000;
+
+/**
+ * POST /writing/generate → one fresh Claude-authored writing topic
+ * (F-027 Today tile / F-073 Writing screen — build once, surface twice).
+ *
+ * Resolves with the unwrapped prompt. Rejects with `ApiError`:
+ *   - 400 — body outside the closed schema (client bug, e.g. rubric with
+ *     mode='general'; the type above makes that unrepresentable in practice).
+ *   - 401 — session expired.
+ *   - 429 — expensive-bucket rate limit; `retryAfter` may carry seconds —
+ *     callers surface it via `errorMessageFor`, never dead-end the button.
+ *   - 502/504 — Claude/upstream failure or timeout; nothing was persisted,
+ *     so a retry regenerates cleanly.
+ */
+export async function generateWritingPrompt(
+  body: GenerateWritingPromptBody,
+  signal?: AbortSignal,
+): Promise<GeneratedWritingPrompt> {
+  const res = await api.post<GenerateWritingPromptEnvelope>(
+    '/writing/generate',
+    body,
+    {
+      timeout: WRITING_GENERATE_TIMEOUT_MS,
+      ...(signal !== undefined ? { signal } : {}),
+    },
+  );
+  return res.prompt;
+}
