@@ -36,6 +36,7 @@ import grammarDrillRoutes from './routes/grammarDrill.js';
 import writingRoutes from './routes/writing.js';
 import uploadsRoutes from './routes/uploads.js';
 import readingRoutes from './routes/reading.js';
+import ticketsRoutes from './routes/tickets.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -104,6 +105,10 @@ export function createApp(): Express {
   // it must be added to the km-lb nginx API allow-list (both -active.conf files)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).
   app.use('/reading', readingRoutes);
+  // F-023: beta ticketing/feedback — a NEW top-level prefix, added to the
+  // km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf) in the
+  // same change, or the SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/tickets', ticketsRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {
