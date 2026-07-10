@@ -275,7 +275,68 @@ def test_047_km_app_dml_allowed_ddl_denied(
 
 
 # ---------------------------------------------------------------------------
-# 2. Round trip + idempotent re-apply over a lingering cluster-wide role
+# 2. Raw-SQL apply without schema_migrations (B-1 regression,
+#    REVIEW_phase2g1_integration)
+# ---------------------------------------------------------------------------
+
+def test_047_raw_sql_apply_without_schema_migrations(
+    dsn: str, role_dir: pathlib.Path
+) -> None:
+    """047 must apply on a database that has NO schema_migrations table.
+
+    Two supported appliers run the chain WITHOUT migrate.py (so the runner's
+    ensure_bookkeeping never creates the bookkeeping table): the server
+    integration-test harness (server/tests/helpers/pg.ts applyMigrations) and
+    the manual `psql -f` path db/migrations/README.md documents. The original
+    047 issued an unguarded `REVOKE ... ON TABLE schema_migrations`, which
+    errored with 42P01 on those appliers and killed every startPostgres()-based
+    server suite. This test mimics them: each up.sql body executed verbatim,
+    no runner, no bookkeeping table.
+
+    It then proves the security intent survives the guard: once the table
+    exists, a re-apply (047 is idempotent) revokes km_app's write privileges
+    on it.
+    """
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        # Raw apply, exactly like pg.ts: file bodies verbatim, in order.
+        for fname in ("001_core_schema.up.sql", "047_km_app_role.up.sql"):
+            cur.execute((role_dir / fname).read_text(encoding="utf-8"))
+
+        # The apply succeeded with the bookkeeping table absent…
+        cur.execute("SELECT to_regclass('public.schema_migrations')")
+        assert cur.fetchone()[0] is None, (
+            "precondition violated: raw-SQL apply must not create "
+            "schema_migrations"
+        )
+        assert _role_exists(cur), "km_app role missing after raw 047 apply"
+        cur.execute("SELECT has_table_privilege('km_app', 'users', 'SELECT')")
+        assert cur.fetchone()[0] is True
+
+        # …and the REVOKE still fires wherever the table DOES exist: create it
+        # (as the runner would) and re-apply 047 — the blanket GRANT re-grants,
+        # the guarded REVOKE takes the write privileges back.
+        cur.execute(migrate.SCHEMA_MIGRATIONS_DDL)
+        cur.execute(
+            (role_dir / "047_km_app_role.up.sql").read_text(encoding="utf-8")
+        )
+        for priv, expected in (
+            ("SELECT", True),  # read-only history stays readable
+            ("INSERT", False),
+            ("UPDATE", False),
+            ("DELETE", False),
+        ):
+            cur.execute(
+                "SELECT has_table_privilege('km_app', 'schema_migrations', %s)",
+                (priv,),
+            )
+            got = cur.fetchone()[0]
+            assert got is expected, (
+                f"km_app {priv} on schema_migrations: {got}, expected {expected}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 3. Round trip + idempotent re-apply over a lingering cluster-wide role
 # ---------------------------------------------------------------------------
 
 def test_047_round_trip_and_reapply_over_lingering_role(

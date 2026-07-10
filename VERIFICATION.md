@@ -266,7 +266,11 @@ Deploy/db-validate.sh "$BACKUP_DIR/<the dump just written>"
 # the deployed code, so forward-migrate if `status` reports drift.
 Deploy/db-restore.sh "$BACKUP_DIR/<dump>" --force
 python db/migrate.py status     # 1. is the restored dump behind the running code?
-python db/migrate.py up         # 2. IF behind: forward-migrate (expand/contract = safe)
+python db/migrate.py up         # 2. IF behind: forward-migrate. CAVEATS: a
+#    pre-045 dump hits the destructive gate at 045 (re-run with
+#    --allow-destructive after reading 045's header), and migrating through
+#    046 is NOT old-code-safe — only do it with the serving color stopped or
+#    already on post-046 code (Deploy/README.md, "Shipping Phase-2 Group 1").
 Deploy/rebuild-environment.sh   # 3. restart the active color so it reconnects
 ```
 

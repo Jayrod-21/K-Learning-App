@@ -57,9 +57,13 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The last migration before 046 — `up --target PRE_046` builds the pre-046
-# schema the data-transform assertions seed against. (There is no 045; the
-# runner orders by version string and does not require contiguity.)
+# The seed target: `up --target PRE_046` builds the schema the data-transform
+# assertions seed against. 044 is the last migration before 045 — stopping
+# there (rather than at 045) is deliberate: 045 (hygiene_cleanup) contains
+# DROP TABLE, so including it would force --allow-destructive onto the
+# seed-stage up, and 045 touches neither topik_attempts nor topik_responses,
+# so for everything 046 transforms the 044 schema IS the pre-046 shape.
+# (The full-chain applies below DO traverse 045 and pass the flag.)
 PRE_046 = "044"
 
 # A syntactically valid argon2id-shaped hash satisfying
@@ -291,6 +295,13 @@ def test_046_down_collapses_history_and_reencodes_then_reups(
         user_d = _seed_user(conn, "a1-closed-only@example.com")
         _seed_attempt(conn, user_d, 20, {"4": "d"}, status="completed")
 
+    # --allow-destructive on the down is not strictly required by the gate
+    # today: 047/046/045's down bodies contain no DESTRUCTIVE_PATTERNS token —
+    # 046.down's data loss is via DELETE + DROP COLUMN, which the gate does not
+    # match (see the warning in 046.down's header). The flag is passed anyway
+    # to match the documented rollback procedure (Deploy/README.md §"Shipping
+    # Phase-2 Group 1"), which treats every 046 rollback as deliberate loss of
+    # attempt history.
     rc = migrate.main(
         ["--migrations-dir", str(full_dir), "--target", PRE_046, "--allow-destructive", "down"]
     )

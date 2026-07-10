@@ -275,6 +275,62 @@ def test_dry_run_does_not_apply(env, dsn, migrations_dir: pathlib.Path) -> None:
         assert "alpha" not in list_user_tables(conn)
 
 
+def test_dry_run_evaluates_destructive_gate(
+    env, dsn, migrations_dir: pathlib.Path
+) -> None:
+    """The deploy scripts use `--dry-run up` as their expand/contract safety
+    gate (azure-deploy-inactive.sh step 4), so the dry-run must FAIL on a
+    pending destructive migration — not defer the DestructiveBlocked to the
+    apply step (ADR-010 amendment, 2026-07-10; S-1 in
+    REVIEW_phase2g1_integration)."""
+    write_pair(
+        migrations_dir,
+        "001",
+        "destructive_plan",
+        up="CREATE TABLE doomed (id BIGINT PRIMARY KEY); DROP TABLE doomed;",
+        down="SELECT 1;",
+    )
+    # Without the flag: the dry-run itself is blocked (validation exit code),
+    # and nothing is applied.
+    rc = migrate.main(["--migrations-dir", str(migrations_dir), "--dry-run", "up"])
+    assert rc == 1
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert "doomed" not in list_user_tables(conn)
+
+    # With the flag: the dry-run plans cleanly and still applies nothing.
+    rc = migrate.main(
+        ["--migrations-dir", str(migrations_dir), "--allow-destructive", "--dry-run", "up"]
+    )
+    assert rc == 0
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert "doomed" not in list_user_tables(conn)
+
+
+def test_dry_run_down_evaluates_destructive_gate(
+    env, dsn, migrations_dir: pathlib.Path
+) -> None:
+    """Symmetry: a `--dry-run down` whose down body is destructive is blocked
+    without the flag, and plans (without executing) with it."""
+    write_pair(
+        migrations_dir,
+        "001",
+        "alpha",
+        up="CREATE TABLE alpha (id BIGINT PRIMARY KEY);",
+        down="DROP TABLE alpha;",
+    )
+    assert migrate.main(["--migrations-dir", str(migrations_dir), "up"]) == 0
+
+    rc = migrate.main(["--migrations-dir", str(migrations_dir), "--dry-run", "down"])
+    assert rc == 1
+
+    rc = migrate.main(
+        ["--migrations-dir", str(migrations_dir), "--allow-destructive", "--dry-run", "down"]
+    )
+    assert rc == 0
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        assert "alpha" in list_user_tables(conn), "dry-run down must not execute"
+
+
 def test_failed_migration_rolls_back(env, dsn, migrations_dir: pathlib.Path) -> None:
     """If a migration errors mid-statement, the whole migration is rolled back."""
     write_pair(

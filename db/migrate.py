@@ -21,10 +21,14 @@ GUARANTEES:
       a buggy migration can never silently truncate the runner's tx.
     * Re-running a migration whose SQL file has been edited since it was
       applied raises `ChecksumMismatch` (refusing to silently diverge).
-    * `--dry-run` parses and orders but never opens a write transaction.
+    * `--dry-run` parses and orders but never opens a write transaction. It
+      DOES evaluate the destructive gate on the planned bodies (ADR-010
+      amendment, 2026-07-10), so a deploy's dry-run step aborts on a pending
+      destructive migration instead of the later apply step.
     * `--allow-destructive` is required if the migration text mentions
       `DROP TABLE`, `DROP SCHEMA`, `TRUNCATE`, or `DROP DATABASE`
-      (case-insensitive, comment-stripped).
+      (case-insensitive, comment-stripped; string literals are NOT stripped —
+      see `strip_sql_noise`'s docstring).
     * Migration sessions run with `statement_timeout = 0` and
       `idle_in_transaction_session_timeout = 0` (large indexes can take a
       while; abandoned migrations are caught by the runner's atomicity
@@ -285,11 +289,18 @@ def strip_sql_comments(sql: str) -> str:
 def strip_sql_noise(sql: str) -> str:
     """Strip comments, dollar-quoted blocks, AND single-quoted string literals.
 
-    Used by `contains_top_level_tx_control` (and `contains_destructive`) so that
-    neither a `DO $$ BEGIN ... END $$` block (where BEGIN is a PL/pgSQL keyword,
-    not transaction control) nor a keyword appearing only as prose inside a
-    string literal (e.g. a `COMMENT ON ... IS '... commit ...'`) trips the
-    detectors.
+    Used by `contains_top_level_tx_control` ONLY, so that neither a
+    `DO $$ BEGIN ... END $$` block (where BEGIN is a PL/pgSQL keyword, not
+    transaction control) nor a keyword appearing only as prose inside a string
+    literal (e.g. a `COMMENT ON ... IS '... commit ...'`) trips that detector.
+
+    NB: `contains_destructive` deliberately does NOT use this — it strips
+    comments only (`strip_sql_comments`), so string literals ARE scanned for
+    destructive keywords. Consequence for migration authors: a documentary
+    literal containing e.g. the word for emptying a table will force
+    --allow-destructive on every apply (047 works around this by spelling
+    "table truncation" in its COMMENT ON ROLE). Erring on false-positive is
+    the safe direction for a data-loss gate, so this asymmetry is kept.
     """
     # Order matters: strip comments first (comments inside a dollar-quoted
     # string aren't really comments, but the SQL grammar allows them and we
@@ -472,8 +483,31 @@ def cmd_migrate(
 
     LOG.info("migrate.plan", count=len(pending), versions=[m.version for m in pending])
     if dry_run:
+        # The dry-run evaluates the destructive gate too (ADR-010 amendment,
+        # 2026-07-10): the blue/green deploy uses `--dry-run up` as its
+        # expand/contract safety gate, so a pending destructive migration must
+        # abort HERE — before the deploy reaches the apply step — not surface
+        # for the first time mid-deploy with backup-restore advice that doesn't
+        # apply (a DestructiveBlocked abort applies nothing).
+        blocked = [
+            m for m in pending
+            if contains_destructive(m.up_sql) and not allow_destructive
+        ]
         for m in pending:
-            print(f"would apply: {m.version}_{m.name}")
+            marker = (
+                " (DESTRUCTIVE — requires --allow-destructive)"
+                if contains_destructive(m.up_sql)
+                else ""
+            )
+            print(f"would apply: {m.version}_{m.name}{marker}")
+        if blocked:
+            raise DestructiveBlocked(
+                "dry-run: pending migration(s) contain destructive SQL and "
+                "would be blocked at apply: "
+                + ", ".join(f"{m.version}_{m.name}" for m in blocked)
+                + ". Re-run with --allow-destructive if the data loss is "
+                "deliberate (see the migration header / release runbook)."
+            )
         return 0
 
     for m in pending:
@@ -507,8 +541,26 @@ def cmd_rollback(
         return 0
 
     if dry_run:
+        # Mirror cmd_migrate: the dry-run evaluates the destructive gate on the
+        # down bodies so a rollback plan fails at plan time, not mid-rollback.
+        blocked = [
+            m for m in to_rollback
+            if contains_destructive(m.down_sql) and not allow_destructive
+        ]
         for m in to_rollback:
-            print(f"would roll back: {m.version}_{m.name}")
+            marker = (
+                " (DESTRUCTIVE — requires --allow-destructive)"
+                if contains_destructive(m.down_sql)
+                else ""
+            )
+            print(f"would roll back: {m.version}_{m.name}{marker}")
+        if blocked:
+            raise DestructiveBlocked(
+                "dry-run: rollback(s) contain destructive SQL and would be "
+                "blocked: "
+                + ", ".join(f"{m.version}_{m.name}" for m in blocked)
+                + ". Pass --allow-destructive to confirm the rollback."
+            )
         return 0
 
     for m in to_rollback:

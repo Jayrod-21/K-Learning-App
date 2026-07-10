@@ -735,8 +735,35 @@ const AttemptSectionSchema = z.enum(['reading', 'listening']);
 // 15s is generous for a delayed request while keeping an immediate same-paper
 // retake's save-blackout short (each refused save is silently absorbed and the
 // next tick after the window lands; picks are re-sent cumulatively).
+//
+// SERIALIZATION (closes the READ-COMMITTED window the pre-046 tombstone design
+// never had): the guard above is an INSERT ... SELECT WHERE NOT EXISTS, and
+// under READ COMMITTED a PUT processed while the submit transaction is still
+// OPEN takes its snapshot before the submit commits — it sees no fresh
+// completed row, and when its speculative insert then blocks on the submit's
+// row lock and the committed row no longer satisfies the partial arbiter's
+// predicate (status flipped to 'completed'), Postgres retries the insertion
+// WITHOUT re-evaluating the NOT EXISTS — resurrecting an active row for a
+// just-graded paper. Fix: PUT and /mock/submit both take the same per-user
+// transaction-scoped advisory lock (ATTEMPT_LOCK_SQL) before touching
+// topik_attempts, so a racing PUT cannot overlap an open submit: it waits for
+// the submit to commit and its guard then sees the fresh completed row. The
+// lock is xact-scoped (auto-released on commit/rollback — no leak path),
+// namespaced by the 'topik_attempt:' prefix so it can never collide with a
+// future advisory-lock user keyed on the same id, and hashtextextended handles
+// the BIGINT user id without int4 truncation.
 // ---------------------------------------------------------------------------
 const ATTEMPT_COMPLETED_GRACE_SECONDS = 15;
+
+/**
+ * Per-user serialization of attempt-lifecycle writers (PUT /topik/attempt and
+ * POST /topik/mock/submit). $1 = the session user id. MUST be the first
+ * statement of the caller's transaction (an advisory lock taken outside a
+ * transaction would not be xact-scoped; pg_advisory_xact_lock errors outside
+ * one, so misuse fails loudly).
+ */
+const ATTEMPT_LOCK_SQL =
+  `SELECT pg_advisory_xact_lock(hashtextextended('topik_attempt:' || $1::text, 0))`;
 
 // source_test / current_idx / remaining_ms are INTEGER columns — INT4-bounded
 // at the boundary (INT4_MAX, defined with the domain constants above).
@@ -820,6 +847,18 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
  * 204 no-op (the attempt it was saving is already graded; there is nothing to
  * keep). Any other save — a different paper, the same paper after the window,
  * or a retake after an ABANDON (abandoned rows never block) — proceeds.
+ *
+ * The upsert runs in a transaction whose first statement is the per-user
+ * advisory lock (ATTEMPT_LOCK_SQL) so it can never overlap /mock/submit's
+ * open transaction — see the SERIALIZATION note above ATTEMPT_LOCK_SQL.
+ *
+ * KNOWN DATA GAP (deliberate 037 parity — revisit before F-078/F-082 build on
+ * this data): starting a NEW mock while another paper's attempt is still
+ * active repurposes that active row in place via the DO UPDATE, so the
+ * displaced unfinished sitting leaves NO abandoned history row (unlike an
+ * explicit DELETE /topik/attempt) and the reused row's created_at predates
+ * the new sitting. If history surfaces need the displaced sitting, switch to
+ * abandon-then-insert here (or have the client abandon first).
  */
 router.put(
   '/attempt',
@@ -829,35 +868,38 @@ router.put(
     try {
       const userId = getUserId(req);
       const b = req.body as z.infer<typeof AttemptBodySchema>;
-      await query(
-        `INSERT INTO topik_attempts
-           (user_id, section, source_test, current_idx, picks, remaining_ms)
-         SELECT $1, $2::topik_section, $3, $4, $5::jsonb, $6
-          WHERE NOT EXISTS (
-                SELECT 1
-                  FROM topik_attempts
-                 WHERE user_id = $1
-                   AND status = 'completed'
-                   AND source_test = $3
-                   AND section = $2::topik_section
-                   AND updated_at > now() - make_interval(secs => $7))
-         ON CONFLICT (user_id) WHERE status = 'active' DO UPDATE SET
-           section      = EXCLUDED.section,
-           source_test  = EXCLUDED.source_test,
-           current_idx  = EXCLUDED.current_idx,
-           picks        = EXCLUDED.picks,
-           remaining_ms = EXCLUDED.remaining_ms,
-           version      = topik_attempts.version + 1`,
-        [
-          userId,
-          b.section,
-          b.sourceTest,
-          b.currentIdx,
-          JSON.stringify(b.picks),
-          b.remainingMs,
-          ATTEMPT_COMPLETED_GRACE_SECONDS,
-        ],
-      );
+      await withTransaction(async (client) => {
+        await client.query(ATTEMPT_LOCK_SQL, [userId]);
+        await client.query(
+          `INSERT INTO topik_attempts
+             (user_id, section, source_test, current_idx, picks, remaining_ms)
+           SELECT $1, $2::topik_section, $3, $4, $5::jsonb, $6
+            WHERE NOT EXISTS (
+                  SELECT 1
+                    FROM topik_attempts
+                   WHERE user_id = $1
+                     AND status = 'completed'
+                     AND source_test = $3
+                     AND section = $2::topik_section
+                     AND updated_at > now() - make_interval(secs => $7))
+           ON CONFLICT (user_id) WHERE status = 'active' DO UPDATE SET
+             section      = EXCLUDED.section,
+             source_test  = EXCLUDED.source_test,
+             current_idx  = EXCLUDED.current_idx,
+             picks        = EXCLUDED.picks,
+             remaining_ms = EXCLUDED.remaining_ms,
+             version      = topik_attempts.version + 1`,
+          [
+            userId,
+            b.section,
+            b.sourceTest,
+            b.currentIdx,
+            JSON.stringify(b.picks),
+            b.remainingMs,
+            ATTEMPT_COMPLETED_GRACE_SECONDS,
+          ],
+        );
+      });
       res.status(204).end();
     } catch (err) {
       next(err);
@@ -1178,6 +1220,12 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
     // Persist every graded answer in ONE transaction (all-or-nothing): a mock is
     // scored atomically, so a mid-write failure never logs a partial section.
     await withTransaction(async (client) => {
+      // Serialize against PUT /topik/attempt for this user (ATTEMPT_LOCK_SQL,
+      // xact-scoped — released automatically at commit/rollback). Without it a
+      // racing save processed while THIS transaction is open slips past the
+      // F-UP-014 fresh-completed guard under READ COMMITTED and resurrects an
+      // active row for the paper being graded here.
+      await client.query(ATTEMPT_LOCK_SQL, [userId]);
       // The section is now submitted — close the attempt FIRST so its id can
       // stamp the response rows below (A1: responses group into the attempt
       // that produced them — F-078/F-082). Marking it 'completed' both retains

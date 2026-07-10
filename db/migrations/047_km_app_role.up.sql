@@ -9,8 +9,14 @@
 --        `korean_master` in prod) — see Deploy/deployment-utils.sh run_migrate.
 --   Reverse: 047_km_app_role.down.sql
 --   Depends on: nothing structural — the grants are schema-generic.
---               (`schema_migrations` exists whenever this runs: the runner's
---               ensure_bookkeeping creates it before any migration body.)
+--               (`schema_migrations` MAY be ABSENT when this runs: migrate.py's
+--               ensure_bookkeeping creates it before any migration body, but
+--               this file is also applied by RAW-SQL appliers that never create
+--               it — the server integration-test harness
+--               (server/tests/helpers/pg.ts applyMigrations) and the manual
+--               `psql -f` path db/migrations/README.md documents. The
+--               schema_migrations REVOKE below is therefore guarded on the
+--               table's existence.)
 --
 -- WHY (db/SECURITY.md §T9, BUGS_AND_FEATURES.md B-030 / F-022 C1): the app has
 -- connected as `korean_master`, which the official postgres image grants
@@ -68,12 +74,15 @@
 --     grant): the app must not be able to rewrite migration history. SELECT
 --     is kept — harmless and useful for a future "schema version" health field.
 --
--- ROLLOUT ORDER (documented for the deploy runbook; enforcement is the idle-
--- color health gate): 1) add KM_APP_USER/KM_APP_PASSWORD to Deploy/.env,
--- 2) deploy applies this migration, 3) run Deploy/set-km-app-password.sh,
--- 4) idle color comes up with the new DATABASE_URL and must pass health checks
--- BEFORE the LB flips (feedback_korean_master_bluegreen_protocol) — a missed
--- step fails loudly on the idle color, never on live traffic.
+-- ROLLOUT ORDER (normative copy: Deploy/README.md §"Shipping Phase-2 Group 1";
+-- enforcement is the idle-color health gate): 1) add KM_APP_USER/
+-- KM_APP_PASSWORD to Deploy/.env, 2) this migration is applied — for the
+-- Group-1 release that is the operator's one-time
+-- `run_migrate --allow-destructive up` (the scripted deploy cannot apply this
+-- chain: 045 trips the destructive gate), 3) run Deploy/set-km-app-password.sh,
+-- 4) the new color comes up with the km_app DATABASE_URL and must pass health
+-- checks BEFORE the LB flips (feedback_korean_master_bluegreen_protocol) — a
+-- missed step fails loudly on the not-yet-live color, never on live traffic.
 --
 -- TRANSACTION OWNERSHIP (ADR-013): no top-level BEGIN/COMMIT — migrate.py
 -- wraps this body in a single transaction with the bookkeeping write.
@@ -127,8 +136,21 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO km_app;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO km_app;
 
--- Carve-out: migration history is read-only to the app (see header).
-REVOKE INSERT, UPDATE, DELETE ON TABLE schema_migrations FROM km_app;
+-- Carve-out: migration history is read-only to the app (see header). GUARDED:
+-- under migrate.py the bookkeeping table always exists (ensure_bookkeeping runs
+-- first), but raw-SQL appliers — server/tests/helpers/pg.ts and the manual
+-- `psql -f` path — apply this file on databases that have no schema_migrations
+-- at all, and an unguarded REVOKE errors on a missing table (42P01). Skipping
+-- when absent loses nothing: the blanket GRANT above is the only source of a
+-- km_app write privilege on it, so a database without the table has nothing to
+-- revoke, and every runner-managed database (all real deployments) takes the
+-- REVOKE. db/tests/test_km_app_role.py asserts both paths.
+DO $$
+BEGIN
+    IF to_regclass('public.schema_migrations') IS NOT NULL THEN
+        REVOKE INSERT, UPDATE, DELETE ON TABLE schema_migrations FROM km_app;
+    END IF;
+END $$;
 
 -- -----------------------------------------------------------------------------
 -- 3. Default privileges for the FUTURE (critical — Phase 2 adds many tables):

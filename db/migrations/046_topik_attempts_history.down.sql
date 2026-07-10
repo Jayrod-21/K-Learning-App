@@ -14,6 +14,26 @@
 --     updated_at (the submit time) is preserved by disabling the trigger
 --     around the UPDATE, so the pre-046 route's tombstone grace-window logic
 --     sees the correct age. A surviving ACTIVE row round-trips losslessly.
+--   * A surviving ABANDONED row is re-encoded as the SAME completed-style
+--     tombstone (deliberate: pre-046 had no abandoned state — an abandon was
+--     a row DELETE). Effect: a rollback right after an abandon makes the old
+--     route's 15s tombstone grace window briefly refuse same-paper saves that
+--     an abandon never blocked. Self-expiring and accepted over the exact
+--     alternative (DELETE abandoned + tombstone completed), which would
+--     destroy more rows.
+--
+-- !! DATA-LOSS WARNING — the runner's destructive gate does NOT protect this
+-- file. migrate.py's DESTRUCTIVE_PATTERNS matches only DROP TABLE / DROP
+-- SCHEMA / DROP DATABASE / TRUNCATE; this rollback destroys data via mass
+-- DELETE (all but one attempt row per user) and DROP COLUMN (attempt_id,
+-- status), none of which match — so a plain `migrate.py down` runs it WITHOUT
+-- --allow-destructive. Widening the pattern was evaluated and rejected for
+-- now (DELETE FROM / DROP COLUMN appear in legitimate non-lossy forward
+-- migrations, e.g. 041 and 045's guarded orphan purge — flagging them would
+-- gate routine applies; see FIX_REPORT_phase2g1.md). PROCEDURE: treat every
+-- rollback of 046 as deliberate, irreversible loss of TOPIK attempt history
+-- and pass --allow-destructive anyway, per the Group-1 release runbook
+-- (Deploy/README.md §"Shipping Phase-2 Group 1").
 --
 -- Idempotent / re-runnable: the status-dependent steps run inside a DO $$
 -- block guarded on the column's existence, and every DROP/CREATE uses

@@ -25,6 +25,11 @@ docker compose up                  # bring up the local stack
 python db/migrate.py up            # initialize / migrate the schema
 ```
 
+> A **fresh** (empty) database needs `python db/migrate.py --allow-destructive up`
+> once: the chain contains one deliberately destructive migration (045, hygiene
+> cleanup — its `DROP TABLE`s are `IF EXISTS` no-ops on an empty DB, so the flag
+> is safe there).
+
 Local DB helpers live in `db/scripts/`. Production uses a **separate** blue/green
 stack under `Deploy/` — see below.
 

@@ -51,8 +51,10 @@
 --     That timestamp is meaningful history (when the attempt completed) and
 --     also feeds the route's post-submit grace window — re-stamping it to
 --     migration time would make every historic attempt look freshly submitted.
---     Disabling a trigger takes the same ACCESS EXCLUSIVE lock the ALTER TABLEs
---     here already take, and the runner holds it all inside one transaction.
+--     Locking: ALTER TABLE ... DISABLE TRIGGER takes SHARE ROW EXCLUSIVE
+--     (PG >= 9.5) — weaker than the ACCESS EXCLUSIVE the ADD COLUMN /
+--     ADD CONSTRAINT statements here already take — and the runner holds it
+--     all inside one transaction, so no new contention is introduced.
 --   * Idempotent / safe on 0..N rows: ADD COLUMN IF NOT EXISTS, guarded ADD
 --     CONSTRAINT (pg_constraint check inside DO $$ — the 044 pattern; Postgres
 --     has no ADD CONSTRAINT IF NOT EXISTS), and the tombstone UPDATE matches

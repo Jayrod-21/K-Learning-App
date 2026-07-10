@@ -1775,6 +1775,72 @@ describe('F-UP-014 — a delayed save cannot resurrect a submitted attempt (fres
     expect((await agent.get('/topik/attempt')).body.attempt).toBeNull(); // NOT resurrected
   });
 
+  it('a PUT overlapping an OPEN submit transaction waits on the per-user advisory lock and is then refused', async () => {
+    // The READ-COMMITTED window (Phase-2 G1 review, topik S-1): a PUT the
+    // server processes while /mock/submit's transaction is still open takes
+    // its guard snapshot BEFORE the submit commits — it sees no fresh
+    // completed row, and the partial-unique arbiter's insert-retry after the
+    // commit is NOT re-guarded, so pre-fix the PUT resurrected an active row
+    // for the just-graded paper. Both writers now open with
+    // pg_advisory_xact_lock(hashtextextended('topik_attempt:' || user_id, 0)),
+    // so the racing PUT must BLOCK until the submit commits and then refuse.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const itemId = await seedAndSave(agent, 2405);
+
+    // Simulate /mock/submit mid-flight: same lock, same close, tx held open.
+    const submitTx = await pg.pool.connect();
+    try {
+      await submitTx.query('BEGIN');
+      await submitTx.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended('topik_attempt:' || $1::text, 0))`,
+        [userId],
+      );
+      await submitTx.query(
+        `UPDATE topik_attempts SET status = 'completed', version = version + 1
+          WHERE user_id = $1 AND status = 'active'`,
+        [userId],
+      );
+
+      // The racing same-paper PUT, dispatched while the submit tx is open.
+      let putSettled = false;
+      const putPromise = agent
+        .put('/topik/attempt')
+        .send({
+          section: 'reading',
+          sourceTest: 2405,
+          currentIdx: 0,
+          picks: { [String(itemId)]: 'b' },
+          remainingMs: 998_000,
+        })
+        .then((r) => {
+          putSettled = true;
+          return r;
+        });
+
+      // It must be WAITING on the advisory lock, not completing against a
+      // pre-commit snapshot.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(putSettled).toBe(false);
+
+      await submitTx.query('COMMIT');
+      const put = await putPromise;
+      expect(put.status).toBe(204); // silently absorbed after the wait
+    } finally {
+      submitTx.release();
+    }
+
+    // The guard held: no resurrected active row, exactly the one completed row.
+    expect((await agent.get('/topik/attempt')).body.attempt).toBeNull();
+    const { rows } = await pg.pool.query<{ status: string; n: string }>(
+      `SELECT status, count(*)::text AS n FROM topik_attempts
+        WHERE user_id = $1 GROUP BY status`,
+      [userId],
+    );
+    expect(Object.fromEntries(rows.map((r) => [r.status, Number(r.n)]))).toEqual({
+      completed: 1,
+    });
+  });
+
   it('a save for a DIFFERENT paper right after submit wins (new mocks are never blocked)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const itemId = await seedAndSave(agent, 2401);

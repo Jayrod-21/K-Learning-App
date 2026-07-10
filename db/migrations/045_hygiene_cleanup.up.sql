@@ -49,11 +49,18 @@
 --
 -- WHY THE FK (item 3): `grammar_drill_attempts.pattern_key` is carried
 --   verbatim from the client's pattern-list item (019 design note). Nothing
---   at the DB level tied it to the user's actual grammar bank, so unbanking
---   a pattern stranded its attempts forever. The composite FK closes that:
---   ON DELETE CASCADE purges a pattern's attempts when it leaves the bank
---   (attempts are transient practice, same posture as the user CASCADE in
---   019), ON UPDATE RESTRICT matches the house FK convention. The existing
+--   at the DB level tied it to the user's actual grammar bank, so attempts
+--   could exist for patterns never (or no longer) present in it. The
+--   composite FK closes the never-banked class and keeps the ~5-orphan class
+--   from recurring. Scope honestly stated: the app UNBANKS by SOFT delete
+--   (grammar_entries.deleted_at is set; no route hard-DELETEs a bank row), so
+--   the ON DELETE CASCADE never fires on the app's unbank path — a soft-
+--   deleted entry's attempts are intentionally RETAINED, still FK-valid and
+--   unreachable through the drill routes (which start from banked patterns).
+--   The CASCADE fires only on HARD deletion: user-account removal (019's
+--   users CASCADE chain) or a manual psql hard delete — attempts are
+--   transient practice (019), so purging them there is correct. ON UPDATE
+--   RESTRICT matches the house FK convention. The existing
 --   `idx_gda_user_pattern_created (user_id, pattern_key, created_at DESC)`
 --   prefix-covers the referencing columns, so the CASCADE scan is indexed.
 --
@@ -134,10 +141,13 @@ BEGIN
 END $$;
 
 COMMENT ON CONSTRAINT fk_grammar_drill_attempts_entry ON grammar_drill_attempts IS
-    'An attempt always belongs to a currently-banked pattern: (user_id, '
-    'pattern_key) must exist in grammar_entries (target UNIQUE: '
-    'uq_grammar_entries_user_pattern). CASCADE purges a pattern''s attempts '
-    'when it leaves the bank — attempts are transient practice (see 019), '
+    'An attempt always belongs to a grammar_entries row: (user_id, '
+    'pattern_key) must exist there (target UNIQUE: '
+    'uq_grammar_entries_user_pattern). NB: app-level unbanking is a SOFT '
+    'delete (grammar_entries.deleted_at), so this CASCADE never fires on the '
+    'app''s unbank path — those attempts are intentionally retained. CASCADE '
+    'purges attempts only on HARD deletion (user-account CASCADE via 019, or '
+    'a manual hard DELETE) — attempts are transient practice (see 019), '
     'never referenced by audit rows. Referencing-side scans are covered by '
     'the idx_gda_user_pattern_created prefix. Added by 045 (F-083) after '
     'deleting the pre-FK orphan rows.';
