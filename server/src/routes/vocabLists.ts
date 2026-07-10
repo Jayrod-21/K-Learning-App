@@ -1,16 +1,35 @@
 /**
- * /vocab/lists routes — user-curated collections of vocab_entries.
+ * /vocab/lists routes — user-curated collections of vocab words, grammar
+ * patterns, and hanja characters (migration 049 — F-048/F-060/F-061,
+ * supersedes B-013).
  *
- * Powers the Review screen "Lists" tab (Pass 3). Every endpoint is
- * authenticated; every read is scoped to `req.user.id` (no list-id leak).
+ * Powers the Review screen "Lists" tab (Pass 3) and the lists-first
+ * flashcards landing (F-060). Every endpoint is authenticated; every read is
+ * scoped to `req.user.id` (no list-id leak).
  *
  *   GET    /vocab/lists                       — paginated index of user's lists
- *   POST   /vocab/lists                       — create a list
- *   GET    /vocab/lists/:id                   — list detail + first N entries
+ *   POST   /vocab/lists                       — create a list (optional vocab seed)
+ *   GET    /vocab/lists/:id                   — list detail + first N items,
+ *                                               each joined to its target entity
  *   PATCH  /vocab/lists/:id                   — rename / re-kind
  *   DELETE /vocab/lists/:id                   — soft delete
- *   POST   /vocab/lists/:id/entries           — append entries (idempotent)
- *   DELETE /vocab/lists/:id/entries/:entryId  — remove a single entry
+ *   POST   /vocab/lists/:id/entries           — append items; body is EITHER
+ *                                               `entry_ids` (legacy, vocab) OR
+ *                                               `items: [{type, id}]` where type
+ *                                               ∈ vocab|grammar|hanja
+ *   DELETE /vocab/lists/:id/entries/:entryId  — remove one item; `?type=`
+ *                                               selects the target type
+ *                                               (default vocab, back-compat)
+ *
+ * Membership model (migration 049): `vocab_list_entries` carries a target XOR
+ * — exactly one of entry_id / kgiu_entry_id / hanja_character_id is set per
+ * row (mirrors the vocab_cards pattern; the vocab column keeps its 012 name
+ * `entry_id` — 049 is an add-only expand, see the migration header).
+ * Per-target uniqueness (the 012 UNIQUE for vocab, partial UNIQUE indexes for
+ * grammar/hanja) makes a duplicate add a 409. `vocab_lists.kind` stays an advisory
+ * display hint — the API does not force memberships to match it (a 'vocab'
+ * list may hold the odd hanja; 'mixed' exists for deliberate cross-track
+ * lists).
  *
  * Threat model (extends Repository/server/SECURITY.md §3 — Authorization):
  *   - IDOR: every route resolves the list via `WHERE id = $listId AND
@@ -21,7 +40,13 @@
  *     extra keys (e.g. `user_id`, `created_at`) are 400'd before SQL.
  *   - Membership tampering: vocab_entries is reference data with a RESTRICT
  *     FK from vocab_list_entries (migration 012). A user cannot, via the
- *     list-membership API, cascade-delete corpus rows.
+ *     list-membership API, cascade-delete corpus rows. The grammar/hanja FKs
+ *     (049) are CASCADE, but they point AT reference tables — a membership
+ *     write can never delete a kgiu_entries / hanja_characters row.
+ *   - Type confusion: the item `type` is a closed Zod enum mapped to a fixed
+ *     column name server-side — the client can never name a column. Target
+ *     ids are validated against the RIGHT table before insert, so a grammar
+ *     id can't be smuggled into the vocab column (and vice versa).
  *   - Soft-delete bypass: every read endpoint adds `deleted_at IS NULL` to
  *     both the list lookup AND its entries' parent join. Hard delete of a
  *     list is not an endpoint.
@@ -51,6 +76,28 @@ const router = Router();
 router.use(requireAuth);
 
 const LIST_KIND = z.enum(['vocab', 'grammar', 'hanja', 'mixed']);
+
+/** Item target types a list can hold (migration 049 XOR columns). */
+const ITEM_TYPE = z.enum(['vocab', 'grammar', 'hanja']);
+type ItemType = z.infer<typeof ITEM_TYPE>;
+
+/**
+ * type → vocab_list_entries target column. Server-owned map — the client
+ * selects a KEY of this object via the closed ITEM_TYPE enum; it can never
+ * supply a column name (threat model §type confusion).
+ */
+const TARGET_COLUMN: Record<ItemType, string> = {
+  vocab: 'entry_id', // 012's name, kept by 049 (add-only expand — no rename)
+  grammar: 'kgiu_entry_id',
+  hanja: 'hanja_character_id',
+};
+
+/** type → referenced table for existence validation. Server-owned. */
+const TARGET_TABLE: Record<ItemType, string> = {
+  vocab: 'vocab_entries',
+  grammar: 'kgiu_entries',
+  hanja: 'hanja_characters',
+};
 
 // Ids (and OFFSETs) bind to BIGINT/int8 in pg. Without an upper bound,
 // `Number.isInteger(1e20)` is true, so a 20-digit id passes Zod and overflows
@@ -265,24 +312,47 @@ router.get(
       const list = listResult.rows[0];
       if (!list) throw new NotFoundError('vocab list not found');
 
+      // One row per membership, LEFT JOINed to whichever target entity the
+      // XOR column points at (049). `entry_id` stays the client-facing name
+      // for the target id (back-compat with the pre-049 vocab-only shape);
+      // `item_type` discriminates which joined columns are populated.
       const entriesResult = await query<{
         entry_id: number;
+        item_type: ItemType;
         position: number;
         added_at: Date;
         korean: string | null;
         english: string | null;
         proficiency: string | null;
+        pattern: string | null;
+        title_en: string | null;
+        hanja_char: string | null;
+        hanja_sound: string | null;
+        hanja_gloss_en: string | null;
+        hanja_level: string | null;
       }>(
-        `SELECT e.entry_id,
+        `SELECT COALESCE(e.entry_id, e.kgiu_entry_id, e.hanja_character_id)
+                  AS entry_id,
+                CASE WHEN e.entry_id      IS NOT NULL THEN 'vocab'
+                     WHEN e.kgiu_entry_id IS NOT NULL THEN 'grammar'
+                     ELSE 'hanja' END AS item_type,
                 e.position,
                 e.added_at,
                 v.korean,
                 v.english,
-                v.proficiency::text AS proficiency
+                v.proficiency::text AS proficiency,
+                g.pattern,
+                g.title_en,
+                h.char  AS hanja_char,
+                h.sound AS hanja_sound,
+                h.gloss_en AS hanja_gloss_en,
+                h.level AS hanja_level
            FROM vocab_list_entries e
-           JOIN vocab_entries v ON v.id = e.entry_id
+           LEFT JOIN vocab_entries    v ON v.id = e.entry_id
+           LEFT JOIN kgiu_entries     g ON g.id = e.kgiu_entry_id
+           LEFT JOIN hanja_characters h ON h.id = e.hanja_character_id
           WHERE e.list_id = $1
-          ORDER BY e.position, e.added_at, e.entry_id
+          ORDER BY e.position, e.added_at, e.id
           LIMIT $2 OFFSET $3`,
         [listId, q.entry_limit, q.entry_offset],
       );
@@ -399,14 +469,29 @@ router.delete(
 
 /* ---------- POST /vocab/lists/:id/entries — append ---------- */
 
+const AppendItemSchema = z
+  .object({
+    type: ITEM_TYPE,
+    id: z.coerce.number().int().positive().max(MAX_ID),
+  })
+  .strict();
+
+// EITHER the legacy vocab-only shape (`entry_ids`) OR the 049 typed shape
+// (`items`) — exactly one. Legacy requests behave exactly as before the
+// widening (every id targets vocab_entries), so pre-049 clients keep working.
 const AppendBodySchema = z
   .object({
     entry_ids: z
       .array(z.coerce.number().int().positive().max(MAX_ID))
       .min(1)
-      .max(200),
+      .max(200)
+      .optional(),
+    items: z.array(AppendItemSchema).min(1).max(200).optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.entry_ids === undefined) !== (v.items === undefined), {
+    message: 'supply exactly one of entry_ids or items',
+  });
 
 router.post(
   '/:id/entries',
@@ -420,7 +505,24 @@ router.post(
         validatedParams: z.infer<typeof ListIdParamsSchema>;
       }).validatedParams.id;
       const body = req.body as z.infer<typeof AppendBodySchema>;
-      const uniqueIds = Array.from(new Set(body.entry_ids));
+
+      // Normalize both accepted shapes to a typed item list, deduplicated by
+      // (type, id) pair — vocab #7 and grammar #7 are distinct targets and
+      // may coexist in one request/list.
+      const requested: Array<{ type: ItemType; id: number }> =
+        body.items ?? (body.entry_ids ?? []).map((id) => ({ type: 'vocab' as const, id }));
+      const seen = new Set<string>();
+      const uniqueItems = requested.filter((it) => {
+        const key = `${it.type}:${it.id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      const idsOf = (t: ItemType): number[] =>
+        uniqueItems.filter((it) => it.type === t).map((it) => it.id);
+      const vocabIds = idsOf('vocab');
+      const grammarIds = idsOf('grammar');
+      const hanjaIds = idsOf('hanja');
 
       const out = await withTransaction(async (client) => {
         // Lock the list row for the duration of this append so a concurrent
@@ -436,37 +538,52 @@ router.post(
           throw new NotFoundError('vocab list not found');
         }
 
-        // Validate every requested entry exists in vocab_entries — surface
+        // Validate every requested target exists in ITS OWN table — surface
         // the missing ids in the response so the client can react. (The FK
         // would 23503 the INSERT below; that's a worse UX than naming the
-        // ids inline.)
-        const valid = await client.query<{ id: number }>(
-          `SELECT id FROM vocab_entries WHERE id = ANY($1::bigint[])`,
-          [uniqueIds],
-        );
-        const validSet = new Set<number>(valid.rows.map((r) => Number(r.id)));
-        const invalidIds = uniqueIds.filter((id) => !validSet.has(id));
-        if (invalidIds.length > 0) {
-          throw new NotFoundError(
-            `vocab entries not found: ${invalidIds.slice(0, 10).join(',')}`,
+        // ids inline.) Per-type validation is also the type-confusion guard:
+        // a grammar id is never checked against vocab_entries.
+        for (const t of ITEM_TYPE.options) {
+          const ids = idsOf(t);
+          if (ids.length === 0) continue;
+          // TARGET_TABLE is a server-owned closed map keyed by the Zod enum —
+          // not client input (see threat model §type confusion).
+          const valid = await client.query<{ id: string }>(
+            `SELECT id FROM ${TARGET_TABLE[t]} WHERE id = ANY($1::bigint[])`,
+            [ids],
           );
+          const validSet = new Set<number>(valid.rows.map((r) => Number(r.id)));
+          const invalidIds = ids.filter((id) => !validSet.has(id));
+          if (invalidIds.length > 0) {
+            throw new NotFoundError(
+              `${t} entries not found: ${invalidIds.slice(0, 10).join(',')}`,
+            );
+          }
         }
 
-        // Detect duplicates BEFORE INSERT so we can return 409 — required
-        // by the task spec ("409 on duplicate add"). The ON CONFLICT DO
-        // NOTHING approach would silently skip; that's not what the design
+        // Detect duplicate memberships BEFORE INSERT so we can return 409 —
+        // required by the contract ("409 on duplicate add"). The ON CONFLICT
+        // DO NOTHING approach would silently skip; that's not what the design
         // wants ("show the user we couldn't add it because it's already
-        // there").
-        const existing = await client.query<{ entry_id: string }>(
-          `SELECT entry_id
+        // there"). The per-target partial UNIQUE indexes (049) back this up
+        // at the DB level against races.
+        const existing = await client.query<{ t: ItemType; target_id: string }>(
+          `SELECT CASE WHEN entry_id      IS NOT NULL THEN 'vocab'
+                       WHEN kgiu_entry_id IS NOT NULL THEN 'grammar'
+                       ELSE 'hanja' END AS t,
+                  COALESCE(entry_id, kgiu_entry_id, hanja_character_id)
+                    AS target_id
              FROM vocab_list_entries
-            WHERE list_id = $1 AND entry_id = ANY($2::bigint[])`,
-          [listId, uniqueIds],
+            WHERE list_id = $1
+              AND (entry_id           = ANY($2::bigint[])
+                OR kgiu_entry_id      = ANY($3::bigint[])
+                OR hanja_character_id = ANY($4::bigint[]))`,
+          [listId, vocabIds, grammarIds, hanjaIds],
         );
         if (existing.rowCount && existing.rowCount > 0) {
-          const dupIds = existing.rows.map((r) => Number(r.entry_id));
+          const dups = existing.rows.map((r) => `${r.t}:${r.target_id}`);
           throw new ConflictError(
-            `entries already in list: ${dupIds.slice(0, 10).join(',')}`,
+            `items already in list: ${dups.slice(0, 10).join(',')}`,
           );
         }
 
@@ -480,16 +597,36 @@ router.post(
         );
         const basePosition = next.rows[0]?.next_position ?? 0;
 
+        // One INSERT for the whole batch: parallel type[]/id[] arrays are
+        // fanned out by unnest, and the type routes each id into its XOR
+        // column. Positions follow the client-supplied order.
         const inserted = await client.query<{
           entry_id: string;
+          item_type: ItemType;
           position: number;
           added_at: Date;
         }>(
-          `INSERT INTO vocab_list_entries (list_id, entry_id, position)
-                SELECT $1, s.entry_id, $3 + (s.ord - 1)::int
-                  FROM unnest($2::bigint[]) WITH ORDINALITY AS s(entry_id, ord)
-             RETURNING entry_id, position, added_at`,
-          [listId, uniqueIds, basePosition],
+          `INSERT INTO vocab_list_entries
+                  (list_id, entry_id, kgiu_entry_id, hanja_character_id, position)
+                SELECT $1,
+                       CASE WHEN s.t = 'vocab'   THEN s.target_id END,
+                       CASE WHEN s.t = 'grammar' THEN s.target_id END,
+                       CASE WHEN s.t = 'hanja'   THEN s.target_id END,
+                       $4 + (s.ord - 1)::int
+                  FROM unnest($2::text[], $3::bigint[])
+                       WITH ORDINALITY AS s(t, target_id, ord)
+             RETURNING COALESCE(entry_id, kgiu_entry_id, hanja_character_id)
+                         AS entry_id,
+                       CASE WHEN entry_id      IS NOT NULL THEN 'vocab'
+                            WHEN kgiu_entry_id IS NOT NULL THEN 'grammar'
+                            ELSE 'hanja' END AS item_type,
+                       position, added_at`,
+          [
+            listId,
+            uniqueItems.map((it) => it.type),
+            uniqueItems.map((it) => it.id),
+            basePosition,
+          ],
         );
 
         // Bump the list's updated_at so the index endpoint resorts it to
@@ -503,6 +640,7 @@ router.post(
 
         return inserted.rows.map((r) => ({
           entry_id: Number(r.entry_id),
+          item_type: r.item_type,
           position: r.position,
           added_at: r.added_at,
         }));
@@ -517,16 +655,26 @@ router.post(
 
 /* ---------- DELETE /vocab/lists/:id/entries/:entryId — remove ---------- */
 
+// `?type=` selects which XOR column the id addresses. Defaults to 'vocab' so
+// pre-049 clients (which only ever removed vocab memberships) are unchanged.
+const RemoveQuerySchema = z.object({
+  type: ITEM_TYPE.default('vocab'),
+});
+
 router.delete(
   '/:id/entries/:entryId',
   cheapLimiter(),
   validateParams(ListEntryParamsSchema),
+  validateQuery(RemoveQuerySchema),
   async (req, res, next) => {
     try {
       const userId = getUserId(req);
       const { id: listId, entryId } = (req as typeof req & {
         validatedParams: z.infer<typeof ListEntryParamsSchema>;
       }).validatedParams;
+      const itemType = (req as typeof req & {
+        validatedQuery: z.infer<typeof RemoveQuerySchema>;
+      }).validatedQuery.type;
 
       const out = await withTransaction(async (client) => {
         // Ownership check first — same 404 posture as the other routes when
@@ -541,9 +689,11 @@ router.delete(
         if (owner.rowCount === 0) {
           throw new NotFoundError('vocab list not found');
         }
+        // TARGET_COLUMN is a server-owned closed map keyed by the Zod enum —
+        // not client input (see threat model §type confusion).
         const del = await client.query(
           `DELETE FROM vocab_list_entries
-            WHERE list_id = $1 AND entry_id = $2`,
+            WHERE list_id = $1 AND ${TARGET_COLUMN[itemType]} = $2`,
           [listId, entryId],
         );
         if (del.rowCount === 0) {

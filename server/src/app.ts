@@ -32,10 +32,12 @@ import ttmikRoutes, { iyagiRouter } from './routes/ttmik.js';
 import hanjaRoutes from './routes/hanja.js';
 import imagesRoutes from './routes/images.js';
 import settingsRoutes from './routes/settings.js';
+import notificationsRoutes from './routes/notifications.js';
 import grammarDrillRoutes from './routes/grammarDrill.js';
 import writingRoutes from './routes/writing.js';
 import uploadsRoutes from './routes/uploads.js';
 import readingRoutes from './routes/reading.js';
+import ticketsRoutes from './routes/tickets.js';
 
 export function createApp(): Express {
   const cfg = loadConfig();
@@ -96,6 +98,11 @@ export function createApp(): Express {
   app.use('/hanja', hanjaRoutes);
   app.use('/images', imagesRoutes);
   app.use('/settings', settingsRoutes);
+  // F-040: notification schedules (persistence + schedule CRUD; the sender is
+  // a later phase) — a NEW top-level prefix, so it must also be added to the
+  // km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf) or the
+  // SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/notifications', notificationsRoutes);
   // U1a: PDF book-upload feature — a NEW top-level prefix, so it must also be
   // added to the km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).
@@ -104,6 +111,10 @@ export function createApp(): Express {
   // it must be added to the km-lb nginx API allow-list (both -active.conf files)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).
   app.use('/reading', readingRoutes);
+  // F-023: beta ticketing/feedback — a NEW top-level prefix, added to the
+  // km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf) in the
+  // same change, or the SPA shadows it (see km-nginx-api-route-allowlist).
+  app.use('/tickets', ticketsRoutes);
 
   // 404 fallthrough — comes BEFORE the error handler.
   app.use((req, res) => {

@@ -228,6 +228,30 @@ destructive statements are `IF EXISTS` no-ops there).
 
 ---
 
+## Shipping Phase-2 Group 2 (migrations 048–052) — standard zero-downtime flow
+
+Group 2 needs **no special protocol**: all five ups are expand-only (new
+tables 048/051/052; add-column/add-constraint expansions 049/050 — 049
+deliberately keeps `vocab_list_entries.entry_id` under its 012 name instead
+of renaming it, exactly so the still-serving old color keeps working; see the
+049 up header). Ship with the normal scripted sequence at the top of this
+file: `azure-deploy-inactive.sh` (applies 048–052 unflagged — nothing trips
+the destructive gate, and nothing needs to) → health-check →
+`azure-switch-production.sh`. **Rollback-by-flip remains valid**: pre-Group-2
+code runs correctly against the post-052 schema. No `set-km-app-password.sh`
+step either — 047's `ALTER DEFAULT PRIVILEGES` auto-grants `km_app` DML on
+the five new tables.
+
+The only Group-2-specific caution is a **schema rollback** (down, not flip):
+`run_migrate --allow-destructive --target 047 down` drops the 048/051/052
+tables outright, and the 050/049 downs discard all hanja cards (+ their FSRS
+review history) and all grammar/hanja list memberships via DELETE +
+DROP COLUMN — real data loss the destructive gate does not mechanically match
+(same caveat as 046.down; see both down headers). Take a `db-backup.sh`
+snapshot before any manual rollback.
+
+---
+
 ## Reading and flipping the active color
 
 The active color lives in two places that must agree:

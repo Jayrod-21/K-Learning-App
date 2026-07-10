@@ -15,9 +15,9 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateQuery, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ConflictError, NotFoundError } from '../middleware/errors.js';
+import { NotFoundError } from '../middleware/errors.js';
 import { escapeLikePattern } from '../db/like.js';
-import { dueDelayMs, schedule, type CardFsrs, type FsrsStateName } from '../services/fsrs.js';
+import { applyCardReview } from '../services/cardReview.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -213,6 +213,12 @@ router.get(
       // no deleted_at — see 001_core_schema), so the join is on the FK alone;
       // per-user isolation stays enforced by `c.user_id = $1` on the card row.
       // Non-vocab cards (grammar / sentence / topik) get NULL vocab_* columns.
+      //
+      // F-075: hanja-target cards (migration 050's fifth XOR leg) are EXCLUDED
+      // (`c.hanja_character_id IS NULL`) — they have their own due queue,
+      // GET /hanja/cards/due, which joins hanja_characters for the fields the
+      // hanja review UI renders. Serving them here too would double-present
+      // every due hanja card and render it blank (all vocab_*/grammar_* NULL).
       const { rows } = await query<{
         id: number;
         face: string;
@@ -263,6 +269,7 @@ router.get(
             AND c.suspended_at IS NULL
             AND c.due_at <= now()
             AND (c.grammar_entry_id IS NULL OR ge.graduated_at IS NULL)
+            AND c.hanja_character_id IS NULL
           ORDER BY c.due_at
           LIMIT $2`,
         [userId, q.limit],
@@ -328,128 +335,18 @@ router.post(
       }).validatedParams.cardId;
       const body = req.body as z.infer<typeof ReviewBodySchema>;
 
-      const out = await withTransaction(async (client) => {
-        // FU-NF-8 (FOLLOW_UPS.md, 2026-05-29): the prior single-UPDATE
-        // implementation conflated "card doesn't exist / not yours / soft-
-        // deleted" with "your expected_version is stale" — both fell to a
-        // 409. That's wrong: 404 vs 409 mean different things to clients
-        // (retry-after-refetch vs. resolve-conflict). Split into a SELECT
-        // for ownership/existence then a versioned UPDATE for the conflict
-        // check.
-        //
-        // Both queries run inside the same transaction so we still have
-        // optimistic concurrency: a row update between the SELECT and the
-        // UPDATE will make the UPDATE's rowCount = 0 and surface a 409.
-        // We also take ``FOR UPDATE`` on the SELECT to serialize concurrent
-        // reviewers of the same card — the row lock is brief (we UPDATE
-        // immediately after) and prevents two reviewers from both passing
-        // the existence check. The SELECT is also the AUTHORITATIVE source
-        // of the `*_before` snapshot: the FSRS input state comes from the
-        // locked DB row, never from the request (ADR-003 D2 stays
-        // trustworthy for re-tuning even against a hostile client).
-        const existing = await client.query<{
-          fsrs_state: FsrsStateName;
-          stability: string;
-          difficulty: string;
-          reps: number;
-          lapses: number;
-          version: number;
-        }>(
-          `SELECT fsrs_state, stability, difficulty, reps, lapses, version
-             FROM vocab_cards
-            WHERE id = $1
-              AND user_id = $2
-              AND deleted_at IS NULL
-            FOR UPDATE`,
-          [cardId, userId],
-        );
-        if (existing.rowCount === 0) {
-          throw new NotFoundError('vocab card not found');
-        }
-        const card = existing.rows[0]!;
-
-        // Derive the next FSRS state from the card's CURRENT state + the
-        // user's rating — the same shared engine grammar production drills
-        // use, so both card families follow one schedule policy.
-        const current: CardFsrs = {
-          state: card.fsrs_state,
-          stability: Number(card.stability),
-          difficulty: Number(card.difficulty),
-          reps: card.reps,
-          lapses: card.lapses,
-        };
-        const next = schedule(current, body.rating);
-
-        // due_at: scheduled_days out, except a lapse (again ⇒ scheduledDays 0)
-        // re-queues ~10 min from now (relearning) rather than immediately —
-        // never "due now" again (the pre-cutover stub bug).
-        const dueAt = new Date(Date.now() + dueDelayMs(next));
-
-        // Optimistic concurrency: bump only if version matches.
-        const upd = await client.query<{ version: number }>(
-          `UPDATE vocab_cards
-              SET fsrs_state     = $3::fsrs_state,
-                  stability      = $4,
-                  difficulty     = $5,
-                  elapsed_days   = 0,
-                  scheduled_days = $6,
-                  reps           = reps + 1,
-                  lapses         = lapses + CASE WHEN $7::fsrs_rating = 'again' THEN 1 ELSE 0 END,
-                  last_reviewed_at = now(),
-                  due_at         = $8,
-                  version        = version + 1
-            WHERE id = $1
-              AND user_id = $2
-              AND version = $9
-              AND deleted_at IS NULL
-          RETURNING version`,
-          [
-            cardId,
-            userId,
-            next.state,
-            next.stability,
-            next.difficulty,
-            next.scheduledDays,
-            body.rating,
-            dueAt,
-            body.expected_version,
-          ],
-        );
-        if (upd.rowCount === 0) {
-          // Existence was just confirmed above (and we hold a row lock);
-          // the only remaining reason for rowCount=0 is a version mismatch.
-          throw new ConflictError('vocab card version is stale');
-        }
-        // Append-only review log: BEFORE from the locked row, AFTER from the
-        // engine (mirrors the grammar drill write). elapsed_days_before uses
-        // -1 as the never-reviewed sentinel (ck_card_reviews_elapsed_before_min
-        // allows >= -1), matching the grammar path.
-        await client.query(
-          `INSERT INTO card_reviews (
-                card_id, user_id, rating,
-                state_before, stability_before, difficulty_before, elapsed_days_before,
-                state_after, stability_after, difficulty_after, scheduled_days_after,
-                duration_ms)
-              VALUES ($1,$2,$3::fsrs_rating,
-                      $4::fsrs_state,$5,$6,$7,
-                      $8::fsrs_state,$9,$10,$11,
-                      $12)`,
-          [
-            cardId,
-            userId,
-            body.rating,
-            current.state,
-            current.stability,
-            current.difficulty,
-            current.reps === 0 ? -1 : 0,
-            next.state,
-            next.stability,
-            next.difficulty,
-            next.scheduledDays,
-            body.duration_ms ?? null,
-          ],
-        );
-        return { version: upd.rows[0]!.version, dueAt, scheduledDays: next.scheduledDays };
+      // The whole lock → FSRS transition → versioned advance → card_reviews
+      // append lives in services/cardReview.ts (extracted verbatim, F-075) so
+      // this route and /hanja/cards/:cardId/reviews share ONE write path.
+      // Semantics are unchanged: 404 not-found / 409 stale-version (FU-NF-8),
+      // server-authoritative scheduling (ADR-003 amendment, 2026-07-02).
+      const out = await applyCardReview({
+        cardId,
+        userId,
+        rating: body.rating,
+        durationMs: body.duration_ms,
+        expectedVersion: body.expected_version,
+        cardNoun: 'vocab card',
       });
       // `scheduled_days` lets the client render "next review in N days"
       // (0 ⇒ the ~10-minute relearn re-queue) without re-deriving anything.

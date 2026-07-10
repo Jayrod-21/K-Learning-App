@@ -1132,6 +1132,31 @@ New tickets from Phase 0:
 - **What:** Before migration 046, `topik_attempts` was a single overwrite-in-place slot per user, so **no historical attempts exist prior to 046** — the "Previous attempts" view (F-078/F-082) will start empty and only accrue history going forward. When building F-078, decide how to present this (e.g. accept the clean-start, or backfill a synthetic history row from `topik_responses` if desired).
 - **Notes:** Surfaced by the P2-G1 /fixpass re-review. Not a bug — a product decision for the F-078 build.
 
+### B-033 · Tickets PATCH returns 409 instead of 404 when the ticket vanishes mid-update
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **Where:** `server/src/routes/tickets.ts` (~252-273) — PATCH `/tickets/:id`.
+- **Root cause:** If the ticket row disappears between the pre-read and the versioned UPDATE (today only possible via a cascading `DELETE FROM users`), the UPDATE affects 0 rows and the handler throws `ConflictError('stale ticket version')` — telling the client to refetch-and-retry a ticket that no longer exists (the refetch 404s, so the client self-corrects after one wasted round trip).
+- **Fix hint:** When the UPDATE returns no row, re-probe existence (owner-scoped) and throw `NotFoundError` vs `ConflictError` accordingly. Low severity now; **becomes user-visible the day a `DELETE /tickets/:id` endpoint ships — do not build that endpoint without this** (and revisit the comment-moderation question in the same design pass).
+- **Notes:** Deferred from the P2-G2 /fixpass (tickets review SHOULD-FIX 1).
+
+### F-091 · Client multi-type list awareness — key and delete list rows by (item_type, entry_id)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** Migration 049 lets a list hold vocab AND grammar/hanja items whose numeric ids may collide, but the client still assumes `entry_id` alone identifies a row: `client/src/components/MyVocabLists.tsx` (~517) keys rows on `` `entry:${entry_id}` `` (collides across types → wrong-row rendering), and `removeListEntry` (`client/src/services/vocab.ts` ~374-382) never passes `?type=` (server defaults to vocab → removing a grammar row 404s at best, deletes a same-numbered vocab row at worst).
+- **Fix hint:** Key rows and deletes on the `(item_type, entry_id)` pair and pass `?type=` on remove; `addListEntries` should adopt the typed `items: [{type, id}]` body. **Hard gate: must land before any grammar/hanja add-UI ships (the F-048/F-060/F-061 client slice).** Server is already correct.
+- **Notes:** Deferred from the P2-G2 /fixpass (lists review SF-2). Harmless today — no UI can put a non-vocab item in a list yet.
+
+### F-092 · notification_deliveries needs a uniqueness-based claim key before a sender ships
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **What:** The 052 deliveries log's idempotency story is probe-newest-then-insert-pending. Without a `UNIQUE (schedule_id, <firing-window>)` there is a probe→insert race in which two workers both claim the same firing and double-send.
+- **Fix hint:** When the F-040 sender phase is built, add a `window_start` (or equivalent firing-window) column + UNIQUE constraint as the real claim — the insert, not the probe, must be the arbiter. Table is trivially alterable until then.
+- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-2). Copy into the sender-phase spec.
+
+### F-093 · Migrate client Settings off the 018 preferences-blob notification booleans
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** The Settings screen still reads/writes the migration-018 `users.preferences` JSONB notification booleans; migration 052 + `/notifications/schedules` is now the real notification-intent store. Until the client migrates, two sources of truth drift (the blob's booleans are documented as future-dead keys in 052's header).
+- **Fix hint:** Point the Settings notification section at GET/PUT `/notifications/schedules` (note: `weekday` must be *omitted*, not `null`, for daily kinds), then retire the blob's notification keys from `NotifPrefsSchema` in a follow-up once nothing reads them.
+- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3).
+
 ---
 
 <!-- Templates — copy when adding items.
