@@ -1,0 +1,52 @@
+/*
+ * ReviewGrammar (Phase 3B — F-054/F-055/F-056/F-024) — page-scoped styles.
+ *
+ * Colocated with ReviewGrammar.tsx (never index.css — the global sheet is
+ * shared mutable state across parallel feature branches). Only shared design
+ * tokens, so both themes and every accent preset come free.
+ */
+
+/* F-024 — the BackButton sits between the sticky Topbar and the view tabs,
+ * where the removed section strip used to be. */
+.km-review-grammar__back {
+  margin: 4px 0 10px;
+}
+
+/* F-055 — the difficulty dropdown leads the browse panel; cap its width so
+ * a four-option select doesn't stretch full-bleed on wide screens. */
+.km-review-grammar__level {
+  max-width: 240px;
+}
+
+/* F-056 — one group per grammar-bearing upload. */
+.km-review-grammar__group {
+  display: grid;
+  gap: 8px;
+}
+
+.km-review-grammar__group + .km-review-grammar__group {
+  margin-top: 18px;
+}
+
+.km-review-grammar__group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0;
+  font-size: 0.9375rem; /* 15px @ md root — rem so F-025 text-size scales it */
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.km-review-grammar__group-name {
+  min-width: 0;
+  overflow-wrap: anywhere; /* a long book title wraps, never overflows */
+}
+
+.km-review-grammar__group-count {
+  flex: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--paper-dim);
+}
