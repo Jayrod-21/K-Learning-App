@@ -3,8 +3,9 @@
  *
  * A directory page over REAL library routes: link rows navigate to
  * /review/mistakes, /review/vocab, /review/dictionary, /review/grammar;
- * the quick-launch hot-buttons jump into the LEARN flow; coming-soon rows
- * (past exams, uploads) are designed inert placeholders.
+ * the quick-launch hot-buttons jump into the LEARN flow; the one remaining
+ * coming-soon row (past exams) is a designed inert placeholder. Uploads went
+ * live in Phase 3B (F-039 re-home — this row is the area's only entry point).
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -116,16 +117,26 @@ describe('ReviewLibrary (P1.2 index)', () => {
     },
   );
 
-  it('renders past-exams and uploads as inert "Coming soon" rows', () => {
+  // F-039 re-home: after Settings dropped its Uploads section this row is
+  // the uploads area's ONLY entry point — if it regresses to a placeholder
+  // (or is removed), /uploads is reachable solely by typing the URL, which
+  // was the Phase 3B pre-deploy blocker.
+  it('links Uploads to /uploads (F-039 — the area\'s canonical entry point)', async () => {
+    const user = userEvent.setup();
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Review library' });
+    await user.click(within(list).getByRole('button', { name: /Uploads/ }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/uploads');
+  });
+
+  it('renders past-exams as the one inert "Coming soon" row', () => {
     renderLibrary();
     expect(screen.getByText('Past TOPIK exams')).toBeInTheDocument();
-    expect(screen.getByText('Uploads')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
-    // Placeholders are not buttons — nothing to activate.
+    expect(screen.getAllByText('Coming soon')).toHaveLength(1);
+    // The placeholder is not a button — nothing to activate.
     expect(
       screen.queryByRole('button', { name: /Past TOPIK exams/ }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Uploads/ })).not.toBeInTheDocument();
   });
 
   it('no row points at the retired /reference page', () => {

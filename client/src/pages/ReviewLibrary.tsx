@@ -11,7 +11,8 @@
  *   - Scan images         → /images             (OCR mining; INTERIM home
  *                            until the P4 IA decision — see ROWS note)
  *   - Past TOPIK exams    → coming soon (designed placeholder; P4)
- *   - Uploads             → coming soon (designed placeholder; P4/P6)
+ *   - Uploads             → /uploads (F-039 re-home — this row is the
+ *                            area's entry point now that Settings lost it)
  *
  * Above the directory sit two QUICK-LAUNCH hot-buttons into the LEARN flow
  * (`/learn/vocab` flashcards + `/learn/grammar` drill) — real targets,
@@ -66,9 +67,12 @@ const ROWS: ReadonlyArray<LibraryRow> = [
   // bring-your-own-material rows (Uploads); its FINAL home is a P4 decision
   // (fold into uploads vs. the chat image feature — OVERHAUL_DESIGN.md).
   { ...rowFor('images'), label: 'Scan images', kr: '이미지 스캔' },
-  // Designed "coming soon" placeholders — routes + endpoints land in P4/P6.
+  // F-039: Uploads' canonical home since Settings dropped its section —
+  // without this row the whole uploads area is reachable only by typing
+  // /uploads (the pre-deploy blocker Phase 3B clears).
+  rowFor('uploads'),
+  // Designed "coming soon" placeholder — route + endpoints land in P4.
   { key: 'exams', label: 'Past TOPIK exams', kr: '기출 시험', icon: 'spark' },
-  { key: 'uploads', label: 'Uploads', kr: '자료 업로드', icon: 'upload' },
 ];
 
 /** Quick-launch hot-buttons → the LEARN flow (real targets; simple for now —
