@@ -327,9 +327,10 @@ function FileTicketForm({
             maxLength={TITLE_MAX}
             disabled={submitting}
             aria-invalid={fieldErrors.title ? true : undefined}
+            aria-describedby={fieldErrors.title ? `${titleId}-error` : undefined}
           />
           {fieldErrors.title ? (
-            <p className="km-tickets__field-error" role="alert">
+            <p id={`${titleId}-error`} className="km-tickets__field-error" role="alert">
               {fieldErrors.title}
             </p>
           ) : null}
@@ -349,9 +350,10 @@ function FileTicketForm({
             maxLength={BODY_MAX}
             disabled={submitting}
             aria-invalid={fieldErrors.body ? true : undefined}
+            aria-describedby={fieldErrors.body ? `${bodyId}-error` : undefined}
           />
           {fieldErrors.body ? (
-            <p className="km-tickets__field-error" role="alert">
+            <p id={`${bodyId}-error`} className="km-tickets__field-error" role="alert">
               {fieldErrors.body}
             </p>
           ) : null}
@@ -534,6 +536,17 @@ function CommentThread({ ticketId }: { ticketId: number }): JSX.Element {
   );
 }
 
+/** `OwnTicket` is the only ticket shape that carries `version` — use that as
+ *  the runtime discriminator when narrowing `OwnTicket | CommunityTicket`,
+ *  rather than trusting a caller-supplied `canEdit` boolean via an unchecked
+ *  `as` cast. Today the two always agree (`canEdit` is derived from the same
+ *  `mine`-list membership that's the only source of `version` — see the
+ *  module header), but this makes that invariant compiler-checked instead of
+ *  merely true-by-construction at the one current call site. */
+function asOwnTicket(ticket: OwnTicket | CommunityTicket): OwnTicket | null {
+  return 'version' in ticket ? ticket : null;
+}
+
 interface TicketDetailProps {
   ticket: OwnTicket | CommunityTicket;
   /** True iff this ticket was found in `GET /tickets/mine` — the ONLY
@@ -559,7 +572,7 @@ function TicketDetail({
   const statusMeta = STATUS_META[ticket.status];
   const showsAsMine = !canEdit && 'isMine' in ticket && ticket.isMine;
 
-  const ownVersion = canEdit ? (ticket as OwnTicket).version : undefined;
+  const ownVersion = canEdit ? asOwnTicket(ticket)?.version : undefined;
   const [editBuffer, setEditBuffer] = useState<{
     title: string;
     body: string;
@@ -589,8 +602,8 @@ function TicketDetail({
       editBuffer.status !== ticket.status);
 
   const save = useCallback(async (): Promise<void> => {
-    if (!canEdit) return;
-    const own = ticket as OwnTicket;
+    const own = asOwnTicket(ticket);
+    if (!canEdit || !own) return;
     const titleTrim = editBuffer.title.trim();
     const bodyTrim = editBuffer.body.trim();
     if (titleTrim === '' || bodyTrim === '') {
@@ -831,10 +844,16 @@ export default function Tickets(): JSX.Element {
    *  Deliberately bypasses `statusFilter`/`typeFilter` so an active board
    *  filter can never hide the very row a stale-write recovery needs, and
    *  only patches that one row into `mine` rather than replacing the whole
-   *  (possibly filtered) list. */
+   *  (possibly filtered) list. Takes its own `AbortController` (aborting any
+   *  prior in-flight recovery fetch, and on this page's unmount) — the same
+   *  contract as every other fetch in this file. */
+  const refetchOwnTicketCtrlRef = useRef<AbortController | null>(null);
   const refetchOwnTicket = useCallback(
     async (id: number): Promise<OwnTicket | null> => {
-      const rows = await listMyTickets();
+      const ctrl = new AbortController();
+      refetchOwnTicketCtrlRef.current?.abort();
+      refetchOwnTicketCtrlRef.current = ctrl;
+      const rows = await listMyTickets(undefined, ctrl.signal);
       const fresh = rows.find((t) => t.id === id) ?? null;
       if (fresh) {
         setMine((prev) => prev.map((t) => (t.id === id ? fresh : t)));
@@ -843,6 +862,12 @@ export default function Tickets(): JSX.Element {
     },
     [],
   );
+
+  useEffect(() => {
+    return () => {
+      refetchOwnTicketCtrlRef.current?.abort();
+    };
+  }, []);
 
   // ── Community ──
   const [community, setCommunity] = useState<CommunityTicket[]>([]);

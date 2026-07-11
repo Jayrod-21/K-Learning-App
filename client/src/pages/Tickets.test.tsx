@@ -102,6 +102,30 @@ describe('Tickets — filing a ticket', () => {
     expect(ticketsSvc.createTicket).not.toHaveBeenCalled();
   });
 
+  it('programmatically associates each field error with its input via aria-describedby (WCAG AA)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+
+    await user.click(screen.getByRole('button', { name: /File ticket/ }));
+
+    const titleInput = screen.getByRole('textbox', { name: 'Title' });
+    const titleError = await screen.findByText('Give it a short title.');
+    const bodyInput = screen.getByRole('textbox', { name: 'Description' });
+    const bodyError = screen.getByText('Describe what happened.');
+
+    // A screen reader resolves `aria-describedby` to the node it names — the
+    // fix is this exact id round-trip, not merely that error text exists
+    // somewhere on the page.
+    expect(titleInput).toHaveAttribute('aria-invalid', 'true');
+    expect(titleInput.getAttribute('aria-describedby')).toBe(titleError.id);
+    expect(titleError.id).toBeTruthy();
+
+    expect(bodyInput).toHaveAttribute('aria-invalid', 'true');
+    expect(bodyInput.getAttribute('aria-describedby')).toBe(bodyError.id);
+    expect(bodyError.id).toBeTruthy();
+  });
+
   it('files a ticket and adds it to My tickets', async () => {
     const created: OwnTicket = {
       id: 5,
@@ -417,5 +441,40 @@ describe('Tickets — Community windowing (usePagination/ShowMore)', () => {
 
     await user.click(screen.getByRole('button', { name: /Show more tickets/ }));
     expect(await screen.findByText('Community ticket #16')).toBeInTheDocument();
+  });
+
+  it('resets the expanded window back to the initial 15 when a filter changes', async () => {
+    const many: CommunityTicket[] = Array.from({ length: 18 }, (_, i) => ({
+      ...COMMUNITY_1,
+      id: 100 + i,
+      title: `Community ticket #${String(i + 1)}`,
+    }));
+    ticketsSvc.listCommunityTickets.mockResolvedValue(many);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+    await user.click(screen.getByRole('tab', { name: /Community/ }));
+
+    await screen.findByText('Community ticket #1');
+    await user.click(screen.getByRole('button', { name: /Show more tickets/ }));
+    expect(await screen.findByText('Community ticket #16')).toBeInTheDocument();
+
+    // Changing a filter re-queries the server (mocked to return the same 18
+    // rows again) and must also collapse the client-side window back to
+    // `initial` (15) via `communityPage.reset()` — without that call, `count`
+    // would stay at 30 and all 18 already-fetched rows would remain visible.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Filter by status' }),
+      'resolved',
+    );
+    await waitFor(() => {
+      expect(ticketsSvc.listCommunityTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'resolved' }),
+        expect.anything(),
+      );
+    });
+
+    expect(await screen.findByText('Community ticket #15')).toBeInTheDocument();
+    expect(screen.queryByText('Community ticket #16')).not.toBeInTheDocument();
   });
 });
