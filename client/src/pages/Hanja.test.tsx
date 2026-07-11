@@ -1,25 +1,35 @@
 /**
  * Hanja page — real-wiring behaviour over a mocked `useEndpointOrMock` + a
- * mocked `services/hanja` write.
+ * fully-mocked `services/hanja` / `services/vocab` surface.
  *
  * `useEndpointOrMock` is mocked so we control the three read surfaces
  * (`hanja:list`, `hanja:progress`, `hanja:today`) per-test without spinning the
- * real hook; the `services/hanja` module is mocked so the bank/practice action
- * resolves/rejects on command and we can assert the optimistic local update
- * (no data-resetting refetch fires — the refetch spies stay untouched).
+ * real hook; the service modules are mocked so every write (state, card seed,
+ * FSRS review, list CRUD, membership) resolves/rejects on command and we can
+ * assert the wire payloads the page actually sends.
+ *
+ * The page routes its nested views (study / lists / list detail / draw) on the
+ * `view` search param, so every render is wrapped in a `MemoryRouter` whose
+ * initial entry selects the surface under test.
  *
  * Fixtures pass through `vi.hoisted` so the Vitest-hoisted `vi.mock` factory can
  * reference them — referencing regular module-scope `const`s from a mock factory
  * throws a ReferenceError because `vi.mock` runs before `import`s execute.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { ApiError } from '../services/api';
 // Alias the domain type so it doesn't clash with the default-exported `Hanja`
 // page component imported below (both would otherwise be named `Hanja`).
-import type { Hanja as HanjaChar, HanjaProgress } from '../types/domain';
+import type { Hanja as HanjaChar, HanjaProgress, ServerVocabList } from '../types/domain';
+import type {
+  HanjaDueCard,
+  HanjaListDetail,
+  SeedHanjaCardResult,
+} from '../services/hanja';
 
 const { FIXTURE_CHARS, FIXTURE_PROGRESS } = vi.hoisted(() => {
   return {
@@ -110,19 +120,158 @@ vi.mock('../services/hanja', () => ({
   fetchHanjaProgress: vi.fn(),
   fetchHanjaToday: vi.fn(),
   setHanjaState: vi.fn(),
+  fetchHanjaDueCards: vi.fn(),
+  seedHanjaCard: vi.fn(),
+  submitHanjaCardReview: vi.fn(),
+  fetchHanjaLists: vi.fn(),
+  fetchHanjaListDetail: vi.fn(),
+  addHanjaToList: vi.fn(),
+  removeHanjaFromList: vi.fn(),
+}));
+
+vi.mock('../services/vocab', () => ({
+  createList: vi.fn(),
+  deleteList: vi.fn(),
 }));
 
 // Import after the mocks so they are in place.
 import Hanja from './Hanja';
-import { setHanjaState } from '../services/hanja';
+import {
+  addHanjaToList,
+  fetchHanjaDueCards,
+  fetchHanjaListDetail,
+  fetchHanjaLists,
+  removeHanjaFromList,
+  seedHanjaCard,
+  setHanjaState,
+  submitHanjaCardReview,
+} from '../services/hanja';
+import { createList, deleteList } from '../services/vocab';
 
 const setHanjaStateMock = vi.mocked(setHanjaState);
+const fetchHanjaDueCardsMock = vi.mocked(fetchHanjaDueCards);
+const seedHanjaCardMock = vi.mocked(seedHanjaCard);
+const submitHanjaCardReviewMock = vi.mocked(submitHanjaCardReview);
+const fetchHanjaListsMock = vi.mocked(fetchHanjaLists);
+const fetchHanjaListDetailMock = vi.mocked(fetchHanjaListDetail);
+const addHanjaToListMock = vi.mocked(addHanjaToList);
+const removeHanjaFromListMock = vi.mocked(removeHanjaFromList);
+const createListMock = vi.mocked(createList);
+const deleteListMock = vi.mocked(deleteList);
+
+// ── Non-hoisted fixtures (used only inside tests) ──────────────
+
+function dueCard(over: Partial<HanjaDueCard>): HanjaDueCard {
+  return {
+    id: 11,
+    face: 'recognition',
+    due_at: '2026-07-09T00:00:00.000Z',
+    fsrs_state: 'review',
+    stability: '1.0',
+    difficulty: '5.0',
+    version: 3,
+    hanja_character_id: 1,
+    ch: '學',
+    sound: '학',
+    gloss: '배울',
+    en: 'learn',
+    level: 'L3',
+    strokes: 16,
+    ...over,
+  };
+}
+
+const FIXTURE_DUE = [
+  dueCard({}),
+  dueCard({ id: 12, version: 1, hanja_character_id: 2, ch: '生', sound: '생', gloss: '날', en: 'birth', level: 'L2', strokes: 5 }),
+];
+
+function seedResult(over: Partial<SeedHanjaCardResult>): SeedHanjaCardResult {
+  return {
+    card_id: 101,
+    character_id: 1,
+    ch: '學',
+    face: 'recognition',
+    due_at: '2026-07-09T00:00:00.000Z',
+    version: 1,
+    created: true,
+    ...over,
+  };
+}
+
+const FIXTURE_LIST: ServerVocabList = {
+  id: 5,
+  name_kr: '중급 한자',
+  name_en: null,
+  kind: 'hanja',
+  version: 1,
+  entry_count: 2,
+  created_at: '2026-07-01T00:00:00.000Z',
+  updated_at: '2026-07-01T00:00:00.000Z',
+};
+
+const FIXTURE_LIST_DETAIL: HanjaListDetail = {
+  list: FIXTURE_LIST,
+  entries: [
+    {
+      entry_id: 1,
+      item_type: 'hanja',
+      position: 0,
+      added_at: '2026-07-01T00:00:00.000Z',
+      hanja_char: '學',
+      hanja_sound: '학',
+      hanja_gloss_en: 'learn',
+      hanja_level: 'L3',
+    },
+    {
+      entry_id: 2,
+      item_type: 'hanja',
+      position: 1,
+      added_at: '2026-07-01T00:00:00.000Z',
+      hanja_char: '生',
+      hanja_sound: '생',
+      hanja_gloss_en: 'birth',
+      hanja_level: 'L2',
+    },
+    {
+      entry_id: 9,
+      item_type: 'vocab',
+      position: 2,
+      added_at: '2026-07-01T00:00:00.000Z',
+      hanja_char: null,
+      hanja_sound: null,
+      hanja_gloss_en: null,
+      hanja_level: null,
+    },
+  ],
+};
+
+function renderHanja(path = '/learn/hanja'): void {
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <Hanja />
+    </MemoryRouter>,
+  );
+}
 
 beforeEach(() => {
   refetchSpies.list.mockClear();
   refetchSpies.progress.mockClear();
   refetchSpies.today.mockClear();
   setHanjaStateMock.mockReset();
+  fetchHanjaDueCardsMock.mockReset();
+  seedHanjaCardMock.mockReset();
+  submitHanjaCardReviewMock.mockReset();
+  fetchHanjaListsMock.mockReset();
+  fetchHanjaListDetailMock.mockReset();
+  addHanjaToListMock.mockReset();
+  removeHanjaFromListMock.mockReset();
+  createListMock.mockReset();
+  deleteListMock.mockReset();
+  // Benign defaults — individual tests override with rejections/fixtures.
+  fetchHanjaListsMock.mockResolvedValue([]);
+  fetchHanjaDueCardsMock.mockResolvedValue([]);
+  seedHanjaCardMock.mockResolvedValue(seedResult({}));
   for (const key of Object.keys(hookOverrides)) {
     delete hookOverrides[key];
   }
@@ -130,7 +279,7 @@ beforeEach(() => {
 
 describe('Hanja page', () => {
   it('renders the encountered band and the server-featured character by default', () => {
-    render(<Hanja />);
+    renderHanja();
     expect(screen.getByRole('heading', { name: /한자/ })).toBeInTheDocument();
     expect(screen.getByText(/Just getting started/)).toBeInTheDocument();
     expect(
@@ -139,7 +288,7 @@ describe('Hanja page', () => {
   });
 
   it('does not show the dev mock badge when every source is real', () => {
-    render(<Hanja />);
+    renderHanja();
     expect(screen.queryByTestId('mock-badge')).not.toBeInTheDocument();
   });
 
@@ -151,7 +300,7 @@ describe('Hanja page', () => {
     hookOverrides['hanja:progress'] = {
       data: { ...FIXTURE_PROGRESS, encountered: 900 },
     };
-    render(<Hanja />);
+    renderHanja();
 
     const bar = screen.getByRole('progressbar', {
       name: 'Hanja encountered out of L4 target',
@@ -167,7 +316,7 @@ describe('Hanja page', () => {
     hookOverrides['hanja:progress'] = {
       data: { ...FIXTURE_PROGRESS, targetL4: 0 },
     };
-    render(<Hanja />);
+    renderHanja();
 
     expect(
       screen.queryByRole('progressbar', {
@@ -177,7 +326,7 @@ describe('Hanja page', () => {
   });
 
   it('P3b: adopts the terse nav eyebrow pair (the flowery line is gone)', () => {
-    render(<Hanja />);
+    renderHanja();
     expect(screen.getByText('Word roots')).toBeInTheDocument();
     expect(screen.getByText('한자 어원')).toBeInTheDocument();
     expect(
@@ -187,7 +336,7 @@ describe('Hanja page', () => {
 
   it('toggles to the Index view and shows the filter chips (aria-pressed) + grid', async () => {
     const user = userEvent.setup();
-    render(<Hanja />);
+    renderHanja();
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
 
@@ -208,7 +357,7 @@ describe('Hanja page', () => {
 
   it('filters the grid locally to the Banked chip', async () => {
     const user = userEvent.setup();
-    render(<Hanja />);
+    renderHanja();
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
     await user.click(screen.getByRole('button', { name: '담김 · Banked' }));
@@ -225,7 +374,7 @@ describe('Hanja page', () => {
   it('applies the new state optimistically without a data-resetting refetch', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockResolvedValueOnce({ char: '生', state: 'practicing' });
-    render(<Hanja />);
+    renderHanja();
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
     await user.click(screen.getByRole('button', { name: /生 날 생/ }));
@@ -252,7 +401,7 @@ describe('Hanja page', () => {
   it('does NOT blank the screen (no skeleton, sheet stays open) on a successful set-state', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockResolvedValueOnce({ char: '學', state: 'banked' });
-    render(<Hanja />);
+    renderHanja();
 
     // Open the featured 學 sheet, then bank it.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
@@ -272,7 +421,7 @@ describe('Hanja page', () => {
   it('banks a new/practicing character via "Bank this hanja"', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockResolvedValueOnce({ char: '學', state: 'banked' });
-    render(<Hanja />);
+    renderHanja();
 
     // 學 (practicing) is the featured Today card — open it directly.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
@@ -286,7 +435,7 @@ describe('Hanja page', () => {
   it('surfaces an error and applies no optimistic change when the state write fails', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockRejectedValueOnce(new Error('boom'));
-    render(<Hanja />);
+    renderHanja();
 
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
     await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
@@ -307,7 +456,7 @@ describe('Hanja page', () => {
 
   it('shows the Today empty state when the server returns no featured character', () => {
     hookOverrides['hanja:today'] = { data: null };
-    render(<Hanja />);
+    renderHanja();
     expect(screen.getByText(/No featured 한자 yet/)).toBeInTheDocument();
   });
 
@@ -323,7 +472,7 @@ describe('Hanja page', () => {
       }),
     };
     const user = userEvent.setup();
-    render(<Hanja />);
+    renderHanja();
 
     expect(
       screen.getByText(/Couldn’t load today’s featured 한자/),
@@ -344,13 +493,487 @@ describe('Hanja page', () => {
       data: null,
       error: new ApiError('boom', { status: 500, code: 'server_error' }),
     };
-    render(<Hanja />);
+    renderHanja();
     expect(screen.getByRole('alert')).toHaveTextContent(/Hanja unavailable/);
   });
 
   it('shows the loading skeleton while any source is loading', () => {
     hookOverrides['hanja:progress'] = { loading: true, data: null };
-    render(<Hanja />);
+    renderHanja();
     expect(screen.getByText(/Loading hanja/)).toBeInTheDocument();
+  });
+
+  // ── Quick-nav + nested-view chrome (F-024) ─────────────────
+
+  it('quick-nav routes from the root into the study view', async () => {
+    const user = userEvent.setup();
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Flashcards/ }));
+
+    expect(
+      await screen.findByText(/No hanja cards due/),
+    ).toBeInTheDocument();
+    expect(fetchHanjaDueCardsMock).toHaveBeenCalled();
+  });
+
+  it('nested views carry a BackButton that returns to the Hanja root', async () => {
+    const user = userEvent.setup();
+    renderHanja('/learn/hanja?view=study');
+
+    await screen.findByText(/No hanja cards due/);
+    await user.click(screen.getByRole('button', { name: 'Back to Hanja' }));
+
+    // Back on the root — the featured card is on screen again.
+    expect(
+      await screen.findByRole('button', { name: /Today's hanja 學/ }),
+    ).toBeInTheDocument();
+  });
+
+  // ── Study view (F-075 / B-028) ─────────────────────────────
+
+  it('drills a due card end-to-end: reveal → rate → advance to the next card', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock.mockResolvedValue(FIXTURE_DUE);
+    submitHanjaCardReviewMock.mockResolvedValue({
+      version: 4,
+      due_at: '2026-07-10T00:00:00.000Z',
+      scheduled_days: 1,
+    });
+    renderHanja('/learn/hanja?view=study');
+
+    // Card 1 of 2 — front shows the glyph, no answer yet.
+    expect(await screen.findByText('1 / 2')).toBeInTheDocument();
+    expect(screen.queryByText('배울')).not.toBeInTheDocument();
+
+    // Reveal, then self-rate Good.
+    await user.click(screen.getByRole('button', { name: 'Hanja flashcard' }));
+    expect(screen.getByText('배울')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('group', { name: 'Rate your recall' }),
+    );
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    await waitFor(() => {
+      expect(submitHanjaCardReviewMock).toHaveBeenCalledWith(
+        11,
+        expect.objectContaining({
+          rating: 'good',
+          expected_version: 3,
+          duration_ms: expect.any(Number) as number,
+        }),
+      );
+    });
+    // The deck advanced to card 2 (生), flipped back to the front.
+    expect(await screen.findByText('2 / 2')).toBeInTheDocument();
+    expect(screen.getByText('生')).toBeInTheDocument();
+    expect(screen.queryByText('날')).not.toBeInTheDocument();
+  });
+
+  it('completes the session after the last card and offers a re-check', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock.mockResolvedValue([FIXTURE_DUE[0]!]);
+    submitHanjaCardReviewMock.mockResolvedValue({
+      version: 4,
+      due_at: '2026-07-10T00:00:00.000Z',
+      scheduled_days: 1,
+    });
+    renderHanja('/learn/hanja?view=study');
+
+    await user.click(await screen.findByRole('button', { name: 'Hanja flashcard' }));
+    await user.click(screen.getByRole('button', { name: /Easy/ }));
+
+    expect(await screen.findByText(/Deck clear/)).toBeInTheDocument();
+    // "Check for more" refetches the queue.
+    await user.click(screen.getByRole('button', { name: /Check for more/ }));
+    await waitFor(() => {
+      expect(fetchHanjaDueCardsMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('keeps the card and surfaces an alert when the rating write fails', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock.mockResolvedValue([FIXTURE_DUE[0]!]);
+    submitHanjaCardReviewMock.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    renderHanja('/learn/hanja?view=study');
+
+    await user.click(await screen.findByRole('button', { name: 'Hanja flashcard' }));
+    await user.click(screen.getByRole('button', { name: /Again/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn.t save that rating/,
+    );
+    // No advance — still 1 / 1 with the answer face up and ratings live.
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+    expect(screen.getByText('배울')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Again/ })).toBeEnabled();
+  });
+
+  it('offers a deck refresh on a 409 (stale expected_version)', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock
+      .mockResolvedValueOnce([FIXTURE_DUE[0]!])
+      .mockResolvedValueOnce([]);
+    submitHanjaCardReviewMock.mockRejectedValueOnce(
+      new ApiError('version conflict', { status: 409, code: 'conflict' }),
+    );
+    renderHanja('/learn/hanja?view=study');
+
+    await user.click(await screen.findByRole('button', { name: 'Hanja flashcard' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /rescheduled elsewhere/,
+    );
+    await user.click(screen.getByRole('button', { name: /Refresh deck/ }));
+
+    // The refreshed (now-empty) queue renders the empty state.
+    expect(await screen.findByText(/No hanja cards due/)).toBeInTheDocument();
+    expect(fetchHanjaDueCardsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a real error card with retry when the due-cards fetch fails', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 500, code: 'server_error' }),
+      )
+      .mockResolvedValueOnce([]);
+    renderHanja('/learn/hanja?view=study');
+
+    expect(
+      await screen.findByText(/Your hanja deck couldn't be loaded/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText(/No hanja cards due/)).toBeInTheDocument();
+    expect(fetchHanjaDueCardsMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Detail-sheet drill CTA (B-028) ─────────────────────────
+
+  it('Drill seeds the recognition card, then enters the study view', async () => {
+    const user = userEvent.setup();
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Drill · recall/ }));
+
+    await waitFor(() => {
+      expect(seedHanjaCardMock).toHaveBeenCalledWith('學');
+    });
+    // Navigated into the study view (empty deck fixture → empty state).
+    expect(await screen.findByText(/No hanja cards due/)).toBeInTheDocument();
+  });
+
+  it('keeps the sheet open and shows an alert when the drill seed fails', async () => {
+    const user = userEvent.setup();
+    seedHanjaCardMock.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Drill · recall/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn.t start the drill/,
+    );
+    // Still on the sheet — the bank control never left the screen.
+    expect(
+      screen.getByRole('button', { name: /Bank this hanja/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('the Drawing drill CTA opens the draw view for the open character', async () => {
+    const user = userEvent.setup();
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Drawing drill/ }));
+
+    expect(await screen.findByText(/Draw the character from memory/)).toBeInTheDocument();
+  });
+
+  // ── Detail-sheet add-to-list (F-075) ───────────────────────
+
+  it('adds the open character to a chosen list (seed → typed membership)', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListsMock.mockResolvedValue([FIXTURE_LIST]);
+    addHanjaToListMock.mockResolvedValue(undefined);
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    // Expand the disclosure tile, pick the list, add.
+    await user.click(screen.getByRole('button', { name: /Add to a list/ }));
+    await user.selectOptions(
+      await screen.findByRole('combobox', { name: 'List' }),
+      '5',
+    );
+    await user.click(screen.getByRole('button', { name: '추가 · Add' }));
+
+    await waitFor(() => {
+      // The pool DTO has no numeric character id — the idempotent card seed
+      // supplies it, and the membership write uses the 049 typed shape.
+      expect(seedHanjaCardMock).toHaveBeenCalledWith('學');
+      expect(addHanjaToListMock).toHaveBeenCalledWith(5, [1]);
+    });
+    expect(await screen.findByText(/Added 學/)).toBeInTheDocument();
+  });
+
+  it('reads a duplicate membership (409) as information, not failure', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListsMock.mockResolvedValue([FIXTURE_LIST]);
+    addHanjaToListMock.mockRejectedValueOnce(
+      new ApiError('items already in list', { status: 409, code: 'conflict' }),
+    );
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Add to a list/ }));
+    await user.selectOptions(
+      await screen.findByRole('combobox', { name: 'List' }),
+      '5',
+    );
+    await user.click(screen.getByRole('button', { name: '추가 · Add' }));
+
+    expect(await screen.findByText(/already in/)).toBeInTheDocument();
+    // Informational status, not an alert.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('creates a hanja-kind list from the sheet, then adds the character', async () => {
+    const user = userEvent.setup();
+    createListMock.mockResolvedValue({
+      list: { ...FIXTURE_LIST, id: 7, name_kr: '새 목록', entry_count: 0 },
+      appended: 0,
+    });
+    addHanjaToListMock.mockResolvedValue(undefined);
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Add to a list/ }));
+    await user.type(
+      await screen.findByLabelText(/New list name/),
+      '새 목록',
+    );
+    await user.click(screen.getByRole('button', { name: /Create & add/ }));
+
+    await waitFor(() => {
+      expect(createListMock).toHaveBeenCalledWith({
+        name_kr: '새 목록',
+        kind: 'hanja',
+      });
+      expect(addHanjaToListMock).toHaveBeenCalledWith(7, [1]);
+    });
+    expect(await screen.findByText(/Created “새 목록”/)).toBeInTheDocument();
+  });
+
+  // ── Lists view (F-075) ─────────────────────────────────────
+
+  it('lists view renders hanja lists and opens a detail view', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListsMock.mockResolvedValue([FIXTURE_LIST]);
+    fetchHanjaListDetailMock.mockResolvedValue(FIXTURE_LIST_DETAIL);
+    renderHanja('/learn/hanja?view=lists');
+
+    // `^` anchors past the row's own delete button ("Delete list 중급 한자").
+    await user.click(await screen.findByRole('button', { name: /^중급 한자/ }));
+
+    await waitFor(() => {
+      expect(fetchHanjaListDetailMock).toHaveBeenCalledWith(
+        5,
+        expect.any(AbortSignal),
+      );
+    });
+    // Detail rows render the hanja columns; non-hanja rows are noted, not shown.
+    expect(await screen.findByText('學')).toBeInTheDocument();
+    expect(screen.getByText('生')).toBeInTheDocument();
+    expect(screen.getByText(/non-hanja item/)).toBeInTheDocument();
+  });
+
+  it('creates a new hanja-kind list from the lists view', async () => {
+    const user = userEvent.setup();
+    createListMock.mockResolvedValue({
+      list: { ...FIXTURE_LIST, id: 8, name_kr: '급수 한자', entry_count: 0 },
+      appended: 0,
+    });
+    renderHanja('/learn/hanja?view=lists');
+
+    await screen.findByText(/No hanja lists yet/);
+    await user.type(screen.getByLabelText(/List name/), '급수 한자');
+    await user.click(screen.getByRole('button', { name: '만들기 · Create' }));
+
+    await waitFor(() => {
+      expect(createListMock).toHaveBeenCalledWith({
+        name_kr: '급수 한자',
+        kind: 'hanja',
+      });
+    });
+    expect(await screen.findByText('급수 한자')).toBeInTheDocument();
+  });
+
+  it('surfaces a create failure as an alert', async () => {
+    const user = userEvent.setup();
+    createListMock.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    renderHanja('/learn/hanja?view=lists');
+
+    await screen.findByText(/No hanja lists yet/);
+    await user.type(screen.getByLabelText(/List name/), '실패 목록');
+    await user.click(screen.getByRole('button', { name: '만들기 · Create' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Couldn.t create that list/,
+    );
+  });
+
+  it('deletes a list behind a two-step inline confirm', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListsMock.mockResolvedValue([FIXTURE_LIST]);
+    deleteListMock.mockResolvedValue(undefined);
+    renderHanja('/learn/hanja?view=lists');
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Delete list 중급 한자' }),
+    );
+    // First tap only arms the confirm — nothing deleted yet.
+    expect(deleteListMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '삭제 · Delete' }));
+
+    await waitFor(() => {
+      expect(deleteListMock).toHaveBeenCalledWith(5);
+    });
+    expect(screen.queryByText('중급 한자')).not.toBeInTheDocument();
+  });
+
+  // ── List detail view (F-075) ───────────────────────────────
+
+  it('removes a character from a list via the typed membership delete', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListDetailMock.mockResolvedValue(FIXTURE_LIST_DETAIL);
+    removeHanjaFromListMock.mockResolvedValue(undefined);
+    renderHanja('/learn/hanja?view=list&id=5');
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Remove 學 from list' }),
+    );
+    await user.click(screen.getByRole('button', { name: '빼기 · Remove' }));
+
+    await waitFor(() => {
+      expect(removeHanjaFromListMock).toHaveBeenCalledWith(5, 1);
+    });
+    expect(screen.queryByText('學')).not.toBeInTheDocument();
+    // 生 survives.
+    expect(screen.getByText('生')).toBeInTheDocument();
+  });
+
+  it('"Add all to deck" seeds one idempotent card per character', async () => {
+    const user = userEvent.setup();
+    fetchHanjaListDetailMock.mockResolvedValue(FIXTURE_LIST_DETAIL);
+    seedHanjaCardMock
+      .mockResolvedValueOnce(seedResult({ ch: '學', character_id: 1 }))
+      .mockResolvedValueOnce(
+        seedResult({ ch: '生', character_id: 2, created: false }),
+      );
+    renderHanja('/learn/hanja?view=list&id=5');
+
+    await user.click(
+      await screen.findByRole('button', { name: /Add all to deck/ }),
+    );
+
+    await waitFor(() => {
+      expect(seedHanjaCardMock).toHaveBeenCalledWith('學');
+      expect(seedHanjaCardMock).toHaveBeenCalledWith('生');
+    });
+    // Honest tally: 1 fresh card, 1 already in the deck.
+    expect(
+      await screen.findByText(/Added 1 new card.*1 already there/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows "List not found" for a garbage id (no fetch fired)', () => {
+    renderHanja('/learn/hanja?view=list&id=nope');
+    expect(screen.getByText(/List not found/)).toBeInTheDocument();
+    expect(fetchHanjaListDetailMock).not.toHaveBeenCalled();
+  });
+
+  // ── Drawing drill (F-076) ──────────────────────────────────
+
+  it('draw view renders the recall prompt without leaking the character', () => {
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    expect(screen.getByText('배울')).toBeInTheDocument();
+    expect(screen.getByText(/Draw the character from memory/)).toBeInTheDocument();
+    // The answer glyph stays hidden until revealed.
+    expect(screen.queryByText('學')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /글자 보기 · Show character/ }),
+    ).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('reveals and hides the ghost character for comparison', async () => {
+    const user = userEvent.setup();
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    await user.click(
+      screen.getByRole('button', { name: /글자 보기 · Show character/ }),
+    );
+    expect(screen.getByText('學')).toBeInTheDocument();
+    const hideBtn = screen.getByRole('button', {
+      name: /글자 숨기기 · Hide character/,
+    });
+    expect(hideBtn).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(hideBtn);
+    expect(screen.queryByText('學')).not.toBeInTheDocument();
+  });
+
+  it('tracks strokes for undo/clear even without a 2d context (model-first)', () => {
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    const undoBtn = screen.getByRole('button', { name: /Undo/ });
+    const clearBtn = screen.getByRole('button', { name: /Clear/ });
+    expect(undoBtn).toBeDisabled();
+    expect(clearBtn).toBeDisabled();
+
+    // One pointer stroke on the pad (happy-dom has no canvas 2d context —
+    // the stroke MODEL must still update so the controls stay honest).
+    const pad = screen.getByRole('img', { name: /Drawing pad/ });
+    fireEvent.pointerDown(pad, { clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(pad, { clientX: 40, clientY: 40 });
+    fireEvent.pointerUp(pad);
+
+    expect(undoBtn).toBeEnabled();
+    expect(clearBtn).toBeEnabled();
+
+    fireEvent.click(undoBtn);
+    expect(undoBtn).toBeDisabled();
+    expect(clearBtn).toBeDisabled();
+  });
+
+  it('names the keyboard/AT alternative inside the About disclosure', async () => {
+    const user = userEvent.setup();
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    const aboutToggle = screen.getByRole('button', { name: /About this drill/ });
+    expect(aboutToggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(aboutToggle);
+    expect(aboutToggle).toHaveAttribute('aria-expanded', 'true');
+
+    // Honest notes: not graded, no stroke-order data, pointer-only + the
+    // flashcard drill as the accessible alternative.
+    expect(screen.getByText(/nothing is graded or saved/i)).toBeInTheDocument();
+    expect(screen.getByText(/stroke-order/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Flashcard drill/ }));
+    expect(await screen.findByText(/No hanja cards due/)).toBeInTheDocument();
+  });
+
+  it('draw view reports an unknown character honestly', () => {
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('無')}`);
+    expect(screen.getByText(/Character not found/)).toBeInTheDocument();
   });
 });

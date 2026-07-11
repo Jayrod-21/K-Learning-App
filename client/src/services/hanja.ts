@@ -52,7 +52,14 @@
  * is kept for symmetry with the other services and for future direct callers.
  */
 import { api } from './api';
-import type { Hanja, HanjaProgress, HanjaState } from '../types/domain';
+import type {
+  FsrsRating,
+  Hanja,
+  HanjaProgress,
+  HanjaState,
+  ListListsResponse,
+  ServerVocabList,
+} from '../types/domain';
 
 /** Filter for `GET /hanja`. Omit (or `'all'`) to draw the whole pool. */
 export type HanjaListFilter = 'all' | HanjaState;
@@ -154,6 +161,224 @@ export async function setHanjaState(
   return api.post<HanjaStateResult>(
     `/hanja/${encodeURIComponent(char)}/state`,
     { state },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// FSRS flashcards + lists (F-075 / B-028 — Phase 3C-1)
+//
+// The card routes ride the SHARED FSRS scheduler (migration 050 —
+// `vocab_cards` rows with a `hanja_character_id` target); list membership
+// rides the shared vocab-lists infra (migration 049 — the multitype
+// `vocab_list_entries` XOR columns). Same threat posture as the routes
+// above: cookie session (`requireAuth`), user-scoped reads/writes, the one
+// path segment we interpolate (`char`) URL-encoded as defence-in-depth and
+// re-validated server-side, all ids serialised via String() into fixed
+// route templates. Scheduling is SERVER-authoritative — the client sends
+// only its rating + `expected_version`; a 409 means the snapshot is stale
+// and the caller must refetch before replaying.
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One due hanja recognition card, as served by `GET /hanja/cards/due`.
+ * `stability` / `difficulty` are NUMERIC → strings on the wire
+ * (precision-safe, same convention as `/vocab/cards/due`); `due_at` is an
+ * ISO timestamp string. `version` MUST be echoed back as
+ * `expected_version` on the review submit (optimistic concurrency).
+ */
+export interface HanjaDueCard {
+  id: number;
+  face: string;
+  due_at: string;
+  fsrs_state: string;
+  stability: string;
+  difficulty: string;
+  version: number;
+  hanja_character_id: number;
+  ch: string;
+  sound: string;
+  gloss: string;
+  en: string;
+  level: string;
+  strokes: number;
+}
+
+/** Envelope returned by `GET /hanja/cards/due`. */
+interface HanjaDueCardsEnvelope {
+  cards: HanjaDueCard[];
+}
+
+/**
+ * GET /hanja/cards/due — this user's due hanja cards, oldest-due first.
+ * Server default page is 20; pass `limit` (1–200) to widen a session.
+ */
+export async function fetchHanjaDueCards(
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<HanjaDueCard[]> {
+  const res = await api.get<HanjaDueCardsEnvelope>('/hanja/cards/due', {
+    ...(limit !== undefined ? { params: { limit } } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+  });
+  return res.cards;
+}
+
+/** Result of `POST /hanja/:char/card`. `created` is false when the card
+ *  already existed (the call is idempotent — 200 vs 201 server-side). */
+export interface SeedHanjaCardResult {
+  card_id: number;
+  /** The numeric `hanja_characters.id` — the id list membership needs. */
+  character_id: number;
+  ch: string;
+  face: string;
+  due_at: string;
+  version: number;
+  created: boolean;
+}
+
+/**
+ * POST /hanja/:char/card — seed a recognition card for one character.
+ * Idempotent: a repeat call returns the existing live card with
+ * `created: false`. A fresh card is immediately due. 404s when the
+ * character is not in the corpus.
+ */
+export async function seedHanjaCard(
+  char: string,
+  signal?: AbortSignal,
+): Promise<SeedHanjaCardResult> {
+  return api.post<SeedHanjaCardResult>(
+    `/hanja/${encodeURIComponent(char)}/card`,
+    {},
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/** Body for `POST /hanja/cards/:cardId/reviews`. */
+export interface HanjaCardReviewBody {
+  rating: FsrsRating;
+  /** Milliseconds the card was on screen; server caps at INT4. */
+  duration_ms?: number;
+  /** The `version` from the due-card row — 409 when stale. */
+  expected_version: number;
+}
+
+/** Result of `POST /hanja/cards/:cardId/reviews`. */
+export interface HanjaCardReviewResult {
+  version: number;
+  due_at: string;
+  scheduled_days: number;
+}
+
+/**
+ * POST /hanja/cards/:cardId/reviews — self-rate a due hanja card. The
+ * server locks the row, derives the FSRS transition, and reschedules; a
+ * stale `expected_version` 409s (caller refetches the queue), an unknown /
+ * cross-user / non-hanja card 404s.
+ */
+export async function submitHanjaCardReview(
+  cardId: number,
+  body: HanjaCardReviewBody,
+  signal?: AbortSignal,
+): Promise<HanjaCardReviewResult> {
+  return api.post<HanjaCardReviewResult>(
+    `/hanja/cards/${String(cardId)}/reviews`,
+    body,
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * GET /vocab/lists?kind=hanja — this user's hanja-kind lists. Same route
+ * family as `services/vocab.listLists`, narrowed server-side to the hanja
+ * kind so the Hanja screen never pages through vocab/grammar lists.
+ * BIGINT `id` arrives as a JSON string — coerced onto the numeric contract.
+ */
+export async function fetchHanjaLists(
+  signal?: AbortSignal,
+): Promise<ServerVocabList[]> {
+  const res = await api.get<ListListsResponse>('/vocab/lists', {
+    params: { kind: 'hanja', limit: 100 },
+    ...(signal !== undefined ? { signal } : {}),
+  });
+  return res.lists.map((l) => ({ ...l, id: Number(l.id) }));
+}
+
+/**
+ * One joined membership row inside a list's detail, as the multitype
+ * (migration 049) `GET /vocab/lists/:id` serves it. `entry_id` is the
+ * TARGET id in the type's own table (for hanja rows: the numeric
+ * `hanja_characters.id`); `item_type` says which of the joined column
+ * families is populated — the hanja_* fields are null on non-hanja rows.
+ */
+export interface HanjaListEntryRow {
+  entry_id: number;
+  item_type: 'vocab' | 'grammar' | 'hanja';
+  position: number;
+  added_at: string;
+  hanja_char: string | null;
+  hanja_sound: string | null;
+  hanja_gloss_en: string | null;
+  hanja_level: string | null;
+}
+
+/** Envelope for the hanja-typed view of `GET /vocab/lists/:id`. */
+export interface HanjaListDetail {
+  list: ServerVocabList;
+  entries: HanjaListEntryRow[];
+}
+
+/**
+ * GET /vocab/lists/:id — list detail with the 049 multitype columns the
+ * hanja screen renders (`item_type` + `hanja_*`). `services/vocab
+ * .getListDetail` predates 049 and types only the vocab columns, so the
+ * hanja surface fetches through this typed view instead. BIGINT ids are
+ * coerced to numbers (node-postgres serialises int8 as strings).
+ */
+export async function fetchHanjaListDetail(
+  id: number,
+  signal?: AbortSignal,
+): Promise<HanjaListDetail> {
+  const res = await api.get<HanjaListDetail>(
+    `/vocab/lists/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return {
+    list: { ...res.list, id: Number(res.list.id) },
+    entries: res.entries.map((e) => ({ ...e, entry_id: Number(e.entry_id) })),
+  };
+}
+
+/**
+ * POST /vocab/lists/:id/entries — append hanja characters (by numeric
+ * `hanja_characters.id`) to a list via the 049 typed-items shape. The
+ * server 409s on a duplicate membership (NOT a silent skip) — callers
+ * treat `ApiError(status: 409)` as "already in this list".
+ */
+export async function addHanjaToList(
+  listId: number,
+  characterIds: number[],
+  signal?: AbortSignal,
+): Promise<void> {
+  await api.post<unknown>(
+    `/vocab/lists/${String(listId)}/entries`,
+    { items: characterIds.map((id) => ({ type: 'hanja' as const, id })) },
+    signal !== undefined ? { signal } : undefined,
+  );
+}
+
+/**
+ * DELETE /vocab/lists/:id/entries/:entryId?type=hanja — remove one hanja
+ * membership. `type=hanja` addresses the 049 XOR column; without it the
+ * server defaults to the legacy vocab column and 404s.
+ */
+export async function removeHanjaFromList(
+  listId: number,
+  characterId: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  await api.delete<void>(
+    `/vocab/lists/${String(listId)}/entries/${String(characterId)}?type=hanja`,
     signal !== undefined ? { signal } : undefined,
   );
 }
