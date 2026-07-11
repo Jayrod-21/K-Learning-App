@@ -1165,7 +1165,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G3 /fixpass (generation review SF-1 coordination note + writing/chat review NIT-6: five-plus copies past the rule-of-three).
 
 ### B-034 · B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done (Phase 3C-1) — grammar 0-day copy branches on `schedule.rating` (again → "under a minute", hard → "~6 minutes"); the three `types/domain.ts` doc comments corrected; hanja restored engine-true interval subs mirroring vocab. · **Priority:** P2 · **Category:** UI · **Beta:** —
 - **Where:** `client/src/pages/Grammar.tsx` (~1573-1578); stale copy also pinned by `client/src/pages/Grammar.test.tsx` (~914-937) and described in `client/src/types/domain.ts` doc comments (~1014, ~1379, ~1395).
 - **Root cause:** After the B-021 FSRS retune (server-only, deliberate), a scheduledDays-0 transition is either an `again` step (<1 minute) or a `hard` learning step (6 minutes) — the hardcoded "~10 minutes" label is false either way. The drill response already carries `schedule.rating`, so the client can distinguish "<1m" from "~6m" without an API change.
 - **Fix hint:** One-file copy change keyed on `schedule.rating` + re-pin the test + update the three domain.ts comments. B-021 is not fully closed until this lands.
@@ -1259,6 +1259,47 @@ Surfaced by the Phase 3B builders + /fixpass reviewers; several backend routes a
 ### F-109 · Retain `source_format` on uploads (enables literal source-format filter)
 - **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (DATABASE) · **Beta:** —
 - **What:** The server discards the original zip/PDF at ingest (migration 041) and stores no `source_format` column, so F-058's literal "PDF-only" filter is unimplementable client-side (and would wrongly hide zip-based corpus books). F-058 shipped the honest equivalent — a viewable-rendition filter. If a literal source-format filter is ever wanted, add the server column first. **F-058 is done-as-respecced.**
+
+---
+
+## 🌊 Phase 3C-1 follow-up tickets (filed 2026-07-10)
+
+Backend gaps the Phase 3C-1 card/FSRS reworks (flashcards · grammar · hanja) honest-stubbed or reserved UI for. Client is CLIENT-only; these are the server halves for the mini-phase.
+
+### F-110 · `GET /grammar-drill/attempts` — past drill history (grammar F-065 backend)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** `grammar_drill_attempts` has no read endpoint, so the Grammar → History view is an honest "not available yet" stub. Add a paged, user-scoped read (pattern, drill type, answer, score, verdict, scored_at) so History renders real entries. (Was code-comment id "F-065-B".)
+
+### F-111 · Per-pattern grammar production-card schedule read (grammar F-063 backend)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** Grammar card rows show only due-NOW badges because there's no read of full FSRS state + `due_at` for non-due production cards. Expose it (e.g. folded into `GET /grammar/bank`) so grammar mastery rows can show Anki state/next-due like vocab. (Was code-comment id "F-063-B".)
+
+### F-112 · Vocab list detail rows should carry example sentences
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** `GET /vocab/lists/:id` rows carry no example sentences, so list-study card backs show gloss only (the KRDICT drawer compensates on demand). Server should JOIN `example_korean`/`example_english` so study backs are complete offline.
+
+### F-113 · Per-list due-aware study queue + bulk "add all to review"
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** List "Study" presents ALL words each run — there's no `due?list_id=` queue, so it isn't due-only like the global due queue. Add a per-list due-aware queue and a per-list bulk "add all to review/deck".
+
+### F-114 · Expose numeric `hanja_characters.id` on the `GET /hanja` DTO
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** The hanja pool DTO doesn't expose the numeric character id, so list-add currently obtains it via an idempotent card-seed round-trip (disclosed in UI). Expose the id on the pool DTO so list-add no longer needs the seed side-effect.
+
+### F-115 · Hanja stroke-order data → guided + gradable drawing drill (F-076 backend)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (BACKEND) · **Beta:** —
+- **What:** The F-076 drawing drill ships as a freehand canvas with an honest note — there's no stroke-order data in the corpus. Acquire per-character stroke data (KanjiVG / makemeahanzi-style) to add a guided stroke overlay + a gradable drill. (Was code-comment id "F-076-b".)
+
+---
+
+## ✅ Phase 3C-1 — Card/FSRS family (Vocab flashcards · Grammar practice · Hanja) — DONE, PR pending
+
+Delivered on `feat/phase3c1-cards`, full 4-phase /fixpass PASS (re-review: all 4 blockers mutation-verified dead, 0 regressions), full client suite 1415/1415.
+- **Vocab flashcards:** F-060 ✅ (lists-first landing) · F-061 ✅ (edit-lists + add-words round-trip) · F-062 ✅ (completion stats) · **B-021 ✅ verified** (client copy matches retuned engine) · B-022 ✅ (More-Examples expands underneath + close + auto-reset + keyboard-operable) · B-023 ✅ (card geometry).
+- **Grammar practice:** F-063 + F-066 ✅ (mirror vocab + Anki — Learning/Known, Again–Easy labels, due-first) · B-024 ✅ (formatting, one-line forms) · F-064 ✅ (Practice button) · F-065 ⏳ history honest-stub (backend **F-110**).
+- **Hanja:** F-075 ✅ (flashcard system + lists) · **B-028 ✅** (real drill replaces the dead button) · F-076 ✅ (canvas drill; stroke guidance stubbed → **F-115**) · F-077 ⏳ deferred (reword — discuss).
+- **Cross-cutting:** shared keyboard-flip bug fixed once in `components/Flashcard.tsx` + `lib/interactiveElement.ts`; interval copy unified engine-true across all three (**B-034 done**).
+- **New tickets filed:** F-110 · F-111 · F-112 · F-113 · F-114 · F-115.
 
 ---
 
