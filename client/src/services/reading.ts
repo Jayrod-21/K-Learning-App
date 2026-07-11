@@ -1,29 +1,45 @@
 /**
  * /reading — U3b digitized chapter reader client (server: routes/reading.ts,
- * `db/docs/U3_READER_DESIGN.md` §U3b). Two read-only GETs: the ordered
- * chapter list for one owned literature `BookUpload`, and one chapter's
- * metadata plus its ordered passages. Mirrors `services/uploads.ts`'s shape
- * — typed wire↔domain boundary, `AbortSignal` on every call.
+ * `db/docs/U3_READER_DESIGN.md` §U3b). Mirrors `services/uploads.ts`'s shape
+ * — typed wire↔domain boundary, `AbortSignal` on every call. Covers:
+ *   - the two read-only chapter GETs (ordered chapter list for one owned
+ *     literature `BookUpload`; one chapter's metadata + ordered passages);
+ *   - the per-upload resume position (F-069; `reading_positions`, migration
+ *     051): `GET`/`PUT /reading/position/:uploadId`;
+ *   - AI-generated short stories (F-068; `generated_stories`, migration
+ *     054): `POST /reading/generate`, `GET /reading/generated`,
+ *     `GET /reading/generated/:id`.
  *
  * Threat model:
- *   - Auth + session: both routes are `requireAuth` server-side; the session
+ *   - Auth + session: every route is `requireAuth` server-side; the session
  *     cookie rides via `withCredentials` on the shared axios instance
  *     (services/api.ts) — no extra plumbing needed here.
  *   - IDOR: every row is scoped server-side to the session `user_id`
  *     (routes/reading.ts's own header) — a foreign or missing
- *     `source_upload_id`/`chapterId` uniformly 404s (never 403, so id-space
- *     probing reveals nothing). This client never has to reason about
- *     ownership; a failed lookup just surfaces as an `ApiError`.
- *   - Read-only: both routes are GET — no CSRF surface of their own.
+ *     `source_upload_id`/`chapterId`/story id uniformly 404s (never 403, so
+ *     id-space probing reveals nothing). This client never has to reason
+ *     about ownership; a failed lookup just surfaces as an `ApiError`.
+ *   - Writes: `PUT /reading/position/:uploadId` and `POST /reading/generate`
+ *     ride the `SameSite=Strict` cookie posture owned by `services/api.ts`
+ *     (ADR-002). The generate route is in the server's EXPENSIVE rate-limit
+ *     bucket — 429 (with `retryAfter`) is a first-class error path for the
+ *     UI, not an exceptional one.
+ *   - Free text: `topic` is this module's only user free text; the server
+ *     bounds it (1..500) and the Claude proxy sanitizes + wraps it as
+ *     untrusted data again. It is sent as a JSON body value — never
+ *     interpolated into the URL.
  *   - Ids: unlike `services/uploads.ts` (whose BIGINT ids arrive as wire
  *     strings and get held as `string`), `routes/reading.ts` already
  *     converts every BIGINT id to a JSON number server-side (`Number(...)`
  *     — see its header), so no string/number split is needed on this side
- *     of the boundary.
- *   - Display fields (`title`, `body`) render as React text children
- *     downstream (Reading.tsx / TapKorean) — escaped, never HTML.
+ *     of the boundary. `uploadId` params take `BookUpload.id` (the wire
+ *     string) — the server's Zod schemas coerce.
+ *   - Display fields (`title`, `body`, `bodyKo`, `prompt`) render as React
+ *     text children downstream (Reading.tsx / TapKorean) — escaped, never
+ *     HTML. That includes Claude-authored story text: model output is
+ *     untrusted display data like any other.
  */
-import { api } from './api';
+import { api, ApiError } from './api';
 import type {
   ReadingChapter,
   ReadingChapterSummary,
@@ -134,4 +150,206 @@ export async function getChapter(
     chapter: toChapter(res.chapter),
     passages: res.passages.map(toPassage),
   };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Resume position (F-069 — reading_positions, migration 051)
+// ─────────────────────────────────────────────────────────────
+
+/** Wire shape of a saved position (the route's PositionDto — snake_case,
+ *  BIGINTs already coerced to numbers; `updated_at` is a serialized Date). */
+interface PositionWire {
+  source_upload_id: number;
+  chapter_id: number | null;
+  passage_number: number | null;
+  page_number: number | null;
+  updated_at: string;
+}
+
+/** Envelope shared by the position GET and PUT. */
+interface PositionEnvelope {
+  position: PositionWire | null;
+}
+
+/**
+ * The user's saved resume spot for one upload. `chapterId` can be null for a
+ * page-only position (or after a book re-load SET-NULLed it — the server
+ * normalizes a fully-degraded row to `position: null`, so a non-null
+ * position always points somewhere).
+ */
+export interface ReadingPosition {
+  sourceUploadId: number;
+  chapterId: number | null;
+  passageNumber: number | null;
+  pageNumber: number | null;
+  updatedAt: string;
+}
+
+function toPosition(wire: PositionWire): ReadingPosition {
+  return {
+    sourceUploadId: wire.source_upload_id,
+    chapterId: wire.chapter_id,
+    passageNumber: wire.passage_number,
+    pageNumber: wire.page_number,
+    updatedAt: wire.updated_at,
+  };
+}
+
+/**
+ * GET /reading/position/:uploadId — the saved resume position for one owned
+ * upload, or null when none is saved yet (a normal state, not an error).
+ * 404s (as `ApiError`) for a missing/foreign upload.
+ */
+export async function getReadingPosition(
+  uploadId: string,
+  signal?: AbortSignal,
+): Promise<ReadingPosition | null> {
+  const res = await api.get<PositionEnvelope>(
+    `/reading/position/${encodeURIComponent(uploadId)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.position === null ? null : toPosition(res.position);
+}
+
+/**
+ * What a position save points at. PUT semantics server-side: this is a FULL
+ * replace — fields left null clear to null. The server enforces the two
+ * semantic invariants (must reference a chapter and/or a page;
+ * `passageNumber` only within a chapter), so this client always sends all
+ * three keys explicitly rather than relying on omission.
+ */
+export interface SaveReadingPositionInput {
+  chapterId: number | null;
+  passageNumber?: number | null;
+  pageNumber?: number | null;
+}
+
+/**
+ * PUT /reading/position/:uploadId — upsert the one-row-per-(user, book)
+ * resume position. Returns the saved row as the server now holds it.
+ */
+export async function saveReadingPosition(
+  uploadId: string,
+  input: SaveReadingPositionInput,
+  signal?: AbortSignal,
+): Promise<ReadingPosition> {
+  const res = await api.put<PositionEnvelope>(
+    `/reading/position/${encodeURIComponent(uploadId)}`,
+    {
+      chapter_id: input.chapterId,
+      passage_number: input.passageNumber ?? null,
+      page_number: input.pageNumber ?? null,
+    },
+    signal !== undefined ? { signal } : undefined,
+  );
+  if (res.position === null) {
+    // The PUT contract always returns the upserted row; a null here means
+    // the server broke its own contract — fail loud rather than pretend.
+    throw new ApiError('position save returned no position', {
+      status: 500,
+      code: 'server_error',
+    });
+  }
+  return toPosition(res.position);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Generated stories (F-068 — generated_stories, migration 054)
+// ─────────────────────────────────────────────────────────────
+
+/** Story generation target bands (the server's StoryLevelBodySchema —
+ *  'basic' is a legacy corpus tag, never a generation target). */
+export type GeneratedStoryLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
+
+/** In display order, for level pickers. */
+export const GENERATED_STORY_LEVELS: ReadonlyArray<GeneratedStoryLevel> = [
+  'L1',
+  'L2',
+  'L3',
+  'L4',
+  'L5+',
+];
+
+/**
+ * One list row of the user's generated-story library
+ * (`GET /reading/generated` — metadata only, no body). The story routes
+ * return camelCase directly (unlike the position DTO), so the wire shape IS
+ * this shape with `createdAt` as a serialized Date string. `level` stays a
+ * plain string on read: the column admits legacy values beyond the
+ * generation enum, and the UI only displays it.
+ */
+export interface GeneratedStorySummary {
+  id: number;
+  title: string;
+  level: string;
+  /** The user's topic at generation time, when one was given. */
+  prompt: string | null;
+  createdAt: string;
+}
+
+/** One full generated story (`POST /reading/generate`,
+ *  `GET /reading/generated/:id`). */
+export interface GeneratedStory extends GeneratedStorySummary {
+  bodyKo: string;
+}
+
+interface StoryEnvelope {
+  story: GeneratedStory;
+}
+
+interface StoriesEnvelope {
+  stories: GeneratedStorySummary[];
+}
+
+/** What a generation request asks for. `topic` is optional free text —
+ *  the server bounds it to 1..500 chars (Zod 400s an empty/overlong one). */
+export interface GenerateStoryInput {
+  level: GeneratedStoryLevel;
+  topic?: string;
+}
+
+/**
+ * POST /reading/generate — Claude authors a short Korean story at the given
+ * level; the server persists it and returns the full story (201). Expensive
+ * route: expect 429 (`ApiError.retryAfter`) as a first-class failure, plus
+ * 502 for an upstream Claude failure — neither writes a story row.
+ */
+export async function generateStory(
+  input: GenerateStoryInput,
+  signal?: AbortSignal,
+): Promise<GeneratedStory> {
+  const res = await api.post<StoryEnvelope>(
+    '/reading/generate',
+    {
+      level: input.level,
+      ...(input.topic !== undefined ? { topic: input.topic } : {}),
+    },
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.story;
+}
+
+/** GET /reading/generated — the user's story library, newest first
+ *  (metadata only; fetch a body via `getGeneratedStory`). */
+export async function listGeneratedStories(
+  signal?: AbortSignal,
+): Promise<GeneratedStorySummary[]> {
+  const res = await api.get<StoriesEnvelope>(
+    '/reading/generated',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.stories;
+}
+
+/** GET /reading/generated/:id — one generated story, full body. 404s (as
+ *  `ApiError`) for a missing or foreign id. */
+export async function getGeneratedStory(
+  id: number,
+  signal?: AbortSignal,
+): Promise<GeneratedStory> {
+  const res = await api.get<StoryEnvelope>(
+    `/reading/generated/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.story;
 }

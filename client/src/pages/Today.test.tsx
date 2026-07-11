@@ -151,6 +151,7 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
             /learn/topik and /review/mistakes. */}
         <Route path="/learn/vocab" element={<div>FLASHCARDS PAGE</div>} />
         <Route path="/learn/grammar" element={<div>GRAMMAR PAGE</div>} />
+        <Route path="/learn/reading" element={<div>READING PAGE</div>} />
         <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
         <Route path="/learn/topik" element={<div>TOPIK PAGE</div>} />
         <Route path="/review/mistakes" element={<div>MISTAKES PAGE</div>} />
@@ -363,6 +364,21 @@ describe('Today', () => {
     // Largest gap pill on Listening tile; Register drill on Writing.
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
     expect(screen.getByText('Register drill')).toBeInTheDocument();
+  });
+
+  it('navigates to /learn/reading when the Reading task page is clicked (B-019)', async () => {
+    // B-019 closed (Phase 3C-2): the Reading tile lands on the rebuilt
+    // Reading page — NOT the old `/learn/listen` fallback it shared with
+    // Listening while `/learn/reading` was a placeholder.
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Reading is page 1 of the tasks carousel — active by default.
+    const tile = screen.getByRole('button', { name: /도시화와 환경/ });
+    await user.click(tile);
+
+    expect(screen.getByText('READING PAGE')).toBeInTheDocument();
   });
 
   it('navigates to /learn/writing when the Writing task page is clicked (F-001)', async () => {
