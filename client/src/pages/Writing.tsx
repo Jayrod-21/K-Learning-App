@@ -21,7 +21,7 @@
  *       against their echoed rubric, free-writes against the Q54 rubric
  *       (the server's own default) with an honest note — the rubric
  *       taxonomy can't widen past Q53/Q54 without a server-enum + DB CHECK
- *       change, which is deferred (see the F-107 note on `gradeRubricFor`).
+ *       change, which is deferred (see the F-117 note on `gradeRubricFor`).
  *
  *   The task header (eyebrow + target band + textarea label) derives from
  *   the ACTIVE task's own rubric/mode — never from a hardcoded Q53 default
@@ -140,7 +140,7 @@ const RUBRICS: readonly TopikWritingRubric[] = ['topik_ii_53', 'topik_ii_54'];
  * grade against Q54 — the server's own `/grade-writing` default — because the
  * rubric taxonomy is a closed Q53/Q54 enum end to end (server Zod + DB
  * CHECK). Widening it (e.g. a `general` rubric with its own dimensions) is a
- * SCHEMA change, deferred and ticketed as F-107; until then the free-write
+ * SCHEMA change, deferred and ticketed as F-117; until then the free-write
  * surface says so honestly (the `km-writing__note` line) instead of
  * pretending a bespoke rubric exists.
  */
@@ -787,7 +787,7 @@ function ComposeSheet({
 
       {isGenerated && task.prompt.mode === 'general' ? (
         // Honest note: the grader's rubric taxonomy is Q53/Q54 only (server
-        // enum + DB CHECK); widening it is deferred — ticketed F-107.
+        // enum + DB CHECK); widening it is deferred — ticketed F-117.
         <p className="km-writing__note">
           <Bilingual
             en="Free writes are graded with the TOPIK Q54 essay rubric for now."

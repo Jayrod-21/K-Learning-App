@@ -1033,7 +1033,7 @@ describe('MockMode (Mock test)', () => {
         }),
       ).toBeInTheDocument();
       // The per-exam list + completion checkmarks need the exam-list route
-      // (proposed F-116) and attempt history (F-104) — honestly pending, no
+      // (proposed F-118) and attempt history (F-104) — honestly pending, no
       // exam ever shown as "completed", and nothing fetched by navigating.
       expect(
         screen.getByText(
@@ -1145,7 +1145,7 @@ describe('MockMode (Mock test)', () => {
     it('a Listening exam discloses the audio gap up front — transcripts, no fake play control', async () => {
       // Per-question audio is not servable (the corpus holds only one
       // whole-section MP3 per paper, un-ingested and un-segmented — data-gap
-      // ticket F-117); the UI must say so rather than render a dead player.
+      // ticket F-119); the UI must say so rather than render a dead player.
       svc.fetchMockTest.mockResolvedValue({ ...TEST, section: 'listening' });
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });

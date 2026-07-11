@@ -590,7 +590,7 @@ describe('Writing', () => {
     expect(await screen.findByText(/기억에 남는 여행/)).toBeInTheDocument();
     expect(fetchRandomMock).not.toHaveBeenCalled();
     // Honest free-write header + the Q54-rubric grading note (the rubric
-    // taxonomy widen is deferred — F-107). '자유 주제' also appears on the
+    // taxonomy widen is deferred — F-117). '자유 주제' also appears on the
     // generator's mode radio and in Bilingual's sr-only halves — AllBy.
     expect(screen.getAllByText('자유 주제').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Free write').length).toBeGreaterThan(0);

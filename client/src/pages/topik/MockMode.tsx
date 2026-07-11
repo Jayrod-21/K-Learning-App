@@ -17,7 +17,7 @@
  *                                 plus an honestly-pending note where the
  *                                 per-exam list with completion checkmarks
  *                                 will render (needs an exam-list route,
- *                                 proposed F-116, + attempt history F-104).
+ *                                 proposed F-118, + attempt history F-104).
  *               ?section=…&exam=  the start page (F-079): exam meta + rules,
  *                                 a previous-attempts block (honestly pending
  *                                 on F-104 — never fabricated), and the
@@ -131,7 +131,7 @@ function parseSectionParam(raw: string | null): MockSection | null {
 /**
  * Parse the `exam` search param. `'auto'` = the server-picked exam (the only
  * wired chooser entry today — per-exam ids arrive with the exam-list route,
- * proposed F-116). Unknown values degrade to the chooser.
+ * proposed F-118). Unknown values degrade to the chooser.
  */
 function parseExamParam(raw: string | null): 'auto' | null {
   return raw === 'auto' ? 'auto' : null;
@@ -741,7 +741,7 @@ function sectionNames(section: MockSection): { en: string; kr: string } {
  * Design intent: a list of every TOPIK paper for this section, each with a
  * green checkmark when previously completed. What is wired TODAY: the
  * server-picked exam (`POST /topik/mock` with no `sourceTest`). The per-exam
- * list needs a route that enumerates `topik_tests` (proposed ticket F-116),
+ * list needs a route that enumerates `topik_tests` (proposed ticket F-118),
  * and the completion checkmarks need attempt history (`GET /topik/attempts`,
  * ticket F-104) — so that area renders an honestly-pending note. NO exam is
  * ever shown as "completed" from fabricated data.
@@ -785,7 +785,7 @@ function ExamChooser({
       </button>
 
       {/* Honest pending state — per-exam browsing + done-checkmarks need the
-          exam-list route (proposed F-116) and attempt history (F-104). */}
+          exam-list route (proposed F-118) and attempt history (F-104). */}
       <Card variant="flat" className="km-mock__pending" role="status">
         <Eyebrow>
           <Bilingual en="Coming soon" kr="준비 중" />
@@ -808,7 +808,7 @@ function ExamChooser({
  * (ticket F-104) and renders honestly pending until that route exists.
  * F-080: for Listening, the audio data gap is disclosed BEFORE the timer
  * starts — items are served as transcripts; the raw section MP3s are not
- * ingested or segmented per question (see the exam-head note / ticket F-117).
+ * ingested or segmented per question (see the exam-head note / ticket F-119).
  */
 function StartPage({
   section,
@@ -1285,7 +1285,7 @@ function ExamRunner({
         // `60th-TOPIK-II-Listening-Audio.mp3`), but nothing is ingested —
         // there is no audio column/DTO field, no serving route, and no
         // per-question timestamps to cut clips from. A play control per item
-        // needs that ingest + segmentation + route — data-gap ticket F-117.
+        // needs that ingest + segmentation + route — data-gap ticket F-119.
         // Until then, say so once, up front, instead of faking a player.
         <p className="km-mock__audio-note" role="note">
           <Bilingual

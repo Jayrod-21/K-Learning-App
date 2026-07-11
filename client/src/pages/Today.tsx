@@ -446,10 +446,17 @@ export function Today(): JSX.Element {
                 />
                 {tile.task.tag === 'Writing' ? (
                   // F-027: Claude authors a fresh topic (TOPIK-style or
-                  // free-write) right on the writing tile. The generated
-                  // topic is ephemeral display — carrying it into
-                  // /learn/writing for grading is F-073's page-side half.
-                  <WritingTopicGenerator />
+                  // free-write) right on the writing tile. F-101: "Write this
+                  // topic" carries the generated prompt into /learn/writing
+                  // via location.state so it can be written against + graded
+                  // (the Writing page narrows `state.generatedTopic`).
+                  <WritingTopicGenerator
+                    onUseTopic={(topic) =>
+                      navigate('/learn/writing', {
+                        state: { generatedTopic: topic },
+                      })
+                    }
+                  />
                 ) : null}
               </div>
             ))}
