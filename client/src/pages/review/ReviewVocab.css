@@ -44,3 +44,12 @@
   flex: 1;
   min-width: 0;
 }
+
+/* F-061 — add-words-mode banner (hand-off from the flashcards list edit). */
+.km-vocab__addBanner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}

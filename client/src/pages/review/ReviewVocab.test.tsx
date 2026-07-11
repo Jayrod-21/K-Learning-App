@@ -694,3 +694,86 @@ describe('ReviewVocab — U1 sort-by-source filter scaffolding', () => {
     ).toBeInTheDocument();
   });
 });
+
+// ─────────────────────────────────────────────────────────────
+// F-061 — add-words hand-off from the flashcards list edit
+// ─────────────────────────────────────────────────────────────
+
+describe('ReviewVocab — add-words hand-off (F-061)', () => {
+  /** Land with the flashcards page's router state attached. */
+  function renderWithAddTarget(state: unknown): ReturnType<typeof render> {
+    return render(
+      <MemoryRouter initialEntries={[{ pathname: '/review/vocab', state }]}>
+        <ToastProvider>
+          <Routes>
+            <Route path="/review/vocab" element={<ReviewVocab />} />
+            <Route path="/review" element={<div data-testid="review-index" />} />
+            <Route
+              path="/learn/vocab"
+              element={<div data-testid="flashcards-stub" />}
+            />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('adds a tapped word straight to the hand-off list, no picker sheet', async () => {
+    const user = userEvent.setup();
+    renderWithAddTarget({ addToList: { id: 7, name: '병원 어휘' } });
+    await screen.findByText('영향');
+
+    // The banner names the target list.
+    expect(screen.getByText('Adding words to')).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Add 영향 to 병원 어휘' }),
+    );
+
+    await waitFor(() => {
+      expect(vocabSvc.addListEntries).toHaveBeenCalledWith(7, [1]);
+    });
+    // Direct add — the picker sheet never opened (its create-a-list input
+    // is the sheet's distinctive control), and the user got a toast.
+    expect(
+      screen.queryByLabelText('Name for the new list'),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText('Added to 병원 어휘.')).toBeInTheDocument();
+  });
+
+  it('treats a 409 duplicate as satisfied intent, not an error', async () => {
+    vocabSvc.addListEntries.mockRejectedValue(
+      new ApiError('duplicate membership', { status: 409, code: 'conflict' }),
+    );
+    const user = userEvent.setup();
+    renderWithAddTarget({ addToList: { id: 7, name: '병원 어휘' } });
+    await screen.findByText('영향');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Add 영향 to 병원 어휘' }),
+    );
+
+    expect(await screen.findByText('Already in 병원 어휘.')).toBeInTheDocument();
+    expect(screen.queryByText('duplicate membership')).not.toBeInTheDocument();
+  });
+
+  it('returns to the originating list via the banner', async () => {
+    const user = userEvent.setup();
+    renderWithAddTarget({ addToList: { id: 7, name: '병원 어휘' } });
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('button', { name: /Back to the list/ }));
+    expect(await screen.findByTestId('flashcards-stub')).toBeInTheDocument();
+  });
+
+  it('ignores malformed router state and stays in normal browse mode', async () => {
+    renderWithAddTarget({ addToList: { id: '7; DROP TABLE', name: 5 } });
+    await screen.findByText('영향');
+
+    expect(screen.queryByText('Adding words to')).not.toBeInTheDocument();
+    // Rows keep the normal picker affordance.
+    expect(
+      screen.getByRole('button', { name: 'Add 영향 to a list' }),
+    ).toBeInTheDocument();
+  });
+});

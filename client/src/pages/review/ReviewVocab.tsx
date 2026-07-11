@@ -37,6 +37,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
@@ -124,7 +125,47 @@ function toLevelFilter(value: string): LevelFilter {
     : 'all';
 }
 
+// ─────────────────────────────────────────────────────────────
+// F-061 — "add words to this list" hand-off from the flashcards page
+// ─────────────────────────────────────────────────────────────
+
+/** The flashcards page's list-edit flow lands here with the open list in
+ *  router state, so a tapped word files into THAT list without re-picking. */
+export interface AddToListTarget {
+  id: number;
+  name: string;
+}
+
+/**
+ * Router state is an untyped I/O boundary (a stale history entry or another
+ * page's state shape can arrive here) — validate structurally and degrade to
+ * null (normal browse mode) rather than trusting a cast.
+ */
+function toAddToListTarget(state: unknown): AddToListTarget | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const raw = (state as { addToList?: unknown }).addToList;
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { id, name } = raw as { id?: unknown; name?: unknown };
+  if (
+    typeof id !== 'number' ||
+    !Number.isSafeInteger(id) ||
+    id <= 0 ||
+    typeof name !== 'string' ||
+    name === ''
+  ) {
+    return null;
+  }
+  return { id, name };
+}
+
 export default function ReviewVocab(): JSX.Element {
+  const location = useLocation();
+  const navigate = useNavigate();
+  // F-061: when the flashcards page sent us here to fill a list, every
+  // Browse-row add goes straight into that list (no picker sheet), and the
+  // banner offers the way back to the list that was originally open.
+  const addToList = toAddToListTarget(location.state);
+
   return (
     <section
       className="screen km-reference km-resources"
@@ -141,6 +182,29 @@ export default function ReviewVocab(): JSX.Element {
       />
 
       <LibrarySubnav />
+
+      {/* F-061 — add-words mode banner + the return leg of the round-trip. */}
+      {addToList !== null ? (
+        <Card variant="accent" className="km-vocab__addBanner" role="status">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Eyebrow>
+              <Bilingual en="Adding words to" kr="단어 추가 중" />
+            </Eyebrow>
+            <div className="kr" style={{ fontSize: 15, fontWeight: 500 }}>
+              {addToList.name}
+            </div>
+          </div>
+          <Button
+            variant="gold"
+            size="sm"
+            onClick={() => {
+              void navigate(`/learn/vocab?list=${String(addToList.id)}`);
+            }}
+          >
+            <Bilingual en="Back to the list" kr="목록으로" compact />
+          </Button>
+        </Card>
+      ) : null}
 
       {/* F-052 — My Lists leads the page. */}
       <section
@@ -167,7 +231,7 @@ export default function ReviewVocab(): JSX.Element {
         <h2 id="km-vocab-browse-h" className="km-review__sectionTitle">
           <Bilingual en="Browse the corpus" kr="말뭉치 둘러보기" />
         </h2>
-        <VocabBrowse />
+        <VocabBrowse addToList={addToList} />
       </section>
     </section>
   );
@@ -207,7 +271,13 @@ function SavedFromUploads(): JSX.Element | null {
 // Browse — curated corpus, searchable; F-049 dropdown filters + F-051 window
 // ─────────────────────────────────────────────────────────────
 
-function VocabBrowse(): JSX.Element {
+function VocabBrowse({
+  addToList,
+}: {
+  /** F-061 — when set, row adds go straight into this list (no picker). */
+  addToList: AddToListTarget | null;
+}): JSX.Element {
+  const { toast } = useToast();
   const { input, q, setInput, clear } = useDebouncedSearch();
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<VocabEntry[]>([]);
@@ -219,6 +289,9 @@ function VocabBrowse(): JSX.Element {
   const [reloadTick, setReloadTick] = useState(0);
   // Add-to-list target row — opens the picker Sheet.
   const [addTarget, setAddTarget] = useState<VocabEntry | null>(null);
+  // F-061 direct-add mode: the entry currently being appended to the
+  // hand-off list (disables that row's button while in flight).
+  const [directAddId, setDirectAddId] = useState<number | null>(null);
   // F-049 filters: genre (content_domain) + difficulty (book_level). 'all'
   // omits the param so the endpoint returns every row.
   const [domain, setDomain] = useState<DomainFilter>('all');
@@ -243,7 +316,7 @@ function VocabBrowse(): JSX.Element {
   // result set. Sync-to-derived-state on a key change — same documented
   // exception the hooks use.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setOffset(0);
     resetWindow();
   }, [q, domain, level, source, resetWindow]);
@@ -260,10 +333,10 @@ function VocabBrowse(): JSX.Element {
     ctrlRef.current = ctrl;
     // Sync-to-external-system (a network fetch) — the same exception
     // useEndpointOrMock documents for its kickoff setState.
-    /* eslint-disable react-hooks/set-state-in-effect */
+     
     setLoading(true);
     setError(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
+     
     vocabService
       .searchEntriesPage(
         {
@@ -298,6 +371,32 @@ function VocabBrowse(): JSX.Element {
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
   }, []);
+
+  // F-061: in add-words mode a tapped row files straight into the hand-off
+  // list — no picker sheet. A 409 means "already a member": the user's
+  // intent is satisfied, so it reads as gentle info, not an error.
+  const directAdd = useCallback(
+    async (entry: VocabEntry): Promise<void> => {
+      if (addToList === null || directAddId !== null) return;
+      setDirectAddId(entry.id);
+      try {
+        await vocabService.addListEntries(addToList.id, [entry.id]);
+        toast({ message: `Added to ${addToList.name}.`, tone: 'success' });
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          toast({ message: `Already in ${addToList.name}.`, tone: 'info' });
+        } else {
+          toast({
+            message: errorMessageFor(err, 'Could not add the word.'),
+            tone: 'error',
+          });
+        }
+      } finally {
+        setDirectAddId(null);
+      }
+    },
+    [addToList, directAddId, toast],
+  );
 
   return (
     <div className="km-resources__panel">
@@ -373,11 +472,24 @@ function VocabBrowse(): JSX.Element {
                       size="sm"
                       leadingIcon={<Icon name="plus" size={12} />}
                       onClick={() => {
-                        setAddTarget(entry);
+                        if (addToList !== null) {
+                          void directAdd(entry);
+                        } else {
+                          setAddTarget(entry);
+                        }
                       }}
-                      aria-label={`Add ${entry.korean ?? 'word'} to a list`}
+                      disabled={directAddId === entry.id}
+                      aria-label={
+                        addToList !== null
+                          ? `Add ${entry.korean ?? 'word'} to ${addToList.name}`
+                          : `Add ${entry.korean ?? 'word'} to a list`
+                      }
                     >
-                      <Bilingual en="List" kr="목록" compact />
+                      {addToList !== null ? (
+                        <Bilingual en="Add" kr="추가" compact />
+                      ) : (
+                        <Bilingual en="List" kr="목록" compact />
+                      )}
                     </Button>
                   </div>
                 </li>

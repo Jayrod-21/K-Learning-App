@@ -1,61 +1,54 @@
 /**
- * Review — Pass 3 wired flow.
+ * Review — Phase 3C-1 lists-first flashcards page.
  *
- * The screen pipes three useEndpointOrMock fetches through the vocab service:
- *   - 'review:due'   → vocab.getDueCards    (Vocab[] adapter)
- *   - 'review:lists' → vocab.listLists      (VocabListBundle adapter)
- *   - 'review:all:Q' → vocab.searchEntries  (debounced query → Vocab[])
+ * The page pipes two useEndpointOrMock feeds through the vocab service:
+ *   - 'review:due'   → vocab.getDueCards  (StudyCard[] adapter + grammar split)
+ *   - 'review:lists' → vocab.listLists    (ServerVocabList[])
+ * plus direct abortable fetches for list detail (getListDetail) and the
+ * study-session persistence pair (bankEntry → submitReview).
  *
- * Tests cover:
- *   - happy path (due cards render on session tab)
- *   - rating Again calls vocab.submitReview
- *   - lists tab opens ListDetailSheet which calls vocab.getList
- *   - all tab debounces input and calls vocab.searchEntries
- *   - empty bank renders EmptyCard (not ErrorCard)
- *   - fetch error renders ErrorCard with Retry
+ * Coverage map:
+ *   F-060 — lists-first landing (no tabs), create-a-list, open-list detail
+ *           with Study at the top.
+ *   F-061 — edit mode: rename, remove word (optimistic + rollback), add
+ *           words hand-off to /review/vocab with the list in router state.
+ *   F-062 — completion page: reviewed count, rating breakdown, next-due
+ *           summary from the server's scheduled_days, unsaved tally.
+ *   B-021 — the displayed rating intervals are pinned to the server FSRS
+ *           tuning (<1m / 6m / 1d / 4d).
+ *   B-022 — the examples tile closes via its button, on page tap, and on
+ *           card flip.
+ *   B-013 — corpus seeding (collapsed tile on the landing).
+ *   FU-NF-42 — grammar production cards render + deep-link into the drill.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { JSX } from 'react';
-import {
-  MemoryRouter,
-  Route,
-  Routes,
-  useLocation,
-} from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type {
   DueCard,
-  Vocab,
-  VocabEntry,
-  VocabListBundle,
+  ServerVocabList,
+  VocabListDetailResponse,
 } from '../types/domain';
 import { ApiError } from '../services/api';
 
-// ── Hoisted hook / service mock state ─────────────────────────────────
+// ── Hoisted hook mock state ───────────────────────────────────────────
 const hoisted = vi.hoisted(() => {
-  type HookState<T> =
+  type HookState =
     | { kind: 'loading' }
-    | { kind: 'data'; data: T; isMock: boolean }
-    | { kind: 'error'; error: ApiError };
+    | { kind: 'data'; data: unknown; isMock: boolean }
+    | { kind: 'error'; error: unknown };
   return {
-    due: { state: { kind: 'loading' } as HookState<Vocab[]> },
-    lists: { state: { kind: 'loading' } as HookState<VocabListBundle> },
-    all: { state: { kind: 'loading' } as HookState<Vocab[]> },
-    refetchCalls: { due: 0, lists: 0, all: 0 },
+    due: { state: { kind: 'loading' } as HookState },
+    lists: { state: { kind: 'loading' } as HookState },
+    refetchCalls: { due: 0, lists: 0 },
     capturedRealFns: {
-      due: null as null | (() => Promise<Vocab[]>),
-      lists: null as null | (() => Promise<VocabListBundle>),
-      all: null as null | (() => Promise<Vocab[]>),
+      due: null as null | (() => Promise<unknown>),
+      lists: null as null | (() => Promise<unknown>),
     },
-    lastAllKey: '',
   };
 });
-
-type AnyHookState =
-  | { kind: 'loading' }
-  | { kind: 'data'; data: unknown; isMock: boolean }
-  | { kind: 'error'; error: ApiError };
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: <T,>(
@@ -63,40 +56,21 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
     _mockFn: () => Promise<T>,
     opts?: { realFn?: () => Promise<T> },
   ) => {
-    let s: AnyHookState;
-    if (key === 'review:due') {
-      s = hoisted.due.state as AnyHookState;
-      if (opts?.realFn) {
-        hoisted.capturedRealFns.due = opts.realFn as () => Promise<Vocab[]>;
-      }
-    } else if (key === 'review:lists') {
-      s = hoisted.lists.state as AnyHookState;
-      if (opts?.realFn) {
-        hoisted.capturedRealFns.lists =
-          opts.realFn as () => Promise<VocabListBundle>;
-      }
-    } else if (key.startsWith('review:all')) {
-      s = hoisted.all.state as AnyHookState;
-      hoisted.lastAllKey = key;
-      if (opts?.realFn) {
-        hoisted.capturedRealFns.all = opts.realFn as () => Promise<Vocab[]>;
-      }
-    } else {
-      s = { kind: 'loading' };
+    const slot =
+      key === 'review:due' ? hoisted.due
+      : key === 'review:lists' ? hoisted.lists
+      : null;
+    if (slot !== null && opts?.realFn) {
+      if (key === 'review:due') hoisted.capturedRealFns.due = opts.realFn;
+      else hoisted.capturedRealFns.lists = opts.realFn;
     }
     const refetch = (): void => {
       if (key === 'review:due') hoisted.refetchCalls.due++;
       else if (key === 'review:lists') hoisted.refetchCalls.lists++;
-      else if (key.startsWith('review:all')) hoisted.refetchCalls.all++;
     };
+    const s = slot?.state ?? { kind: 'loading' as const };
     if (s.kind === 'loading') {
-      return {
-        data: null,
-        loading: true,
-        error: null,
-        isMock: false,
-        refetch,
-      };
+      return { data: null, loading: true, error: null, isMock: false, refetch };
     }
     if (s.kind === 'error') {
       return {
@@ -121,6 +95,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
 vi.mock('../services/vocab', () => ({
   getDueCards: vi.fn(),
   submitReview: vi.fn(),
+  bankEntry: vi.fn(),
   listLists: vi.fn(),
   getListDetail: vi.fn(),
   createList: vi.fn(),
@@ -141,17 +116,14 @@ vi.mock('../services/progress', () => ({
 
 vi.mock('../services/define', () => ({ defineEntry: vi.fn() }));
 
-import { Review } from './Review';
+import { Review, type StudyCard } from './Review';
 import * as vocabService from '../services/vocab';
 import * as progressService from '../services/progress';
 import { defineEntry } from '../services/define';
 
-/**
- * Captures the most recent navigation target + router state so the FU-NF-42
- * deep-link test can assert that activating a grammar production card routes to
- * `/learn/grammar` with the right `drillTarget`. A sibling route under the same
- * MemoryRouter renders its own location into the DOM for inspection.
- */
+// ── Router probes ────────────────────────────────────────────────────
+
+/** Captures the grammar-drill deep-link's router state (FU-NF-42). */
 function GrammarStub(): JSX.Element {
   const loc = useLocation();
   return (
@@ -162,29 +134,20 @@ function GrammarStub(): JSX.Element {
   );
 }
 
-/**
- * Sibling stub for the Review-library vocab page — the P1.2 My-Lists dedup
- * moved custom-list management to `/review/vocab?tab=lists`, and the Lists
- * tab links there. The probe renders the landing location for assertion.
- */
+/** Captures the F-061 add-words hand-off's router state. */
 function LibraryVocabStub(): JSX.Element {
   const loc = useLocation();
   return (
     <div data-testid="library-vocab-stub">
       LIBRARY VOCAB
-      <span data-testid="library-vocab-search">{loc.search}</span>
+      <span data-testid="library-vocab-state">{JSON.stringify(loc.state)}</span>
     </div>
   );
 }
 
-/**
- * Render `<Review />` (the FSRS flashcards page — at `/learn/vocab` since
- * Overhaul P1.1) with a `/learn/grammar` deep-link target and the
- * `/review/vocab` library stub.
- */
-function renderReview(): ReturnType<typeof render> {
+function renderReview(initialEntry = '/learn/vocab'): ReturnType<typeof render> {
   return render(
-    <MemoryRouter initialEntries={['/learn/vocab']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/learn/vocab" element={<Review />} />
         <Route path="/learn/grammar" element={<GrammarStub />} />
@@ -195,45 +158,86 @@ function renderReview(): ReturnType<typeof render> {
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────
-const DUE_VOCAB: Vocab[] = [
-  {
-    id: 'd:101',
-    kr: '영향',
-    pos: 'n.',
-    en: '',
-    ex_kr: '',
-    ex_en: '',
-  },
-];
 
-// B-009: `face` is the card_face ENUM ('recognition'), NOT the word — the
-// real word/gloss/example/source arrive on the vocab* fields the service
-// normalised from the vocab_entries JOIN. The old fixture put the word in
-// `face`, which masked the bug where the flashcard rendered the enum label.
-const DUE_RAW: DueCard[] = [
+const LISTS: ServerVocabList[] = [
   {
-    id: 101,
-    face: 'recognition',
-    due_at: new Date().toISOString(),
-    stability: '0',
-    difficulty: '0',
-    fsrs_state: 'new',
-    vocab_entry_id: 1,
-    grammar_entry_id: null,
-    source_sentence_id: null,
-    topik_item_id: null,
+    id: 7,
+    name_kr: '병원 어휘',
+    name_en: 'Hospital words',
+    kind: 'vocab',
     version: 1,
-    vocabKorean: '영향',
-    vocabEnglish: 'influence',
-    vocabExampleKorean: '음악은 우리 생활에 큰 영향을 미친다.',
-    vocabExampleEnglish: 'Music has a big influence on our lives.',
-    vocabSourceBook: 'vocab-2000-int',
+    entry_count: 2,
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+  },
+  {
+    id: 8,
+    name_kr: '뉴스 어휘',
+    name_en: null,
+    kind: 'vocab',
+    version: 1,
+    entry_count: 0,
+    created_at: '2026-07-02T00:00:00Z',
+    updated_at: '2026-07-02T00:00:00Z',
   },
 ];
 
-// FU-NF-42: a grammar PRODUCTION due card (face 'production' + JOINed display).
-// `getDueCards` has already normalised the snake-case wire fields to camelCase,
-// so the fixture mirrors the normalised `DueCard`.
+const LIST_DETAIL: VocabListDetailResponse = {
+  list: LISTS[0]!,
+  entries: [
+    {
+      entry_id: 42,
+      position: 1,
+      added_at: '2026-07-01T00:00:00Z',
+      korean: '학교',
+      english: 'school',
+      proficiency: 'L1',
+    },
+    {
+      entry_id: 43,
+      position: 2,
+      added_at: '2026-07-01T00:00:00Z',
+      korean: '영향',
+      english: 'influence',
+      proficiency: 'L3',
+    },
+  ],
+  entry_limit: 100,
+  entry_offset: 0,
+};
+
+const DUE_RAW: DueCard = {
+  id: 101,
+  face: 'recognition',
+  due_at: new Date().toISOString(),
+  stability: '0',
+  difficulty: '0',
+  fsrs_state: 'new',
+  vocab_entry_id: 1,
+  grammar_entry_id: null,
+  source_sentence_id: null,
+  topik_item_id: null,
+  version: 1,
+  vocabKorean: '영향',
+  vocabEnglish: 'influence',
+  vocabExampleKorean: '음악은 우리 생활에 큰 영향을 미친다.',
+  vocabExampleEnglish: 'Music has a big influence on our lives.',
+  vocabSourceBook: 'vocab-2000-int',
+};
+
+/** A due-queue StudyCard exactly as `dueRealFn` would produce it. */
+const DUE_STUDY: StudyCard[] = [
+  {
+    key: 'due:101',
+    kr: '영향',
+    en: 'influence',
+    exKr: '음악은 우리 생활에 큰 영향을 미친다.',
+    exEn: 'Music has a big influence on our lives.',
+    source: 'vocab-2000-int',
+    wire: { kind: 'due', snapshot: DUE_RAW },
+  },
+];
+
 const GRAMMAR_DUE: DueCard[] = [
   {
     id: 555,
@@ -253,103 +257,416 @@ const GRAMMAR_DUE: DueCard[] = [
   },
 ];
 
-const BUNDLE: VocabListBundle = {
-  active: 'e:7',
-  custom: [
-    {
-      id: 'e:7',
-      name: '병원 어휘',
-      en: 'Hospital words',
-      kind: 'vocab',
-      count: 5,
-      mature: 2,
-      due: 1,
-      lastStudied: 'today',
-      preview: ['진료', '처방전'],
-    },
-  ],
-  sources: [],
-};
-
-/** BUNDLE + a textbook source group — the only rows that still open the
- *  ListDetailSheet on this page after the P1.2 My-Lists dedup. */
-const BUNDLE_WITH_SOURCE: VocabListBundle = {
-  ...BUNDLE,
-  sources: [
-    {
-      source: 'TOPIK 어휘 30일',
-      publisher: '다락원',
-      cover: '한',
-      kind: 'vocab',
-      lists: [
-        {
-          id: 's1',
-          name: '11일 · 정치',
-          en: 'Politics',
-          count: 24,
-          level: 'L4',
-          added: 0,
-        },
-      ],
-    },
-  ],
-};
-
-const SERVER_ENTRIES: VocabEntry[] = [
-  {
-    id: 42,
-    corpus: 'vocab_2000_intermediate',
-    korean: '학교',
-    english: 'school',
-    proficiency: 'L3',
-    theme: null,
-  },
-];
+/** Landing with both feeds settled — the default backdrop for most tests. */
+function settleLanding(opts?: {
+  lists?: ServerVocabList[];
+  due?: StudyCard[];
+}): void {
+  hoisted.lists.state = {
+    kind: 'data',
+    data: opts?.lists ?? LISTS,
+    isMock: false,
+  };
+  hoisted.due.state = { kind: 'data', data: opts?.due ?? [], isMock: false };
+}
 
 beforeEach(() => {
   hoisted.due.state = { kind: 'loading' };
   hoisted.lists.state = { kind: 'loading' };
-  hoisted.all.state = { kind: 'loading' };
-  hoisted.refetchCalls = { due: 0, lists: 0, all: 0 };
-  hoisted.capturedRealFns = { due: null, lists: null, all: null };
-  hoisted.lastAllKey = '';
+  hoisted.refetchCalls = { due: 0, lists: 0 };
+  hoisted.capturedRealFns = { due: null, lists: null };
   vi.clearAllMocks();
 });
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+// ─────────────────────────────────────────────────────────────
+// Landing (F-060)
+// ─────────────────────────────────────────────────────────────
 
-describe('Review', () => {
-  it('renders the skeleton while loading', () => {
+describe('Review — landing (F-060)', () => {
+  it('renders the skeleton while the feeds load', () => {
     renderReview();
-    const busy = document.querySelectorAll('[aria-busy="true"]');
-    expect(busy.length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('[aria-busy="true"]').length).toBeGreaterThan(0);
   });
 
-  it('renders the session panel with the first due card', () => {
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+  it('is lists-first: all lists render, no session/all-cards tabs remain', () => {
+    settleLanding();
     renderReview();
 
-    // P3b: nav-aligned title (was the stale 복습 · Review), Korean chrome in
-    // both-mode, and the old FSRS impl-leak eyebrow is gone.
     expect(
       screen.getByRole('heading', { level: 1, name: '단어 카드 · Vocab' }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/FSRS-style scheduling/),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText('Active list')).toBeInTheDocument();
-    expect(screen.getByText('현재 목록')).toBeInTheDocument();
-    expect(screen.getAllByText('영향').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Tap card or press/)).toBeInTheDocument();
+    // Every list renders as a row with its count.
+    expect(screen.getByRole('button', { name: /병원 어휘/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /뉴스 어휘/ })).toBeInTheDocument();
+    expect(screen.getByText(/2 words/)).toBeInTheDocument();
+    // The create-a-list section is on the landing.
+    expect(screen.getByLabelText('New list name')).toBeInTheDocument();
+    // The old tabbed IA is gone — no tablist, no All-cards search.
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Search banked vocab')).not.toBeInTheDocument();
   });
 
-  it('lazily loads KRDICT examples into the More examples drawer (F-UP-008)', async () => {
+  it('shows the due strip with a Study entry when cards are due', async () => {
+    settleLanding({ due: DUE_STUDY });
     const user = userEvent.setup();
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
+    renderReview();
+
+    expect(screen.getByText('1 card due')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '학습 · Study' }));
+    // The due study session opens on the first due card's front.
+    expect(screen.getByRole('button', { name: 'Flip card' })).toBeInTheDocument();
+    expect(screen.getAllByText('영향').length).toBeGreaterThan(0);
+  });
+
+  it('hides the due strip when nothing is due', () => {
+    settleLanding({ due: [] });
+    renderReview();
+    expect(screen.queryByText(/card due/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '학습 · Study' })).not.toBeInTheDocument();
+  });
+
+  it('renders an ErrorCard with a working Retry when the lists fetch fails', async () => {
+    hoisted.lists.state = {
+      kind: 'error',
+      error: new ApiError('boom', { status: 500, code: 'server_error' }),
+    };
+    hoisted.due.state = { kind: 'data', data: [], isMock: false };
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.click(screen.getByRole('button', { name: /Retry/i }));
+    expect(hoisted.refetchCalls.lists).toBeGreaterThan(0);
+  });
+
+  it('creates a list and lands inside it (F-060 create section)', async () => {
+    settleLanding();
+    const created: ServerVocabList = {
+      ...LISTS[1]!,
+      id: 99,
+      name_kr: '새 목록',
+      entry_count: 0,
+    };
+    vi.mocked(vocabService.createList).mockResolvedValue({
+      list: created,
+      appended: 0,
+    });
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      list: created,
+      entries: [],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.type(screen.getByLabelText('New list name'), '새 목록');
+    await user.click(screen.getByRole('button', { name: /Create list/ }));
+
+    await waitFor(() => {
+      expect(vocabService.createList).toHaveBeenCalledWith({
+        name_kr: '새 목록',
+        kind: 'vocab',
+      });
+    });
+    // Landed on the new list's detail view (fetched by id).
+    await waitFor(() => {
+      expect(vocabService.getListDetail).toHaveBeenCalledWith(99, expect.anything());
+    });
+    expect(await screen.findByRole('heading', { name: '새 목록' })).toBeInTheDocument();
+    // The landing's list rows refresh for the return trip.
+    expect(hoisted.refetchCalls.lists).toBeGreaterThan(0);
+  });
+
+  it('surfaces a fixed-copy alert and re-enables the form when create fails', async () => {
+    settleLanding();
+    vi.mocked(vocabService.createList).mockRejectedValue(
+      new ApiError('constraint violated: vocab_lists_name_kr_check', {
+        status: 400,
+        code: 'bad_request',
+      }),
+    );
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.type(screen.getByLabelText('New list name'), '새 목록');
+    await user.click(screen.getByRole('button', { name: /Create list/ }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not create the list.');
+    // Server prose never reaches the DOM.
+    expect(alert).not.toHaveTextContent('constraint violated');
+    expect(screen.getByRole('button', { name: /Create list/ })).not.toBeDisabled();
+  });
+
+  it('degrades hostile URL params to the landing view', () => {
+    settleLanding();
+    renderReview('/learn/vocab?list=../../etc&study=1');
+    expect(screen.getByLabelText('New list name')).toBeInTheDocument();
+    expect(vocabService.getListDetail).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// List detail (F-060) + edit mode (F-061)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — list detail (F-060/F-061)', () => {
+  it('opens a list into the detail view with Study at the top and a BackButton (F-024)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    const user = userEvent.setup();
+    renderReview();
+
+    await user.click(screen.getByRole('button', { name: /병원 어휘/ }));
+
+    expect(await screen.findByRole('heading', { name: '병원 어휘' })).toBeInTheDocument();
+    expect(vocabService.getListDetail).toHaveBeenCalledWith(7, expect.anything());
+    // Words render.
+    expect(screen.getByText('학교')).toBeInTheDocument();
+    expect(screen.getByText('school')).toBeInTheDocument();
+    // Study is available at the top; BackButton names the parent surface.
+    expect(screen.getByRole('button', { name: '학습 · Study' })).not.toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Back to Vocab lists' }),
+    ).toBeInTheDocument();
+  });
+
+  it('disables Study for a list with no studyable words', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      ...LIST_DETAIL,
+      list: LISTS[1]!,
+      entries: [],
+    });
+    renderReview('/learn/vocab?list=8');
+
+    expect(await screen.findByRole('heading', { name: '뉴스 어휘' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '학습 · Study' })).toBeDisabled();
+  });
+
+  it('renames the list title through edit mode (F-061)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.patchList).mockResolvedValue({
+      list: { ...LISTS[0]!, name_kr: '진료 어휘', version: 2 },
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    const nameInput = screen.getByLabelText('List name (Korean)');
+    expect(nameInput).toHaveValue('병원 어휘');
+    await user.clear(nameInput);
+    await user.type(nameInput, '진료 어휘');
+    await user.click(screen.getByRole('button', { name: /Save title/ }));
+
+    await waitFor(() => {
+      expect(vocabService.patchList).toHaveBeenCalledWith(7, {
+        name_kr: '진료 어휘',
+        name_en: 'Hospital words',
+      });
+    });
+    // Leave edit mode → the header shows the server-confirmed name.
+    await user.click(screen.getByRole('button', { name: /Done editing/ }));
+    expect(screen.getByRole('heading', { name: '진료 어휘' })).toBeInTheDocument();
+  });
+
+  it('removes a word optimistically in edit mode (F-061)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.removeListEntry).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 학교 from the list' }),
+    );
+
+    // Optimistic: the row is gone before the server settles.
+    expect(screen.queryByText('학교')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(vocabService.removeListEntry).toHaveBeenCalledWith(7, 42);
+    });
+  });
+
+  it('rolls the removed word back and alerts when the delete fails (F-061)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.removeListEntry).mockRejectedValue(
+      new ApiError('fk violation', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 학교 from the list' }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not remove the word.');
+    expect(alert).not.toHaveTextContent('fk violation');
+    // Rollback: the row is back.
+    expect(screen.getByText('학교')).toBeInTheDocument();
+  });
+
+  it('hands off to the library with the open list in router state (F-061 add words)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    await user.click(screen.getByRole('button', { name: /Add words/ }));
+
+    expect(await screen.findByTestId('library-vocab-stub')).toBeInTheDocument();
+    const state = JSON.parse(
+      screen.getByTestId('library-vocab-state').textContent ?? 'null',
+    ) as { addToList?: { id: number; name: string } };
+    expect(state.addToList).toEqual({ id: 7, name: '병원 어휘' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Study session
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — study session', () => {
+  it('pins the displayed rating intervals to the server FSRS tuning (B-021)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7&study=1');
+
+    await user.click(await screen.findByRole('button', { name: 'Flip card' }));
+
+    // RELEARN_DELAY_MS = 50s → '<1m'; HARD_STEP_DELAY_MS = 6min → '6m';
+    // BASE_STABILITY good = 1 day → '1d'; easy = 4 days → '4d'
+    // (server/src/services/fsrs.ts). A drifted label = a lying UI.
+    const expected: ReadonlyArray<[RegExp, string]> = [
+      [/Again/, '<1m'],
+      [/Hard/, '6m'],
+      [/Good/, '1d'],
+      [/Easy/, '4d'],
+    ];
+    for (const [name, sub] of expected) {
+      const btn = screen.getByRole('button', { name });
+      expect(within(btn).getByText(sub)).toBeInTheDocument();
+    }
+  });
+
+  it('persists a list-card rating via the bank→review pair', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.bankEntry).mockResolvedValue({
+      card: { id: 900, version: 3 },
+    });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 4,
+      due_at: new Date().toISOString(),
+      scheduled_days: 1,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7&study=1');
+
+    await user.click(await screen.findByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    await waitFor(() => {
+      expect(vocabService.bankEntry).toHaveBeenCalledWith(42);
+      // The review rides the bank call's fresh version snapshot — the
+      // server owns the FSRS transition, so the payload is rating+version
+      // ONLY.
+      expect(vocabService.submitReview).toHaveBeenCalledWith(900, {
+        rating: 'good',
+        expected_version: 3,
+      });
+    });
+  });
+
+  it('persists a due-queue rating directly against the card snapshot', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 0,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Again/ }));
+
+    await waitFor(() => {
+      expect(vocabService.submitReview).toHaveBeenCalledWith(101, {
+        rating: 'again',
+        expected_version: 1,
+      });
+    });
+    expect(vocabService.bankEntry).not.toHaveBeenCalled();
+  });
+
+  it('spacebar reveals the answer face', async () => {
+    settleLanding({ due: DUE_STUDY });
+    renderReview('/learn/vocab?study=due');
+
+    const flip = screen.getByRole('button', { name: 'Flip card' });
+    expect(flip.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => {
+      fireEvent.keyDown(window, { key: ' ' });
+    });
+    expect(flip.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: /Again/ })).toBeInTheDocument();
+  });
+
+  it('mounts the answer face only while flipped (B-014 regression)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    expect(screen.queryByText('influence')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    expect(screen.getByText('influence')).toBeInTheDocument();
+    expect(
+      screen.getByText('Music has a big influence on our lives.'),
+    ).toBeInTheDocument();
+  });
+
+  it('logs study time on unmount when at least one card was rated', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 0,
+    });
+    const user = userEvent.setup();
+    const { unmount } = renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+    unmount();
+
+    expect(progressService.logStudy).toHaveBeenCalledWith(
+      expect.objectContaining({ activity: 'review' }),
+    );
+  });
+
+  it('does NOT log study time when no card was rated', () => {
+    settleLanding({ due: DUE_STUDY });
+    const { unmount } = renderReview('/learn/vocab?study=due');
+    unmount();
+    expect(progressService.logStudy).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Examples tile (B-022)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — examples tile (B-022)', () => {
+  async function openTile(user: ReturnType<typeof userEvent.setup>): Promise<void> {
     vi.mocked(defineEntry).mockResolvedValue({
       word: '영향',
       entries: [
@@ -361,195 +678,244 @@ describe('Review', () => {
           definition_english: null,
           examples: [
             { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
-            { korean: '큰 영향을 받았다.', english: null },
           ],
         },
       ],
     });
-    renderReview();
-
     await user.click(screen.getByRole('button', { name: 'Flip card' }));
-    // Lazy: nothing is fetched until the user opens the drawer.
-    expect(defineEntry).not.toHaveBeenCalled();
-
+    expect(defineEntry).not.toHaveBeenCalled(); // lazy until opened
     await user.click(screen.getByRole('button', { name: /More examples/ }));
-    expect(
-      await screen.findByText('음악은 영향을 준다.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('Music has an influence.')).toBeInTheDocument();
-    expect(defineEntry).toHaveBeenCalledWith('영향', expect.anything());
-  });
+    expect(await screen.findByText('음악은 영향을 준다.')).toBeInTheDocument();
+  }
 
-  it('mounts the answer face only when flipped (B-014 — no answer flash on advance)', async () => {
-    // Regression for B-014: the answer face must NOT be in the DOM while the
-    // card shows its front. If it were (as before this fix), the next card's
-    // English would sit in the back face and flash through during the 480ms
-    // flip-back rotation when a rating advances the deck.
-    const CARD_WITH_ANSWER: Vocab[] = [
-      {
-        id: 'd:101',
-        kr: '영향',
-        pos: 'n.',
-        en: 'influence',
-        ex_kr: '음악은 우리 생활에 큰 영향을 미친다.',
-        ex_en: 'Music has a big influence on our lives.',
-      },
-    ];
-    hoisted.due.state = { kind: 'data', data: CARD_WITH_ANSWER, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
+  it('loads lazily and closes via its own close button', async () => {
+    settleLanding({ due: DUE_STUDY });
     const user = userEvent.setup();
-    renderReview();
+    renderReview('/learn/vocab?study=due');
 
-    // Front is showing → the gloss and example translation are absent.
-    expect(screen.queryByText('influence')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('Music has a big influence on our lives.'),
-    ).not.toBeInTheDocument();
+    await openTile(user);
+    expect(defineEntry).toHaveBeenCalledWith('영향', expect.anything());
 
-    // Reveal → the answer face mounts.
-    await user.click(screen.getByRole('button', { name: 'Flip card' }));
-    expect(screen.getByText('influence')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close examples' }));
+    expect(screen.queryByText('음악은 영향을 준다.')).not.toBeInTheDocument();
     expect(
-      screen.getByText('Music has a big influence on our lives.'),
-    ).toBeInTheDocument();
+      screen.getByRole('button', { name: /More examples/ }),
+    ).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('rate Again calls submitReview when the card has a wire snapshot', async () => {
-    // Wire the realFn to populate the dueCardIndex so submitReview can resolve
-    // the numeric cardId. The hook mock captures realFn; we invoke it manually.
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(DUE_RAW);
+  it('auto-closes when the page is tapped', async () => {
+    settleLanding({ due: DUE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await openTile(user);
+    // Tap somewhere on the page outside the card — the deck strip.
+    await user.click(screen.getByText('학습 중'));
+    expect(screen.queryByText('음악은 영향을 준다.')).not.toBeInTheDocument();
+  });
+
+  it('auto-closes and resets when the card is flipped', async () => {
+    settleLanding({ due: DUE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await openTile(user);
+    // Flip back to the front — the tile must not survive the flip.
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    expect(screen.queryByText('음악은 영향을 준다.')).not.toBeInTheDocument();
+    // Flip forward again: the tile starts closed (state was reset).
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    expect(
+      screen.getByRole('button', { name: /More examples/ }),
+    ).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Completion page (F-062)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — completion (F-062)', () => {
+  it('shows session stats after the last card: count, breakdown, next-due summary', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.bankEntry)
+      .mockResolvedValueOnce({ card: { id: 900, version: 1 } })
+      .mockResolvedValueOnce({ card: { id: 901, version: 1 } });
+    vi.mocked(vocabService.submitReview)
+      .mockResolvedValueOnce({
+        version: 2,
+        due_at: new Date().toISOString(),
+        scheduled_days: 1,
+      })
+      .mockResolvedValueOnce({
+        version: 2,
+        due_at: new Date().toISOString(),
+        scheduled_days: 4,
+      });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7&study=1');
+
+    // Card 1 → Good, card 2 → Easy.
+    await user.click(await screen.findByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Easy/ }));
+
+    expect(
+      await screen.findByRole('heading', { name: '세션 완료 · Session complete' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('2 cards reviewed')).toBeInTheDocument();
+
+    // Rating breakdown: 1 Good, 1 Easy, 0 Again/Hard.
+    const breakdown = screen.getByLabelText('Rating breakdown');
+    const cell = (name: RegExp): HTMLElement => {
+      const dt = within(breakdown).getByText(name);
+      return dt.closest('.km-review__breakCell') as HTMLElement;
+    };
+    expect(within(cell(/Good/)).getByText('1')).toBeInTheDocument();
+    expect(within(cell(/Easy/)).getByText('1')).toBeInTheDocument();
+    expect(within(cell(/Again/)).getByText('0')).toBeInTheDocument();
+    expect(within(cell(/Hard/)).getByText('0')).toBeInTheDocument();
+
+    // Next-due summary from the server's scheduled_days (1 → tomorrow,
+    // 4 → 2+ days) — appears once the saves settle.
+    expect(await screen.findByText('1 due in 1 day')).toBeInTheDocument();
+    expect(screen.getByText('1 due in 2+ days')).toBeInTheDocument();
+    // Nothing failed → no unsaved alert.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('reports unsaved ratings when persistence fails', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview).mockRejectedValue(
+      new ApiError('stale version', { status: 409, code: 'conflict' }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    expect(
+      await screen.findByRole('heading', { name: '세션 완료 · Session complete' }),
+    ).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('1 rating couldn’t be saved.');
+    expect(alert).not.toHaveTextContent('stale version');
+  });
+
+  it('Study again restarts the same deck from the first card', async () => {
+    settleLanding({ due: DUE_STUDY });
     vi.mocked(vocabService.submitReview).mockResolvedValue({
       version: 2,
       due_at: new Date().toISOString(),
-      scheduled_days: 0,
+      scheduled_days: 1,
     });
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
     const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+    await screen.findByRole('heading', { name: '세션 완료 · Session complete' });
+
+    await user.click(screen.getByRole('button', { name: /Study again/ }));
+    // Back on the first card, front face up.
+    const flip = screen.getByRole('button', { name: 'Flip card' });
+    expect(flip.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  });
+
+  it('Done returns to the list detail view', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.bankEntry).mockResolvedValue({
+      card: { id: 900, version: 1 },
+    });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 1,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7&study=1');
+
+    await user.click(await screen.findByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+    await screen.findByRole('heading', { name: '세션 완료 · Session complete' });
+
+    await user.click(screen.getByRole('button', { name: '완료 · Done' }));
+    // Detail view again: the list heading + Study button.
+    expect(await screen.findByRole('heading', { name: '병원 어휘' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '학습 · Study' })).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Grammar production cards (FU-NF-42) + corpus seeding (B-013)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — grammar production + seeding', () => {
+  it('partitions due grammar production cards into their own landing section', async () => {
+    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    settleLanding({ due: [] });
     renderReview();
 
-    // Prime the index by invoking the captured realFn.
     await act(async () => {
       await hoisted.capturedRealFns.due?.();
     });
 
-    // Reveal the back so the rating buttons appear.
-    await user.click(screen.getByRole('button', { name: 'Flip card' }));
-
-    await user.click(screen.getByRole('button', { name: /Again/ }));
-
-    // EXACT payload: rating + version snapshot only. The server owns the FSRS
-    // transition — no client-computed state or interval fields on the wire.
-    expect(vocabService.submitReview).toHaveBeenCalledWith(101, {
-      rating: 'again',
-      expected_version: 1,
-    });
+    expect(
+      await screen.findByText('Grammar production · 1 due'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('-더라도')).toBeInTheDocument();
   });
 
-  // B-009 regression: dueCardToVocab (exercised through the real dueRealFn)
-  // must map the JOINed vocab-entry fields onto the UI card — front = Korean
-  // headword, back = English gloss + example pair + source — instead of
-  // rendering `face` (the card_face enum) with hardcoded empties.
-  it('maps a due vocab card onto the UI shape from the vocab-entry fields (B-009)', async () => {
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(DUE_RAW);
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    renderReview();
-
-    let ui: Vocab[] = [];
-    await act(async () => {
-      ui = (await hoisted.capturedRealFns.due?.()) ?? [];
-    });
-
-    expect(ui).toHaveLength(1);
-    expect(ui[0]).toMatchObject({
-      id: 'd:101',
-      kr: '영향', // the Korean headword — NOT the 'recognition' face enum
-      en: 'influence',
-      ex_kr: '음악은 우리 생활에 큰 영향을 미친다.',
-      ex_en: 'Music has a big influence on our lives.',
-      mined_in: 'vocab-2000-int',
-    });
-  });
-
-  it('falls back to the face label only when a card carries no vocab fields (B-009)', async () => {
-    // A sentence/topik card (no vocab_entry_id, nothing better on the wire
-    // yet) keeps the pre-fix degraded rendering rather than a blank card.
-    vi.mocked(vocabService.getDueCards).mockResolvedValue([
-      {
-        id: 300,
-        face: 'cloze',
-        due_at: new Date().toISOString(),
-        stability: '0',
-        difficulty: '0',
-        fsrs_state: 'new',
-        vocab_entry_id: null,
-        grammar_entry_id: null,
-        source_sentence_id: 12,
-        topik_item_id: null,
-        version: 1,
-      },
-    ]);
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    renderReview();
-
-    let ui: Vocab[] = [];
-    await act(async () => {
-      ui = (await hoisted.capturedRealFns.due?.()) ?? [];
-    });
-
-    expect(ui[0]).toMatchObject({ id: 'd:300', kr: 'cloze', en: '', ex_kr: '', ex_en: '' });
-  });
-
-  it('Lists tab renders NO duplicate My-Lists surface — it links to the library instead (P1.2 dedup)', async () => {
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
+  it('deep-links a grammar card into the Grammar Drill tab with the pattern key', async () => {
+    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    settleLanding({ due: [] });
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    // The link card is present…
-    expect(screen.getByText('내 단어장')).toBeInTheDocument();
-    expect(screen.getByText('My lists')).toBeInTheDocument();
-    // …but the old duplicate surface is GONE: no create affordance and no
-    // custom-list row (the bundle's 병원 어휘 must not render as a row).
-    expect(
-      screen.queryByRole('button', { name: /New list/ }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /병원 어휘/ }),
-    ).not.toBeInTheDocument();
-    // No list detail fetch happens from this page anymore.
-    expect(vocabService.getListDetail).not.toHaveBeenCalled();
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+    await user.click(await screen.findByRole('button', { name: /Drill -더라도/ }));
 
-    // The manage link deep-links into the canonical surface: the library's
-    // vocab page with its lists view preselected.
-    await user.click(screen.getByRole('button', { name: /Manage my lists/ }));
-    expect(await screen.findByTestId('library-vocab-stub')).toBeInTheDocument();
-    expect(screen.getByTestId('library-vocab-search')).toHaveTextContent(
-      '?tab=lists',
-    );
+    expect(await screen.findByTestId('grammar-stub')).toBeInTheDocument();
+    const state = JSON.parse(
+      screen.getByTestId('grammar-state').textContent ?? 'null',
+    ) as { drillTarget?: { patternKey: string; display: string; meaning: string } };
+    expect(state.drillTarget).toEqual({
+      patternKey: 'KGIU-INT-007',
+      display: '-더라도',
+      meaning: 'even if / even though',
+    });
   });
 
-  it('Add to review seeds both corpora and refetches the due queue (B-013)', async () => {
+  it('seeds both corpora from the collapsed Add-to-review tile and refetches the queue (B-013)', async () => {
+    settleLanding();
     vi.mocked(vocabService.initCards)
       .mockResolvedValueOnce({ inserted: 12 })
       .mockResolvedValueOnce({ inserted: 3 });
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    const seedBefore = hoisted.refetchCalls.due;
-    await user.click(screen.getByRole('button', { name: /Add to review/ }));
+    // Expand the tile (disclosure header), then hit the seed action inside.
+    const header = screen
+      .getAllByRole('button', { name: '복습에 추가 · Add to review' })
+      .find((b) => b.hasAttribute('aria-expanded'));
+    expect(header).toBeDefined();
+    await user.click(header!);
+    const seedBtn = screen
+      .getAllByRole('button', { name: '복습에 추가 · Add to review' })
+      .find((b) => !b.hasAttribute('aria-expanded'));
+    expect(seedBtn).toBeDefined();
+
+    const before = hoisted.refetchCalls.due;
+    await user.click(seedBtn!);
 
     await waitFor(() => {
       expect(screen.getByText('Added 15 cards to review.')).toBeInTheDocument();
@@ -562,319 +928,32 @@ describe('Review', () => {
       corpus: 'vocab_2000_intermediate',
       limit: 100,
     });
-    // The Session tab's due queue is re-pulled so the freshly-seeded cards
-    // appear without a manual "Start new session" tap.
-    expect(hoisted.refetchCalls.due).toBeGreaterThan(seedBefore);
+    expect(hoisted.refetchCalls.due).toBeGreaterThan(before);
   });
 
-  it('Add to review reports the idempotent zero-inserted case without refetching (B-013)', async () => {
-    vi.mocked(vocabService.initCards).mockResolvedValue({ inserted: 0 });
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    const seedBefore = hoisted.refetchCalls.due;
-    await user.click(screen.getByRole('button', { name: /Add to review/ }));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(
-          "You're all caught up — every loaded word already has a review card.",
-        ),
-      ).toBeInTheDocument();
-    });
-    // Nothing changed server-side, so there's nothing new for the Session
-    // tab to pick up — a refetch here would just be a wasted round trip.
-    expect(hoisted.refetchCalls.due).toBe(seedBefore);
-  });
-
-  it('Add to review surfaces an ApiError message and re-enables the button on failure (B-013)', async () => {
+  it('seed failure surfaces fixed copy and stops after the first corpus', async () => {
+    settleLanding();
     vi.mocked(vocabService.initCards).mockRejectedValueOnce(
       new ApiError('rate limited', { status: 429, code: 'rate_limited' }),
     );
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
     const user = userEvent.setup();
     renderReview();
 
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    const seedButton = screen.getByRole('button', { name: /Add to review/ });
-    await user.click(seedButton);
+    const header = screen
+      .getAllByRole('button', { name: '복습에 추가 · Add to review' })
+      .find((b) => b.hasAttribute('aria-expanded'));
+    await user.click(header!);
+    const seedBtn = screen
+      .getAllByRole('button', { name: '복습에 추가 · Add to review' })
+      .find((b) => !b.hasAttribute('aria-expanded'));
+    await user.click(seedBtn!);
 
     await waitFor(() => {
-      // Fixed 429 copy (F-UP-018) — never the raw server prose.
       expect(screen.getByRole('alert')).toHaveTextContent(
         'Rate-limited right now. Wait a moment and try again.',
       );
     });
     expect(screen.getByRole('alert')).not.toHaveTextContent('rate limited');
-    expect(seedButton).not.toBeDisabled();
-    // The second corpus call never fires — the loop bails on the first
-    // rejection rather than silently swallowing it and moving on.
     expect(vocabService.initCards).toHaveBeenCalledTimes(1);
-  });
-
-  it('All tab debounces query input and calls searchEntries', async () => {
-    vi.mocked(vocabService.searchEntries).mockResolvedValue(SERVER_ENTRIES);
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-    hoisted.all.state = { kind: 'data', data: [], isMock: false };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    await user.click(screen.getByRole('tab', { name: '전체 카드 · All cards' }));
-
-    const input = screen.getByLabelText('Search banked vocab');
-    await user.type(input, '학교');
-
-    // Allow the 200ms debounce to flush.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    });
-
-    // The hook key now reflects the debounced value.
-    expect(hoisted.lastAllKey).toBe('review:all:학교');
-
-    // Invoke the captured realFn — the component would do this through the
-    // hook on key change; the test's hook mock only captures it.
-    await act(async () => {
-      await hoisted.capturedRealFns.all?.();
-    });
-
-    expect(vocabService.searchEntries).toHaveBeenCalledWith({ q: '학교' });
-  });
-
-  it('renders EmptyCard (not ErrorCard) when the bank is empty', () => {
-    hoisted.due.state = { kind: 'data', data: [], isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-    renderReview();
-
-    expect(screen.getByText(/0 cards in your bank yet/)).toBeInTheDocument();
-    // No vermilion ErrorCard / Retry button on an empty bank.
-    expect(screen.queryByRole('button', { name: /Retry/i })).not.toBeInTheDocument();
-  });
-
-  it('renders ErrorCard with Retry when a fetch errors and refetch fires', async () => {
-    const err = new ApiError('boom', { status: 500, code: 'server_error' });
-    hoisted.due.state = { kind: 'error', error: err };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    const retry = screen.getByRole('button', { name: /Retry/i });
-    expect(retry).toBeInTheDocument();
-    await user.click(retry);
-    // SessionPanel's retry routes through both refetches.
-    expect(hoisted.refetchCalls.due).toBeGreaterThan(0);
-    expect(hoisted.refetchCalls.lists).toBeGreaterThan(0);
-  });
-
-  it('spacebar reveals the flashcard back (D-B3)', async () => {
-    // Hook captures the realFn but the spacebar listener doesn't need the
-    // DueCard snapshot — it only flips the local `flipped` state.
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    renderReview();
-
-    // Before reveal: the Flashcard's aria-expanded reads false. (The
-    // component uses aria-expanded — semantically appropriate for a flip
-    // that reveals a hidden face.)
-    const flip = screen.getByRole('button', { name: 'Flip card' });
-    expect(flip.getAttribute('aria-expanded')).toBe('false');
-
-    // Pass-2 idiom: fireEvent.keyDown on window — userEvent + fake timers
-    // deadlocks in happy-dom for the window-bound listener path.
-    await act(async () => {
-      fireEvent.keyDown(window, { key: ' ' });
-    });
-
-    // After reveal: aria-expanded flips true.
-    expect(flip.getAttribute('aria-expanded')).toBe('true');
-    // And the rating buttons appear (rendered only while `flipped`).
-    expect(screen.getByRole('button', { name: /Again/ })).toBeInTheDocument();
-  });
-
-  it('spacebar is ignored while a Sheet is open (D-B3 sheet-open guard)', async () => {
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    // Post-P1.2 only SOURCE lists open the sheet from this page (custom-list
-    // management moved to the library) — give the bundle a source group.
-    hoisted.lists.state = {
-      kind: 'data',
-      data: BUNDLE_WITH_SOURCE,
-      isMock: false,
-    };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    // Open ListDetailSheet by switching to Lists and tapping a source row.
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    await user.click(screen.getByRole('button', { name: /11일 · 정치/ }));
-    expect(await screen.findByText(/Preview ·/)).toBeInTheDocument();
-
-    // Back to the Session tab so the flashcard is rendered behind the open
-    // sheet. The session-tab effect re-mounts the spacebar listener but the
-    // sheet-open guard suppresses the reveal. `fireEvent.click` instead of
-    // `user.click` here so the Sheet's backdrop (which would otherwise
-    // intercept a pointer-event-simulated click via elementFromPoint in
-    // some happy-dom configs) can't accidentally close the sheet before
-    // we get to assert the guard.
-    fireEvent.click(screen.getByRole('tab', { name: '세션 · Session' }));
-
-    const flip = screen.getByRole('button', { name: 'Flip card' });
-    expect(flip.getAttribute('aria-expanded')).toBe('false');
-
-    await act(async () => {
-      fireEvent.keyDown(window, { key: ' ' });
-    });
-
-    // Sheet-open guard preserved from Pass 2: no reveal.
-    expect(flip.getAttribute('aria-expanded')).toBe('false');
-    expect(
-      screen.queryByRole('button', { name: /Again/ }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('P3b trim: the two disabled sheet actions share ONE coming-soon tooltip', async () => {
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = {
-      kind: 'data',
-      data: BUNDLE_WITH_SOURCE,
-      isMock: false,
-    };
-
-    const user = userEvent.setup();
-    renderReview();
-    await user.click(screen.getByRole('tab', { name: '목록 · Lists' }));
-    await user.click(screen.getByRole('button', { name: /11일 · 정치/ }));
-    await screen.findByText(/Preview ·/);
-
-    const titled = Array.from(
-      document.querySelectorAll('button[title*="Coming soon"]'),
-    );
-    expect(titled).toHaveLength(2);
-    // De-duplicated: one string, used by both (not two pasted variants).
-    expect(new Set(titled.map((b) => b.getAttribute('title'))).size).toBe(1);
-  });
-
-  it('logs study time on unmount when at least one card was rated', async () => {
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(DUE_RAW);
-    vi.mocked(vocabService.submitReview).mockResolvedValue({
-      version: 2,
-      due_at: new Date().toISOString(),
-      scheduled_days: 3,
-    });
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    const user = userEvent.setup();
-    const { unmount } = renderReview();
-
-    await act(async () => {
-      await hoisted.capturedRealFns.due?.();
-    });
-    await user.click(screen.getByRole('button', { name: 'Flip card' }));
-    await user.click(screen.getByRole('button', { name: /Good/ }));
-
-    unmount();
-
-    expect(progressService.logStudy).toHaveBeenCalledWith(
-      expect.objectContaining({ activity: 'review' }),
-    );
-  });
-
-  // ── FU-NF-42 B3: grammar production cards in the Review loop ─────────────
-
-  it('renders a grammar production section from due grammar cards', async () => {
-    // getDueCards returns ONLY a grammar production card; the realFn partitions
-    // it into the grammar section (and out of the vocab deck). The hook's data
-    // is the vocab deck (empty here), so we drive `setGrammarCards` via the
-    // captured realFn.
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
-    hoisted.due.state = { kind: 'data', data: [], isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    renderReview();
-
-    await act(async () => {
-      await hoisted.capturedRealFns.due?.();
-    });
-
-    expect(
-      await screen.findByText('Grammar production · 1 due'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('-더라도')).toBeInTheDocument();
-    expect(screen.getByText('even if / even though')).toBeInTheDocument();
-    // The vocab "empty bank" state must NOT show — there is work to do.
-    expect(screen.queryByText(/0 cards in your bank yet/)).not.toBeInTheDocument();
-  });
-
-  it('navigates to the Grammar Drill tab with the pattern when a grammar card is activated', async () => {
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
-    hoisted.due.state = { kind: 'data', data: [], isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    await act(async () => {
-      await hoisted.capturedRealFns.due?.();
-    });
-
-    await user.click(screen.getByRole('button', { name: /Drill -더라도/ }));
-
-    // The deep-link landed on /learn/grammar carrying the drillTarget in
-    // router state.
-    expect(await screen.findByTestId('grammar-stub')).toBeInTheDocument();
-    const state = JSON.parse(
-      screen.getByTestId('grammar-state').textContent ?? 'null',
-    ) as { drillTarget?: { patternKey: string; display: string; meaning: string } };
-    expect(state.drillTarget).toEqual({
-      patternKey: 'KGIU-INT-007',
-      display: '-더라도',
-      meaning: 'even if / even though',
-    });
-  });
-
-  it('keeps the vocab flashcard flow intact alongside a grammar card (no regression)', async () => {
-    // Both a grammar production card AND a vocab card are due. The vocab card
-    // must still flow through the flashcard deck untouched.
-    vi.mocked(vocabService.getDueCards).mockResolvedValue([
-      ...GRAMMAR_DUE,
-      ...DUE_RAW,
-    ]);
-    vi.mocked(vocabService.submitReview).mockResolvedValue({
-      version: 2,
-      due_at: new Date().toISOString(),
-      scheduled_days: 0,
-    });
-    hoisted.due.state = { kind: 'data', data: DUE_VOCAB, isMock: false };
-    hoisted.lists.state = { kind: 'data', data: BUNDLE, isMock: false };
-
-    const user = userEvent.setup();
-    renderReview();
-
-    await act(async () => {
-      await hoisted.capturedRealFns.due?.();
-    });
-
-    // Grammar section renders…
-    expect(
-      await screen.findByText('Grammar production · 1 due'),
-    ).toBeInTheDocument();
-    // …and the vocab flashcard rating still works exactly as before.
-    await user.click(screen.getByRole('button', { name: 'Flip card' }));
-    await user.click(screen.getByRole('button', { name: /Again/ }));
-    expect(vocabService.submitReview).toHaveBeenCalledWith(
-      101,
-      expect.objectContaining({ rating: 'again' }),
-    );
   });
 });
