@@ -1556,6 +1556,9 @@ export interface AppendMessageResult {
 /** One row from `GET /conversation`. */
 export interface ConversationRow {
   id: number;
+  /** User-set OR Claude auto-generated (F-036) title; `null` until named —
+   *  the sidebar falls back to a derived snippet, then mode + date. */
+  title: string | null;
   mode: string;
   target_register: string | null;
   version: number;
@@ -1585,10 +1588,26 @@ export interface ConversationTurnImage {
 }
 
 /**
+ * Optional document reference on a persisted turn (F-035 attach — mirrors
+ * the server's `StoredTurnFile` in routes/conversation.ts). Present only on
+ * turns created by `POST /conversation/:id/file`: the turn's `content` is
+ * the document's (bounded) text and this block carries display metadata
+ * only — `name` is a sanitized basename, never a path.
+ */
+export interface ConversationTurnFile {
+  name: string;
+  media_type: string;
+  size_bytes: number;
+  /** True when the stored text is a truncated excerpt of a longer document. */
+  truncated: boolean;
+}
+
+/**
  * One persisted turn as the server stores it in the `messages` JSONB (the
  * server's `StoredTurn`). This is the WIRE shape `GET /conversation/:id`
  * returns — distinct from the render-side `ConversationMessage` (kr/en
- * bilingual line) the Chat screen builds. Plain text turns carry no `image`.
+ * bilingual line) the Chat screen builds. Plain text turns carry neither
+ * `image` nor `file`.
  */
 export interface StoredConversationTurn {
   role: 'user' | 'assistant';
@@ -1596,11 +1615,14 @@ export interface StoredConversationTurn {
   sent_at: string;
   request_id?: string;
   image?: ConversationTurnImage;
+  file?: ConversationTurnFile;
 }
 
 /** Payload of `GET /conversation/:id` — full history + streaming metadata. */
 export interface ConversationDetail {
   id: number;
+  /** User-set OR Claude auto-generated (F-036) title; `null` until named. */
+  title: string | null;
   mode: string;
   target_register: string | null;
   /** Optimistic-concurrency snapshot — send as `expected_version` on the
@@ -1622,6 +1644,22 @@ export interface AppendImageTurnResult {
   messages: unknown;
   /** The appended user turn — always carries `image`. */
   turn: StoredConversationTurn;
+}
+
+/** Result envelope from `POST /conversation/:id/file` (201, F-035 attach). */
+export interface AppendFileTurnResult {
+  version: number;
+  messages: unknown;
+  /** The appended user turn — always carries `file`. */
+  turn: StoredConversationTurn;
+}
+
+/** Result envelope from `POST /conversation/:id/name` (F-036 auto-naming). */
+export interface NameConversationResult {
+  title: string;
+  /** `false` when the conversation was already named — the returned title
+   *  is the existing one, and no Claude call was made. */
+  generated: boolean;
 }
 
 /** Auth `/auth/me` and PATCH envelope. */

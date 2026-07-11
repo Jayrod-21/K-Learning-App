@@ -1072,6 +1072,10 @@ describe('POST /conversation/:id/file — document attach (F-035 backend)', () =
         contentType: 'text/plain',
       });
     expect(res.status).toBe(400);
+    // A format/encoding rejection carries the GENERIC code — distinct from
+    // the injection-guard's `content_rejected` (see the test below) so the
+    // client can tell "wrong format" apart from "content flagged".
+    expect(res.body.error.code).toBe('validation_error');
     const conv = await pg.pool.query<{ messages: unknown[] }>(
       'SELECT messages FROM conversations WHERE id = $1',
       [id],
@@ -1110,6 +1114,10 @@ describe('POST /conversation/:id/file — document attach (F-035 backend)', () =
     expect(res.status).toBe(400);
     // The marker itself is not echoed to the wire.
     expect(JSON.stringify(res.body)).not.toMatch(/ignore previous/i);
+    // A DISTINCT code from the generic format-rejection 400s above — this is
+    // what lets the client tell a genuinely well-formed-but-flagged file
+    // apart from a malformed one (fix-pass S-1, client `docUploadErrorMessage`).
+    expect(res.body.error.code).toBe('content_rejected');
     const conv = await pg.pool.query<{ version: number; messages: unknown[] }>(
       'SELECT version, messages FROM conversations WHERE id = $1',
       [id],

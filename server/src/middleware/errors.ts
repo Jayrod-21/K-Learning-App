@@ -29,6 +29,24 @@ export class ValidationError extends AppError {
   }
 }
 
+/**
+ * A 400 whose cause is the shared prompt-injection guard (`sanitizeUserInput`)
+ * rejecting otherwise well-formed content — distinct from `ValidationError`'s
+ * generic "malformed/wrong-type input" 400 so a client-facing surface (e.g.
+ * chat's document attach, `docAttach.ts`) can tell a user "this file's
+ * content was flagged" instead of misleadingly implying the file's FORMAT
+ * was the problem (which would send the user off re-encoding a `.txt` that
+ * was never going to be accepted). Same status (400) as `ValidationError` —
+ * only the wire `code` differs — so nothing else about error handling
+ * changes; this is purely a disambiguation hook for copy selection.
+ */
+export class ContentRejectedError extends AppError {
+  public constructor(message: string, details?: unknown) {
+    super(400, 'content_rejected', message, details);
+    this.name = 'ContentRejectedError';
+  }
+}
+
 export class UnauthorizedError extends AppError {
   public constructor(message = 'authentication required') {
     super(401, 'unauthorized', message);

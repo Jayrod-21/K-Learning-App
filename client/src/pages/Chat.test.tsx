@@ -44,13 +44,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import type {
+  AppendFileTurnResult,
   AppendImageTurnResult,
   AppendMessageBody,
   ConversationDetailResult,
   ConversationsList,
-  DefineResult,
-  MineWordInput,
-  MineWordResult,
+  NameConversationResult,
   StoredConversationTurn,
 } from '../types/domain';
 import type { ChatSeedState } from '../lib/askSeed';
@@ -83,14 +82,6 @@ const hoisted = vi.hoisted(() => {
     /** Reject the history fetch from the test (manual mode). */
     reject: (err: Error) => void;
   }
-  interface CapturedDefineCall {
-    word: string;
-    signal: AbortSignal | undefined;
-    /** Resolve the lookup from the test. */
-    resolve: (result: DefineResult) => void;
-    /** Reject the lookup from the test. */
-    reject: (err: Error) => void;
-  }
   interface CapturedUploadCall {
     conversationId: number;
     file: File;
@@ -99,6 +90,19 @@ const hoisted = vi.hoisted(() => {
     /** Resolve the upload from the test. */
     resolve: (result: AppendImageTurnResult) => void;
     /** Reject the upload from the test. */
+    reject: (err: Error) => void;
+  }
+  interface CapturedFileUploadCall {
+    conversationId: number;
+    file: File;
+    expectedVersion: number;
+    signal: AbortSignal | undefined;
+    resolve: (result: AppendFileTurnResult) => void;
+    reject: (err: Error) => void;
+  }
+  interface CapturedNameCall {
+    conversationId: number;
+    resolve: (result: NameConversationResult) => void;
     reject: (err: Error) => void;
   }
   interface EndpointState {
@@ -110,9 +114,11 @@ const hoisted = vi.hoisted(() => {
     id: number,
     messages: StoredConversationTurn[],
     version: number,
+    title: string | null = null,
   ): ConversationDetailResult => ({
     conversation: {
       id,
+      title,
       mode: 'casual',
       target_register: null,
       version,
@@ -143,11 +149,12 @@ const hoisted = vi.hoisted(() => {
       autoDetail: true,
       detailVersions: {} as Record<number, number>,
       detailMessages: {} as Record<number, StoredConversationTurn[]>,
-      defineCalls: [] as CapturedDefineCall[],
-      mineCalls: [] as MineWordInput[],
-      /** When set, the next (and every) mineWord call rejects with this. */
-      mineRejectWith: null as Error | null,
       uploadCalls: [] as CapturedUploadCall[],
+      fileUploadCalls: [] as CapturedFileUploadCall[],
+      nameCalls: [] as CapturedNameCall[],
+      /** true → nameConversation auto-resolves with a fixed title (most
+       *  tests don't care about naming); false → tests settle by hand. */
+      autoName: true,
     },
   };
 });
@@ -312,20 +319,23 @@ vi.mock('../services/conversation', () => ({
       return promise;
     },
   ),
-}));
-
-// ── services/define mock — controlled promise per lookup (F-016) ────────
-vi.mock('../services/define', () => ({
-  defineEntry: vi.fn(
-    (word: string, signal?: AbortSignal): Promise<DefineResult> => {
-      let resolveFn: (result: DefineResult) => void = () => undefined;
+  uploadConversationFile: vi.fn(
+    (
+      conversationId: number,
+      file: File,
+      expectedVersion: number,
+      signal?: AbortSignal,
+    ): Promise<AppendFileTurnResult> => {
+      let resolveFn: (result: AppendFileTurnResult) => void = () => undefined;
       let rejectFn: (err: Error) => void = () => undefined;
-      const promise = new Promise<DefineResult>((resolve, reject) => {
+      const promise = new Promise<AppendFileTurnResult>((resolve, reject) => {
         resolveFn = resolve;
         rejectFn = reject;
       });
-      hoisted.ref.defineCalls.push({
-        word,
+      hoisted.ref.fileUploadCalls.push({
+        conversationId,
+        file,
+        expectedVersion,
         signal,
         resolve: resolveFn,
         reject: rejectFn,
@@ -333,16 +343,30 @@ vi.mock('../services/define', () => ({
       return promise;
     },
   ),
-}));
-
-// ── services/vocab mock — Chat only imports mineWord (F-016 add-to-bank) ─
-vi.mock('../services/vocab', () => ({
-  mineWord: vi.fn(async (input: MineWordInput): Promise<MineWordResult> => {
-    hoisted.ref.mineCalls.push(input);
-    const rejection = hoisted.ref.mineRejectWith;
-    if (rejection !== null) throw rejection;
-    return { entryId: 1, card: { id: 1, version: 1 } };
-  }),
+  nameConversation: vi.fn(
+    (conversationId: number): Promise<NameConversationResult> => {
+      let resolveFn: (result: NameConversationResult) => void = () =>
+        undefined;
+      let rejectFn: (err: Error) => void = () => undefined;
+      const promise = new Promise<NameConversationResult>(
+        (resolve, reject) => {
+          resolveFn = resolve;
+          rejectFn = reject;
+        },
+      );
+      hoisted.ref.nameCalls.push({
+        conversationId,
+        resolve: resolveFn,
+        reject: rejectFn,
+      });
+      // Auto-resolve by default — most tests don't care about naming and
+      // shouldn't have to manually settle a call they never asserted on.
+      if (hoisted.ref.autoName) {
+        resolveFn({ title: '자동 생성된 제목', generated: true });
+      }
+      return promise;
+    },
+  ),
 }));
 
 import { Chat } from './Chat';
@@ -412,10 +436,10 @@ function resetState(): void {
   // off the list envelope would send 3/1 and fail.
   hoisted.ref.detailVersions = { 42: 5, 11: 2 };
   hoisted.ref.detailMessages = {};
-  hoisted.ref.defineCalls = [];
-  hoisted.ref.mineCalls = [];
-  hoisted.ref.mineRejectWith = null;
   hoisted.ref.uploadCalls = [];
+  hoisted.ref.fileUploadCalls = [];
+  hoisted.ref.nameCalls = [];
+  hoisted.ref.autoName = true;
   window.localStorage.clear();
 }
 
@@ -423,6 +447,7 @@ const LIST: ConversationsList = {
   conversations: [
     {
       id: 42,
+      title: null,
       mode: 'casual',
       target_register: null,
       version: 3,
@@ -431,6 +456,7 @@ const LIST: ConversationsList = {
     },
     {
       id: 11,
+      title: null,
       mode: 'casual',
       target_register: null,
       version: 1,
@@ -1300,522 +1326,6 @@ describe('Chat seed (F-020)', () => {
   });
 });
 
-// ── Dictionary lookup (F-016) ────────────────────────────────────────────
-describe('Chat dictionary lookup (F-016)', () => {
-  const ENTRY_RESULT: DefineResult = {
-    word: '사전',
-    entries: [
-      {
-        id: 77,
-        headword: '사전',
-        part_of_speech: 'noun',
-        definition_korean: null,
-        definition_english: 'dictionary',
-        examples: [
-          {
-            korean: '사전을 찾아보세요.',
-            english: 'Look it up in the dictionary.',
-          },
-        ],
-      },
-    ],
-  };
-
-  /** A second, distinguishable entry — lets races assert WHOSE result won. */
-  const TREE_RESULT: DefineResult = {
-    word: '나무',
-    entries: [
-      {
-        id: 88,
-        headword: '나무',
-        part_of_speech: 'noun',
-        definition_korean: null,
-        definition_english: 'tree',
-        examples: [],
-      },
-    ],
-  };
-
-  /**
-   * Entry with NO English gloss — `buildWordPopover` fills the popover's
-   * `en` with the app-wide `GLOSS_DICTIONARY_ENTRY` sentinel ('Dictionary
-   * entry'). The bank payload must never persist that sentinel as the
-   * word's English (B-002 SF-1 contract, Chat.tsx sentinel filter).
-   */
-  const SENTINEL_RESULT: DefineResult = {
-    word: '사전',
-    entries: [
-      {
-        id: 77,
-        headword: '사전',
-        part_of_speech: 'noun',
-        definition_korean: null,
-        definition_english: null,
-        examples: [],
-      },
-    ],
-  };
-
-  /** Open the lookup field via the book toggle and type a word into it. */
-  async function openDictAndType(
-    user: ReturnType<typeof userEvent.setup>,
-    word: string,
-  ): Promise<void> {
-    await user.click(
-      screen.getByRole('button', { name: 'Dictionary lookup' }),
-    );
-    await user.type(screen.getByLabelText('Dictionary word'), word);
-  }
-
-  it('looks up a word — calls defineEntry and renders the popover with headword + gloss', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    // The service was called with the trimmed word…
-    expect(hoisted.ref.defineCalls.length).toBe(1);
-    expect(hoisted.ref.defineCalls[0]?.word).toBe('사전');
-    // …and the popover opened immediately in its loading state.
-    expect(screen.getByTestId('word-popover-loading')).toBeInTheDocument();
-
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-    });
-
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('사전')).toBeInTheDocument();
-    expect(within(dialog).getByText('dictionary')).toBeInTheDocument();
-    expect(within(dialog).getByText('noun')).toBeInTheDocument();
-    expect(within(dialog).getByText('사전을 찾아보세요.')).toBeInTheDocument();
-    // Loading stub gone once resolved.
-    expect(
-      screen.queryByTestId('word-popover-loading'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('Enter in the lookup field submits the lookup', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.keyboard('{Enter}');
-
-    expect(hoisted.ref.defineCalls.length).toBe(1);
-    expect(hoisted.ref.defineCalls[0]?.word).toBe('사전');
-  });
-
-  it('Enter during an in-flight lookup is a no-op — matches the disabled button', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.keyboard('{Enter}');
-    expect(hoisted.ref.defineCalls.length).toBe(1);
-
-    // The lookup is still pending (dictLoading true — the search button is
-    // disabled). Enter must obey the same gate: no abort-and-refire behind
-    // a visibly disabled affordance. fireEvent targets the input directly
-    // because the loading popover has moved focus to its Close button.
-    fireEvent.keyDown(screen.getByLabelText('Dictionary word'), {
-      key: 'Enter',
-    });
-
-    // No second lookup fired AND the first was not aborted-and-restarted.
-    expect(hoisted.ref.defineCalls.length).toBe(1);
-    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(false);
-  });
-
-  it('shows the friendly no-entry notice when the lookup matches nothing', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '없는말');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve({ word: '없는말', entries: [] });
-    });
-
-    // No dialog, no crash — a fixed friendly line under the field instead.
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'No dictionary entry found for that word.',
-    );
-  });
-
-  it('shows fixed error copy on krdict_unavailable — never the server prose', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.reject(
-        new ApiError('KRDICT tables missing in this deploy', {
-          status: 503,
-          code: 'krdict_unavailable',
-        }),
-      );
-    });
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent(
-      'The dictionary is unavailable right now. Try again later.',
-    );
-    expect(alert).not.toHaveTextContent('KRDICT tables missing');
-  });
-
-  it('shows the shared fixed network copy on a network failure', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.reject(
-        new ApiError('connect ECONNREFUSED 127.0.0.1:3000', {
-          status: 0,
-          code: 'network',
-        }),
-      );
-    });
-
-    const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent(
-      'Network unreachable. Check your connection and try again.',
-    );
-    expect(alert).not.toHaveTextContent('ECONNREFUSED');
-  });
-
-  it('empty / whitespace input is a no-op', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await user.click(
-      screen.getByRole('button', { name: 'Dictionary lookup' }),
-    );
-    const lookupBtn = screen.getByRole('button', { name: 'Look up word' });
-    expect(lookupBtn).toBeDisabled();
-
-    await user.type(screen.getByLabelText('Dictionary word'), '   ');
-    expect(lookupBtn).toBeDisabled();
-    await user.keyboard('{Enter}');
-    expect(hoisted.ref.defineCalls.length).toBe(0);
-  });
-
-  it('aborts an in-flight lookup on unmount', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    const { unmount } = renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    const call = hoisted.ref.defineCalls[0];
-    if (!call) throw new Error('no captured define call');
-    expect(call.signal?.aborted).toBe(false);
-
-    unmount();
-    expect(call.signal?.aborted).toBe(true);
-  });
-
-  it('closing the popover aborts the pending lookup', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    // Loading stub is a dialog with a Close button.
-    const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
-  });
-
-  it('ignores a lookup result that lands AFTER the popover was closed (SF-1)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    // Close while the lookup is still pending — this aborts the controller.
-    const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
-
-    // The mocked promise now resolves LATE, with a full entry. Without the
-    // `ctrl.signal.aborted` guard on the success continuation this would
-    // repaint the popover the user just dismissed.
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-    });
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId('word-popover-loading'),
-    ).not.toBeInTheDocument();
-    // And no stray notice either — the late result must be a total no-op.
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('stays silent when a lookup FAILS after the popover was closed (SF-1)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
-
-    // Late REJECTION (a real network error, not axios's ERR_CANCELED — so
-    // the aborted-guard on the error continuation is the only defense).
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.reject(
-        new ApiError('connect ECONNREFUSED 127.0.0.1:3000', {
-          status: 0,
-          code: 'network',
-        }),
-      );
-    });
-
-    // No error notice for a lookup the user already walked away from.
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent('ECONNREFUSED');
-  });
-
-  it('a lookup that settles after unmount neither throws nor warns (SF-1)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    const errSpy = vi
-      .spyOn(console, 'error')
-      .mockImplementation(() => undefined);
-    try {
-      const { unmount } = renderChat();
-
-      await openDictAndType(user, '사전');
-      await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-      unmount();
-      expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
-
-      // Late resolution against a dead tree — must be swallowed by the
-      // aborted-guard, producing no state update, no throw, no warning.
-      await act(async () => {
-        hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-      });
-
-      expect(errSpy).not.toHaveBeenCalled();
-    } finally {
-      errSpy.mockRestore();
-    }
-  });
-
-  it('a newer lookup aborts the prior controller — only the newest result renders (SF-2)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    // Lookup A resolves and paints its popover. Its controller stays in the
-    // ref, un-aborted.
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-    });
-    expect(
-      within(screen.getByRole('dialog')).getByText('dictionary'),
-    ).toBeInTheDocument();
-
-    // Lookup B fires. The FIRST thing lookupWord does is abort the prior
-    // controller — remove that line and A's signal stays un-aborted.
-    const input = screen.getByLabelText('Dictionary word');
-    await user.clear(input);
-    await user.type(input, '나무');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-
-    expect(hoisted.ref.defineCalls.length).toBe(2);
-    expect(hoisted.ref.defineCalls[0]?.signal?.aborted).toBe(true);
-    expect(hoisted.ref.defineCalls[1]?.signal?.aborted).toBe(false);
-
-    // Only B's result paints; A's content is gone.
-    await act(async () => {
-      hoisted.ref.defineCalls[1]?.resolve(TREE_RESULT);
-    });
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('나무')).toBeInTheDocument();
-    expect(within(dialog).getByText('tree')).toBeInTheDocument();
-    expect(within(dialog).queryByText('dictionary')).not.toBeInTheDocument();
-  });
-
-  it('Add to bank mines the looked-up word with its KRDICT entry id', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-    });
-
-    const dialog = screen.getByRole('dialog');
-    await user.click(
-      within(dialog).getByRole('button', { name: /Add to vocab/ }),
-    );
-
-    await waitFor(() => {
-      expect(hoisted.ref.mineCalls.length).toBe(1);
-    });
-    expect(hoisted.ref.mineCalls[0]).toEqual({
-      lemma: '사전',
-      english: 'dictionary',
-      pos: 'noun',
-      krdictEntryId: 77,
-    });
-    // Button locked to its added state.
-    expect(
-      within(dialog).getByRole('button', { name: /Added to vocab/ }),
-    ).toBeInTheDocument();
-  });
-
-  it('rolls back the optimistic flip, toasts fixed copy, and unlocks the button when the bank fails (SF-3)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    hoisted.ref.mineRejectWith = new ApiError(
-      'duplicate key value violates unique constraint "vocab_entries_pkey"',
-      { status: 500, code: 'server_error' },
-    );
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(ENTRY_RESULT);
-    });
-
-    const dialog = screen.getByRole('dialog');
-    await user.click(
-      within(dialog).getByRole('button', { name: /Add to vocab/ }),
-    );
-
-    // Fixed-copy toast — never the server prose riding on the error.
-    expect(
-      await screen.findByText(/Couldn't bank — try again/i),
-    ).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent('duplicate key');
-
-    // The re-throw reached WordPopover: its "Added" lock rolled back so the
-    // user can retry. Remove the re-throw and the button stays locked.
-    await waitFor(() => {
-      expect(
-        within(dialog).getByRole('button', { name: /Add to vocab/ }),
-      ).toBeInTheDocument();
-    });
-    expect(
-      within(dialog).queryByRole('button', { name: /Added to vocab/ }),
-    ).not.toBeInTheDocument();
-
-    // The optimistic dictMined flip rolled back too: a re-lookup of the
-    // same word must NOT claim it was banked. Remove the rollback block in
-    // handleDictAdd and this pill appears.
-    hoisted.ref.mineRejectWith = null;
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[1]?.resolve(ENTRY_RESULT);
-    });
-    const dialog2 = screen.getByRole('dialog');
-    expect(
-      within(dialog2).queryByText('already banked'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('never persists a sentinel gloss as the banked English (SF-3)', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-
-    await openDictAndType(user, '사전');
-    await user.click(screen.getByRole('button', { name: 'Look up word' }));
-    await act(async () => {
-      hoisted.ref.defineCalls[0]?.resolve(SENTINEL_RESULT);
-    });
-
-    // The popover shows the sentinel (a real entry with no English gloss).
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Dictionary entry')).toBeInTheDocument();
-
-    await user.click(
-      within(dialog).getByRole('button', { name: /Add to vocab/ }),
-    );
-    await waitFor(() => {
-      expect(hoisted.ref.mineCalls.length).toBe(1);
-    });
-
-    // `english` is omitted entirely — the sentinel filter in handleDictAdd
-    // must strip both GLOSS_DICTIONARY_ENTRY and GLOSS_UNAVAILABLE.
-    expect(hoisted.ref.mineCalls[0]).toEqual({
-      lemma: '사전',
-      pos: 'noun',
-      krdictEntryId: 77,
-    });
-    expect(hoisted.ref.mineCalls[0]).not.toHaveProperty('english');
-  });
-
-  it('leaves the send flow untouched — composer send still streams', async () => {
-    resetState();
-    hoisted.ref.endpoint = { kind: 'data', data: LIST };
-    const user = userEvent.setup();
-    renderChat();
-    await screen.findByText(OPENER_RE);
-
-    // Open the dictionary field, then use the normal composer anyway.
-    await user.click(
-      screen.getByRole('button', { name: 'Dictionary lookup' }),
-    );
-    await user.type(screen.getByLabelText('Reply input'), '감사합니다');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(hoisted.ref.streamCalls.length).toBe(1);
-    expect(hoisted.ref.streamCalls[0]?.body.content).toBe('감사합니다');
-    // The dictionary lookup never fired.
-    expect(hoisted.ref.defineCalls.length).toBe(0);
-  });
-});
 
 // ── FAB entry: force-new + "Discuss the page you were on?" (Slice 3) ─────
 describe('Chat FAB open (Slice 3)', () => {
@@ -2118,10 +1628,122 @@ describe('Chat FAB open (Slice 3)', () => {
   });
 });
 
-// ── Image-in-chat (Slice 3) ───────────────────────────────────────────────
-describe('Chat image upload (Slice 3)', () => {
-  const UPLOAD_LABEL = 'Upload a photo · 사진 올리기';
+// ── "+" attach menu — Camera / Upload image / Upload document (F-035) ───
+describe('Chat attach menu (F-035)', () => {
+  it('opens on click, closes on Escape, and returns focus to the trigger', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
 
+    const trigger = screen.getByRole('button', { name: 'Attach' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('menu', { name: 'Attach' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('menuitem', { name: /Camera/ }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('closes when clicking outside the menu (no item picked)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('lists Camera, Upload image, and Upload document as menu items', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    const menu = screen.getByRole('menu', { name: 'Attach' });
+    const items = within(menu).getAllByRole('menuitem');
+    expect(items.length).toBe(3);
+    expect(within(menu).getByRole('menuitem', { name: /Camera/ })).toBeInTheDocument();
+    expect(
+      within(menu).getByRole('menuitem', { name: /Upload image/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(menu).getByRole('menuitem', { name: /Upload document/ }),
+    ).toBeInTheDocument();
+  });
+
+  // B-1 (fix-pass blocker): the menu had no arrow-key roving navigation and
+  // no close-on-Tab-out — a keyboard user tabbing past the last item left
+  // the popup visually open and orphaned. Both cases below FAIL against the
+  // pre-fix code (no ArrowDown/Up/Home/End handling at all; Tab does
+  // nothing so the menu stays open).
+  it('moves focus between menu items with ArrowDown/ArrowUp/Home/End (roving tabindex, wraps at each end)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    const camera = screen.getByRole('menuitem', { name: /Camera/ });
+    const image = screen.getByRole('menuitem', { name: /Upload image/ });
+    const doc = screen.getByRole('menuitem', { name: /Upload document/ });
+    expect(camera).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(image).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(doc).toHaveFocus();
+
+    // Wraps forward from the last item back to the first.
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(camera).toHaveFocus();
+
+    // Wraps backward from the first item to the last.
+    fireEvent.keyDown(document, { key: 'ArrowUp' });
+    expect(doc).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Home' });
+    expect(camera).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'End' });
+    expect(doc).toHaveFocus();
+  });
+
+  it('closes the menu on Tab so it can never be left open+orphaned once focus moves on', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    // Tab from the first item (or any item) — the menu must not still be
+    // rendered afterward, regardless of where the browser's own default
+    // focus-move action then sends focus.
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+});
+
+// ── Image-in-chat (Slice 3, now behind the "+" menu — F-035) ─────────────
+describe('Chat image upload (Slice 3 + F-035 menu)', () => {
   function makeImageFile(
     name = 'menu.jpg',
     type = 'image/jpeg',
@@ -2134,8 +1756,33 @@ describe('Chat image upload (Slice 3)', () => {
     return file;
   }
 
-  /** Fire a picked file straight into the hidden input. */
-  function pickFile(file: File): void {
+  /** Open the "+" menu, click "Upload image", then fire the picked file
+   *  straight into the hidden input the item proxies. */
+  async function pickImageViaMenu(
+    user: ReturnType<typeof userEvent.setup>,
+    file: File,
+  ): Promise<void> {
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    await user.click(screen.getByRole('menuitem', { name: /Upload image/ }));
+    const input = screen.getByTestId<HTMLInputElement>('chat-image-input');
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  /** Same, via the Camera menu item / hidden input — proves camera and
+   *  image share the same upload flow (uploadImageFile). */
+  async function pickImageViaCamera(
+    user: ReturnType<typeof userEvent.setup>,
+    file: File,
+  ): Promise<void> {
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    await user.click(screen.getByRole('menuitem', { name: /Camera/ }));
+    const input = screen.getByTestId<HTMLInputElement>('chat-camera-input');
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  /** Oversize/unsupported pre-check rejections fire before any menu
+   *  interaction matters — go straight at the hidden input like before. */
+  function pickFileDirect(file: File): void {
     const input = screen.getByTestId<HTMLInputElement>('chat-image-input');
     fireEvent.change(input, { target: { files: [file] } });
   }
@@ -2159,8 +1806,7 @@ describe('Chat image upload (Slice 3)', () => {
     renderChat();
     await screen.findByText(OPENER_RE); // conversation 42 loaded, version 5
 
-    await user.click(screen.getByRole('button', { name: UPLOAD_LABEL }));
-    pickFile(makeImageFile());
+    await pickImageViaMenu(user, makeImageFile());
 
     // The service got the ACTIVE conversation + the history-loaded version.
     await waitFor(() => {
@@ -2172,18 +1818,16 @@ describe('Chat image upload (Slice 3)', () => {
     expect(call.expectedVersion).toBe(5);
     expect(call.file.name).toBe('menu.jpg');
 
-    // In-flight affordances: busy button + status line.
-    expect(
-      screen.getByRole('button', { name: UPLOAD_LABEL }),
-    ).toBeDisabled();
-    expect(screen.getByText(/Uploading photo/)).toBeInTheDocument();
+    // In-flight affordances: busy trigger + status line.
+    expect(screen.getByRole('button', { name: 'Attach' })).toBeDisabled();
+    expect(screen.getByText(/Uploading/)).toBeInTheDocument();
 
     await act(async () => {
       call.resolve({ version: 6, messages: [], turn: IMAGE_TURN });
     });
 
     // The OCR'd turn renders: photo + Korean text; the English caption
-    // follows the hints toggle (on by default here). The image is
+    // follows the English toggle (on by default here). The image is
     // decorative for AT (its OCR'd text below is the content) — tests key
     // off the testid.
     const img = within(thread()).getByTestId('chat-bubble-image');
@@ -2194,15 +1838,29 @@ describe('Chat image upload (Slice 3)', () => {
     expect(
       within(thread()).getByText('Americano 4,500 won'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: UPLOAD_LABEL }),
-    ).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Attach' })).not.toBeDisabled();
 
     // The version advanced to the server's post-append value: the next
     // send must ride version 6, not the stale 5.
     await user.type(screen.getByLabelText('Reply input'), '이게 무슨 뜻이에요?');
     await user.click(screen.getByRole('button', { name: 'Send' }));
     expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(6);
+  });
+
+  it('the Camera menu item drives the SAME upload flow via its own hidden input', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickImageViaCamera(user, makeImageFile('capture.jpg'));
+
+    await waitFor(() => {
+      expect(hoisted.ref.uploadCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.uploadCalls[0]?.file.name).toBe('capture.jpg');
+    expect(hoisted.ref.uploadCalls[0]?.conversationId).toBe(42);
   });
 
   it('renders image turns from a loaded history (persistence round-trip)', async () => {
@@ -2228,8 +1886,7 @@ describe('Chat image upload (Slice 3)', () => {
     renderChat();
     await screen.findByText(OPENER_RE);
 
-    await user.click(screen.getByRole('button', { name: UPLOAD_LABEL }));
-    pickFile(makeImageFile());
+    await pickImageViaMenu(user, makeImageFile());
     await waitFor(() => {
       expect(hoisted.ref.uploadCalls.length).toBe(1);
     });
@@ -2252,9 +1909,7 @@ describe('Chat image upload (Slice 3)', () => {
     expect(
       within(thread()).queryByTestId('chat-bubble-image'),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: UPLOAD_LABEL }),
-    ).not.toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Attach' })).not.toBeDisabled();
   });
 
   it('rejects an oversize file client-side with the shared fixed copy (no request)', async () => {
@@ -2263,7 +1918,7 @@ describe('Chat image upload (Slice 3)', () => {
     renderChat();
     await screen.findByText(OPENER_RE);
 
-    pickFile(makeImageFile('big.jpg', 'image/jpeg', 9 * 1024 * 1024));
+    pickFileDirect(makeImageFile('big.jpg', 'image/jpeg', 9 * 1024 * 1024));
 
     expect(screen.getByRole('alert')).toHaveTextContent(
       'That image is too large. Pick one under 8 MB.',
@@ -2277,7 +1932,7 @@ describe('Chat image upload (Slice 3)', () => {
     renderChat();
     await screen.findByText(OPENER_RE);
 
-    pickFile(makeImageFile('doc.pdf', 'application/pdf'));
+    pickFileDirect(makeImageFile('doc.pdf', 'application/pdf'));
 
     expect(screen.getByRole('alert')).toHaveTextContent(
       'That file isn’t a supported image. Use a JPEG, PNG, or WebP.',
@@ -2291,7 +1946,7 @@ describe('Chat image upload (Slice 3)', () => {
     const { unmount } = renderChat();
     await screen.findByText(OPENER_RE);
 
-    pickFile(makeImageFile());
+    pickFileDirect(makeImageFile());
     await waitFor(() => {
       expect(hoisted.ref.uploadCalls.length).toBe(1);
     });
@@ -2316,7 +1971,7 @@ describe('Chat image upload (Slice 3)', () => {
     renderChat();
     await screen.findByText(OPENER_RE);
 
-    pickFile(makeImageFile());
+    pickFileDirect(makeImageFile());
     await waitFor(() => {
       expect(hoisted.ref.uploadCalls.length).toBe(1);
     });
@@ -2349,7 +2004,7 @@ describe('Chat image upload (Slice 3)', () => {
     await screen.findByText(OPENER_RE);
     expect(hoisted.ref.getCalls.length).toBe(1);
 
-    pickFile(makeImageFile());
+    pickFileDirect(makeImageFile());
     await waitFor(() => {
       expect(hoisted.ref.uploadCalls.length).toBe(1);
     });
@@ -2367,7 +2022,7 @@ describe('Chat image upload (Slice 3)', () => {
     });
 
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'This conversation changed — reloading it. Try the photo again.',
+      'This conversation changed — reloading it. Try again.',
     );
     expect(screen.getByRole('alert')).not.toHaveTextContent(
       'version conflict',
@@ -2394,7 +2049,7 @@ describe('Chat image upload (Slice 3)', () => {
 
     const input = screen.getByLabelText<HTMLTextAreaElement>('Reply input');
     await user.type(input, '업로드 중에 보내기');
-    pickFile(makeImageFile());
+    pickFileDirect(makeImageFile());
     await waitFor(() => {
       expect(hoisted.ref.uploadCalls.length).toBe(1);
     });
@@ -2423,5 +2078,381 @@ describe('Chat image upload (Slice 3)', () => {
       expect(hoisted.ref.streamCalls.length).toBe(1);
     });
     expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(6);
+  });
+});
+
+// ── Document attach (F-035 backend wiring) ────────────────────────────────
+describe('Chat document attach (F-035)', () => {
+  function makeDocFile(
+    name = 'notes.txt',
+    type = 'text/plain',
+    size?: number,
+  ): File {
+    const file = new File(['하나 둘 셋'], name, { type });
+    if (size !== undefined) {
+      Object.defineProperty(file, 'size', { value: size });
+    }
+    return file;
+  }
+
+  const FILE_TURN: StoredConversationTurn = {
+    role: 'user',
+    content: '하나 둘 셋 넷 다섯',
+    sent_at: '2026-07-07T12:00:00Z',
+    file: {
+      name: 'notes.txt',
+      media_type: 'text/plain',
+      size_bytes: 42,
+      truncated: false,
+    },
+  };
+
+  async function pickDocViaMenu(
+    user: ReturnType<typeof userEvent.setup>,
+    file: File,
+  ): Promise<void> {
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    await user.click(
+      screen.getByRole('menuitem', { name: /Upload document/ }),
+    );
+    const input = screen.getByTestId<HTMLInputElement>('chat-file-input');
+    fireEvent.change(input, { target: { files: [file] } });
+  }
+
+  it('uploads a document and renders its file chip + text in the thread', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE); // conversation 42 loaded, version 5
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.fileUploadCalls[0];
+    if (!call) throw new Error('no captured file upload call');
+    expect(call.conversationId).toBe(42);
+    expect(call.expectedVersion).toBe(5);
+    expect(call.file.name).toBe('notes.txt');
+
+    await act(async () => {
+      call.resolve({ version: 6, messages: [], turn: FILE_TURN });
+    });
+
+    expect(
+      within(thread()).getByTestId('chat-bubble-file'),
+    ).toHaveTextContent('notes.txt');
+    expect(
+      within(thread()).getByText('하나 둘 셋 넷 다섯'),
+    ).toBeInTheDocument();
+
+    // The version advanced — the next send rides it.
+    await user.type(screen.getByLabelText('Reply input'), '이 문서 요약해줘');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(hoisted.ref.streamCalls[0]?.body.expected_version).toBe(6);
+  });
+
+  it('rejects an oversize document client-side with fixed copy (no request)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile('big.txt', 'text/plain', 300 * 1024));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'That file is too large. Pick one under 256 KB.',
+    );
+    expect(hoisted.ref.fileUploadCalls.length).toBe(0);
+  });
+
+  it('rejects an unsupported declared mime client-side with fixed copy (no request)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile('sheet.csv', 'text/csv'));
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "That file couldn't be attached. Use a plain text (.txt or .md) file under 256 KB.",
+    );
+    expect(hoisted.ref.fileUploadCalls.length).toBe(0);
+  });
+
+  // S-1 (fix-pass should-fix): a server-side `content_rejected` 400 (the
+  // shared injection guard flagging otherwise well-formed text) must render
+  // DIFFERENT copy from the generic "wrong format" 400 above — folding both
+  // into the same message would send a user with a genuinely clean `.txt`
+  // off re-encoding/renaming a file that was never going to be accepted.
+  it('renders distinct copy for a server-side content_rejected 400 (not the generic "wrong format" message)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+
+    await act(async () => {
+      hoisted.ref.fileUploadCalls[0]?.reject(
+        new ApiError('document contains content that cannot be sent to the tutor', {
+          status: 400,
+          code: 'content_rejected',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "That document's content can't be sent to the tutor. Try a different file.",
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent(
+      "Use a plain text (.txt or .md) file",
+    );
+  });
+
+  it('a 409 (stale version) shows the shared attachment-conflict copy and refetches the thread', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+    expect(hoisted.ref.getCalls.length).toBe(1);
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+    hoisted.ref.detailVersions[42] = 9;
+    await act(async () => {
+      hoisted.ref.fileUploadCalls[0]?.reject(
+        new ApiError('version conflict: expected 5, row at 9', {
+          status: 409,
+          code: 'version_conflict',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'This conversation changed — reloading it. Try again.',
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent(
+      'version conflict',
+    );
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.getCalls[1]?.id).toBe(42);
+  });
+
+  it('aborts the in-flight document upload on unmount', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    const { unmount } = renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+    const call = hoisted.ref.fileUploadCalls[0];
+    if (!call) throw new Error('no captured file upload call');
+    expect(call.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(call.signal?.aborted).toBe(true);
+  });
+
+  it('an image upload and a document upload share the `uploading` gate (mutually exclusive)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+    // The "+" trigger is disabled while ANY attachment upload is in flight —
+    // a second attach attempt (image or document) cannot race the first.
+    expect(screen.getByRole('button', { name: 'Attach' })).toBeDisabled();
+  });
+});
+
+// ── Auto-naming (F-036) ───────────────────────────────────────────────────
+describe('Chat auto-naming (F-036)', () => {
+  /** Fire a send and settle its stream cleanly (onDone + resolve). */
+  async function sendAndFinish(
+    user: ReturnType<typeof userEvent.setup>,
+    text: string,
+    callIndex: number,
+  ): Promise<void> {
+    await user.type(screen.getByLabelText('Reply input'), text);
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => {
+      expect(hoisted.ref.streamCalls.length).toBe(callIndex + 1);
+    });
+    const call = hoisted.ref.streamCalls[callIndex];
+    if (!call) throw new Error('no captured stream call');
+    await act(async () => {
+      call.onDone?.();
+      call.resolve();
+      await call.promise;
+    });
+  }
+
+  it('triggers nameConversation once the first turn completes, and renders the resolved title in the sidebar', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoName = false;
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await sendAndFinish(user, '안녕하세요', 0);
+
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.nameCalls[0]?.conversationId).toBe(42);
+
+    await act(async () => {
+      hoisted.ref.nameCalls[0]?.resolve({
+        title: '재택근무 논의',
+        generated: true,
+      });
+    });
+
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(
+      within(nav).getByRole('button', { name: /재택근무 논의/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not re-call nameConversation for the same conversation after this session already succeeded', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await sendAndFinish(user, '첫 메시지', 0);
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(1);
+    });
+
+    await sendAndFinish(user, '두 번째 메시지', 1);
+
+    // A second turn in the SAME conversation must not re-trigger naming —
+    // the per-session latch already has a confirmed title.
+    expect(hoisted.ref.nameCalls.length).toBe(1);
+  });
+
+  // S-2 (fix-pass should-fix): `triggerAutoName`'s rejection branch releases
+  // the `namedRef` latch so a transient failure gets another chance on the
+  // next turn — documented in the source but, until now, never exercised.
+  // This FAILS if that release is ever accidentally dropped/inverted (the
+  // conversation would stay permanently unnamed for the rest of the
+  // session).
+  it('releases the latch on a failed nameConversation call so a later turn retries it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoName = false;
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await sendAndFinish(user, '첫 메시지', 0);
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(1);
+    });
+
+    await act(async () => {
+      hoisted.ref.nameCalls[0]?.reject(new Error('naming failed'));
+      // Let the rejection handler's latch-release microtask run.
+      await Promise.resolve();
+    });
+
+    await sendAndFinish(user, '두 번째 메시지', 1);
+
+    // The failed call released the latch — a later completed turn gets
+    // another try, rather than permanently wedging the conversation unnamed.
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.nameCalls[1]?.conversationId).toBe(42);
+  });
+
+  it('a real title on the loaded history (`conversation.title`) wins over the derived snippet', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoDetail = false;
+    renderChat();
+
+    // Conversation 42 auto-loads first; settle it by hand with a NAMED
+    // detail (title set) whose first message is DIFFERENT text — proving
+    // the confirmed title wins over the snippet it would otherwise derive.
+    await waitFor(() => {
+      expect(hoisted.ref.getCalls.length).toBe(1);
+    });
+    expect(hoisted.ref.getCalls[0]?.id).toBe(42);
+    await act(async () => {
+      hoisted.ref.getCalls[0]?.resolve(
+        hoisted.makeDetail(
+          42,
+          [turn('user', '문법 질문이 있어요')],
+          5,
+          '문법 도움',
+        ),
+      );
+    });
+
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    expect(
+      within(nav).getByRole('button', { name: /문법 도움/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(nav).queryByRole('button', { name: /^문법 질문이 있어요/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ── English toggle — visible label (B-020) ────────────────────────────────
+describe('Chat English toggle label (B-020)', () => {
+  it('renders a visible bilingual label naming the switch’s purpose', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    expect(screen.getByText('English')).toBeInTheDocument();
+    expect(screen.getByText('영어')).toBeInTheDocument();
+    expect(
+      screen.getByRole('switch', { name: 'Show English translations' }),
+    ).toBeInTheDocument();
+  });
+
+  it('toggling off hides the English translation lines', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    expect(screen.getByText(/Today we'll discuss/)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('switch', { name: 'Show English translations' }),
+    );
+    expect(
+      screen.queryByText(/Today we'll discuss/),
+    ).not.toBeInTheDocument();
   });
 });

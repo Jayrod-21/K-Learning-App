@@ -1359,6 +1359,11 @@ Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/
 - **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (SECURITY) · **Beta:** —
 - **What:** The shared `mapClaudeError` forwards `${code}: ${message}` on both 4xx and 5xx paths. Safe today (every proxy error message is a fixed generic string), but a future non-generic message would leak to the client. Pre-existing, surfaced during the F-116 review. Harden to only forward a whitelisted/generic message.
 
+### F-125 · `POST /conversation/:id/name` not exactly-once under concurrent first calls
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND · **Beta:** —
+- **What:** `routes/conversation.ts`'s `/name` route reads `title`, calls Claude only if it's `NULL`, then persists via `UPDATE ... WHERE title IS NULL`. Two requests arriving close together on the same never-named conversation (two open tabs, a reloaded component, etc.) can both pass the read-check and both burn a Claude call before either commits the UPDATE — storage never diverges (the UPDATE's `WHERE title IS NULL` guard means only one write wins) and the race can only happen ONCE per conversation (every later call short-circuits with no Claude spend), bounded further by the existing per-user `expensiveLimiter()`. Surfaced independently by both the Phase 3D client and server reviews (`docs/phase3d/REVIEW_chat_server.md` S-1) as a SHOULD-FIX, not a blocker. Pre-existing Phase 2 code; Phase 3D only wired the client to it.
+- **Why deferred (not fixed in Phase 3D):** the two low-risk-looking fixes both carry real cost for a bounded, storage-safe race: (a) a sentinel/claim-first column (`UPDATE ... SET title = 'PENDING' WHERE title IS NULL`) is a schema change, and this repo's own gate requires migration/schema work to run the FULL client+server+db suite, not a targeted slice — out of scope for a fix-pass restricted to targeted verification; (b) a session-scoped Postgres advisory lock held across the Claude network round-trip needs careful client-checkout/release lifecycle management (a pattern with zero existing precedent or test coverage in this codebase) — introducing it under a fix-pass's targeted-test-only gate risks a subtler bug (a leaked/never-released lock or pooled connection) than the race it fixes. Recommend implementing whichever of the two the next full-suite-gated pass picks, with the full suite run per `feedback_fixpass_gates_run_full_suite.md`.
+
 ---
 
 ## ✅ Backend mini-phase — light-up (F-104/F-106/F-110/F-111/F-116/F-117/F-118) — DONE, PR pending
@@ -1369,6 +1374,26 @@ Delivered on `feat/phase-be-lightup`, full 4-phase /fixpass PASS (0 blockers, se
 - **Grammar:** F-110 ✅ (`GET /grammar-drill/attempts`) → **F-065 live**; F-111 ✅ (FSRS schedule folded into `/grammar/bank`) → grammar mastery rows show real state/next-due.
 - **Reading:** F-116 ✅ (migration 057 + `POST /reading/translate` Claude route, cached/low-temp) → **F-070 live** (real passage translation).
 - **New tickets filed:** F-122 · F-123 · F-124.
+
+---
+
+## ✅ Phase 3D — Chat (final page group) — DONE, PR pending
+
+Delivered on `feat/phase3d-chat`, full 4-phase /fixpass PASS (1 blocker + 5 should-fixes → re-review PASS, 0 regressions; attach-menu keyboard blocker mutation-verified dead). Full suites: client 1502 · server 1240 (+4 skip).
+- **F-037 ✅** tutor replies now concise & conversational by default (system-prompt DEFAULT BREVITY / expand-only-on-request block; tutor domain behavior intact).
+- **F-033 ✅** formatting overhaul (styles consolidated into co-located `Chat.css`).
+- **F-034 ✅** in-chat dictionary + suggested-words removed (grep-clean across the whole client tree).
+- **F-035 ✅** "+" attach menu (camera / upload-image / upload-document) — all three wired (document to the existing `POST /conversation/:id/file`), WAI-ARIA menu-button with roving arrow-key nav + Tab-close + Escape/outside-click, 409 stale-version handling on both upload paths; server-side file validation (size, real UTF-8 bytes, injection markers).
+- **B-020 ✅** English toggle labeled ("English · 영어" + sharpened aria-label).
+- **F-036 ✅** chats auto-named from content via the existing `name_conversation` route (latched per-conversation; title precedence session→server→snippet→date).
+- **F-024** n/a (`/chat` has no nested route).
+- **New ticket filed:** F-125 (`/name` route not exactly-once under concurrent first calls — bounded/storage-safe, deferred for a full-suite-gated pass).
+
+---
+
+## 🏁 Wave 1 pre-beta redesign — BUILD COMPLETE (PRs #91–#96)
+
+All phases through the full 4-phase /fixpass: Phase 1 primitives · Phase 2 backend (045–055) · **3A** Today/Progress/Settings (#91) · **3B** Review/Library (#92) · **3C-1** flashcards/grammar/hanja (#93) · **3C-2** reading/listen/writing/topik (#94) · **backend light-up** (#95) · **3D** Chat (#96). Next: DEPLOY (blue/green to M, migrations 045–057 + km_app role) → friends beta.
 
 ---
 
