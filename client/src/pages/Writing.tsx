@@ -18,19 +18,22 @@
  *       writing tile (F-101; the history entry is scrubbed on mount so
  *       Back/refresh can't replay the deep link — the Grammar drill-target
  *       idiom). Generated topics are gradable: TOPIK-style ones grade
- *       against their echoed rubric, free-writes against the Q54 rubric
- *       (the server's own default) with an honest note — the rubric
- *       taxonomy can't widen past Q53/Q54 without a server-enum + DB CHECK
- *       change, which is deferred (see the F-117 note on `gradeRubricFor`).
+ *       against their echoed rubric; free-writes grade against the real
+ *       `free_write` rubric (migration 056/F-117 widened the server enum +
+ *       DB CHECK, replacing the earlier Q54-borrowing stand-in — see
+ *       `gradeRubricFor`).
  *
  *   The task header (eyebrow + target band + textarea label) derives from
  *   the ACTIVE task's own rubric/mode — never from a hardcoded Q53 default
  *   (the other half of B-027: the headers previously could not disagree with
  *   the tab, so a mis-served prompt would have worn the wrong rubric).
  *
- *   RESPONSES — honest stub (F-074). Listing past attempts needs
- *   `GET /writing/attempts`, which does not exist yet (only the aggregate
- *   `GET /writing/series` does); ticketed as F-106. No fabricated rows.
+ *   RESPONSES — the caller's graded-writing history via
+ *   `GET /writing/attempts` (F-106, replacing the earlier F-074 honest stub
+ *   that could only say "browsing is coming soon" — that endpoint didn't
+ *   exist yet). Abortable fetch on tab activation, failure-safe (fixed-copy
+ *   error + Retry, never a mock fallback), honest empty state for a learner
+ *   who has never submitted a sample.
  *
  * Draft-preservation contract (F-UP-017's successor): the learner's text is
  * cleared ONLY when a genuinely different task lands after an explicit "New
@@ -89,7 +92,11 @@ import { Tabs, type TabItem } from '../components/Tabs';
 import { WritingTopicGenerator } from '../components/WritingTopicGenerator';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
-import { fetchRandomWritingPrompt, gradeWriting } from '../services/writing';
+import {
+  fetchRandomWritingPrompt,
+  fetchWritingAttempts,
+  gradeWriting,
+} from '../services/writing';
 import type {
   GeneratedWritingPrompt,
   WritingPromptDTO,
@@ -97,9 +104,11 @@ import type {
 import type {
   GradeWritingBody,
   TopikWritingRubric,
+  WritingAttemptDTO,
   WritingDimensionScore,
   WritingEstimatedLevel,
   WritingGradeResult,
+  WritingRubric,
 } from '../types/domain';
 import './Writing.css';
 
@@ -135,14 +144,11 @@ const RUBRIC_META: Record<
 const RUBRICS: readonly TopikWritingRubric[] = ['topik_ii_53', 'topik_ii_54'];
 
 /**
- * Rubric used to GRADE a task. Bank prompts carry their own; generated
- * TOPIK-style topics echo the rubric the server authored against; free-writes
- * grade against Q54 — the server's own `/grade-writing` default — because the
- * rubric taxonomy is a closed Q53/Q54 enum end to end (server Zod + DB
- * CHECK). Widening it (e.g. a `general` rubric with its own dimensions) is a
- * SCHEMA change, deferred and ticketed as F-117; until then the free-write
- * surface says so honestly (the `km-writing__note` line) instead of
- * pretending a bespoke rubric exists.
+ * Fallback TOPIK rubric for a generated `mode: 'topik'` task whose own
+ * `rubric` is somehow missing (the server always echoes one for topik mode —
+ * this is defensive, not a real path). Mirrors `/grade-writing`'s own Q54
+ * default. NOT used for `mode: 'general'` free-writes — those grade against
+ * the real `free_write` rubric (migration 056/F-117); see `gradeRubricFor`.
  */
 const DEFAULT_GENERATED_RUBRIC: TopikWritingRubric = 'topik_ii_54';
 
@@ -191,9 +197,17 @@ type TaskState =
   | { phase: 'error'; message: string }
   | { phase: 'ready'; task: ActiveTask };
 
-/** The rubric a task grades against (see DEFAULT_GENERATED_RUBRIC). */
-function gradeRubricFor(task: ActiveTask): TopikWritingRubric {
+/**
+ * The rubric a task grades against. Bank prompts carry their own; a generated
+ * TOPIK-style topic echoes the rubric the server authored against (falling
+ * back to `DEFAULT_GENERATED_RUBRIC` only if it were somehow absent); a
+ * generated `general`-mode topic is a genuine free-write and grades against
+ * the real `free_write` rubric (migration 056/F-117 — no longer a Q54
+ * borrow).
+ */
+function gradeRubricFor(task: ActiveTask): WritingRubric {
   if (task.source === 'bank') return task.prompt.rubric;
+  if (task.prompt.mode === 'general') return 'free_write';
   return task.prompt.rubric ?? DEFAULT_GENERATED_RUBRIC;
 }
 
@@ -294,6 +308,22 @@ function promptsMessageFor(err: unknown): string {
     }
   }
   return "A writing task couldn't be loaded. Try again in a moment.";
+}
+
+/**
+ * Fixed-string error copy for the Responses-tab history fetch (F-106; same
+ * never-echo-server-prose contract as `messageFor`/`promptsMessageFor`).
+ */
+function attemptsMessageFor(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'network') {
+      return 'Network unreachable. Reconnect and retry to load your responses.';
+    }
+    if (err.status === 401) {
+      return 'Your session has expired. Sign in again to see your responses.';
+    }
+  }
+  return "Your responses couldn't be loaded. Try again in a moment.";
 }
 
 function Writing(): JSX.Element {
@@ -582,7 +612,7 @@ function Writing(): JSX.Element {
       <Tabs tabs={WRITING_TABS} ariaLabel="Writing sections">
         {(activeTab) =>
           activeTab === 'responses' ? (
-            <ResponsesStub />
+            <MyResponses />
           ) : (
             <>
               {/* Rubric radiogroup ───────────────────────────────── */}
@@ -785,17 +815,6 @@ function ComposeSheet({
       />
       <div className="km-writing__count">{sample.length}자</div>
 
-      {isGenerated && task.prompt.mode === 'general' ? (
-        // Honest note: the grader's rubric taxonomy is Q53/Q54 only (server
-        // enum + DB CHECK); widening it is deferred — ticketed F-117.
-        <p className="km-writing__note">
-          <Bilingual
-            en="Free writes are graded with the TOPIK Q54 essay rubric for now."
-            kr="자유 주제 글은 당분간 TOPIK 54번 기준으로 채점돼요."
-          />
-        </p>
-      ) : null}
-
       {grading ? (
         <div className="km-grammar__state" role="status">
           <Bilingual
@@ -851,25 +870,145 @@ function ComposeSheet({
   );
 }
 
+/** Rubric label for one history row — reuses RUBRIC_META's mixed-text label
+ *  for the two TOPIK rubrics; free_write gets its own (056/F-117 — a REAL
+ *  rubric now, not a Q54 borrow, so it earns its own label, not "Q54 ·…"). */
+function attemptRubricLabel(rubric: WritingRubric): string {
+  if (rubric === 'free_write') return 'Free write · 자유 주제';
+  return RUBRIC_META[rubric].label;
+}
+
+/** Lifecycle for the F-106 attempts fetch. Deliberately NO combined
+ *  loading+stale-data state — a fresh tab activation always starts clean
+ *  (the Tabs primitive re-keys/remounts the panel on switch). */
+type AttemptsState =
+  | { phase: 'loading' }
+  | { phase: 'error'; message: string }
+  | { phase: 'empty' }
+  | { phase: 'loaded'; attempts: WritingAttemptDTO[] };
+
 /**
- * F-074 honest stub — past writing responses. Listing attempts needs
- * `GET /writing/attempts`, which does not exist yet (only the aggregate
- * `GET /writing/series` does); ticketed as F-106. Until it lands this tab
- * says so plainly — it never fabricates rows.
+ * F-106 — the caller's graded-writing history via `GET /writing/attempts`,
+ * replacing the earlier F-074 honest stub now that the endpoint is real.
+ * Abortable on unmount/retry (the same idiom as the bank-prompt fetch
+ * effect above); failure-safe (fixed-copy `ErrorCard` + Retry, never a mock
+ * fallback); an honest empty state for a learner who has never graded a
+ * sample. All prompt/sample text is Claude/learner text relayed by our
+ * server, rendered ONLY through React text children (no `dangerouslySetInnerHTML`).
  */
-function ResponsesStub(): JSX.Element {
+function MyResponses(): JSX.Element {
+  const [state, setState] = useState<AttemptsState>({ phase: 'loading' });
+  const [retryTick, setRetryTick] = useState(0);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    // Resets to 'loading' on a Retry (retryTick bump) without unmounting —
+    // the initial mount is already 'loading' via useState's initializer.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setState({ phase: 'loading' });
+    fetchWritingAttempts(undefined, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setState(
+          res.attempts.length === 0
+            ? { phase: 'empty' }
+            : { phase: 'loaded', attempts: res.attempts },
+        );
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setState({ phase: 'error', message: attemptsMessageFor(err) });
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [retryTick]);
+
   return (
     <Card variant="default">
       <Eyebrow>
         <Bilingual en="My responses" kr="내 답안" />
       </Eyebrow>
-      <p className="km-writing__stub">
-        <Bilingual
-          en="Every graded response is already saved with its score. Browsing them here is coming soon."
-          kr="채점된 글은 점수와 함께 모두 저장돼 있어요. 곧 여기에서 볼 수 있어요."
+      {state.phase === 'loading' ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual en="Loading your responses…" kr="답안을 불러오는 중…" />
+        </div>
+      ) : state.phase === 'error' ? (
+        <ErrorCard
+          message={state.message}
+          onRetry={() => {
+            setRetryTick((t) => t + 1);
+          }}
         />
-      </p>
+      ) : state.phase === 'empty' ? (
+        <p className="km-reference__empty">
+          <Bilingual
+            en="You haven't graded a writing sample yet. Submit one in Write to see it here."
+            kr="아직 채점된 답안이 없어요. 쓰기 탭에서 글을 제출해 보세요."
+          />
+        </p>
+      ) : (
+        <ul className="km-writing__attempts">
+          {state.attempts.map((a) => (
+            <AttemptRow key={a.id} attempt={a} />
+          ))}
+        </ul>
+      )}
     </Card>
+  );
+}
+
+/** One row in the F-106 graded-writing history. */
+function AttemptRow({ attempt }: { attempt: WritingAttemptDTO }): JSX.Element {
+  const level = attempt.estimatedLevel !== null ? LEVEL_META[attempt.estimatedLevel] : null;
+  return (
+    <li className="km-writing__attempt" style={{ marginBottom: 16 }}>
+      <Card variant="flat">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 8,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Pill>{attemptRubricLabel(attempt.rubric)}</Pill>
+            {attempt.promptId === null ? (
+              // No writing_prompts source row — this is a Claude-generated
+              // topic, not a curated bank prompt (F-106's nullable prompt_id).
+              <Pill tone="gold">
+                <Bilingual en="Generated topic" kr="만든 주제" compact />
+              </Pill>
+            ) : null}
+          </div>
+          <time
+            dateTime={attempt.gradedAt}
+            style={{ fontSize: 13, color: 'var(--paper)', whiteSpace: 'nowrap' }}
+          >
+            {new Date(attempt.gradedAt).toLocaleDateString()}
+          </time>
+        </div>
+        <p className="kr km-grammar__context">{attempt.promptKr}</p>
+        <p className="kr km-writing__gloss">{attempt.sample}</p>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 12,
+            marginTop: 8,
+          }}
+        >
+          <div className="km-grammar__score">
+            <span className="km-grammar__score-num">{attempt.totalScore}</span>
+            <span className="km-grammar__score-max"> / {attempt.maxTotal}</span>
+          </div>
+          {level !== null ? <Pill tone={level.tone}>{level.label}</Pill> : null}
+        </div>
+      </Card>
+    </li>
   );
 }
 

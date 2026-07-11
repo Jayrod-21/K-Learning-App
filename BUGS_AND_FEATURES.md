@@ -1345,6 +1345,33 @@ Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/
 
 ---
 
+## 🌊 Backend mini-phase follow-up tickets (filed 2026-07-11)
+
+### F-122 · Persist `topik_level` on `topik_attempts` for full D-1 level-pinning
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (DATABASE) · **Beta:** —
+- **What:** F-104/S-1 threaded `topik_level` through the exam pick/serve/grade path so clicking a specific TOPIK I vs II paper serves the exact level. But `topik_attempts` has no `topik_level` column (migration 037 predates D-1), so the F-007 **resume** re-fetch still can't pin the level on an in-progress attempt. Add a `topik_level` column (migration) + thread it through resume to close the D-1 gap fully.
+
+### F-123 · Exam-completion checkmarks keyed by `sourceTest` alone (same D-1 class)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** `ExamChooser`'s completed-checkmark set is keyed by `test_number` only, so a completed TOPIK II paper marks the same-numbered TOPIK I paper done (and vice-versa). Key the completed-set by `(test_number, topik_level)` once F-122 lands the level on attempt history.
+
+### F-124 · `mapClaudeError` forwards `${code}: ${message}` to the client
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (SECURITY) · **Beta:** —
+- **What:** The shared `mapClaudeError` forwards `${code}: ${message}` on both 4xx and 5xx paths. Safe today (every proxy error message is a fixed generic string), but a future non-generic message would leak to the client. Pre-existing, surfaced during the F-116 review. Harden to only forward a whitelisted/generic message.
+
+---
+
+## ✅ Backend mini-phase — light-up (F-104/F-106/F-110/F-111/F-116/F-117/F-118) — DONE, PR pending
+
+Delivered on `feat/phase-be-lightup`, full 4-phase /fixpass PASS (0 blockers, security clean across all 4 surfaces, 9 should-fixes FIXED, 0 regressions; migrations 056+057 up/down verified in-container). Full suites: client 1500 · server 1240 (+4 skip) · db 63.
+- **TOPIK:** F-104 ✅ (`GET /topik/attempts`) · F-118 ✅ (`GET /topik/tests`) → **F-078/F-079/F-082 now live** (real scores, chooser, previous-attempts; S-1 level-threading fixed). Residual: F-122/F-123.
+- **Writing:** F-106 ✅ (`GET /writing/attempts`) → **F-074 live**; F-117 ✅ (migration 056 widens `writing_attempts` rubric to `free_write`; real free-write grader) → **B-027 rubric-widen closed**.
+- **Grammar:** F-110 ✅ (`GET /grammar-drill/attempts`) → **F-065 live**; F-111 ✅ (FSRS schedule folded into `/grammar/bank`) → grammar mastery rows show real state/next-due.
+- **Reading:** F-116 ✅ (migration 057 + `POST /reading/translate` Claude route, cached/low-temp) → **F-070 live** (real passage translation).
+- **New tickets filed:** F-122 · F-123 · F-124.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>

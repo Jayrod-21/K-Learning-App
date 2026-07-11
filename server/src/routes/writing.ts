@@ -12,6 +12,10 @@
  *                                          index 0, so every visit opened the
  *                                          same prompt)
  *   GET  /writing/series?days=           → daily normalized grade series (F-017)
+ *   GET  /writing/attempts?limit=&offset= → the caller's own graded-writing
+ *                                          history, newest first (F-106 —
+ *                                          lights up the F-074 Responses-tab
+ *                                          stub on the client)
  *   POST /writing/generate               → Claude authors ONE fresh writing
  *                                          prompt (TOPIK Q53/Q54-style or a
  *                                          general free-write). EPHEMERAL:
@@ -21,15 +25,15 @@
  *
  * The attempts themselves are WRITTEN by POST /grade-writing (a persist
  * side-effect of a successful grade — see gradeWriting.ts); this module's
- * bank/series endpoints only read, and /generate writes nothing.
+ * bank/series/attempts endpoints only read, and /generate writes nothing.
  *
  * SECURITY:
  *   - requireAuth on the whole router; cheapLimiter on the read routes (single
  *     indexed SELECTs). /generate is a PAID upstream call → expensiveLimiter
  *     (per-user burst) PLUS the proxy's own per-route per-minute limiter.
- *   - IDOR: /series is scoped to `getUserId(req)` — never a client-supplied
- *     id. /prompts is shared reference data (no ownership to scope);
- *     /generate persists nothing, so there is nothing to own.
+ *   - IDOR: /series and /attempts are scoped to `getUserId(req)` — never a
+ *     client-supplied id. /prompts is shared reference data (no ownership to
+ *     scope); /generate persists nothing, so there is nothing to own.
  *   - Input validation at the boundary via zod (rubric enum, days 1..90;
  *     /generate's body is `.strict()` with closed enums — NO free text rides
  *     this route, so its prompt-injection surface is nil); every query is
@@ -249,6 +253,125 @@ router.get(
           unit: '%',
           points: rows.map((r) => ({ date: r.date, value: r.value })),
         },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /writing/attempts — the caller's own graded-writing history (F-106)
+// ---------------------------------------------------------------------------
+
+/**
+ * The full PERSISTED-attempt rubric taxonomy: the two TOPIK II rubrics plus
+ * `free_write` (migration 056/F-117). Deliberately WIDER than
+ * `WritingRubricSchema` above (the bank/prompts filter — the curated
+ * writing_prompts bank is Q53/Q54 only today; free-write topics are
+ * Claude-generated and never bank rows). This is an OUTPUT type only (reading
+ * back a column the DB's own CHECK already constrains), so it is a plain
+ * union, not a re-validated zod schema — mirrors the DB CHECK installed by
+ * 038 and widened by 056.
+ */
+type PersistedWritingRubric = 'topik_ii_53' | 'topik_ii_54' | 'free_write';
+
+// Mirrors the tickets.ts `/tickets/mine` paging convention (the closest
+// general-purpose user-scoped history-list precedent in this codebase):
+// limit/offset, LIMIT bound below the resource-exhaustion ceiling, response
+// echoes limit+offset back (no hasMore/cursor — not this codebase's idiom).
+// Fix-pass SF-2 (REVIEW_writing.md): `offset` previously bottomed out at
+// `.max(Number.MAX_SAFE_INTEGER)` — an overflow-safety cap, not a PRACTICAL
+// one (unlike `limit`'s deliberate 100 ceiling). A single user's graded-
+// writing history could never reach six figures, so a genuine ceiling here
+// still can't reject a legitimate page while giving `limit` a real sibling
+// bound instead of a symbolic one.
+const MAX_ATTEMPTS_OFFSET = 100_000;
+
+const AttemptsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ATTEMPTS_OFFSET).default(0),
+});
+
+interface AttemptRow {
+  id: string; // BIGINT arrives as string from pg
+  prompt_id: string | null; // BIGINT, nullable (generated topics have none)
+  rubric: PersistedWritingRubric;
+  prompt_kr: string;
+  sample: string;
+  total_score: number;
+  max_total: number;
+  estimated_level: string | null;
+  graded_at: Date;
+}
+
+/** Wire shape for one history entry — camelCased, ids coerced to number. */
+interface WritingAttemptDTO {
+  id: number;
+  promptId: number | null;
+  rubric: PersistedWritingRubric;
+  promptKr: string;
+  sample: string;
+  totalScore: number;
+  maxTotal: number;
+  estimatedLevel: string | null;
+  gradedAt: Date;
+}
+
+function toAttemptDTO(r: AttemptRow): WritingAttemptDTO {
+  return {
+    id: Number(r.id),
+    promptId: r.prompt_id !== null ? Number(r.prompt_id) : null,
+    rubric: r.rubric,
+    promptKr: r.prompt_kr,
+    sample: r.sample,
+    totalScore: r.total_score,
+    maxTotal: r.max_total,
+    estimatedLevel: r.estimated_level,
+    gradedAt: r.graded_at,
+  };
+}
+
+/**
+ * GET /writing/attempts?limit=1..100(def 20)&offset=0..(def 0)
+ *
+ * The caller's own graded-writing history, newest first — every
+ * `writing_attempts` row POST /grade-writing persisted (F-014), across BOTH
+ * TOPIK-bank prompts (`promptId` non-null, links back to `writing_prompts`)
+ * and Claude-generated topics (`promptId` null — there is no bank row to
+ * link). Lights up the F-074 Responses-tab stub (Writing.tsx), which until
+ * now could only say "browsing is coming soon" (this endpoint didn't exist).
+ *
+ * User-scoped to `getUserId(req)` — never a client-supplied id (no IDOR); no
+ * other user's attempts can ever appear, regardless of query params. Stable
+ * order via `graded_at DESC, id DESC` (a tiebreak for same-instant rows, same
+ * convention as tickets.ts). An empty history is a 200 with `attempts: []`,
+ * never an error — a learner who has never submitted a writing sample is not
+ * a failure state.
+ */
+router.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(AttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof AttemptsQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<AttemptRow>(
+        `SELECT id, prompt_id, rubric, prompt_kr, sample,
+                total_score, max_total, estimated_level, graded_at
+           FROM writing_attempts
+          WHERE user_id = $1
+          ORDER BY graded_at DESC, id DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+      res.status(200).json({
+        attempts: rows.map(toAttemptDTO),
+        limit: q.limit,
+        offset: q.offset,
       });
     } catch (err) {
       next(err);

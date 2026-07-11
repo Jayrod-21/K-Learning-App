@@ -1,0 +1,24 @@
+-- 057 (up): add 'translate_passage' to claude_route.
+--
+-- F-116 (POST /reading/translate — Claude authors a natural-English
+-- translation of a selected Korean passage/paragraph, replacing Reading.tsx's
+-- honest "coming soon" TranslateSheet stub) adds ONE new proxy route to the
+-- code's RouteName union (server/src/services/claude/config.ts):
+--   * translate_passage — POST /reading/translate; stateless (nothing
+--                         persisted server-side by the route itself).
+-- Without this enum value the call would succeed against Anthropic but then
+-- fail its claude_cache / claude_usage write with
+-- `invalid input value for enum claude_route` — uncached (full paid call
+-- every time) and invisible to the cost tracker, the exact defect 031/032
+-- fixed for the grammar-drill / image-OCR / diagnostic routes, and that
+-- 053/055/056 repeat the same "intentional friction" pattern for since. This
+-- migration is that friction: a new Claude-touching route requires a
+-- reviewed migration, authored HERE alongside the code instead of after the
+-- fact.
+--
+-- ADR-013: ADD VALUE is its own migration and safe inside migrate.py's
+-- per-migration transaction on PG12+ — the value just cannot be USED until
+-- COMMIT. Nothing in this file uses it; the server (separate runtime
+-- transactions, once this migration has landed) does. Mirrors 031/032/028/053.
+
+ALTER TYPE claude_route ADD VALUE IF NOT EXISTS 'translate_passage';

@@ -248,6 +248,15 @@ export function makeStubProxy(overrides: Partial<ClaudeProxy> = {}): ClaudeProxy
       },
       metadata: { ...baseMeta, requestId: randomUUID() },
     }),
+    translatePassage: async (input) => ({
+      // Deterministic mock translation echoing the source passage — lets the
+      // /reading/translate route test assert the wire shape without touching
+      // Anthropic.
+      result: {
+        translation: `[mock translation] ${input.passage}`,
+      },
+      metadata: { ...baseMeta, requestId: randomUUID() },
+    }),
     generateConversation: (input) => {
       // Default stub: a deterministic single-delta stream + a complete event.
       // Tests that need failure or chunked behaviour pass an override via

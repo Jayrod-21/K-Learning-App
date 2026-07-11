@@ -100,7 +100,11 @@ import {
   fetchAttempt,
   saveAttempt,
   clearAttempt,
+  fetchAvailableTests,
+  fetchAttemptHistory,
   type AttemptState,
+  type TopikTestSummary,
+  type TopikAttemptHistoryEntry,
 } from '../../services/topik';
 import {
   loadTopikMockTest,
@@ -113,6 +117,7 @@ import type {
   MockSubmitAnswer,
   MockSubmitBody,
   MockTest,
+  TopikLevel,
   TopikMockItem,
 } from '../../types/domain';
 import './MockMode.css';
@@ -129,12 +134,34 @@ function parseSectionParam(raw: string | null): MockSection | null {
 }
 
 /**
- * Parse the `exam` search param. `'auto'` = the server-picked exam (the only
- * wired chooser entry today — per-exam ids arrive with the exam-list route,
- * F-118). Unknown values degrade to the chooser.
+ * Parse the `exam` search param: `'auto'` = the server-picked exam
+ * (`fetchMockTest` with no `sourceTest`), or a positive integer = a SPECIFIC
+ * past paper's `test_number` picked from the F-118 exam list. Bounded to
+ * INT4_MAX (the server's `topik_tests.test_number` column is `INTEGER`) so a
+ * malformed URL degrades to the chooser rather than reaching a request path
+ * with a value the server would 400 on anyway. Unknown/malformed values
+ * degrade to `null` (no exam chosen — shows the chooser).
  */
-function parseExamParam(raw: string | null): 'auto' | null {
-  return raw === 'auto' ? 'auto' : null;
+const INT4_MAX = 2_147_483_647;
+function parseExamParam(raw: string | null): 'auto' | number | null {
+  if (raw === 'auto') return 'auto';
+  if (raw !== null && /^[1-9][0-9]*$/.test(raw)) {
+    const n = Number(raw);
+    if (n <= INT4_MAX) return n;
+  }
+  return null;
+}
+
+/**
+ * Parse the `level` search param (untrusted input) against the closed
+ * `TopikLevel` union — anything unrecognised degrades to "no level known"
+ * (fix-pass S-1 / D-1). Only meaningful alongside a numeric `exam` (a
+ * SPECIFIC past paper picked from the F-118 list); `goToView` clears it
+ * whenever `exam` isn't a specific test_number, so it never outlives the
+ * `exam` param it discriminates.
+ */
+function parseLevelParam(raw: string | null): TopikLevel | null {
+  return raw === 'TOPIK I' || raw === 'TOPIK II' ? raw : null;
 }
 
 /** Section card metadata — drives the select screen + the exam's timer budget. */
@@ -197,18 +224,40 @@ export function MockMode(): JSX.Element {
   // The exam param is only meaningful under a valid section.
   const urlExam =
     urlSection !== null ? parseExamParam(searchParams.get('exam')) : null;
+  // The level param (D-1 / fix-pass S-1) is only meaningful alongside a
+  // SPECIFIC picked paper (a numeric `exam`, never `'auto'` or absent) — the
+  // "recommended exam" path lets the server resolve the level itself.
+  const urlLevel =
+    urlSection !== null && typeof urlExam === 'number'
+      ? parseLevelParam(searchParams.get('level'))
+      : null;
 
-  // Rewrite ONLY this component's params (section/exam), preserving the
-  // parent's (`mode`, owned by Topik.tsx) — MockMode never navigates the
+  // Rewrite ONLY this component's params (section/exam/level), preserving
+  // the parent's (`mode`, owned by Topik.tsx) — MockMode never navigates the
   // whole page, it moves within its own sub-views.
   const goToView = useCallback(
-    (section: MockSection | null, exam: 'auto' | null): void => {
+    (
+      section: MockSection | null,
+      exam: 'auto' | number | null,
+      level?: TopikLevel,
+    ): void => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         if (section === null) next.delete('section');
         else next.set('section', section);
         if (section === null || exam === null) next.delete('exam');
-        else next.set('exam', exam);
+        else next.set('exam', String(exam));
+        // `level` only makes sense alongside a SPECIFIC picked paper (a
+        // positive test_number) — clearing it whenever `exam` isn't one
+        // keeps `level` from ever outliving the `exam` it discriminates
+        // (fix-pass S-1: a stale level surviving a switch to the
+        // server-picked "recommended" path could wrongly pin a resolver
+        // request that should be left to resolve freely).
+        if (section === null || exam === null || typeof exam !== 'number' || level === undefined) {
+          next.delete('level');
+        } else {
+          next.set('level', level);
+        }
         return next;
       });
     },
@@ -403,9 +452,13 @@ export function MockMode(): JSX.Element {
   );
 
   // Start a section: fetch the answer-stripped exam, falling back to the
-  // offline fixture so the exam always opens (failure-safe).
+  // offline fixture so the exam always opens (failure-safe). `sourceTest`
+  // (+ `topikLevel`) are supplied when the learner picked a SPECIFIC past
+  // paper from the F-118 exam list (`ExamChooser`); omitted for the
+  // "Recommended exam" card, which lets the server pick (`resolveMockTest`,
+  // unchanged).
   const startSection = useCallback(
-    (section: MockSection): void => {
+    (section: MockSection, sourceTest?: number, topikLevel?: TopikLevel): void => {
       const ctrl = beginCall();
       setNet('loading');
       setErrorMsg(null);
@@ -415,7 +468,19 @@ export function MockMode(): JSX.Element {
       setInitialExam(null);
       setResumable(null);
       setResumeFailed(false);
-      fetchMockTest(section, ctrl.signal)
+      // Omit the 3rd/4th args entirely for the "recommended" path (rather
+      // than passing an explicit `undefined`) — keeps this call's shape
+      // identical to before F-118, and matches `POST /topik/mock`'s own
+      // contract where `sourceTest`/`topikLevel` are OMITTED (not null) to
+      // let the server pick. `topikLevel` is only ever sent alongside a
+      // known `sourceTest` (fix-pass S-1 / D-1) — a level with no paper to
+      // pin it to has nothing to discriminate.
+      (sourceTest !== undefined && topikLevel !== undefined
+        ? fetchMockTest(section, ctrl.signal, sourceTest, topikLevel)
+        : sourceTest !== undefined
+          ? fetchMockTest(section, ctrl.signal, sourceTest)
+          : fetchMockTest(section, ctrl.signal)
+      )
         .then((real) => {
           if (ctrl.signal.aborted) return;
           setTest(real);
@@ -614,16 +679,31 @@ export function MockMode(): JSX.Element {
               onPickServerExam={() => {
                 goToView(urlSection, 'auto');
               }}
+              onPickExam={(testNumber, topikLevel) => {
+                // D-1 / fix-pass S-1: carry the EXACT level the picked row
+                // named, not just its test_number — a test_number alone
+                // names TWO exams (TOPIK I and TOPIK II share every
+                // test_number).
+                goToView(urlSection, testNumber, topikLevel);
+              }}
             />
           ) : null}
 
           {phase === 'select' && urlSection !== null && urlExam !== null ? (
             // F-079: the start page — the exam only fetches (and the timer
-            // only arms) on the explicit Start click.
+            // only arms) on the explicit Start click. `sourceTest`/`topikLevel`
+            // are known only when a SPECIFIC past paper was picked from the
+            // F-118 list (urlExam is its test_number, not the 'auto' literal).
             <StartPage
               section={urlSection}
+              sourceTest={typeof urlExam === 'number' ? urlExam : undefined}
+              topikLevel={typeof urlExam === 'number' ? (urlLevel ?? undefined) : undefined}
               onStart={() => {
-                startSection(urlSection);
+                startSection(
+                  urlSection,
+                  typeof urlExam === 'number' ? urlExam : undefined,
+                  typeof urlExam === 'number' ? (urlLevel ?? undefined) : undefined,
+                );
               }}
             />
           ) : null}
@@ -738,22 +818,75 @@ function sectionNames(section: MockSection): { en: string; kr: string } {
 /**
  * F-079 — the exam chooser for one section.
  *
- * Design intent: a list of every TOPIK paper for this section, each with a
- * green checkmark when previously completed. What is wired TODAY: the
- * server-picked exam (`POST /topik/mock` with no `sourceTest`). The per-exam
- * list needs a route that enumerates `topik_tests` (ticket F-118), and the
- * completion checkmarks need attempt history (`GET /topik/attempts`,
- * ticket F-104) — so that area renders an honestly-pending note. NO exam is
- * ever shown as "completed" from fabricated data.
+ * Wired: the per-paper list is `GET /topik/tests` (F-118), scoped to this
+ * section — an abortable fetch with its own error+retry (a primary surface
+ * of this screen). The green completion checkmark per paper is `GET
+ * /topik/attempts` (F-104) — a best-effort ANNOTATION on that list: a failed
+ * fetch here degrades SILENTLY (no checkmarks, no error UI), mirroring this
+ * file's own resume-banner fetch ("a missing/failed fetch simply means no
+ * banner — it never blocks the screen"). NO exam is ever shown as
+ * "completed" from fabricated data — the checkmark only appears when F-104
+ * genuinely reports a completed attempt for that (section, test_number).
  */
 function ExamChooser({
   section,
   onPickServerExam,
+  onPickExam,
 }: {
   section: MockSection;
   onPickServerExam: () => void;
+  /** `topikLevel` (D-1 / fix-pass S-1) is the SAME paper's level the row
+   *  displayed — passing it through lets the caller pin the exact exam the
+   *  user clicked, rather than leaving the server's resolver to tie-break. */
+  onPickExam: (sourceTest: number, topikLevel: TopikLevel) => void;
 }): JSX.Element {
   const names = sectionNames(section);
+
+  const [testsNet, setTestsNet] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [tests, setTests] = useState<TopikTestSummary[]>([]);
+  const [testsErrorMsg, setTestsErrorMsg] = useState<string | null>(null);
+  const [testsTick, setTestsTick] = useState(0);
+  // Best-effort annotation set — see the doc above. Starts empty (no
+  // checkmarks) and stays that way if the history fetch fails.
+  const [doneTestNumbers, setDoneTestNumbers] = useState<ReadonlySet<number>>(
+    new Set(),
+  );
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setTestsNet('loading');
+    setTestsErrorMsg(null);
+    fetchAvailableTests({ section }, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setTests(res.tests);
+        setTestsNet('ready');
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setTestsErrorMsg(toMessage(err, 'Could not load past papers.'));
+        setTestsNet('error');
+      });
+    fetchAttemptHistory({ limit: 100 }, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        const done = new Set<number>();
+        for (const a of res.attempts) {
+          if (a.section === names.kr) done.add(a.sourceTest);
+        }
+        setDoneTestNumbers(done);
+      })
+      .catch(() => {
+        /* best-effort annotation only — no checkmarks, never an error UI */
+      });
+    return () => {
+      ctrl.abort();
+    };
+    // `names.kr` is a pure function of `section`, not independent state — the
+    // real dependency is `section` itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, testsTick]);
+
   return (
     <div className="km-mock__chooser">
       {/* F-024: back to the section select. */}
@@ -784,41 +917,156 @@ function ExamChooser({
         </span>
       </button>
 
-      {/* Honest pending state — per-exam browsing + done-checkmarks need the
-          exam-list route (F-118) and attempt history (F-104). */}
-      <Card variant="flat" className="km-mock__pending" role="status">
-        <Eyebrow>
-          <Bilingual en="Coming soon" kr="준비 중" />
-        </Eyebrow>
-        <p className="km-mock__pending-copy">
-          <Bilingual
-            en="Browsing every past paper — with a green checkmark on the ones you've completed — will appear here once the exam list and your attempt history are available."
-            kr="모든 기출 시험지 목록과 완료한 시험의 초록색 체크 표시는 시험 목록과 응시 기록이 준비되면 여기에 표시될 거예요."
-          />
+      <Eyebrow className="km-mock__chooser-head">
+        <Bilingual en="Past papers" kr="기출 시험지" />
+      </Eyebrow>
+
+      {testsNet === 'loading' ? (
+        <p className="km-mock__pending-copy" role="status">
+          <Bilingual en="Loading past papers…" kr="기출 시험지를 불러오는 중…" />
         </p>
-      </Card>
+      ) : null}
+
+      {testsNet === 'error' ? (
+        <Card variant="flat" className="km-mock__pending" role="alert">
+          <p className="km-mock__pending-copy">{testsErrorMsg}</p>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setTestsTick((n) => n + 1);
+            }}
+          >
+            <Bilingual en="Try again" kr="다시 시도" />
+          </Button>
+        </Card>
+      ) : null}
+
+      {testsNet === 'ready' && tests.length === 0 ? (
+        // Honest empty state — a real absence (no papers indexed for this
+        // section yet), never fabricated.
+        <Card variant="flat" className="km-mock__pending" role="status">
+          <p className="km-mock__pending-copy">
+            <Bilingual
+              en="No past papers are available for this section yet."
+              kr="이 영역에는 아직 이용 가능한 기출 시험지가 없어요."
+            />
+          </p>
+        </Card>
+      ) : null}
+
+      {testsNet === 'ready' && tests.length > 0 ? (
+        <ul className="km-mock__exam-list">
+          {tests.map((test) => {
+            const done = doneTestNumbers.has(test.testNumber);
+            return (
+              <li key={`${test.topikLevel}-${String(test.testNumber)}`}>
+                <button
+                  type="button"
+                  className="km-mock__section km-mock__chooser-card focusring"
+                  aria-label={`${test.topikLevel} test ${String(test.testNumber)}, ${String(test.itemCount)} items${done ? ', completed' : ''}`}
+                  onClick={() => {
+                    onPickExam(test.testNumber, test.topikLevel);
+                  }}
+                >
+                  <span className="km-mock__section-en">
+                    {done ? <Icon name="check" size={14} /> : null}{' '}
+                    <Bilingual
+                      en={`Test ${String(test.testNumber)}`}
+                      kr={`${String(test.testNumber)}회`}
+                    />
+                  </span>
+                  <span className="km-mock__section-kr">
+                    <Bilingual
+                      en={`${test.topikLevel} · ${String(test.itemCount)} items`}
+                      kr={`${test.topikLevel} · ${String(test.itemCount)}문항`}
+                      compact
+                    />
+                  </span>
+                  <span className="km-mock__section-go">
+                    <Bilingual en="Choose" kr="선택" compact />{' '}
+                    <Icon name="arrow-right" size={13} />
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </div>
   );
 }
 
 /**
  * F-079 — the start page. The exam is fetched (and the countdown armed) ONLY
- * on the explicit Start click, never by navigation. The previous-attempts
- * block (grade + when, for a repeat sitting) needs `GET /topik/attempts`
- * (ticket F-104) and renders honestly pending until that route exists.
+ * on the explicit Start click, never by navigation.
+ *
+ * The previous-attempts block (grade + when, for a repeat sitting) is wired
+ * from `GET /topik/attempts` (F-104) — but ONLY when `sourceTest` is known:
+ * a SPECIFIC past paper picked from the F-118 `ExamChooser` list. The
+ * "Recommended exam" path (`sourceTest` undefined) genuinely cannot look
+ * this up yet — the server doesn't resolve WHICH test_number it will pick
+ * until the Start click's `fetchMockTest` call returns — so that path shows
+ * an honest note instead of a fetch with nothing to filter by.
+ *
  * F-080: for Listening, the audio data gap is disclosed BEFORE the timer
  * starts — items are served as transcripts; the raw section MP3s are not
  * ingested or segmented per question (see the exam-head note / ticket F-119).
  */
 function StartPage({
   section,
+  sourceTest,
+  topikLevel,
   onStart,
 }: {
   section: MockSection;
+  /** A SPECIFIC past paper's test_number, when one was picked (F-118). */
+  sourceTest?: number;
+  /**
+   * The SAME paper's TOPIK level (D-1 / fix-pass S-1) — surfaced here so a
+   * mismatch between what was picked and what gets served would at least be
+   * visible, never silently swallowed.
+   */
+  topikLevel?: TopikLevel;
   onStart: () => void;
 }): JSX.Element {
   const names = sectionNames(section);
   const mins = SECTION_MINUTES[section];
+
+  const [attemptsNet, setAttemptsNet] = useState<'loading' | 'ready' | 'error'>(
+    'loading',
+  );
+  const [priorAttempts, setPriorAttempts] = useState<TopikAttemptHistoryEntry[]>([]);
+  const [attemptsErrorMsg, setAttemptsErrorMsg] = useState<string | null>(null);
+  const [attemptsTick, setAttemptsTick] = useState(0);
+
+  useEffect(() => {
+    if (sourceTest === undefined) return undefined;
+    const ctrl = new AbortController();
+    setAttemptsNet('loading');
+    setAttemptsErrorMsg(null);
+    fetchAttemptHistory({ limit: 100 }, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setPriorAttempts(
+          res.attempts.filter(
+            (a) => a.section === names.kr && a.sourceTest === sourceTest,
+          ),
+        );
+        setAttemptsNet('ready');
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        setAttemptsErrorMsg(toMessage(err, 'Could not load previous attempts.'));
+        setAttemptsNet('error');
+      });
+    return () => {
+      ctrl.abort();
+    };
+    // `names.kr` is a pure function of `section` — the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceTest, section, attemptsTick]);
+
   return (
     <div className="km-mock__start">
       {/* F-024: back to this section's exam chooser. */}
@@ -830,10 +1078,27 @@ function StartPage({
       <Card variant="flat" className="km-mock__start-meta">
         <Eyebrow>
           <Bilingual
-            en={`${names.en} · recommended exam`}
-            kr={`${names.kr} · 추천 시험`}
+            en={
+              sourceTest !== undefined
+                ? `${names.en} · test ${String(sourceTest)}`
+                : `${names.en} · recommended exam`
+            }
+            kr={
+              sourceTest !== undefined
+                ? `${names.kr} · ${String(sourceTest)}회`
+                : `${names.kr} · 추천 시험`
+            }
           />
         </Eyebrow>
+        {sourceTest !== undefined && topikLevel !== undefined ? (
+          // Fix-pass S-1: surface the EXACT level this start page will fetch
+          // — a test_number alone names two exams (D-1), so this is the
+          // reader-visible confirmation that a mismatch, if one ever slips
+          // through, would not go silently unnoticed.
+          <p className="km-mock__start-level" role="note">
+            <Bilingual en={`${topikLevel} paper`} kr={`${topikLevel} 시험지`} compact />
+          </p>
+        ) : null}
         <p className="km-mock__start-rules">
           <Bilingual
             en={`50 items · ${String(mins)} minutes, timed. Answers are graded after you submit; unanswered items count as incorrect. The test auto-submits when time runs out.`}
@@ -850,18 +1115,73 @@ function StartPage({
         ) : null}
       </Card>
 
-      {/* Honest pending state — previous attempts on this exam (grade +
-          date) need attempt history (GET /topik/attempts, ticket F-104). */}
+      {/* F-104: previous attempts on THIS exam — wired when a specific paper
+          is known; an honest note otherwise (see the doc above). */}
       <Card variant="flat" className="km-mock__pending" role="status">
         <Eyebrow>
           <Bilingual en="Previous attempts" kr="지난 응시 기록" />
         </Eyebrow>
-        <p className="km-mock__pending-copy">
-          <Bilingual
-            en="If you've taken this exam before, your grade and past attempts will show here once attempt history is available. Coming soon."
-            kr="이 시험을 본 적이 있다면, 응시 기록이 준비되는 대로 성적과 지난 기록이 여기에 표시될 거예요. 준비 중이에요."
-          />
-        </p>
+
+        {sourceTest === undefined ? (
+          <p className="km-mock__pending-copy">
+            <Bilingual
+              en="Pick a specific past paper from the exam list to see your previous attempts on it."
+              kr="특정 기출 시험지를 고르면 이전 응시 기록을 볼 수 있어요."
+            />
+          </p>
+        ) : null}
+
+        {sourceTest !== undefined && attemptsNet === 'loading' ? (
+          <p className="km-mock__pending-copy">
+            <Bilingual en="Loading previous attempts…" kr="지난 기록을 불러오는 중…" />
+          </p>
+        ) : null}
+
+        {sourceTest !== undefined && attemptsNet === 'error' ? (
+          <>
+            <p className="km-mock__pending-copy" role="alert">
+              {attemptsErrorMsg}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setAttemptsTick((n) => n + 1);
+              }}
+            >
+              <Bilingual en="Try again" kr="다시 시도" />
+            </Button>
+          </>
+        ) : null}
+
+        {sourceTest !== undefined &&
+        attemptsNet === 'ready' &&
+        priorAttempts.length === 0 ? (
+          <p className="km-mock__pending-copy">
+            <Bilingual
+              en="You haven't taken this exam before."
+              kr="이 시험을 본 적이 없어요."
+            />
+          </p>
+        ) : null}
+
+        {sourceTest !== undefined && attemptsNet === 'ready' && priorAttempts.length > 0 ? (
+          <ul className="km-mock__prior-attempts">
+            {priorAttempts.map((a) => {
+              const pct =
+                a.totalItems > 0 ? Math.round((a.correct / a.totalItems) * 1000) / 10 : 0;
+              return (
+                <li key={a.attemptId}>
+                  <Bilingual
+                    en={`${new Date(a.completedAt).toLocaleDateString()} · ${String(a.correct)}/${String(a.totalItems)} (${String(pct)}%)`}
+                    kr={`${new Date(a.completedAt).toLocaleDateString()} · ${String(a.correct)}/${String(a.totalItems)} (${String(pct)}%)`}
+                    compact
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
       </Card>
 
       <div className="km-mock__start-row">
@@ -1100,11 +1420,16 @@ function ExamRunner({
     const durationMs = Math.max(0, Date.now() - examStartRef.current);
     return {
       sourceTest: test.sourceTest,
+      // Fix-pass S-1 / D-1: echo the SAME level the fetch resolved so the
+      // shared server-side resolver grades the EXACT paper that was served,
+      // never a re-resolved DIFFERENT paper (a test_number alone names two
+      // exams — TOPIK I and TOPIK II share every test_number).
+      topikLevel: test.topikLevel,
       section: test.section,
       answers,
       durationMs,
     };
-  }, [current, flushItemTime, picks, test.sourceTest, test.section]);
+  }, [current, flushItemTime, picks, test.sourceTest, test.topikLevel, test.section]);
 
   // Submit guard — fires once. Shared by the confirm button and auto-submit.
   const doSubmit = useCallback((): void => {

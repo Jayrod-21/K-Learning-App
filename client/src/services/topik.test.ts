@@ -4,10 +4,14 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  fetchAttemptHistory,
+  fetchAvailableTests,
   fetchMockTest,
   fetchStudyDraw,
   recordTopikAnswer,
   submitMockTest,
+  type AttemptHistoryResult,
+  type AvailableTestsResult,
 } from './topik';
 import { api, ApiError } from './api';
 import type {
@@ -155,6 +159,7 @@ describe('recordTopikAnswer', () => {
 
 const MOCK_TEST: MockTest = {
   sourceTest: 7,
+  topikLevel: 'TOPIK II',
   section: 'reading',
   items: [
     {
@@ -202,6 +207,34 @@ describe('fetchMockTest', () => {
       '/topik/mock',
       { section: 'listening' },
       { signal: ctrl.signal },
+    );
+  });
+
+  // Fix-pass S-1 (REVIEW_topik.md / D-1): a specific past paper picked from
+  // the F-118 exam list carries BOTH `sourceTest` and `topikLevel` — a
+  // `test_number` alone names TWO exams (TOPIK I and TOPIK II share every
+  // test_number), so this call must thread the level through, never drop it.
+  it('sends BOTH sourceTest and topikLevel when a specific paper is picked', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_TEST);
+
+    await fetchMockTest('reading', undefined, 91, 'TOPIK I');
+
+    expect(spy).toHaveBeenCalledWith(
+      '/topik/mock',
+      { section: 'reading', sourceTest: 91, topikLevel: 'TOPIK I' },
+      undefined,
+    );
+  });
+
+  it('sends sourceTest without topikLevel when only the test number is known (e.g. F-007 resume)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(MOCK_TEST);
+
+    await fetchMockTest('reading', undefined, 91);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/topik/mock',
+      { section: 'reading', sourceTest: 91 },
+      undefined,
     );
   });
 
@@ -291,5 +324,147 @@ describe('submitMockTest', () => {
     await expect(submitMockTest(SUBMIT_BODY)).rejects.toMatchObject({
       status: 400,
     });
+  });
+});
+
+// ── Fix-pass S-3 (REVIEW_topik.md) ────────────────────────────────────────
+// `fetchAttemptHistory` (F-104) and `fetchAvailableTests` (F-118) were the
+// only two functions in this file with no dedicated unit tests of their
+// own — every OTHER function above (fetchStudyDraw, recordTopikAnswer,
+// fetchMockTest, submitMockTest) gets a `describe` block asserting the exact
+// URL, query-param construction, envelope unwrap, and AbortSignal threading;
+// these two were exercised only indirectly through component tests mocking
+// the whole service module. Mirrors the `searchKrdict` params-object test
+// shape (services/krdict.test.ts).
+
+const ATTEMPT_HISTORY_RESULT: AttemptHistoryResult = {
+  attempts: [
+    {
+      attemptId: '1',
+      section: '읽기',
+      sourceTest: 91,
+      topikLevel: 'TOPIK II',
+      correct: 40,
+      totalItems: 50,
+      completedAt: '2026-06-01T00:00:00.000Z',
+    },
+  ],
+  total: 1,
+};
+
+describe('fetchAttemptHistory', () => {
+  it('GETs /topik/attempts with limit/offset params and returns the envelope', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(ATTEMPT_HISTORY_RESULT);
+
+    const res = await fetchAttemptHistory({ limit: 20, offset: 0 });
+
+    expect(spy).toHaveBeenCalledWith('/topik/attempts', {
+      params: { limit: 20, offset: 0 },
+    });
+    expect(res).toBe(ATTEMPT_HISTORY_RESULT);
+  });
+
+  it('omits limit/offset entirely when not provided (server applies its own defaults)', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: [], total: 0 });
+
+    await fetchAttemptHistory();
+
+    expect(spy).toHaveBeenCalledWith('/topik/attempts', { params: {} });
+  });
+
+  it('forwards only the opts that were provided (limit without offset)', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: [], total: 0 });
+
+    await fetchAttemptHistory({ limit: 100 });
+
+    expect(spy).toHaveBeenCalledWith('/topik/attempts', {
+      params: { limit: 100 },
+    });
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: [], total: 0 });
+    const ctrl = new AbortController();
+
+    await fetchAttemptHistory({}, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/topik/attempts', {
+      params: {},
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(fetchAttemptHistory()).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+const AVAILABLE_TESTS_RESULT: AvailableTestsResult = {
+  tests: [{ testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 }],
+  total: 1,
+};
+
+describe('fetchAvailableTests', () => {
+  it('GETs /topik/tests with section/limit/offset params and returns the envelope', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(AVAILABLE_TESTS_RESULT);
+
+    const res = await fetchAvailableTests({
+      section: 'reading',
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(spy).toHaveBeenCalledWith('/topik/tests', {
+      params: { section: 'reading', limit: 50, offset: 0 },
+    });
+    expect(res).toBe(AVAILABLE_TESTS_RESULT);
+  });
+
+  it('omits section/limit/offset entirely when not provided', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ tests: [], total: 0 });
+
+    await fetchAvailableTests();
+
+    expect(spy).toHaveBeenCalledWith('/topik/tests', { params: {} });
+  });
+
+  it('forwards only the opts that were provided (section without limit/offset)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ tests: [], total: 0 });
+
+    await fetchAvailableTests({ section: 'listening' });
+
+    expect(spy).toHaveBeenCalledWith('/topik/tests', {
+      params: { section: 'listening' },
+    });
+  });
+
+  it('threads an AbortSignal into the request config', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ tests: [], total: 0 });
+    const ctrl = new AbortController();
+
+    await fetchAvailableTests({}, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/topik/tests', {
+      params: {},
+      signal: ctrl.signal,
+    });
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(fetchAvailableTests()).rejects.toMatchObject({ status: 500 });
   });
 });

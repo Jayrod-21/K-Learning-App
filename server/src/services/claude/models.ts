@@ -148,11 +148,31 @@ export const TopikRubricSchema = z.enum([
 ]);
 export type TopikRubric = z.infer<typeof TopikRubricSchema>;
 
+/**
+ * The full GRADING rubric taxonomy — `TopikRubricSchema`'s two TOPIK II
+ * rubrics plus `free_write` (056/F-117): a Claude-generated free-write topic
+ * (mode='general', no TOPIK rubric of its own) previously had to borrow the
+ * Q54 essay rubric to be graded at all — an honest but ill-fitting stand-in.
+ * Deliberately a SEPARATE, wider schema from `TopikRubricSchema` rather than
+ * a widen-in-place: `TopikRubricSchema` still gates
+ * `WritingPromptGenInputSchema.rubric` below, which is topik-MODE prompt
+ * GENERATION only (a free-write prompt is authored via mode='general', which
+ * carries no rubric field at all) — widening that schema would let
+ * 'free_write' ride a code path that has nothing to do with grading. Mirrors
+ * the DB CHECK widened by migration 056 (`ck_writing_attempts_rubric`).
+ */
+export const WritingGradeRubricSchema = z.enum([
+  'topik_ii_53',
+  'topik_ii_54',
+  'free_write',
+]);
+export type WritingGradeRubric = z.infer<typeof WritingGradeRubricSchema>;
+
 export const GradeInputSchema = z.object({
   /** The user's writing sample. Korean. */
   sample: NonEmptyText.max(16_000),
-  /** Which TOPIK rubric to grade against. */
-  rubric: TopikRubricSchema,
+  /** Which rubric to grade against (two TOPIK rubrics, or free_write). */
+  rubric: WritingGradeRubricSchema,
   /** Optional prompt the user was writing toward. */
   prompt: z.string().trim().max(2000).optional(),
   /** Optional model override. */
@@ -172,7 +192,7 @@ const DimensionScoreSchema = z.object({
 });
 
 export const GradeResultSchema = z.object({
-  rubric: TopikRubricSchema,
+  rubric: WritingGradeRubricSchema,
   /** 내용 및 과제수행 — content and task completion. */
   content: DimensionScoreSchema,
   /** 전개구조 — organization and development. */
@@ -499,6 +519,34 @@ export const StoryResultSchema = z.object({
   bodyKo: NonEmptyText.max(6000),
 });
 export type StoryResult = z.infer<typeof StoryResultSchema>;
+
+// ---- 3f. translatePassage ---------------------------------------------------
+// F-116: whole-passage/paragraph translation (Reading.tsx's `TranslateSheet`,
+// replacing the F-070 honest "coming soon" stub). Distinct from generateStory:
+// this task wants a STABLE, reproducible translation of a GIVEN passage —
+// re-opening the same passage's translate action should hit the cache, not
+// re-roll a fresh phrasing — so (unlike generate_story's temperature 1.0 /
+// cacheTtl 0 "variety" stance) this route runs at low temperature and caches
+// with a long TTL, matching enrich/recognize_grammar's "same input, same
+// answer" posture (see config.ts's CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S).
+
+export const TranslatePassageInputSchema = z.object({
+  /** The Korean passage or story paragraph to translate verbatim — sourced
+   *  from reading_passages.body (migration 044) or a generated_stories
+   *  paragraph (migration 054). Free text — sanitized + wrapped as untrusted
+   *  data by the proxy. Bounded well under both source columns' 20000-char DB
+   *  ceiling; a real curated passage/paragraph is far smaller. */
+  passage: NonEmptyText.max(6000),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type TranslatePassageInput = z.infer<typeof TranslatePassageInputSchema>;
+
+export const TranslatePassageResultSchema = z.object({
+  /** Natural, register-aware English translation of the whole passage. */
+  translation: NonEmptyText.max(8000),
+});
+export type TranslatePassageResult = z.infer<typeof TranslatePassageResultSchema>;
 
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.

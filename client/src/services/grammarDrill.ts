@@ -31,6 +31,7 @@
  */
 import { api } from './api';
 import type {
+  DrillAttemptsPage,
   DrillItemPublic,
   DrillScore,
   DrillType,
@@ -109,4 +110,29 @@ export async function submitDrill(
       ...(signal !== undefined ? { signal } : {}),
     },
   );
+}
+
+/** Query options for `GET /grammar-drill/attempts` (F-110). */
+export interface ListAttemptsOptions {
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * GET /grammar-drill/attempts → paged practice history (F-110), newest first.
+ * Not a Claude call (a plain DB read), so no `DRILL_CLAUDE_TIMEOUT_MS`
+ * override — the default axios timeout applies, same as `services/grammar.ts`
+ * reads.
+ */
+export async function listAttempts(
+  opts: ListAttemptsOptions = {},
+  signal?: AbortSignal,
+): Promise<DrillAttemptsPage> {
+  const params: Record<string, number> = {};
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<DrillAttemptsPage>('/grammar-drill/attempts', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }

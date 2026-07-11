@@ -1,9 +1,11 @@
 /**
- * POST /grade-writing — TOPIK-rubric writing grader (proxied to B4).
+ * POST /grade-writing — writing grader (proxied to B4): two TOPIK II
+ * rubrics plus a general `free_write` rubric (056/F-117).
  *
  * Body fields mirror B4's GradeInputSchema, plus an edge-only `promptId`
  * (F-014). On a successful grade the route persists a writing_attempts row
- * (best-effort — see the persist block) which feeds GET /writing/series.
+ * (best-effort — see the persist block) which feeds GET /writing/series and
+ * GET /writing/attempts (F-106).
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -27,8 +29,11 @@ const router = Router();
 //   * sample     — REQUIRED. The learner's writing. Bounded 1..5000 (a TOPIK II
 //                  Q54 essay is ~700 Korean chars; 5000 is generous head-room
 //                  while still rejecting paste-bomb DoS input).
-//   * rubric     — OPTIONAL, defaults to TOPIK II Q54 (the more general rubric).
-//                  A *present but invalid* value is still a 400.
+//   * rubric     — OPTIONAL, defaults to TOPIK II Q54 (the more general TOPIK
+//                  rubric). A *present but invalid* value is still a 400. As
+//                  of migration 056 (F-117) also accepts `free_write` — a
+//                  real rubric for a Claude-generated open-topic sample,
+//                  instead of borrowing Q54's rubric as an ill-fitting stand-in.
 //   * targetLevel — OPTIONAL proficiency band hint (proficiency_level enum). An
 //                  out-of-set value (e.g. 'L9') is a 400. Accepted at the edge
 //                  for forward-compat but NOT forwarded to the proxy (the grader
@@ -43,7 +48,9 @@ const GradeSchema = z
   .object({
     prompt: z.string().min(1).max(2_000),
     sample: z.string().min(1).max(5_000),
-    rubric: z.enum(['topik_ii_53', 'topik_ii_54']).default('topik_ii_54'),
+    // Mirrors the DB CHECK (ck_writing_attempts_rubric, widened by migration
+    // 056/F-117 to add free_write alongside the two TOPIK II rubrics).
+    rubric: z.enum(['topik_ii_53', 'topik_ii_54', 'free_write']).default('topik_ii_54'),
     targetLevel: z.enum(['basic', 'L3', 'L4', 'L5+']).optional(),
     // writing_prompts.id is BIGINT; ids are identity-generated well below
     // 2^53, so a JS-safe-integer cap rejects garbage without ever rejecting a

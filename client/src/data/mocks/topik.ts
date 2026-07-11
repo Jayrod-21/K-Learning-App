@@ -20,6 +20,7 @@ import type {
   TopikItem,
   TopikMockItem,
 } from '../../types/domain';
+import type { AttemptHistoryResult } from '../../services/topik';
 import { mockDelay } from './_delay';
 
 /**
@@ -280,6 +281,9 @@ export async function loadTopikMockTest(section: MockSection): Promise<MockTest>
   await mockDelay();
   return {
     sourceTest: 0,
+    // Offline fixture — an arbitrary fixed level (the 🅂 badge already marks
+    // this as non-authoritative; there is no real corpus paper behind it).
+    topikLevel: 'TOPIK II',
     section,
     items: TOPIK_MOCK_ITEMS_FIXTURE.map((it) => ({
       ...it,
@@ -343,4 +347,52 @@ export async function submitTopikMockTestMock(
     band,
     items,
   };
+}
+
+// ── Attempt history (F-104 / A1) — offline fallback for GET /topik/attempts ──
+//
+// Wired surfaces: F-078's daily total, F-082's "Previous attempts" review.
+// One entry dated "today" (so the F-078 offline path renders a nonzero daily
+// total) and one from a past date (so the F-082 review list exercises more
+// than a single row offline). Real timestamps generated at call time — this
+// is a mock LOADER, not a static fixture, since "today" only means something
+// relative to when it renders.
+
+/** Build a fresh attempt-history fixture, timestamped relative to now(). */
+function buildTopikAttemptHistoryFixture(): AttemptHistoryResult {
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  return {
+    attempts: [
+      {
+        attemptId: 'mock-attempt-2',
+        section: '듣기',
+        sourceTest: 91,
+        topikLevel: 'TOPIK II',
+        correct: 38,
+        totalItems: 50,
+        completedAt: now.toISOString(),
+      },
+      {
+        attemptId: 'mock-attempt-1',
+        section: '읽기',
+        sourceTest: 83,
+        topikLevel: 'TOPIK II',
+        correct: 29,
+        totalItems: 50,
+        completedAt: yesterday.toISOString(),
+      },
+    ],
+    total: 2,
+  };
+}
+
+/**
+ * Async loader — resolves the offline attempt-history fixture after a brief
+ * simulated round-trip. Returns a fresh object each call (timestamps are
+ * relative to "now") so a caller can't accidentally hold a stale "today".
+ */
+export async function loadTopikAttemptHistoryMock(): Promise<AttemptHistoryResult> {
+  await mockDelay();
+  return buildTopikAttemptHistoryFixture();
 }

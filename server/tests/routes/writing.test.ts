@@ -367,3 +367,200 @@ describe('GET /writing/series — daily normalized grade series (F-017)', () => 
     expect(res.body.error.code).toBe('validation_error');
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /writing/attempts (F-106)
+// ---------------------------------------------------------------------------
+
+describe('GET /writing/attempts — the caller\'s graded-writing history (F-106)', () => {
+  interface AttemptDTO {
+    id: number;
+    promptId: number | null;
+    rubric: string;
+    promptKr: string;
+    sample: string;
+    totalScore: number;
+    maxTotal: number;
+    estimatedLevel: string | null;
+    gradedAt: string;
+  }
+
+  /** Insert a writing_attempts row with full control over every field the
+   *  route's DTO surfaces, `daysAgo` days back (for newest-first ordering). */
+  async function insertAttempt(
+    userId: number,
+    opts: {
+      promptId?: number | null;
+      rubric?: 'topik_ii_53' | 'topik_ii_54' | 'free_write';
+      promptKr?: string;
+      sample?: string;
+      total?: number;
+      max?: number;
+      estimatedLevel?: string | null;
+      daysAgo?: number;
+    } = {},
+  ): Promise<number> {
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO writing_attempts
+          (user_id, prompt_id, rubric, prompt_kr, sample, total_score,
+           max_total, estimated_level, result, graded_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{"overallComment":"test"}'::jsonb,
+               now() - make_interval(days => $9))
+       RETURNING id`,
+      [
+        userId,
+        opts.promptId ?? null,
+        opts.rubric ?? 'topik_ii_53',
+        opts.promptKr ?? '테스트 프롬프트',
+        opts.sample ?? '테스트 답안입니다.',
+        opts.total ?? 20,
+        opts.max ?? 30,
+        opts.estimatedLevel ?? 'L3',
+        opts.daysAgo ?? 0,
+      ],
+    );
+    return Number(rows[0]!.id);
+  }
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/writing/attempts');
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('no attempts → 200 with an empty array (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/writing/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], limit: 20, offset: 0 });
+  });
+
+  it('seeded attempts → correct history, newest first, full DTO shape, prompt_id nullable', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const bank = await pg.pool.query<{ id: string; prompt_kr: string }>(
+      `SELECT id, prompt_kr FROM writing_prompts
+        WHERE rubric = 'topik_ii_53' AND is_active ORDER BY id LIMIT 1`,
+    );
+    const bankPromptId = Number(bank.rows[0]!.id);
+    const bankPromptKr = bank.rows[0]!.prompt_kr;
+
+    // Oldest: a bank-linked TOPIK attempt.
+    await insertAttempt(userId, {
+      promptId: bankPromptId,
+      promptKr: bankPromptKr,
+      rubric: 'topik_ii_53',
+      sample: '오래된 답안입니다.',
+      total: 18,
+      max: 30,
+      estimatedLevel: 'L3',
+      daysAgo: 2,
+    });
+    // Middle: a Claude-generated free-write — no bank row, so promptId NULL.
+    await insertAttempt(userId, {
+      promptId: null,
+      rubric: 'free_write',
+      promptKr: '자유 주제로 글을 써 보세요.',
+      sample: '자유 글쓰기 답안입니다.',
+      total: 22,
+      max: 30,
+      estimatedLevel: 'L4',
+      daysAgo: 1,
+    });
+    // Newest: another bank-linked TOPIK attempt.
+    const newestId = await insertAttempt(userId, {
+      promptId: bankPromptId,
+      promptKr: bankPromptKr,
+      rubric: 'topik_ii_53',
+      sample: '최신 답안입니다.',
+      total: 25,
+      max: 30,
+      estimatedLevel: 'L4',
+      daysAgo: 0,
+    });
+
+    const res = await agent.get('/writing/attempts');
+    expect(res.status).toBe(200);
+    const { attempts, limit, offset } = res.body as {
+      attempts: AttemptDTO[];
+      limit: number;
+      offset: number;
+    };
+    expect(limit).toBe(20);
+    expect(offset).toBe(0);
+    expect(attempts).toHaveLength(3);
+
+    // Newest first.
+    expect(attempts[0]!.id).toBe(newestId);
+    expect(attempts[0]!.sample).toBe('최신 답안입니다.');
+    expect(attempts[2]!.sample).toBe('오래된 답안입니다.');
+
+    // Full DTO shape on the newest row: bank-linked (promptId non-null).
+    expect(attempts[0]).toMatchObject({
+      promptId: bankPromptId,
+      rubric: 'topik_ii_53',
+      promptKr: bankPromptKr,
+      sample: '최신 답안입니다.',
+      totalScore: 25,
+      maxTotal: 30,
+      estimatedLevel: 'L4',
+    });
+    expect(typeof attempts[0]!.gradedAt).toBe('string');
+
+    // The middle row: a generated free-write, promptId NULL, rubric free_write
+    // — this is exactly the F-106/F-117 case (Claude-generated, no bank row).
+    expect(attempts[1]).toMatchObject({
+      promptId: null,
+      rubric: 'free_write',
+      promptKr: '자유 주제로 글을 써 보세요.',
+      sample: '자유 글쓰기 답안입니다.',
+      totalScore: 22,
+      maxTotal: 30,
+      estimatedLevel: 'L4',
+    });
+  });
+
+  it("is user-scoped (no IDOR) — another user's attempts never appear", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await insertAttempt(a.userId, { sample: 'user A 답안' });
+    await insertAttempt(b.userId, { sample: 'user B 답안' });
+
+    const resA = await a.agent.get('/writing/attempts');
+    expect(resA.status).toBe(200);
+    const bodyA = resA.body as { attempts: AttemptDTO[] };
+    expect(bodyA.attempts).toHaveLength(1);
+    expect(bodyA.attempts[0]!.sample).toBe('user A 답안');
+
+    const resB = await b.agent.get('/writing/attempts');
+    const bodyB = resB.body as { attempts: AttemptDTO[] };
+    expect(bodyB.attempts).toHaveLength(1);
+    expect(bodyB.attempts[0]!.sample).toBe('user B 답안');
+  });
+
+  it('honors limit + offset (paging convention mirrors GET /tickets/mine)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    for (let i = 0; i < 5; i++) {
+      await insertAttempt(userId, { sample: `답안 ${String(i)}`, daysAgo: 4 - i });
+    }
+    const page1 = await agent.get('/writing/attempts?limit=2&offset=0');
+    expect(page1.status).toBe(200);
+    const body1 = page1.body as { attempts: AttemptDTO[]; limit: number; offset: number };
+    expect(body1.limit).toBe(2);
+    expect(body1.offset).toBe(0);
+    expect(body1.attempts.map((a) => a.sample)).toEqual(['답안 4', '답안 3']);
+
+    const page2 = await agent.get('/writing/attempts?limit=2&offset=2');
+    const body2 = page2.body as { attempts: AttemptDTO[] };
+    expect(body2.attempts.map((a) => a.sample)).toEqual(['답안 2', '답안 1']);
+  });
+
+  it.each([['limit=0'], ['limit=101'], ['offset=-1'], ['offset=100001']])(
+    '%s → 400 (validation, never a silent clamp)',
+    async (qs) => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent.get(`/writing/attempts?${qs}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    },
+  );
+});

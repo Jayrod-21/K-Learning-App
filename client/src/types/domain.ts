@@ -217,6 +217,15 @@ export type ChoiceId = 'a' | 'b' | 'c' | 'd';
 export type MockSection = 'reading' | 'listening';
 
 /**
+ * TOPIK I vs TOPIK II — the exam-paper discriminator (D-1). TOPIK I and
+ * TOPIK II sittings SHARE every `test_number` (migration 029 widened the
+ * server's natural key to `(test_number, topik_level, section)` for exactly
+ * this reason), so a mock paper is never fully named by `test_number` alone.
+ * Mirrors the server's `TopikLevelSchema` (routes/topik.ts).
+ */
+export type TopikLevel = 'TOPIK I' | 'TOPIK II';
+
+/**
  * One choice on a Mock-Test item as the client receives it.
  *
  * SECURITY (answer-tampering defense, mirrors `DiagnosticChoice`): this type
@@ -261,6 +270,14 @@ export interface TopikMockItem {
 export interface MockTest {
   /** The test the server picked (or echoed) — referenced on submit. */
   sourceTest: number;
+  /**
+   * The paper's TOPIK level, as `resolveMockTest` resolved it server-side
+   * (D-1) — echoed here so `submitMockTest` can pin the SAME paper it just
+   * served, rather than letting the shared resolver's tie-break
+   * (`ORDER BY topik_level DESC`) potentially re-resolve to a DIFFERENT
+   * paper at grade time (fix-pass S-1 / REVIEW_topik.md).
+   */
+  topikLevel: TopikLevel;
   section: MockSection;
   items: TopikMockItem[];
 }
@@ -277,6 +294,14 @@ export interface MockSubmitAnswer {
 /** Body for `POST /topik/mock/submit`. */
 export interface MockSubmitBody {
   sourceTest: number;
+  /**
+   * The exact paper to grade against (D-1) — echoes `MockTest.topikLevel`
+   * from the fetch that served this exam. Optional on the wire (the server's
+   * `resolveMockTest` still resolves a paper without it), but the client
+   * always sends the level it was actually served (fix-pass S-1) so a
+   * fetch/submit pair can never resolve to two DIFFERENT papers.
+   */
+  topikLevel?: TopikLevel;
   section: MockSection;
   answers: MockSubmitAnswer[];
   /** Best-effort total wall-clock duration of the exam, in ms. */
@@ -1248,6 +1273,33 @@ export interface BankedGrammarRow {
    * retired from active learning until re-admitted.
    */
   graduated_at: string | null;
+  /**
+   * Real FSRS schedule state of this pattern's grammar PRODUCTION card
+   * (F-111), folded into this row rather than a dedicated endpoint (see the
+   * server route's comment for the risk tradeoff). `null` means the pattern
+   * has never been drilled — no production card exists yet (FU-NF-42 creates
+   * one lazily on the first drill submit); an honest "not started" rather
+   * than a synthesized new-card default. Non-null for every pattern that has
+   * ever been drilled, whether or not it's due right now — this is what lets
+   * a mastery row show real state/next-due instead of only a due-NOW badge
+   * (the due-NOW signal itself still comes from `GET /vocab/cards/due`).
+   */
+  schedule: GrammarCardSchedule | null;
+}
+
+/**
+ * Full FSRS schedule snapshot for a grammar pattern's production card
+ * (F-111). Distinct from `DrillSchedule` below: that one is the ONE-TIME
+ * rating+interval a drill submit just derived; this is the card's CURRENT
+ * persistent state, read back on every `GET /grammar/bank`.
+ */
+export interface GrammarCardSchedule {
+  /** Current FSRS card state — same wire values as `FsrsState`. */
+  state: FsrsState;
+  /** NUMERIC arrives as a string (precision-safe — mirrors `DueCard.stability`). */
+  stability: string;
+  /** ISO timestamp the card is next due. */
+  dueAt: string;
 }
 
 /** Envelope for `GET /grammar/bank`. */
@@ -1397,6 +1449,35 @@ export interface DrillSchedule {
    * learning step (`again` → ~50s / under a minute, `hard` → ~6 minutes).
    */
   scheduledDays: number;
+}
+
+/**
+ * One row from `GET /grammar-drill/attempts` (F-110) — a SCORED practice
+ * attempt only. A generated-but-never-submitted attempt (the learner hit
+ * Skip) is excluded server-side, so every row here carries a real answer,
+ * score, and verdict — never nulls to paper over. Snake_case mirrors
+ * `BankedGrammarRow`'s convention for a direct DB-row read (as opposed to
+ * `DrillItemPublic`/`DrillScore`, which are Claude JSON contracts).
+ */
+export interface DrillAttemptHistoryRow {
+  id: number;
+  pattern_key: string;
+  pattern_display: string;
+  drill_type: DrillType;
+  user_answer: string;
+  score: number;
+  verdict: DrillVerdict;
+  /** ISO timestamp of the submit that scored this attempt. */
+  scored_at: string;
+}
+
+/** Paged envelope for `GET /grammar-drill/attempts` (F-110) — newest first. */
+export interface DrillAttemptsPage {
+  attempts: DrillAttemptHistoryRow[];
+  /** Total SCORED attempts matching the query, for "N of total" / load-more. */
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 // ── Progress wire shapes ──────────────────────────────────────────────
@@ -1740,12 +1821,29 @@ export interface ImageCapture {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * TOPIK II writing rubrics the grader accepts — mirrors the server's
- * `TopikRubricSchema` (server/src/services/claude/models.ts):
+ * TOPIK II writing rubrics — mirrors the server's `TopikRubricSchema`
+ * (server/src/services/claude/models.ts). Scoped to the curated bank/topik-
+ * mode-generation taxonomy ONLY:
  *   - `topik_ii_53` — Q53, 200–300자 explanatory/description writing.
  *   - `topik_ii_54` — Q54, 600–700자 argumentative essay.
+ * Used for `WritingPromptDTO.rubric` (the bank is Q53/Q54 only today) and
+ * `POST /writing/generate`'s `mode: 'topik'` rubric param. For the broader
+ * GRADING taxonomy (which also accepts `free_write`), see `WritingRubric`.
  */
 export type TopikWritingRubric = 'topik_ii_53' | 'topik_ii_54';
+
+/**
+ * The full GRADING rubric taxonomy — mirrors the server's
+ * `WritingGradeRubricSchema` (server/src/services/claude/models.ts), widened
+ * by migration 056 (F-117) to add `free_write`: a Claude-generated open-topic
+ * sample (mode='general', no TOPIK rubric of its own) now grades against a
+ * real free-write rubric instead of borrowing Q54's as an ill-fitting
+ * stand-in. Used wherever a GRADE (input or echoed output) carries a rubric —
+ * `GradeWritingBody.rubric`, `WritingGradeResult.rubric`, and the
+ * `GET /writing/attempts` history DTO — as opposed to `TopikWritingRubric`,
+ * which stays scoped to the curated bank/topik-generation taxonomy.
+ */
+export type WritingRubric = TopikWritingRubric | 'free_write';
 
 /**
  * Estimated TOPIK II level the sample would earn — the server's closed
@@ -1769,10 +1867,11 @@ export interface WritingDimensionScore {
 
 /**
  * The grader's verdict — mirrors the server's `GradeResultSchema` field for
- * field. The three dimensions are the official TOPIK writing rubric axes.
+ * field. The three dimensions are the official rubric axes shared by all
+ * three rubrics (TOPIK II Q53/Q54, and `free_write` as of 056/F-117).
  */
 export interface WritingGradeResult {
-  rubric: TopikWritingRubric;
+  rubric: WritingRubric;
   /** 내용 및 과제수행 — content and task completion. */
   content: WritingDimensionScore;
   /** 전개구조 — organization and development. */
@@ -1812,7 +1911,9 @@ export interface WritingCallMetadata {
  * (server/src/routes/gradeWriting.ts), or every grade will 400:
  *   - `prompt` — REQUIRED, 1..2000. The task the learner answered.
  *   - `sample` — REQUIRED, 1..5000. The learner's Korean writing.
- *   - `rubric` — optional; server defaults to `topik_ii_54`.
+ *   - `rubric` — optional; server defaults to `topik_ii_54`. As of migration
+ *     056 (F-117) also accepts `free_write` for a Claude-generated open-topic
+ *     sample.
  *   - `promptId` — optional (F-014); the `writing_prompts.id` of the served
  *     task so the persisted `writing_attempts` row links to its source.
  *     Omitted (never `undefined`-valued) for a promptless grade.
@@ -1822,7 +1923,7 @@ export interface WritingCallMetadata {
 export interface GradeWritingBody {
   prompt: string;
   sample: string;
-  rubric?: TopikWritingRubric;
+  rubric?: WritingRubric;
   promptId?: number;
 }
 
@@ -1830,6 +1931,27 @@ export interface GradeWritingBody {
 export interface GradeWritingResponse {
   result: WritingGradeResult;
   metadata: WritingCallMetadata;
+}
+
+/**
+ * One entry in the caller's graded-writing history — mirrors
+ * `GET /writing/attempts`'s wire DTO (server/src/routes/writing.ts, F-106).
+ * `promptId` is `null` for a Claude-generated topic (no `writing_prompts`
+ * source row to link — mode='general' free-writes and mode='topik' generated
+ * topics alike); non-null for a bank-drawn TOPIK prompt. `rubric` is the full
+ * `WritingRubric` taxonomy (a persisted attempt may carry any of the three).
+ */
+export interface WritingAttemptDTO {
+  id: number;
+  promptId: number | null;
+  rubric: WritingRubric;
+  promptKr: string;
+  sample: string;
+  totalScore: number;
+  maxTotal: number;
+  estimatedLevel: WritingEstimatedLevel | null;
+  /** ISO timestamp of when the grade was recorded. */
+  gradedAt: string;
 }
 
 // ── TTMIK / Iyagi audio (F-012) ───────────────────────────────────────────
