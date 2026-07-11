@@ -4,10 +4,11 @@
  * The compose/grade surface itself reuses the shared `.km-grammar__*` sheet
  * rules (textarea, status rows, footer, reveal) exactly as the pre-rework
  * screen did; this file only carries what 3C-2 added: the back-control row,
- * the generated-topic marker, the free-write grading note, the topic
- * generator's placement, and the aria-disabled paint for the Grade button
- * (which stays focusable while a grade is in flight — see Writing.tsx).
- * Tokenized throughout so both themes and every accent preset come free.
+ * the generated-topic marker, the topic generator's placement, the
+ * aria-disabled paint for the Grade button (which stays focusable while a
+ * grade is in flight), and the F-106 Responses-tab history list (see
+ * Writing.tsx). Tokenized throughout so both themes and every accent preset
+ * come free.
  */
 
 /* F-024 back control, pinned above the Topbar (same row Mistakes uses). */
@@ -40,14 +41,6 @@
   margin-bottom: 12px;
 }
 
-/* Honesty note for free-write topics (graded with the Q54 rubric until the
-   rubric taxonomy widens — see the deferred-ticket note in Writing.tsx). */
-.km-writing__note {
-  font-size: 12.5px;
-  color: var(--paper-mute);
-  margin: -4px 0 12px;
-}
-
 /* The shared topic-generator panel sits under the compose card (F-073). */
 .km-writing__topicgen {
   margin-top: 16px;
@@ -61,9 +54,10 @@
   cursor: not-allowed;
 }
 
-/* F-074 Responses stub copy block. */
-.km-writing__stub {
-  font-size: 13.5px;
-  color: var(--paper-mute);
-  line-height: 1.6;
+/* F-106 Responses-tab history list (replaces the earlier F-074 stub). Plain
+   reset — each row is its own Card, so the <ul>/<li> carry no borders. */
+.km-writing__attempts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }

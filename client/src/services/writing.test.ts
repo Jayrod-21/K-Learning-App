@@ -5,9 +5,11 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  fetchWritingAttempts,
   fetchWritingPrompts,
   gradeWriting,
   type GradeWritingResponse,
+  type WritingAttemptDTO,
   type WritingPromptDTO,
 } from './writing';
 import { api, ApiError } from './api';
@@ -205,5 +207,74 @@ describe('fetchWritingPrompts', () => {
     await expect(fetchWritingPrompts('topik_ii_53')).rejects.toMatchObject({
       status: 500,
     });
+  });
+});
+
+describe('fetchWritingAttempts (F-106)', () => {
+  const ATTEMPTS: WritingAttemptDTO[] = [
+    {
+      id: 501,
+      promptId: 101,
+      rubric: 'topik_ii_53',
+      promptKr: '스트레스 해소 방법에 대해 쓰십시오.',
+      sample: '지난 답안입니다.',
+      totalScore: 21,
+      maxTotal: 30,
+      estimatedLevel: 'L3',
+      gradedAt: '2026-07-01T00:00:00.000Z',
+    },
+    {
+      id: 502,
+      promptId: null,
+      rubric: 'free_write',
+      promptKr: '가장 기억에 남는 여행에 대해 자유롭게 써 보세요.',
+      sample: '작년 여행이 기억에 남습니다.',
+      totalScore: 24,
+      maxTotal: 30,
+      estimatedLevel: 'L4',
+      gradedAt: '2026-07-05T00:00:00.000Z',
+    },
+  ];
+
+  it('GETs /writing/attempts and unwraps { attempts, limit, offset }', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: ATTEMPTS, limit: 20, offset: 0 });
+
+    const out = await fetchWritingAttempts();
+
+    // No params supplied → both keys forwarded as undefined (axios drops
+    // undefined-valued params from the query string; the server defaults).
+    expect(spy).toHaveBeenCalledWith('/writing/attempts', {
+      params: { limit: undefined, offset: undefined },
+    });
+    expect(out.attempts).toEqual(ATTEMPTS);
+    expect(out.limit).toBe(20);
+    expect(out.offset).toBe(0);
+  });
+
+  it('forwards limit/offset and the abort signal', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: [], limit: 5, offset: 10 });
+    const ctrl = new AbortController();
+
+    const out = await fetchWritingAttempts({ limit: 5, offset: 10 }, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/writing/attempts', {
+      params: { limit: 5, offset: 10 },
+      signal: ctrl.signal,
+    });
+    // An empty history resolves as [] — never an error (a learner who has
+    // never graded a sample is not a failure state).
+    expect(out.attempts).toEqual([]);
+  });
+
+  it('surfaces a failed load as ApiError (no swallow, no fallback)', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('server error', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(fetchWritingAttempts()).rejects.toMatchObject({ status: 500 });
   });
 });

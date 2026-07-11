@@ -25,11 +25,13 @@ import { ApiError } from '../services/api';
 import type { GradeWritingResponse } from '../types/domain';
 import type {
   GeneratedWritingPrompt,
+  WritingAttemptDTO,
   WritingPromptDTO,
 } from '../services/writing';
 
 vi.mock('../services/writing', () => ({
   fetchRandomWritingPrompt: vi.fn(),
+  fetchWritingAttempts: vi.fn(),
   gradeWriting: vi.fn(),
   generateWritingPrompt: vi.fn(),
 }));
@@ -38,11 +40,13 @@ vi.mock('../services/writing', () => ({
 import Writing from './Writing';
 import {
   fetchRandomWritingPrompt,
+  fetchWritingAttempts,
   gradeWriting,
   generateWritingPrompt,
 } from '../services/writing';
 
 const fetchRandomMock = vi.mocked(fetchRandomWritingPrompt);
+const fetchAttemptsMock = vi.mocked(fetchWritingAttempts);
 const gradeWritingMock = vi.mocked(gradeWriting);
 const generateMock = vi.mocked(generateWritingPrompt);
 
@@ -137,6 +141,31 @@ const RESPONSE: GradeWritingResponse = {
 const SAMPLE =
   '저는 스트레스를 받을 때 산책을 합니다. 산책을 하면 기분이 좋아지기 때문에 자주 걷습니다.';
 
+/** F-106 graded-writing history fixtures. */
+const ATTEMPT_BANK: WritingAttemptDTO = {
+  id: 501,
+  promptId: 101,
+  rubric: 'topik_ii_53',
+  promptKr: Q53_PROMPT.promptKr,
+  sample: '지난 답안입니다.',
+  totalScore: 21,
+  maxTotal: 30,
+  estimatedLevel: 'L3',
+  gradedAt: '2026-07-01T00:00:00.000Z',
+};
+
+const ATTEMPT_FREE_WRITE: WritingAttemptDTO = {
+  id: 502,
+  promptId: null,
+  rubric: 'free_write',
+  promptKr: '가장 기억에 남는 여행에 대해 자유롭게 써 보세요.',
+  sample: '작년 여행이 기억에 남습니다.',
+  totalScore: 24,
+  maxTotal: 30,
+  estimatedLevel: 'L4',
+  gradedAt: '2026-07-05T00:00:00.000Z',
+};
+
 /** Render inside a MemoryRouter, optionally with F-101 deep-link state. */
 function renderWriting(state?: unknown): void {
   render(
@@ -157,12 +186,16 @@ async function renderLoaded(): Promise<void> {
 beforeEach(() => {
   gradeWritingMock.mockReset();
   fetchRandomMock.mockReset();
+  fetchAttemptsMock.mockReset();
   generateMock.mockReset();
   generateMock.mockRejectedValue(new Error('not wired in this test'));
   // Default happy path: each rubric serves its own random draw.
   fetchRandomMock.mockImplementation((rubric) =>
     Promise.resolve(rubric === 'topik_ii_53' ? Q53_PROMPT : Q54_PROMPT),
   );
+  // Default happy path for the Responses tab — empty history unless a test
+  // overrides it.
+  fetchAttemptsMock.mockResolvedValue({ attempts: [], limit: 20, offset: 0 });
 });
 
 describe('Writing', () => {
@@ -581,7 +614,7 @@ describe('Writing', () => {
   it('F-101: adopts a Today-carried generated topic from location.state without a bank draw', async () => {
     gradeWritingMock.mockResolvedValueOnce({
       ...RESPONSE,
-      result: { ...RESPONSE.result, rubric: 'topik_ii_54' },
+      result: { ...RESPONSE.result, rubric: 'free_write' },
     });
     const user = userEvent.setup();
     renderWriting({ generatedTopic: GENERATED_GENERAL });
@@ -589,14 +622,11 @@ describe('Writing', () => {
     // The carried topic IS the task — no random bank draw happened.
     expect(await screen.findByText(/기억에 남는 여행/)).toBeInTheDocument();
     expect(fetchRandomMock).not.toHaveBeenCalled();
-    // Honest free-write header + the Q54-rubric grading note (the rubric
-    // taxonomy widen is deferred — F-117). '자유 주제' also appears on the
-    // generator's mode radio and in Bilingual's sr-only halves — AllBy.
+    // Honest free-write header. '자유 주제' also appears on the generator's
+    // mode radio and in Bilingual's sr-only halves — AllBy. No grading-note
+    // caveat anymore (056/F-117: free_write is a real rubric now).
     expect(screen.getAllByText('자유 주제').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Free write').length).toBeGreaterThan(0);
-    expect(
-      screen.getByText(/graded with the TOPIK Q54 essay rubric/),
-    ).toBeInTheDocument();
 
     await user.type(
       screen.getByRole('textbox', { name: /Your writing in Korean/ }),
@@ -610,10 +640,12 @@ describe('Writing', () => {
       expect(gradeWritingMock).toHaveBeenCalledTimes(1);
     });
     const [body] = gradeWritingMock.mock.calls[0]!;
+    // A generated free-write grades against the REAL free_write rubric
+    // (056/F-117) — no longer the Q54-borrow fallback.
     expect(body).toEqual({
       prompt: GENERATED_GENERAL.promptKr,
       sample: '작년 여행이 기억에 남습니다.',
-      rubric: 'topik_ii_54',
+      rubric: 'free_write',
     });
   });
 
@@ -647,19 +679,80 @@ describe('Writing', () => {
     );
   });
 
-  it('F-074: the Responses tab is an honest stub with no fabricated attempts', async () => {
+  it('F-106: the Responses tab loads and renders the real graded-writing history', async () => {
+    fetchAttemptsMock.mockResolvedValueOnce({
+      attempts: [ATTEMPT_FREE_WRITE, ATTEMPT_BANK],
+      limit: 20,
+      offset: 0,
+    });
     const user = userEvent.setup();
     await renderLoaded();
 
     await user.click(screen.getByRole('tab', { name: '내 답안 · My responses' }));
+    expect(fetchAttemptsMock).toHaveBeenCalledWith(undefined, expect.any(AbortSignal));
 
-    // Honest pending copy (browsing needs GET /writing/attempts — F-106).
-    expect(screen.getByText(/coming soon/)).toBeInTheDocument();
-    // The write surface is swapped out; nothing pretends to be a past attempt.
+    // Both rows render, with their real persisted fields — no fabrication,
+    // no "coming soon" placeholder.
+    expect(await screen.findByText('지난 답안입니다.')).toBeInTheDocument();
+    expect(screen.getByText('작년 여행이 기억에 남습니다.')).toBeInTheDocument();
+    expect(screen.getByText('21')).toBeInTheDocument();
+    expect(screen.getByText('24')).toBeInTheDocument();
+    expect(screen.getAllByText('/ 30')).toHaveLength(2);
+    // The generated free-write carries the "Generated topic" marker
+    // (nullable promptId, F-106); the bank row does not.
+    expect(screen.getAllByText(/만든 주제/).length).toBeGreaterThan(0);
+    // The write surface is swapped out; nothing from the compose sheet leaks.
     expect(
       screen.queryByRole('textbox', { name: /Your writing in Korean/ }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/63/)).not.toBeInTheDocument();
+  });
+
+  it('F-106: shows a loading status while the history fetch is in flight', async () => {
+    fetchAttemptsMock.mockImplementation(
+      () =>
+        new Promise<{ attempts: WritingAttemptDTO[]; limit: number; offset: number }>(
+          () => undefined,
+        ),
+    );
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole('tab', { name: '내 답안 · My responses' }));
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      /Loading your responses/,
+    );
+  });
+
+  it('F-106: renders an honest empty state when the caller has no history', async () => {
+    fetchAttemptsMock.mockResolvedValueOnce({ attempts: [], limit: 20, offset: 0 });
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole('tab', { name: '내 답안 · My responses' }));
+
+    expect(
+      await screen.findByText(/haven't graded a writing sample yet/),
+    ).toBeInTheDocument();
+  });
+
+  it('F-106: surfaces a history-fetch failure with a Retry that reloads', async () => {
+    fetchAttemptsMock.mockRejectedValueOnce(
+      new ApiError('server error', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    await renderLoaded();
+    await user.click(screen.getByRole('tab', { name: '내 답안 · My responses' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/responses couldn't be loaded/);
+
+    fetchAttemptsMock.mockResolvedValueOnce({
+      attempts: [ATTEMPT_BANK],
+      limit: 20,
+      offset: 0,
+    });
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('지난 답안입니다.')).toBeInTheDocument();
+    expect(fetchAttemptsMock).toHaveBeenCalledTimes(2);
   });
 
   it('preserves the draft across a Responses tab round-trip without refetching', async () => {
