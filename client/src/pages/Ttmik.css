@@ -1,0 +1,85 @@
+/**
+ * Listen page — Phase 3C-2 additions (F-071 landing tile grid, F-072 paged
+ * listings, F-024 back-control spacing). Co-located per the redesign
+ * convention; the pre-3C rules the page reuses (km-review__tabs,
+ * km-reference__*, km-pill) stay in styles/index.css. Everything is
+ * tokenized so both themes + every accent preset come free.
+ */
+
+/* ── F-024 back-control row — sits above the Topbar, scrolls away ── */
+.km-ttmik__nav {
+  margin-bottom: 4px;
+}
+
+/* ── F-071 landing: square collection tiles, 2 across, flowing down ──
+ * `repeat(2, minmax(0, 1fr))` — always two equal columns that shrink with
+ * the viewport (minmax(0, …) lets long tile text ellipsize instead of
+ * blowing the track wide); `aspect-ratio` keeps every tile square at any
+ * width. New collections simply wrap onto the next row. */
+.km-ttmik__tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.km-ttmik__tile {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-1);
+  color: var(--paper);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms;
+}
+.km-ttmik__tile:hover {
+  border-color: var(--gold);
+}
+
+.km-ttmik__tile-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.km-ttmik__tile-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+/* --paper-dim (not -mute): the subtitle is content, so it must hold AA. */
+.km-ttmik__tile-sub {
+  font-size: 11px;
+  color: var(--paper-dim);
+}
+
+/* ── F-072 listing chrome: filter/stat row + centered expander ── */
+.km-ttmik__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* Visible/total stat under the filter (aria-live) — content, holds AA. */
+.km-ttmik__stat {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+}
+
+.km-ttmik__pager {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}

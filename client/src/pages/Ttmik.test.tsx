@@ -1,7 +1,8 @@
 /**
- * Listen page (F-012 rework) — browse tabs, detail view with a PERSISTENT
- * audio player + Highlights/Transcript sub-tabs, clickable transcript words
- * (the Read tab's tap chain), and the Iyagi hosts-array line.
+ * Listen page (F-012, reworked 3C-2: F-071 / F-072 / F-024) — landing tile
+ * grid, URL-addressed listings windowed to 15 rows, BackButtons on nested
+ * views, detail view with a PERSISTENT audio player + Highlights/Transcript
+ * sub-tabs and clickable transcript words (the Read tab's tap chain).
  *
  * The four fetchers in `services/ttmik` are mocked per test; `buildAudioSrc`
  * stays REAL so the assertions cover the actual src the page hands to the
@@ -10,6 +11,11 @@
  * the page goes through `lib/tapChain.resolveWordPopover`, which calls them.
  * The audio element has no ARIA role, so identity/presence is asserted via
  * DOM queries — everything else goes through accessible surfaces.
+ *
+ * Layout note: jsdom computes no CSS, so "2 across" itself lives in
+ * Ttmik.css (`.km-ttmik__tiles` → `repeat(2, minmax(0, 1fr))`); the tests
+ * pin the structural contract that CSS keys on — the labelled tile list,
+ * its class hook, and one keyboard-operable button per collection.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -58,10 +64,33 @@ const LESSONS: TtmikLesson[] = [
   { level: 2, number: 21, title: 'More / -(으)ㄴ 것 같다', hasAudio: false },
 ];
 
+/** F-072 fixture — 35 level-1 + 5 level-2 lessons (40 total, 3 windows). */
+const MANY_LESSONS: TtmikLesson[] = [
+  ...Array.from({ length: 35 }, (_, i) => ({
+    level: 1,
+    number: i + 1,
+    title: `Beginner topic ${String(i + 1)}`,
+    hasAudio: true,
+  })),
+  ...Array.from({ length: 5 }, (_, i) => ({
+    level: 2,
+    number: i + 1,
+    title: `Intermediate topic ${String(i + 1)}`,
+    hasAudio: true,
+  })),
+];
+
 const EPISODES: IyagiEpisode[] = [
   { number: 1, title: '서울의 겨울', hasAudio: true },
   { number: 143, title: '한국의 카페 문화', hasAudio: false },
 ];
+
+/** F-072 fixture — 20 episodes (one window + a 5-row remainder). */
+const MANY_EPISODES: IyagiEpisode[] = Array.from({ length: 20 }, (_, i) => ({
+  number: i + 1,
+  title: `에피소드 주제 ${String(i + 1)}`,
+  hasAudio: true,
+}));
 
 /** Highlights arrive deliberately OUT of ordinal order — the page must sort. */
 const LESSON_DETAIL: TtmikLessonDetail = {
@@ -122,9 +151,9 @@ const EPISODE_DETAIL: IyagiEpisodeDetail = {
   ],
 };
 
-function renderPage(): void {
+function renderPage(initialEntry = '/learn/listen'): void {
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <ToastProvider>
         <Ttmik />
       </ToastProvider>
@@ -132,13 +161,22 @@ function renderPage(): void {
   );
 }
 
-/** Open lesson 1 from the browse view and wait for its detail header. */
+/** Landing → TTMIK listing (tiles render synchronously — no fetch first). */
+async function openTtmikListing(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /TTMIK Lessons/ }));
+}
+
+/** Landing → listing → lesson 1 detail, waiting for its header. */
 async function openLessonOne(
   user: ReturnType<typeof userEvent.setup>,
 ): Promise<void> {
-  await screen.findByText('Level 1');
+  await openTtmikListing(user);
   await user.click(
-    screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
+    await screen.findByRole('button', {
+      name: 'Open lesson 1: Hello / Thank you',
+    }),
   );
   await screen.findByText('Level 1 · Lesson 1');
 }
@@ -154,13 +192,83 @@ beforeEach(() => {
   vi.mocked(mineWord).mockReset();
 });
 
-describe('Ttmik page — browse', () => {
-  it('renders TTMIK lessons grouped by level with audio indicators', async () => {
+describe('Ttmik page — landing (F-071)', () => {
+  it('renders the collection tile grid — one labelled tile per collection, no list fetch', () => {
     renderPage();
 
-    // Level group headings appear once the list resolves.
-    expect(await screen.findByText('Level 1')).toBeInTheDocument();
-    expect(screen.getByText('Level 2')).toBeInTheDocument();
+    // The labelled grid list + its CSS hook (the 2-across layout keys on it).
+    const grid = screen.getByRole('list', { name: 'Audio collections' });
+    expect(grid).toHaveClass('km-ttmik__tiles');
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(2);
+
+    // One keyboard-operable button per collection, named by its content.
+    expect(
+      within(grid).getByRole('button', { name: /TTMIK Lessons/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(grid).getByRole('button', { name: /Iyagi Episodes/ }),
+    ).toBeInTheDocument();
+
+    // The landing is pure navigation — neither listing fetch fires.
+    expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
+    expect(vi.mocked(getIyagiEpisodes)).not.toHaveBeenCalled();
+  });
+
+  it('a tile is keyboard-operable: Enter opens the TTMIK listing', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    screen.getByRole('button', { name: /TTMIK Lessons/ }).focus();
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByText('Showing 3 of 3')).toBeInTheDocument();
+    expect(vi.mocked(getTtmikLessons)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the Iyagi tile opens the episodes listing', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
+
+    expect(
+      await screen.findByRole('button', { name: 'Open episode 1: 서울의 겨울' }),
+    ).toBeInTheDocument();
+    const ep143 = screen.getByRole('button', {
+      name: 'Open episode 143: 한국의 카페 문화',
+    });
+    expect(within(ep143).getByText('No audio')).toBeInTheDocument();
+  });
+
+  it('P3b: title, nav eyebrow, and listing level headings render Korean in both-mode', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: '듣기 · Listen' }),
+    ).toBeInTheDocument();
+    // Topbar eyebrow — the nav manifest pair.
+    expect(screen.getByText('TTMIK · 이야기 오디오')).toBeInTheDocument();
+    expect(screen.getByText('TTMIK · Iyagi audio')).toBeInTheDocument();
+
+    await openTtmikListing(user);
+    // Level group eyebrows carry their Korean halves.
+    expect(await screen.findByText('레벨 1')).toBeInTheDocument();
+    // The audio pills expose both languages in the accessible reading.
+    expect(screen.getAllByText('오디오').length).toBeGreaterThan(0);
+  });
+});
+
+describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
+  it('renders lessons grouped by level with audio indicators', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await openTtmikListing(user);
+
+    // Level group headings appear once the list resolves (Korean eyebrow —
+    // the English half also appears as a filter option, so it is not unique).
+    expect(await screen.findByText('레벨 1')).toBeInTheDocument();
+    expect(screen.getByText('레벨 2')).toBeInTheDocument();
 
     // Rows are accessible buttons carrying the lesson title.
     const lesson1 = screen.getByRole('button', {
@@ -174,40 +282,82 @@ describe('Ttmik page — browse', () => {
     expect(within(lesson21).getByText('No audio')).toBeInTheDocument();
   });
 
-  it('P3b: title, nav eyebrow, and level headings render Korean in both-mode', async () => {
-    renderPage();
-    await screen.findByText('Level 1');
-    expect(
-      screen.getByRole('heading', { level: 1, name: '듣기 · Listen' }),
-    ).toBeInTheDocument();
-    // Topbar eyebrow — the nav manifest pair.
-    expect(screen.getByText('TTMIK · 이야기 오디오')).toBeInTheDocument();
-    expect(screen.getByText('TTMIK · Iyagi audio')).toBeInTheDocument();
-    // Level group eyebrows carry their Korean halves.
-    expect(screen.getByText('레벨 1')).toBeInTheDocument();
-    // The audio pills expose both languages in the accessible reading.
-    expect(screen.getAllByText('오디오').length).toBeGreaterThan(0);
-  });
-
-  it('switches to the Iyagi Episodes tab and lists episodes', async () => {
+  it('F-072: windows the listing to 15 rows and reveals 15 more per Show more', async () => {
+    vi.mocked(getTtmikLessons).mockResolvedValue(MANY_LESSONS);
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText('Level 1');
+    await openTtmikListing(user);
 
-    await user.click(screen.getByRole('tab', { name: '이야기 에피소드 · Iyagi Episodes' }));
+    // Page one: exactly 15 rows of 40.
+    expect(await screen.findByText('Showing 15 of 40')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Open lesson/ })).toHaveLength(
+      15,
+    );
 
+    // The expander announces how many the next click reveals.
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
+    expect(screen.getByText('Showing 30 of 40')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Open lesson/ })).toHaveLength(
+      30,
+    );
+
+    // Last window is the 10-row remainder; the exhausted control disappears.
+    await user.click(screen.getByRole('button', { name: 'Show more (10)' }));
+    expect(screen.getByText('Showing 40 of 40')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Open lesson/ })).toHaveLength(
+      40,
+    );
     expect(
-      await screen.findByRole('button', { name: 'Open episode 1: 서울의 겨울' }),
+      screen.queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('F-072: the level filter narrows the listing AND collapses the window', async () => {
+    vi.mocked(getTtmikLessons).mockResolvedValue(MANY_LESSONS);
+    const user = userEvent.setup();
+    renderPage();
+    await openTtmikListing(user);
+    await screen.findByText('Showing 15 of 40');
+
+    // Expand to 30 first so the reset is observable.
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
+    expect(screen.getByText('Showing 30 of 40')).toBeInTheDocument();
+
+    // Filter to level 2 — only its 5 lessons remain, no expander.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Level · 레벨' }),
+      '2',
+    );
+    expect(screen.getByText('Showing 5 of 5')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Open lesson/ })).toHaveLength(
+      5,
+    );
+    expect(
+      within(
+        screen.getAllByRole('button', { name: /^Open lesson/ })[0]!,
+      ).getByText('Intermediate topic 1'),
     ).toBeInTheDocument();
-    const ep143 = screen.getByRole('button', {
-      name: 'Open episode 143: 한국의 카페 문화',
-    });
-    expect(within(ep143).getByText('No audio')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+
+    // Clearing the filter lands back on page ONE (15), not the previous 30 —
+    // the filter change reset the window.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Level · 레벨' }),
+      '',
+    );
+    expect(screen.getByText('Showing 15 of 40')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /^Open lesson/ })).toHaveLength(
+      15,
+    );
   });
 
   it('shows the empty state when there are no lessons', async () => {
     vi.mocked(getTtmikLessons).mockResolvedValue([]);
+    const user = userEvent.setup();
     renderPage();
+    await openTtmikListing(user);
 
     expect(
       await screen.findByText('No lessons available yet.'),
@@ -222,6 +372,7 @@ describe('Ttmik page — browse', () => {
       )
       .mockResolvedValueOnce(LESSONS);
     renderPage();
+    await openTtmikListing(user);
 
     // F-UP-018 fixed-copy contract: the ErrorCard shows author-controlled
     // copy, never the server prose riding on ApiError.message.
@@ -230,8 +381,55 @@ describe('Ttmik page — browse', () => {
     expect(alert).not.toHaveTextContent(/server error/);
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('Level 1')).toBeInTheDocument();
+    expect(await screen.findByText('레벨 1')).toBeInTheDocument();
     expect(vi.mocked(getTtmikLessons)).toHaveBeenCalledTimes(2);
+  });
+
+  it('F-024: the listing carries a BackButton to the Listen landing', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await openTtmikListing(user);
+    await screen.findByText('Showing 3 of 3');
+
+    await user.click(screen.getByRole('button', { name: 'Back to Listen' }));
+
+    expect(
+      screen.getByRole('list', { name: 'Audio collections' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /^Open lesson/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('Ttmik page — URL addressing (untrusted search params)', () => {
+  it('deep-links straight into a lesson detail without touching the listings', async () => {
+    renderPage('/learn/listen?corpus=ttmik&level=1&lesson=1');
+
+    expect(await screen.findByText('Level 1 · Lesson 1')).toBeInTheDocument();
+    expect(vi.mocked(getTtmikLesson)).toHaveBeenCalledWith(
+      1,
+      1,
+      expect.any(AbortSignal),
+    );
+    expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
+  });
+
+  it('an unknown corpus falls back to the landing (no fetches)', () => {
+    renderPage('/learn/listen?corpus=podcasts');
+
+    expect(
+      screen.getByRole('list', { name: 'Audio collections' }),
+    ).toBeInTheDocument();
+    expect(vi.mocked(getTtmikLessons)).not.toHaveBeenCalled();
+    expect(vi.mocked(getTtmikLesson)).not.toHaveBeenCalled();
+  });
+
+  it('malformed detail numbers fall back to the listing, never into a fetch', async () => {
+    renderPage('/learn/listen?corpus=ttmik&level=0&lesson=abc');
+
+    expect(await screen.findByText('Showing 3 of 3')).toBeInTheDocument();
+    expect(vi.mocked(getTtmikLesson)).not.toHaveBeenCalled();
   });
 });
 
@@ -260,7 +458,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     ).toBeInTheDocument();
 
     // Highlights: ordinal order (the wire fixture is deliberately reversed),
-    // Korean + English + romanization, speaker label on the dialog turn.
+    // Korean + English, speaker label on the dialog turn.
     const highlights = screen.getByRole('list', { name: 'Highlights' });
     const rows = within(highlights).getAllByRole('listitem');
     expect(rows).toHaveLength(2);
@@ -301,8 +499,8 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
       await screen.findByRole('list', { name: 'Transcript' }),
     ).toBeInTheDocument();
     // The panel below must match the visible tab — the empty HighlightsPanel's
-    // "No highlights for this one." must never leak (the derived-tab fix means
-    // there is no post-render flash showing it, unlike a set-state-in-effect).
+    // "No highlights yet." must never leak (the derived-tab fix means there is
+    // no post-render flash showing it, unlike a set-state-in-effect).
     expect(
       screen.queryByText('No highlights yet.'),
     ).not.toBeInTheDocument();
@@ -354,7 +552,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     expect(vi.mocked(getTtmikLesson)).toHaveBeenCalledTimes(1);
   });
 
-  it('renders every transcript line kind: header, pair, romanization, prose, dialog', async () => {
+  it('B-025: renders every transcript line kind: header, pair, romanization, prose, dialog', async () => {
     const user = userEvent.setup();
     renderPage();
     await openLessonOne(user);
@@ -514,18 +712,16 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     expect(mineSignal?.aborted).toBe(true);
   });
 
-  it('returns to the browse list via the Browse button', async () => {
+  it('F-024: the detail BackButton returns to the TTMIK listing (player unmounts)', async () => {
     const user = userEvent.setup();
     renderPage();
     await openLessonOne(user);
 
     await user.click(
-      screen.getByRole('button', {
-        name: 'Back to all lessons and episodes',
-      }),
+      screen.getByRole('button', { name: 'Back to TTMIK Lessons' }),
     );
 
-    expect(await screen.findByText('Level 1')).toBeInTheDocument();
+    expect(await screen.findByText('레벨 1')).toBeInTheDocument();
     expect(document.querySelector('audio')).toBeNull();
   });
 
@@ -537,10 +733,12 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
       )
       .mockResolvedValueOnce(LESSON_DETAIL);
     renderPage();
-    await screen.findByText('Level 1');
+    await openTtmikListing(user);
 
     await user.click(
-      screen.getByRole('button', { name: 'Open lesson 1: Hello / Thank you' }),
+      await screen.findByRole('button', {
+        name: 'Open lesson 1: Hello / Thank you',
+      }),
     );
 
     // Fixed copy — the 404's server prose ("not found") must not render.
@@ -553,13 +751,32 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
   });
 });
 
-describe('Ttmik page — Iyagi episode detail', () => {
-  it('renders the hosts array as a hosts line, a no-audio note, and a clickable transcript', async () => {
+describe('Ttmik page — Iyagi listing + episode detail', () => {
+  it('F-072: windows the episode listing to 15 rows with a working expander', async () => {
+    vi.mocked(getIyagiEpisodes).mockResolvedValue(MANY_EPISODES);
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText('Level 1');
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
 
-    await user.click(screen.getByRole('tab', { name: '이야기 에피소드 · Iyagi Episodes' }));
+    expect(await screen.findByText('Showing 15 of 20')).toBeInTheDocument();
+    expect(
+      screen.getAllByRole('button', { name: /^Open episode/ }),
+    ).toHaveLength(15);
+
+    await user.click(screen.getByRole('button', { name: 'Show more (5)' }));
+    expect(screen.getByText('Showing 20 of 20')).toBeInTheDocument();
+    expect(
+      screen.getAllByRole('button', { name: /^Open episode/ }),
+    ).toHaveLength(20);
+    expect(
+      screen.queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the hosts array, a no-audio note, a clickable transcript, and an F-024 back control', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
     await user.click(
       await screen.findByRole('button', {
         name: 'Open episode 143: 한국의 카페 문화',
@@ -589,5 +806,15 @@ describe('Ttmik page — Iyagi episode detail', () => {
       143,
       expect.any(AbortSignal),
     );
+
+    // F-024: back to the owning listing.
+    await user.click(
+      screen.getByRole('button', { name: 'Back to Iyagi Episodes' }),
+    );
+    expect(
+      await screen.findByRole('button', {
+        name: 'Open episode 143: 한국의 카페 문화',
+      }),
+    ).toBeInTheDocument();
   });
 });
