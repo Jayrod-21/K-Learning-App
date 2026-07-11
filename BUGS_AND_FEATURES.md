@@ -1377,6 +1377,26 @@ Delivered on `feat/phase-be-lightup`, full 4-phase /fixpass PASS (0 blockers, se
 
 ---
 
+## ✅ Phase 3D — Chat (final page group) — DONE, PR pending
+
+Delivered on `feat/phase3d-chat`, full 4-phase /fixpass PASS (1 blocker + 5 should-fixes → re-review PASS, 0 regressions; attach-menu keyboard blocker mutation-verified dead). Full suites: client 1502 · server 1240 (+4 skip).
+- **F-037 ✅** tutor replies now concise & conversational by default (system-prompt DEFAULT BREVITY / expand-only-on-request block; tutor domain behavior intact).
+- **F-033 ✅** formatting overhaul (styles consolidated into co-located `Chat.css`).
+- **F-034 ✅** in-chat dictionary + suggested-words removed (grep-clean across the whole client tree).
+- **F-035 ✅** "+" attach menu (camera / upload-image / upload-document) — all three wired (document to the existing `POST /conversation/:id/file`), WAI-ARIA menu-button with roving arrow-key nav + Tab-close + Escape/outside-click, 409 stale-version handling on both upload paths; server-side file validation (size, real UTF-8 bytes, injection markers).
+- **B-020 ✅** English toggle labeled ("English · 영어" + sharpened aria-label).
+- **F-036 ✅** chats auto-named from content via the existing `name_conversation` route (latched per-conversation; title precedence session→server→snippet→date).
+- **F-024** n/a (`/chat` has no nested route).
+- **New ticket filed:** F-125 (`/name` route not exactly-once under concurrent first calls — bounded/storage-safe, deferred for a full-suite-gated pass).
+
+---
+
+## 🏁 Wave 1 pre-beta redesign — BUILD COMPLETE (PRs #91–#96)
+
+All phases through the full 4-phase /fixpass: Phase 1 primitives · Phase 2 backend (045–055) · **3A** Today/Progress/Settings (#91) · **3B** Review/Library (#92) · **3C-1** flashcards/grammar/hanja (#93) · **3C-2** reading/listen/writing/topik (#94) · **backend light-up** (#95) · **3D** Chat (#96). Next: DEPLOY (blue/green to M, migrations 045–057 + km_app role) → friends beta.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
