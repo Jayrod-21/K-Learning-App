@@ -111,15 +111,19 @@ import * as grammarService from '../services/grammar';
 import * as vocabService from '../services/vocab';
 import {
   generateDrill,
+  listAttempts,
   submitDrill,
   type DrillScore,
 } from '../services/grammarDrill';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
 import type {
+  DrillAttemptHistoryRow,
   DrillItemPublic,
   DrillSchedule,
   FsrsRating,
+  FsrsState,
+  GrammarCardSchedule,
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -291,6 +295,14 @@ interface BankedMeta {
   category: string;
   /** Raw register string from the bank row (may be composite / null). */
   register: string | null;
+  /**
+   * Real FSRS schedule of this pattern's production card (F-111). `null` =
+   * never drilled yet (no card exists). Non-null covers EVERY drilled
+   * pattern, due or not — this is what lets a mastery row show real
+   * state/next-due instead of only the due-NOW pill (`dueKeys`, sourced
+   * separately from `GET /vocab/cards/due`).
+   */
+  schedule: GrammarCardSchedule | null;
 }
 
 /**
@@ -339,6 +351,7 @@ async function loadRealBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
         proficiency: toServerProficiency(e.proficiency),
         category: e.category,
         register: e.register,
+        schedule: e.schedule,
       },
     ]),
   );
@@ -462,6 +475,20 @@ function Grammar(): JSX.Element {
     () => dueState.data ?? new Set<string>(),
     [dueState.data],
   );
+
+  // F-111: patternKey → the real FSRS schedule of that pattern's production
+  // card, sourced straight off the bank fetch (the server folds `schedule`
+  // into GET /grammar/bank rather than a dedicated per-pattern endpoint — see
+  // the route comment). `undefined` for a key the bank map doesn't have; the
+  // row lookup below normalises that to `null` (same as "never drilled").
+  const scheduleByKey = useMemo<ReadonlyMap<string, GrammarCardSchedule | null>>(() => {
+    const map = new Map<string, GrammarCardSchedule | null>();
+    if (!bankedState.data) return map;
+    for (const [key, meta] of bankedState.data) {
+      map.set(key, meta.schedule);
+    }
+    return map;
+  }, [bankedState.data]);
 
   // Detail Sheet state. We keep the row context alongside the fetch
   // result so the Sheet header can paint immediately while the detail
@@ -739,6 +766,7 @@ function Grammar(): JSX.Element {
           learningItems={learningItems}
           knownItems={knownItems}
           dueKeys={dueKeys}
+          scheduleByKey={scheduleByKey}
           actionableKeys={actionableKeys}
           pendingKey={knownPendingKey}
           actionError={knownError}
@@ -837,6 +865,11 @@ interface CardsPanelProps {
   knownItems: readonly PatternListItem[];
   /** Pattern keys whose production card is due for review (Due pill). */
   dueKeys: ReadonlySet<string>;
+  /**
+   * patternKey → real FSRS schedule (F-111), for the state/next-due line on
+   * every row — not just the due-NOW ones `dueKeys` covers.
+   */
+  scheduleByKey: ReadonlyMap<string, GrammarCardSchedule | null>;
   /** Keys whose server bank-row id is known — action buttons enabled. */
   actionableKeys: ReadonlySet<string>;
   /** patternKey of the known-state action currently in flight, if any. */
@@ -859,6 +892,7 @@ function CardsPanel({
   learningItems,
   knownItems,
   dueKeys,
+  scheduleByKey,
   actionableKeys,
   pendingKey,
   actionError,
@@ -995,6 +1029,7 @@ function CardsPanel({
                   row={row}
                   view={view}
                   due={dueKeys.has(row.patternKey)}
+                  schedule={scheduleByKey.get(row.patternKey) ?? null}
                   pending={pendingKey === row.patternKey}
                   actionable={actionableKeys.has(row.patternKey)}
                   onOpen={onOpen}
@@ -1032,12 +1067,49 @@ function CardsPanel({
   );
 }
 
+/**
+ * FSRS state → display label, matching the vocab Anki vocabulary
+ * (learning/relearning read as active study; review as the settled state).
+ */
+const FSRS_STATE_LABEL: Record<FsrsState, string> = {
+  new: 'New',
+  learning: 'Learning',
+  review: 'Review',
+  relearning: 'Relearning',
+};
+
+/**
+ * F-111: render a pattern's real schedule line — state + next-due — from the
+ * server's `GrammarCardSchedule`, or an honest "not yet practiced" when the
+ * pattern has never been drilled (no production card exists). Never
+ * fabricates an interval: past-due renders "due now" rather than a negative
+ * day count.
+ */
+const ONE_DAY_MS = 86_400_000;
+
+function scheduleStatusLine(schedule: GrammarCardSchedule | null): string {
+  if (!schedule) return 'Not yet practiced';
+  const label = FSRS_STATE_LABEL[schedule.state];
+  const dueMs = new Date(schedule.dueAt).getTime() - Date.now();
+  if (Number.isNaN(dueMs)) return label; // malformed date — state alone, no invented interval
+  if (dueMs <= 0) return `${label} · due now`;
+  // Sub-day intervals (a minute-scale FSRS learning/relearning step, e.g. the
+  // ~6-minute HARD_STEP_DELAY_MS) must be checked BEFORE ceiling to whole
+  // days — `Math.ceil` of any positive value is already >= 1, so a
+  // post-ceiling `< 1` check can never fire and would misreport a 6-minute
+  // step as "1 day".
+  if (dueMs < ONE_DAY_MS) return `${label} · due later today`;
+  const days = Math.ceil(dueMs / ONE_DAY_MS);
+  return `${label} · next review in ${String(days)} day${days === 1 ? '' : 's'}`;
+}
+
 /** One saved-pattern row. The Korean form renders on ONE line (B-024 —
  *  nowrap + ellipsis in Grammar.css); the EN summary sits beneath it. */
 function CardRow({
   row,
   view,
   due,
+  schedule,
   pending,
   actionable,
   onOpen,
@@ -1047,6 +1119,7 @@ function CardRow({
   row: PatternListItem;
   view: CardsView;
   due: boolean;
+  schedule: GrammarCardSchedule | null;
   pending: boolean;
   actionable: boolean;
   onOpen: (row: PatternListItem) => void;
@@ -1068,6 +1141,7 @@ function CardRow({
           {due ? <Pill tone="gold">Due</Pill> : null}
         </span>
         <span className="km-grammar__row-title">{row.title}</span>
+        <span className="km-grammar__row-schedule">{scheduleStatusLine(schedule)}</span>
       </button>
       {view === 'learning' ? (
         <Button
@@ -1105,24 +1179,165 @@ function CardRow({
 // ─────────────────────────────────────────────────────────────
 
 /**
- * F-065: every practice attempt (answer, score, verdict, feedback) is
- * persisted server-side in `grammar_drill_attempts`, but the drill router
- * exposes only the generate + submit POSTs — there is no endpoint to read
- * attempts back. Rendering a fake or empty "list" would misrepresent that,
- * so this view states the situation plainly. Backend ticket: F-110
- * (GET /grammar-drill/attempts — paged, user-scoped).
+ * F-065/F-110: every SCORED practice attempt (pattern, drill type, answer,
+ * score, verdict, scored-at) is now readable via `GET /grammar-drill/attempts`
+ * — the honest stub is retired. Newest first, paged (`Load more` walks the
+ * offset); a generated-but-never-submitted attempt (a Skip) never appears —
+ * the server excludes it (see the route's comment) so this view never shows
+ * a blank row with no answer/score to speak of.
  */
+const HISTORY_PAGE_SIZE = 20;
+
+/** Drill-type → display label for the history list. */
+const DRILL_TYPE_LABEL: Record<DrillAttemptHistoryRow['drill_type'], string> = {
+  transformation: 'Transformation',
+  cloze: 'Cloze',
+  conversation: 'Conversation',
+};
+
+/** Best-effort readable date for a history row; falls back to the raw ISO
+ *  string rather than throwing on a malformed value. */
+function formatHistoryDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+}
+
 function HistoryPanel(): JSX.Element {
+  const [attempts, setAttempts] = useState<DrillAttemptHistoryRow[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  const load = useCallback((offset: number, append: boolean): void => {
+    ctrlRef.current?.abort();
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+    setError(null);
+    void (async (): Promise<void> => {
+      try {
+        const page = await listAttempts(
+          { limit: HISTORY_PAGE_SIZE, offset },
+          ctrl.signal,
+        );
+        if (ctrl.signal.aborted) return;
+        setAttempts((prev) =>
+          append && prev ? [...prev, ...page.attempts] : page.attempts,
+        );
+        setTotal(page.total);
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(
+          errorMessageFor(err, "Your practice history couldn't be loaded."),
+        );
+      } finally {
+        if (ctrl.signal.aborted) return;
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    load(0, false);
+    return () => {
+      ctrlRef.current?.abort();
+    };
+    // Mount-only fetch; `load` is intentionally excluded from deps — its
+    // identity is stable (empty dep array) but re-adding it here would only
+    // add churn, not behavior. Retry/Load-more call it directly on click.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="km-grammar__state" role="status">
+        Loading practice history…
+      </div>
+    );
+  }
+
+  const rows = attempts ?? [];
+
+  if (error && rows.length === 0) {
+    return (
+      <ErrorCard
+        message={error}
+        onRetry={() => {
+          load(0, false);
+        }}
+      />
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <Card variant="flat">
+        <Eyebrow>Practice history</Eyebrow>
+        <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+          No scored practice attempts yet. Answers you submit in Practice will
+          appear here, newest first.
+        </p>
+      </Card>
+    );
+  }
+
+  const canLoadMore = rows.length < total;
+
   return (
-    <Card variant="flat">
-      <Eyebrow>Practice history</Eyebrow>
-      <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-        Not available yet. Your past practice attempts — answers, scores, and
-        feedback — are saved on the server, but there&apos;s no way to fetch
-        them back until the history endpoint ships (ticket F-110). They
-        will appear here once it does.
-      </p>
-    </Card>
+    <>
+      {error ? (
+        <ErrorCard
+          message={error}
+          onRetry={() => {
+            load(rows.length, true);
+          }}
+        />
+      ) : null}
+      {/* eslint-disable-next-line jsx-a11y/no-redundant-roles -- see the
+          identical CardsPanel list note: list-style:none drops the implicit
+          list semantics in Safari/VoiceOver. */}
+      <ul className="km-grammar__list" role="list">
+        {rows.map((a) => (
+          <HistoryRow key={a.id} attempt={a} />
+        ))}
+      </ul>
+      {canLoadMore ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            load(rows.length, true);
+          }}
+          disabled={loadingMore}
+        >
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </Button>
+      ) : null}
+    </>
+  );
+}
+
+/** One scored practice attempt — pattern, drill type, score/verdict, date. */
+function HistoryRow({ attempt }: { attempt: DrillAttemptHistoryRow }): JSX.Element {
+  const verdict = VERDICT_META[attempt.verdict];
+  return (
+    <li className="km-grammar__row">
+      <div className="km-grammar__row-static">
+        <span className="km-grammar__row-head">
+          <span className="kr km-grammar__row-kr">{attempt.pattern_display}</span>
+          <Pill tone={verdict.tone}>{verdict.label}</Pill>
+        </span>
+        <span className="km-grammar__row-title">
+          {DRILL_TYPE_LABEL[attempt.drill_type]} · {attempt.score}/100 ·{' '}
+          {formatHistoryDate(attempt.scored_at)}
+        </span>
+      </div>
+    </li>
   );
 }
 

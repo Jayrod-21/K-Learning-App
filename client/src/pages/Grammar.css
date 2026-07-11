@@ -111,6 +111,26 @@
   flex-shrink: 0;
 }
 
+/* ── F-111: per-pattern FSRS schedule line on a mastery card row ────────── */
+
+.km-grammar__row-schedule {
+  font-size: 11px;
+  color: var(--paper-dim);
+  opacity: 0.85;
+}
+
+/* ── F-110: practice history rows — same rhythm as row-btn, no action ──── */
+
+.km-grammar__row-static {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 6px;
+}
+
 /* ── F-063: due summary note ───────────────────────────────────────────── */
 
 .km-grammar__due-note {

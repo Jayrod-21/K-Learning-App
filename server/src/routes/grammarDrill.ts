@@ -38,12 +38,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { expensiveLimiter } from '../middleware/rateLimits.js';
-import { validateBody, validateParams } from '../middleware/validate.js';
+import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
-import type { DrillType, GrammarDrillItem } from '../services/claudeProxy.js';
+import type { DrillType, DrillVerdict, GrammarDrillItem } from '../services/claudeProxy.js';
 import { ratingFromVerdict } from '../services/grammarScheduler.js';
 import {
   dueDelayMs,
@@ -520,6 +520,77 @@ router.post(
       });
     } catch (err) {
       next(mapClaudeError(err));
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /grammar-drill/attempts — paged, user-scoped practice history (F-110)
+// ---------------------------------------------------------------------------
+
+const AttemptsQuerySchema = z.object({
+  // A personal practice-history feed never needs a huge page; 100 bounds a
+  // runaway client the same way the KGIU browse's 400 ceiling bounds ITS
+  // (much larger) corpus page. Mirrors the /vocab/entries + /grammar/kgiu
+  // limit/offset paging shape.
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+});
+
+interface AttemptHistoryRow {
+  id: string;
+  pattern_key: string;
+  pattern_display: string;
+  drill_type: DrillType;
+  user_answer: string;
+  score: number;
+  verdict: DrillVerdict;
+  scored_at: Date;
+  total: string;
+}
+
+router.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(AttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (req as typeof req & {
+        validatedQuery: z.infer<typeof AttemptsQuerySchema>;
+      }).validatedQuery;
+      // SCORED attempts only (`scored_at IS NOT NULL`). Every drill
+      // GENERATION writes a row (POST /grammar-drill), including ones the
+      // learner Skips without ever submitting — those rows carry NULL
+      // answer/score/verdict forever. A "practice history" that included
+      // them would be mostly blank noise from skips rather than a record of
+      // completed practice, so this mirrors the same exclusion
+      // GET /grammar/series already applies to its own average (that
+      // route's "unscored attempts never count" comment) — one consistent
+      // definition of "counts as practice" across both reads.
+      //
+      // COUNT(*) OVER () mirrors GET /vocab/entries: the total rides along
+      // on every row so the client can page without a second round-trip.
+      const { rows } = await query<AttemptHistoryRow>(
+        `SELECT id::text AS id, pattern_key, pattern_display, drill_type,
+                user_answer, score, verdict, scored_at,
+                COUNT(*) OVER ()::text AS total
+           FROM grammar_drill_attempts
+          WHERE user_id = $1 AND scored_at IS NOT NULL
+          ORDER BY scored_at DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      // Strip the per-row window total from the attempt DTOs — it's surfaced
+      // once at the top level, not repeated on every row.
+      const attempts = rows.map(({ total: _total, ...rest }) => ({
+        ...rest,
+        id: Number(rest.id),
+      }));
+      res.status(200).json({ attempts, total, limit: q.limit, offset: q.offset });
+    } catch (err) {
+      next(err);
     }
   },
 );

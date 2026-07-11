@@ -10,6 +10,7 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { query } from '../db/pool.js';
 import { ConflictError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
+import type { FsrsStateName } from '../services/fsrs.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -232,15 +233,75 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
     // bank into active vs known/graduated without a second endpoint: NULL =
     // active learning, non-NULL = graduated. Graduated rows are still
     // returned — they are banked, just retired from the drill/review loop.
-    const { rows } = await query(
-      `SELECT id, pattern_key, pattern_display, summary_en, proficiency,
-              category, register, discovered_via, created_at, graduated_at
-         FROM grammar_entries
-        WHERE user_id = $1 AND deleted_at IS NULL
-        ORDER BY created_at DESC`,
+    //
+    // F-111: LEFT JOIN each pattern's grammar PRODUCTION card so the client's
+    // mastery rows can render the REAL FSRS schedule (state + due date) for
+    // EVERY saved pattern, not only a due-NOW badge — the existing
+    // `GET /vocab/cards/due` queue only ever surfaces cards that are due
+    // right now, so a non-due pattern had no schedule signal at all. Folded
+    // into this existing read rather than a new dedicated endpoint: it's the
+    // lower-risk option — GET /grammar/bank is already user-scoped and
+    // rate-limited, and it's the exact read the cards view fires on every
+    // load, so the schedule rides along for free instead of growing the
+    // route surface with a second per-pattern lookup the client would have
+    // to fan out N times (one per saved pattern).
+    //
+    // The join cannot multiply a bank row: `uq_vocab_cards_user_grammar_
+    // production` (migration 020) is a partial UNIQUE index on
+    // (user_id, grammar_entry_id) WHERE face = 'production' AND deleted_at
+    // IS NULL, so at most one card matches per grammar_entries row.
+    // `vc.user_id = g.user_id` is defense-in-depth (the FK already ties a
+    // card to one user's entry; mirrors the same belt-and-suspenders join
+    // guard GET /vocab/cards/due uses for its grammar_entries LEFT JOIN).
+    //
+    // `schedule` is null when the pattern has never been drilled — no
+    // production card exists yet (FU-NF-42 creates one lazily on the first
+    // drill submit) — an honest "not started" rather than a synthesized
+    // new-card default.
+    const { rows } = await query<{
+      id: unknown;
+      pattern_key: string;
+      pattern_display: string;
+      summary_en: string;
+      proficiency: string;
+      category: string;
+      register: string | null;
+      discovered_via: string;
+      created_at: Date;
+      graduated_at: Date | null;
+      card_state: FsrsStateName | null;
+      card_stability: string | null;
+      card_due_at: Date | null;
+    }>(
+      `SELECT g.id, g.pattern_key, g.pattern_display, g.summary_en, g.proficiency,
+              g.category, g.register, g.discovered_via, g.created_at, g.graduated_at,
+              vc.fsrs_state AS card_state,
+              vc.stability  AS card_stability,
+              vc.due_at     AS card_due_at
+         FROM grammar_entries g
+         LEFT JOIN vocab_cards vc
+                ON vc.grammar_entry_id = g.id
+               AND vc.face = 'production'
+               AND vc.user_id = g.user_id
+               AND vc.deleted_at IS NULL
+        WHERE g.user_id = $1 AND g.deleted_at IS NULL
+        ORDER BY g.created_at DESC`,
       [userId],
     );
-    res.status(200).json({ entries: rows });
+    const entries = rows.map((r) => {
+      const { card_state, card_stability, card_due_at, ...pub } = r;
+      return {
+        ...pub,
+        // card_state/card_stability/card_due_at are all sourced from the SAME
+        // joined row (vc.*), so they are null together or non-null together —
+        // the non-null assertion on stability is safe once state is checked.
+        schedule:
+          card_state !== null && card_due_at !== null
+            ? { state: card_state, stability: card_stability!, dueAt: card_due_at.toISOString() }
+            : null,
+      };
+    });
+    res.status(200).json({ entries });
   } catch (err) {
     next(err);
   }

@@ -74,8 +74,12 @@ describe('grammar-drill — auth required', () => {
   it.each([
     ['POST', '/grammar-drill'],
     ['POST', '/grammar-drill/1/submit'],
-  ])('%s %s unauthenticated → 401', async (_method, p) => {
-    const res = await request(t.app).post(p).send({});
+    ['GET', '/grammar-drill/attempts'],
+  ])('%s %s unauthenticated → 401', async (method, p) => {
+    const res =
+      method === 'GET'
+        ? await request(t.app).get(p)
+        : await request(t.app).post(p).send({});
     expect(res.status).toBe(401);
   });
 });
@@ -503,6 +507,127 @@ describe('POST /grammar-drill/:attemptId/submit — production scheduling (FU-NF
     );
     expect(reviews.rows[0]!.n).toBe('1');
   });
+});
+
+describe('GET /grammar-drill/attempts — paged practice history (F-110)', () => {
+  /** Insert a grammar_drill_attempts row directly. `scoredDaysAgo: null` models
+   *  a generated-but-never-submitted attempt (a Skip) — scored_at stays NULL
+   *  and must never surface in the history. */
+  async function insertAttempt(
+    userId: number,
+    opts: {
+      patternKey?: string;
+      patternDisplay?: string;
+      score?: number | null;
+      scoredDaysAgo?: number | null;
+    },
+  ): Promise<void> {
+    const scored = opts.score !== undefined && opts.score !== null;
+    await pg.pool.query(
+      `INSERT INTO grammar_drill_attempts (
+          user_id, pattern_key, pattern_display, drill_type, item,
+          user_answer, score, verdict, feedback, scored_at)
+       VALUES ($1, $2, $3, 'cloze', '{}'::jsonb,
+               CASE WHEN $4 THEN '답변' ELSE NULL END,
+               $5::int,
+               CASE WHEN $4 THEN 'good' ELSE NULL END,
+               CASE WHEN $4 THEN '{}'::jsonb ELSE NULL END,
+               CASE WHEN $4 THEN now() - make_interval(days => $6::int) ELSE NULL END)`,
+      [
+        userId,
+        opts.patternKey ?? 'GR-history-test',
+        opts.patternDisplay ?? '-(으)면',
+        scored,
+        opts.score ?? null,
+        opts.scoredDaysAgo ?? 0,
+      ],
+    );
+  }
+
+  it('returns seeded SCORED attempts newest-first, with pattern/type/answer/score/verdict/scored_at', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await insertAttempt(userId, { score: 60, scoredDaysAgo: 2 });
+    await insertAttempt(userId, { score: 90, scoredDaysAgo: 0 });
+    // A generated-but-never-submitted (Skip) attempt — must be excluded.
+    await insertAttempt(userId, { score: null });
+
+    const res = await agent.get('/grammar-drill/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts).toHaveLength(2);
+    // Newest-first: the score=90 (0 days ago) attempt precedes score=60 (2 days ago).
+    expect(res.body.attempts[0].score).toBe(90);
+    expect(res.body.attempts[1].score).toBe(60);
+    const row = res.body.attempts[0];
+    expect(row.pattern_key).toBe('GR-history-test');
+    expect(row.pattern_display).toBe('-(으)면');
+    expect(row.drill_type).toBe('cloze');
+    expect(row.user_answer).toBe('답변');
+    expect(row.verdict).toBe('good');
+    expect(typeof row.scored_at).toBe('string');
+    expect(res.body.total).toBe(2);
+    expect(res.body.limit).toBe(20);
+    expect(res.body.offset).toBe(0);
+  });
+
+  it('pages with limit/offset', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    for (let i = 0; i < 5; i += 1) {
+      await insertAttempt(userId, { score: 50 + i, scoredDaysAgo: i });
+    }
+    const page1 = await agent.get('/grammar-drill/attempts?limit=2&offset=0');
+    expect(page1.status).toBe(200);
+    expect(page1.body.attempts).toHaveLength(2);
+    expect(page1.body.total).toBe(5);
+    // Newest-first: scoredDaysAgo=0 (score 50) then daysAgo=1 (score 51).
+    expect(page1.body.attempts[0].score).toBe(50);
+    expect(page1.body.attempts[1].score).toBe(51);
+
+    const page2 = await agent.get('/grammar-drill/attempts?limit=2&offset=2');
+    expect(page2.status).toBe(200);
+    expect(page2.body.attempts).toHaveLength(2);
+    expect(page2.body.attempts[0].score).toBe(52);
+    expect(page2.body.attempts[1].score).toBe(53);
+  });
+
+  it('is user-scoped (no IDOR) — another user’s attempts never appear', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await insertAttempt(a.userId, { score: 77 });
+
+    const resB = await b.agent.get('/grammar-drill/attempts');
+    expect(resB.status).toBe(200);
+    expect(resB.body.attempts).toEqual([]);
+    expect(resB.body.total).toBe(0);
+
+    const resA = await a.agent.get('/grammar-drill/attempts');
+    expect(resA.body.attempts).toHaveLength(1);
+    expect(resA.body.attempts[0].score).toBe(77);
+  });
+
+  it('no attempts → 200 with an empty array (honest empty state, not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar-drill/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], total: 0, limit: 20, offset: 0 });
+  });
+
+  it('a Skip-only history (no submits) is empty, not full of blank rows', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await insertAttempt(userId, { score: null });
+    await insertAttempt(userId, { score: null });
+    const res = await agent.get('/grammar-drill/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts).toEqual([]);
+  });
+
+  it.each([['limit=0'], ['limit=101'], ['offset=-1']])(
+    '%s → 400 (paging boundary)',
+    async (qs) => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent.get(`/grammar-drill/attempts?${qs}`);
+      expect(res.status).toBe(400);
+    },
+  );
 });
 
 describe('drill-type rotation — deterministic', () => {

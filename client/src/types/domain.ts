@@ -1248,6 +1248,33 @@ export interface BankedGrammarRow {
    * retired from active learning until re-admitted.
    */
   graduated_at: string | null;
+  /**
+   * Real FSRS schedule state of this pattern's grammar PRODUCTION card
+   * (F-111), folded into this row rather than a dedicated endpoint (see the
+   * server route's comment for the risk tradeoff). `null` means the pattern
+   * has never been drilled — no production card exists yet (FU-NF-42 creates
+   * one lazily on the first drill submit); an honest "not started" rather
+   * than a synthesized new-card default. Non-null for every pattern that has
+   * ever been drilled, whether or not it's due right now — this is what lets
+   * a mastery row show real state/next-due instead of only a due-NOW badge
+   * (the due-NOW signal itself still comes from `GET /vocab/cards/due`).
+   */
+  schedule: GrammarCardSchedule | null;
+}
+
+/**
+ * Full FSRS schedule snapshot for a grammar pattern's production card
+ * (F-111). Distinct from `DrillSchedule` below: that one is the ONE-TIME
+ * rating+interval a drill submit just derived; this is the card's CURRENT
+ * persistent state, read back on every `GET /grammar/bank`.
+ */
+export interface GrammarCardSchedule {
+  /** Current FSRS card state — same wire values as `FsrsState`. */
+  state: FsrsState;
+  /** NUMERIC arrives as a string (precision-safe — mirrors `DueCard.stability`). */
+  stability: string;
+  /** ISO timestamp the card is next due. */
+  dueAt: string;
 }
 
 /** Envelope for `GET /grammar/bank`. */
@@ -1397,6 +1424,35 @@ export interface DrillSchedule {
    * learning step (`again` → ~50s / under a minute, `hard` → ~6 minutes).
    */
   scheduledDays: number;
+}
+
+/**
+ * One row from `GET /grammar-drill/attempts` (F-110) — a SCORED practice
+ * attempt only. A generated-but-never-submitted attempt (the learner hit
+ * Skip) is excluded server-side, so every row here carries a real answer,
+ * score, and verdict — never nulls to paper over. Snake_case mirrors
+ * `BankedGrammarRow`'s convention for a direct DB-row read (as opposed to
+ * `DrillItemPublic`/`DrillScore`, which are Claude JSON contracts).
+ */
+export interface DrillAttemptHistoryRow {
+  id: number;
+  pattern_key: string;
+  pattern_display: string;
+  drill_type: DrillType;
+  user_answer: string;
+  score: number;
+  verdict: DrillVerdict;
+  /** ISO timestamp of the submit that scored this attempt. */
+  scored_at: string;
+}
+
+/** Paged envelope for `GET /grammar-drill/attempts` (F-110) — newest first. */
+export interface DrillAttemptsPage {
+  attempts: DrillAttemptHistoryRow[];
+  /** Total SCORED attempts matching the query, for "N of total" / load-more. */
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 // ── Progress wire shapes ──────────────────────────────────────────────

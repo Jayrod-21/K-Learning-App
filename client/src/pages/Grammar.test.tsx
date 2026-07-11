@@ -57,6 +57,7 @@ const vocabServices = vi.hoisted(() => ({
 const drillServices = vi.hoisted(() => ({
   generateDrill: vi.fn(),
   submitDrill: vi.fn(),
+  listAttempts: vi.fn(),
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -158,6 +159,9 @@ const BANKED_ROW = {
   discovered_via: 'manual',
   created_at: '2026-06-01T00:00:00Z',
   graduated_at: null,
+  // F-111: no production card yet unless a test overrides it — "never
+  // drilled" is the honest default for a freshly banked fixture row.
+  schedule: null,
 };
 
 const BANKED_ROW_2 = {
@@ -171,6 +175,7 @@ const BANKED_ROW_2 = {
   discovered_via: 'manual',
   created_at: '2026-06-01T00:00:00Z',
   graduated_at: null,
+  schedule: null,
 };
 
 /** A due grammar-production card as `GET /vocab/cards/due` returns it
@@ -266,6 +271,13 @@ function resetMocks(): void {
   mocks.loadGrammarMock.mockResolvedValue(FIXTURE);
   // No due cards unless a test says otherwise — due-ness is opt-in.
   vocabServices.getDueCards.mockResolvedValue([]);
+  // F-110: an empty history page unless a test seeds attempts.
+  drillServices.listAttempts.mockResolvedValue({
+    attempts: [],
+    total: 0,
+    limit: 20,
+    offset: 0,
+  });
   // The drill rotation persists its cursor to localStorage so it survives
   // remounts (the live always-N이다 fix). Clear it so tests don't bleed a
   // cursor into each other.
@@ -447,32 +459,158 @@ describe('Grammar — 3C-1 shape (cards default, Practice top-right, no tabs)', 
   });
 });
 
-describe('Grammar — F-065 practice history (honest stub)', () => {
-  it('opens the history view from the cards footer and states there is no endpoint yet', async () => {
+describe('Grammar — F-110 practice history (real GET /grammar-drill/attempts)', () => {
+  const ATTEMPT_1 = {
+    id: 9001,
+    pattern_key: 'GR-kgiu-int-007',
+    pattern_display: '-더라도',
+    drill_type: 'transformation' as const,
+    user_answer: '비가 오더라도 갈 거예요.',
+    score: 82,
+    verdict: 'good' as const,
+    scored_at: '2026-07-05T10:00:00Z',
+  };
+  const ATTEMPT_2 = {
+    id: 9000,
+    pattern_key: 'GR-kgiu-int-008',
+    pattern_display: '-느라고',
+    drill_type: 'cloze' as const,
+    user_answer: '발표 자료를 준비하느라고 저녁을 못 먹었어요.',
+    score: 60,
+    verdict: 'needs_work' as const,
+    scored_at: '2026-07-03T10:00:00Z',
+  };
+
+  async function openHistory(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<void> {
+    await screen.findByRole('button', { name: /^Learning \(0\)/ });
+    await user.click(screen.getByRole('button', { name: 'Practice history' }));
+  }
+
+  it('renders real attempts newest-first with pattern/type/score/verdict/date', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.listAttempts.mockResolvedValue({
+      attempts: [ATTEMPT_1, ATTEMPT_2],
+      total: 2,
+      limit: 20,
+      offset: 0,
+    });
 
     const user = userEvent.setup();
     renderGrammar();
-    await screen.findByRole('button', { name: /^Learning \(0\)/ });
+    await openHistory(user);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Practice history' }),
+    expect(drillServices.listAttempts).toHaveBeenCalledWith(
+      { limit: 20, offset: 0 },
+      expect.anything(),
     );
+    // Newest-first: attempt 1 (Jul 5) precedes attempt 2 (Jul 3) in the DOM.
+    const items = await screen.findAllByRole('listitem');
+    expect(within(items[0]!).getByText('-더라도')).toBeInTheDocument();
+    expect(within(items[0]!).getByText(/Transformation/)).toBeInTheDocument();
+    expect(within(items[0]!).getByText(/82\/100/)).toBeInTheDocument();
+    expect(within(items[0]!).getByText('Good')).toBeInTheDocument();
+    expect(within(items[1]!).getByText('-느라고')).toBeInTheDocument();
+    expect(within(items[1]!).getByText(/Cloze/)).toBeInTheDocument();
+    expect(within(items[1]!).getByText(/60\/100/)).toBeInTheDocument();
+    expect(within(items[1]!).getByText('Needs work')).toBeInTheDocument();
 
-    // The stub is honest: no fake list, an explicit "not available yet"
-    // with the backend ticket reference.
-    expect(
-      await screen.findByText(/Not available yet/i),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/F-110/)).toBeInTheDocument();
-    // Nested view → BackButton (F-024).
-    await user.click(
-      screen.getByRole('button', { name: 'Back to Grammar' }),
-    );
+    // Nested view → BackButton (F-024) still works.
+    await user.click(screen.getByRole('button', { name: 'Back to Grammar' }));
     expect(
       await screen.findByRole('button', { name: /^Learning \(0\)/ }),
     ).toBeInTheDocument();
+  });
+
+  it('shows an honest empty state when there are no scored attempts', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    // Default mock already resolves empty; explicit for clarity.
+    drillServices.listAttempts.mockResolvedValue({
+      attempts: [],
+      total: 0,
+      limit: 20,
+      offset: 0,
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openHistory(user);
+
+    expect(
+      await screen.findByText(/No scored practice attempts yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('listitem')).not.toBeInTheDocument();
+  });
+
+  it('surfaces an error + Retry on a failed fetch, and Retry re-fetches', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.listAttempts
+      .mockRejectedValueOnce(
+        new ApiError('down', { status: 503, code: 'server' }),
+      )
+      .mockResolvedValue({
+        attempts: [ATTEMPT_1],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openHistory(user);
+
+    expect(
+      await screen.findByText(/practice history couldn't be loaded/i),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Retry$/i }));
+
+    expect(await screen.findByText('-더라도')).toBeInTheDocument();
+    expect(drillServices.listAttempts).toHaveBeenCalledTimes(2);
+  });
+
+  it('"Load more" walks the offset and appends the next page', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.listAttempts
+      .mockResolvedValueOnce({
+        attempts: [ATTEMPT_1],
+        total: 2,
+        limit: 20,
+        offset: 0,
+      })
+      .mockResolvedValue({
+        attempts: [ATTEMPT_2],
+        total: 2,
+        limit: 20,
+        offset: 1,
+      });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openHistory(user);
+
+    await screen.findByText('-더라도');
+    expect(screen.queryByText('-느라고')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^Load more$/i }));
+
+    await waitFor(() => {
+      expect(drillServices.listAttempts).toHaveBeenLastCalledWith(
+        { limit: 20, offset: 1 },
+        expect.anything(),
+      );
+    });
+    // Both pages' rows are now present.
+    expect(await screen.findByText('-느라고')).toBeInTheDocument();
+    expect(screen.getByText('-더라도')).toBeInTheDocument();
+    // No more pages (1 + 1 === total 2) — the button is gone.
+    expect(
+      screen.queryByRole('button', { name: /^Load more$/i }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -635,6 +773,69 @@ describe('Grammar — due wiring (F-063: /vocab/cards/due → Due pills + due-fi
     ).toBeInTheDocument();
     expect(screen.queryByText('Due')).not.toBeInTheDocument();
     expect(screen.queryByText(/due for review/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Grammar — F-111 mastery rows show the real FSRS schedule', () => {
+  it('shows state + next-due for a drilled pattern, not just a due-NOW badge', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [
+        {
+          ...BANKED_ROW,
+          schedule: {
+            state: 'review' as const,
+            stability: '4.5',
+            dueAt: new Date(Date.now() + 2.2 * 86_400_000).toISOString(),
+          },
+        },
+      ],
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const row = await screen.findByRole('button', {
+      name: '-더라도 even if / even though',
+    });
+    // Rounds up to whole days (Math.ceil) — 2.2 days out reads "3 days".
+    expect(within(row).getByText(/Review · next review in 3 days/)).toBeInTheDocument();
+  });
+
+  it('shows "Not yet practiced" for a saved pattern with no production card yet', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW], // schedule: null — never drilled
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const row = await screen.findByRole('button', {
+      name: '-더라도 even if / even though',
+    });
+    expect(within(row).getByText('Not yet practiced')).toBeInTheDocument();
+  });
+
+  it('renders "due now" rather than a negative day count for an overdue card', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [
+        {
+          ...BANKED_ROW,
+          schedule: {
+            state: 'learning' as const,
+            stability: '1.0',
+            dueAt: new Date(Date.now() - 60_000).toISOString(),
+          },
+        },
+      ],
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const row = await screen.findByRole('button', {
+      name: '-더라도 even if / even though',
+    });
+    expect(within(row).getByText('Learning · due now')).toBeInTheDocument();
   });
 });
 
@@ -1418,6 +1619,7 @@ describe('Grammar — practice view (live generate → submit → reveal)', () =
           discovered_via: 'manual',
           created_at: '2026-06-01T00:00:00Z',
           graduated_at: null,
+          schedule: null,
         },
       ],
     } satisfies BankedGrammarList);
