@@ -1,0 +1,218 @@
+/* Tickets — F-023 in-app beta feedback/ticketing (`/tickets`). */
+
+/* ── "File a ticket" ─────────────────────────────────────────── */
+.km-tickets__file {
+  margin-bottom: 16px;
+}
+
+.km-tickets__file-title {
+  margin: 0 0 12px;
+}
+
+.km-tickets__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.km-tickets__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--paper-dim);
+}
+
+.km-tickets__input,
+.km-tickets__select {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong, rgba(0, 0, 0, 0.14));
+  color: var(--paper);
+  font-size: 14px;
+  font-family: inherit;
+  width: 100%;
+}
+
+.km-tickets__input:focus,
+.km-tickets__select:focus {
+  border-color: var(--vermilion);
+}
+
+.km-tickets__textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong, rgba(0, 0, 0, 0.14));
+  color: var(--paper);
+  font-size: 15px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.km-tickets__textarea:disabled {
+  opacity: 0.7;
+}
+
+.km-tickets__textarea--comment {
+  min-height: 64px;
+  margin-bottom: 8px;
+}
+
+.km-tickets__field-error {
+  font-size: 0.78rem;
+  color: var(--danger-ink, var(--vermilion));
+}
+
+/* ── Filters + tab list ──────────────────────────────────────── */
+.km-tickets__filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.km-tickets__filters > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── List / rows ─────────────────────────────────────────────── */
+.km-tickets__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.km-tickets__row-wrap {
+  list-style: none;
+}
+
+.km-tickets__row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  box-shadow: var(--shadow-sm);
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.km-tickets__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+}
+
+.km-tickets__row-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.km-tickets__row-meta {
+  font-size: 0.78rem;
+  color: var(--paper-mute);
+}
+
+.km-tickets__row-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.km-tickets__empty,
+.km-tickets__state {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--paper-dim);
+}
+
+/* ── Ticket detail ───────────────────────────────────────────── */
+.km-tickets__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.km-tickets__detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.km-tickets__detail-title {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.km-tickets__detail-body {
+  line-height: 1.6;
+  white-space: pre-wrap;
+  color: var(--paper-dim);
+}
+
+.km-tickets__edit-form .km-tickets__field:last-of-type {
+  margin-bottom: 12px;
+}
+
+.km-tickets__conflict {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--ochre-soft);
+  color: var(--ochre-ink);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* ── Comment thread ──────────────────────────────────────────── */
+.km-tickets__thread-title {
+  margin: 0 0 12px;
+}
+
+.km-tickets__comment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.km-tickets__comment {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+}
+
+.km-tickets__comment-body {
+  margin: 0 0 4px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.km-tickets__comment-meta {
+  font-size: 0.72rem;
+  color: var(--paper-mute);
+}
+
+.km-tickets__comment-form {
+  border-top: 1px solid var(--line, rgba(0, 0, 0, 0.08));
+  padding-top: 12px;
+}

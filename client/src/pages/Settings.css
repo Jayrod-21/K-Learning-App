@@ -37,6 +37,15 @@
   color: var(--paper-mute);
 }
 
+/* ── Beta feedback (F-023) ────────────────────────────────────── */
+
+.km-settings__ticket-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--paper-mute);
+}
+
 .km-settings__sched-row {
   display: flex;
   align-items: center;
