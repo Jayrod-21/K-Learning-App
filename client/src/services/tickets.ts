@@ -52,6 +52,8 @@ interface OwnTicketWire {
   body: string;
   status: TicketStatus;
   version: number;
+  /** F-127 — the app path this ticket was filed from, or `null`. */
+  source_page: string | null;
   /** Absent on the POST/PATCH response (a fresh/just-edited ticket has no
    *  comments yet to count); present on `/mine` rows. */
   comment_count?: number;
@@ -66,6 +68,8 @@ interface CommunityTicketWire {
   title: string;
   body: string;
   status: TicketStatus;
+  /** F-127 — same contract as `OwnTicketWire.source_page`. */
+  source_page: string | null;
   comment_count: number;
   is_mine: boolean;
   created_at: string;
@@ -110,6 +114,7 @@ function toOwnTicket(wire: OwnTicketWire): OwnTicket {
     body: wire.body,
     status: wire.status,
     version: wire.version,
+    sourcePage: wire.source_page,
     commentCount: wire.comment_count ?? 0,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
@@ -123,6 +128,7 @@ function toCommunityTicket(wire: CommunityTicketWire): CommunityTicket {
     title: wire.title,
     body: wire.body,
     status: wire.status,
+    sourcePage: wire.source_page,
     commentCount: wire.comment_count,
     isMine: wire.is_mine,
     createdAt: wire.created_at,
@@ -151,14 +157,26 @@ function listParams(
   return params;
 }
 
-/** POST /tickets — file a new ticket. */
+/**
+ * POST /tickets — file a new ticket. `sourcePage` (camelCase, F-127) is
+ * translated to the wire's `source_page` explicitly — unlike `type`/
+ * `title`/`body` (case-invariant single words), it can't ride along
+ * unchanged, and it's sent ONLY when present so an unset context reaches
+ * the server as an absent key (genuine SQL NULL), never `''`.
+ */
 export async function createTicket(
   body: CreateTicketBody,
   signal?: AbortSignal,
 ): Promise<OwnTicket> {
+  const wireBody: Record<string, unknown> = {
+    type: body.type,
+    title: body.title,
+    body: body.body,
+  };
+  if (body.sourcePage !== undefined) wireBody.source_page = body.sourcePage;
   const res = await api.post<TicketEnvelope>(
     '/tickets',
-    body,
+    wireBody,
     signal !== undefined ? { signal } : undefined,
   );
   return toOwnTicket(res.ticket);

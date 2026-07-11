@@ -138,6 +138,72 @@ describe('POST /tickets', () => {
   });
 });
 
+describe('POST /tickets — source_page (F-127 global "!" FAB)', () => {
+  it('files a ticket with source_page → 201, the path comes back verbatim', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'suggestion',
+      title: 'Add a dark mode toggle',
+      body: 'Would be nice.',
+      source_page: '/learn/writing',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ticket.source_page).toBe('/learn/writing');
+    // source_page is UI context, not identity — the anonymity assertion
+    // still holds with it present.
+    assertAnonymized(res.body);
+  });
+
+  it('files a ticket WITHOUT source_page → 201, the column is null (not the Settings tile flow)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/tickets')
+      .send({ type: 'bug', title: 'no page context', body: 'b' });
+    expect(res.status).toBe(201);
+    expect(res.body.ticket.source_page).toBeNull();
+  });
+
+  it('rejects an empty-string source_page → 400 (omit, don’t empty-string, when there is no context)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 't',
+      body: 'b',
+      source_page: '',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an over-length source_page → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 't',
+      body: 'b',
+      source_page: '/' + 'a'.repeat(200),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('a ticket filed with source_page carries it on /mine and /community', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.post('/tickets').send({
+      type: 'bug',
+      title: 'source-page round trip',
+      body: 'b',
+      source_page: '/progress',
+    });
+
+    const mine = await agent.get('/tickets/mine');
+    expect(mine.status).toBe(200);
+    expect(mine.body.tickets[0].source_page).toBe('/progress');
+
+    const community = await agent.get('/tickets/community');
+    expect(community.status).toBe(200);
+    expect(community.body.tickets[0].source_page).toBe('/progress');
+  });
+});
+
 describe('GET /tickets/mine', () => {
   it('returns the caller own tickets only, recent first', async () => {
     const a = await registerUser(t.app, pg.pool);

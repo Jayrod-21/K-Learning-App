@@ -386,3 +386,41 @@ export function navItem(id: NavItemId): NavItem {
   }
   return it;
 }
+
+/**
+ * Best-effort human label for an app pathname (F-127: the global "!"
+ * feedback FAB, `FeedbackFab.tsx`, stamps the current page's name onto a
+ * filed ticket's `source_page`; `Tickets.tsx` re-derives the SAME label at
+ * render time from the stored path — see that module's header for why the
+ * path, not the label, is the thing persisted).
+ *
+ * Matching order:
+ *   1. Exact `path` match against `NAV_ITEMS` (case-insensitive — React
+ *      Router matches routes case-insensitively, so a hand-typed `/Chat`
+ *      still renders the real screen; this must agree).
+ *   2. Longest-prefix, segment-boundary match (mirrors ChatFab's
+ *      `isHiddenPath` convention) — covers dynamic/nested routes with no
+ *      manifest entry of their own, e.g. `/uploads/42` → the `uploads`
+ *      item's "Uploads" (its detail view is not its own NavItem).
+ *   3. Fallback: the raw pathname, so an unmapped route (or `/tickets`
+ *      itself, which the FAB never fires from) still reads as SOMETHING
+ *      rather than a blank label.
+ */
+export function pageNameForPath(pathname: string): string {
+  const path = pathname.toLowerCase();
+
+  const exact = NAV_ITEMS.find((it) => it.path.toLowerCase() === path);
+  if (exact) return exact.label;
+
+  let best: NavItem | null = null;
+  for (const it of NAV_ITEMS) {
+    const p = it.path.toLowerCase();
+    // '/' would prefix-match every path via `${p}/`; it's already covered
+    // by the exact-match branch above, so skip it here rather than let it
+    // win a "longest prefix" comparison it was never a real candidate for.
+    if (p !== '/' && path.startsWith(`${p}/`)) {
+      if (best === null || p.length > best.path.length) best = it;
+    }
+  }
+  return best?.label ?? pathname;
+}

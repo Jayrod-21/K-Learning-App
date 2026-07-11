@@ -37,6 +37,14 @@
  *   - SQL injection: every query is parameterized; no string interpolation.
  *   - DB-error leakage: routes never echo raw error text; the central
  *     errorHandler returns generic 500s with correlation IDs only.
+ *   - `source_page` (F-127, migration 058): a CLIENT-REPORTED string (the
+ *     app pathname the global "!" FAB was tapped from) — untrusted UI
+ *     context, not an authorization signal. Zod-bounded (1..200 chars) AND
+ *     CHECK-constrained in the schema (defense in depth, same pattern as
+ *     title/body); rendered by the client as plain text (React children
+ *     auto-escape). It is NOT author-identifying and does not touch the
+ *     F-023 anonymity contract — safe to return on both owner and community
+ *     reads, same as type/title/body/status.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -83,6 +91,7 @@ interface OwnTicketRow {
   body: string;
   status: string;
   version: number;
+  source_page: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -94,6 +103,12 @@ const CreateBodySchema = z
     type: TICKET_TYPE,
     title: z.string().trim().min(1).max(200),
     body: z.string().trim().min(1).max(5000),
+    // F-127: optional client-reported page path the FAB was tapped from.
+    // Bounded the same as the DB's ck_tickets_source_page_length (migration
+    // 058) — the API schema must never be looser than the constraint behind
+    // it. Omitted entirely (not empty-stringed) when the client has no page
+    // context, so the column stays genuinely NULL rather than ''.
+    source_page: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 
@@ -106,10 +121,11 @@ router.post(
       const userId = getUserId(req);
       const body = req.body as z.infer<typeof CreateBodySchema>;
       const { rows } = await query<OwnTicketRow>(
-        `INSERT INTO tickets (user_id, type, title, body)
-              VALUES ($1, $2, $3, $4)
-           RETURNING id, type, title, body, status, version, created_at, updated_at`,
-        [userId, body.type, body.title, body.body],
+        `INSERT INTO tickets (user_id, type, title, body, source_page)
+              VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, type, title, body, status, version, source_page,
+                     created_at, updated_at`,
+        [userId, body.type, body.title, body.body, body.source_page ?? null],
       );
       const ticket = rows[0];
       if (!ticket) throw new Error('tickets insert returned no rows');
@@ -136,6 +152,7 @@ router.get(
         // LEFT JOIN aggregate so a ticket with zero comments still returns
         // (comment_count = 0).
         `SELECT t.id, t.type, t.title, t.body, t.status, t.version,
+                t.source_page,
                 COALESCE(COUNT(c.id), 0)::int AS comment_count,
                 t.created_at, t.updated_at
            FROM tickets t
@@ -173,6 +190,7 @@ router.get(
         title: string;
         body: string;
         status: string;
+        source_page: string | null;
         comment_count: number;
         is_mine: boolean;
         created_at: Date;
@@ -180,8 +198,10 @@ router.get(
       }>(
         // ANONYMIZED (F-023): the SELECT list deliberately excludes user_id
         // and never joins users. `is_mine` compares against the CALLER's own
-        // id — it exposes nothing about any other author.
-        `SELECT t.id, t.type, t.title, t.body, t.status,
+        // id — it exposes nothing about any other author. `source_page`
+        // (F-127) is client-reported UI context, not author identity — safe
+        // to include here (see module header threat-model note).
+        `SELECT t.id, t.type, t.title, t.body, t.status, t.source_page,
                 COALESCE(COUNT(c.id), 0)::int AS comment_count,
                 (t.user_id = $1)              AS is_mine,
                 t.created_at, t.updated_at
@@ -256,7 +276,8 @@ router.patch(
                 status  = CASE WHEN $8::boolean THEN $9::text ELSE status END,
                 version = version + 1
           WHERE id = $1 AND user_id = $2 AND version = $3
-        RETURNING id, type, title, body, status, version, created_at, updated_at`,
+        RETURNING id, type, title, body, status, version, source_page,
+                  created_at, updated_at`,
         [
           ticketId,
           userId,

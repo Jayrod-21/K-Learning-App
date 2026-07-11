@@ -36,6 +36,7 @@ const MINE_1: OwnTicket = {
   body: 'Tapping Sign in does nothing on iOS Safari.',
   status: 'open',
   version: 1,
+  sourcePage: null,
   commentCount: 0,
   createdAt: '2026-07-01T00:00:00Z',
   updatedAt: '2026-07-01T00:00:00Z',
@@ -47,6 +48,7 @@ const COMMUNITY_1: CommunityTicket = {
   title: 'Add a dark mode toggle to onboarding',
   body: 'Would be nice to pick the theme before signing in.',
   status: 'open',
+  sourcePage: null,
   commentCount: 1,
   isMine: false,
   createdAt: '2026-07-02T00:00:00Z',
@@ -60,7 +62,9 @@ const COMMENT_1: TicketComment = {
   createdAt: '2026-07-02T01:00:00Z',
 };
 
-function renderPage(initialEntry = '/tickets'): ReturnType<typeof render> {
+function renderPage(
+  initialEntry: string | { pathname: string; state?: unknown } = '/tickets',
+): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <ToastProvider>
@@ -134,6 +138,7 @@ describe('Tickets — filing a ticket', () => {
       body: 'Would help with tracking progress externally.',
       status: 'open',
       version: 1,
+      sourcePage: null,
       commentCount: 0,
       createdAt: '2026-07-05T00:00:00Z',
       updatedAt: '2026-07-05T00:00:00Z',
@@ -168,6 +173,7 @@ describe('Tickets — filing a ticket', () => {
         body: 'App crashes immediately on a cold start.',
         status: 'open',
         version: 1,
+        sourcePage: null,
         commentCount: 0,
         createdAt: '2026-07-06T00:00:00Z',
         updatedAt: '2026-07-06T00:00:00Z',
@@ -190,6 +196,97 @@ describe('Tickets — filing a ticket', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Crash on launch')).toBeInTheDocument();
     expect(ticketsSvc.createTicket).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Tickets — F-127 (global "!" FAB hand-off)', () => {
+  it('arriving via the FAB (compose + sourcePage state) autofocuses the title, shows "Filing from", and submits source_page', async () => {
+    ticketsSvc.createTicket.mockResolvedValue({
+      ...MINE_1,
+      id: 7,
+      title: 'Timer looks wrong',
+      sourcePage: '/learn/topik',
+    });
+    const user = userEvent.setup();
+    renderPage({
+      pathname: '/tickets',
+      state: {
+        compose: true,
+        sourcePage: { path: '/learn/topik', name: 'TOPIK' },
+      },
+    });
+    await screen.findByText(/No tickets yet/);
+
+    expect(screen.getByText('Filing from: TOPIK')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveFocus();
+
+    await user.type(
+      screen.getByRole('textbox', { name: 'Title' }),
+      'Timer looks wrong',
+    );
+    await user.type(
+      screen.getByRole('textbox', { name: 'Description' }),
+      'The mock timer freezes.',
+    );
+    await user.click(screen.getByRole('button', { name: /File ticket/ }));
+
+    expect(ticketsSvc.createTicket).toHaveBeenCalledWith({
+      type: 'bug',
+      title: 'Timer looks wrong',
+      body: 'The mock timer freezes.',
+      sourcePage: '/learn/topik',
+    });
+  });
+
+  it('a plain navigation to /tickets (no FAB state) shows no "Filing from" hint and omits source_page entirely', async () => {
+    ticketsSvc.createTicket.mockResolvedValue({ ...MINE_1, id: 8 });
+    const user = userEvent.setup();
+    renderPage('/tickets');
+    await screen.findByText(/No tickets yet/);
+
+    expect(screen.queryByText(/Filing from:/)).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'x');
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'y');
+    await user.click(screen.getByRole('button', { name: /File ticket/ }));
+
+    // No `sourcePage` key at all — never a bare `undefined`/empty string —
+    // so the server sees a genuinely absent field (routes/tickets.ts stores
+    // a real SQL NULL only when the key is missing).
+    expect(ticketsSvc.createTicket).toHaveBeenCalledWith({
+      type: 'bug',
+      title: 'x',
+      body: 'y',
+    });
+  });
+
+  it('shows "Reported from: <name>" on a My-tickets row, and again on its detail view', async () => {
+    const withSource: OwnTicket = { ...MINE_1, sourcePage: '/learn/writing' };
+    ticketsSvc.listMyTickets.mockResolvedValue([withSource]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(withSource.title);
+
+    expect(screen.getByText('Reported from: Writing')).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: `View ticket: ${withSource.title}` }),
+    );
+    expect(await screen.findByText('Reported from: Writing')).toBeInTheDocument();
+  });
+
+  it('renders no "Reported from" line for a ticket with no source page', async () => {
+    ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(MINE_1.title);
+
+    expect(screen.queryByText(/Reported from:/)).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: `View ticket: ${MINE_1.title}` }),
+    );
+    expect(screen.queryByText(/Reported from:/)).not.toBeInTheDocument();
   });
 });
 
