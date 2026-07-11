@@ -1,0 +1,129 @@
+/*
+ * Grammar page — Phase 3C-1 co-located styles.
+ *
+ * Only the NEW rules from the 3C-1 rework live here (B-024 card rows +
+ * grouping chrome, the due note, the panel footer links). The pre-existing
+ * drill-card / reveal / sheet styles remain in styles/index.css untouched.
+ */
+
+/* ── B-024: proficiency groups ─────────────────────────────────────────── */
+
+.km-grammar__group {
+  margin-bottom: 12px;
+}
+
+.km-grammar__group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--paper);
+}
+
+.km-grammar__group-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--paper-dim);
+}
+
+/* ── B-024: card rows — clear separation, one-line forms ───────────────── */
+
+.km-grammar__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.km-grammar__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.km-grammar__row:last-child {
+  border-bottom: none;
+}
+
+.km-grammar__row-btn {
+  flex: 1;
+  /* min-width: 0 lets the KR form's ellipsis engage inside the flex row —
+     without it the row would widen and wrap instead of truncating. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 6px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.km-grammar__row-btn:hover {
+  background: var(--ink-2);
+}
+
+.km-grammar__row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* B-024: the grammar FORM stays on ONE line, always — truncate with an
+   ellipsis rather than wrapping a long composite pattern onto two lines. */
+.km-grammar__row-kr {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--paper);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.km-grammar__row-title {
+  font-size: 13px;
+  color: var(--paper-dim);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.km-grammar__row-action {
+  flex-shrink: 0;
+}
+
+/* ── F-063: due summary note ───────────────────────────────────────────── */
+
+.km-grammar__due-note {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+
+/* ── Panel footer links (browse + history) ─────────────────────────────── */
+
+.km-grammar__panel-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
