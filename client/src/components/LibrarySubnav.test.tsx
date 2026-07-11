@@ -43,17 +43,17 @@ describe('LibrarySubnav (P3b bilingual chrome)', () => {
     // Accessible names carry BOTH languages (compact sr-only reading);
     // visually the Korean-first default shows the Korean label alone.
     const vocab = screen.getByRole('button', { name: '단어 · Vocabulary' });
-    const dict = screen.getByRole('button', { name: '사전 · Dictionary' });
+    const dict = screen.getByRole('button', { name: '전체 단어 · All Words' });
     const grammar = screen.getByRole('button', { name: '문법 · Grammar' });
     expect(visibleText(vocab)).toBe('단어');
-    expect(visibleText(dict)).toBe('사전');
+    expect(visibleText(dict)).toBe('전체 단어');
     expect(visibleText(grammar)).toBe('문법');
   });
 
   it('marks only the current section with aria-current="page"', () => {
     renderAt('/review/dictionary');
     expect(
-      screen.getByRole('button', { name: '사전 · Dictionary' }),
+      screen.getByRole('button', { name: '전체 단어 · All Words' }),
     ).toHaveAttribute('aria-current', 'page');
     expect(
       screen.getByRole('button', { name: '단어 · Vocabulary' }),

@@ -72,7 +72,7 @@ describe('ReviewLibrary (P1.2 index)', () => {
 
   it.each([
     ['Vocabulary', '/review/vocab'],
-    ['Dictionary', '/review/dictionary'],
+    ['All Words', '/review/dictionary'],
     ['Grammar', '/review/grammar'],
   ])(
     'links %s to its first-class library route %s (Reference dissolved)',

@@ -1,0 +1,46 @@
+/*
+ * ReviewVocab — component-scoped styles (P3B: F-049/F-051/F-052/F-048).
+ *
+ * Colocated per the LineChart.css convention (the global sheet is shared
+ * mutable state across parallel feature branches). Layout-only rules —
+ * colors/typography ride the shared tokens already applied by the reused
+ * classes (km-review__sectionTitle, km-resources__create-input, …).
+ */
+
+/* Stacked page sections (F-052 — My Lists on top, Browse below). */
+.km-vocab__section {
+  margin-top: 18px;
+}
+
+.km-vocab__section > .km-review__sectionTitle {
+  display: block;
+  margin: 0 0 10px;
+}
+
+/* F-049 — the two dropdown filters sit side by side above the list and
+ * stack on narrow screens (each select keeps its own label). */
+.km-vocab__filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+@media (max-width: 420px) {
+  .km-vocab__filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* F-048 — inline create-a-list row at the bottom of the add-to-list sheet. */
+.km-vocab__sheetCreate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.km-vocab__sheetCreate .km-resources__create-input {
+  flex: 1;
+  min-width: 0;
+}
