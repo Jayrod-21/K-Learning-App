@@ -148,11 +148,31 @@ export const TopikRubricSchema = z.enum([
 ]);
 export type TopikRubric = z.infer<typeof TopikRubricSchema>;
 
+/**
+ * The full GRADING rubric taxonomy — `TopikRubricSchema`'s two TOPIK II
+ * rubrics plus `free_write` (056/F-117): a Claude-generated free-write topic
+ * (mode='general', no TOPIK rubric of its own) previously had to borrow the
+ * Q54 essay rubric to be graded at all — an honest but ill-fitting stand-in.
+ * Deliberately a SEPARATE, wider schema from `TopikRubricSchema` rather than
+ * a widen-in-place: `TopikRubricSchema` still gates
+ * `WritingPromptGenInputSchema.rubric` below, which is topik-MODE prompt
+ * GENERATION only (a free-write prompt is authored via mode='general', which
+ * carries no rubric field at all) — widening that schema would let
+ * 'free_write' ride a code path that has nothing to do with grading. Mirrors
+ * the DB CHECK widened by migration 056 (`ck_writing_attempts_rubric`).
+ */
+export const WritingGradeRubricSchema = z.enum([
+  'topik_ii_53',
+  'topik_ii_54',
+  'free_write',
+]);
+export type WritingGradeRubric = z.infer<typeof WritingGradeRubricSchema>;
+
 export const GradeInputSchema = z.object({
   /** The user's writing sample. Korean. */
   sample: NonEmptyText.max(16_000),
-  /** Which TOPIK rubric to grade against. */
-  rubric: TopikRubricSchema,
+  /** Which rubric to grade against (two TOPIK rubrics, or free_write). */
+  rubric: WritingGradeRubricSchema,
   /** Optional prompt the user was writing toward. */
   prompt: z.string().trim().max(2000).optional(),
   /** Optional model override. */
@@ -172,7 +192,7 @@ const DimensionScoreSchema = z.object({
 });
 
 export const GradeResultSchema = z.object({
-  rubric: TopikRubricSchema,
+  rubric: WritingGradeRubricSchema,
   /** 내용 및 과제수행 — content and task completion. */
   content: DimensionScoreSchema,
   /** 전개구조 — organization and development. */

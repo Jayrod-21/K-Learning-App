@@ -1740,12 +1740,29 @@ export interface ImageCapture {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * TOPIK II writing rubrics the grader accepts — mirrors the server's
- * `TopikRubricSchema` (server/src/services/claude/models.ts):
+ * TOPIK II writing rubrics — mirrors the server's `TopikRubricSchema`
+ * (server/src/services/claude/models.ts). Scoped to the curated bank/topik-
+ * mode-generation taxonomy ONLY:
  *   - `topik_ii_53` — Q53, 200–300자 explanatory/description writing.
  *   - `topik_ii_54` — Q54, 600–700자 argumentative essay.
+ * Used for `WritingPromptDTO.rubric` (the bank is Q53/Q54 only today) and
+ * `POST /writing/generate`'s `mode: 'topik'` rubric param. For the broader
+ * GRADING taxonomy (which also accepts `free_write`), see `WritingRubric`.
  */
 export type TopikWritingRubric = 'topik_ii_53' | 'topik_ii_54';
+
+/**
+ * The full GRADING rubric taxonomy — mirrors the server's
+ * `WritingGradeRubricSchema` (server/src/services/claude/models.ts), widened
+ * by migration 056 (F-117) to add `free_write`: a Claude-generated open-topic
+ * sample (mode='general', no TOPIK rubric of its own) now grades against a
+ * real free-write rubric instead of borrowing Q54's as an ill-fitting
+ * stand-in. Used wherever a GRADE (input or echoed output) carries a rubric —
+ * `GradeWritingBody.rubric`, `WritingGradeResult.rubric`, and the
+ * `GET /writing/attempts` history DTO — as opposed to `TopikWritingRubric`,
+ * which stays scoped to the curated bank/topik-generation taxonomy.
+ */
+export type WritingRubric = TopikWritingRubric | 'free_write';
 
 /**
  * Estimated TOPIK II level the sample would earn — the server's closed
@@ -1769,10 +1786,11 @@ export interface WritingDimensionScore {
 
 /**
  * The grader's verdict — mirrors the server's `GradeResultSchema` field for
- * field. The three dimensions are the official TOPIK writing rubric axes.
+ * field. The three dimensions are the official rubric axes shared by all
+ * three rubrics (TOPIK II Q53/Q54, and `free_write` as of 056/F-117).
  */
 export interface WritingGradeResult {
-  rubric: TopikWritingRubric;
+  rubric: WritingRubric;
   /** 내용 및 과제수행 — content and task completion. */
   content: WritingDimensionScore;
   /** 전개구조 — organization and development. */
@@ -1812,7 +1830,9 @@ export interface WritingCallMetadata {
  * (server/src/routes/gradeWriting.ts), or every grade will 400:
  *   - `prompt` — REQUIRED, 1..2000. The task the learner answered.
  *   - `sample` — REQUIRED, 1..5000. The learner's Korean writing.
- *   - `rubric` — optional; server defaults to `topik_ii_54`.
+ *   - `rubric` — optional; server defaults to `topik_ii_54`. As of migration
+ *     056 (F-117) also accepts `free_write` for a Claude-generated open-topic
+ *     sample.
  *   - `promptId` — optional (F-014); the `writing_prompts.id` of the served
  *     task so the persisted `writing_attempts` row links to its source.
  *     Omitted (never `undefined`-valued) for a promptless grade.
@@ -1822,7 +1842,7 @@ export interface WritingCallMetadata {
 export interface GradeWritingBody {
   prompt: string;
   sample: string;
-  rubric?: TopikWritingRubric;
+  rubric?: WritingRubric;
   promptId?: number;
 }
 
@@ -1830,6 +1850,27 @@ export interface GradeWritingBody {
 export interface GradeWritingResponse {
   result: WritingGradeResult;
   metadata: WritingCallMetadata;
+}
+
+/**
+ * One entry in the caller's graded-writing history — mirrors
+ * `GET /writing/attempts`'s wire DTO (server/src/routes/writing.ts, F-106).
+ * `promptId` is `null` for a Claude-generated topic (no `writing_prompts`
+ * source row to link — mode='general' free-writes and mode='topik' generated
+ * topics alike); non-null for a bank-drawn TOPIK prompt. `rubric` is the full
+ * `WritingRubric` taxonomy (a persisted attempt may carry any of the three).
+ */
+export interface WritingAttemptDTO {
+  id: number;
+  promptId: number | null;
+  rubric: WritingRubric;
+  promptKr: string;
+  sample: string;
+  totalScore: number;
+  maxTotal: number;
+  estimatedLevel: WritingEstimatedLevel | null;
+  /** ISO timestamp of when the grade was recorded. */
+  gradedAt: string;
 }
 
 // ── TTMIK / Iyagi audio (F-012) ───────────────────────────────────────────

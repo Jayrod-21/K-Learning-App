@@ -39,9 +39,11 @@ import type {
   GradeWritingBody,
   GradeWritingResponse,
   TopikWritingRubric,
+  WritingAttemptDTO,
   WritingDimensionScore,
   WritingEstimatedLevel,
   WritingGradeResult,
+  WritingRubric,
 } from '../types/domain';
 
 // Re-export the domain types so screens can lean on the service module as the
@@ -50,9 +52,11 @@ export type {
   GradeWritingBody,
   GradeWritingResponse,
   TopikWritingRubric,
+  WritingAttemptDTO,
   WritingDimensionScore,
   WritingEstimatedLevel,
   WritingGradeResult,
+  WritingRubric,
 };
 
 /**
@@ -127,6 +131,37 @@ export async function fetchRandomWritingPrompt(
     },
   );
   return res.prompt;
+}
+
+/** Envelope returned by `GET /writing/attempts` (F-106). */
+interface WritingAttemptsEnvelope {
+  attempts: WritingAttemptDTO[];
+  limit: number;
+  offset: number;
+}
+
+/**
+ * GET /writing/attempts?limit=&offset= — the caller's own graded-writing
+ * history, newest first (F-106). Lights up the F-074 Responses-tab stub on
+ * the Writing screen — until this endpoint existed, that tab could only say
+ * "browsing is coming soon."
+ *
+ * `limit` defaults to 20 server-side (1..100); `offset` defaults to 0. Both
+ * are optional here — omit them for the first page. Rejects with `ApiError`:
+ *   - 400 — an out-of-bounds limit/offset (a client bug; the caller here
+ *     never sends one).
+ *   - 401 — session expired.
+ *   - 429 — cheap-bucket limit.
+ * An empty history resolves as `{ attempts: [] }` — never an error.
+ */
+export async function fetchWritingAttempts(
+  params?: { limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<WritingAttemptsEnvelope> {
+  return api.get<WritingAttemptsEnvelope>('/writing/attempts', {
+    params: { limit: params?.limit, offset: params?.offset },
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 /**

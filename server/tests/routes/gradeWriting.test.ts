@@ -61,6 +61,34 @@ describe('POST /grade-writing — success', () => {
     const parsed = GradeResponseSchema.safeParse(res.body);
     expect(parsed.success).toBe(true);
   });
+
+  // 056/F-117: free_write is a REAL rubric now — not the Q54 fallback the
+  // client used before the taxonomy widened. The edge accepts it, the stub
+  // proxy echoes it back (helpers/app.ts's gradeWriting stub echoes
+  // `input.rubric` verbatim), and it persists on writing_attempts, whose
+  // CHECK (ck_writing_attempts_rubric) migration 056 widened to allow it.
+  it('rubric=free_write → 200 and the grade echoes free_write', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/grade-writing').send({
+      prompt: '자유 주제로 글을 써 보세요.',
+      sample: '오늘은 날씨가 좋아서 산책을 했습니다.',
+      rubric: 'free_write',
+    });
+    expect(res.status).toBe(200);
+    expect((res.body as { result: { rubric: string } }).result.rubric).toBe(
+      'free_write',
+    );
+    const { rows } = await pg.pool.query<{ rubric: string; prompt_id: string | null }>(
+      `SELECT rubric, prompt_id FROM writing_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.rubric).toBe('free_write');
+    // A free-write grade has no writing_prompts source row (Claude-generated,
+    // not bank-drawn) — promptId is omitted at the edge in this test, so the
+    // persisted soft link is NULL, exactly like a generated-topic grade.
+    expect(rows[0]!.prompt_id).toBeNull();
+  });
 });
 
 describe('POST /grade-writing — validation rejection', () => {
@@ -71,6 +99,7 @@ describe('POST /grade-writing — validation rejection', () => {
     { name: 'oversized sample', body: { prompt: 'x', sample: 'x'.repeat(10_000) } },
     { name: 'oversized prompt', body: { prompt: 'x'.repeat(3_000), sample: 'x' } },
     { name: 'bad targetLevel', body: { prompt: 'x', sample: 'x', targetLevel: 'L9' } },
+    { name: 'invalid rubric', body: { prompt: 'x', sample: 'x', rubric: 'nonsense' } },
     { name: 'non-integer promptId', body: { prompt: 'x', sample: 'x', promptId: 1.5 } },
     { name: 'non-positive promptId', body: { prompt: 'x', sample: 'x', promptId: 0 } },
     { name: 'string promptId', body: { prompt: 'x', sample: 'x', promptId: '7' } },

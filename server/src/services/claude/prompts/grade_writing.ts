@@ -7,7 +7,11 @@
  * a guaranteed JSON shape instead of relying on the model to behave on
  * a "respond JSON only" instruction.
  *
- * Two rubrics today (53 description, 54 essay). The rubric text is in
+ * Three rubrics as of 056/F-117: two closed-form TOPIK II rubrics (53
+ * description, 54 essay) plus `free_write` — a general, length-flexible
+ * rubric for Claude-generated open-topic writing (previously graded against
+ * the Q54 essay rubric as an honest-but-ill-fitting stand-in; see the
+ * `WritingGradeRubricSchema` doc in `../models`). The rubric text is in
  * a cache_control: '1h' block so 60 minutes of grading calls share it.
  */
 
@@ -17,11 +21,11 @@ import type {
   Tool,
   ToolChoice,
 } from '../client';
-import type { GradeInput, TopikRubric } from '../models';
+import type { GradeInput, WritingGradeRubric } from '../models';
 import { wrapUserInput } from './sanitize';
 
-const SYSTEM_PROMPT = `You are a TOPIK II writing grader. Score the user's writing sample against
-the official TOPIK II rubric in three dimensions:
+const SYSTEM_PROMPT = `You are a Korean writing grader. Score the user's writing sample against
+the assigned rubric in three dimensions:
 
   내용 및 과제수행  (content and task completion)
   전개구조          (organization and development of ideas)
@@ -44,7 +48,7 @@ Rules:
 
 Rubrics:`;
 
-const RUBRIC_TEXT: Record<TopikRubric, string> = {
+const RUBRIC_TEXT: Record<WritingGradeRubric, string> = {
   topik_ii_53: `### Rubric: TOPIK II #53 (200–300 자 descriptive paragraph, /30)
 - 내용 및 과제수행 (/12):
   * 12: All required pieces of information from the prompt are present, accurate, and well integrated.
@@ -87,6 +91,33 @@ Total: 30. Boundaries:
   *  0: Errors throughout prevent comprehension.
 Total: 50. Boundaries:
   ≥42 → L6, 36–41 → L5, 28–35 → L4, 20–27 → L3, <20 → below_L3.`,
+
+  free_write: `### Rubric: Free write (open topic, flexible length, /30)
+This sample was NOT written against a fixed TOPIK question or length target —
+grade it as a genuine open composition, not against Q53/Q54's specific
+prompt-fulfillment criteria (there is no fixed information checklist to tick
+off, and no 200-300/600-700자 band to enforce).
+- 내용 및 과제수행 (/12):
+  * 12: Substantive, relevant content with a clear personal voice or point;
+        genuinely engages the topic rather than skimming it.
+  * 9: Mostly on-topic; ideas present but underdeveloped in places.
+  * 6: Partially on-topic; noticeable gaps in relevance or development.
+  * 3: Mostly off-topic OR extremely thin content.
+  * 0: No meaningful engagement with the topic.
+- 전개구조 (/10):
+  * 10: Clear, coherent progression of ideas with appropriate connectors;
+        a discernible beginning/middle/end regardless of length.
+  * 7: Mostly coherent; minor gaps in flow or transitions.
+  * 4: Some logical gaps OR repetitive/disorganized structure.
+  * 0: No discernible structure.
+- 언어사용 (/8):
+  * 8: Accurate, varied grammar and vocabulary appropriate to the writer's
+       apparent level.
+  * 6: Mostly accurate; some repetition of basic forms.
+  * 3: Frequent errors that occasionally impede meaning.
+  * 0: Errors throughout prevent comprehension.
+Total: 30. Boundaries:
+  ≥24 → L5/L6, 18–23 → L4, 12–17 → L3, <12 → below_L3.`,
 };
 
 const SUBMIT_GRADE_TOOL: Tool = {
@@ -107,7 +138,7 @@ const SUBMIT_GRADE_TOOL: Tool = {
       'overall_comment',
     ],
     properties: {
-      rubric: { type: 'string', enum: ['topik_ii_53', 'topik_ii_54'] },
+      rubric: { type: 'string', enum: ['topik_ii_53', 'topik_ii_54', 'free_write'] },
       content: dimensionSchema(),
       organization: dimensionSchema(),
       language_use: dimensionSchema(),
