@@ -1,81 +1,104 @@
 /**
- * Reading — `/learn/reading`, the U3b digitized chapter reader
- * (`db/docs/U3_READER_DESIGN.md` §U3b). Replaces the P1.1 placeholder now
- * that literature books have a real content store (`reading_chapters` /
- * `reading_passages`, migration 044) and a real server surface
- * (`routes/reading.ts`).
+ * Reading — `/learn/reading`, the Learn → Reading home (Phase 3C-2).
  *
- * Three-level drill-down, all client-side state (no URL params — mirrors
- * `Ttmik.tsx`'s browse→detail `Selection` state, not React Router):
- *   1. Book picker — the user's READY `literature`-typed uploads
- *      (`listUploads` filtered client-side, same filter
- *      `SourceFilterRow` applies: `status === 'ready'`; only literature
- *      uploads populate chapters, so `type === 'literature'` narrows
- *      further).
- *   2. Chapter picker — `GET /reading/chapters?source_upload_id=` for the
- *      chosen book.
- *   3. Chapter reader — `GET /reading/chapters/:id`'s ordered passages,
- *      rendered as tappable Korean text (`tokeniseKorean` → `Tapword`,
- *      the `TapKorean` pattern shared with `Ttmik.tsx`) wired to
- *      `useTapWord` → `WordPopover`. "View original scan" deep-links to
- *      the page-image viewer at the chapter's own scan page
- *      (`/uploads/:sourceUploadId?page={startPage}` — U3c; `startPage` IS
- *      `book_pages.page_number`, the loader wrote it as such, so no offset
- *      correction applies). A null `startPage` (chapter not yet linked to
- *      its scan pages) falls back to the bare route → page 1.
+ * Grew out of the U3b digitized chapter reader (`db/docs/U3_READER_DESIGN.md`
+ * §U3b; `reading_chapters`/`reading_passages`, migration 044) into the full
+ * reading surface:
  *
- * Read-only consumption: no editing surface here. Tap-to-define reuses the
- * shared stack as-is (`lib/tapChain`, `components/Tapword`,
- * `components/WordPopover`) — no new lookup logic. "Add to bank" reuses
- * `services/vocab.mineWord` with the same optimistic-flip + rollback +
- * fixed-copy-toast contract `Ttmik.tsx`'s `DetailView` uses (kept
- * page-local rather than folded into `useTapWord` — see that hook's header
- * for why), INCLUDING the abort contract: `ChapterReader` keeps its own
- * `addCtrlRef` (the same page-local controller `Ttmik.tsx`'s `DetailView`
- * keeps post-U3c, since `useTapWord` deliberately doesn't expose its
- * internal controller) so closing the popover — or unmounting mid-request —
- * aborts an in-flight "Add to bank" POST too, not just the
- * lemmatize→define→enrich chain.
+ *   Root — two `Tabs` (F-032 primitive):
+ *     Books (F-067)   — the user's READY uploads, grouped into typed
+ *                       sections: Literature (문학), Dialogue (대화), and
+ *                       Documents (문서 — the vocab/grammar/both scans;
+ *                       "this is also where uploaded documents live").
+ *                       Sections window through `usePagination`+`ShowMore`.
+ *     AI stories (F-068) — `StoryGenerator` (POST /reading/generate: Claude
+ *                       authors a short story at a chosen level, optional
+ *                       topic) above the generated-story library
+ *                       (GET /reading/generated); a fresh story opens
+ *                       immediately.
+ *
+ *   Nested views ride SEARCH PARAMS (the Hanja/Grammar F-024 convention —
+ *   each is deep-linkable and carries a real `BackButton` with a
+ *   deterministic `to`, so a deep link can never history-back out of the
+ *   PWA):
+ *     ?book=ID              — chapter picker for one upload (GET
+ *                             /reading/chapters + GET /uploads/:id + the
+ *                             F-069 resume position, fetched together).
+ *     ?book=ID&chapter=N    — the chapter reader (tappable passages).
+ *     ?story=N              — one generated story, same tappable treatment.
+ *
+ *   F-069 (resume, `reading_positions`/051): opening a chapter IS the
+ *   position — the reader PUTs /reading/position/:uploadId after the chapter
+ *   loads (chapter granularity; passage-level tracking would need scroll
+ *   telemetry this phase doesn't add). The chapter picker surfaces the saved
+ *   spot as a "Resume" button when one exists AND still points at a listed
+ *   chapter. A failed save toasts once — reading continues regardless.
+ *
+ *   F-070 (passage translation): every passage (and story paragraph) carries
+ *   a "Translate" action that opens `TranslateSheet` — the popup shell for
+ *   whole-passage translation. The server has NO passage-translate route yet
+ *   (routes/reading.ts serves passages + single-word define/enrich only), so
+ *   the sheet is an HONEST STUB: it shows the selected passage and a clear
+ *   "coming soon" state (ticket F-116 tracks the Claude route) — it never
+ *   fabricates a translation. Single-word tap-to-define is untouched.
+ *
+ * Tap-to-define reuses the shared stack as-is (`lib/tapChain`,
+ * `components/Tapword`, `components/WordPopover`) via the page-local
+ * `useMineable` hook below — the same optimistic-flip + rollback +
+ * fixed-copy-toast + ABORTABLE "Add to bank" contract `Ttmik.tsx`'s
+ * `DetailView` uses (kept page-local rather than folded into `useTapWord` —
+ * see that hook's header for why), now shared by the chapter reader AND the
+ * story reader instead of duplicated.
  *
  * Threat model:
- *   - All data (book titles, chapter titles, passage bodies) is server
- *     corpus/OCR text rendered through React text children — escaped, no
- *     `dangerouslySetInnerHTML` anywhere on this screen. The tap chain's
- *     popover fields go through the same contract (see `lib/tapChain`).
- *   - IDOR: every read (`listUploads`, `listChapters`, `getChapter`) is
- *     scoped server-side to the session `user_id`; a foreign/missing id
- *     just 404s as an `ApiError`, surfaced through `errorMessageFor`'s
- *     fixed-copy lookup — server prose is never echoed.
+ *   - All display data (book/chapter/story titles, passage/story bodies,
+ *     topics) is server corpus/OCR/Claude text rendered through React text
+ *     children — escaped, no `dangerouslySetInnerHTML` anywhere on this
+ *     screen. Claude-authored story text is untrusted display data like any
+ *     other. The tap chain's popover fields go through the same contract
+ *     (see `lib/tapChain`).
+ *   - IDOR: every read/write is scoped server-side to the session `user_id`;
+ *     a foreign/missing id just 404s as an `ApiError`, surfaced through
+ *     `errorMessageFor`'s fixed-copy lookup — server prose is never echoed.
+ *   - URL params are validated here (`/^\d+$/` / positive-int parse) before
+ *     use; a garbage deep link renders the root, not a malformed fetch.
  *   - Every fetch threads its own `AbortController`, checked before every
- *     post-await state write, and is aborted on unmount / on re-fetch /
- *     on drilling into a different book or chapter — mirrors every other
- *     list+detail screen in the app (`Ttmik.tsx`, `UploadViewer.tsx`).
- *   - GET-only data surface plus `POST /vocab/mine` on Add — that POST
- *     rides the `SameSite=Strict` cookie posture owned by
- *     `services/api.ts` (ADR-002), and is itself abortable (see the
- *     `addCtrlRef` note above) so a closed popover can't leak a late
- *     resolve into an unmounted `WordPopover`.
+ *     post-await state write, and is aborted on unmount / re-fetch / view
+ *     change. The writes (position PUT, generate POST, vocab-mine POST) ride
+ *     the `SameSite=Strict` cookie posture owned by `services/api.ts`
+ *     (ADR-002) and are themselves abortable.
+ *   - POST /reading/generate sits in the server's EXPENSIVE rate-limit
+ *     bucket: 429 (with structured `retryAfter`) renders via
+ *     `errorMessageFor` and the Generate button stays enabled as the retry.
  */
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
   type JSX,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
+import { Pill } from '../components/Pill';
+import { Sheet } from '../components/Sheet';
+import { ShowMore } from '../components/ShowMore';
+import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { Topbar } from '../components/Topbar';
 import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
 import { useToast } from '../components/useToast';
+import { usePagination } from '../hooks/usePagination';
 import { useTapWord } from '../hooks/useTapWord';
 import {
   GLOSS_DICTIONARY_ENTRY,
@@ -85,58 +108,126 @@ import {
 import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
-import { getChapter, listChapters } from '../services/reading';
-import { listUploads } from '../services/uploads';
+import {
+  GENERATED_STORY_LEVELS,
+  generateStory,
+  getChapter,
+  getGeneratedStory,
+  getReadingPosition,
+  listChapters,
+  listGeneratedStories,
+  saveReadingPosition,
+} from '../services/reading';
+import type {
+  GeneratedStory,
+  GeneratedStoryLevel,
+  GeneratedStorySummary,
+  ReadingPosition,
+} from '../services/reading';
+import { getUpload, listUploads } from '../services/uploads';
 import { mineWord } from '../services/vocab';
 import type {
   BookUpload,
+  BookUploadType,
   ReadingChapter,
   ReadingChapterSummary,
   ReadingPassage,
 } from '../types/domain';
+import './Reading.css';
 
 /** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
 const READING_NAV = navItem('reading');
 
+/** Canonical route — sub-view links + BackButton targets build on this. */
+const READING_PATH = '/learn/reading';
+
 /** Signature every tap surface funnels into: raw word + its source line. */
 type TapWordHandler = (raw: string, sentenceText: string) => void;
 
+/** Strict positive-int parse for numeric search params; anything else
+ *  (missing, signed, decimal, overlong garbage) is null → root view. */
+function parsePositiveInt(raw: string | null): number | null {
+  if (raw === null || !/^\d{1,15}$/.test(raw)) return null;
+  const n = Number(raw);
+  return n > 0 ? n : null;
+}
+
 export default function Reading(): JSX.Element {
-  const [selectedBook, setSelectedBook] = useState<BookUpload | null>(null);
-  const [selectedChapterId, setSelectedChapterId] = useState<number | null>(
-    null,
+  const [params, setParams] = useSearchParams();
+
+  // Upload ids are wire STRINGS (BIGINT — see services/uploads.ts), so the
+  // book param stays a string; digits-only or it's ignored.
+  const rawBook = params.get('book');
+  const bookId = rawBook !== null && /^\d{1,19}$/.test(rawBook) ? rawBook : null;
+  const chapterId = parsePositiveInt(params.get('chapter'));
+  const storyId = parsePositiveInt(params.get('story'));
+  const tab = params.get('tab') === 'stories' ? 'stories' : 'books';
+
+  const openBook = useCallback(
+    (id: string): void => {
+      setParams({ book: id });
+    },
+    [setParams],
+  );
+  const openStory = useCallback(
+    (id: number): void => {
+      setParams({ story: String(id) });
+    },
+    [setParams],
+  );
+  const onTabChange = useCallback(
+    (id: string): void => {
+      // `books` is the default — keep the canonical URL bare for it.
+      setParams(id === 'stories' ? { tab: 'stories' } : {});
+    },
+    [setParams],
   );
 
-  const backToBooks = useCallback((): void => {
-    setSelectedBook(null);
-    setSelectedChapterId(null);
-  }, []);
-  const backToChapters = useCallback((): void => {
-    setSelectedChapterId(null);
-  }, []);
-
-  const right =
-    selectedChapterId !== null ? (
-      <Button
-        variant="ghost"
-        size="sm"
-        leadingIcon={<Icon name="list" size={14} />}
-        onClick={backToChapters}
-        aria-label="Back to the chapter list"
+  // Resolve the active view + its BackButton target (F-024: every nested
+  // view gets a deterministic `to`, never a raw history back).
+  let back: { to: string; label: string } | null = null;
+  let view: JSX.Element;
+  if (bookId !== null && chapterId !== null) {
+    back = { to: `${READING_PATH}?book=${bookId}`, label: 'Chapters' };
+    view = <ChapterReader key={chapterId} chapterId={chapterId} />;
+  } else if (bookId !== null) {
+    back = { to: READING_PATH, label: 'Reading' };
+    view = (
+      <ChapterPicker
+        key={bookId}
+        bookId={bookId}
+        onOpenChapter={(cid) => {
+          setParams({ book: bookId, chapter: String(cid) });
+        }}
+      />
+    );
+  } else if (storyId !== null) {
+    back = { to: `${READING_PATH}?tab=stories`, label: 'Stories' };
+    view = <StoryReader key={storyId} storyId={storyId} />;
+  } else {
+    view = (
+      <Tabs
+        tabs={[
+          { id: 'books', label: <Bilingual en="Books" kr="책" compact /> },
+          {
+            id: 'stories',
+            label: <Bilingual en="AI stories" kr="AI 이야기" compact />,
+          },
+        ]}
+        ariaLabel="Reading sections"
+        active={tab}
+        onChange={onTabChange}
       >
-        <Bilingual en="Chapters" kr="목차" compact />
-      </Button>
-    ) : selectedBook !== null ? (
-      <Button
-        variant="ghost"
-        size="sm"
-        leadingIcon={<Icon name="list" size={14} />}
-        onClick={backToBooks}
-        aria-label="Back to all books"
-      >
-        <Bilingual en="All books" kr="모든 책" compact />
-      </Button>
-    ) : undefined;
+        {(active) =>
+          active === 'stories' ? (
+            <StoriesSection onOpenStory={openStory} />
+          ) : (
+            <BookShelf onOpenBook={openBook} />
+          )
+        }
+      </Tabs>
+    );
+  }
 
   return (
     <section
@@ -144,6 +235,7 @@ export default function Reading(): JSX.Element {
       aria-labelledby="reading-title"
       style={{ padding: '0 18px 32px' }}
     >
+      {back !== null ? <BackButton to={back.to} label={back.label} /> : null}
       <Topbar
         krTitle="읽기"
         title="Reading"
@@ -151,34 +243,43 @@ export default function Reading(): JSX.Element {
         eyebrow={
           <Bilingual en={READING_NAV.eyebrow} kr={READING_NAV.krEyebrow} />
         }
-        right={right}
       />
-      {selectedChapterId !== null ? (
-        <ChapterReader
-          key={selectedChapterId}
-          chapterId={selectedChapterId}
-        />
-      ) : selectedBook !== null ? (
-        <ChapterPicker
-          key={selectedBook.id}
-          book={selectedBook}
-          onOpenChapter={setSelectedChapterId}
-        />
-      ) : (
-        <BookPicker onOpenBook={setSelectedBook} />
-      )}
+      {view}
     </section>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Level 1 — book picker
+// Books tab — typed sections (F-067)
 // ─────────────────────────────────────────────────────────────
 
-function BookPicker({
+/**
+ * The typed sections, in display order. Literature and dialogue are the
+ * reader-first types; Documents is where the other uploaded scans
+ * (vocab/grammar/both) live per F-067 — they rarely have chapters, so
+ * opening one lands on the honest "no chapters yet" state with the
+ * original-scan link, never a fabricated reader.
+ */
+const BOOK_SECTIONS: ReadonlyArray<{
+  key: string;
+  en: string;
+  kr: string;
+  types: ReadonlyArray<BookUploadType>;
+}> = [
+  { key: 'literature', en: 'Literature', kr: '문학', types: ['literature'] },
+  { key: 'dialogue', en: 'Dialogue', kr: '대화', types: ['dialogue'] },
+  {
+    key: 'documents',
+    en: 'Documents',
+    kr: '문서',
+    types: ['vocab', 'grammar', 'both'],
+  },
+];
+
+function BookShelf({
   onOpenBook,
 }: {
-  onOpenBook: (book: BookUpload) => void;
+  onOpenBook: (id: string) => void;
 }): JSX.Element {
   const navigate = useNavigate();
   const [books, setBooks] = useState<BookUpload[]>([]);
@@ -201,12 +302,9 @@ function BookPicker({
     listUploads(ctrl.signal)
       .then((rows) => {
         if (ctrl.signal.aborted) return;
-        // Only `literature`-typed, `ready` uploads have (or ever will have)
-        // chapters — mirrors `SourceFilterRow`'s own `status === 'ready'`
-        // filter, narrowed further to the type this reader actually serves.
-        setBooks(
-          rows.filter((u) => u.type === 'literature' && u.status === 'ready'),
-        );
+        // Only READY uploads are openable (mirrors `SourceFilterRow`'s
+        // `status === 'ready'` filter); the type split happens per-section.
+        setBooks(rows.filter((u) => u.status === 'ready'));
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -246,8 +344,8 @@ function BookPicker({
           }}
         >
           <Bilingual
-            en="Upload a literature book to start reading."
-            kr="읽기를 시작하려면 문학 도서를 업로드하세요."
+            en="Upload a book to start reading."
+            kr="읽기를 시작하려면 책을 업로드하세요."
           />
         </p>
         <Button
@@ -265,45 +363,90 @@ function BookPicker({
   }
 
   return (
-    <Card className="km-reference__list" variant="flat">
-      <ul>
-        {books.map((book) => (
-          <li key={book.id} className="km-reference__row">
-            <button
-              type="button"
-              className="km-resources__list-open focusring"
-              onClick={() => {
-                onOpenBook(book);
-              }}
-              aria-label={`Open ${book.title}`}
-            >
-              <span className="kr km-reference__row-kr">{book.title}</span>
-              {book.pageCount !== undefined ? (
-                <span className="km-resources__pager-count">
-                  {book.pageCount} pp
-                </span>
-              ) : null}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </Card>
+    <div>
+      {BOOK_SECTIONS.map((section) => {
+        const rows = books.filter((b) => section.types.includes(b.type));
+        if (rows.length === 0) return null; // empty sections stay out of the way
+        return (
+          <BookSection
+            key={section.key}
+            en={section.en}
+            kr={section.kr}
+            books={rows}
+            onOpenBook={onOpenBook}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** One typed shelf: heading + windowed rows (`usePagination` + `ShowMore` —
+ *  a big Documents backlog can't flood the screen). */
+function BookSection({
+  en,
+  kr,
+  books,
+  onOpenBook,
+}: {
+  en: string;
+  kr: string;
+  books: BookUpload[];
+  onOpenBook: (id: string) => void;
+}): JSX.Element {
+  const pag = usePagination(books, { initial: 8, step: 8, max: 30 });
+  return (
+    <section className="km-reading__section" aria-label={en}>
+      <h2 className="km-reading__section-title">
+        <Bilingual en={en} kr={kr} />
+      </h2>
+      <Card className="km-reference__list" variant="flat">
+        <ul>
+          {pag.visible.map((book) => (
+            <li key={book.id} className="km-reference__row">
+              <button
+                type="button"
+                className="km-resources__list-open focusring"
+                onClick={() => {
+                  onOpenBook(book.id);
+                }}
+                aria-label={`Open ${book.title}`}
+              >
+                <span className="kr km-reference__row-kr">{book.title}</span>
+                {book.pageCount !== undefined ? (
+                  <span className="km-resources__pager-count">
+                    {book.pageCount} pp
+                  </span>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <ShowMore
+        canShowMore={pag.canShowMore}
+        onShowMore={pag.showMore}
+        remaining={pag.remaining}
+      />
+    </section>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Level 2 — chapter picker
+// Chapter picker (?book=ID) — chapters + F-069 resume
 // ─────────────────────────────────────────────────────────────
 
 function ChapterPicker({
-  book,
+  bookId,
   onOpenChapter,
 }: {
-  book: BookUpload;
+  bookId: string;
   onOpenChapter: (chapterId: number) => void;
 }): JSX.Element {
   const navigate = useNavigate();
+  const [book, setBook] = useState<BookUpload | null>(null);
   const [chapters, setChapters] = useState<ReadingChapterSummary[]>([]);
+  const [position, setPosition] = useState<ReadingPosition | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -317,22 +460,32 @@ function ChapterPicker({
     setLoading(true);
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
-    listChapters(book.id, ctrl.signal)
-      .then((rows) => {
+    // One fate for the whole view: the three reads are cheap same-server
+    // GETs against the same upload — a partial paint (chapters without the
+    // book title, or a silently missing resume spot) would be a lie, so a
+    // single failure funnels into the one ErrorCard + Retry.
+    Promise.all([
+      getUpload(bookId, ctrl.signal),
+      listChapters(bookId, ctrl.signal),
+      getReadingPosition(bookId, ctrl.signal),
+    ])
+      .then(([b, ch, pos]) => {
         if (ctrl.signal.aborted) return;
-        setChapters(rows);
+        setBook(b);
+        setChapters(ch);
+        setPosition(pos);
         setLoading(false);
       })
       .catch((err: unknown) => {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
-        setError(errorMessageFor(err, 'Could not load the chapters.'));
+        setError(errorMessageFor(err, 'Could not load this book.'));
         setLoading(false);
       });
     return () => {
       ctrl.abort();
     };
-  }, [book.id, reloadTick]);
+  }, [bookId, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -343,6 +496,30 @@ function ChapterPicker({
     () => [...chapters].sort((a, b) => a.chapterNumber - b.chapterNumber),
     [chapters],
   );
+
+  // F-069: the saved spot, but only when it still points at a LISTED
+  // chapter — a stale id (book re-loaded since) offers no resume rather
+  // than a dead button.
+  const resumeChapter = useMemo(() => {
+    if (position === null || position.chapterId === null) return null;
+    return ordered.find((c) => c.id === position.chapterId) ?? null;
+  }, [ordered, position]);
+
+  if (loading) {
+    return (
+      <div className="km-grammar__state" role="status">
+        <Bilingual en="Loading chapters…" kr="목차를 불러오는 중…" />
+      </div>
+    );
+  }
+  if (error !== null || book === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load this book.'}
+        onRetry={refetch}
+      />
+    );
+  }
 
   return (
     <div>
@@ -365,13 +542,25 @@ function ChapterPicker({
         </Button>
       </div>
 
-      {loading ? (
-        <div className="km-grammar__state" role="status">
-          <Bilingual en="Loading chapters…" kr="목차를 불러오는 중…" />
+      {resumeChapter !== null ? (
+        <div className="km-reading__resume">
+          <Button
+            variant="gold"
+            size="md"
+            leadingIcon={<Icon name="play" size={14} />}
+            onClick={() => {
+              onOpenChapter(resumeChapter.id);
+            }}
+          >
+            <Bilingual
+              en={`Resume — Chapter ${String(resumeChapter.chapterNumber)}`}
+              kr="이어서 읽기"
+            />
+          </Button>
         </div>
-      ) : error !== null ? (
-        <ErrorCard message={error} onRetry={refetch} />
-      ) : ordered.length === 0 ? (
+      ) : null}
+
+      {ordered.length === 0 ? (
         <p className="km-reference__empty">
           <Bilingual
             en="No chapters yet for this book."
@@ -382,7 +571,8 @@ function ChapterPicker({
         <Card className="km-reference__list" variant="flat">
           <ul>
             {ordered.map((chapter) => {
-              const label = chapter.title ?? `Chapter ${String(chapter.chapterNumber)}`;
+              const label =
+                chapter.title ?? `Chapter ${String(chapter.chapterNumber)}`;
               return (
                 <li key={chapter.id} className="km-reference__row">
                   <button
@@ -414,21 +604,117 @@ function ChapterPicker({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Level 3 — chapter reader (tap-to-define passages)
+// Tap-to-define + add-to-bank (shared by both readers)
 // ─────────────────────────────────────────────────────────────
 
-/** Skeleton placeholder while a chapter loads (mirrors Ttmik's). */
-function SkeletonCard(): JSX.Element {
-  return (
-    <Card
-      variant="default"
-      aria-busy="true"
-      style={{ minHeight: 240, opacity: 0.55 }}
-    >
-      <></>
-    </Card>
+/**
+ * Page-local mineable-text wiring: `useTapWord`'s lemmatize→define→enrich
+ * chain plus the "Add to bank" optimistic-flip + rollback + fixed-copy-toast
+ * contract from `Ttmik.tsx`'s `DetailView` — INCLUDING the abort contract:
+ * this hook keeps its own `addCtrlRef` (the same page-local controller
+ * `Ttmik.tsx` keeps post-U3c, since `useTapWord` deliberately doesn't expose
+ * its internal controller) so closing the popover — or unmounting
+ * mid-request — aborts an in-flight "Add to bank" POST too, not just the
+ * tap chain. Shared here because the chapter reader and the story reader
+ * both need the identical stack.
+ */
+function useMineable(): {
+  minedIds: ReadonlySet<string>;
+  onTapWord: TapWordHandler;
+  popover: JSX.Element | null;
+} {
+  const { toast } = useToast();
+  const [minedIds, setMinedIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
   );
+  const addCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      addCtrlRef.current?.abort();
+    },
+    [],
+  );
+
+  const isMined = useCallback(
+    (word: string) => minedIds.has(word),
+    [minedIds],
+  );
+  const { popData, popLoading, onTapWord, onClose } = useTapWord({
+    isMined,
+  });
+
+  /** Close the popover AND abort any in-flight "Add to bank" request. */
+  const handleClose = useCallback((): void => {
+    addCtrlRef.current?.abort();
+    addCtrlRef.current = null;
+    onClose();
+  }, [onClose]);
+
+  /**
+   * Add-to-bank — a fresh `AbortController` per add, aborted by
+   * `handleClose` (popover close) or the unmount effect above, so a
+   * closed/unmounted popover can never land a late `setMinedIds`/`toast` or
+   * re-throw into `WordPopover`'s already-unmounted rollback handler.
+   */
+  const handleAdd = useCallback(
+    (d: WordPopoverData): void | Promise<void> => {
+      const lemma = d.kr;
+      setMinedIds((prev) => {
+        const next = new Set(prev);
+        next.add(lemma);
+        return next;
+      });
+
+      addCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      addCtrlRef.current = ctrl;
+
+      return mineWord(
+        {
+          lemma,
+          ...(d.en && d.en !== GLOSS_DICTIONARY_ENTRY && d.en !== GLOSS_UNAVAILABLE
+            ? { english: d.en }
+            : {}),
+          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
+          ...(d.krdictEntryId !== undefined
+            ? { krdictEntryId: d.krdictEntryId }
+            : {}),
+        },
+        ctrl.signal,
+      ).then(
+        () => undefined,
+        (err: unknown) => {
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setMinedIds((prev) => {
+            if (!prev.has(lemma)) return prev;
+            const next = new Set(prev);
+            next.delete(lemma);
+            return next;
+          });
+          toast({ message: "Couldn't bank — try again", tone: 'error' });
+          // Re-throw so WordPopover rolls its "Added" button back too.
+          throw err instanceof Error ? err : new Error('bank failed');
+        },
+      );
+    },
+    [toast],
+  );
+
+  const popover = popData ? (
+    <WordPopover
+      data={popData}
+      onClose={handleClose}
+      onAdd={handleAdd}
+      isLoading={popLoading}
+    />
+  ) : null;
+
+  return { minedIds, onTapWord, popover };
 }
+
+// ─────────────────────────────────────────────────────────────
+// Tappable text rendering (shared by both readers)
+// ─────────────────────────────────────────────────────────────
 
 /**
  * Render a Korean string through the shared tokeniser (`tokeniseKorean`) as
@@ -496,7 +782,7 @@ function PassageBody({
   return (
     <p
       className="kr km-reference__row-kr"
-      style={{ margin: '0 0 16px', lineHeight: 1.9 }}
+      style={{ margin: '0 0 4px', lineHeight: 1.9 }}
     >
       {lines.map((line, i) => (
         <span key={i}>
@@ -508,6 +794,103 @@ function PassageBody({
   );
 }
 
+/**
+ * One passage block: tappable body + the F-070 "Translate" action beneath
+ * it. `ariaContext` disambiguates the repeated buttons for screen readers
+ * ("Translate passage 3", "Translate paragraph 2").
+ */
+function TranslatablePassage({
+  body,
+  ariaContext,
+  minedIds,
+  onTapWord,
+  onTranslate,
+}: {
+  body: string;
+  ariaContext: string;
+  minedIds: ReadonlySet<string>;
+  onTapWord: TapWordHandler;
+  onTranslate: (body: string) => void;
+}): JSX.Element {
+  return (
+    <div className="km-reading__passage">
+      <PassageBody body={body} minedIds={minedIds} onTapWord={onTapWord} />
+      <div className="km-reading__passage-tools">
+        <Button
+          variant="ghost"
+          size="sm"
+          leadingIcon={<Icon name="translate" size={12} />}
+          aria-label={`Translate ${ariaContext}`}
+          onClick={() => {
+            onTranslate(body);
+          }}
+        >
+          <Bilingual en="Translate" kr="번역" compact />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * F-070 — the whole-passage translation popup (Google-Translate style
+ * shell). HONEST STUB: the server has no passage-translate route yet
+ * (routes/reading.ts serves passages + single-word define/enrich only), so
+ * this shows the selected passage and a clear coming-soon state — ticket
+ * F-116 tracks the Claude route. When it lands, only the fetch wiring is
+ * missing from this shell; the copy below is replaced by the translation.
+ * It never fabricates a translation.
+ */
+function TranslateSheet({
+  text,
+  onClose,
+}: {
+  text: string;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <Sheet open onClose={onClose} ariaLabel="Passage translation">
+      <div className="km-reading__translate-sheet">
+        <Eyebrow>
+          <Bilingual en="Translation" kr="번역" compact />
+        </Eyebrow>
+        <p className="kr km-reading__translate-src">{text}</p>
+        <div className="km-reading__translate-stub">
+          <Pill tone="ochre">
+            <Bilingual en="Coming soon" kr="준비 중" compact />
+          </Pill>
+          <p className="km-reading__translate-note">
+            <Bilingual
+              en="Whole-passage translation isn't wired up yet (F-116). Tap any single word for its dictionary entry in the meantime."
+              kr="문장 전체 번역은 아직 준비 중이에요. 지금은 단어를 눌러 사전 뜻을 확인해 주세요."
+            />
+          </p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    </Sheet>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Chapter reader (?book=ID&chapter=N)
+// ─────────────────────────────────────────────────────────────
+
+/** Skeleton placeholder while a chapter/story loads (mirrors Ttmik's). */
+function SkeletonCard(): JSX.Element {
+  return (
+    <Card
+      variant="default"
+      aria-busy="true"
+      style={{ minHeight: 240, opacity: 0.55 }}
+    >
+      <></>
+    </Card>
+  );
+}
+
 function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -516,26 +899,10 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [translateText, setTranslateText] = useState<string | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
 
-  // Add-to-bank state — page-local (see module header + useTapWord's own
-  // header for why this isn't folded into the hook).
-  const [minedIds, setMinedIds] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  // Add-to-bank request controller. `useTapWord` deliberately doesn't expose
-  // its internal controller (see the hook's header), so this page keeps its
-  // own — aborted on popover close (via `handleClose` below) and on
-  // unmount, mirroring `Ttmik.tsx`'s `DetailView.addCtrlRef` so closing the
-  // popover cancels an in-flight "Add to bank" POST too, not just the
-  // lemmatize→define→enrich chain `useTapWord` already aborts.
-  const addCtrlRef = useRef<AbortController | null>(null);
-  useEffect(
-    () => () => {
-      addCtrlRef.current?.abort();
-    },
-    [],
-  );
+  const { minedIds, onTapWord, popover } = useMineable();
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -563,76 +930,34 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
     };
   }, [chapterId, reloadTick]);
 
+  // F-069: opening a chapter IS the resume position — one PUT per loaded
+  // chapter (chapter granularity; `page_number` carries the chapter's scan
+  // start so the position survives a future chapter re-number). A failed
+  // save gets ONE error toast — never blocks reading, never retries in a
+  // loop; the next chapter open writes fresh anyway.
+  useEffect(() => {
+    if (chapter === null) return;
+    const ctrl = new AbortController();
+    saveReadingPosition(
+      String(chapter.sourceUploadId),
+      { chapterId: chapter.id, pageNumber: chapter.startPage },
+      ctrl.signal,
+    ).catch((err: unknown) => {
+      if (ctrl.signal.aborted) return;
+      if (err instanceof ApiError && err.code === 'canceled') return;
+      toast({
+        message: "Couldn't save your reading position",
+        tone: 'error',
+      });
+    });
+    return () => {
+      ctrl.abort();
+    };
+  }, [chapter, toast]);
+
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
   }, []);
-
-  const isMined = useCallback(
-    (word: string) => minedIds.has(word),
-    [minedIds],
-  );
-  const { popData, popLoading, onTapWord, onClose } = useTapWord({
-    isMined,
-  });
-
-  /** Close the popover AND abort any in-flight "Add to bank" request. */
-  const handleClose = useCallback((): void => {
-    addCtrlRef.current?.abort();
-    addCtrlRef.current = null;
-    onClose();
-  }, [onClose]);
-
-  /**
-   * Add-to-bank — same optimistic-flip + rollback + fixed-copy toast
-   * contract as `Ttmik.tsx`'s `DetailView.handleAdd`, including the abort
-   * wiring: a fresh `AbortController` per add, aborted by `handleClose`
-   * (popover close) or the unmount effect above, so a closed/unmounted
-   * popover can never land a late `setMinedIds`/`toast` or re-throw into
-   * `WordPopover`'s already-unmounted rollback handler.
-   */
-  const handleAdd = useCallback(
-    (d: WordPopoverData): void | Promise<void> => {
-      const lemma = d.kr;
-      setMinedIds((prev) => {
-        const next = new Set(prev);
-        next.add(lemma);
-        return next;
-      });
-
-      addCtrlRef.current?.abort();
-      const ctrl = new AbortController();
-      addCtrlRef.current = ctrl;
-
-      return mineWord(
-        {
-          lemma,
-          ...(d.en && d.en !== GLOSS_DICTIONARY_ENTRY && d.en !== GLOSS_UNAVAILABLE
-            ? { english: d.en }
-            : {}),
-          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
-          ...(d.krdictEntryId !== undefined
-            ? { krdictEntryId: d.krdictEntryId }
-            : {}),
-        },
-        ctrl.signal,
-      ).then(
-        () => undefined,
-        (err: unknown) => {
-          if (err instanceof ApiError && err.code === 'canceled') return;
-          setMinedIds((prev) => {
-            if (!prev.has(lemma)) return prev;
-            const next = new Set(prev);
-            next.delete(lemma);
-            return next;
-          });
-          toast({ message: "Couldn't bank — try again", tone: 'error' });
-          // Re-throw so WordPopover rolls its "Added" button back too.
-          throw err instanceof Error ? err : new Error('bank failed');
-        },
-      );
-    },
-    [toast],
-  );
 
   // Defensive order — the server already orders by passage_number.
   const orderedPassages = useMemo(
@@ -694,22 +1019,428 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
       ) : (
         <Card variant="default" style={{ padding: '20px 22px' }}>
           {orderedPassages.map((passage) => (
-            <PassageBody
+            <TranslatablePassage
               key={passage.id}
               body={passage.body}
+              ariaContext={`passage ${String(passage.passageNumber)}`}
               minedIds={minedIds}
               onTapWord={onTapWord}
+              onTranslate={setTranslateText}
             />
           ))}
         </Card>
       )}
 
-      {popData ? (
-        <WordPopover
-          data={popData}
-          onClose={handleClose}
-          onAdd={handleAdd}
-          isLoading={popLoading}
+      {popover}
+      {translateText !== null ? (
+        <TranslateSheet
+          text={translateText}
+          onClose={() => {
+            setTranslateText(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stories tab — generator + library (F-068)
+// ─────────────────────────────────────────────────────────────
+
+/** Generator panel lifecycle — one state at a time, no boolean soup.
+ *  No 'done' phase: a successful generation opens the new story. */
+type GenState =
+  | { phase: 'idle' }
+  | { phase: 'busy' }
+  | { phase: 'error'; message: string };
+
+/** Fixed fallback copy for a failed generation (errorCopy contract). */
+const GENERATE_FAILED_COPY = 'Could not generate a story. Try again.';
+
+/**
+ * "New story from Claude" panel — level radiogroup (roving tabindex, arrow
+ * keys wrap: the WritingTopicGenerator/ModeToggle segmented pattern),
+ * optional topic, and a Generate button that goes `aria-disabled` (NOT
+ * `disabled` — the hard attribute would drop keyboard focus to <body>
+ * mid-generation, WCAG 2.4.3) while POST /reading/generate is in flight.
+ * 429 is a first-class path (expensive route): `errorMessageFor` renders
+ * the structured `retryAfter` and the button stays enabled as the retry.
+ */
+function StoryGenerator({
+  onCreated,
+}: {
+  onCreated: (story: GeneratedStory) => void;
+}): JSX.Element {
+  const [level, setLevel] = useState<GeneratedStoryLevel>('L3');
+  const [topic, setTopic] = useState('');
+  const [state, setState] = useState<GenState>({ phase: 'idle' });
+  const levelRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const uid = useId();
+
+  // Abort any in-flight generation on unmount so a late resolve can't set
+  // state on a dead component (the catch below drops aborted rejections).
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
+
+  const generate = async (): Promise<void> => {
+    // Supersede: a regenerate while one is in flight cancels the old call —
+    // exactly one outcome ever lands.
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setState({ phase: 'busy' });
+    try {
+      const trimmed = topic.trim();
+      const story = await generateStory(
+        { level, ...(trimmed !== '' ? { topic: trimmed } : {}) },
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) return;
+      // Open the fresh story — the parent navigates, unmounting this panel.
+      onCreated(story);
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      setState({
+        phase: 'error',
+        message: errorMessageFor(err, GENERATE_FAILED_COPY),
+      });
+    }
+  };
+
+  // Roving-tabindex arrows on the level radios (WAI-ARIA radiogroup).
+  const onLevelKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>): void => {
+    const current = GENERATED_STORY_LEVELS.indexOf(level);
+    let next: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      next = (current + 1) % GENERATED_STORY_LEVELS.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      next =
+        (current - 1 + GENERATED_STORY_LEVELS.length) %
+        GENERATED_STORY_LEVELS.length;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    const target = GENERATED_STORY_LEVELS[next];
+    if (target === undefined) return;
+    setLevel(target);
+    levelRefs.current[next]?.focus();
+  };
+
+  const busy = state.phase === 'busy';
+
+  return (
+    <div className="km-reading__gen" aria-busy={busy || undefined}>
+      <div className="km-reading__gen-head" id={`${uid}-label`}>
+        <Icon name="spark" size={14} />
+        <Bilingual en="New story from Claude" kr="새 이야기 만들기" />
+      </div>
+
+      <div
+        className="km-reading__gen-levels"
+        role="radiogroup"
+        aria-labelledby={`${uid}-label`}
+      >
+        {GENERATED_STORY_LEVELS.map((l, i) => {
+          const selected = l === level;
+          return (
+            <button
+              key={l}
+              ref={(el) => {
+                levelRefs.current[i] = el;
+              }}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              tabIndex={selected ? 0 : -1}
+              className={
+                selected
+                  ? 'km-reading__gen-level km-reading__gen-level--active focusring'
+                  : 'km-reading__gen-level focusring'
+              }
+              onClick={() => {
+                setLevel(l);
+              }}
+              onKeyDown={onLevelKeyDown}
+            >
+              {l}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="km-reading__gen-topic">
+        <label htmlFor={`${uid}-topic`}>
+          <Bilingual en="Topic (optional)" kr="주제 (선택)" compact />
+        </label>
+        <input
+          id={`${uid}-topic`}
+          type="text"
+          value={topic}
+          maxLength={500}
+          placeholder="e.g. 바닷가 마을"
+          onChange={(e) => {
+            setTopic(e.target.value);
+          }}
+        />
+      </div>
+
+      <div>
+        <Button
+          variant="gold"
+          size="sm"
+          // aria-disabled, NOT disabled: the hard attribute would move
+          // keyboard focus to <body> the instant the call starts. The busy
+          // guard below is the real re-entry gate.
+          aria-disabled={busy || undefined}
+          leadingIcon={<Icon name="spark" size={14} />}
+          onClick={() => {
+            if (busy) return; // aria-disabled doesn't block clicks — we do.
+            void generate();
+          }}
+        >
+          {busy ? (
+            <Bilingual en="Generating…" kr="생성 중…" compact />
+          ) : (
+            <Bilingual en="Generate story" kr="이야기 생성" compact />
+          )}
+        </Button>
+      </div>
+
+      {state.phase === 'error' ? (
+        <div role="alert" className="km-reading__gen-error">
+          {state.message}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Library date — short, locale-fixed (the app's copy is en-first), and
+ *  silent on an unparseable server timestamp rather than "Invalid Date". */
+function formatStoryDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function StoriesSection({
+  onOpenStory,
+}: {
+  onOpenStory: (id: number) => void;
+}): JSX.Element {
+  const [stories, setStories] = useState<GeneratedStorySummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    listGeneratedStories(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setStories(rows);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load your stories.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // Window the library (server caps the list at 200; match that ceiling so
+  // "Show more" can eventually reach everything the server sent).
+  const pag = usePagination(stories, { initial: 10, step: 10, max: 200 });
+
+  return (
+    <div>
+      <StoryGenerator
+        onCreated={(story) => {
+          onOpenStory(story.id);
+        }}
+      />
+
+      <h2 className="km-reading__section-title" style={{ marginTop: 22 }}>
+        <Bilingual en="Your stories" kr="내 이야기" />
+      </h2>
+      {loading ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual en="Loading stories…" kr="이야기를 불러오는 중…" />
+        </div>
+      ) : error !== null ? (
+        <ErrorCard message={error} onRetry={refetch} />
+      ) : stories.length === 0 ? (
+        <p className="km-reference__empty">
+          <Bilingual
+            en="No stories yet — generate your first one above."
+            kr="아직 이야기가 없어요. 위에서 첫 이야기를 만들어 보세요."
+          />
+        </p>
+      ) : (
+        <>
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {pag.visible.map((story) => (
+                <li key={story.id} className="km-reference__row">
+                  <button
+                    type="button"
+                    className="km-resources__list-open focusring"
+                    onClick={() => {
+                      onOpenStory(story.id);
+                    }}
+                    aria-label={`Open ${story.title}`}
+                  >
+                    <span className="kr km-reference__row-kr">
+                      {story.title}
+                    </span>
+                    <Pill tone="gold">{story.level}</Pill>
+                    <span className="km-resources__pager-count">
+                      {formatStoryDate(story.createdAt)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <ShowMore
+            canShowMore={pag.canShowMore}
+            onShowMore={pag.showMore}
+            remaining={pag.remaining}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Story reader (?story=N)
+// ─────────────────────────────────────────────────────────────
+
+function StoryReader({ storyId }: { storyId: number }): JSX.Element {
+  const [story, setStory] = useState<GeneratedStory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+  const [translateText, setTranslateText] = useState<string | null>(null);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  const { minedIds, onTapWord, popover } = useMineable();
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    getGeneratedStory(storyId, ctrl.signal)
+      .then((s) => {
+        if (ctrl.signal.aborted) return;
+        setStory(s);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load this story.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [storyId, reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // Paragraph blocks: blank-line separated (Claude authors prose with
+  // paragraph breaks); single `\n`s inside a block are preserved by
+  // `PassageBody`. `\r\n` normalized first — same defense as PassageBody's.
+  const paragraphs = useMemo(() => {
+    if (story === null) return [];
+    return story.bodyKo
+      .replace(/\r\n/g, '\n')
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter((block) => block !== '');
+  }, [story]);
+
+  if (loading) return <SkeletonCard />;
+  if (error !== null || story === null) {
+    return (
+      <ErrorCard
+        message={error ?? 'Could not load this story.'}
+        onRetry={refetch}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="km-reading__story-meta">
+        <Eyebrow>
+          <Bilingual en="AI story" kr="AI 이야기" compact />
+        </Eyebrow>
+        <Pill tone="gold">{story.level}</Pill>
+      </div>
+      <h2 className="kr kr-display" style={{ margin: '4px 0 6px' }}>
+        {story.title}
+      </h2>
+      {story.prompt !== null ? (
+        <p className="km-reading__story-topic">
+          <Bilingual en="Topic" kr="주제" compact />
+          {': '}
+          <span className="kr">{story.prompt}</span>
+        </p>
+      ) : null}
+
+      <Card variant="default" style={{ padding: '20px 22px', marginTop: 14 }}>
+        {paragraphs.map((block, i) => (
+          <TranslatablePassage
+            // Index keys are safe here: the list is derived, static per
+            // loaded story, and never reordered.
+            key={i}
+            body={block}
+            ariaContext={`paragraph ${String(i + 1)}`}
+            minedIds={minedIds}
+            onTapWord={onTapWord}
+            onTranslate={setTranslateText}
+          />
+        ))}
+      </Card>
+
+      {popover}
+      {translateText !== null ? (
+        <TranslateSheet
+          text={translateText}
+          onClose={() => {
+            setTranslateText(null);
+          }}
         />
       ) : null}
     </div>

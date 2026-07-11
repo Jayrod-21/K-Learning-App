@@ -1,0 +1,171 @@
+/*
+ * Reading (`/learn/reading`) — colocated styles for the Phase 3C-2 surface:
+ * typed book sections (F-067), the story generator + library (F-068), the
+ * resume affordance (F-069), and the translate action + sheet (F-070 stub).
+ * Tokenized throughout so both themes and every accent preset come free;
+ * shared list-row paint (`.km-reference__*` / `.km-resources__*`) stays in
+ * styles/index.css — only Reading-specific layout lives here.
+ */
+
+/* ── Typed sections (F-067) ─────────────────────────────────── */
+
+.km-reading__section {
+  margin: 0 0 22px;
+}
+
+.km-reading__section-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--paper-dim);
+}
+
+/* ── Resume (F-069) ─────────────────────────────────────────── */
+
+.km-reading__resume {
+  margin: 0 0 16px;
+}
+
+/* ── Passages + translate action (F-070) ────────────────────── */
+
+.km-reading__passage {
+  margin: 0 0 18px;
+}
+
+.km-reading__passage-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.km-reading__translate-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px 8px;
+}
+
+.km-reading__translate-src {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--paper);
+  /* A long passage must scroll inside the sheet, not blow it out. */
+  max-height: 32vh;
+  overflow-y: auto;
+}
+
+.km-reading__translate-stub {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 10px;
+}
+
+.km-reading__translate-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--paper-mute);
+}
+
+/* ── Story generator (F-068) ────────────────────────────────── */
+
+.km-reading__gen {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  box-shadow: var(--shadow-sm);
+}
+
+.km-reading__gen-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--paper-dim);
+}
+
+.km-reading__gen-levels {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--ink-2);
+}
+
+.km-reading__gen-level {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--paper-mute);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.km-reading__gen-level--active {
+  background: var(--ink-1);
+  color: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+
+.km-reading__gen-topic {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--paper-dim);
+}
+
+.km-reading__gen-topic input {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-2);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 13.5px;
+}
+
+.km-reading__gen-topic input::placeholder {
+  color: var(--paper-mute);
+}
+
+/* The Generate button goes aria-disabled (not `disabled`) while a call is
+   in flight so keyboard focus stays put; mirror the shared .km-btn:disabled
+   paint here so busy still LOOKS inert. Re-entry is blocked in the handler. */
+.km-reading__gen .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.km-reading__gen-error {
+  font-size: 12.5px;
+  color: var(--danger-ink);
+}
+
+/* ── Story reader ───────────────────────────────────────────── */
+
+.km-reading__story-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.km-reading__story-topic {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--paper-mute);
+}
