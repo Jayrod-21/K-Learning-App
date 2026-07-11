@@ -887,8 +887,9 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **Notes:** Lives in the migrated Uploads area (F-039).
 
 ### F-058 · Uploads listing shows only PDF versions
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done-as-respecced (Phase 3B) · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** The Uploads area only shows the PDF versions of uploads.
+- **Disposition:** A literal "PDF-only" filter is unimplementable and product-wrong — the server discards the original format at ingest (migration 041, no `source_format` column) and a literal filter would hide zip-based corpus books. Phase 3B shipped the honest equivalent: a **viewable-rendition filter** (excludes only un-renderable ghost rows, keeps processing/failed lifecycle rows). A literal source-format filter needs a server column first — tracked in **F-109**.
 
 ### F-059 · Manual OCR trigger button
 - **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
