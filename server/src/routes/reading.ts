@@ -25,6 +25,12 @@
  *   GET /reading/generated                   → the user's generated-story
  *                                              library, newest first
  *   GET /reading/generated/:id               → one generated story (full body)
+ *   POST /reading/translate                  → Claude authors a natural-
+ *                                              English translation of a
+ *                                              selected Korean passage or
+ *                                              story paragraph (F-116).
+ *                                              STATELESS — nothing persisted
+ *                                              server-side by this route.
  *
  * SECURITY:
  *   - IDOR: reading_chapters.user_id is the book owner (pinned to it by the
@@ -62,6 +68,17 @@
  *     The optional topic is the route's only free text — bounded here and
  *     sanitized + <user_input>-wrapped again inside the proxy. Story reads are
  *     user-scoped (IDOR: a missing or foreign id is a uniform 404).
+ *   - TRANSLATION (F-116): /translate is a PAID upstream call →
+ *     expensiveLimiter (per-user burst) PLUS the proxy's own per-route
+ *     per-minute limiter. The passage is the route's ONLY free text — bounded
+ *     here (1..6000, `.strict()` body) and sanitized + <user_input>-wrapped
+ *     again inside the proxy. Nothing is persisted (stateless translation — no
+ *     table backs this route); a Claude failure maps through the shared
+ *     mapClaudeError (injection → 400, proxy limiter → 429, upstream failure →
+ *     502) with no server prose leaked to the client. Unlike /generate (F-068,
+ *     deliberate variety, cacheTtl 0), translating a GIVEN passage is expected
+ *     to be STABLE — the proxy caches (Layer B, 30-day TTL), so re-opening the
+ *     same passage's translate sheet is a cache hit, not a repeat paid call.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -586,6 +603,56 @@ router.get(
       res.status(200).json({ story: toStoryDto(rows[0]!) });
     } catch (err) {
       next(err);
+    }
+  },
+);
+
+/* ---------- POST /reading/translate (F-116) ---------- */
+
+/**
+ * POST /reading/translate body. `.strict()` rejects unknown keys (probing
+ * `model` or a typo'd key fails loud). `passage` is the route's ONLY free
+ * text — bounded 1..6000 here (under the proxy's translate_passage input cap
+ * of 8000; see services/claude/config.ts) and sanitized + <user_input>-wrapped
+ * again inside the proxy. 6000 sits comfortably under both source columns'
+ * DB ceiling (reading_passages.body / generated_stories.body_ko, both capped
+ * at 20000 chars, migrations 044/054) — a real curated passage/paragraph is
+ * far smaller than either ceiling.
+ */
+const TranslatePassageBodySchema = z
+  .object({
+    passage: z.string().trim().min(1).max(6000),
+  })
+  .strict();
+
+/**
+ * POST /reading/translate — Claude authors a natural-English translation of
+ * the given passage (F-116, replacing the F-070 honest "coming soon"
+ * `TranslateSheet` stub). STATELESS: no table backs this route — the
+ * translation is returned inline and never persisted server-side, so there is
+ * no half-state to worry about on a downstream failure (unlike /generate,
+ * which persists a story). A Claude failure is mapped by the shared
+ * mapClaudeError (injection → 400, proxy limiter → 429, upstream failure →
+ * 502) with no server prose leaked.
+ */
+router.post(
+  '/translate',
+  expensiveLimiter(),
+  validateBody(TranslatePassageBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof TranslatePassageBodySchema>;
+
+      const proxy = getClaudeProxy();
+      const { result } = await proxy.translatePassage(
+        { passage: body.passage },
+        { ...(req.correlationId !== undefined ? { requestId: req.correlationId } : {}), userId },
+      );
+
+      res.status(200).json({ translation: result.translation });
+    } catch (err) {
+      next(mapClaudeError(err));
     }
   },
 );

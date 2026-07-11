@@ -68,6 +68,8 @@ import {
   PatternResultSchema,
   StoryGenInputSchema,
   StoryResultSchema,
+  TranslatePassageInputSchema,
+  TranslatePassageResultSchema,
   WritingPromptGenInputSchema,
   WritingPromptResultSchema,
   type CallMetadata,
@@ -93,6 +95,8 @@ import {
   type ProxyResult,
   type StoryGenInput,
   type StoryResult,
+  type TranslatePassageInput,
+  type TranslatePassageResult,
   type WritingPromptGenInput,
   type WritingPromptResult,
 } from './models';
@@ -108,6 +112,7 @@ import {
 import { buildStoryRequest, buildWritingPromptRequest } from './prompts/generation';
 import { buildImageOcrRequest } from './prompts/image_ocr';
 import { buildRecognizeGrammarRequest } from './prompts/recognize_grammar';
+import { buildTranslatePassageRequest } from './prompts/translate_passage';
 import { sanitizeUserInput } from './prompts/sanitize';
 import { TokenBucketLimiter, type RateLimiter } from './rate_limit';
 import { withRetry } from './retry';
@@ -148,6 +153,8 @@ export type {
   StoryGenInput,
   StoryLevel,
   StoryResult,
+  TranslatePassageInput,
+  TranslatePassageResult,
   WritingPromptGenInput,
   WritingPromptMode,
   WritingPromptResult,
@@ -264,6 +271,17 @@ export interface ClaudeProxy {
     input: StoryGenInput,
     ctx?: CallContext,
   ): Promise<ProxyResult<StoryResult>>;
+  /**
+   * F-116: translate ONE Korean passage/paragraph into natural English
+   * (Reading.tsx's `TranslateSheet`). Tool-use forced; STATELESS — the route
+   * persists nothing. Unlike `generateStory` (deliberate variety), this
+   * runs at low temperature and IS cached (long TTL) — translating the same
+   * given passage twice should return the same answer, not a fresh roll.
+   */
+  translatePassage(
+    input: TranslatePassageInput,
+    ctx?: CallContext,
+  ): Promise<ProxyResult<TranslatePassageResult>>;
   generateConversation(
     input: ConversationInput,
     ctx?: CallContext,
@@ -619,6 +637,33 @@ class ClaudeProxyImpl implements ClaudeProxy {
       cacheTtl: cfg.cacheTtlSeconds.generate_story,
       outputSchema: StoryResultSchema,
       parser: parseToolResult('submit_story'),
+    });
+  }
+
+  async translatePassage(
+    rawInput: TranslatePassageInput,
+    ctx: CallContext = {},
+  ): Promise<ProxyResult<TranslatePassageResult>> {
+    const cfg = this.cfg;
+    const route: RouteName = 'translate_passage';
+    const input = parseInput(TranslatePassageInputSchema, rawInput, route);
+    // The passage is the only free text — run it through the shared
+    // injection guard + length cap.
+    const passage = sanitizeUserInput(input.passage, {
+      maxLength: cfg.inputCaps.translate_passage,
+    });
+    const cleaned: TranslatePassageInput = { ...input, passage };
+    const model = resolveModel(cfg, route, input.model);
+    const request = buildTranslatePassageRequest(cleaned, model);
+
+    return this.runJsonRoute({
+      route,
+      model,
+      ctx,
+      request,
+      cacheTtl: cfg.cacheTtlSeconds.translate_passage,
+      outputSchema: TranslatePassageResultSchema,
+      parser: parseToolResult('submit_translation'),
     });
   }
 

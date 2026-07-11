@@ -515,3 +515,153 @@ describe('PUT /reading/position/:uploadId — resume position upsert (F-069)', (
     ).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /reading/translate (F-116)
+// ---------------------------------------------------------------------------
+
+describe('POST /reading/translate — auth required', () => {
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app)
+      .post('/reading/translate')
+      .send({ passage: '소년은 걸었다.' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /reading/translate — success', () => {
+  it('200 with the translation from the stub, nothing persisted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/reading/translate')
+      .send({ passage: '소년은 걸었다.' });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.translation).toBe('string');
+    expect(res.body.translation).toContain('소년은 걸었다.');
+    // Stateless: this route has no backing table — the response is the
+    // whole contract. (Nothing to query for "no row written" here, unlike
+    // /generate's generated_stories persistence.)
+    expect(res.body).not.toHaveProperty('id');
+  });
+
+  it('accepts a passage at exactly the 6000-char boundary', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const passage = '가'.repeat(6000);
+    const res = await agent.post('/reading/translate').send({ passage });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.translation).toBe('string');
+  });
+});
+
+describe('POST /reading/translate — validation rejection', () => {
+  const cases: Array<{ name: string; body: Record<string, unknown> }> = [
+    { name: 'missing passage', body: {} },
+    { name: 'empty passage', body: { passage: '' } },
+    { name: 'whitespace-only passage (trims to empty)', body: { passage: '   ' } },
+    { name: 'oversized passage (>6000)', body: { passage: '가'.repeat(6001) } },
+    { name: 'non-string passage', body: { passage: 12345 } },
+    // Unknown keys fail loud (`.strict()`) — a typo'd `model` probe must not
+    // silently no-op.
+    { name: 'unknown key (model probe)', body: { passage: '소년은 걸었다.', model: 'opus' } },
+  ];
+  for (const c of cases) {
+    it(`${c.name} → 400`, async () => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent.post('/reading/translate').send(c.body);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    });
+  }
+});
+
+describe('POST /reading/translate — downstream error', () => {
+  it('B4 5xx httpStatus error → flattened to a blanket 502 (mapClaudeError never forwards a 5xx upstream detail)', async () => {
+    const broken = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        translatePassage: async () => {
+          const e = new Error('upstream timeout') as Error & {
+            httpStatus: number;
+            code: string;
+          };
+          e.httpStatus = 504;
+          e.code = 'b4_timeout';
+          throw e;
+        },
+      },
+    });
+    try {
+      const { agent } = await registerUser(broken.app, pg.pool);
+      const res = await agent
+        .post('/reading/translate')
+        .send({ passage: '소년은 걸었다.' });
+      // mapClaudeError (shared by writing.ts/reading.ts) flattens EVERY 5xx-
+      // class proxy error to a blanket 502 — the upstream's real 504 is never
+      // forwarded (middleware/errors.ts's mapClaudeError doc, SECURITY.md
+      // §13.7).
+      expect(res.status).toBe(502);
+      expect(res.body.error.code).toBe('upstream_error');
+    } finally {
+      await teardownTestApp(broken);
+    }
+  });
+
+  it('a proxy-side prompt-injection rejection → mapped to a 400 (client-fault, not an outage)', async () => {
+    // mapClaudeError passes 4xx-class proxy errors through as their real
+    // status (a PromptInjectionRejectedError is the CALLER's fault, not an
+    // upstream outage) — see middleware/errors.ts's mapClaudeError doc.
+    const broken = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        translatePassage: async () => {
+          const e = new Error('user input contains injection marker') as Error & {
+            httpStatus: number;
+            code: string;
+          };
+          e.httpStatus = 400;
+          e.code = 'prompt_injection_rejected';
+          throw e;
+        },
+      },
+    });
+    try {
+      const { agent } = await registerUser(broken.app, pg.pool);
+      const res = await agent
+        .post('/reading/translate')
+        .send({ passage: '소년은 걸었다.' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('upstream_error');
+    } finally {
+      await teardownTestApp(broken);
+    }
+  });
+});
+
+describe('POST /reading/translate — rate limit', () => {
+  it('expensive-bucket exceeded → 429 with retry_after in the body AND a matching Retry-After header', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    let status429 = 0;
+    let body429: unknown = null;
+    let headers429: Record<string, string | undefined> = {};
+    for (let i = 0; i < 40; i++) {
+      const res = await agent
+        .post('/reading/translate')
+        .send({ passage: `소년은 걸었다 ${String(i)}.` });
+      if (res.status === 429) {
+        status429 = res.status;
+        body429 = res.body;
+        headers429 = res.headers as Record<string, string | undefined>;
+        break;
+      }
+    }
+    expect(status429).toBe(429);
+    const err = (body429 as { error?: { code?: string; retry_after?: unknown } }).error;
+    expect(err?.code).toBe('rate_limited');
+    expect(typeof err?.retry_after).toBe('number');
+    const retryAfter = err?.retry_after as number;
+    expect(Number.isInteger(retryAfter)).toBe(true);
+    expect(retryAfter).toBeGreaterThan(0);
+    expect(retryAfter).toBeLessThanOrEqual(60);
+    expect(headers429['retry-after']).toBe(String(retryAfter));
+  });
+});

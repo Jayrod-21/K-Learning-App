@@ -520,6 +520,34 @@ export const StoryResultSchema = z.object({
 });
 export type StoryResult = z.infer<typeof StoryResultSchema>;
 
+// ---- 3f. translatePassage ---------------------------------------------------
+// F-116: whole-passage/paragraph translation (Reading.tsx's `TranslateSheet`,
+// replacing the F-070 honest "coming soon" stub). Distinct from generateStory:
+// this task wants a STABLE, reproducible translation of a GIVEN passage —
+// re-opening the same passage's translate action should hit the cache, not
+// re-roll a fresh phrasing — so (unlike generate_story's temperature 1.0 /
+// cacheTtl 0 "variety" stance) this route runs at low temperature and caches
+// with a long TTL, matching enrich/recognize_grammar's "same input, same
+// answer" posture (see config.ts's CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S).
+
+export const TranslatePassageInputSchema = z.object({
+  /** The Korean passage or story paragraph to translate verbatim — sourced
+   *  from reading_passages.body (migration 044) or a generated_stories
+   *  paragraph (migration 054). Free text — sanitized + wrapped as untrusted
+   *  data by the proxy. Bounded well under both source columns' 20000-char DB
+   *  ceiling; a real curated passage/paragraph is far smaller. */
+  passage: NonEmptyText.max(6000),
+  /** Optional model override. */
+  model: z.enum(['haiku', 'sonnet', 'opus']).optional(),
+});
+export type TranslatePassageInput = z.infer<typeof TranslatePassageInputSchema>;
+
+export const TranslatePassageResultSchema = z.object({
+  /** Natural, register-aware English translation of the whole passage. */
+  translation: NonEmptyText.max(8000),
+});
+export type TranslatePassageResult = z.infer<typeof TranslatePassageResultSchema>;
+
 // ---- 4. generateConversation -----------------------------------------------
 // Streamed conversation turns. Register-aware. Optional vocab focus.
 

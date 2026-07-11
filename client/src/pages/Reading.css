@@ -1,7 +1,7 @@
 /*
  * Reading (`/learn/reading`) — colocated styles for the Phase 3C-2 surface:
  * typed book sections (F-067), the story generator + library (F-068), the
- * resume affordance (F-069), and the translate action + sheet (F-070 stub).
+ * resume affordance (F-069), and the translate action + sheet (F-070/F-116).
  * Tokenized throughout so both themes and every accent preset come free;
  * shared list-row paint (`.km-reference__*` / `.km-resources__*`) stays in
  * styles/index.css — only Reading-specific layout lives here.
@@ -69,6 +69,19 @@
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--paper-mute);
+}
+
+/* F-116: the fetched translation itself — same rhythm as the stub row it
+ * replaces once the call resolves. */
+.km-reading__translate-result {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--paper);
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 10px;
+  max-height: 32vh;
+  overflow-y: auto;
 }
 
 /* ── Story generator (F-068) ────────────────────────────────── */

@@ -56,6 +56,10 @@ const EnvSchema = z.object({
   // 2-6 word title from the first exchange) — haiku tier is plenty and keeps
   // the per-conversation naming cost negligible.
   CLAUDE_DEFAULT_MODEL_NAME_CONVERSATION: ModelEnum.default('claude-haiku-4-5'),
+  // F-116 whole-passage translation: natural, register-aware English prose —
+  // sonnet-grade Korean reading comprehension by default (mirrors
+  // recognize_grammar/grade_writing, not the haiku-tier trivial-lookup routes).
+  CLAUDE_DEFAULT_MODEL_TRANSLATE_PASSAGE: ModelEnum.default('claude-sonnet-4-6'),
 
   // Input length caps (in characters) — prompt-injection defense.
   CLAUDE_MAX_INPUT_ENRICH: z.coerce.number().int().positive().default(2_000),
@@ -85,6 +89,12 @@ const EnvSchema = z.object({
   // turn before calling, so this per-field cap is a hard injection/cost
   // ceiling, not the working size.
   CLAUDE_MAX_INPUT_NAME_CONVERSATION: z.coerce.number().int().positive().default(4_000),
+  // F-116: the passage/paragraph to translate. reading_passages.body and
+  // generated_stories.body_ko are both DB-capped at 20000 chars, but a real
+  // curated paragraph/passage is far smaller; the route's own Zod schema caps
+  // at 6000 (under this ceiling) — this cap is the hard injection/cost
+  // backstop, not the working size.
+  CLAUDE_MAX_INPUT_TRANSLATE_PASSAGE: z.coerce.number().int().positive().default(8_000),
 
   // Cache TTLs (seconds). 0 = DO NOT cache (the CacheStore skips the write and
   // every lookup misses). Forever-caching requires the explicit
@@ -119,6 +129,14 @@ const EnvSchema = z.object({
   // title-IS-NULL guard already makes repeat naming calls free (they never
   // reach the proxy), so a cache row would never be read back.
   CLAUDE_CACHE_TTL_NAME_CONVERSATION_S: z.coerce.number().int().nonnegative().default(0),
+  // F-116 translate_passage: UNLIKE generate_story (temperature 1.0,
+  // cacheTtl 0 — deliberate variety on regenerate), translating a GIVEN
+  // passage should be STABLE: re-opening the same passage's translate sheet
+  // is expected to show the SAME translation, not a fresh roll. This is the
+  // "same input, same answer" posture enrich/recognize_grammar already use —
+  // 30 days caches the working set (a single-user's re-tapped passages)
+  // without the operational cost of a forever cache.
+  CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S: z.coerce.number().int().nonnegative().default(60 * 60 * 24 * 30),
 
   // Rate-limit (per-minute, per-bucket-key).
   CLAUDE_RATE_LIMIT_ENRICH: z.coerce.number().int().positive().default(60),
@@ -144,6 +162,10 @@ const EnvSchema = z.object({
   // Naming fires at most once per conversation (title-IS-NULL guard), so
   // 10/min per user is generous for real use while capping a runaway loop.
   CLAUDE_RATE_LIMIT_NAME_CONVERSATION: z.coerce.number().int().positive().default(10),
+  // Translate is a per-passage/per-paragraph tap; 30/min per user comfortably
+  // covers a real reading session (mirrors recognize_grammar's ceiling) while
+  // capping a runaway loop against the paid upstream.
+  CLAUDE_RATE_LIMIT_TRANSLATE_PASSAGE: z.coerce.number().int().positive().default(30),
 
   // Logging. 'silent' is a valid pino level (disables all output) and is what
   // the test harness sets; include it so loadConfig() accepts it rather than
@@ -165,7 +187,8 @@ export type RouteName =
   | 'score_grammar_drill'
   | 'generate_writing_prompt'
   | 'generate_story'
-  | 'name_conversation';
+  | 'name_conversation'
+  | 'translate_passage';
 
 /**
  * Every `RouteName`, as a runtime array — the canonical source of truth for the
@@ -196,6 +219,7 @@ export const ROUTE_NAMES = [
   'generate_writing_prompt',
   'generate_story',
   'name_conversation',
+  'translate_passage',
 ] as const satisfies readonly RouteName[];
 
 // Compile-time exhaustiveness: if a RouteName is added to the union above but
@@ -274,6 +298,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_writing_prompt: e.CLAUDE_DEFAULT_MODEL_GENERATE_WRITING_PROMPT,
       generate_story: e.CLAUDE_DEFAULT_MODEL_GENERATE_STORY,
       name_conversation: e.CLAUDE_DEFAULT_MODEL_NAME_CONVERSATION,
+      translate_passage: e.CLAUDE_DEFAULT_MODEL_TRANSLATE_PASSAGE,
     },
     inputCaps: {
       enrich: e.CLAUDE_MAX_INPUT_ENRICH,
@@ -287,6 +312,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_writing_prompt: e.CLAUDE_MAX_INPUT_GENERATE_WRITING_PROMPT,
       generate_story: e.CLAUDE_MAX_INPUT_GENERATE_STORY,
       name_conversation: e.CLAUDE_MAX_INPUT_NAME_CONVERSATION,
+      translate_passage: e.CLAUDE_MAX_INPUT_TRANSLATE_PASSAGE,
     },
     cacheTtlSeconds: {
       enrich: e.CLAUDE_CACHE_TTL_ENRICH_S,
@@ -300,6 +326,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_writing_prompt: e.CLAUDE_CACHE_TTL_GENERATE_WRITING_PROMPT_S,
       generate_story: e.CLAUDE_CACHE_TTL_GENERATE_STORY_S,
       name_conversation: e.CLAUDE_CACHE_TTL_NAME_CONVERSATION_S,
+      translate_passage: e.CLAUDE_CACHE_TTL_TRANSLATE_PASSAGE_S,
     },
     rateLimitPerMinute: {
       enrich: e.CLAUDE_RATE_LIMIT_ENRICH,
@@ -313,6 +340,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PublicClaudeCo
       generate_writing_prompt: e.CLAUDE_RATE_LIMIT_GENERATE_WRITING_PROMPT,
       generate_story: e.CLAUDE_RATE_LIMIT_GENERATE_STORY,
       name_conversation: e.CLAUDE_RATE_LIMIT_NAME_CONVERSATION,
+      translate_passage: e.CLAUDE_RATE_LIMIT_TRANSLATE_PASSAGE,
     },
     logLevel: e.LOG_LEVEL,
     nodeEnv: e.NODE_ENV,
