@@ -20,6 +20,10 @@
  *           card flip.
  *   B-013 — corpus seeding (collapsed tile on the landing).
  *   FU-NF-42 — grammar production cards render + deep-link into the drill.
+ *   Keyboard (fix-pass BLOCKER-1/2) — Space/Enter on the rating buttons and
+ *           the drawer toggle/close ACTIVATE those controls; neither the
+ *           window space-handler nor the Flashcard flip handler may hijack
+ *           them (which flipped the card and silently dropped the action).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -512,6 +516,55 @@ describe('Review — list detail (F-060/F-061)', () => {
     expect(screen.getByText('학교')).toBeInTheDocument();
   });
 
+  it('disables ALL remove buttons while one removal is in flight (SF-1 — concurrent rollback corruption)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    let releaseRemove!: () => void;
+    vi.mocked(vocabService.removeListEntry).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseRemove = () => {
+            resolve();
+          };
+        }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 학교 from the list' }),
+    );
+
+    // While 학교's delete is in flight, 영향's remove must be disabled too —
+    // a second removal's failure rollback would resurrect the first row.
+    expect(
+      screen.getByRole('button', { name: 'Remove 영향 from the list' }),
+    ).toBeDisabled();
+
+    await act(async () => {
+      releaseRemove();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Remove 영향 from the list' }),
+    ).toBeEnabled();
+  });
+
+  it('states the truncation honestly when the list is bigger than the fetched page (SF-3)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      ...LIST_DETAIL,
+      list: { ...LISTS[0]!, entry_count: 150 },
+    });
+    renderReview('/learn/vocab?list=7');
+
+    expect(
+      await screen.findByText(
+        'Showing the first 2 of 150 words — a study session covers these 2.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('hands off to the library with the open list in router state (F-061 add words)', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
@@ -619,6 +672,49 @@ describe('Review — study session', () => {
     });
     expect(flip.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByRole('button', { name: /Again/ })).toBeInTheDocument();
+  });
+
+  it('Space on a focused rating button rates the card — it must not flip it and drop the rating (BLOCKER-2)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 1,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    const good = screen.getByRole('button', { name: /Good/ });
+    good.focus();
+
+    // The global space-to-flip handler must NOT preventDefault (which would
+    // cancel the button's native Space activation) nor flip the card away.
+    const notPrevented = fireEvent.keyDown(good, { key: ' ' });
+    expect(notPrevented).toBe(true);
+    expect(
+      screen.getByRole('group', { name: 'FSRS rating' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Flip card' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+
+    // The browser delivers the button's click on keyup — the rating lands.
+    fireEvent.click(good);
+    await waitFor(() => {
+      expect(vocabService.submitReview).toHaveBeenCalledWith(101, {
+        rating: 'good',
+        expected_version: 1,
+      });
+    });
+  });
+
+  it('the progressbar carries its accessible name (SF-4)', () => {
+    settleLanding({ due: DUE_STUDY });
+    renderReview('/learn/vocab?study=due');
+    expect(
+      screen.getByRole('progressbar', { name: 'Session progress' }),
+    ).toBeInTheDocument();
   });
 
   it('mounts the answer face only while flipped (B-014 regression)', async () => {
@@ -729,6 +825,90 @@ describe('Review — examples tile (B-022)', () => {
       screen.getByRole('button', { name: /More examples/ }),
     ).toHaveAttribute('aria-expanded', 'false');
   });
+
+  it('the drawer toggle and close button are keyboard-operable — Enter/Space must not flip the card instead (BLOCKER-1)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(defineEntry).mockResolvedValue({
+      word: '영향',
+      entries: [
+        {
+          id: 1,
+          headword: '영향',
+          part_of_speech: null,
+          definition_korean: null,
+          definition_english: null,
+          examples: [
+            { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
+          ],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    const toggle = screen.getByRole('button', { name: /More examples/ });
+    toggle.focus();
+
+    // Enter keydown bubbles into the Flashcard's flip handler — pre-fix it
+    // preventDefault()'d the toggle's activation and flipped to the FRONT
+    // (unmounting the drawer toggle entirely).
+    expect(fireEvent.keyDown(toggle, { key: 'Enter' })).toBe(true);
+    expect(
+      screen.getByRole('button', { name: 'Flip card' }).getAttribute('aria-expanded'),
+    ).toBe('true');
+    // The browser's synthesized click opens the drawer.
+    fireEvent.click(toggle);
+    expect(await screen.findByText('음악은 영향을 준다.')).toBeInTheDocument();
+
+    // Space on the close button: same contract (window handler + bubbling).
+    const close = screen.getByRole('button', { name: 'Close examples' });
+    close.focus();
+    expect(fireEvent.keyDown(close, { key: ' ' })).toBe(true);
+    expect(screen.getByText('음악은 영향을 준다.')).toBeInTheDocument();
+    fireEvent.click(close);
+    expect(screen.queryByText('음악은 영향을 준다.')).not.toBeInTheDocument();
+  });
+
+  it('a failed examples fetch shows a real error with retry — not a false "No additional examples" (SF-2)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(defineEntry)
+      .mockRejectedValueOnce(
+        new ApiError('krdict down', { status: 502, code: 'upstream' }),
+      )
+      .mockResolvedValueOnce({
+        word: '영향',
+        entries: [
+          {
+            id: 1,
+            headword: '영향',
+            part_of_speech: null,
+            definition_korean: null,
+            definition_english: null,
+            examples: [
+              { korean: '음악은 영향을 준다.', english: 'Music has an influence.' },
+            ],
+          },
+        ],
+      });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /More examples/ }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load examples.");
+    expect(alert).not.toHaveTextContent('krdict down');
+    expect(
+      screen.queryByText('No additional examples.'),
+    ).not.toBeInTheDocument();
+
+    // Retry re-fetches and renders the examples.
+    await user.click(screen.getByRole('button', { name: /Try again/ }));
+    expect(await screen.findByText('음악은 영향을 준다.')).toBeInTheDocument();
+    expect(defineEntry).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -803,6 +983,45 @@ describe('Review — completion (F-062)', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('1 rating couldn’t be saved.');
     expect(alert).not.toHaveTextContent('stale version');
+  });
+
+  it('offers a retry for failed saves that re-persists the failed (card, rating) pairs (SF-5)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview)
+      .mockRejectedValueOnce(
+        new ApiError('flaky network', { status: 0, code: 'network' }),
+      )
+      .mockResolvedValueOnce({
+        version: 2,
+        due_at: new Date().toISOString(),
+        scheduled_days: 1,
+      });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    await screen.findByRole('heading', { name: '세션 완료 · Session complete' });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '1 rating couldn’t be saved.',
+    );
+
+    await user.click(screen.getByRole('button', { name: /Retry saving/ }));
+
+    // The retry re-submits the SAME card + rating pair…
+    await waitFor(() => {
+      expect(vocabService.submitReview).toHaveBeenCalledTimes(2);
+    });
+    expect(vocabService.submitReview).toHaveBeenLastCalledWith(101, {
+      rating: 'good',
+      expected_version: 1,
+    });
+    // …and on success the failure alert clears and the save counts.
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText('1 due in 1 day')).toBeInTheDocument();
   });
 
   it('Study again restarts the same deck from the first card', async () => {

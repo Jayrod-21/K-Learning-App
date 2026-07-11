@@ -210,6 +210,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Honest-truncation note under the entry rows (lists past the server's
+   100-row detail page). */
+.km-review__entriesNote {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
 
 /* ── Study session chrome ─────────────────────────────────────────────── */
 .km-review__stripEn {

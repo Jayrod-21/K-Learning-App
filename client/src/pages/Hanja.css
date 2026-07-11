@@ -178,6 +178,15 @@
   opacity: 0.55;
   cursor: default;
 }
+/* Engine-true next-interval hint under each rating label (mirrors the vocab
+   session's .km-review__ratingSub). */
+.km-hanja__rating-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--paper-mute);
+  font-variant-numeric: tabular-nums;
+}
 .km-hanja__rating--again { color: var(--vermilion-ink); }
 .km-hanja__rating--hard  { color: var(--paper-mute); }
 .km-hanja__rating--good  { color: var(--indigo-ink); }

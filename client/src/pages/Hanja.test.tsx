@@ -17,7 +17,7 @@
  * throws a ReferenceError because `vi.mock` runs before `import`s execute.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
@@ -570,6 +570,61 @@ describe('Hanja page', () => {
     expect(screen.queryByText('날')).not.toBeInTheDocument();
   });
 
+  it('Space on a focused rating button rates — it must not flip the card and drop the rating (shared keyboard fix)', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock.mockResolvedValue([FIXTURE_DUE[0]!]);
+    submitHanjaCardReviewMock.mockResolvedValue({
+      version: 4,
+      due_at: '2026-07-10T00:00:00.000Z',
+      scheduled_days: 1,
+    });
+    renderHanja('/learn/hanja?view=study');
+
+    await user.click(await screen.findByRole('button', { name: 'Hanja flashcard' }));
+    const good = screen.getByRole('button', { name: /Good/ });
+    good.focus();
+
+    // The window space-to-reveal handler must NOT preventDefault (cancelling
+    // the button's native Space activation) nor flip the ratings away.
+    const notPrevented = fireEvent.keyDown(good, { key: ' ' });
+    expect(notPrevented).toBe(true);
+    expect(
+      screen.getByRole('group', { name: 'Rate your recall' }),
+    ).toBeInTheDocument();
+
+    // The browser delivers the button's click on keyup — the rating lands.
+    fireEvent.click(good);
+    await waitFor(() => {
+      expect(submitHanjaCardReviewMock).toHaveBeenCalledWith(
+        11,
+        expect.objectContaining({ rating: 'good', expected_version: 3 }),
+      );
+    });
+  });
+
+  it('pins the rating interval subs to the shared FSRS engine, mirroring the vocab session (B-021 parity)', async () => {
+    const user = userEvent.setup();
+    fetchHanjaDueCardsMock.mockResolvedValue([FIXTURE_DUE[0]!]);
+    renderHanja('/learn/hanja?view=study');
+
+    await user.click(await screen.findByRole('button', { name: 'Hanja flashcard' }));
+
+    // Hanja reviews run the SAME retuned engine as vocab
+    // (server/src/services/fsrs.ts): RELEARN_DELAY_MS = 50s → '<1m',
+    // HARD_STEP_DELAY_MS = 6min → '6m', good = 1 day, easy = 4 days.
+    // A drifted label = a lying UI (identical pin to Review.test.tsx B-021).
+    const expected: ReadonlyArray<[RegExp, string]> = [
+      [/Again/, '<1m'],
+      [/Hard/, '6m'],
+      [/Good/, '1d'],
+      [/Easy/, '4d'],
+    ];
+    for (const [name, sub] of expected) {
+      const btn = screen.getByRole('button', { name });
+      expect(within(btn).getByText(sub)).toBeInTheDocument();
+    }
+  });
+
   it('completes the session after the last card and offers a re-check', async () => {
     const user = userEvent.setup();
     fetchHanjaDueCardsMock.mockResolvedValue([FIXTURE_DUE[0]!]);
@@ -769,6 +824,35 @@ describe('Hanja page', () => {
       expect(addHanjaToListMock).toHaveBeenCalledWith(7, [1]);
     });
     expect(await screen.findByText(/Created “새 목록”/)).toBeInTheDocument();
+  });
+
+  it("names the real failure when the list is created but the add fails — never a false 'couldn't create' (SF-2)", async () => {
+    const user = userEvent.setup();
+    fetchHanjaListsMock.mockResolvedValue([]);
+    createListMock.mockResolvedValue({
+      list: { ...FIXTURE_LIST, id: 7, name_kr: '새 목록', entry_count: 0 },
+      appended: 0,
+    });
+    seedHanjaCardMock.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    renderHanja();
+
+    await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
+    await user.click(screen.getByRole('button', { name: /Add to a list/ }));
+    await user.type(await screen.findByLabelText(/New list name/), '새 목록');
+    await user.click(screen.getByRole('button', { name: /Create & add/ }));
+
+    // The list EXISTS — the copy must say so and point at the safe retry
+    // (plain Add on the now-pre-selected list), not invite a duplicate
+    // create.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Created “새 목록”, but 學 couldn't be added/);
+    expect(alert).not.toHaveTextContent(/Couldn't create that list/);
+    // The fresh list is in the picker and pre-selected for that retry.
+    expect(
+      await screen.findByRole('combobox', { name: 'List' }),
+    ).toHaveValue('7');
   });
 
   // ── Lists view (F-075) ─────────────────────────────────────

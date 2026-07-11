@@ -32,7 +32,8 @@
  *   - `history`  — honest stub (F-065): attempts are persisted server-side
  *                (`grammar_drill_attempts`) but no read endpoint exists yet,
  *                so this view says so instead of faking a list. Backend
- *                ticket: F-065-B (GET /grammar-drill/attempts).
+ *                ticket: F-110 (grammar drill-attempts read —
+ *                GET /grammar-drill/attempts).
  *
  *   NOT on this page (P1.2/D3 unchanged): the corpus browse + Bank action
  *   live in the Review library at /review/grammar (ReviewGrammar.tsx).
@@ -44,7 +45,8 @@
  * ordering, and every scored drill advances the card. What does NOT exist is
  * a read API for per-pattern schedule state (state / next due date for
  * non-due cards) — rows therefore only badge due-NOW patterns rather than
- * inventing intervals. Backend ticket: F-063-B.
+ * inventing intervals. Backend ticket: F-111 (per-pattern grammar card
+ * schedule read).
  *
  * Data:
  *   useEndpointOrMock('grammar:list', …) → PatternListItem[]   (KGIU corpus,
@@ -422,7 +424,7 @@ function Grammar(): JSX.Element {
     setSearchParams({ view: 'practice' });
   }, [setSearchParams]);
 
-  /** F-065: the practice-history view (honest stub until F-065-B lands). */
+  /** F-065: the practice-history view (honest stub until F-110 lands). */
   const openHistory = useCallback((): void => {
     setSearchParams({ view: 'history' });
   }, [setSearchParams]);
@@ -763,7 +765,14 @@ function Grammar(): JSX.Element {
 
       {view === 'practice' ? (
         <PracticePanel
-          loading={listState.loading}
+          // ALL three pool inputs must settle before the panel builds its
+          // session pool (SF-1): generating off a partial pool and letting a
+          // late bank/due settle reshape it mid-answer wiped in-progress
+          // answers. A deep-link target bypasses the gate (it carries its
+          // own pattern).
+          loading={
+            listState.loading || bankedState.loading || dueState.loading
+          }
           items={drillableItems}
           learningItems={learningItems}
           dueKeys={dueKeys}
@@ -974,7 +983,12 @@ function CardsPanel({
               </span>
             }
           >
-            <ul className="km-grammar__list">
+            {/* Explicit role: `list-style: none` (Grammar.css) makes
+                Safari/VoiceOver drop the implicit list semantics (row
+                count/position), so the "redundant" role is load-bearing —
+                the documented exception to this lint rule. */}
+            {/* eslint-disable-next-line jsx-a11y/no-redundant-roles */}
+            <ul className="km-grammar__list" role="list">
               {g.rows.map((row) => (
                 <CardRow
                   key={row.patternKey}
@@ -1095,7 +1109,7 @@ function CardRow({
  * persisted server-side in `grammar_drill_attempts`, but the drill router
  * exposes only the generate + submit POSTs — there is no endpoint to read
  * attempts back. Rendering a fake or empty "list" would misrepresent that,
- * so this view states the situation plainly. Backend ticket: F-065-B
+ * so this view states the situation plainly. Backend ticket: F-110
  * (GET /grammar-drill/attempts — paged, user-scoped).
  */
 function HistoryPanel(): JSX.Element {
@@ -1105,7 +1119,7 @@ function HistoryPanel(): JSX.Element {
       <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
         Not available yet. Your past practice attempts — answers, scores, and
         feedback — are saved on the server, but there&apos;s no way to fetch
-        them back until the history endpoint ships (ticket F-065-B). They
+        them back until the history endpoint ships (ticket F-110). They
         will appear here once it does.
       </p>
     </Card>
@@ -1132,10 +1146,9 @@ interface PracticePanelProps {
    */
   learningItems: readonly PatternListItem[];
   /**
-   * Pattern keys whose production card is DUE (F-063). Due patterns are
-   * partitioned to the FRONT of the pool (stable within each half) so
-   * practice serves what the scheduler says is due first — the same
-   * due-first ordering the vocab session gets from `/vocab/cards/due`.
+   * Pattern keys whose production card is DUE (F-063). Due patterns form a
+   * session-local queue the panel drains BEFORE the cursor rotation — the
+   * same due-first ordering the vocab session gets from `/vocab/cards/due`.
    */
   dueKeys: ReadonlySet<string>;
   /**
@@ -1321,6 +1334,35 @@ function writeDrillCursor(cursor: number): void {
   }
 }
 
+/** The session's practice pool: the due queue + the cursor rotation. */
+interface DrillPool {
+  /** Patterns whose production card is due — drained FIRST, in order. */
+  due: readonly PatternListItem[];
+  /** The remaining rotation, served via the persisted cursor. */
+  rest: readonly PatternListItem[];
+}
+
+const EMPTY_POOL: DrillPool = { due: [], rest: [] };
+
+/** Partition the practice base into the due queue + the rotation (F-063).
+ *  Base = the learner's saved learning patterns when any exist (drilling
+ *  what they chose to study), else the full fetched KGIU list.
+ *  `learningItems ⊆ items`, so an empty `items` implies an empty pool. */
+function partitionPool(
+  items: readonly PatternListItem[],
+  learningItems: readonly PatternListItem[],
+  dueKeys: ReadonlySet<string>,
+): DrillPool {
+  const base = learningItems.length > 0 ? learningItems : items;
+  if (dueKeys.size === 0) return { due: [], rest: base };
+  const due: PatternListItem[] = [];
+  const rest: PatternListItem[] = [];
+  for (const it of base) {
+    (dueKeys.has(it.patternKey) ? due : rest).push(it);
+  }
+  return { due, rest };
+}
+
 function PracticePanel({
   loading,
   items,
@@ -1329,28 +1371,30 @@ function PracticePanel({
   target = null,
   onClearTarget,
 }: PracticePanelProps): JSX.Element {
-  // Which pattern (by index into the pool) we're drilling. Wraps with `%`.
-  // Initialised from the PERSISTED cursor so a remount (view switch, reload)
-  // resumes the rotation where the learner left off instead of resetting to
-  // pool[0] — see DRILL_CURSOR_STORAGE_KEY for the live bug this fixes.
+  // Which pattern (by index into the NON-DUE rotation) we're drilling.
+  // Wraps with `%`. Initialised from the PERSISTED cursor so a remount
+  // (view switch, reload) resumes the rotation where the learner left off
+  // instead of resetting to the first pattern — see
+  // DRILL_CURSOR_STORAGE_KEY for the live bug this fixes.
   const [idx, setIdx] = useState<number>(readDrillCursor);
+  // Session-local walk through the DUE partition (F-063 due-first, B-1).
+  // Due cards are a finite queue the session drains BEFORE the rotation —
+  // exactly like the vocab due session. Deliberately session-local and NOT
+  // fed by the persisted cursor: indexing the partitioned pool with the
+  // monotonically-growing `idx` (`pool[idx % pool.length]`) almost never
+  // landed on the due partition after any prior practice, silently
+  // defeating the due-first ordering the cards view promises.
+  const [duePos, setDuePos] = useState(0);
 
-  // Practice pool: the learner's saved learning patterns when any exist
-  // (drilling what they chose to study), else the full fetched KGIU list.
-  // `learningItems` is a subset of `items`, so an empty `items` implies an
-  // empty pool and the empty-state gates below still hold. F-063: DUE
-  // patterns partition to the front (stable within each half) so the session
-  // clears the scheduler's queue first, exactly like the vocab session.
-  const pool = useMemo<readonly PatternListItem[]>(() => {
-    const base = learningItems.length > 0 ? learningItems : items;
-    if (dueKeys.size === 0) return base;
-    const due: PatternListItem[] = [];
-    const rest: PatternListItem[] = [];
-    for (const it of base) {
-      (dueKeys.has(it.patternKey) ? due : rest).push(it);
-    }
-    return due.length > 0 ? [...due, ...rest] : base;
-  }, [items, learningItems, dueKeys]);
+  // Practice pool, SNAPSHOTTED once per session (SF-1): frozen on the first
+  // render after all three pool inputs settle (`loading` gates until then),
+  // so a later bank/due settle can't reshape the pool mid-answer — that
+  // swap re-fired the generate effect and wiped the in-progress answer.
+  const poolRef = useRef<DrillPool | null>(null);
+  if (poolRef.current === null && !loading) {
+    poolRef.current = partitionPool(items, learningItems, dueKeys);
+  }
+  const pool = poolRef.current ?? EMPTY_POOL;
   const [phase, setPhase] = useState<DrillPhase>('generating');
   const [attemptId, setAttemptId] = useState<number | null>(null);
   const [item, setItem] = useState<DrillItemPublic | null>(null);
@@ -1371,14 +1415,21 @@ function PracticePanel({
   const [genTick, setGenTick] = useState(0);
 
   // FU-NF-42 B3: a deep-link target wins over the rotation. When present we
-  // drill exactly that pattern; otherwise we cycle `pool[idx]`. The targeted
-  // pattern can be drilled even when the pool is empty (the list fetch is
-  // mock/empty) — the target carries its own display + meaning.
+  // drill exactly that pattern (it carries its own display + meaning, so it
+  // works even with an empty/mock list fetch). Otherwise the session serves
+  // the DUE queue first, then the persisted `idx` rotation over the rest;
+  // with nothing but due patterns the due queue wraps so practice never
+  // dead-ends.
+  const servingDue =
+    pool.due.length > 0 &&
+    (duePos < pool.due.length || pool.rest.length === 0);
   const source: DrillSource | null = target
     ? targetToSource(target)
-    : pool.length > 0
-      ? rowToSource(pool[idx % pool.length]!)
-      : null;
+    : servingDue
+      ? rowToSource(pool.due[duePos % pool.due.length]!)
+      : pool.rest.length > 0
+        ? rowToSource(pool.rest[idx % pool.rest.length]!)
+        : null;
   const patternKey = source?.patternKey ?? null;
 
   // Generate-in-flight controller so navigating away (Skip/Next) or unmount
@@ -1453,28 +1504,36 @@ function PracticePanel({
         setPhase('ready');
       }
     })();
-    // `idx` + `patternKey` are the stable triggers (`source` is a fresh object
-    // each render). A deep-link target swaps the `patternKey` (vs. the
-    // rotation), so it re-fires the generate cleanly. The display/meaning are
-    // read off the same source, so the minimal deps hold. `genTick` re-fires
-    // the SAME pattern after a PROD generate failure (the ErrorCard's Retry).
+    // `idx`/`duePos` + `patternKey` are the stable triggers (`source` is a
+    // fresh object each render). A deep-link target swaps the `patternKey`
+    // (vs. the rotation), so it re-fires the generate cleanly; `duePos`
+    // covers the single-due-pattern wrap where the key doesn't change. The
+    // display/meaning are read off the same source, so the minimal deps
+    // hold. `genTick` re-fires the SAME pattern after a PROD generate
+    // failure (the ErrorCard's Retry).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, patternKey, genTick]);
+  }, [idx, duePos, patternKey, genTick]);
 
   // Move past the current pattern. With a deep-link target active there is no
-  // `idx` rotation to advance into, so we drop the target (→ parent clears it)
-  // and the panel falls back to its `pool[idx]` rotation. Without a target we
-  // bump `idx` AND persist the new cursor, so the step survives a remount —
-  // Skip / Next pattern deterministically moves to a different pattern
-  // instead of regenerating the same one after any view switch.
+  // rotation to advance into, so we drop the target (→ parent clears it) and
+  // the panel falls back to its pool. While the due queue is being drained we
+  // advance the session-local `duePos` — the persisted rotation cursor must
+  // NOT move past rest-patterns it never served. Otherwise we bump `idx` AND
+  // persist the new cursor, so the step survives a remount — Skip / Next
+  // pattern deterministically moves to a different pattern instead of
+  // regenerating the same one after any view switch.
   const advance = useCallback((): void => {
     submitCtrlRef.current?.abort();
     if (target) {
       onClearTarget?.();
       return;
     }
+    if (servingDue) {
+      setDuePos((p) => p + 1);
+      return;
+    }
     setIdx((i) => i + 1);
-  }, [target, onClearTarget]);
+  }, [target, onClearTarget, servingDue]);
 
   // Persist the cursor on every step (and on mount, an idempotent re-write of
   // the value just read). An effect rather than a write inside the setIdx
@@ -1528,16 +1587,18 @@ function PracticePanel({
   }, [item, userInput, isMock, attemptId]);
 
   // A deep-link target carries its own pattern, so it can drill even with an
-  // empty/mock list fetch — only gate the loading/empty states when there's no
-  // target to fall back on.
-  if (loading && items.length === 0 && !target) {
+  // empty/mock list fetch — only gate the loading/empty states when there's
+  // no target to fall back on. The loading gate holds until ALL pool inputs
+  // settle (SF-1): the session pool is frozen from the settled data above,
+  // never from a partial snapshot a late settle would reshape.
+  if (loading && !target) {
     return (
       <div className="km-grammar__state" role="status">
         Loading practice…
       </div>
     );
   }
-  if (items.length === 0 && !target) {
+  if (pool.due.length + pool.rest.length === 0 && !target) {
     return (
       <div className="km-grammar__state" role="status">
         No grammar cards to practice yet. Save patterns from the grammar
@@ -1672,10 +1733,23 @@ function DrillCard({
         maxLength={500}
       />
 
+      {/* WCAG 4.1.3: ONE persistent live region announces the async status
+          changes — "scoring" while in flight, then the score/verdict/
+          schedule when the reveal mounts. Persistent + text-swap because a
+          live region INSERTED already populated (e.g. role="status" inside
+          the reveal itself) is unreliably announced; and a single region
+          keeps it to one announcement per state change. The failure path
+          stays on ErrorCard's role="alert". */}
+      <p role="status" className="km-sr-only">
+        {scoring
+          ? 'Scoring your answer…'
+          : phase === 'revealed' && score !== null
+            ? revealAnnouncement(score)
+            : ''}
+      </p>
       {scoring ? (
-        <div className="km-grammar__state" role="status">
-          Scoring your answer…
-        </div>
+        // Visual only — the live announcement comes from the region above.
+        <div className="km-grammar__state">Scoring your answer…</div>
       ) : null}
 
       {error ? (
@@ -1801,10 +1875,10 @@ function DrillReveal({
 
       {/* FU-NF-42 B2 + F-063: the server-derived production schedule, named
           with the SAME Again/Hard/Good/Easy rating vocabulary the vocab
-          session's rating buttons use. Subtle, hanji-styled, and inside the
-          already-announced reveal region (the card carries
-          `aria-describedby={revealId}` while revealed), so AT picks it up
-          with the rest of the grade without a second live announcement.
+          session's rating buttons use. Announced to AT via DrillCard's
+          persistent role="status" line (WCAG 4.1.3) — the textarea's
+          `aria-describedby` alone would never surface it, since describedby
+          is only read on focus and the textarea is disabled once revealed.
           Omitted when the server didn't return a schedule (pre-bump server /
           offline mock). */}
       {score.schedule ? (
@@ -1829,17 +1903,37 @@ const RATING_LABEL: Record<FsrsRating, string> = {
 
 /**
  * Render the schedule line from a production schedule, leading with the
- * derived FSRS rating (vocab vocabulary — F-063). `scheduledDays === 0` (an
- * `again`/`hard` relearning step) reads as "~10 minutes"; a 1-day interval
- * drops the plural so it reads "1 day" not "1 days".
+ * derived FSRS rating (vocab vocabulary — F-063). `scheduledDays <= 0` is a
+ * minute-scale relearning step whose TRUE delay depends on the rating
+ * (server fsrs.ts: RELEARN_DELAY_MS = 50s for `again`,
+ * HARD_STEP_DELAY_MS = 6 min for `hard`) — so the copy branches on the
+ * rating to mirror the vocab session's `<1m` / `6m` button subs instead of
+ * misstating a shared "~10 minutes" (B-034). A 1-day interval drops the
+ * plural so it reads "1 day" not "1 days".
  */
 function scheduleLine(schedule: DrillSchedule): string {
   const rated = `Rated ${RATING_LABEL[schedule.rating]}`;
   if (schedule.scheduledDays <= 0) {
-    return `${rated} · next review in ~10 minutes`;
+    const soon =
+      schedule.rating === 'again' ? 'in under a minute'
+      : schedule.rating === 'hard' ? 'in ~6 minutes'
+      : // Defensive: good/easy schedule ≥ 1 day on this engine, so this arm
+        // is unreachable today — stay vague rather than invent a number.
+        'later today';
+    return `${rated} · next review ${soon}`;
   }
   const days = schedule.scheduledDays;
   return `${rated} · next review in ${String(days)} day${days === 1 ? '' : 's'}`;
+}
+
+/**
+ * One-line SR announcement for the reveal (WCAG 4.1.3) — score, verdict,
+ * and the schedule when the server returned one. Rendered into DrillCard's
+ * persistent `role="status"` region.
+ */
+function revealAnnouncement(score: DrillScore): string {
+  const schedule = score.schedule ? ` ${scheduleLine(score.schedule)}.` : '';
+  return `Scored ${String(score.score)} of 100 — ${VERDICT_META[score.verdict].label}.${schedule}`;
 }
 
 // ─────────────────────────────────────────────────────────────

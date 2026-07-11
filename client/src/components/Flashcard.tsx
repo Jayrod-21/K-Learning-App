@@ -53,6 +53,15 @@ export function Flashcard({
   ariaLabel = 'Flip card',
 }: FlashcardProps): JSX.Element {
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    // Key events that bubble up from interactive descendants (the answer
+    // face's drawer toggle/close buttons, the front "Reveal" button, hanja's
+    // draw CTA) belong to those controls. Without this guard, Enter/Space on
+    // any of them preventDefault()'d the control's own activation and flipped
+    // the card instead — dropping the intended action entirely. Their click
+    // paths are unaffected: the browser still synthesizes the control's
+    // click, which may bubble to the container's onClick (that's how the
+    // front "Reveal" button flips).
+    if (e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       onFlip();

@@ -89,6 +89,7 @@ import { defineEntry } from '../services/define';
 import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
 import { errorMessageFor } from '../lib/errorCopy';
+import { isInteractiveElement } from '../lib/interactiveElement';
 import type {
   DefineExample,
   DueCard,
@@ -1025,8 +1026,10 @@ function ListDetailView({
 
   const data = detail.data;
 
-  // F-051-style window over the entries; max lifted to the server page size
-  // (100) so long lists stay fully reachable.
+  // F-051-style window over the entries; max matches the server page size
+  // (100). getListDetail fetches ONE page, so a list beyond 100 entries is
+  // genuinely truncated here — the note below the rows states it honestly
+  // instead of letting the header's full entry_count imply otherwise.
   const { visible, canShowMore, showMore, remaining } = usePagination(
     data?.entries ?? [],
     { initial: 15, step: 15, max: 100 },
@@ -1259,7 +1262,11 @@ function ListDetailView({
                       onClick={() => {
                         void removeEntry(e.entry_id);
                       }}
-                      disabled={removingId === e.entry_id}
+                      // ALL rows disable while any removal is in flight: a
+                      // second concurrent removal's failure rollback would
+                      // restore its own stale entries snapshot and resurrect
+                      // the first (already-deleted) row.
+                      disabled={removingId !== null}
                       aria-label={`Remove ${e.korean ?? 'word'} from the list`}
                     >
                       <Icon name="close" size={12} />
@@ -1274,6 +1281,15 @@ function ListDetailView({
             onShowMore={showMore}
             remaining={remaining}
           />
+          {/* Honest truncation: the detail fetch returns one server page
+              (100 rows). A bigger list would otherwise silently hide words
+              101+ from BOTH this view and the study deck while the header
+              shows the full count. */}
+          {data.list.entry_count > data.entries.length ? (
+            <p className="km-review__entriesNote">
+              {`Showing the first ${String(data.entries.length)} of ${String(data.list.entry_count)} words — a study session covers these ${String(data.entries.length)}.`}
+            </p>
+          ) : null}
         </>
       )}
     </div>
@@ -1332,7 +1348,13 @@ function StudySession({
   // Per-rating persistence bookkeeping for the F-062 completion stats.
   const [results, setResults] = useState<ReviewResult[]>([]);
   const [pendingSaves, setPendingSaves] = useState(0);
-  const [failedSaves, setFailedSaves] = useState(0);
+  // Failed saves are kept as (card, rating) PAIRS — not a bare counter — so
+  // the completion page can re-attempt them: `entry` cards re-resolve a
+  // fresh card version via the idempotent bank call, `due` cards replay
+  // their snapshot (a genuine version conflict re-fails honestly).
+  const [failedSaves, setFailedSaves] = useState<
+    { card: StudyCard; rating: FsrsRating }[]
+  >([]);
   const [localRatings, setLocalRatings] = useState(0);
   const [rateError, setRateError] = useState<string | null>(null);
 
@@ -1351,6 +1373,9 @@ function StudySession({
     null,
   );
   const [examplesLoading, setExamplesLoading] = useState(false);
+  // A failed examples fetch is an ERROR, not "no additional examples" —
+  // stating the latter would assert a fact the client doesn't know.
+  const [examplesFailed, setExamplesFailed] = useState(false);
   const examplesCtrl = useRef<AbortController | null>(null);
   useEffect(() => {
     return () => {
@@ -1363,6 +1388,7 @@ function StudySession({
     setDrawer(false);
     setKrdictExamples(null);
     setExamplesLoading(false);
+    setExamplesFailed(false);
   }, []);
 
   // Kicked off from the toggle's CLICK handler (not an effect) — React
@@ -1376,6 +1402,7 @@ function StudySession({
     setDrawer(true);
     setExamplesLoading(true);
     setKrdictExamples(null);
+    setExamplesFailed(false);
     defineEntry(cardKr, ctrl.signal)
       .then((res) => {
         if (ctrl.signal.aborted) return;
@@ -1389,7 +1416,9 @@ function StudySession({
         ) {
           return;
         }
-        setKrdictExamples([]); // degrade to "no additional examples"
+        // Real error + retry (fixed copy in the drawer) — masking this as
+        // "No additional examples" would state a fact we don't know.
+        setExamplesFailed(true);
         setExamplesLoading(false);
       });
   };
@@ -1400,13 +1429,16 @@ function StudySession({
     closeDrawer();
   }, [closeDrawer]);
 
-  // Spacebar reveals — ignored while an input has focus.
+  // Spacebar reveals — ignored while focus sits on anything interactive.
+  // Space must ACTIVATE a focused control (a rating button, the drawer
+  // toggle/close, the card itself), not cancel it and flip the card:
+  // preventDefault() here used to eat the rating outright when a rating
+  // button had focus.
   useEffect(() => {
     if (complete || card === null) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== ' ' && e.key !== 'Spacebar') return;
-      const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (isInteractiveElement(document.activeElement)) return;
       e.preventDefault();
       flip();
     };
@@ -1466,7 +1498,7 @@ function StudySession({
         }
         setResults((prev) => [...prev, result]);
       } catch (err) {
-        setFailedSaves((n) => n + 1);
+        setFailedSaves((prev) => [...prev, { card: target, rating }]);
         setRateError(
           errorMessageFor(err, `Couldn't save the rating for “${target.kr}”.`),
         );
@@ -1475,6 +1507,19 @@ function StudySession({
       }
     })();
   }, []);
+
+  /** Re-attempt every failed save (completion-page affordance). The pairs
+   *  are drained BEFORE re-persisting so a re-failure re-files rather than
+   *  duplicating. */
+  const retryFailedSaves = useCallback((): void => {
+    const pending = failedSaves;
+    if (pending.length === 0) return;
+    setFailedSaves([]);
+    setRateError(null);
+    for (const f of pending) {
+      persist(f.card, f.rating);
+    }
+  }, [failedSaves, persist]);
 
   const rate = useCallback(
     (rating: FsrsRating): void => {
@@ -1495,7 +1540,7 @@ function StudySession({
     closeDrawer();
     setBreakdown({ ...EMPTY_BREAKDOWN });
     setResults([]);
-    setFailedSaves(0);
+    setFailedSaves([]);
     setLocalRatings(0);
     setRateError(null);
   }, [closeDrawer]);
@@ -1508,8 +1553,9 @@ function StudySession({
         breakdown={breakdown}
         results={results}
         pendingSaves={pendingSaves}
-        failedSaves={failedSaves}
+        failedSaves={failedSaves.length}
         localRatings={localRatings}
+        onRetrySaves={retryFailedSaves}
         onStudyAgain={restart}
         onDone={() => {
           void navigate(doneTo);
@@ -1555,15 +1601,18 @@ function StudySession({
       </Card>
 
       {/* Progress */}
-      <div className="km-review__progress" aria-label="Session progress">
+      <div className="km-review__progress">
         <div className="km-review__progressMeta">
           <span>
             {idx + 1} / {deck.length}
           </span>
         </div>
+        {/* The accessible name lives ON the progressbar element — an
+            aria-label on the role-less wrapper computes to nothing. */}
         <div
           className="km-review__progressBar"
           role="progressbar"
+          aria-label="Session progress"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(progressPct)}
@@ -1665,6 +1714,25 @@ function StudySession({
                     <div className="km-review__drawerEn">
                       <Bilingual en="Loading examples…" kr="예문을 불러오는 중…" />
                     </div>
+                  ) : examplesFailed ? (
+                    <div role="alert" className="km-review__drawerEn">
+                      <Bilingual
+                        en="Couldn't load examples."
+                        kr="예문을 불러오지 못했어요."
+                      />{' '}
+                      <button
+                        type="button"
+                        className="km-btn km-btn--ghost km-btn--sm focusring"
+                        onClick={(e) => {
+                          // Same bubbling hazard as the toggle: the card-wide
+                          // flip and the page-level dismiss both sit above us.
+                          e.stopPropagation();
+                          openDrawer();
+                        }}
+                      >
+                        <Bilingual en="Try again" kr="다시 시도" compact />
+                      </button>
+                    </div>
                   ) : (krdictExamples ?? []).length > 0 ? (
                     (krdictExamples ?? []).map((ex, i) => (
                       <div key={i} className="km-review__drawerRow">
@@ -1738,6 +1806,8 @@ interface SessionCompleteProps {
   pendingSaves: number;
   failedSaves: number;
   localRatings: number;
+  /** Re-attempt the failed rating saves (SF-5 recourse). */
+  onRetrySaves: () => void;
   onStudyAgain: () => void;
   onDone: () => void;
 }
@@ -1750,6 +1820,7 @@ function SessionComplete({
   pendingSaves,
   failedSaves,
   localRatings,
+  onRetrySaves,
   onStudyAgain,
   onDone,
 }: SessionCompleteProps): JSX.Element {
@@ -1838,11 +1909,16 @@ function SessionComplete({
           </div>
         )}
         {failedSaves > 0 ? (
-          <div role="alert" className="km-review__inlineError">
-            {failedSaves === 1
-              ? '1 rating couldn’t be saved.'
-              : `${String(failedSaves)} ratings couldn’t be saved.`}
-          </div>
+          <>
+            <div role="alert" className="km-review__inlineError">
+              {failedSaves === 1
+                ? '1 rating couldn’t be saved.'
+                : `${String(failedSaves)} ratings couldn’t be saved.`}
+            </div>
+            <Button variant="ghost" size="sm" onClick={onRetrySaves}>
+              <Bilingual en="Retry saving" kr="저장 다시 시도" compact />
+            </Button>
+          </>
         ) : null}
         {localRatings > 0 ? (
           <div className="km-review__completeLine" role="status">

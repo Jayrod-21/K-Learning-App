@@ -465,7 +465,7 @@ describe('Grammar — F-065 practice history (honest stub)', () => {
     expect(
       await screen.findByText(/Not available yet/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/F-065-B/)).toBeInTheDocument();
+    expect(screen.getByText(/F-110/)).toBeInTheDocument();
     // Nested view → BackButton (F-024).
     await user.click(
       screen.getByRole('button', { name: 'Back to Grammar' }),
@@ -543,6 +543,77 @@ describe('Grammar — due wiring (F-063: /vocab/cards/due → Due pills + due-fi
     expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
       patternKey: 'GR-kgiu-int-008',
       patternDisplay: '-느라고',
+    });
+  });
+
+  it('serves the DUE pattern first even when the persisted rotation cursor is non-zero (B-1)', async () => {
+    // The pre-fix code indexed the due-first pool with the monotonically
+    // growing localStorage cursor (`pool[idx % pool.length]`), so after any
+    // prior practice the session almost never STARTED on the due partition.
+    // The old pinning test passed only because resetMocks() clears
+    // localStorage (cursor 0) — this one seeds a mid-rotation cursor.
+    window.localStorage.setItem('km.grammar.drillCursor', '7');
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    vocabServices.getDueCards.mockResolvedValue([
+      dueProductionCard(9001, 'GR-kgiu-int-008'),
+    ]);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
+
+    await openPractice(user);
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('waits for the due queue to settle before generating, then pools from the settled snapshot (SF-1)', async () => {
+    // Pre-fix, practice gated only on the LIST fetch: opening it before the
+    // due/bank settles generated a drill off a partial pool, and the late
+    // settle reshaped the pool mid-answer — regenerating the drill and
+    // wiping the in-progress answer.
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    let releaseDue!: (cards: DueCard[]) => void;
+    vocabServices.getDueCards.mockImplementation(
+      () =>
+        new Promise<DueCard[]>((resolve) => {
+          releaseDue = resolve;
+        }),
+    );
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
+    await openPractice(user);
+
+    // No drill until the pool inputs settle — the session pool is a
+    // snapshot, never a moving target.
+    expect(screen.getByText('Loading practice…')).toBeInTheDocument();
+    expect(drillServices.generateDrill).not.toHaveBeenCalled();
+
+    await act(async () => {
+      releaseDue([dueProductionCard(9001, 'GR-kgiu-int-008')]);
+    });
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    // …and the settled due-ness is honoured: the due pattern drills first.
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
     });
   });
 
@@ -1170,7 +1241,7 @@ describe('Grammar — practice view (live generate → submit → reveal)', () =
     ).toBeInTheDocument();
   });
 
-  it('renders the "Rated Again · ~10 minutes" variant when scheduledDays is 0 (relearning step)', async () => {
+  it('renders the engine-true "under a minute" copy for a 0-day AGAIN step (B-034/SF-2 — RELEARN_DELAY_MS = 50s)', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
     drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
@@ -1192,9 +1263,68 @@ describe('Grammar — practice view (live generate → submit → reveal)', () =
     await user.type(textarea, '비가 와요.');
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
 
+    // Mirrors the vocab session's '<1m' button sub; the old shared
+    // "~10 minutes" line was wrong by ~12x for `again`.
     expect(
-      await screen.findByText('Rated Again · next review in ~10 minutes'),
+      await screen.findByText('Rated Again · next review in under a minute'),
     ).toBeInTheDocument();
+  });
+
+  it('renders the engine-true "~6 minutes" copy for a 0-day HARD step (B-034/SF-2 — HARD_STEP_DELAY_MS = 6min)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      verdict: 'needs_work' as const,
+      schedule: {
+        rating: 'hard',
+        dueAt: '2026-05-30T00:06:00Z',
+        scheduledDays: 0,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openPractice(user);
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 와요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    expect(
+      await screen.findByText('Rated Hard · next review in ~6 minutes'),
+    ).toBeInTheDocument();
+  });
+
+  it('announces the reveal through a live status region (B-2 — WCAG 4.1.3)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      schedule: {
+        rating: 'good',
+        dueAt: '2026-06-02T00:00:00Z',
+        scheduledDays: 3,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openPractice(user);
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // The reveal is an async status change: without a live region an SR user
+    // gets silence where a sighted user gets the grade. One announcement,
+    // carrying score + verdict + schedule.
+    await screen.findByText('82');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Scored 82 of 100 — Good. Rated Good · next review in 3 days.',
+    );
   });
 
   it('omits the schedule line when the score has no schedule (pre-bump server)', async () => {

@@ -107,6 +107,7 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
 import { encounteredBarAria } from '../lib/encounteredBar';
 import { errorMessageFor } from '../lib/errorCopy';
+import { isInteractiveElement } from '../lib/interactiveElement';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import {
@@ -190,18 +191,23 @@ const STATE_PILL_TONE = {
   new: 'default',
 } as const;
 
-/** FSRS self-ratings for the study drill. No fake interval hints — the
- *  server owns scheduling, so hard-coded "1d/4d" labels would be a lie. */
+/** FSRS self-ratings for the study drill. The interval subs mirror the
+ *  vocab session's rating buttons EXACTLY (Review.tsx `RATINGS`, B-021) and
+ *  are pinned to the same retuned server engine hanja reviews run through
+ *  (`applyCardReview` → server/src/services/fsrs.ts): RELEARN_DELAY_MS
+ *  < 1 min, HARD_STEP_DELAY_MS = 6 min, good graduates at 1 day, easy at
+ *  4 days. Same engine, same truth — a drifted label is a lying UI. */
 const HANJA_RATINGS: ReadonlyArray<{
   id: FsrsRating;
   label: string;
   kr: string;
+  sub: string;
   className: string;
 }> = [
-  { id: 'again', label: 'Again', kr: '다시', className: 'km-hanja__rating--again' },
-  { id: 'hard', label: 'Hard', kr: '어려움', className: 'km-hanja__rating--hard' },
-  { id: 'good', label: 'Good', kr: '좋음', className: 'km-hanja__rating--good' },
-  { id: 'easy', label: 'Easy', kr: '쉬움', className: 'km-hanja__rating--easy' },
+  { id: 'again', label: 'Again', kr: '다시', sub: '<1m', className: 'km-hanja__rating--again' },
+  { id: 'hard', label: 'Hard', kr: '어려움', sub: '6m', className: 'km-hanja__rating--hard' },
+  { id: 'good', label: 'Good', kr: '좋음', sub: '1d', className: 'km-hanja__rating--good' },
+  { id: 'easy', label: 'Easy', kr: '쉬움', sub: '4d', className: 'km-hanja__rating--easy' },
 ];
 
 /** Route builder for the drawing drill (char URL-encoded — single glyph). */
@@ -908,14 +914,16 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
     shownAt.current = Date.now();
   }, [idx, cards]);
 
-  // Spacebar reveals — the Review-screen convention. Skipped while a form
-  // control has focus so typing never flips the card.
+  // Spacebar reveals — the Review-screen convention. Skipped while ANY
+  // interactive element has focus: Space must activate a focused rating
+  // button (not cancel it and flip the ratings away), and the flashcard
+  // itself handles its own Enter/Space (a second flip here read as a
+  // visible no-op).
   useEffect(() => {
     if (current === undefined) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== ' ' && e.key !== 'Spacebar') return;
-      const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (isInteractiveElement(document.activeElement)) return;
       e.preventDefault();
       setFlipped((f) => !f);
     };
@@ -950,6 +958,11 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
           setIdx((i) => i + 1);
         } catch (err) {
           if (err instanceof ApiError && err.status === 409) {
+            // Deliberate trade-off (review SF-3): "Refresh deck" refetches
+            // from scratch and restarts at card 1. Already-rated cards are
+            // no longer due, so nothing is double-rated; preserving a
+            // mid-deck position against a snapshot we KNOW is stale isn't
+            // worth the machinery, and the copy states what will happen.
             setSubmitError({
               text: 'This card was rescheduled elsewhere. Refresh the deck to continue.',
               stale: true,
@@ -1115,6 +1128,7 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
               }}
             >
               <Bilingual en={r.label} kr={r.kr} compact />
+              <span className="km-hanja__rating-sub">{r.sub}</span>
             </button>
           ))}
         </div>
@@ -2250,20 +2264,37 @@ function AddToListTile({ ch }: { ch: string }): JSX.Element {
     setBusy(true);
     setStatus(null);
     void (async (): Promise<void> => {
+      // Phase 1 — create the list. Only THIS failure may say "couldn't
+      // create": once the list exists (it's already in local state and
+      // pre-selected below), repeating that copy would invite a retry via
+      // "Create & add" that mints a duplicate, identically-named list.
+      let listId: number;
       try {
         const res = await createList({ name_kr: name, kind: 'hanja' });
-        const listId = Number(res.list.id);
+        listId = Number(res.list.id);
         const created: ServerVocabList = { ...res.list, id: listId };
         setLists((prev) => (prev ? [created, ...prev] : [created]));
         setSelected(String(listId));
         setNewName('');
-        const seeded = await seedHanjaCard(ch);
-        await addHanjaToList(listId, [seeded.character_id]);
-        setStatus({ kind: 'ok', text: `Created “${name}” and added ${ch}.` });
       } catch (err) {
         setStatus({
           kind: 'error',
           text: errorMessageFor(err, "Couldn't create that list. Try again."),
+        });
+        setBusy(false);
+        return;
+      }
+      // Phase 2 — seed the card + write the membership. On failure the
+      // status names the real state and points at the safe retry path (the
+      // fresh list is pre-selected in the combobox above).
+      try {
+        const seeded = await seedHanjaCard(ch);
+        await addHanjaToList(listId, [seeded.character_id]);
+        setStatus({ kind: 'ok', text: `Created “${name}” and added ${ch}.` });
+      } catch {
+        setStatus({
+          kind: 'error',
+          text: `Created “${name}”, but ${ch} couldn't be added — it's selected above, press Add to retry.`,
         });
       } finally {
         setBusy(false);
