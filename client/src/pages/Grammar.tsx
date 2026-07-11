@@ -1235,9 +1235,13 @@ function HistoryPanel(): JSX.Element {
           errorMessageFor(err, "Your practice history couldn't be loaded."),
         );
       } finally {
-        if (ctrl.signal.aborted) return;
-        setLoading(false);
-        setLoadingMore(false);
+        // Guard rather than `return` inside finally (no-unsafe-finally): a
+        // return here would swallow the try/catch completion. When aborted,
+        // simply skip clearing the loading flags.
+        if (!ctrl.signal.aborted) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     })();
   }, []);
