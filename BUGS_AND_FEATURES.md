@@ -1327,6 +1327,22 @@ Backend routes / corpus data the Phase 3C-2 content-surface reworks (Reading · 
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (BACKEND) · **Beta:** —
 - **What:** F-081 (question-paired images) is a data gap: images live only inside the test-paper PDFs; the DB has only `has_image` + `image_text`. Extract `has_image` items' figures, store + serve the assets, add a DTO image URL; then render alongside `image_text`. The client renders the honest text-description affordance today.
 
+### F-121 · `ShowMore` final-reveal focus lands on an off-screen node (visible-focus polish)
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (A11Y) · **Beta:** —
+- **What:** The Phase 3C-2 fix for the `components/ShowMore.tsx` focus-drop (button unmounts on final reveal → focus fell to `<body>`) hands focus off to the revealed content region, which fully fixes the focus-loss defect but the target isn't reliably in-viewport, so it doesn't satisfy WCAG 2.4.7 (visible focus) for sighted keyboard users. Strict improvement over the original bug; polish the handoff to land on a visible, scrolled-into-view element. Affects all ShowMore consumers (Progress, ReviewVocab, Listen).
+
+---
+
+## ✅ Phase 3C-2 — Content/exam surfaces (Reading · Listen · Writing · TOPIK) — DONE, PR pending
+
+Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/11 should-fixes FIXED, 0 regressions; cross-cutting ShowMore + Tabs changes verified against all consumers), full client suite 1463/1463.
+- **Reading:** F-067 ✅ (typed sections) · F-068 ✅ (AI story-gen, wired) · F-069 ✅ (per-upload resume, wired) · F-070 ⏳ passage-translate honest stub (→ **F-116**) · **B-019 ✅ closed** (Today Reading tile → /learn/reading).
+- **Listen:** F-071 ✅ (2-across square grid) · F-072 ✅ (15/page) · B-025/B-026 correctly not-built (deferred/data).
+- **Writing:** F-073 ✅ (on-page generator) · **F-101 ✅ closed** (Today→Writing handoff wired both ends) · **B-027 ✅** (honest headers + random selection; rubric-widen → **F-117**) · F-074 ⏳ responses stub (→ **F-106**).
+- **TOPIK:** B-029 ✅ (uncapped draw) · F-078/F-079/F-082 ⏳ honest stubs (→ **F-104** attempts + **F-118** /topik/tests) · F-080 ⏳ audio data gap (→ **F-119**) · F-081 ⏳ image data gap (→ **F-120**).
+- **Cross-cutting:** `components/ShowMore.tsx` focus-drop fixed (all consumers); Ttmik hand-rolled tablist → shared `Tabs`.
+- **New tickets filed:** F-116 · F-117 · F-118 · F-119 · F-120 · F-121.
+
 ---
 
 <!-- Templates — copy when adding items.
