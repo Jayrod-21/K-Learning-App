@@ -84,6 +84,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { ErrorCard } from '../components/ErrorCard';
@@ -379,6 +380,7 @@ function languageDisplayEqual(
 }
 
 export default function Settings(): JSX.Element {
+  const navigate = useNavigate();
   const { user, refresh } = useAuth();
   const { settings, updateSettings, resetSettings } = useSettings();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
@@ -1234,6 +1236,29 @@ export default function Settings(): JSX.Element {
         >
           <Bilingual en="Reset to defaults" kr="기본값으로" />
         </button>
+      </SettingsGroup>
+
+      {/* ───── Beta feedback (F-023 — in-app ticketing) ─────
+          A more prominent global entry (e.g. a ChatFab-style FAB) is a
+          follow-up — ticket F-110; this Settings tile is the F-023 entry
+          point per spec. */}
+      <SettingsGroup icon="chat" eyebrow="베타 피드백" title="Beta feedback">
+        <p className="km-settings__ticket-hint">
+          <Bilingual
+            en="Report a bug, a concern, a suggestion, or a request — and see what other beta testers have filed."
+            kr="버그, 우려사항, 제안, 요청을 알려주세요 — 다른 베타 테스터가 남긴 내용도 볼 수 있어요."
+          />
+        </p>
+        <Button
+          variant="gold"
+          size="md"
+          fullWidth
+          onClick={() => {
+            navigate('/tickets');
+          }}
+        >
+          <Bilingual en="Report a bug or suggestion" kr="버그 또는 제안 보내기" />
+        </Button>
       </SettingsGroup>
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>

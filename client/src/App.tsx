@@ -63,6 +63,7 @@ import Mistakes from './pages/Mistakes';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
+import Tickets from './pages/Tickets';
 import Progress from './pages/Progress';
 import Ttmik from './pages/Ttmik';
 import Uploads from './pages/Uploads';
@@ -138,6 +139,11 @@ export default function App(): JSX.Element {
                     <Route path="diagnostic" element={<Diagnostic />} />
                     <Route path="images" element={<Images />} />
                     <Route path="chat" element={<Chat />} />
+                    {/* F-023 — in-app beta feedback/ticketing. Reachable
+                        from Settings → "Beta feedback" (a more prominent
+                        global entry point, e.g. a ChatFab-style FAB, is a
+                        follow-up — ticket F-110). */}
+                    <Route path="tickets" element={<Tickets />} />
                     {/* U1b — page-image book-upload feature (zip-of-images or
                         PDF, normalized server-side into ordered page
                         images). `/uploads` is BOTH a client route (this

@@ -2261,3 +2261,87 @@ export interface ReadingPassage {
   body: string;
   pageNumber: number | null;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Tickets (F-023) — in-app beta feedback/ticketing (`server/src/routes/
+// tickets.ts`, already deployed). `services/tickets.ts` is the wire↔domain
+// boundary — server rows are snake_case; these are the camelCase shapes
+// every consumer reads. Author identity is NEVER present on any of these
+// types — the anonymity contract (F-023): `isMine` is the only
+// identity-adjacent signal any list/thread carries, and it is computed
+// server-side against the CALLER's own id, so it reveals nothing about any
+// other author. There is no field here a UI could reach for to render an
+// author even by mistake.
+
+export type TicketType = 'bug' | 'concern' | 'suggestion' | 'request';
+export type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed';
+
+/** POST /tickets body. */
+export interface CreateTicketBody {
+  type: TicketType;
+  title: string;
+  body: string;
+}
+
+/**
+ * A ticket as `GET /tickets/mine` (and the POST/PATCH response) returns it —
+ * the CALLER's own, carrying `version` for the PATCH optimistic-concurrency
+ * contract. Only ever rendered to its owner.
+ */
+export interface OwnTicket {
+  id: number;
+  type: TicketType;
+  title: string;
+  body: string;
+  status: TicketStatus;
+  version: number;
+  commentCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A ticket as `GET /tickets/community` returns it — ANONYMIZED (F-023): no
+ * author field exists on this type at all, by construction.
+ */
+export interface CommunityTicket {
+  id: number;
+  type: TicketType;
+  title: string;
+  body: string;
+  status: TicketStatus;
+  commentCount: number;
+  /** Whether the CALLER filed this ticket — reveals nothing about anyone else. */
+  isMine: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * PATCH /tickets/:id body — optimistic concurrency via `expectedVersion`
+ * (mapped to the wire's `expected_version` in services/tickets.ts). A stale
+ * value 409s; the caller must refetch `/mine` and retry against the fresh
+ * version.
+ */
+export interface PatchTicketBody {
+  title?: string;
+  body?: string;
+  status?: TicketStatus;
+  expectedVersion: number;
+}
+
+/** One comment in a ticket's thread — anonymized, same contract as CommunityTicket. */
+export interface TicketComment {
+  id: number;
+  body: string;
+  isMine: boolean;
+  createdAt: string;
+}
+
+/** Server-side list filters shared by `/tickets/mine` and `/tickets/community`. */
+export interface TicketListQuery {
+  status?: TicketStatus;
+  type?: TicketType;
+  limit?: number;
+  offset?: number;
+}

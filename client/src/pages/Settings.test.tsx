@@ -34,7 +34,7 @@ import {
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../services/api';
 import type { User } from '../hooks/auth-context';
 
@@ -134,16 +134,27 @@ import { ToastProvider } from '../components/ToastProvider';
  * ThemeProvider + AccentProvider + ToastProvider alongside SettingsProvider
  * (Router included to match the App.tsx tree). This helper wraps the page
  * in the same provider order App.tsx uses.
+ *
+ * F-023: Settings now also navigates to `/tickets` (the "Beta feedback"
+ * entry point) via `useNavigate`, so the route tree carries a `/tickets`
+ * probe alongside the real `Settings` route — mirrors Uploads.test.tsx's
+ * ViewerProbe pattern for asserting a real navigation happened.
  */
 function renderSettings(): ReturnType<typeof render> {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={['/settings']}>
       <ThemeProvider>
         <AccentProvider>
           <TextSizeProvider>
             <ToastProvider>
               <SettingsProvider>
-                <Settings />
+                <Routes>
+                  <Route path="/settings" element={<Settings />} />
+                  <Route
+                    path="/tickets"
+                    element={<div data-testid="tickets-probe">tickets</div>}
+                  />
+                </Routes>
               </SettingsProvider>
             </ToastProvider>
           </TextSizeProvider>
@@ -1670,6 +1681,7 @@ describe('Settings — collapsible groups (F-038)', () => {
       /Two-Factor/,
       /Notifications/,
       /Appearance/,
+      /Beta feedback/,
     ]) {
       const header = screen.getByRole('button', { name });
       expect(header).toHaveAttribute('aria-expanded', 'false');
@@ -1709,6 +1721,38 @@ describe('Settings — collapsible groups (F-038)', () => {
     expect(
       screen.getByRole('radiogroup', { name: 'Text size' }),
     ).toBeInTheDocument();
+  });
+});
+
+// ─── Beta feedback entry point (F-023) ───────────────────────────────
+
+describe('Settings — Beta feedback entry point (F-023)', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('collapsed by default; expanding reveals the report button, which navigates to /tickets', async () => {
+    meOk();
+    const user = userEvent.setup();
+    renderSettings();
+
+    // Collapsed: the button is hidden from the accessibility tree.
+    expect(
+      screen.queryByRole('button', { name: /Report a bug or suggestion/ }),
+    ).not.toBeInTheDocument();
+
+    expandGroup(/Beta feedback/);
+    const reportButton = screen.getByRole('button', {
+      name: /Report a bug or suggestion/,
+    });
+    expect(reportButton).toBeInTheDocument();
+
+    await user.click(reportButton);
+    expect(await screen.findByTestId('tickets-probe')).toBeInTheDocument();
   });
 });
 
