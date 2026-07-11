@@ -414,6 +414,87 @@ describe('GET /grammar/bank', () => {
   });
 });
 
+describe('GET /grammar/bank — production-card schedule (F-111)', () => {
+  it('schedule is null for a freshly banked pattern (never drilled)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.post('/grammar/bank').send({
+      pattern_key: 'GR-a-eo-boida',
+      pattern_display: '-아/어 보이다',
+      summary_en: 'seems',
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    const res = await agent.get('/grammar/bank');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toHaveLength(1);
+    expect(res.body.entries[0].schedule).toBeNull();
+  });
+
+  it('reflects the real FSRS state/stability/due date after a drill submit auto-banks + advances the card', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // FU-NF-42's auto-bank: submitting a drill creates BOTH the grammar_entries
+    // row and its production vocab_cards row (see grammarDrill.test.ts's
+    // identical scheduling assertions) — no separate POST /grammar/bank is
+    // needed, this drill round-trip is the real path that produces a card.
+    const gen = await agent
+      .post('/grammar-drill')
+      .send({
+        patternKey: '-아/어 버리다',
+        patternDisplay: '-아/어 버리다',
+        meaning: 'completion / regret aspectual',
+      })
+      .expect(201);
+    await agent
+      .post(`/grammar-drill/${gen.body.attemptId as number}/submit`)
+      .send({ answer: '다 먹어 버렸어요.' })
+      .expect(200);
+
+    const res = await agent.get('/grammar/bank').expect(200);
+    expect(res.body.entries).toHaveLength(1);
+    const schedule = res.body.entries[0].schedule;
+    expect(schedule).not.toBeNull();
+    expect(schedule.state).toBe('learning');
+    expect(typeof schedule.stability).toBe('string');
+    expect(typeof schedule.dueAt).toBe('string');
+    expect(Number.isNaN(Date.parse(schedule.dueAt))).toBe(false);
+    // The stub scorer's verdict 'good' + usesPattern true seeds a NEW card
+    // 1 day out (mirrors grammarDrill.test.ts's identical scheduling assert).
+    const dueMs = new Date(schedule.dueAt).getTime() - Date.now();
+    expect(dueMs).toBeGreaterThan(0.5 * 86_400_000);
+    expect(dueMs).toBeLessThan(1.5 * 86_400_000);
+  });
+
+  it('does not leak another user’s production-card schedule (no cross-user join)', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const gen = await a.agent
+      .post('/grammar-drill')
+      .send({
+        patternKey: '-아/어 버리다',
+        patternDisplay: '-아/어 버리다',
+        meaning: 'completion / regret aspectual',
+      })
+      .expect(201);
+    await a.agent
+      .post(`/grammar-drill/${gen.body.attemptId as number}/submit`)
+      .send({ answer: '다 먹어 버렸어요.' })
+      .expect(200);
+
+    // User B independently banks the SAME display pattern (a distinct
+    // grammar_entries row, own id) — B's schedule must be null, never A's card.
+    await b.agent.post('/grammar/bank').send({
+      pattern_key: 'GR-a-eo-beorida',
+      pattern_display: '-아/어 버리다',
+      summary_en: 'completion / regret',
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    const resB = await b.agent.get('/grammar/bank').expect(200);
+    expect(resB.body.entries).toHaveLength(1);
+    expect(resB.body.entries[0].schedule).toBeNull();
+  });
+});
+
 describe('POST /grammar/bank/:id/graduate + /readmit (migration 033)', () => {
   const bankBody = {
     pattern_key: 'GR-a-eo-boida',
