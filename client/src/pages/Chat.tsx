@@ -1,9 +1,14 @@
 /**
  * Chat (Conversation) screen — multi-conversation tutor chat with a
- * collapsible sidebar (chat rework Slice 2).
+ * collapsible sidebar (chat rework Slice 2; Phase 3D reformats the thread/
+ * composer/sidebar and reworks attachments + naming — see the section
+ * headers below).
  *
  * Layout:
- *   1. Topbar: "Tutor conversation" eyebrow + 대화 · Chat serif title.
+ *   1. Topbar: "Tutor conversation" eyebrow + 대화 · Chat serif title, with
+ *      a visibly-LABELED English-translations switch on the right (B-020 —
+ *      the switch used to carry only an `aria-label`, so its purpose was
+ *      invisible to sighted users; the label now reads "English · 영어").
  *   2. A two-pane layout below the Topbar:
  *      - LEFT: a collapsible conversation sidebar (mockup: thin-rail
  *        collapse ‹, "New chat", the conversation list newest-first, a
@@ -24,21 +29,23 @@
  *     (`{ key, empty }`). `historyLoading` is DERIVED (`activeId` set but
  *     not yet loaded and not failed) rather than set synchronously in an
  *     effect, keeping the history effect clean of sync setState.
- *   - `titles` — derived sidebar titles: the first user message's snippet,
- *     learned when a conversation's history loads (the list endpoint has
- *     no message bodies) or when this session sends its first message.
- *     Fallback: Korean mode label + date.
+ *   - `titles` — DERIVED-SNIPPET sidebar titles (first user message's
+ *     snippet), learned when a conversation's history loads (the list
+ *     endpoint has no message bodies) or when this session sends its first
+ *     message. This is only ever the FALLBACK shown before a real title
+ *     resolves — see "Auto-naming (F-036)" below for the authoritative
+ *     source and precedence order.
  *
  * History loading (the previously-missing capability):
  *   An effect keyed on the active conversation id fetches
  *   `getConversation(id)` with an AbortController; switching away or
  *   unmounting aborts, and every continuation is `signal.aborted`-guarded
  *   so a late resolve can never set state on a dead tree or clobber a
- *   newer selection (F-016's abort discipline). The fetched `version`
- *   refreshes `versionRef` so the next send's `expected_version` is
- *   correct for the switched-to conversation. Sends are gated on
- *   `threadReady` (history loaded for the active id) so a send can never
- *   ride a stale version from a previous conversation.
+ *   newer selection. The fetched `version` refreshes `versionRef` so the
+ *   next send's `expected_version` is correct for the switched-to
+ *   conversation. Sends are gated on `threadReady` (history loaded for the
+ *   active id) so a send can never ride a stale version from a previous
+ *   conversation.
  *
  * Sidebar behavior:
  *   - Click a row → abort any in-flight stream, clear the thread, load
@@ -55,26 +62,30 @@
  *     switch to it (opener thread), focus the composer. Prior
  *     conversations stay listed.
  *
+ * Auto-naming (F-036 — Claude-web style titles):
+ *   The sidebar renders each row's title with this precedence:
+ *     `confirmedTitles.get(id)` (a real title — user-set or Claude
+ *     auto-generated, learned this session) → `row.title` (the same, as
+ *     reported by the server on the list/detail envelope) → `titles.get(id)`
+ *     (the derived first-message snippet) → `fallbackTitle` (mode + date).
+ *   `runStream`'s `onDone` — i.e. once an assistant turn is durably
+ *   persisted — fires `triggerAutoName(convId)`, which calls
+ *   `POST /conversation/:id/name` (`nameConversation`) and, on success,
+ *   records the returned title in `confirmedTitles`. The endpoint is
+ *   idempotent (a named conversation 200s with its existing title and NO
+ *   Claude call), so calling it after every turn is safe — `namedRef`
+ *   still latches per conversation per session to avoid a redundant round
+ *   trip once a title is known. A failed naming call releases the latch
+ *   (silently — this is a cosmetic enhancement, never a user-facing error)
+ *   so a transient failure gets another chance on the next turn instead of
+ *   being stuck with the fallback for the rest of the session.
+ *
  * Send wiring (unchanged from Pass 3 apart from the id/version source):
  *   optimistic user-bubble append, then `streamMessage(id, { content,
  *   expected_version }, { signal, onDelta, onDone, onError, requestId })`.
- *   `onDelta` grows a partial tutor bubble, `onDone` finalises it and
- *   bumps the row's recency, `onError` rolls the optimistic user-turn
- *   into a `failed → retry` chip.
- *
- * Dictionary lookup (F-016):
- *   A book icon next to the composer reveals a compact single-word lookup
- *   field. Submitting it calls `GET /define` directly (`defineEntry`) — the
- *   user typed the headword themselves, so the tap-chain's lemmatize +
- *   enrich steps are skipped — and the result renders in the shared
- *   `WordPopover` via `buildWordPopover(word, result, null)`. States:
- *   empty input is a no-op; the popover opens immediately with its
- *   `isLoading` stub; a lookup with no entries closes the stub and shows a
- *   fixed "no entry" notice under the field; a 503 `krdict_unavailable` /
- *   network failure shows fixed error copy (never server prose — F-UP-018);
- *   unmount / a newer lookup aborts the in-flight request. "Add to bank"
- *   inside the popover mines via `mineWord`, mirroring Ttmik's optimistic
- *   flip + rollback + fixed-copy toast contract.
+ *   `onDelta` grows a partial tutor bubble, `onDone` finalises it, bumps the
+ *   row's recency, and triggers auto-naming; `onError` rolls the optimistic
+ *   user-turn into a `failed → retry` chip.
  *
  * "Ask about this" seeding (F-020):
  *   A review surface (Mistakes / TOPIK mock / TOPIK study / Diagnostic) can
@@ -98,20 +109,45 @@
  *   you like to chat about?") renders instead of the default greeting. The
  *   open-state is cleared from history like the F-020 seed.
  *
- * Image-in-chat (Slice 3):
- *   A camera button in the composer opens a file picker; the picked photo
- *   goes to `uploadConversationImage` (Slice 1's `POST /conversation/:id/
- *   image`), which OCRs it and appends ONE user turn — the OCR'd Korean as
- *   `content`, the image block carrying the blob URL + English caption.
- *   The turn renders as a user bubble with the image above its text.
+ * Attachments (F-035 — "+" attach menu, Phase 3D):
+ *   The composer's bottom-left "+" button (`aria-haspopup="menu"`) opens a
+ *   small popup menu (`role="menu"`) with three items — Camera, Upload
+ *   image, Upload document — replacing the old bare camera icon. Camera and
+ *   Upload image both drive `uploadImageFile` (Slice 1/3's
+ *   `uploadConversationImage`, `POST /conversation/:id/image`): the picked
+ *   photo is OCR'd server-side and appends ONE user turn — the OCR'd Korean
+ *   as `content`, an `image` block carrying the blob URL + English caption.
+ *   They differ ONLY in which hidden `<input type="file">` they proxy: the
+ *   camera item's input carries `capture="environment"` (opens the device
+ *   camera directly where the platform supports it); the "Upload image"
+ *   item's input has no `capture` attribute (opens the photo library /
+ *   file picker). Upload document drives `uploadDocumentFile`
+ *   (`uploadConversationFile`, `POST /conversation/:id/file`, F-035
+ *   backend): a `.txt`/`.md` file's text becomes the turn's `content`
+ *   verbatim (no OCR, no blob) and a `file` block carries display metadata
+ *   (name/size/truncated). All three turn types render in the SAME bubble
+ *   shape — the image above the text, or a small file chip above it.
+ *
  *   Client pre-checks (type/size) are convenience only — the server
- *   re-validates (magic bytes, 8 MiB, daily Vision cap). Failures surface
- *   as FIXED copy via `imageUploadErrorMessage` (shared with the Images
- *   screen so the two upload surfaces can't drift); a 409 (stale version)
- *   additionally invalidates the loaded thread so the history effect
- *   refetches the authoritative version. One AbortController per upload,
- *   aborted on unmount AND on conversation switch. OCR'd text is CONTENT —
+ *   re-validates everything (magic bytes / UTF-8 decode, size caps, daily
+ *   Vision cap for images). Failures surface as FIXED copy
+ *   (`imageUploadErrorMessage`, shared with the Images screen; the local
+ *   `docUploadErrorMessage` for documents) — never server prose. A 409
+ *   (stale version) on EITHER upload invalidates the loaded thread so the
+ *   history effect refetches the authoritative version. One shared
+ *   AbortController (`uploadCtrlRef`) covers whichever upload is in
+ *   flight — camera/image/document are mutually exclusive with each other
+ *   AND with a text send (`uploading` gates Send symmetrically) — aborted
+ *   on unmount AND on conversation switch. Uploaded text is CONTENT —
  *   rendered like any message, never through `<Bilingual>`.
+ *
+ *   The menu itself is a lightweight, non-modal popup (NOT `useModalA11y` —
+ *   that hook is for page-covering dialogs with a backdrop + scroll lock;
+ *   this is a transient menu the rest of the page stays interactive
+ *   around). It follows the WAI-ARIA menu-button pattern: `Escape` or a
+ *   click outside closes it and returns focus to the "+" trigger; opening
+ *   moves focus to the first item so keyboard users land inside it
+ *   immediately.
  *
  * Threat model (FU-NF-4 closeout + Slice 2 additions):
  *   - **Streaming abort on unmount AND on conversation switch.** A
@@ -156,6 +192,11 @@
  *   - **localStorage.** Only the boolean sidebar preference is stored;
  *     reads are try/catch'd (privacy mode) and coerced to a boolean —
  *     nothing attacker-controllable flows anywhere sensitive.
+ *   - **Attach-menu focus / keyboard trap avoidance.** The "+" menu is
+ *     non-modal on purpose (see "Attachments" above) — it never locks body
+ *     scroll or traps Tab, so it can never strand keyboard focus if a
+ *     click lands elsewhere without going through the documented close
+ *     paths (Escape / outside click / picking an item).
  */
 import {
   useCallback,
@@ -175,9 +216,6 @@ import { Toggle } from '../components/Toggle';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
-import { WordPopover } from '../components/WordPopover';
-import type { WordPopoverData } from '../components/WordPopover';
-import { useToast } from '../components/useToast';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { useSettings } from '../hooks/useSettings';
@@ -190,14 +228,7 @@ import {
 } from '../lib/chatContext';
 import { cn } from '../lib/cn';
 import { navItem } from '../lib/nav';
-import {
-  buildWordPopover,
-  GLOSS_DICTIONARY_ENTRY,
-  GLOSS_UNAVAILABLE,
-} from '../lib/tapChain';
 import * as conversationService from '../services/conversation';
-import { defineEntry } from '../services/define';
-import { mineWord } from '../services/vocab';
 import { ApiError, getApiBaseUrl } from '../services/api';
 import { errorMessageFor, imageUploadErrorMessage } from '../lib/errorCopy';
 import type {
@@ -208,17 +239,10 @@ import type {
   ConversationsList,
   StoredConversationTurn,
 } from '../types/domain';
+import './Chat.css';
 
 /** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
 const CHAT_NAV = navItem('chat');
-
-/** Quick-reply starter strings shown under composer when hints are on. */
-const HINT_STARTERS: ReadonlyArray<string> = [
-  '제 생각에는',
-  '예를 들어',
-  '반면에',
-  '그렇다면',
-];
 
 /** Default opener used while a NEW (or empty) conversation is active. */
 const FALLBACK_OPENER: ConversationMessage = {
@@ -230,9 +254,9 @@ const FALLBACK_OPENER: ConversationMessage = {
 /**
  * Opener for a FAB-opened fresh conversation (Slice 3 — mockup copy).
  * Message CONTENT like `FALLBACK_OPENER` (rendered as a tutor bubble whose
- * EN line follows the hints toggle), so it is deliberately NOT `<Bilingual>`
- * chrome, and it is never run through `personalise` (that helper rewrites
- * the remote-work greeting specifically).
+ * EN line follows the English toggle), so it is deliberately NOT
+ * `<Bilingual>` chrome, and it is never run through `personalise` (that
+ * helper rewrites the remote-work greeting specifically).
  */
 const ASK_OPENER: ConversationMessage = {
   role: 'tutor',
@@ -240,32 +264,41 @@ const ASK_OPENER: ConversationMessage = {
   en: 'What would you like to chat about?',
 };
 
-/** `accept` filter for the composer's photo input — mirrors the server's
- *  jpeg/png/webp allowlist (convenience only; the server re-sniffs). */
+/** `accept` filter for the composer's photo inputs (camera + image-library
+ *  menu items) — mirrors the server's jpeg/png/webp allowlist (convenience
+ *  only; the server re-sniffs magic bytes). */
 const IMAGE_ACCEPT = 'image/jpeg,image/png,image/webp';
 
 /** Client-side pre-check ceiling — the server's own multer cap is 8 MiB. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-/** Fixed copy when an image upload hit a stale `expected_version` (409).
- *  The thread is refetched (authoritative version) so a retry can succeed. */
-const UPLOAD_CONFLICT_COPY =
-  'This conversation changed — reloading it. Try the photo again.';
+/** `accept` filter for the "Upload document" menu item — mirrors the
+ *  server's plain-text/markdown allowlist (`docAttach.ts` ALLOWED_DOC_MIMES).
+ *  Extensions are included too: some OSes report a bare `.txt`/`.md` with no
+ *  (or a generic) MIME type, which would otherwise fail the browser's picker
+ *  filter even though the server would happily accept the bytes. */
+const DOC_ACCEPT = 'text/plain,text/markdown,.txt,.md';
+
+/** Client-side pre-check ceiling — mirrors the server's 256 KiB cap
+ *  (`docAttach.ts` MAX_DOC_UPLOAD_BYTES; a chat attachment is a note, not a
+ *  book). */
+const MAX_DOC_BYTES = 256 * 1024;
+
+/** Declared-mime allowlist for the client pre-check — mirrors
+ *  `docAttach.ts` ALLOWED_DOC_MIMES. Convenience only (many OSes report an
+ *  empty type for a bare `.txt`, so an empty `file.type` is never rejected
+ *  here); the server's UTF-8 decode is the real authority. */
+const ALLOWED_DOC_TYPES: readonly string[] = ['text/plain', 'text/markdown'];
+
+/** Fixed copy when an attachment upload (image OR document) hit a stale
+ *  `expected_version` (409). The thread is refetched (authoritative
+ *  version) so a retry can succeed. Shared across both upload kinds — the
+ *  cause and the recovery are identical either way. */
+const ATTACHMENT_CONFLICT_COPY =
+  'This conversation changed — reloading it. Try again.';
 
 /** Server start mode — kept here (one screen, one mode) to avoid a config dep. */
 const DEFAULT_START_MODE = 'casual' as const;
-
-/** Fixed copy for a lookup that resolved but matched no KRDICT entry (F-016).
- *  Author-controlled — the server's 404/empty body is never echoed. */
-const DICT_NO_ENTRY_COPY = 'No dictionary entry found for that word.';
-
-/** Fixed copy for the 503 `krdict_unavailable` path (F-UP-018 contract —
- *  the server's own prose never reaches the DOM). */
-const DICT_UNAVAILABLE_COPY =
-  'The dictionary is unavailable right now. Try again later.';
-
-/** Fallback fixed copy for any other lookup failure. */
-const DICT_FAILED_COPY = 'Could not look that word up. Try again.';
 
 /** Fixed copy when a conversation's history fails to load (F-UP-018 —
  *  never the server's prose). */
@@ -293,11 +326,32 @@ const MODE_TITLE_LABELS: Readonly<Record<string, string>> = {
   register_drill: '말투 연습',
 };
 
-/** Inline notice under the dictionary field — friendly status ("no entry")
- *  vs. error (lookup failed) picks the a11y role and the colour. */
-interface DictNotice {
-  tone: 'status' | 'error';
-  text: string;
+/**
+ * Fixed copy for a failed document attach (`POST /conversation/:id/file`,
+ * F-035 backend — see `docAttach.ts`). Kept local (unlike
+ * `imageUploadErrorMessage`) because only Chat attaches documents; there is
+ * no second surface to share copy with. Keyed on the structured
+ * status/code only — server prose (which could include a raw UTF-8 decode
+ * failure detail) is never echoed.
+ */
+function docUploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return err.retryAfter !== undefined
+        ? `Rate-limited. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : 'Rate-limited right now. Wait a moment and try again.';
+    }
+    if (err.status === 413) {
+      return 'That file is too large. Pick one under 256 KB.';
+    }
+    if (err.status === 400) {
+      return "That file couldn't be attached. Use a plain text (.txt or .md) file under 256 KB.";
+    }
+    if (err.code === 'network') {
+      return 'Network unreachable. Check your connection and try again.';
+    }
+  }
+  return 'Attachment failed. Try again.';
 }
 
 /**
@@ -405,8 +459,11 @@ function joinApiPath(path: string): string {
  * Map ONE wire turn (`StoredConversationTurn`, role user/assistant) into a
  * render row (role user/tutor). Image turns carry the OCR'd Korean text as
  * `content` (CONTENT — rendered like any message text); their English
- * caption rides as the bubble's EN line (the hints toggle governs display)
- * and the image itself renders above the text via `row.image`.
+ * caption rides as the bubble's EN line (the English toggle governs
+ * display) and the image itself renders above the text via `row.image`.
+ * Document turns (F-035) carry the document's own text as `content` and a
+ * small file chip (`row.file`) above it — no English caption (there is
+ * none to show).
  */
 function storedTurnToRow(turn: StoredConversationTurn): ThreadRow {
   return {
@@ -415,6 +472,9 @@ function storedTurnToRow(turn: StoredConversationTurn): ThreadRow {
     en: turn.image?.caption_en ?? '',
     ...(turn.image !== undefined
       ? { image: { src: joinApiPath(turn.image.blob_url) } }
+      : {}),
+    ...(turn.file !== undefined
+      ? { file: { name: turn.file.name, truncated: turn.file.truncated } }
       : {}),
   };
 }
@@ -465,6 +525,9 @@ interface ThreadRow extends ConversationMessage {
   failedContent?: string;
   /** Present on image turns (Slice 3) — the photo renders above the text. */
   image?: { src: string };
+  /** Present on document turns (F-035) — a small file chip renders above
+   *  the text. */
+  file?: { name: string; truncated: boolean };
 }
 
 /** Which conversation the thread pane is showing: a server id, or the
@@ -481,7 +544,6 @@ interface LoadedThread {
 
 export function Chat(): JSX.Element {
   const { settings } = useSettings();
-  const { toast } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -535,11 +597,21 @@ export function Chat(): JSX.Element {
   const [touchedAt, setTouchedAt] = useState<ReadonlyMap<number, string>>(
     () => new Map<number, string>(),
   );
-  // Derived sidebar titles (first user message snippet). Learned from a
-  // history load or this session's first send; fallback is mode + date.
+  // Derived sidebar titles (first user message snippet) — the FALLBACK
+  // shown before a real title resolves. Learned from a history load or
+  // this session's first send.
   const [titles, setTitles] = useState<ReadonlyMap<number, string>>(
     () => new Map<number, string>(),
   );
+  // Real titles (F-036) — user-set or Claude auto-generated — learned this
+  // session from a history load's `title` field or a successful
+  // `nameConversation` call. Takes precedence over `titles` and the list
+  // row's own `title` at render (see `rows.map` below); a separate map
+  // (rather than folding into `titles`) keeps "confirmed name" and "derived
+  // guess" from ever being confused with each other.
+  const [confirmedTitles, setConfirmedTitles] = useState<
+    ReadonlyMap<number, string>
+  >(() => new Map<number, string>());
   // Captured once per mount — relative labels don't need to tick live.
   const [nowMs] = useState<number>(() => Date.now());
 
@@ -601,7 +673,11 @@ export function Chat(): JSX.Element {
   // in on the navigation (F-020). Pre-fill only: the user reviews and hits
   // Send themselves, nothing is auto-sent.
   const [input, setInput] = useState<string>(chatSeed?.seedText ?? '');
-  const [hintsOn, setHintsOn] = useState<boolean>(true);
+  // B-020: this is the ONLY thing the switch controls (F-034 removed the
+  // reply-starter chips it used to also gate) — its visible label in the
+  // Topbar now names that purpose directly instead of the ambiguous
+  // "Show hints".
+  const [showEnglish, setShowEnglish] = useState<boolean>(true);
   const [streaming, setStreaming] = useState<boolean>(false);
   const [sendError, setSendError] = useState<string | null>(null);
   // "New chat" in-flight latch — the button is disabled while starting.
@@ -749,8 +825,19 @@ export function Chat(): JSX.Element {
               : new Map(prev).set(detail.id, title),
           );
         }
+        // F-036: a real title (user-set or previously auto-generated) rides
+        // the detail envelope — record it so it wins over the derived
+        // snippet even before the sidebar's own list row catches up.
+        const confirmedTitle = detail.title;
+        if (confirmedTitle !== null) {
+          setConfirmedTitles((prev) =>
+            prev.get(detail.id) === confirmedTitle
+              ? prev
+              : new Map(prev).set(detail.id, confirmedTitle),
+          );
+        }
         setLoaded({ key: detail.id, empty: detail.messages.length === 0 });
-        setAnnounce(`Conversation loaded: ${title ?? 'chat'}`);
+        setAnnounce(`Conversation loaded: ${detail.title ?? title ?? 'chat'}`);
       },
       (err: unknown) => {
         if (ctrl.signal.aborted) return;
@@ -819,18 +906,70 @@ export function Chat(): JSX.Element {
     };
   }, []);
 
-  // ── In-flight image upload tracking (Slice 3) ──────────────────────
+  // ── In-flight attachment upload tracking (image OR document) ───────
   // Same discipline as sends: one controller per upload, aborted on
-  // unmount and on conversation switch (a late OCR turn must never append
-  // into a different thread).
+  // unmount and on conversation switch (a late OCR/doc turn must never
+  // append into a different thread). Shared across camera/image/document —
+  // only one attachment can be in flight at a time (the menu items and the
+  // Send button all gate on `uploading`).
   const [uploading, setUploading] = useState<boolean>(false);
   const uploadCtrlRef = useRef<AbortController | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Three hidden inputs behind the "+" menu — see the "Attachments" header
+  // section for why camera/image are two separate inputs (the `capture`
+  // attribute) rather than one toggled dynamically.
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const docInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     return () => {
       uploadCtrlRef.current?.abort();
     };
   }, []);
+
+  // ── "+" attach menu (F-035) ─────────────────────────────────────────
+  // Non-modal popup menu (WAI-ARIA menu-button pattern) — see the header's
+  // "Attachments" section for why this is deliberately NOT useModalA11y.
+  const [attachMenuOpen, setAttachMenuOpen] = useState<boolean>(false);
+  const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const attachFirstItemRef = useRef<HTMLButtonElement | null>(null);
+
+  const closeAttachMenu = useCallback((refocusTrigger: boolean): void => {
+    setAttachMenuOpen(false);
+    if (refocusTrigger) attachTriggerRef.current?.focus();
+  }, []);
+
+  const toggleAttachMenu = useCallback((): void => {
+    setAttachMenuOpen((open) => !open);
+  }, []);
+
+  // Focus the first item when the menu opens (keyboard users land inside
+  // it immediately); Escape closes + refocuses the trigger; a mousedown
+  // outside the menu AND outside the trigger closes it without moving
+  // focus (the click itself is left to do whatever it was going to do).
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    attachFirstItemRef.current?.focus();
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeAttachMenu(true);
+      }
+    };
+    const onPointerDown = (e: MouseEvent): void => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (attachMenuRef.current?.contains(target)) return;
+      if (attachTriggerRef.current?.contains(target)) return;
+      closeAttachMenu(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('mousedown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('mousedown', onPointerDown);
+    };
+  }, [attachMenuOpen, closeAttachMenu]);
 
   const retry = (): void => {
     refetch();
@@ -849,6 +988,7 @@ export function Chat(): JSX.Element {
       setLocalRows((prev) => [
         {
           id,
+          title: null,
           mode,
           target_register: null,
           version: 1,
@@ -981,6 +1121,43 @@ export function Chat(): JSX.Element {
     [],
   );
 
+  // Per-session latch: at most one `nameConversation` call in flight (or
+  // already answered) per conversation id, so repeatedly calling
+  // `triggerAutoName` after every turn never spams the endpoint even though
+  // the endpoint itself is idempotent server-side.
+  const namedRef = useRef<ReadonlySet<number>>(new Set());
+
+  /**
+   * F-036 — fire-and-forget auto-naming trigger. Called once an assistant
+   * turn is durably persisted (`runStream`'s `onDone`). `nameConversation`
+   * 200s immediately with NO Claude call if the conversation is already
+   * named, so calling this after every turn is cheap; `namedRef` still
+   * latches so a session only ever makes ONE round trip per conversation
+   * once that round trip has succeeded. A failure releases the latch
+   * (silently — this is a cosmetic enhancement, never a user-facing error)
+   * so a transient failure gets another chance on the next turn.
+   */
+  const triggerAutoName = useCallback((convId: number): void => {
+    if (namedRef.current.has(convId)) return;
+    namedRef.current = new Set(namedRef.current).add(convId);
+    void conversationService.nameConversation(convId).then(
+      (res) => {
+        if (!mountedRef.current) return;
+        setConfirmedTitles((prev) =>
+          prev.get(convId) === res.title
+            ? prev
+            : new Map(prev).set(convId, res.title),
+        );
+      },
+      () => {
+        // Release the latch so a later turn can retry — see doc above.
+        namedRef.current = new Set(
+          [...namedRef.current].filter((id) => id !== convId),
+        );
+      },
+    );
+  }, []);
+
   /**
    * Upload one photo onto the active conversation (Slice 3). The server
    * OCRs it and appends ONE user turn (OCR'd Korean `content` + image
@@ -1053,10 +1230,96 @@ export function Chat(): JSX.Element {
             // Stale expected_version — drop the loaded-thread cache so the
             // history effect refetches (thread AND authoritative version).
             setLoaded(null);
-            setSendError(UPLOAD_CONFLICT_COPY);
+            setSendError(ATTACHMENT_CONFLICT_COPY);
             return;
           }
           setSendError(imageUploadErrorMessage(err));
+        } finally {
+          if (uploadCtrlRef.current === ctrl) uploadCtrlRef.current = null;
+          if (mountedRef.current) setUploading(false);
+        }
+      })();
+    },
+    [
+      activeKey,
+      ensureActiveConversationId,
+      learnTitleFromSend,
+      selectedKey,
+      streaming,
+      threadReady,
+      uploading,
+    ],
+  );
+
+  /**
+   * Attach one text document onto the active conversation (F-035). Mirrors
+   * `uploadImageFile`'s contract exactly (shared `uploading`/`uploadCtrlRef`
+   * so the two are mutually exclusive; same lazy-start / version / abort
+   * discipline; same 409 → invalidate-and-refetch handling) but targets
+   * `uploadConversationFile` and the document pre-checks/copy instead of
+   * the image ones — kept as a separate function rather than a shared
+   * generic because the two pre-check shapes (mime allowlist vs. UTF-8
+   * text) and result shapes genuinely differ, and a two-call-site generic
+   * would add more indirection than the ~30 duplicated lines it removes.
+   */
+  const uploadDocumentFile = useCallback(
+    (file: File): void => {
+      if (uploading || streaming || !threadReady) return;
+      if (file.size > MAX_DOC_BYTES) {
+        setSendError(
+          docUploadErrorMessage(
+            new ApiError('client size pre-check', {
+              status: 413,
+              code: 'payload_too_large',
+            }),
+          ),
+        );
+        return;
+      }
+      if (file.type !== '' && !ALLOWED_DOC_TYPES.includes(file.type)) {
+        setSendError(
+          docUploadErrorMessage(
+            new ApiError('client type pre-check', {
+              status: 400,
+              code: 'unsupported_document',
+            }),
+          ),
+        );
+        return;
+      }
+      setSendError(null);
+      setUploading(true);
+      if (selectedKey === null && typeof activeKey === 'number') {
+        setSelectedKey(activeKey);
+      }
+      const ctrl = new AbortController();
+      uploadCtrlRef.current = ctrl;
+      void (async (): Promise<void> => {
+        try {
+          const convId = await ensureActiveConversationId();
+          if (!mountedRef.current || ctrl.signal.aborted) return;
+          const result = await conversationService.uploadConversationFile(
+            convId,
+            file,
+            versionRef.current,
+            ctrl.signal,
+          );
+          if (ctrl.signal.aborted) return;
+          versionRef.current = result.version;
+          setMsgs((prev) => [...prev, storedTurnToRow(result.turn)]);
+          learnTitleFromSend(convId, result.turn.content);
+          setTouchedAt((prev) =>
+            new Map(prev).set(convId, new Date().toISOString()),
+          );
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          if (err instanceof ApiError && err.status === 409) {
+            setLoaded(null);
+            setSendError(ATTACHMENT_CONFLICT_COPY);
+            return;
+          }
+          setSendError(docUploadErrorMessage(err));
         } finally {
           if (uploadCtrlRef.current === ctrl) uploadCtrlRef.current = null;
           if (mountedRef.current) setUploading(false);
@@ -1141,6 +1404,10 @@ export function Chat(): JSX.Element {
               setTouchedAt((prev) =>
                 new Map(prev).set(convId, new Date().toISOString()),
               );
+              // F-036: the assistant turn is now durably persisted — this is
+              // "after the first exchange" for a brand-new conversation, and
+              // a cheap idempotent no-op for one that's already named.
+              triggerAutoName(convId);
             },
             onError: (err: Error): void => {
               // Marker-based; the catch below also runs and is the
@@ -1201,7 +1468,7 @@ export function Chat(): JSX.Element {
         }
       }
     },
-    [],
+    [triggerAutoName],
   );
 
   /**
@@ -1337,170 +1604,6 @@ export function Chat(): JSX.Element {
     }
   };
 
-  // ── Dictionary lookup (F-016) ──────────────────────────────────────
-  // Book button toggles a compact single-word field under the composer;
-  // submitting it runs `defineEntry` → `buildWordPopover` → WordPopover.
-  const [dictOpen, setDictOpen] = useState<boolean>(false);
-  const [dictInput, setDictInput] = useState<string>('');
-  const [dictPop, setDictPop] = useState<WordPopoverData | null>(null);
-  const [dictLoading, setDictLoading] = useState<boolean>(false);
-  const [dictNotice, setDictNotice] = useState<DictNotice | null>(null);
-  // Session-scoped set of banked headwords — re-looking one up shows the
-  // "already banked" pill (same convention as Ttmik's minedIds).
-  const [dictMined, setDictMined] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
-  );
-  // Lookup-scoped controller — aborted on a newer lookup, popover close,
-  // or unmount, so a late resolve can never set state on a dead tree.
-  const dictCtrlRef = useRef<AbortController | null>(null);
-  useEffect(() => {
-    return () => {
-      dictCtrlRef.current?.abort();
-    };
-  }, []);
-
-  const toggleDict = useCallback((): void => {
-    // Toggling always clears the notice — a stale "no entry" line must not
-    // survive a close/reopen. The typed word is kept (cheap undo). The two
-    // set calls stay side by side (never one inside the other's updater —
-    // updaters must be pure).
-    setDictNotice(null);
-    setDictOpen((open) => !open);
-  }, []);
-
-  /**
-   * Run one lookup. The popover opens immediately with its `isLoading`
-   * stub (same gesture as Ttmik's tap path); a no-entry result or a
-   * failure closes the stub and surfaces fixed copy under the field
-   * instead — WordPopover has no error body, and an inline line next to
-   * where the user just typed reads better than a near-empty dialog.
-   */
-  const lookupWord = useCallback((): void => {
-    const word = dictInput.trim();
-    if (!word) return;
-    dictCtrlRef.current?.abort();
-    const ctrl = new AbortController();
-    dictCtrlRef.current = ctrl;
-
-    setDictNotice(null);
-    setDictLoading(true);
-    setDictPop({
-      kr: word,
-      en: '',
-      pos: 'word',
-      ex_kr: '',
-      ex_en: '',
-      mined: dictMined.has(word),
-    });
-
-    void defineEntry(word, ctrl.signal).then(
-      (result) => {
-        if (ctrl.signal.aborted) return;
-        if (result.entries.length === 0) {
-          // 200-with-empty-entries — the "typo / not in KRDICT" path.
-          setDictPop(null);
-          setDictLoading(false);
-          setDictNotice({ tone: 'status', text: DICT_NO_ENTRY_COPY });
-          return;
-        }
-        // Direct typed lookup: the user supplied the headword, so the
-        // define result alone is the popover (no lemmatize/enrich pass).
-        const popover = buildWordPopover(word, result, null);
-        popover.mined = dictMined.has(popover.kr);
-        setDictPop(popover);
-        setDictLoading(false);
-      },
-      (err: unknown) => {
-        if (ctrl.signal.aborted) return;
-        if (err instanceof ApiError && err.code === 'canceled') return;
-        setDictPop(null);
-        setDictLoading(false);
-        if (err instanceof ApiError && err.status === 404) {
-          // Older server contract surfaced "no entry" as a 404 — same
-          // friendly copy, never the server body.
-          setDictNotice({ tone: 'status', text: DICT_NO_ENTRY_COPY });
-          return;
-        }
-        const text =
-          err instanceof ApiError && err.code === 'krdict_unavailable'
-            ? DICT_UNAVAILABLE_COPY
-            : errorMessageFor(err, DICT_FAILED_COPY);
-        setDictNotice({ tone: 'error', text });
-      },
-    );
-  }, [dictInput, dictMined]);
-
-  /** Close the popover and abort any still-pending lookup. */
-  const closeDictPopover = useCallback((): void => {
-    dictCtrlRef.current?.abort();
-    dictCtrlRef.current = null;
-    setDictPop(null);
-    setDictLoading(false);
-  }, []);
-
-  const onDictKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      // Mirror the search button's disabled state exactly: Enter must not
-      // restart an in-flight lookup (it would abort + refire behind a
-      // visibly disabled button) and must not submit whitespace.
-      if (dictLoading || !dictInput.trim()) return;
-      lookupWord();
-    }
-  };
-
-  /**
-   * Add-to-bank (FU-NF-33) — Ttmik's contract verbatim: optimistic flip,
-   * rollback + fixed-copy toast on a real failure, a close-aborted request
-   * swallowed. Sentinel glosses are never persisted as the word's English.
-   */
-  const handleDictAdd = useCallback(
-    (d: WordPopoverData): void | Promise<void> => {
-      const lemma = d.kr;
-      setDictMined((prev) => {
-        const next = new Set(prev);
-        next.add(lemma);
-        return next;
-      });
-
-      // Reuse the lookup-scoped controller so a popover close cancels the
-      // bank too; fall back to a fresh one if it was already cleared.
-      const ctrl = dictCtrlRef.current ?? new AbortController();
-      dictCtrlRef.current = ctrl;
-
-      return mineWord(
-        {
-          lemma,
-          ...(d.en &&
-          d.en !== GLOSS_DICTIONARY_ENTRY &&
-          d.en !== GLOSS_UNAVAILABLE
-            ? { english: d.en }
-            : {}),
-          ...(d.pos && d.pos !== 'word' ? { pos: d.pos } : {}),
-          ...(d.krdictEntryId !== undefined
-            ? { krdictEntryId: d.krdictEntryId }
-            : {}),
-        },
-        ctrl.signal,
-      ).then(
-        () => undefined,
-        (err: unknown) => {
-          if (err instanceof ApiError && err.code === 'canceled') return;
-          setDictMined((prev) => {
-            if (!prev.has(lemma)) return prev;
-            const next = new Set(prev);
-            next.delete(lemma);
-            return next;
-          });
-          toast({ message: "Couldn't bank — try again", tone: 'error' });
-          // Re-throw so WordPopover rolls its "Added" button back too.
-          throw err instanceof Error ? err : new Error('bank failed');
-        },
-      );
-    },
-    [toast],
-  );
-
   return (
     <section
       className="screen km-chat"
@@ -1515,11 +1618,21 @@ export function Chat(): JSX.Element {
         titleId="chat-title"
         eyebrow={<Bilingual en={CHAT_NAV.eyebrow} kr={CHAT_NAV.krEyebrow} />}
         right={
-          <Toggle
-            ariaLabel="Show hints"
-            checked={hintsOn}
-            onChange={setHintsOn}
-          />
+          // B-020: the switch used to render with only an `aria-label` — its
+          // purpose was invisible to sighted users. A visible bilingual
+          // caption now sits beside it (same convention as Settings' named
+          // toggle rows); the Toggle's own `ariaLabel` stays the
+          // authoritative accessible name for AT.
+          <span className="km-chat__engToggle">
+            <span className="km-chat__engToggleLabel km-eyebrow">
+              <Bilingual en="English" kr="영어" />
+            </span>
+            <Toggle
+              ariaLabel="Show English translations"
+              checked={showEnglish}
+              onChange={setShowEnglish}
+            />
+          </span>
         }
       />
 
@@ -1589,7 +1702,15 @@ export function Chat(): JSX.Element {
             >
               {rows.map((row) => {
                 const isActive = row.id === activeKey;
-                const title = titles.get(row.id) ?? fallbackTitle(row);
+                // F-036 precedence: a real title (this session's naming call
+                // or the server's own list row) wins; otherwise fall back to
+                // the derived snippet, then mode + date. See the header's
+                // "Auto-naming" section.
+                const title =
+                  confirmedTitles.get(row.id) ??
+                  row.title ??
+                  titles.get(row.id) ??
+                  fallbackTitle(row);
                 const when = relativeTime(row.updated_at, nowMs);
                 return (
                   <li key={row.id}>
@@ -1728,13 +1849,13 @@ export function Chat(): JSX.Element {
               ) : (
                 <>
                   {baseRows.map((m, i) => (
-                    <Bubble key={`base-${String(i)}`} msg={m} showEn={hintsOn} />
+                    <Bubble key={`base-${String(i)}`} msg={m} showEn={showEnglish} />
                   ))}
                   {msgs.map((m, i) => (
                     <Bubble
                       key={i}
                       msg={m}
-                      showEn={hintsOn}
+                      showEn={showEnglish}
                       onRetry={
                         m.status === 'failed' && !streaming
                           ? () => {
@@ -1758,11 +1879,26 @@ export function Chat(): JSX.Element {
                 </span>
               </label>
               <div className="km-chat__composerRow">
-                {/* 📷 upload (Slice 3) — mockup places it left of the field.
-                    Hidden input holds the actual picker; the visible button
-                    proxies a click so the affordance stays a real button. */}
+                {/* Three hidden pickers behind the "+" menu — camera and
+                    image share IMAGE_ACCEPT/uploadImageFile and differ only
+                    in `capture` (see the header's "Attachments" section). */}
                 <input
-                  ref={fileInputRef}
+                  ref={cameraInputRef}
+                  type="file"
+                  accept={IMAGE_ACCEPT}
+                  capture="environment"
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  data-testid="chat-camera-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (file) uploadImageFile(file);
+                  }}
+                />
+                <input
+                  ref={imageInputRef}
                   type="file"
                   accept={IMAGE_ACCEPT}
                   hidden
@@ -1776,18 +1912,83 @@ export function Chat(): JSX.Element {
                     if (file) uploadImageFile(file);
                   }}
                 />
-                <Button
-                  variant="ghost"
-                  size="md"
-                  onClick={() => {
-                    fileInputRef.current?.click();
+                <input
+                  ref={docInputRef}
+                  type="file"
+                  accept={DOC_ACCEPT}
+                  hidden
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  data-testid="chat-file-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (file) uploadDocumentFile(file);
                   }}
-                  disabled={uploading || streaming || !threadReady}
-                  aria-label="Upload a photo · 사진 올리기"
-                  aria-busy={uploading ? 'true' : 'false'}
-                >
-                  <Icon name="camera" size={16} />
-                </Button>
+                />
+                <div className="km-chat__attach">
+                  <Button
+                    ref={attachTriggerRef}
+                    variant="ghost"
+                    size="md"
+                    onClick={toggleAttachMenu}
+                    disabled={uploading || streaming || !threadReady}
+                    aria-label="Attach"
+                    aria-haspopup="menu"
+                    aria-expanded={attachMenuOpen}
+                    aria-controls="chat-attach-menu"
+                    aria-busy={uploading ? 'true' : 'false'}
+                  >
+                    <Icon name="plus" size={16} />
+                  </Button>
+                  {attachMenuOpen ? (
+                    <div
+                      ref={attachMenuRef}
+                      id="chat-attach-menu"
+                      role="menu"
+                      aria-label="Attach"
+                      className="km-chat__attachMenu"
+                    >
+                      <button
+                        ref={attachFirstItemRef}
+                        type="button"
+                        role="menuitem"
+                        className="km-chat__attachItem focusring"
+                        onClick={() => {
+                          closeAttachMenu(true);
+                          cameraInputRef.current?.click();
+                        }}
+                      >
+                        <Icon name="camera" size={16} />
+                        <Bilingual en="Camera" kr="카메라" />
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="km-chat__attachItem focusring"
+                        onClick={() => {
+                          closeAttachMenu(true);
+                          imageInputRef.current?.click();
+                        }}
+                      >
+                        <Icon name="image" size={16} />
+                        <Bilingual en="Upload image" kr="이미지 업로드" />
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="km-chat__attachItem focusring"
+                        onClick={() => {
+                          closeAttachMenu(true);
+                          docInputRef.current?.click();
+                        }}
+                      >
+                        <Icon name="upload" size={16} />
+                        <Bilingual en="Upload document" kr="문서 업로드" />
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
                 <textarea
                   id="chat-input"
                   ref={composerRef}
@@ -1813,117 +2014,21 @@ export function Chat(): JSX.Element {
                 >
                   <Icon name="send" size={16} />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="md"
-                  onClick={toggleDict}
-                  aria-label="Dictionary lookup"
-                  aria-expanded={dictOpen}
-                  aria-controls="chat-dict-row"
-                >
-                  <Icon name="book" size={16} />
-                </Button>
               </div>
-              {dictOpen ? (
-                <div id="chat-dict-row" className="km-chat__dictRow">
-                  <label
-                    className="km-chat__composerLabel"
-                    htmlFor="chat-dict-input"
-                  >
-                    <span className="km-eyebrow">
-                      <Bilingual en="Dictionary" kr="사전" />
-                    </span>
-                  </label>
-                  <div className="km-chat__dictInputRow">
-                    <input
-                      id="chat-dict-input"
-                      type="text"
-                      className="kr focusring km-chat__dictInput"
-                      value={dictInput}
-                      onChange={(e) => {
-                        setDictInput(e.target.value);
-                      }}
-                      onKeyDown={onDictKeyDown}
-                      placeholder="Korean word — e.g. 사전"
-                      aria-label="Dictionary word"
-                      autoComplete="off"
-                    />
-                    <Button
-                      variant="gold"
-                      size="md"
-                      onClick={lookupWord}
-                      disabled={!dictInput.trim() || dictLoading}
-                      aria-label="Look up word"
-                      aria-busy={dictLoading ? 'true' : 'false'}
-                    >
-                      <Icon name="search" size={16} />
-                    </Button>
-                  </div>
-                  {dictNotice ? (
-                    <div
-                      role={dictNotice.tone === 'error' ? 'alert' : 'status'}
-                      className={`km-chat__dictNotice${
-                        dictNotice.tone === 'error'
-                          ? ' km-chat__dictNotice--error'
-                          : ''
-                      }`}
-                    >
-                      {dictNotice.text}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
               {uploading ? (
                 <div role="status" className="km-chat__uploadStatus">
-                  <Bilingual en="Uploading photo…" kr="사진 업로드 중…" />
+                  <Bilingual en="Uploading…" kr="업로드 중…" />
                 </div>
               ) : null}
               {sendError ? (
-                <div
-                  role="alert"
-                  className="km-chat__sendError"
-                  style={{
-                    marginTop: 8,
-                    fontSize: 13,
-                    color: 'var(--vermilion)',
-                  }}
-                >
+                <div role="alert" className="km-chat__sendError">
                   {sendError}
-                </div>
-              ) : null}
-              {hintsOn ? (
-                <div
-                  className="km-chat__hints"
-                  role="group"
-                  aria-label="Reply starters"
-                >
-                  {HINT_STARTERS.map((h) => (
-                    <button
-                      key={h}
-                      type="button"
-                      className="km-chat__hint focusring"
-                      onClick={() => {
-                        setInput((prev) => (prev ? `${prev} ${h}` : h));
-                      }}
-                    >
-                      {h}
-                    </button>
-                  ))}
                 </div>
               ) : null}
             </div>
           </div>
         </div>
       )}
-
-      {dictPop ? (
-        <WordPopover
-          data={dictPop}
-          onClose={closeDictPopover}
-          onAdd={handleDictAdd}
-          isLoading={dictLoading}
-        />
-      ) : null}
     </section>
   );
 }
@@ -1969,6 +2074,19 @@ function Bubble({
             data-testid="chat-bubble-image"
           />
         ) : null}
+        {msg.file ? (
+          // F-035 document turn — a small file chip above the text (its own
+          // content, below, IS the document's text — nothing more to show).
+          <div className="km-chat__fileChip" data-testid="chat-bubble-file">
+            <Icon name="upload" size={14} />
+            <span className="km-chat__fileName">{msg.file.name}</span>
+            {msg.file.truncated ? (
+              <span className="km-chat__fileTruncated">
+                <Bilingual en="(truncated)" kr="(일부만)" />
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <div className="kr km-chat__text">{msg.kr}</div>
         {showEn && msg.en ? (
           <div className="km-chat__en">{msg.en}</div>
@@ -1979,15 +2097,6 @@ function Bubble({
             className="km-chat__retry focusring"
             onClick={onRetry}
             aria-label="Retry sending message"
-            style={{
-              marginTop: 6,
-              fontSize: 12,
-              color: 'var(--vermilion)',
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              padding: 0,
-            }}
           >
             <Bilingual en="failed — retry" kr="실패 — 다시 시도" />
           </button>

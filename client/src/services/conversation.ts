@@ -31,11 +31,13 @@ import { ApiError, api, getApiBaseUrl } from './api';
 import { buildMultipartConfig } from './images';
 import { streamSse, type SseEvent } from './sseStream';
 import type {
+  AppendFileTurnResult,
   AppendImageTurnResult,
   AppendMessageBody,
   AppendMessageResult,
   ConversationDetailResult,
   ConversationsList,
+  NameConversationResult,
   StartConversationBody,
   StartConversationResult,
 } from '../types/domain';
@@ -111,6 +113,56 @@ export async function uploadConversationImage(
     `/conversation/${String(conversationId)}/image`,
     form,
     buildMultipartConfig(signal),
+  );
+}
+
+/**
+ * POST /conversation/:id/file — attach one text document onto a conversation
+ * (multipart `file` field + `expected_version` text field, F-035 attach).
+ *
+ * The server accepts `text/plain` / `text/markdown` only, verifies the BYTES
+ * are valid UTF-8 (never trusting the declared mime), and appends ONE user
+ * turn whose `content` is the (bounded, injection-checked) document text and
+ * whose `file` block carries display metadata (name/size/type/truncated) —
+ * no blob store, no OCR. Failures surface as `ApiError` (400 not UTF-8 text /
+ * empty / rejected content, 404 not the user's conversation, 409 stale
+ * `expected_version` — refetch via `getConversation` and retry, 413 over the
+ * 256 KiB cap). A failure persists nothing, so a retry is safe.
+ */
+export async function uploadConversationFile(
+  conversationId: number,
+  file: File,
+  expectedVersion: number,
+  signal?: AbortSignal,
+): Promise<AppendFileTurnResult> {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  form.append('expected_version', String(expectedVersion));
+
+  return api.post<AppendFileTurnResult>(
+    `/conversation/${String(conversationId)}/file`,
+    form,
+    buildMultipartConfig(signal),
+  );
+}
+
+/**
+ * POST /conversation/:id/name — F-036 auto-naming trigger. Idempotent: an
+ * already-named conversation (user rename OR an earlier auto-name) 200s
+ * with the EXISTING title and `generated: false`, with no Claude call — so
+ * callers may invoke this liberally (e.g. once per completed turn) without
+ * worrying about duplicate spend. A conversation with no messages yet 409s
+ * (`ApiError`); the caller should only call this once at least one
+ * user/assistant exchange has been persisted.
+ */
+export async function nameConversation(
+  conversationId: number,
+  signal?: AbortSignal,
+): Promise<NameConversationResult> {
+  return api.post<NameConversationResult>(
+    `/conversation/${String(conversationId)}/name`,
+    undefined,
+    signal !== undefined ? { signal } : undefined,
   );
 }
 
