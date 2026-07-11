@@ -138,6 +138,78 @@ describe('POST /tickets', () => {
   });
 });
 
+describe('POST /tickets — source_page (F-127 global "!" FAB)', () => {
+  it('files a ticket with source_page → 201, the path comes back verbatim', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'suggestion',
+      title: 'Add a dark mode toggle',
+      body: 'Would be nice.',
+      source_page: '/learn/writing',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.ticket.source_page).toBe('/learn/writing');
+    // source_page is UI context, not identity — the anonymity assertion
+    // still holds with it present.
+    assertAnonymized(res.body);
+  });
+
+  it('files a ticket WITHOUT source_page → 201, the column is null (not the Settings tile flow)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/tickets')
+      .send({ type: 'bug', title: 'no page context', body: 'b' });
+    expect(res.status).toBe(201);
+    expect(res.body.ticket.source_page).toBeNull();
+  });
+
+  it('rejects an empty-string source_page → 400 (omit, don’t empty-string, when there is no context)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 't',
+      body: 'b',
+      source_page: '',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an over-length source_page → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 't',
+      body: 'b',
+      source_page: '/' + 'a'.repeat(200),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('a ticket filed with source_page carries it on /mine and /community, still anonymized (REVIEW_backend.md SF-2)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.post('/tickets').send({
+      type: 'bug',
+      title: 'source-page round trip',
+      body: 'b',
+      source_page: '/progress',
+    });
+
+    const mine = await agent.get('/tickets/mine');
+    expect(mine.status).toBe(200);
+    expect(mine.body.tickets[0].source_page).toBe('/progress');
+
+    const community = await agent.get('/tickets/community');
+    expect(community.status).toBe(200);
+    expect(community.body.tickets[0].source_page).toBe('/progress');
+    // The two properties ("carries source_page" and "still identity-free")
+    // must hold SIMULTANEOUSLY on the same community payload — a careless
+    // future `SELECT t.*`-style refactor that leaked identity alongside
+    // source_page specifically wouldn't necessarily be caught by either
+    // property being asserted in isolation elsewhere in this file.
+    assertAnonymized(community.body);
+  });
+});
+
 describe('GET /tickets/mine', () => {
   it('returns the caller own tickets only, recent first', async () => {
     const a = await registerUser(t.app, pg.pool);
@@ -311,6 +383,34 @@ describe('PATCH /tickets/:id', () => {
       .patch(`/tickets/${create.body.ticket.id}`)
       .send({ status: 'wontfix', expected_version: 1 });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects source_page on PATCH — page context is set once at filing, never rewritten (REVIEW_backend.md SF-1)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 't',
+      body: 'b',
+      source_page: '/learn/writing',
+    });
+    const id = create.body.ticket.id;
+    const res = await agent.patch(`/tickets/${id}`).send({
+      title: 'still edits title fine',
+      source_page: '/hijack',
+      expected_version: 1,
+    });
+    // PatchBodySchema has no `source_page` key and is `.strict()` — an
+    // unknown key 400s the whole request before the handler ever runs, it
+    // is not silently dropped/ignored. This proves that guarantee rather
+    // than just reading the schema: a future edit that added a
+    // `source_page` key to PatchBodySchema (e.g. a "re-tag the page"
+    // feature) would flip this test from 400 to 200 and be caught here.
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+    // The ticket itself must be untouched by the rejected request.
+    const mine = await agent.get('/tickets/mine');
+    expect(mine.body.tickets[0].source_page).toBe('/learn/writing');
+    expect(mine.body.tickets[0].title).toBe('t');
   });
 });
 

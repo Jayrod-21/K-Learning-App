@@ -2281,6 +2281,16 @@ export interface CreateTicketBody {
   type: TicketType;
   title: string;
   body: string;
+  /**
+   * F-127: the app PATH (never a label — see nav.ts `pageNameForPath`) the
+   * global "!" FAB was tapped from, e.g. `/learn/writing`. Omit entirely
+   * (never send an empty string) when there is no known page context —
+   * mirrors the server's Zod schema (routes/tickets.ts), which stores a
+   * genuine SQL NULL only when the field is absent. Client-reported UI
+   * context, NOT author-identifying — orthogonal to the anonymity contract
+   * this module's header describes.
+   */
+  sourcePage?: string;
 }
 
 /**
@@ -2295,6 +2305,11 @@ export interface OwnTicket {
   body: string;
   status: TicketStatus;
   version: number;
+  /** F-127: the app path this ticket was filed from, or `null` when filed
+   *  without page context (pre-058 rows, or the Settings tile). Feed this
+   *  PATH — not this string re-labeled by hand — into `pageNameForPath`
+   *  (lib/nav.ts) to render "Reported from: <name>". */
+  sourcePage: string | null;
   commentCount: number;
   createdAt: string;
   updatedAt: string;
@@ -2310,6 +2325,10 @@ export interface CommunityTicket {
   title: string;
   body: string;
   status: TicketStatus;
+  /** F-127: same contract as `OwnTicket.sourcePage` — a path, or `null`.
+   *  Client-reported UI context, NOT author-identifying (safe on the
+   *  anonymized community feed for the same reason `type`/`title` are). */
+  sourcePage: string | null;
   commentCount: number;
   /** Whether the CALLER filed this ticket — reveals nothing about anyone else. */
   isMine: boolean;

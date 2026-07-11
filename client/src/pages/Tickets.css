@@ -127,6 +127,25 @@
   color: var(--paper-mute);
 }
 
+/* F-127 — "Reported from: <page>" / "Filing from: <page>" hints. Shares
+ * the row-meta size/color; a dedicated class in case the two ever need to
+ * diverge (e.g. a future icon). */
+.km-tickets__source-page {
+  display: block;
+}
+
+.km-tickets__file-source {
+  margin: -4px 0 12px;
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+}
+
+.km-tickets__detail-source {
+  margin: -4px 0 12px;
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+}
+
 .km-tickets__row-badges {
   display: flex;
   flex-wrap: wrap;

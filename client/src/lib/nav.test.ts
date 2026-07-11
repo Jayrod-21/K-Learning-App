@@ -14,6 +14,7 @@ import {
   PRIMARY_TAB_IDS,
   SECONDARY_IDS,
   navItem,
+  pageNameForPath,
 } from './nav';
 
 describe('nav manifest (P1.1)', () => {
@@ -106,5 +107,48 @@ describe('nav manifest (P1.1)', () => {
         /[.!?…]$/,
       );
     }
+  });
+});
+
+describe('pageNameForPath (F-127 SHOULD-FIX: tier-2 prefix/segment-boundary coverage)', () => {
+  // Tier 1 (exact match) is already exercised indirectly by every other
+  // NAV_ITEMS-driven test in this file's suite; not re-tested here.
+
+  it('resolves a nested dynamic route to its parent NavItem\'s label (tier 2)', () => {
+    // /uploads/:id is a detail view with no NavItem of its own — this is
+    // the JSDoc's own example (nav.ts pageNameForPath header).
+    expect(pageNameForPath('/uploads/42')).toBe('Uploads');
+  });
+
+  it('picks the LONGEST matching prefix when more than one NavItem could match', () => {
+    // '/review/vocab/123' starts with both '/review/' (label "Library")
+    // and '/review/vocab/' (label "Vocabulary") — the longer, more
+    // specific item must win, not whichever happens first in NAV_ITEMS.
+    expect(pageNameForPath('/review/vocab/123')).toBe('Vocabulary');
+    // Sanity: the shorter parent alone still resolves as tier 1 (exact).
+    expect(pageNameForPath('/review')).toBe('Library');
+  });
+
+  it('does NOT tier-2-match a sibling path that merely shares characters (segment boundary required)', () => {
+    // '/uploadsx' shares the literal prefix "/uploads" but is not a real
+    // sub-path (no '/' boundary) — must fall through to tier 3 (raw path),
+    // not be mistaken for '/uploads/x'.
+    expect(pageNameForPath('/uploadsx')).toBe('/uploadsx');
+  });
+
+  it('never lets "/" win a tier-2 "longest prefix" contest for an unrelated route', () => {
+    // Every path starts with '/', so root ('/', label "Today") would
+    // spuriously "prefix-match" anything via `${p}/` if not excluded —
+    // nav.ts explicitly guards this. An unmapped route must fall to the
+    // raw-path fallback (tier 3), never resolve to "Today".
+    expect(pageNameForPath('/some/unmapped-route')).toBe(
+      '/some/unmapped-route',
+    );
+  });
+
+  it('falls back to the raw pathname for a wholly unmapped route (tier 3)', () => {
+    expect(pageNameForPath('/totally/not/a/route')).toBe(
+      '/totally/not/a/route',
+    );
   });
 });

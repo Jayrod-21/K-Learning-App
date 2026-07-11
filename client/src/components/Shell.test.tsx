@@ -10,6 +10,11 @@
  *
  * ChatFab and the Outlet page render for real (no heavy providers are
  * required — Shell's subtree hooks all have null-safe defaults).
+ *
+ * FeedbackFab (F-127, global "!" button) tests live in their own describe
+ * block below — it's rendered as a Shell-level sibling of ChatFab/Outlet,
+ * same as ChatFab itself, so it's exercised the same way: render the real
+ * Shell + a routed probe, no mocks.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -21,8 +26,18 @@ import { LEARN_MENU_EXIT_MS } from './LearnMenu';
 
 function LocationProbe(): JSX.Element {
   const loc = useLocation();
-  return <div data-testid="pathname">{loc.pathname}</div>;
+  return (
+    <>
+      <div data-testid="pathname">{loc.pathname}</div>
+      {/* F-127: exposes the router state a navigation carried, so the
+       *  FeedbackFab tests can assert on the exact { compose, sourcePage }
+       *  payload without re-implementing Tickets.tsx's own state reading. */}
+      <div data-testid="state">{JSON.stringify(loc.state)}</div>
+    </>
+  );
 }
+
+const FEEDBACK_FAB_NAME = 'Report feedback · 피드백 보내기';
 
 function renderShell(initialPath = '/'): void {
   render(
@@ -238,5 +253,77 @@ describe('Shell — LearnMenu phase machine', () => {
     expect(document.querySelector('.km-learnmenu--closing')).not.toBeNull();
     finishExit();
     expect(menuDialog()).toBeNull();
+  });
+});
+
+describe('Shell — FeedbackFab (F-127 global "!" button)', () => {
+  it.each(['/', '/progress', '/review', '/learn/vocab', '/review/mistakes'])(
+    'is visible on %s',
+    (path) => {
+      renderShell(path);
+      expect(
+        screen.getByRole('button', { name: FEEDBACK_FAB_NAME }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  // Case-insensitive, same convention as ChatFab's hide check (React Router
+  // matches routes case-insensitively).
+  it.each(['/tickets', '/tickets/5', '/Tickets'])(
+    'is hidden on %s (reporting feedback FROM the feedback page is noise)',
+    (path) => {
+      renderShell(path);
+      expect(
+        screen.queryByRole('button', { name: FEEDBACK_FAB_NAME }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it('does NOT hide on a sibling path that merely shares the /tickets prefix', () => {
+    renderShell('/ticketsomething');
+    expect(
+      screen.getByRole('button', { name: FEEDBACK_FAB_NAME }),
+    ).toBeInTheDocument();
+  });
+
+  it('co-exists with ChatFab — both render, neither replaces the other', () => {
+    renderShell('/progress');
+    expect(
+      screen.getByRole('button', { name: FEEDBACK_FAB_NAME }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open chat · 대화' }),
+    ).toBeInTheDocument();
+  });
+
+  it('tapping it navigates to /tickets with { compose: true, sourcePage } derived from the CURRENT route via nav.ts', async () => {
+    const user = userEvent.setup();
+    renderShell('/progress');
+
+    await user.click(screen.getByRole('button', { name: FEEDBACK_FAB_NAME }));
+
+    expect(screen.getByTestId('pathname')).toHaveTextContent('/tickets');
+    const state: unknown = JSON.parse(
+      screen.getByTestId('state').textContent ?? 'null',
+    );
+    expect(state).toEqual({
+      compose: true,
+      sourcePage: { path: '/progress', name: 'Progress' },
+    });
+  });
+
+  it('falls back to the raw path as `name` for a route with no nav.ts manifest entry', async () => {
+    const user = userEvent.setup();
+    renderShell('/some/unmapped-route');
+
+    await user.click(screen.getByRole('button', { name: FEEDBACK_FAB_NAME }));
+
+    const state: unknown = JSON.parse(
+      screen.getByTestId('state').textContent ?? 'null',
+    );
+    expect(state).toEqual({
+      compose: true,
+      sourcePage: { path: '/some/unmapped-route', name: '/some/unmapped-route' },
+    });
   });
 });

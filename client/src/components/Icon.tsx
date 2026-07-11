@@ -11,6 +11,7 @@
 import type { JSX } from 'react';
 
 export type IconName =
+  | 'alert'
   | 'arrow-right'
   | 'bell'
   | 'book'
@@ -69,6 +70,14 @@ export interface IconProps {
 type SvgChildren = JSX.Element | ReadonlyArray<JSX.Element>;
 
 const PATHS: Record<IconName, SvgChildren> = {
+  // Bare exclamation mark — the F-127 feedback FAB's mark. Deliberately NOT
+  // the `info` glyph's circle-i: this is a standalone "!" (the FAB button
+  // shell itself supplies the circular chrome via CSS), matching the
+  // `h.01` zero-length-path dot idiom `info` already uses.
+  alert: [
+    <path key="0" d="M12 5v9" />,
+    <path key="1" d="M12 19h.01" />,
+  ],
   'arrow-right': <path d="M5 12h14M13 5l7 7-7 7" />,
   bell: (
     <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0" />

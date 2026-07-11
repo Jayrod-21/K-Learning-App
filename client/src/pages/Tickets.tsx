@@ -48,6 +48,18 @@
  *   - **Abort.** Every list/thread fetch takes its own `AbortController`,
  *     cancelled on unmount, ticket-id change, or a superseding request
  *     (filter change, tab switch) — mirrors every other page in this app.
+ *   - **F-127 (global "!" FAB → this page).** `FeedbackFab.tsx` navigates
+ *     here with router state `{ compose: true, sourcePage: { path, name } }`.
+ *     `sourcePage.path` is the only part that's persisted — it rides
+ *     straight into `createTicket`'s `sourcePage` field, which the server
+ *     bounds/validates (routes/tickets.ts) before ever reaching the DB; it
+ *     is client-reported UI context, never trusted as anything more, and
+ *     is NOT author-identifying (orthogonal to the anonymity contract
+ *     above). `sourcePage.name` is used ONLY for this render pass's "Filing
+ *     from: <name>" hint — the stored ticket re-derives its OWN display
+ *     name later from the persisted path via `pageNameForPath` (lib/nav.ts),
+ *     so a later nav.ts rename can't leave old tickets showing a stale
+ *     label frozen at filing time.
  */
 import {
   useCallback,
@@ -58,7 +70,7 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
@@ -73,6 +85,7 @@ import { Topbar } from '../components/Topbar';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
 import { errorMessageFor } from '../lib/errorCopy';
+import { pageNameForPath } from '../lib/nav';
 import { ApiError } from '../services/api';
 import {
   addTicketComment,
@@ -110,6 +123,15 @@ const STATUS_META: Record<
   resolved: { en: 'Resolved', kr: '해결됨', tone: 'green' },
   closed: { en: 'Closed', kr: '닫힘', tone: 'default' },
 };
+
+/** Router state `FeedbackFab.tsx` navigates here with (F-127). Both fields
+ *  are optional/absent for every OTHER way of reaching this page (direct
+ *  nav, the Settings tile, a bookmarked link) — this page must render
+ *  correctly with neither present. */
+interface TicketsLocationState {
+  compose?: boolean;
+  sourcePage?: { path: string; name: string };
+}
 
 const TICKET_TYPES: readonly TicketType[] = [
   'bug',
@@ -204,6 +226,11 @@ function TicketRow({
               ? '1 comment'
               : `${String(ticket.commentCount)} comments`}
           </span>
+          {ticket.sourcePage ? (
+            <span className="km-tickets__row-meta km-tickets__source-page">
+              Reported from: {pageNameForPath(ticket.sourcePage)}
+            </span>
+          ) : null}
         </span>
         <span className="km-tickets__row-badges">
           {isMine ? (
@@ -227,8 +254,18 @@ function TicketRow({
  *  submit so the ErrorCard's Retry re-sends the exact same payload. */
 function FileTicketForm({
   onFiled,
+  sourcePage,
+  autoFocusTitle = false,
 }: {
   onFiled: (ticket: OwnTicket) => void;
+  /** F-127: the page the global "!" FAB was tapped from, if that's how the
+   *  caller arrived here. Rides into `createTicket`'s `sourcePage` field
+   *  (path only — see module header on why the label isn't persisted). */
+  sourcePage?: { path: string; name: string };
+  /** True when the FAB's `state.compose` flag is set — moves focus into the
+   *  title field so a FAB tap lands the user ready to type, not just
+   *  scrolled to a form they still have to find. */
+  autoFocusTitle?: boolean;
 }): JSX.Element {
   const [type, setType] = useState<TicketType>('bug');
   const [title, setTitle] = useState('');
@@ -242,6 +279,17 @@ function FileTicketForm({
   const typeId = useId();
   const titleId = useId();
   const bodyId = useId();
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (autoFocusTitle) titleRef.current?.focus();
+    // Intentionally fires once per mount (the FAB navigation that set this
+    // flag is a one-time arrival, not a value that should re-steal focus on
+    // every re-render) — `autoFocusTitle` is constant for this component's
+    // lifetime in practice (derived once from the location state that
+    // triggered its mount).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const submit = useCallback(async (): Promise<void> => {
     const titleTrim = title.trim();
@@ -267,6 +315,7 @@ function FileTicketForm({
         type,
         title: titleTrim,
         body: bodyTrim,
+        ...(sourcePage !== undefined ? { sourcePage: sourcePage.path } : {}),
       });
       onFiled(created);
       setTitle('');
@@ -278,13 +327,18 @@ function FileTicketForm({
     } finally {
       setSubmitting(false);
     }
-  }, [type, title, body, onFiled]);
+  }, [type, title, body, sourcePage, onFiled]);
 
   return (
     <Card className="km-tickets__file">
       <h2 className="km-eyebrow km-tickets__file-title">
         <Bilingual en="File a ticket" kr="티켓 제출" />
       </h2>
+      {sourcePage ? (
+        <p className="km-tickets__source-page km-tickets__file-source">
+          Filing from: {sourcePage.name}
+        </p>
+      ) : null}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -317,6 +371,7 @@ function FileTicketForm({
             Title
           </label>
           <input
+            ref={titleRef}
             id={titleId}
             type="text"
             className="km-tickets__input focusring"
@@ -675,6 +730,12 @@ function TicketDetail({
           ) : null}
         </div>
 
+        {ticket.sourcePage ? (
+          <p className="km-tickets__source-page km-tickets__detail-source">
+            Reported from: {pageNameForPath(ticket.sourcePage)}
+          </p>
+        ) : null}
+
         {canEdit ? (
           <form
             className="km-tickets__edit-form"
@@ -783,10 +844,25 @@ function TicketDetail({
 
 export default function Tickets(): JSX.Element {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const { toast } = useToast();
 
   const tab = parseTab(searchParams.get('tab'));
   const ticketId = parseTicketIdParam(searchParams.get('ticket'));
+
+  // F-127: FeedbackFab.tsx's router state, if that's how we got here.
+  // Narrowed defensively (router state is caller-controlled, not a typed
+  // API response) rather than trusted with a bare `as` cast — anything
+  // malformed just falls back to "no page context", the same as a plain
+  // direct navigation to /tickets.
+  const navState = location.state as TicketsLocationState | null | undefined;
+  const sourcePage =
+    navState?.sourcePage !== undefined &&
+    typeof navState.sourcePage.path === 'string' &&
+    typeof navState.sourcePage.name === 'string'
+      ? navState.sourcePage
+      : undefined;
+  const autoFocusTitle = navState?.compose === true;
 
   // Filters — local, shared by both tabs. Not part of the deep-link
   // contract (unlike tab/ticket), so a shared link never surprises the
@@ -1018,7 +1094,11 @@ export default function Tickets(): JSX.Element {
         eyebrow={<Bilingual en="Feedback" kr="피드백" />}
       />
 
-      <FileTicketForm onFiled={onFiled} />
+      <FileTicketForm
+        onFiled={onFiled}
+        sourcePage={sourcePage}
+        autoFocusTitle={autoFocusTitle}
+      />
 
       <div className="km-tickets__filters">
         <FilterSelect

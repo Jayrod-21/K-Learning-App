@@ -8,6 +8,9 @@
  *      upward-expanding LearnMenu overlaying it when open (P1.1).
  *   4. ChatFab — the floating chat dot on the right edge (hides itself on
  *      /chat, /settings, during a mock exam, and while the keyboard is up).
+ *   5. FeedbackFab (F-127) — the floating "!" feedback button in the
+ *      TOP-right corner (hides itself on /tickets — see FeedbackFab.tsx).
+ *      Pinned to the opposite corner from ChatFab so the two never collide.
  *
  * `ExamActiveProvider` mounts here so BOTH the writer (MockMode, rendered
  * deep inside the `<Outlet/>`) and the reader (ChatFab, shell chrome) sit
@@ -55,6 +58,7 @@ import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { BottomNav } from './BottomNav';
 import { ChatFab } from './ChatFab';
+import { FeedbackFab } from './FeedbackFab';
 import { LearnMenu, LEARN_MENU_EXIT_MS } from './LearnMenu';
 import { ExamActiveProvider } from '../hooks/ExamActiveProvider';
 
@@ -150,6 +154,7 @@ export function Shell(): JSX.Element {
           <Outlet />
         </main>
         <ChatFab />
+        <FeedbackFab />
         <div className="km-shell__nav">
           <BottomNav
             learnOpen={learnPhase === 'open'}
