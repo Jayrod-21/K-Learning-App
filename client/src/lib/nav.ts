@@ -225,13 +225,17 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
     // P1.2, decision D2 — the KRDICT dictionary stays its OWN page (a
     // lookup corpus, not merged into the vocabulary browse).
+    // F-050 (P3B): renamed "Dictionary" → "All Words" — the page is the
+    // whole-corpus word browse (KRDICT + a genre lens over the curated
+    // corpus), not just a lookup tool. The route/id stay `review-dictionary`
+    // (paths are contracts; labels are copy).
     id: 'review-dictionary',
     path: '/review/dictionary',
-    label: 'Dictionary',
-    kr: '사전',
+    label: 'All Words',
+    kr: '전체 단어',
     eyebrow: 'KRDICT · 54k entries',
     krEyebrow: 'KRDICT · 표제어 5.4만',
-    headerTitle: '사전 · Dictionary',
+    headerTitle: '전체 단어 · All Words',
     icon: 'search',
   },
   {

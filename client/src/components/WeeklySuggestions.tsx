@@ -45,7 +45,19 @@ function hasPattern(p: KgiuEntrySummary): boolean {
   return p.pattern.trim().length > 0;
 }
 
-export function WeeklySuggestions(): JSX.Element | null {
+export interface WeeklySuggestionsProps {
+  /**
+   * F-047: the Review-library VOCABULARY page hosts this strip but must not
+   * show grammar content (grammar now has its own library tab). `false`
+   * renders the vocab column only AND skips the grammar fetch entirely —
+   * no wasted round-trip for a column that can never render.
+   */
+  showGrammar?: boolean;
+}
+
+export function WeeklySuggestions({
+  showGrammar = true,
+}: WeeklySuggestionsProps): JSX.Element | null {
   const [vocab, setVocab] = useState<VocabEntry[] | null>(null);
   const [grammar, setGrammar] = useState<KgiuEntrySummary[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,9 +73,13 @@ export function WeeklySuggestions(): JSX.Element | null {
     // Fetch both picks in parallel; a failure on one leaves the other usable.
     // `allSettled` so one empty/erroring suggestion source doesn't blank the
     // whole strip (suggest-only is a nice-to-have, never a blocker).
+    // F-047: with grammar hidden, don't fetch it at all — resolve that slot
+    // to an empty list so the render logic stays uniform.
     void Promise.allSettled([
       fetchWeeklyVocabSuggestions(ctrl.signal),
-      fetchWeeklyGrammarSuggestions(ctrl.signal),
+      showGrammar
+        ? fetchWeeklyGrammarSuggestions(ctrl.signal)
+        : Promise.resolve([] as KgiuEntrySummary[]),
     ]).then(([v, g]) => {
       if (!alive || ctrl.signal.aborted) return;
       setVocab(v.status === 'fulfilled' ? v.value : []);
@@ -78,7 +94,7 @@ export function WeeklySuggestions(): JSX.Element | null {
       alive = false;
       ctrl.abort();
     };
-  }, []);
+  }, [showGrammar]);
 
   const setAdd = useCallback((key: string, next: AddState): void => {
     setAdds((prev) => ({ ...prev, [key]: next }));
