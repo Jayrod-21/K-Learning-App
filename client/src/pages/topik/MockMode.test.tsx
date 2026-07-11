@@ -56,6 +56,7 @@ import { useExamActive } from '../../hooks/useExamActive';
 
 const TEST: MockTest = {
   sourceTest: 7,
+  topikLevel: 'TOPIK II',
   section: 'reading',
   items: [
     {
@@ -1106,12 +1107,78 @@ describe('MockMode (Mock test)', () => {
         screen.getByRole('button', { name: '시험 시작 · Start test' }),
       );
       await waitFor(() => {
+        // Fix-pass S-1 (REVIEW_topik.md / D-1): the level rides along with
+        // the test_number, not just the number alone.
         expect(svc.fetchMockTest).toHaveBeenCalledWith(
           'reading',
           expect.any(AbortSignal),
           91,
+          'TOPIK II',
         );
       });
+    });
+
+    // Fix-pass S-1 (REVIEW_topik.md): the D-1 scenario the review's own
+    // fixtures never exercised — the SAME test_number appears TWICE in the
+    // chooser, once per level. Before the fix, `onPickExam` discarded
+    // `test.topikLevel` and `fetchMockTest` was only ever called with
+    // `sourceTest`, so the server's `resolveMockTest` tie-break
+    // (`ORDER BY topik_level DESC`) always resolved TOPIK II regardless of
+    // which row was clicked — clicking the TOPIK I row silently served
+    // TOPIK II. This test fails on that un-fixed code (asserting `'TOPIK I'`
+    // where the old call site never passed a 4th arg at all).
+    it('clicking the TOPIK I row serves TOPIK I, not the shared test_number\'s TOPIK II tie-break default', async () => {
+      svc.fetchAvailableTests.mockResolvedValue({
+        tests: [
+          { testNumber: 91, topikLevel: 'TOPIK I', section: '읽기', itemCount: 50 },
+          { testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 },
+        ],
+        total: 2,
+      });
+      svc.fetchAttemptHistory.mockResolvedValue({ attempts: [], total: 0 });
+      svc.fetchMockTest.mockResolvedValueOnce({ ...TEST, topikLevel: 'TOPIK I' });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      const topikI = await screen.findByRole('button', {
+        name: 'TOPIK I test 91, 50 items',
+      });
+      // Sanity: the OTHER row for the same test_number is TOPIK II — this is
+      // the exact D-1 "one test_number, two papers" scenario. Exact-string
+      // names (not regex substrings) so "TOPIK I" can't accidentally match
+      // inside "TOPIK II"'s accessible name.
+      expect(
+        screen.getByRole('button', { name: 'TOPIK II test 91, 50 items' }),
+      ).toBeInTheDocument();
+
+      await user.click(topikI);
+      // The start page discloses the level it will fetch (fix-pass S-1) —
+      // checked via the note's text content (not a language-mode-specific
+      // string) since "TOPIK I" renders identically in both the en/kr copy.
+      expect(screen.getByRole('note')).toHaveTextContent(/TOPIK I/);
+      await user.click(
+        screen.getByRole('button', { name: '시험 시작 · Start test' }),
+      );
+
+      await waitFor(() => {
+        expect(svc.fetchMockTest).toHaveBeenCalledWith(
+          'reading',
+          expect.any(AbortSignal),
+          91,
+          'TOPIK I',
+        );
+      });
+      // Never resolved/served as TOPIK II — the D-1 tie-break must not win
+      // over the level the user actually clicked.
+      expect(svc.fetchMockTest).not.toHaveBeenCalledWith(
+        'reading',
+        expect.any(AbortSignal),
+        91,
+        'TOPIK II',
+      );
     });
 
     it("the exam chooser's checkmarks degrade silently when attempt history fails (the list itself still renders)", async () => {

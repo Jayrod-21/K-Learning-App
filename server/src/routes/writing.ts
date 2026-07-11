@@ -280,9 +280,17 @@ type PersistedWritingRubric = 'topik_ii_53' | 'topik_ii_54' | 'free_write';
 // general-purpose user-scoped history-list precedent in this codebase):
 // limit/offset, LIMIT bound below the resource-exhaustion ceiling, response
 // echoes limit+offset back (no hasMore/cursor — not this codebase's idiom).
+// Fix-pass SF-2 (REVIEW_writing.md): `offset` previously bottomed out at
+// `.max(Number.MAX_SAFE_INTEGER)` — an overflow-safety cap, not a PRACTICAL
+// one (unlike `limit`'s deliberate 100 ceiling). A single user's graded-
+// writing history could never reach six figures, so a genuine ceiling here
+// still can't reject a legitimate page while giving `limit` a real sibling
+// bound instead of a symbolic one.
+const MAX_ATTEMPTS_OFFSET = 100_000;
+
 const AttemptsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
-  offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ATTEMPTS_OFFSET).default(0),
 });
 
 interface AttemptRow {

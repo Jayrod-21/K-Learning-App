@@ -1,16 +1,22 @@
--- 056 (down): restore the narrow (topik_ii_53 / topik_ii_54) rubric CHECKs.
+-- 056 (down): restore the narrow (topik_ii_53 / topik_ii_54) writing_attempts
+-- rubric CHECK.
+--
+-- writing_prompts.rubric is NOT touched here — 056's up never widened it
+-- (fix-pass SF-1 / REVIEW_writing.md: a free_write-tagged bank/prompt row has
+-- no seed/ingest path and no route ever queries for it, so that CHECK was
+-- left at its narrow 038 shape rather than widened to a value nothing can
+-- produce). There is nothing to roll back on that table.
 --
 -- HONEST GATE — NO SILENT DATA LOSS: this is a pure CHECK narrow, not a data
--- migration. It does not DELETE or touch a single row. If any writing_prompts
--- or writing_attempts row already carries rubric = 'free_write' (written
--- after 056 shipped), re-adding the narrower CHECK below FAILS with a
--- Postgres CheckViolation — exactly like 027's kgiu_entries.pattern rollback
--- ("this will fail if any reference rows with a null pattern exist"): rolling
--- back a widen while the widened value is IN USE is a data-shape conflict the
--- operator must resolve deliberately (retag or remove the free_write rows)
--- before the rollback can succeed. This is deliberate — a silent DELETE of
--- graded writing_attempts rows (or of bank prompts) would be a worse outcome
--- than a loud, blocked rollback.
+-- migration. It does not DELETE or touch a single row. If any writing_attempts
+-- row already carries rubric = 'free_write' (written after 056 shipped),
+-- re-adding the narrower CHECK below FAILS with a Postgres CheckViolation —
+-- exactly like 027's kgiu_entries.pattern rollback ("this will fail if any
+-- reference rows with a null pattern exist"): rolling back a widen while the
+-- widened value is IN USE is a data-shape conflict the operator must resolve
+-- deliberately (retag or remove the free_write rows) before the rollback can
+-- succeed. This is deliberate — a silent DELETE of graded writing_attempts
+-- rows would be a worse outcome than a loud, blocked rollback.
 --
 -- NB: migrate.py's own DESTRUCTIVE_PATTERNS gate (DROP TABLE / DROP SCHEMA /
 -- DROP DATABASE / TRUNCATE) does not fire on this file — there is no dropped
@@ -30,18 +36,5 @@ ALTER TABLE writing_attempts
 COMMENT ON COLUMN writing_attempts.rubric IS
     'Rubric the sample was graded against (topik_ii_53 / topik_ii_54 — 056 '
     'rolled back; free_write requires 056 to be re-applied).';
-
-ALTER TABLE writing_prompts
-    DROP CONSTRAINT IF EXISTS ck_writing_prompts_rubric;
-ALTER TABLE writing_prompts
-    ADD CONSTRAINT ck_writing_prompts_rubric
-        CHECK (rubric IS NULL OR rubric IN ('topik_ii_53', 'topik_ii_54'));
-
-COMMENT ON COLUMN writing_prompts.rubric IS
-    'TOPIK II writing rubric the prompt targets (topik_ii_53 = 200-300자 '
-    'description, topik_ii_54 = 600-700자 argumentative essay). NULL only on '
-    'the retired pre-F-014 register-drill rows; every ACTIVE prompt is tagged '
-    'so GET /writing/prompts and GET /plan/today draw from the same pool. '
-    '(056 rolled back: free_write is no longer accepted here.)';
 
 -- End of 056_writing_rubric_widen.down.sql — runner owns the transaction (ADR-013).

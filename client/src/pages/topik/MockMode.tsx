@@ -117,6 +117,7 @@ import type {
   MockSubmitAnswer,
   MockSubmitBody,
   MockTest,
+  TopikLevel,
   TopikMockItem,
 } from '../../types/domain';
 import './MockMode.css';
@@ -149,6 +150,18 @@ function parseExamParam(raw: string | null): 'auto' | number | null {
     if (n <= INT4_MAX) return n;
   }
   return null;
+}
+
+/**
+ * Parse the `level` search param (untrusted input) against the closed
+ * `TopikLevel` union — anything unrecognised degrades to "no level known"
+ * (fix-pass S-1 / D-1). Only meaningful alongside a numeric `exam` (a
+ * SPECIFIC past paper picked from the F-118 list); `goToView` clears it
+ * whenever `exam` isn't a specific test_number, so it never outlives the
+ * `exam` param it discriminates.
+ */
+function parseLevelParam(raw: string | null): TopikLevel | null {
+  return raw === 'TOPIK I' || raw === 'TOPIK II' ? raw : null;
 }
 
 /** Section card metadata — drives the select screen + the exam's timer budget. */
@@ -211,18 +224,40 @@ export function MockMode(): JSX.Element {
   // The exam param is only meaningful under a valid section.
   const urlExam =
     urlSection !== null ? parseExamParam(searchParams.get('exam')) : null;
+  // The level param (D-1 / fix-pass S-1) is only meaningful alongside a
+  // SPECIFIC picked paper (a numeric `exam`, never `'auto'` or absent) — the
+  // "recommended exam" path lets the server resolve the level itself.
+  const urlLevel =
+    urlSection !== null && typeof urlExam === 'number'
+      ? parseLevelParam(searchParams.get('level'))
+      : null;
 
-  // Rewrite ONLY this component's params (section/exam), preserving the
-  // parent's (`mode`, owned by Topik.tsx) — MockMode never navigates the
+  // Rewrite ONLY this component's params (section/exam/level), preserving
+  // the parent's (`mode`, owned by Topik.tsx) — MockMode never navigates the
   // whole page, it moves within its own sub-views.
   const goToView = useCallback(
-    (section: MockSection | null, exam: 'auto' | number | null): void => {
+    (
+      section: MockSection | null,
+      exam: 'auto' | number | null,
+      level?: TopikLevel,
+    ): void => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
         if (section === null) next.delete('section');
         else next.set('section', section);
         if (section === null || exam === null) next.delete('exam');
         else next.set('exam', String(exam));
+        // `level` only makes sense alongside a SPECIFIC picked paper (a
+        // positive test_number) — clearing it whenever `exam` isn't one
+        // keeps `level` from ever outliving the `exam` it discriminates
+        // (fix-pass S-1: a stale level surviving a switch to the
+        // server-picked "recommended" path could wrongly pin a resolver
+        // request that should be left to resolve freely).
+        if (section === null || exam === null || typeof exam !== 'number' || level === undefined) {
+          next.delete('level');
+        } else {
+          next.set('level', level);
+        }
         return next;
       });
     },
@@ -417,12 +452,13 @@ export function MockMode(): JSX.Element {
   );
 
   // Start a section: fetch the answer-stripped exam, falling back to the
-  // offline fixture so the exam always opens (failure-safe). `sourceTest` is
-  // supplied when the learner picked a SPECIFIC past paper from the F-118
-  // exam list (`ExamChooser`); omitted for the "Recommended exam" card, which
-  // lets the server pick (`resolveMockTest`, unchanged).
+  // offline fixture so the exam always opens (failure-safe). `sourceTest`
+  // (+ `topikLevel`) are supplied when the learner picked a SPECIFIC past
+  // paper from the F-118 exam list (`ExamChooser`); omitted for the
+  // "Recommended exam" card, which lets the server pick (`resolveMockTest`,
+  // unchanged).
   const startSection = useCallback(
-    (section: MockSection, sourceTest?: number): void => {
+    (section: MockSection, sourceTest?: number, topikLevel?: TopikLevel): void => {
       const ctrl = beginCall();
       setNet('loading');
       setErrorMsg(null);
@@ -432,13 +468,18 @@ export function MockMode(): JSX.Element {
       setInitialExam(null);
       setResumable(null);
       setResumeFailed(false);
-      // Omit the 3rd arg entirely for the "recommended" path (rather than
-      // passing an explicit `undefined`) — keeps this call's shape identical
-      // to before F-118, and matches `POST /topik/mock`'s own contract where
-      // `sourceTest` is OMITTED (not null) to let the server pick.
-      (sourceTest !== undefined
-        ? fetchMockTest(section, ctrl.signal, sourceTest)
-        : fetchMockTest(section, ctrl.signal)
+      // Omit the 3rd/4th args entirely for the "recommended" path (rather
+      // than passing an explicit `undefined`) — keeps this call's shape
+      // identical to before F-118, and matches `POST /topik/mock`'s own
+      // contract where `sourceTest`/`topikLevel` are OMITTED (not null) to
+      // let the server pick. `topikLevel` is only ever sent alongside a
+      // known `sourceTest` (fix-pass S-1 / D-1) — a level with no paper to
+      // pin it to has nothing to discriminate.
+      (sourceTest !== undefined && topikLevel !== undefined
+        ? fetchMockTest(section, ctrl.signal, sourceTest, topikLevel)
+        : sourceTest !== undefined
+          ? fetchMockTest(section, ctrl.signal, sourceTest)
+          : fetchMockTest(section, ctrl.signal)
       )
         .then((real) => {
           if (ctrl.signal.aborted) return;
@@ -638,24 +679,30 @@ export function MockMode(): JSX.Element {
               onPickServerExam={() => {
                 goToView(urlSection, 'auto');
               }}
-              onPickExam={(testNumber) => {
-                goToView(urlSection, testNumber);
+              onPickExam={(testNumber, topikLevel) => {
+                // D-1 / fix-pass S-1: carry the EXACT level the picked row
+                // named, not just its test_number — a test_number alone
+                // names TWO exams (TOPIK I and TOPIK II share every
+                // test_number).
+                goToView(urlSection, testNumber, topikLevel);
               }}
             />
           ) : null}
 
           {phase === 'select' && urlSection !== null && urlExam !== null ? (
             // F-079: the start page — the exam only fetches (and the timer
-            // only arms) on the explicit Start click. `sourceTest` is known
-            // only when a SPECIFIC past paper was picked from the F-118 list
-            // (urlExam is its test_number, not the 'auto' literal).
+            // only arms) on the explicit Start click. `sourceTest`/`topikLevel`
+            // are known only when a SPECIFIC past paper was picked from the
+            // F-118 list (urlExam is its test_number, not the 'auto' literal).
             <StartPage
               section={urlSection}
               sourceTest={typeof urlExam === 'number' ? urlExam : undefined}
+              topikLevel={typeof urlExam === 'number' ? (urlLevel ?? undefined) : undefined}
               onStart={() => {
                 startSection(
                   urlSection,
                   typeof urlExam === 'number' ? urlExam : undefined,
+                  typeof urlExam === 'number' ? (urlLevel ?? undefined) : undefined,
                 );
               }}
             />
@@ -788,7 +835,10 @@ function ExamChooser({
 }: {
   section: MockSection;
   onPickServerExam: () => void;
-  onPickExam: (sourceTest: number) => void;
+  /** `topikLevel` (D-1 / fix-pass S-1) is the SAME paper's level the row
+   *  displayed — passing it through lets the caller pin the exact exam the
+   *  user clicked, rather than leaving the server's resolver to tie-break. */
+  onPickExam: (sourceTest: number, topikLevel: TopikLevel) => void;
 }): JSX.Element {
   const names = sectionNames(section);
 
@@ -916,7 +966,7 @@ function ExamChooser({
                   className="km-mock__section km-mock__chooser-card focusring"
                   aria-label={`${test.topikLevel} test ${String(test.testNumber)}, ${String(test.itemCount)} items${done ? ', completed' : ''}`}
                   onClick={() => {
-                    onPickExam(test.testNumber);
+                    onPickExam(test.testNumber, test.topikLevel);
                   }}
                 >
                   <span className="km-mock__section-en">
@@ -966,11 +1016,18 @@ function ExamChooser({
 function StartPage({
   section,
   sourceTest,
+  topikLevel,
   onStart,
 }: {
   section: MockSection;
   /** A SPECIFIC past paper's test_number, when one was picked (F-118). */
   sourceTest?: number;
+  /**
+   * The SAME paper's TOPIK level (D-1 / fix-pass S-1) — surfaced here so a
+   * mismatch between what was picked and what gets served would at least be
+   * visible, never silently swallowed.
+   */
+  topikLevel?: TopikLevel;
   onStart: () => void;
 }): JSX.Element {
   const names = sectionNames(section);
@@ -1033,6 +1090,15 @@ function StartPage({
             }
           />
         </Eyebrow>
+        {sourceTest !== undefined && topikLevel !== undefined ? (
+          // Fix-pass S-1: surface the EXACT level this start page will fetch
+          // — a test_number alone names two exams (D-1), so this is the
+          // reader-visible confirmation that a mismatch, if one ever slips
+          // through, would not go silently unnoticed.
+          <p className="km-mock__start-level" role="note">
+            <Bilingual en={`${topikLevel} paper`} kr={`${topikLevel} 시험지`} compact />
+          </p>
+        ) : null}
         <p className="km-mock__start-rules">
           <Bilingual
             en={`50 items · ${String(mins)} minutes, timed. Answers are graded after you submit; unanswered items count as incorrect. The test auto-submits when time runs out.`}
@@ -1354,11 +1420,16 @@ function ExamRunner({
     const durationMs = Math.max(0, Date.now() - examStartRef.current);
     return {
       sourceTest: test.sourceTest,
+      // Fix-pass S-1 / D-1: echo the SAME level the fetch resolved so the
+      // shared server-side resolver grades the EXACT paper that was served,
+      // never a re-resolved DIFFERENT paper (a test_number alone names two
+      // exams — TOPIK I and TOPIK II share every test_number).
+      topikLevel: test.topikLevel,
       section: test.section,
       answers,
       durationMs,
     };
-  }, [current, flushItemTime, picks, test.sourceTest, test.section]);
+  }, [current, flushItemTime, picks, test.sourceTest, test.topikLevel, test.section]);
 
   // Submit guard — fires once. Shared by the confirm button and auto-submit.
   const doSubmit = useCallback((): void => {

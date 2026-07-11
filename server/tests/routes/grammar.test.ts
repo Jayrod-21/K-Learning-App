@@ -493,6 +493,45 @@ describe('GET /grammar/bank — production-card schedule (F-111)', () => {
     expect(resB.body.entries).toHaveLength(1);
     expect(resB.body.entries[0].schedule).toBeNull();
   });
+
+  // Fix-pass SF-2 (REVIEW_grammar.md): the join-safety property (`face =
+  // 'production'` in the ON clause, PLUS `uq_vocab_cards_user_grammar_
+  // production`'s partial unique index) is real and DB-enforced, but no
+  // existing test seeded a *second*, non-production card for the same
+  // (user, grammar_entry) to positively demonstrate the `face` filter — not
+  // just the unique index — is what keeps the join from fanning a bank row
+  // out to two. A `recognition`-face card is legal at the SAME
+  // (user_id, grammar_entry_id): the partial unique index only constrains
+  // face='production', so this insert would NOT be rejected by the index —
+  // only the route's `vc.face = 'production'` join predicate keeps it from
+  // ever being picked up.
+  it('a recognition-face card on the same grammar entry does not leak into (or duplicate) the production schedule', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const bank = await agent.post('/grammar/bank').send({
+      pattern_key: 'GR-a-eo-boida',
+      pattern_display: '-아/어 보이다',
+      summary_en: 'seems',
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    expect(bank.status).toBe(201);
+    const grammarEntryId = bank.body.id as number;
+
+    // Legal per the schema (the unique index only covers face='production'):
+    // a recognition-face card on the SAME grammar_entry_id.
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id)
+       VALUES ($1, 'recognition'::card_face, $2)`,
+      [userId, grammarEntryId],
+    );
+
+    const res = await agent.get('/grammar/bank').expect(200);
+    // Still exactly ONE bank row (the join did not fan out)...
+    expect(res.body.entries).toHaveLength(1);
+    // ...and its schedule is still null: no PRODUCTION card exists for this
+    // pattern, so the recognition card must never surface as "practiced".
+    expect(res.body.entries[0].schedule).toBeNull();
+  });
 });
 
 describe('POST /grammar/bank/:id/graduate + /readmit (migration 033)', () => {

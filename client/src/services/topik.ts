@@ -49,6 +49,7 @@ import type {
   MockTest,
   TopikAnswerResult,
   TopikItem,
+  TopikLevel,
 } from '../types/domain';
 
 /** Filter for `POST /topik/study`. All fields optional → whole-pool draw. */
@@ -132,6 +133,16 @@ export async function recordTopikAnswer(
  * (`TopikMockItem` carries no `correct` flag and no `explanation`) — the exam
  * is graded server-side on submit, never on the client.
  *
+ * `topikLevel` (F-118 / D-1 / fix-pass S-1): when the caller picked a
+ * SPECIFIC past paper from `GET /topik/tests`'s per-paper list, both
+ * `sourceTest` AND `topikLevel` must be sent together — a `test_number` alone
+ * names TWO exams (TOPIK I and TOPIK II share every test_number), so omitting
+ * the level lets the server's `resolveMockTest` tie-break to TOPIK II
+ * regardless of which row the user actually clicked. Omitted (never a bare
+ * `sourceTest` with no level) unless the caller has a level to pin — the
+ * "recommended exam" / resume paths, which only know a `sourceTest`, still
+ * omit it and let the server resolve deterministically as before.
+ *
  * Typed pass-through: the server's answer-stripped DTO matches `MockTest`
  * field-for-field, so this returns the envelope as-is (no per-field mapping).
  */
@@ -139,14 +150,15 @@ export async function fetchMockTest(
   section: MockSection,
   signal?: AbortSignal,
   sourceTest?: number,
+  topikLevel?: TopikLevel,
 ): Promise<MockTest> {
-  // `sourceTest` is supplied only when RESUMING (F-007): the mock assembly is
-  // deterministic per (section, sourceTest), so re-fetching the same test_number
-  // returns the identical item set the saved picks/index refer to. A fresh mock
-  // omits it and lets the server pick.
+  const body: { section: MockSection; sourceTest?: number; topikLevel?: TopikLevel } =
+    { section };
+  if (sourceTest !== undefined) body.sourceTest = sourceTest;
+  if (topikLevel !== undefined) body.topikLevel = topikLevel;
   return api.post<MockTest>(
     '/topik/mock',
-    sourceTest !== undefined ? { section, sourceTest } : { section },
+    body,
     signal !== undefined ? { signal } : undefined,
   );
 }
@@ -280,7 +292,7 @@ export interface TopikAttemptHistoryEntry {
   /** Korean section label (`TopikItem['section']`'s enum) — matches the wire. */
   section: TopikItem['section'];
   sourceTest: number;
-  topikLevel: 'TOPIK I' | 'TOPIK II' | null;
+  topikLevel: TopikLevel | null;
   correct: number;
   totalItems: number;
   /** ISO timestamp of when the attempt was graded. */
@@ -319,7 +331,7 @@ export async function fetchAttemptHistory(
 /** One TOPIK paper summary, as `GET /topik/tests` serves it. */
 export interface TopikTestSummary {
   testNumber: number;
-  topikLevel: 'TOPIK I' | 'TOPIK II';
+  topikLevel: TopikLevel;
   section: TopikItem['section'];
   /**
    * The paper's answerable item count for this section, capped at the

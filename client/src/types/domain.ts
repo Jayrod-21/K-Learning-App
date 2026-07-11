@@ -217,6 +217,15 @@ export type ChoiceId = 'a' | 'b' | 'c' | 'd';
 export type MockSection = 'reading' | 'listening';
 
 /**
+ * TOPIK I vs TOPIK II — the exam-paper discriminator (D-1). TOPIK I and
+ * TOPIK II sittings SHARE every `test_number` (migration 029 widened the
+ * server's natural key to `(test_number, topik_level, section)` for exactly
+ * this reason), so a mock paper is never fully named by `test_number` alone.
+ * Mirrors the server's `TopikLevelSchema` (routes/topik.ts).
+ */
+export type TopikLevel = 'TOPIK I' | 'TOPIK II';
+
+/**
  * One choice on a Mock-Test item as the client receives it.
  *
  * SECURITY (answer-tampering defense, mirrors `DiagnosticChoice`): this type
@@ -261,6 +270,14 @@ export interface TopikMockItem {
 export interface MockTest {
   /** The test the server picked (or echoed) — referenced on submit. */
   sourceTest: number;
+  /**
+   * The paper's TOPIK level, as `resolveMockTest` resolved it server-side
+   * (D-1) — echoed here so `submitMockTest` can pin the SAME paper it just
+   * served, rather than letting the shared resolver's tie-break
+   * (`ORDER BY topik_level DESC`) potentially re-resolve to a DIFFERENT
+   * paper at grade time (fix-pass S-1 / REVIEW_topik.md).
+   */
+  topikLevel: TopikLevel;
   section: MockSection;
   items: TopikMockItem[];
 }
@@ -277,6 +294,14 @@ export interface MockSubmitAnswer {
 /** Body for `POST /topik/mock/submit`. */
 export interface MockSubmitBody {
   sourceTest: number;
+  /**
+   * The exact paper to grade against (D-1) — echoes `MockTest.topikLevel`
+   * from the fetch that served this exam. Optional on the wire (the server's
+   * `resolveMockTest` still resolves a paper without it), but the client
+   * always sends the level it was actually served (fix-pass S-1) so a
+   * fetch/submit pair can never resolve to two DIFFERENT papers.
+   */
+  topikLevel?: TopikLevel;
   section: MockSection;
   answers: MockSubmitAnswer[];
   /** Best-effort total wall-clock duration of the exam, in ms. */

@@ -74,9 +74,14 @@ export function buildTranslatePassageRequest(
 
   return {
     model,
-    // 8000 output tokens comfortably covers a 6000-char (Korean) passage's
-    // English translation (English prose runs longer per idea than Korean,
-    // but token count tracks source length, not character count 1:1).
+    // 4000 OUTPUT tokens comfortably covers the translation of up to an
+    // 8000-INPUT-CHARACTER passage (the proxy's backstop cap — see
+    // config.ts; the route's own tighter cap is 6000 chars). English prose
+    // runs longer per idea than Korean, but token count tracks source
+    // length, not character count 1:1, so 4000 output tokens is comfortable
+    // headroom, not a tight fit. (Previously misstated as "8000 output
+    // tokens" here — that number is the INPUT character cap, not an output
+    // token count.)
     max_tokens: 4000,
     // Low temperature — a stable, reproducible translation is the whole
     // point (see file header); this is NOT the generate_story "variety"

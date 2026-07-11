@@ -554,7 +554,7 @@ describe('GET /writing/attempts — the caller\'s graded-writing history (F-106)
     expect(body2.attempts.map((a) => a.sample)).toEqual(['답안 2', '답안 1']);
   });
 
-  it.each([['limit=0'], ['limit=101'], ['offset=-1']])(
+  it.each([['limit=0'], ['limit=101'], ['offset=-1'], ['offset=100001']])(
     '%s → 400 (validation, never a silent clamp)',
     async (qs) => {
       const { agent } = await registerUser(t.app, pg.pool);

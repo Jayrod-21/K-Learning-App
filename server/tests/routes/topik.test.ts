@@ -2265,6 +2265,55 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
       expect(res.status).toBe(400);
     },
   );
+
+  // Fix-pass S-2 (REVIEW_topik.md): `resolveServedTotal`'s null-fallback
+  // branch (the backing corpus paper is gone by the time history is read)
+  // had zero test coverage. Seed a completed attempt, then delete the
+  // backing topik_items so `resolveMockTest` — and therefore
+  // `resolveServedTotal` — can no longer resolve a paper, and assert the
+  // honest fallback: `topikLevel: null` (never a guessed level) and
+  // `totalItems` equal to the attempt's own answered count (a real lower
+  // bound, never a fabricated total above what is actually known).
+  it('resolveServedTotal null-fallback: corpus rows removed post-completion → topikLevel null, totalItems falls back to the answered count', async () => {
+    const [id1] = await seedThreeItemReadingMockAt(2050);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2050,
+      section: 'reading',
+      answers: [{ itemId: id1, picked: 'b' }], // correct
+    });
+    expect(submit.status).toBe(200);
+
+    // Corpus edit: the backing items no longer satisfy ANSWERABLE_ITEM_SQL by
+    // the time GET /topik/attempts runs, so resolveMockTest (and
+    // resolveServedTotal) can no longer find a matching paper — the same
+    // "resolveMockTest -> null" outcome the doc calls out for "the items
+    // were since removed". Nulling `answer` (rather than DELETE) avoids
+    // tripping fk_topik_responses_topik_item (topik_responses still
+    // references these item ids for its own correct/answered aggregates,
+    // which must stay intact and untouched by this edit).
+    await pg.pool.query(
+      `UPDATE topik_items SET answer = NULL WHERE topik_test_id IN (
+         SELECT id FROM topik_tests
+          WHERE test_number = 2050 AND section = 'reading'::topik_section
+       )`,
+    );
+
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts.length).toBe(1);
+    expect(res.body.attempts[0]).toMatchObject({
+      sourceTest: 2050,
+      topikLevel: null,
+      correct: 1,
+      // Only 1 answer was submitted (the other 2 items were skipped and
+      // never logged to topik_responses — "only ANSWERED items are
+      // logged"), so the honest fallback total is 1, never the original
+      // 3-item exam size the (now-deleted) corpus can no longer confirm.
+      totalItems: 1,
+    });
+  });
 });
 
 describe('GET /topik/tests — enumerate available TOPIK papers (F-118)', () => {

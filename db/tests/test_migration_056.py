@@ -1,37 +1,48 @@
 """Migration 056 (writing rubric taxonomy widen, F-117) — real-data tests.
 
 WHY THIS FILE EXISTS:
-    056 ALTERS TWO EXISTING CHECK CONSTRAINTS on tables that already carry
-    seed/user data: `ck_writing_prompts_rubric` and `ck_writing_attempts_rubric`
-    (both installed by 038) widen from a closed two-value set
-    (topik_ii_53 / topik_ii_54) to a three-value set that also accepts
-    'free_write'. The synthetic harness tests (test_migrations.py) and the
-    foundation round-trips (test_migrations_real.py, 001+002 only) cannot
-    prove that pre-056 rows survive untouched, that the widened CHECK
-    actually accepts 'free_write' end to end on both tables, that the old
-    two values are still enforced (never silently opened up further than
-    intended), or that the DOWN migration behaves HONESTLY when a
-    'free_write' row already exists (it must fail loudly via a Postgres
-    CheckViolation, never silently delete graded work). These tests apply
-    the REAL migration chain against a Postgres-16 testcontainer via
-    `migrate.main()`.
+    056 ALTERS ONE EXISTING CHECK CONSTRAINT on a table that already carries
+    user data: `ck_writing_attempts_rubric` (installed by 038) widens from a
+    closed two-value set (topik_ii_53 / topik_ii_54) to a three-value set
+    that also accepts 'free_write'. `writing_prompts.rubric`'s CHECK
+    (`ck_writing_prompts_rubric`) is DELIBERATELY LEFT NARROW (fix-pass SF-1
+    / REVIEW_writing.md): a free-write topic is Claude-GENERATED on demand
+    (POST /writing/generate), never a curated bank row, and no route ever
+    queries writing_prompts for rubric='free_write' (GET /writing/prompts
+    and GET /writing/prompts/random both validate against the narrower
+    two-value WritingRubricSchema) — widening it too would accept a value no
+    code path can ever produce or query, i.e. dead schema surface. The
+    synthetic harness tests (test_migrations.py) and the foundation
+    round-trips (test_migrations_real.py, 001+002 only) cannot prove that
+    pre-056 rows survive untouched, that the widened writing_attempts CHECK
+    actually accepts 'free_write' end to end, that writing_prompts genuinely
+    STAYS closed to it, that the old two values are still enforced
+    everywhere (never silently opened up further than intended), or that
+    the DOWN migration behaves HONESTLY when a 'free_write' attempt row
+    already exists (it must fail loudly via a Postgres CheckViolation, never
+    silently delete graded work). These tests apply the REAL migration chain
+    against a Postgres-16 testcontainer via `migrate.main()`.
 
 SCOPE:
     - up: the pre-existing 038-seeded TOPIK II bank rows (topik_ii_53 /
-      topik_ii_54) survive untouched; 'free_write' is now insertable on both
-      writing_prompts and writing_attempts; a bogus rubric value is still
-      rejected; the CHECK constraints keep their original names (038's ADD
-      CONSTRAINT name is reused, not replaced by a differently-named one, so
-      no other migration or app code that references the constraint by name
-      breaks).
+      topik_ii_54) survive untouched; 'free_write' is now insertable on
+      writing_attempts but STILL REJECTED on writing_prompts; a bogus rubric
+      value is still rejected on both tables; the constraint names are
+      unchanged (038's ADD CONSTRAINT name is reused, not replaced by a
+      differently-named one, so no other migration or app code that
+      references the constraint by name breaks).
     - down (clean path): with no 'free_write' rows present, the down
-      restores the narrow 038 CHECKs; 'free_write' is rejected again;
-      topik_ii_53/54 still insert cleanly; a clean re-up is then possible.
+      restores the narrow 038 writing_attempts CHECK; 'free_write' is
+      rejected again on both tables; topik_ii_53/54 still insert cleanly on
+      both; a clean re-up is then possible.
     - down (honest-gate path): with a 'free_write' row already persisted on
-      EITHER table, the down FAILS (CheckViolation, migrate.main() returns
-      exit code 2 per its own documented contract) instead of silently
-      discarding the row — this is the "handle honestly" requirement for a
-      CHECK-narrow whose widened value may already be in use.
+      writing_attempts, the down FAILS (CheckViolation, migrate.main()
+      returns exit code 2 per its own documented contract) instead of
+      silently discarding the row — this is the "handle honestly"
+      requirement for a CHECK-narrow whose widened value may already be in
+      use. (There is no matching writing_prompts scenario: the bank never
+      accepted the value in the first place, so there is nothing to gate on
+      that table.)
 
 DETERMINISM:
     Mirrors test_migration_049.py / test_migration_046.py — the real
@@ -185,11 +196,12 @@ def _insert_attempt(conn: psycopg.Connection, user_id: int, rubric: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# 1. UP — pre-056 rows survive; 'free_write' now accepted on both tables;
-#    invalid values still rejected; constraint names unchanged.
+# 1. UP — pre-056 rows survive; 'free_write' now accepted on writing_attempts
+#    ONLY (writing_prompts stays closed to it); invalid values still
+#    rejected; constraint names unchanged.
 # ---------------------------------------------------------------------------
 
-def test_056_up_preserves_rows_and_widens_both_checks(env, dsn: str, full_dir) -> None:
+def test_056_up_preserves_rows_and_widens_attempts_check_only(env, dsn: str, full_dir) -> None:
     # --allow-destructive: the chain to 055 traverses 045 (DROP TABLE), so
     # even the seed-stage up trips migrate.py's gate — same as the 046/049
     # precedent.
@@ -218,8 +230,12 @@ def test_056_up_preserves_rows_and_widens_both_checks(env, dsn: str, full_dir) -
         assert "ck_writing_prompts_rubric" in _constraint_names(conn, "writing_prompts")
         assert "ck_writing_attempts_rubric" in _constraint_names(conn, "writing_attempts")
 
-        # Widened definitions now mention free_write.
-        assert "free_write" in _check_definition(conn, "ck_writing_prompts_rubric")
+        # Only writing_attempts widens. writing_prompts is UNTOUCHED by 056
+        # (fix-pass SF-1: a free_write bank/prompt row has no seed/ingest
+        # path and no route ever queries for it, so the CHECK is deliberately
+        # left at its narrow 038 shape rather than accepting a value nothing
+        # can produce or query).
+        assert "free_write" not in _check_definition(conn, "ck_writing_prompts_rubric")
         assert "free_write" in _check_definition(conn, "ck_writing_attempts_rubric")
 
         # Pre-056 rows survived untouched.
@@ -233,14 +249,7 @@ def test_056_up_preserves_rows_and_widens_both_checks(env, dsn: str, full_dir) -
             )
             assert cur.fetchone()["rubric"] == "topik_ii_54"
 
-        # 'free_write' is now insertable on BOTH tables.
-        fw_prompt_id = _insert_prompt(conn, "free_write", "056-fw-prompt")
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rubric FROM writing_prompts WHERE id = %s", (fw_prompt_id,)
-            )
-            assert cur.fetchone()["rubric"] == "free_write"
-
+        # 'free_write' is now insertable on writing_attempts...
         user2 = _seed_user(conn, "056-up-fw@example.com")
         fw_attempt_id = _insert_attempt(conn, user2, "free_write")
         with conn.cursor() as cur:
@@ -248,6 +257,11 @@ def test_056_up_preserves_rows_and_widens_both_checks(env, dsn: str, full_dir) -
                 "SELECT rubric FROM writing_attempts WHERE id = %s", (fw_attempt_id,)
             )
             assert cur.fetchone()["rubric"] == "free_write"
+
+        # ...but NOT on writing_prompts — the bank stays closed to it.
+        with pytest.raises(psycopg.errors.CheckViolation) as exc:
+            _insert_prompt(conn, "free_write", "056-fw-prompt-rejected")
+        assert exc.value.diag.constraint_name == "ck_writing_prompts_rubric"
 
         # NULL is still allowed on writing_prompts (legacy register-drill rows).
         null_prompt_id = _insert_prompt(conn, None, "056-null-prompt")
@@ -258,7 +272,7 @@ def test_056_up_preserves_rows_and_widens_both_checks(env, dsn: str, full_dir) -
             assert cur.fetchone()["rubric"] is None
 
         # An out-of-set value is STILL rejected on both tables — the widen
-        # opened exactly one new value, not the column.
+        # opened exactly one new value on ONE table, not the columns wide open.
         with pytest.raises(psycopg.errors.CheckViolation) as exc:
             with conn.cursor() as cur:
                 cur.execute(
@@ -305,8 +319,10 @@ def test_056_down_restores_narrow_check_when_no_free_write_rows(
     assert rc == 0, f"down --target {PRE_056} returned {rc}"
 
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
-        # CHECKs restored to the narrow 038 shape.
+        # writing_prompts was never widened by 056's up (see its header) — its
+        # CHECK is identical before and after; this is a no-op for that table.
         assert "free_write" not in _check_definition(conn, "ck_writing_prompts_rubric")
+        # writing_attempts CHECK restored to the narrow 038 shape.
         assert "free_write" not in _check_definition(conn, "ck_writing_attempts_rubric")
 
         # free_write is rejected again on both tables.
@@ -327,50 +343,19 @@ def test_056_down_restores_narrow_check_when_no_free_write_rows(
     rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
     assert rc == 0, f"re-apply of 056 after rollback returned {rc}"
     with psycopg.connect(dsn, autocommit=True) as conn:
-        assert "free_write" in _check_definition(conn, "ck_writing_prompts_rubric")
+        assert "free_write" not in _check_definition(conn, "ck_writing_prompts_rubric")
         assert "free_write" in _check_definition(conn, "ck_writing_attempts_rubric")
 
 
 # ---------------------------------------------------------------------------
-# 3. DOWN — honest-gate path: a 'free_write' row already exists → the down
-#    must FAIL LOUDLY (CheckViolation → migrate.main() exit code 2), never
-#    silently discard the row.
+# 3. DOWN — honest-gate path: a 'free_write' row already exists on
+#    writing_attempts → the down must FAIL LOUDLY (CheckViolation →
+#    migrate.main() exit code 2), never silently discard the row.
+#
+#    There is no writing_prompts counterpart to this test: since 056's up
+#    never widens ck_writing_prompts_rubric (fix-pass SF-1), a free_write
+#    prompt row can never exist in the first place — nothing to gate on.
 # ---------------------------------------------------------------------------
-
-def test_056_down_fails_loudly_when_a_free_write_prompt_row_exists(
-    env, dsn: str, full_dir
-) -> None:
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
-    assert rc == 0, f"initial full up returned {rc}"
-
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        fw_prompt_id = _insert_prompt(conn, "free_write", "056-gate-prompt")
-
-    # The rollback must fail — not silently narrow the CHECK past a row that
-    # violates it. migrate.py's own contract: a psycopg.Error during apply/
-    # rollback returns exit code 2 (SQL execution failure), never a partial
-    # commit (ADR-013: body + bookkeeping DELETE share one transaction).
-    rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_056, "--allow-destructive", "down"]
-    )
-    assert rc == 2, f"expected the CheckViolation to surface as exit 2, got {rc}"
-
-    # Nothing rolled back: bookkeeping still shows 056 applied, the widened
-    # CHECK is still in place, and the free_write row is untouched — the
-    # failed rollback left NO partial state (single-transaction guarantee).
-    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = %s", ("056",)
-            )
-            assert cur.fetchone() is not None, "056 must still be recorded as applied"
-        assert "free_write" in _check_definition(conn, "ck_writing_prompts_rubric")
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT rubric FROM writing_prompts WHERE id = %s", (fw_prompt_id,)
-            )
-            assert cur.fetchone()["rubric"] == "free_write"
-
 
 def test_056_down_fails_loudly_when_a_free_write_attempt_row_exists(
     env, dsn: str, full_dir

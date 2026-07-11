@@ -281,6 +281,9 @@ export async function loadTopikMockTest(section: MockSection): Promise<MockTest>
   await mockDelay();
   return {
     sourceTest: 0,
+    // Offline fixture — an arbitrary fixed level (the 🅂 badge already marks
+    // this as non-authoritative; there is no real corpus paper behind it).
+    topikLevel: 'TOPIK II',
     section,
     items: TOPIK_MOCK_ITEMS_FIXTURE.map((it) => ({
       ...it,

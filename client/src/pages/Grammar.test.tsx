@@ -837,6 +837,41 @@ describe('Grammar — F-111 mastery rows show the real FSRS schedule', () => {
     });
     expect(within(row).getByText('Learning · due now')).toBeInTheDocument();
   });
+
+  // Fix-pass SF-1 (REVIEW_grammar.md): the sub-day-threshold fix in
+  // `scheduleStatusLine` (checking `dueMs < ONE_DAY_MS` BEFORE `Math.ceil`)
+  // had no regression test on THIS function's `GrammarCardSchedule` path —
+  // the pre-existing "~6 minutes" test at line ~1474 exercises a different
+  // function (`scheduleLine` for the post-submit `DrillSchedule` reveal,
+  // which takes a pre-computed day-count, not a raw `dueAt` timestamp). A
+  // `dueAt` a few minutes in the future on a bank mastery row must render
+  // "due later today", never a fabricated "1 day" (Math.ceil of any positive
+  // value is already >= 1, so a post-ceiling `< 1` check can never fire —
+  // this test fails on that regression).
+  it('renders "due later today" for a sub-day dueAt, not a fabricated "1 day"', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [
+        {
+          ...BANKED_ROW,
+          schedule: {
+            state: 'learning' as const,
+            stability: '1.0',
+            dueAt: new Date(Date.now() + 6 * 60_000).toISOString(),
+          },
+        },
+      ],
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const row = await screen.findByRole('button', {
+      name: '-더라도 even if / even though',
+    });
+    expect(within(row).getByText('Learning · due later today')).toBeInTheDocument();
+    // Never a fabricated day count for a sub-day interval.
+    expect(within(row).queryByText(/next review in \d+ day/)).not.toBeInTheDocument();
+  });
 });
 
 describe('Grammar — cards + practice pool independent of the corpus fetch (B-SF-1)', () => {
