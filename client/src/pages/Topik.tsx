@@ -56,6 +56,7 @@
  */
 import {
   useCallback,
+  useMemo,
   useState,
   type Dispatch,
   type JSX,
@@ -79,8 +80,14 @@ import { TopikImageNote } from '../components/TopikImageNote';
 import { TopikPassage } from '../components/TopikPassage';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
-import { loadTopikStudyMock } from '../data/mocks/topik';
-import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
+import { loadTopikStudyMock, loadTopikAttemptHistoryMock } from '../data/mocks/topik';
+import {
+  fetchAttemptHistory,
+  fetchStudyDraw,
+  recordTopikAnswer,
+  type AttemptHistoryResult,
+  type TopikAttemptHistoryEntry,
+} from '../services/topik';
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -104,6 +111,50 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 interface Tally {
   right: number;
   wrong: number;
+}
+
+/**
+ * F-078 — the daily mock-exam total, sourced from `GET /topik/attempts`
+ * (F-104). Distinct from the "This session" `Tally` above: the session tally
+ * is a client-side count of Study-mode reveals, while this is the PERSISTED
+ * aggregate of TODAY's completed mock exams (`topik_attempts.status =
+ * 'completed'`) — the two intentionally measure different things, so they
+ * render as separate lines rather than one merged (and misleading) number.
+ */
+type DailyMockTotal =
+  | { status: 'loading' }
+  | { status: 'error'; onRetry: () => void }
+  | { status: 'ready'; right: number; wrong: number };
+
+/** True iff `iso` falls on the same LOCAL calendar day as `ref`. */
+function isSameLocalDay(iso: string, ref: Date): boolean {
+  const d = new Date(iso);
+  return (
+    d.getFullYear() === ref.getFullYear() &&
+    d.getMonth() === ref.getMonth() &&
+    d.getDate() === ref.getDate()
+  );
+}
+
+/**
+ * Sum today's completed-mock right/wrong from an attempt-history page
+ * (F-104). A skipped item counts as wrong (`totalItems - correct`), matching
+ * how every other TOPIK surface in this app grades a skip. Bounded to
+ * whatever page the caller fetched (see `fetchAttemptHistory`'s call site) —
+ * a best-effort "today" for a single-user app, not a paginated full scan.
+ */
+function sumTodaysMockAttempts(
+  attempts: readonly TopikAttemptHistoryEntry[],
+  ref: Date,
+): { right: number; wrong: number } {
+  let right = 0;
+  let wrong = 0;
+  for (const a of attempts) {
+    if (!isSameLocalDay(a.completedAt, ref)) continue;
+    right += a.correct;
+    wrong += Math.max(0, a.totalItems - a.correct);
+  }
+  return { right, wrong };
 }
 
 /** The two TOPIK Prep modes the segmented toggle switches between. */
@@ -199,20 +250,23 @@ function Topik(): JSX.Element {
 }
 
 /**
- * F-078 — the study landing's right/wrong tally. The counts are the SESSION's
- * client-side truth (every reveal the learner actually saw, across sets); the
- * full-day totals genuinely need the attempt/response history route
- * (`GET /topik/attempts`, ticket F-104), so the tile says "session" and marks
- * the daily number as pending rather than fabricating one. The 10-item line
- * keeps B-029's "daily recommended" indicator now that the draw size itself
- * is user-controlled.
+ * F-078 — the study landing's right/wrong tally. The top counts are the
+ * SESSION's client-side truth (every Study-mode reveal the learner actually
+ * saw, across sets). Below that, `daily` is the PERSISTED total of TODAY's
+ * completed mock exams (F-104, `GET /topik/attempts`) — a genuinely different
+ * measurement (mock sittings, not Study items), rendered as its own honest
+ * line rather than merged into "session" and misrepresented as the same
+ * count. The 10-item line keeps B-029's "daily recommended" indicator now
+ * that the draw size itself is user-controlled.
  */
 function SessionTally({
   right,
   wrong,
+  daily,
 }: {
   right: number;
   wrong: number;
+  daily: DailyMockTotal;
 }): JSX.Element {
   return (
     <Card
@@ -235,28 +289,99 @@ function SessionTally({
           <Bilingual en={`${String(wrong)} wrong`} kr={`틀림 ${String(wrong)}`} compact />
         </span>
       </p>
+
+      {/* F-104: today's completed-mock total — real, persisted data replacing
+          the old "coming soon" placeholder. Loading/error+retry/honest-empty,
+          never fabricated. */}
+      <p className="km-topik__tally-daily" aria-live="polite">
+        {daily.status === 'loading' ? (
+          <Bilingual en="Loading today's mock total…" kr="오늘 모의고사 기록 불러오는 중…" compact />
+        ) : null}
+        {daily.status === 'error' ? (
+          <span role="alert">
+            <Bilingual en="Couldn't load today's mock total." kr="오늘 기록을 불러오지 못했어요." compact />{' '}
+            <button
+              type="button"
+              className="km-topik__tally-retry focusring"
+              onClick={daily.onRetry}
+            >
+              <Bilingual en="Retry" kr="다시 시도" compact />
+            </button>
+          </span>
+        ) : null}
+        {daily.status === 'ready' && daily.right + daily.wrong === 0 ? (
+          <Bilingual
+            en="No mock exams completed today yet."
+            kr="오늘 완료한 모의고사가 아직 없어요."
+            compact
+          />
+        ) : null}
+        {daily.status === 'ready' && daily.right + daily.wrong > 0 ? (
+          <Bilingual
+            en={`Today's mock exams: ${String(daily.right)} right · ${String(daily.wrong)} wrong`}
+            kr={`오늘 모의고사: 맞음 ${String(daily.right)} · 틀림 ${String(daily.wrong)}`}
+            compact
+          />
+        ) : null}
+      </p>
+
       <p className="km-topik__tally-note">
-        <Bilingual
-          en="Daily recommended: 10 items. Full-day totals will appear once attempt history is available."
-          kr="하루 권장량은 10문항이에요. 하루 전체 기록은 준비 중이에요."
-        />
+        <Bilingual en="Daily recommended: 10 items." kr="하루 권장량은 10문항이에요." />
       </p>
     </Card>
+  );
+}
+
+/** Section badge label — Korean wire label already; kept as-is for display. */
+function formatAttemptHeadline(a: TopikAttemptHistoryEntry): string {
+  const levelPart = a.topikLevel !== null ? `${a.topikLevel} · ` : '';
+  return `${levelPart}${a.section} · Test ${String(a.sourceTest)}`;
+}
+
+/** One completed-exam row (F-082) — grade + correct/total + date. */
+function AttemptHistoryRow({ a }: { a: TopikAttemptHistoryEntry }): JSX.Element {
+  const percentage =
+    a.totalItems > 0 ? Math.round((a.correct / a.totalItems) * 1000) / 10 : 0;
+  const band = bandForPercentage(percentage);
+  const date = new Date(a.completedAt);
+  return (
+    <li className="km-topik__attempt-row">
+      <span className="km-topik__attempt-row-head">{formatAttemptHeadline(a)}</span>
+      <span className="km-topik__attempt-row-grade">
+        <Bilingual
+          en={`${String(a.correct)}/${String(a.totalItems)} · ${String(percentage)}% · ${band}`}
+          kr={`${String(a.correct)}/${String(a.totalItems)} · ${String(percentage)}%`}
+          compact
+        />
+      </span>
+      <span className="km-topik__attempt-row-date">
+        {Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString()}
+      </span>
+    </li>
   );
 }
 
 /**
  * F-082 — "Previous attempts" review view (`/learn/topik?view=attempts`).
  *
- * Designed structure: a list of completed exams (grade + correct-out-of-total)
- * whose wrong questions render red in the mock review-tile format, each
- * deep-linking to its explanation in Review → Mistakes. The completed-attempt
- * DATA needs `GET /topik/attempts` (ticket F-104) — until it lands the
- * sections render honestly-pending bodies (the Mistakes F-046 convention) and
- * NOTHING is fabricated. The one part that exists today is wired: the jump
- * into Review → Mistakes, where every wrong answer already lives.
+ * The "Completed exams" tile is now populated from `GET /topik/attempts`
+ * (F-104): a list of completed exams, newest first, each with its grade and
+ * correct-out-of-total. Per-question red/green review WITHIN an exam still
+ * needs per-response linkage F-104 doesn't carry (it returns per-attempt
+ * aggregates, not per-item picks) — so the "Wrong-question review" tile
+ * keeps its jump into Review → Mistakes, where every wrong answer (across
+ * all TOPIK work) already lives, rather than fabricating a per-exam
+ * breakdown the data can't support yet.
  */
 function AttemptsReview(): JSX.Element {
+  const realFn = useCallback(() => fetchAttemptHistory({ limit: 50 }), []);
+  const { data, loading, error, refetch } = useEndpointOrMock<AttemptHistoryResult>(
+    'topik-attempts-review',
+    loadTopikAttemptHistoryMock,
+    { realFn },
+  );
+  const attempts = data?.attempts ?? [];
+
   return (
     <section className="screen km-topik" aria-labelledby="topik-attempts-title">
       {/* F-024: nested sub-view → explicit back to the canonical parent. */}
@@ -275,15 +400,44 @@ function AttemptsReview(): JSX.Element {
           </span>
         }
       >
-        {/* Honest pending state — completed-exam history (grade,
-            correct-out-of-total, per-question red/green review) requires
-            GET /topik/attempts (ticket F-104). Never fabricated. */}
-        <p className="km-topik__pending" role="status">
-          <Bilingual
-            en="Your completed mock exams — grade and correct-out-of-total, with wrong questions marked in red — will appear here once attempt history is available. Coming soon."
-            kr="완료한 모의고사의 성적과 정답 수, 빨간색으로 표시된 오답 문제가 곧 여기에 표시될 거예요. 준비 중이에요."
-          />
-        </p>
+        {loading ? (
+          <p className="km-topik__pending" role="status">
+            <Bilingual en="Loading your completed exams…" kr="완료한 시험을 불러오는 중…" />
+          </p>
+        ) : null}
+
+        {!loading && error && attempts.length === 0 ? (
+          <div className="km-topik__pending" role="alert">
+            <Bilingual
+              en="Couldn't load your completed exams."
+              kr="완료한 시험을 불러오지 못했어요."
+            />{' '}
+            {errorMessageFor(error, 'Try again in a moment.')}
+            <div className="km-topik__footer">
+              <Button variant="gold" onClick={refetch}>
+                <Bilingual en="Try again" kr="다시 시도" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {!loading && !error && attempts.length === 0 ? (
+          // Honest empty state — a real absence, never fabricated.
+          <p className="km-topik__pending" role="status">
+            <Bilingual
+              en="You haven't completed a mock exam yet. Finish one in Mock mode and it will show up here."
+              kr="아직 완료한 모의고사가 없어요. 모의 모드에서 시험을 완료하면 여기에 표시돼요."
+            />
+          </p>
+        ) : null}
+
+        {attempts.length > 0 ? (
+          <ul className="km-topik__attempt-list">
+            {attempts.map((a) => (
+              <AttemptHistoryRow key={a.attemptId} a={a} />
+            ))}
+          </ul>
+        ) : null}
       </CollapsibleTile>
 
       <CollapsibleTile
@@ -295,13 +449,12 @@ function AttemptsReview(): JSX.Element {
       >
         <p className="km-topik__pending">
           <Bilingual
-            en="Per-exam wrong-question review (your previous answer, then a jump to the full explanation) needs the same attempt history. Your recent misses across all TOPIK work are already reviewable:"
-            kr="시험별 오답 복습(내가 고른 답과 해설 보기)도 같은 기록이 필요해요. 최근에 틀린 문제는 지금도 복습할 수 있어요:"
+            en="Per-exam wrong-question review (which question, in which exam) isn't broken out yet — but every recent miss across all TOPIK work is already reviewable:"
+            kr="시험별 오답 복습(어느 시험의 몇 번 문제인지)은 아직 준비 중이에요 — 최근에 틀린 문제는 지금도 복습할 수 있어요:"
           />
         </p>
-        {/* Wired today: the Mistakes page is where wrong answers + full
-            explanations already live — the F-082 per-question jump will
-            deep-link here once attempts exist. */}
+        {/* Wired: the Mistakes page is where wrong answers + full
+            explanations already live. */}
         <Link to="/review/mistakes" className="km-topik__attempts-link focusring">
           <Bilingual en="Review your mistakes" kr="틀린 문제 복습" />{' '}
           <Icon name="arrow-right" size={13} />
@@ -426,6 +579,33 @@ function StudyMode({
   >(`topik-study-${String(drawKey)}-${setSize === '' ? '10' : setSize}`, loadTopikStudyMock, {
     realFn,
   });
+
+  // F-078/F-104: today's completed-mock total — a SEPARATE hook call (own
+  // key, own mock loader) from the study draw above, so the two never
+  // collide on `useEndpointOrMock`'s key-scoped state. Bounded to the most
+  // recent 100 completed attempts (the server's paging max) — a best-effort
+  // "today" scan appropriate for this app's personal, single-user scale
+  // (see project_korean_master_personal_scope).
+  const dailyRealFn = useCallback(() => fetchAttemptHistory({ limit: 100 }), []);
+  const {
+    data: dailyHistory,
+    loading: dailyLoading,
+    error: dailyError,
+    refetch: refetchDaily,
+  } = useEndpointOrMock<AttemptHistoryResult>(
+    'topik-daily-total',
+    loadTopikAttemptHistoryMock,
+    { realFn: dailyRealFn },
+  );
+  const daily: DailyMockTotal = useMemo(() => {
+    if (dailyLoading) return { status: 'loading' };
+    if (dailyError !== null) return { status: 'error', onRetry: refetchDaily };
+    const { right, wrong } = sumTodaysMockAttempts(
+      dailyHistory?.attempts ?? [],
+      new Date(),
+    );
+    return { status: 'ready', right, wrong };
+  }, [dailyLoading, dailyError, dailyHistory, refetchDaily]);
 
   const draw = data ?? [];
   const current: TopikItem | undefined = draw[idx];
@@ -589,7 +769,7 @@ function StudyMode({
       {/* F-078 session tally + B-029 draw-size control + the F-082 entry.
           Rendered above the flow in every study state so the landing always
           carries them (they are landing chrome, not per-item state). */}
-      <SessionTally right={tally.right} wrong={tally.wrong} />
+      <SessionTally right={tally.right} wrong={tally.wrong} daily={daily} />
       <div className="km-topik__controls">
         <FilterSelect
           label="Set size · 세트 크기"

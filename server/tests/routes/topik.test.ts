@@ -138,6 +138,8 @@ describe('topik — auth required', () => {
   it.each([
     ['GET', '/topik/items'],
     ['GET', '/topik/series'],
+    ['GET', '/topik/attempts'],
+    ['GET', '/topik/tests'],
     ['POST', '/topik/mock'],
     ['POST', '/topik/mock/submit'],
     ['POST', '/topik/study'],
@@ -2103,5 +2105,273 @@ describe('A1 (046) — attempt history: completed/abandoned attempts are retaine
         [userId],
       ),
     ).rejects.toMatchObject({ code: '23505' }); // unique_violation
+  });
+});
+
+describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () => {
+  /** Seed a 3-item reading mock under one test; answers are b/c/a (2/3/1). */
+  async function seedThreeItemReadingMockAt(testNumber: number): Promise<number[]> {
+    const ids: number[] = [];
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 1,
+        options: ['가', '나', '다', '라'],
+        answer: 2, // correct 'b'
+      }),
+    );
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 2,
+        options: ['가', '나', '다', '라'],
+        answer: 3, // correct 'c'
+      }),
+    );
+    ids.push(
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber,
+        itemNumber: 3,
+        options: ['가', '나', '다', '라'],
+        answer: 1, // correct 'a'
+      }),
+    );
+    return ids;
+  }
+
+  it('returns a completed attempt with the correct score + the re-derived topikLevel/totalItems', async () => {
+    const [id1, id2] = await seedThreeItemReadingMockAt(2000);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2000,
+      section: 'reading',
+      answers: [
+        { itemId: id1, picked: 'b' }, // correct
+        { itemId: id2, picked: 'a' }, // wrong
+      ],
+    });
+    expect(submit.status).toBe(200);
+
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.attempts.length).toBe(1);
+    const a = res.body.attempts[0];
+    expect(a.section).toBe('읽기'); // enum → Korean
+    expect(a.sourceTest).toBe(2000);
+    expect(a.topikLevel).toBe('TOPIK II'); // seedTopikItem defaults to TOPIK II
+    expect(a.correct).toBe(1);
+    expect(a.totalItems).toBe(3); // the 3-item mock's served total
+    expect(typeof a.attemptId).toBe('string');
+    expect(typeof a.completedAt).toBe('string');
+  });
+
+  it('is user-scoped (no IDOR) — another user never sees these attempts', async () => {
+    const [id1] = await seedThreeItemReadingMockAt(2001);
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await a.agent.post('/topik/mock/submit').send({
+      sourceTest: 2001,
+      section: 'reading',
+      answers: [{ itemId: id1, picked: 'b' }],
+    });
+
+    const resB = await b.agent.get('/topik/attempts');
+    expect(resB.status).toBe(200);
+    expect(resB.body.attempts).toEqual([]);
+    expect(resB.body.total).toBe(0);
+
+    const resA = await a.agent.get('/topik/attempts');
+    expect(resA.body.attempts.length).toBe(1);
+  });
+
+  it('empty case: no completed attempts → 200 with an empty list', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], total: 0 });
+  });
+
+  it('excludes an in-progress (active) attempt — only completed rows are history', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 2002,
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 1000,
+    });
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts).toEqual([]);
+  });
+
+  it('an all-skipped submit still records history: correct=0, totalItems re-derived from the corpus', async () => {
+    await seedThreeItemReadingMockAt(2003);
+    const { agent } = await registerUser(t.app, pg.pool);
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 2003,
+      section: 'reading',
+      answers: [],
+    });
+    expect(submit.status).toBe(200);
+
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts.length).toBe(1);
+    expect(res.body.attempts[0]).toMatchObject({
+      sourceTest: 2003,
+      topikLevel: 'TOPIK II',
+      correct: 0,
+      totalItems: 3,
+    });
+  });
+
+  it('orders newest-first and honors limit/offset paging', async () => {
+    const [x1] = await seedThreeItemReadingMockAt(2010);
+    const [y1] = await seedThreeItemReadingMockAt(2011);
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 2010,
+      section: 'reading',
+      answers: [{ itemId: x1, picked: 'b' }],
+    });
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 2011,
+      section: 'reading',
+      answers: [{ itemId: y1, picked: 'b' }],
+    });
+
+    const page1 = await agent.get('/topik/attempts').query({ limit: 1, offset: 0 });
+    expect(page1.status).toBe(200);
+    expect(page1.body.total).toBe(2);
+    expect(page1.body.attempts.length).toBe(1);
+    expect(page1.body.attempts[0].sourceTest).toBe(2011); // most recently completed first
+
+    const page2 = await agent.get('/topik/attempts').query({ limit: 1, offset: 1 });
+    expect(page2.body.attempts.length).toBe(1);
+    expect(page2.body.attempts[0].sourceTest).toBe(2010);
+  });
+
+  it.each([['limit=0'], ['limit=101'], ['offset=-1']])(
+    '%s → 400 (paging out of bounds)',
+    async (qs) => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent.get(`/topik/attempts?${qs}`);
+      expect(res.status).toBe(400);
+    },
+  );
+});
+
+describe('GET /topik/tests — enumerate available TOPIK papers (F-118)', () => {
+  it('returns test_number/topikLevel/section/itemCount for a seeded paper', async () => {
+    for (let n = 1; n <= 5; n++) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 3000,
+        itemNumber: n,
+        options: ['가', '나', '다', '라'],
+        answer: 1,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/tests');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.tests).toEqual([
+      { testNumber: 3000, topikLevel: 'TOPIK II', section: '읽기', itemCount: 5 },
+    ]);
+  });
+
+  it('caps itemCount at the official 50-item mock size (F-UP-007 parity)', async () => {
+    for (let n = 1; n <= 60; n++) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 3001,
+        itemNumber: n,
+        options: ['가', '나', '다', '라'],
+        answer: 1,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/tests');
+    expect(res.status).toBe(200);
+    expect(res.body.tests.length).toBe(1);
+    expect(res.body.tests[0].itemCount).toBe(50); // capped, not the 60 that exist
+  });
+
+  it('excludes a paper with zero answerable items', async () => {
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 3002,
+      itemNumber: 1,
+      options: ['only-one'], // <2 options → unanswerable (survivor guard)
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/tests');
+    expect(res.status).toBe(200);
+    expect(res.body.tests).toEqual([]);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('filters by section and by topik_level (D-1: one test_number, two papers)', async () => {
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 3010,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'listening',
+      testNumber: 3011,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    await seedTopikItemAtLevel('TOPIK I', {
+      testNumber: 3010,
+      itemNumber: 1,
+      section: 'reading',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const reading = await agent.get('/topik/tests').query({ section: 'reading' });
+    expect(reading.status).toBe(200);
+    expect(reading.body.total).toBe(2); // 3010/TOPIK II + 3010/TOPIK I — distinct papers
+    for (const test of reading.body.tests as Array<{ section: string }>) {
+      expect(test.section).toBe('읽기');
+    }
+
+    const topikI = await agent.get('/topik/tests').query({ topik_level: 'TOPIK I' });
+    expect(topikI.status).toBe(200);
+    expect(topikI.body.total).toBe(1);
+    expect(topikI.body.tests[0]).toMatchObject({ testNumber: 3010, topikLevel: 'TOPIK I' });
+  });
+
+  it('paginates with limit/offset while total reflects the full filtered paper count', async () => {
+    for (let n = 1; n <= 3; n++) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 3100 + n,
+        options: ['가', '나', '다', '라'],
+        answer: 1,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    const page1 = await agent.get('/topik/tests').query({ limit: 2, offset: 0 });
+    expect(page1.status).toBe(200);
+    expect(page1.body.total).toBe(3);
+    expect(page1.body.tests.length).toBe(2);
+    const page2 = await agent.get('/topik/tests').query({ limit: 2, offset: 2 });
+    expect(page2.body.tests.length).toBe(1);
+  });
+
+  it('rejects an unknown section value with 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/topik/tests').query({ section: 'bogus' });
+    expect(res.status).toBe(400);
   });
 });

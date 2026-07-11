@@ -264,3 +264,95 @@ export async function fetchMistakes(
   });
   return res.mistakes;
 }
+
+// ── Attempt history (F-104 / A1) — GET /topik/attempts ────────────────────
+
+/**
+ * One completed mock-attempt history entry, as `GET /topik/attempts` serves
+ * it. `topikLevel` is a best-effort server re-derivation (`topik_attempts`
+ * doesn't store it — see the route's `resolveServedTotal` doc) and is `null`
+ * on the rare case the backing corpus paper is gone; `totalItems` falls back
+ * to the actual answered count in that same case (a real, non-fabricated
+ * lower bound, never a guess).
+ */
+export interface TopikAttemptHistoryEntry {
+  attemptId: string;
+  /** Korean section label (`TopikItem['section']`'s enum) — matches the wire. */
+  section: TopikItem['section'];
+  sourceTest: number;
+  topikLevel: 'TOPIK I' | 'TOPIK II' | null;
+  correct: number;
+  totalItems: number;
+  /** ISO timestamp of when the attempt was graded. */
+  completedAt: string;
+}
+
+/** Envelope returned by `GET /topik/attempts`. */
+export interface AttemptHistoryResult {
+  attempts: TopikAttemptHistoryEntry[];
+  /** Total completed attempts matching the (unfiltered) query — for paging. */
+  total: number;
+}
+
+/**
+ * GET /topik/attempts — the caller's completed mock-attempt history
+ * (F-104 / A1). Newest-first; `status='active'`/`'abandoned'` attempts are
+ * excluded — only graded sittings are history. Feeds F-078's daily total,
+ * F-079's per-exam completion checkmarks + grade, and F-082's "Previous
+ * attempts" review list.
+ */
+export async function fetchAttemptHistory(
+  opts: { limit?: number; offset?: number } = {},
+  signal?: AbortSignal,
+): Promise<AttemptHistoryResult> {
+  const params: Record<string, number> = {};
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<AttemptHistoryResult>('/topik/attempts', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
+}
+
+// ── Available-papers enumeration (F-118) — GET /topik/tests ───────────────
+
+/** One TOPIK paper summary, as `GET /topik/tests` serves it. */
+export interface TopikTestSummary {
+  testNumber: number;
+  topikLevel: 'TOPIK I' | 'TOPIK II';
+  section: TopikItem['section'];
+  /**
+   * The paper's answerable item count for this section, capped at the
+   * official mock size (50) — matches EXACTLY what `POST /topik/mock` would
+   * serve for this paper, so a chooser built from this never advertises a
+   * count the exam itself would not deliver.
+   */
+  itemCount: number;
+}
+
+/** Envelope returned by `GET /topik/tests`. */
+export interface AvailableTestsResult {
+  tests: TopikTestSummary[];
+  /** Total matching papers (unfiltered by paging) — for paging. */
+  total: number;
+}
+
+/**
+ * GET /topik/tests — enumerate available TOPIK papers (F-118). Feeds the
+ * F-079 Mock exam chooser's per-paper list. `section` narrows to one MCQ
+ * section (the chooser is always entered already scoped to one); omit to
+ * list every paper.
+ */
+export async function fetchAvailableTests(
+  opts: { section?: MockSection; limit?: number; offset?: number } = {},
+  signal?: AbortSignal,
+): Promise<AvailableTestsResult> {
+  const params: Record<string, number | string> = {};
+  if (opts.section !== undefined) params.section = opts.section;
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<AvailableTestsResult>('/topik/tests', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
+}
