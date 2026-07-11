@@ -353,3 +353,33 @@ export async function getGeneratedStory(
   );
   return res.story;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Passage translation (F-116 — replaces the F-070 honest stub)
+// ─────────────────────────────────────────────────────────────
+
+interface TranslatePassageEnvelope {
+  translation: string;
+}
+
+/**
+ * POST /reading/translate — Claude authors a natural-English translation of
+ * the given Korean passage/paragraph. Expensive route: expect 429
+ * (`ApiError.retryAfter`) as a first-class failure, plus 502 for an upstream
+ * Claude failure. STATELESS — nothing is persisted server-side, so a failed
+ * call leaves no half-state to worry about; the caller can retry freely.
+ * `passage` is this module's only free text on this call — the server bounds
+ * it (1..6000) and the Claude proxy sanitizes + wraps it as untrusted data
+ * again. Sent as a JSON body value — never interpolated into the URL.
+ */
+export async function translatePassage(
+  passage: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await api.post<TranslatePassageEnvelope>(
+    '/reading/translate',
+    { passage },
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.translation;
+}

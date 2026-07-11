@@ -72,6 +72,7 @@ function setupProxy(sdkResponses: Parameters<typeof makeStubSdk>[0]) {
     generate_writing_prompt: 20,
     generate_story: 6,
     name_conversation: 10,
+    translate_passage: 30,
   });
   const sdk = makeStubSdk(sdkResponses);
   const proxy = createClaudeProxy({
@@ -201,7 +202,7 @@ describe('enrich — error paths', () => {
     const cache = new InMemoryCacheStore();
     const usage = new InMemoryUsageStore();
     const limiter = new TokenBucketLimiter(
-      { enrich: 1, recognize_grammar: 1, grade_writing: 1, diagnostic_item: 1, image_ocr: 1, generate_conversation: 1, generate_grammar_drill: 1, score_grammar_drill: 1, generate_writing_prompt: 1, generate_story: 1, name_conversation: 1 },
+      { enrich: 1, recognize_grammar: 1, grade_writing: 1, diagnostic_item: 1, image_ocr: 1, generate_conversation: 1, generate_grammar_drill: 1, score_grammar_drill: 1, generate_writing_prompt: 1, generate_story: 1, name_conversation: 1, translate_passage: 1 },
       () => 1_700_000_000_000,
     );
     setTestEnv();

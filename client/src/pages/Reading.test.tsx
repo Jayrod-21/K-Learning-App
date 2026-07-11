@@ -50,6 +50,7 @@ const readingSvc = vi.hoisted(() => ({
   generateStory: vi.fn(),
   listGeneratedStories: vi.fn(),
   getGeneratedStory: vi.fn(),
+  translatePassage: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -156,6 +157,7 @@ beforeEach(() => {
   readingSvc.generateStory.mockReset();
   readingSvc.listGeneratedStories.mockReset();
   readingSvc.getGeneratedStory.mockReset();
+  readingSvc.translatePassage.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
@@ -629,13 +631,14 @@ describe('Reading — chapter reader (tap-to-define)', () => {
     expect(mineSignal?.aborted).toBe(true);
   });
 
-  it('opens the translate sheet as an honest coming-soon stub — never a fabricated translation (F-070)', async () => {
+  it('opens the translate sheet and renders the fetched translation (F-116)', async () => {
     readingSvc.getChapter.mockResolvedValue({
       chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
       passages: [
         { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
       ],
     });
+    readingSvc.translatePassage.mockResolvedValue('The boy walked.');
 
     const user = userEvent.setup();
     renderReading();
@@ -648,17 +651,140 @@ describe('Reading — chapter reader (tap-to-define)', () => {
     const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
     // The selected passage is shown back…
     expect(within(sheet).getByText('소년은 걸었다.')).toBeInTheDocument();
-    // …with the clear not-yet state (server route tracked as F-116) — and
-    // NO translation text is fabricated anywhere in the sheet.
-    expect(within(sheet).getByText(/coming soon/i)).toBeInTheDocument();
+    // …and the request went out for that exact passage, abortably.
+    expect(readingSvc.translatePassage).toHaveBeenCalledWith(
+      '소년은 걸었다.',
+      expect.any(AbortSignal),
+    );
+    // …then the real translation renders (never a fabricated/stub string).
     expect(
-      within(sheet).getByText(/isn't wired up yet/i),
+      await within(sheet).findByText('The boy walked.'),
     ).toBeInTheDocument();
+    expect(within(sheet).queryByText(/coming soon/i)).not.toBeInTheDocument();
 
     await user.click(within(sheet).getByRole('button', { name: 'Close' }));
     expect(
       screen.queryByRole('dialog', { name: 'Passage translation' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows a loading state while the translation is in flight', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    // Never resolves — lets the test observe the loading state mid-flight.
+    readingSvc.translatePassage.mockImplementation(
+      () =>
+        new Promise(() => {
+          /* never settles */
+        }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Translate passage 1' }),
+    );
+
+    const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
+    expect(within(sheet).getByText(/translating/i)).toBeInTheDocument();
+  });
+
+  it('surfaces a translation failure with a working Retry — no server prose leak (F-116)', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    readingSvc.translatePassage
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 502, code: 'upstream_error' }),
+      )
+      .mockResolvedValueOnce('The boy walked.');
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Translate passage 1' }),
+    );
+    const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
+
+    const alert = await within(sheet).findByRole('alert');
+    expect(alert).toHaveTextContent(/could not translate this passage/i);
+    expect(alert).not.toHaveTextContent(/boom/);
+
+    await user.click(within(sheet).getByRole('button', { name: 'Retry' }));
+    expect(
+      await within(sheet).findByText('The boy walked.'),
+    ).toBeInTheDocument();
+    expect(readingSvc.translatePassage).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders the structured 429 retry-after copy on a rate-limited translate call', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    readingSvc.translatePassage.mockRejectedValue(
+      new ApiError('rate limited', {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 12,
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Translate passage 1' }),
+    );
+    const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
+
+    const alert = await within(sheet).findByRole('alert');
+    expect(alert).toHaveTextContent(/try again in about 12 seconds/i);
+  });
+
+  it('closing the translate sheet aborts an in-flight request', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    let translateSignal: AbortSignal | undefined;
+    readingSvc.translatePassage.mockImplementation(
+      (_text: string, signal?: AbortSignal) => {
+        translateSignal = signal;
+        return new Promise(() => {
+          /* never settles */
+        });
+      },
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Translate passage 1' }),
+    );
+    const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
+    expect(translateSignal?.aborted).toBe(false);
+
+    await user.click(within(sheet).getByRole('button', { name: 'Close' }));
+    expect(translateSignal?.aborted).toBe(true);
   });
 });
 

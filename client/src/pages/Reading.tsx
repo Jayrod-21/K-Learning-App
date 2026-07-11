@@ -34,13 +34,14 @@
  *   spot as a "Resume" button when one exists AND still points at a listed
  *   chapter. A failed save toasts once — reading continues regardless.
  *
- *   F-070 (passage translation): every passage (and story paragraph) carries
- *   a "Translate" action that opens `TranslateSheet` — the popup shell for
- *   whole-passage translation. The server has NO passage-translate route yet
- *   (routes/reading.ts serves passages + single-word define/enrich only), so
- *   the sheet is an HONEST STUB: it shows the selected passage and a clear
- *   "coming soon" state (ticket F-116 tracks the Claude route) — it never
- *   fabricates a translation. Single-word tap-to-define is untouched.
+ *   F-070/F-116 (passage translation): every passage (and story paragraph)
+ *   carries a "Translate" action that opens `TranslateSheet` — a popup that
+ *   fetches `POST /reading/translate` (F-116) for the selected passage and
+ *   renders Claude's natural-English translation. Abortable (a re-open or
+ *   unmount cancels the in-flight call); a failure renders `ErrorCard` with a
+ *   working Retry, using the app's fixed-copy `errorMessageFor` (429 renders
+ *   its structured retry-after copy — this is an EXPENSIVE route). Single-word
+ *   tap-to-define is untouched.
  *
  * Tap-to-define reuses the shared stack as-is (`lib/tapChain`,
  * `components/Tapword`, `components/WordPopover`) via the page-local
@@ -67,9 +68,11 @@
  *     change. The writes (position PUT, generate POST, vocab-mine POST) ride
  *     the `SameSite=Strict` cookie posture owned by `services/api.ts`
  *     (ADR-002) and are themselves abortable.
- *   - POST /reading/generate sits in the server's EXPENSIVE rate-limit
- *     bucket: 429 (with structured `retryAfter`) renders via
- *     `errorMessageFor` and the Generate button stays enabled as the retry.
+ *   - POST /reading/generate and POST /reading/translate both sit in the
+ *     server's EXPENSIVE rate-limit bucket: 429 (with structured
+ *     `retryAfter`) renders via `errorMessageFor`; the Generate button stays
+ *     enabled as the retry, and the translate sheet's error state carries its
+ *     own Retry button.
  */
 import {
   useCallback,
@@ -117,6 +120,7 @@ import {
   listChapters,
   listGeneratedStories,
   saveReadingPosition,
+  translatePassage,
 } from '../services/reading';
 import type {
   GeneratedStory,
@@ -840,14 +844,24 @@ function TranslatablePassage({
   );
 }
 
+/** `TranslateSheet`'s fetch lifecycle — one state at a time, no boolean soup
+ *  (mirrors `GenState` above). No 'idle' phase: the sheet only mounts once a
+ *  passage is selected, so it always starts loading immediately. */
+type TranslateSheetState =
+  | { phase: 'loading' }
+  | { phase: 'success'; translation: string }
+  | { phase: 'error'; message: string };
+
+/** Fixed fallback copy for a failed translation (errorCopy contract). */
+const TRANSLATE_FAILED_COPY = 'Could not translate this passage. Try again.';
+
 /**
- * F-070 — the whole-passage translation popup (Google-Translate style
- * shell). HONEST STUB: the server has no passage-translate route yet
- * (routes/reading.ts serves passages + single-word define/enrich only), so
- * this shows the selected passage and a clear coming-soon state — ticket
- * F-116 tracks the Claude route. When it lands, only the fetch wiring is
- * missing from this shell; the copy below is replaced by the translation.
- * It never fabricates a translation.
+ * F-070/F-116 — the whole-passage translation popup (Google-Translate style
+ * shell). Fetches `POST /reading/translate` for the selected passage and
+ * renders Claude's translation. Abortable: closing/re-opening the sheet
+ * (parent re-keys via `text`) or unmounting cancels any in-flight call, and a
+ * failure never leaves a stale/half-drawn result — `reloadTick` drives an
+ * explicit Retry rather than a silent background re-poll.
  */
 function TranslateSheet({
   text,
@@ -856,6 +870,41 @@ function TranslateSheet({
   text: string;
   onClose: () => void;
 }): JSX.Element {
+  const [state, setState] = useState<TranslateSheetState>({ phase: 'loading' });
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (network fetch) — same documented exception the
+    // other fetch effects on this page use for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setState({ phase: 'loading' });
+    /* eslint-enable react-hooks/set-state-in-effect */
+    translatePassage(text, ctrl.signal)
+      .then((translation) => {
+        if (ctrl.signal.aborted) return;
+        setState({ phase: 'success', translation });
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setState({
+          phase: 'error',
+          message: errorMessageFor(err, TRANSLATE_FAILED_COPY),
+        });
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [text, reloadTick]);
+
+  const retry = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
   return (
     <Sheet open onClose={onClose} ariaLabel="Passage translation">
       <div className="km-reading__translate-sheet">
@@ -863,17 +912,15 @@ function TranslateSheet({
           <Bilingual en="Translation" kr="번역" compact />
         </Eyebrow>
         <p className="kr km-reading__translate-src">{text}</p>
-        <div className="km-reading__translate-stub">
-          <Pill tone="ochre">
-            <Bilingual en="Coming soon" kr="준비 중" compact />
-          </Pill>
-          <p className="km-reading__translate-note">
-            <Bilingual
-              en="Whole-passage translation isn't wired up yet (F-116). Tap any single word for its dictionary entry in the meantime."
-              kr="문장 전체 번역은 아직 준비 중이에요. 지금은 단어를 눌러 사전 뜻을 확인해 주세요."
-            />
-          </p>
-        </div>
+        {state.phase === 'loading' ? (
+          <div className="km-reading__translate-stub" role="status">
+            <Bilingual en="Translating…" kr="번역 중…" compact />
+          </div>
+        ) : state.phase === 'error' ? (
+          <ErrorCard message={state.message} onRetry={retry} />
+        ) : (
+          <p className="km-reading__translate-result">{state.translation}</p>
+        )}
         <Button variant="ghost" size="sm" onClick={onClose}>
           Close
         </Button>
