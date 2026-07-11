@@ -1,5 +1,26 @@
-/* Mistakes-review screen (F-021). Reuses the global km-topik__choice option
- * styling; these rules only lay out the page + review-card chrome. */
+/* Mistakes-review screen (F-021, reworked P3b: F-044/F-045/F-046/F-024).
+ * Reuses the global km-topik__choice option styling; these rules only lay
+ * out the page chrome — the per-question tile itself is CollapsibleTile. */
+
+/* F-024 back control row — sits above the sticky Topbar, scrolls away. */
+.km-mistakes__nav {
+  margin-bottom: 4px;
+}
+
+/* F-044 session-filter row: the FilterSelect + the live missed-count stat. */
+.km-mistakes__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* F-045 (interim): the honest derivable stat — missed count for the visible
+ * scope. --paper-dim (not -mute): this is content, so it must hold WCAG AA. */
+.km-mistakes__stat {
+  font-size: 0.8rem;
+  color: var(--paper-dim);
+}
 
 .km-mistakes__list {
   display: flex;
@@ -7,17 +28,40 @@
   gap: 16px;
 }
 
-.km-mistakes__card {
+/* ── F-044 collapsed-tile header ─────────────────────────────────────────
+ * Lives INSIDE CollapsibleTile's toggle <button> — spans only (phrasing
+ * content). The title is a flex item of the header row (blockified, with
+ * min-width: 0 from .km-collapsible__title), so the snippet's ellipsis
+ * resolves against the available header width. */
+.km-mistakes__tile-head {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
+  min-width: 0;
 }
 
-.km-mistakes__meta {
+.km-mistakes__tile-meta {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* One-line prompt preview so a collapsed tile is still identifiable. */
+.km-mistakes__tile-snippet {
+  display: block;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expanded review body (inside the tile's disclosure region). */
+.km-mistakes__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .km-mistakes__when {
@@ -83,4 +127,25 @@
 
 .km-mistakes__skeleton-line + .km-mistakes__skeleton-line {
   width: 70%;
+}
+
+/* ── F-046 writing-review section (stubbed — ticket KM-3B-M3) ──────────── */
+.km-mistakes__writing {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 32px;
+}
+
+.km-mistakes__section-title {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+/* Honest "coming soon" body copy. --paper-dim, not -mute: real content. */
+.km-mistakes__stub {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--paper-dim);
 }
