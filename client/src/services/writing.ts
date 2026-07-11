@@ -98,6 +98,37 @@ export async function fetchWritingPrompts(
   return res.prompts;
 }
 
+/** Envelope returned by `GET /writing/prompts/random`. */
+interface RandomWritingPromptEnvelope {
+  prompt: WritingPromptDTO;
+}
+
+/**
+ * GET /writing/prompts/random?rubric=… — ONE uniformly random ACTIVE prompt
+ * for the rubric, picked server-side (B-027: `/writing/prompts` returns a
+ * stable ascending-id list and the Writing screen pinned index 0, so every
+ * visit opened the SAME task; this endpoint is the genuinely-random pick the
+ * screen now uses). Rides the cheap bucket like the list endpoint.
+ *
+ * Rejects with `ApiError`:
+ *   - 404 — the rubric's active pool is EMPTY (an operator retired every
+ *     prompt); callers render their honest empty state on this status.
+ *   - 401 session expired / 429 cheap-bucket limit / 5xx — fixed-copy error.
+ */
+export async function fetchRandomWritingPrompt(
+  rubric: TopikWritingRubric,
+  signal?: AbortSignal,
+): Promise<WritingPromptDTO> {
+  const res = await api.get<RandomWritingPromptEnvelope>(
+    '/writing/prompts/random',
+    {
+      params: { rubric },
+      ...(signal !== undefined ? { signal } : {}),
+    },
+  );
+  return res.prompt;
+}
+
 /**
  * Per-call request ceiling for the grade leg.
  *
