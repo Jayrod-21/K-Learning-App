@@ -699,6 +699,62 @@ describe('Topik (Study mode)', () => {
     expect(within(tally).getAllByText('맞음 0').length).toBeGreaterThan(0);
   });
 
+  it('SF-2: the session tally survives a Study→Mock→Study round trip', async () => {
+    // `Tabs` re-keys its panel per mode (render-one design), so switching to
+    // Mock and back unmounts + remounts StudyMode outright. Before the SF-2
+    // fix the tally lived in StudyMode's own state and was zeroed by this.
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — correct
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('tab', { name: /mock/i }));
+    await user.click(screen.getByRole('tab', { name: /study/i }));
+
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('SF-2: the session tally survives a trip to Previous attempts and back', async () => {
+    // The `view === 'attempts'` early return in `Topik` replaces the ENTIRE
+    // tabbed area — another unmount path StudyMode's own state couldn't
+    // survive before the fix.
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getAllByRole('radio')[1]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole('link', { name: /Previous attempts/i }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Back to TOPIK' }));
+
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
   it('F-082: the landing links to Previous attempts — an honestly-pending review view with a wired jump to Mistakes', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();

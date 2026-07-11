@@ -842,6 +842,43 @@ describe('Reading — AI stories (F-068)', () => {
     });
   });
 
+  it('switching tabs mid-generation aborts the in-flight request (F-068)', async () => {
+    // Mirrors the "Add to bank" abort regression above: never resolves, so
+    // the test observes the real signal mid-flight instead of racing a
+    // resolution.
+    let genSignal: AbortSignal | undefined;
+    readingSvc.generateStory.mockImplementation(
+      (_input: unknown, signal?: AbortSignal) => {
+        genSignal = signal;
+        return new Promise(() => {
+          /* never settles */
+        });
+      },
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStoriesTab(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /Generate story/ }),
+    );
+
+    expect(readingSvc.generateStory).toHaveBeenCalledWith(
+      { level: 'L3' },
+      expect.any(AbortSignal),
+    );
+    expect(genSignal?.aborted).toBe(false);
+
+    // `Tabs` is a render-one primitive that re-keys its panel per tab, so
+    // switching away unmounts StoryGenerator outright — this must run the
+    // unmount-abort cleanup rather than leaving the request to resolve
+    // against a dead component.
+    await user.click(screen.getByRole('tab', { name: /Books/ }));
+
+    expect(genSignal?.aborted).toBe(true);
+  });
+
   it('surfaces a generation failure as fixed alert copy — no server prose leak', async () => {
     readingSvc.generateStory.mockRejectedValue(
       new ApiError('boom', { status: 502, code: 'upstream_error' }),

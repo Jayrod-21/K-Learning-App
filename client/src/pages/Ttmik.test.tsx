@@ -175,7 +175,7 @@ async function openLessonOne(
   await openTtmikListing(user);
   await user.click(
     await screen.findByRole('button', {
-      name: 'Open lesson 1: Hello / Thank you',
+      name: 'Open lesson 1: Hello / Thank you (audio)',
     }),
   );
   await screen.findByText('Level 1 · Lesson 1');
@@ -232,10 +232,12 @@ describe('Ttmik page — landing (F-071)', () => {
     await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
 
     expect(
-      await screen.findByRole('button', { name: 'Open episode 1: 서울의 겨울' }),
+      await screen.findByRole('button', {
+        name: 'Open episode 1: 서울의 겨울 (audio)',
+      }),
     ).toBeInTheDocument();
     const ep143 = screen.getByRole('button', {
-      name: 'Open episode 143: 한국의 카페 문화',
+      name: 'Open episode 143: 한국의 카페 문화 (no audio)',
     });
     expect(within(ep143).getByText('No audio')).toBeInTheDocument();
   });
@@ -272,12 +274,12 @@ describe('Ttmik page — TTMIK listing (F-072 window + F-024 back)', () => {
 
     // Rows are accessible buttons carrying the lesson title.
     const lesson1 = screen.getByRole('button', {
-      name: 'Open lesson 1: Hello / Thank you',
+      name: 'Open lesson 1: Hello / Thank you (audio)',
     });
     expect(within(lesson1).getByText('Audio')).toBeInTheDocument();
 
     const lesson21 = screen.getByRole('button', {
-      name: 'Open lesson 21: More / -(으)ㄴ 것 같다',
+      name: 'Open lesson 21: More / -(으)ㄴ 것 같다 (no audio)',
     });
     expect(within(lesson21).getByText('No audio')).toBeInTheDocument();
   });
@@ -737,7 +739,7 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
 
     await user.click(
       await screen.findByRole('button', {
-        name: 'Open lesson 1: Hello / Thank you',
+        name: 'Open lesson 1: Hello / Thank you (audio)',
       }),
     );
 
@@ -779,7 +781,7 @@ describe('Ttmik page — Iyagi listing + episode detail', () => {
     await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
     await user.click(
       await screen.findByRole('button', {
-        name: 'Open episode 143: 한국의 카페 문화',
+        name: 'Open episode 143: 한국의 카페 문화 (no audio)',
       }),
     );
 
@@ -813,7 +815,7 @@ describe('Ttmik page — Iyagi listing + episode detail', () => {
     );
     expect(
       await screen.findByRole('button', {
-        name: 'Open episode 143: 한국의 카페 문화',
+        name: 'Open episode 143: 한국의 카페 문화 (no audio)',
       }),
     ).toBeInTheDocument();
   });

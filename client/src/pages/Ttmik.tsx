@@ -98,6 +98,7 @@ import { Eyebrow } from '../components/Eyebrow';
 import { FilterSelect } from '../components/FilterSelect';
 import { Icon, type IconName } from '../components/Icon';
 import { ShowMore } from '../components/ShowMore';
+import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { Topbar } from '../components/Topbar';
 import { WordPopover } from '../components/WordPopover';
@@ -562,7 +563,11 @@ function TtmikListing(): JSX.Element {
                     onClick={() => {
                       void navigate(lessonPath(lesson));
                     }}
-                    aria-label={`Open lesson ${String(lesson.number)}: ${lesson.title}`}
+                    // aria-label REPLACES the button's subtree name, so it
+                    // must fold in the AudioPill's state itself — otherwise
+                    // "Audio"/"No audio" is visible to sighted users but
+                    // never announced to AT (SF-2).
+                    aria-label={`Open lesson ${String(lesson.number)}: ${lesson.title} (${lesson.hasAudio ? 'audio' : 'no audio'})`}
                   >
                     <span className="km-reference__row-en">
                       {lesson.number}.
@@ -685,7 +690,10 @@ function IyagiListing(): JSX.Element {
                 onClick={() => {
                   void navigate(episodePath(episode.number));
                 }}
-                aria-label={`Open episode ${String(episode.number)}: ${episode.title}`}
+                // Same fold-in as the ttmik row above (SF-2) — the
+                // aria-label replaces the subtree name, so the AudioPill's
+                // state has to travel inside it or AT never hears it.
+                aria-label={`Open episode ${String(episode.number)}: ${episode.title} (${episode.hasAudio ? 'audio' : 'no audio'})`}
               >
                 <span className="km-reference__row-en">#{episode.number}</span>
                 <span className="kr km-reference__row-kr">{episode.title}</span>
@@ -850,16 +858,28 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
 
   const { toast } = useToast();
 
+  // SF-4: `selection` is a fresh object literal minted by `parseListenView`
+  // on every render of the Ttmik root, so depping the effect on the object
+  // itself would spuriously re-fire (abort the in-flight/completed fetch
+  // and refetch the SAME detail, flashing the skeleton) on any parent
+  // re-render that doesn't change the URL — this component is remounted
+  // wholesale (via `key={selectionKey(...)}` in the parent) whenever the
+  // selection genuinely changes, so within one mounted instance the value
+  // never actually changes. Dep on the same primitive string the parent
+  // keys the remount with, so identical selections never re-trigger this.
+  const detailKey = selectionKey(selection);
+
   useEffect(() => {
     const ctrl = new AbortController();
     ctrlRef.current?.abort();
     ctrlRef.current = ctrl;
     // Sync-to-external-system (network fetch) — same documented exception
-    // the Reference tabs use for their kickoff setState.
-    /* eslint-disable react-hooks/set-state-in-effect */
+    // the Reference tabs use for their kickoff setState. (No eslint-disable
+    // needed here: depping on the primitive `detailKey` rather than the
+    // `selection` object, per the SF-4 fix above, reads as a plain
+    // reactive effect to the lint rule's analysis.)
     setLoading(true);
     setError(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
     loadDetail(selection, ctrl.signal)
       .then((detail) => {
         if (ctrl.signal.aborted) return;
@@ -877,7 +897,9 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [selection, reloadTick]);
+    // `selection` intentionally excluded — see `detailKey` comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailKey, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -1046,45 +1068,42 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
             />
           </p>
         ) : (
-          <>
-            <div
-              className="km-review__tabs"
-              role="tablist"
-              aria-label="Lesson content"
-            >
-              {visibleLessonTabs.map((t) => {
-                const selected = effectiveTab === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-                    onClick={() => {
-                      setLessonTab(t.id);
-                    }}
-                  >
-                    <Bilingual en={t.label} kr={t.kr} compact />
-                  </button>
-                );
-              })}
-            </div>
-
-            {effectiveTab === 'highlights' ? (
-              <HighlightsPanel
-                rows={orderedHighlights}
-                minedIds={minedIds}
-                onTapWord={onTapWord}
-              />
-            ) : (
-              <TranscriptPanel
-                lines={orderedTranscript}
-                minedIds={minedIds}
-                onTapWord={onTapWord}
-              />
-            )}
-          </>
+          // SF-3: mounts the shared `Tabs` primitive (F-032) instead of a
+          // hand-rolled tablist — full APG contract (roving tabindex,
+          // Arrow/Home/End, a real tabpanel) for free. `Tabs` renders its
+          // panel BELOW this point in the tree; the persistent `<audio>`
+          // above is a sibling rendered unconditionally before this whole
+          // branch, so its DOM position — and therefore its identity
+          // across Highlights ↔ Transcript switches — is untouched.
+          <Tabs
+            tabs={visibleLessonTabs.map((t) => ({
+              id: t.id,
+              label: <Bilingual en={t.label} kr={t.kr} compact />,
+            }))}
+            ariaLabel="Lesson content"
+            active={effectiveTab}
+            onChange={(id) => {
+              // `visibleLessonTabs` only ever supplies 'highlights' |
+              // 'transcript' ids, so this narrowing is exhaustive.
+              setLessonTab(id as LessonTab);
+            }}
+          >
+            {(activeId) =>
+              activeId === 'highlights' ? (
+                <HighlightsPanel
+                  rows={orderedHighlights}
+                  minedIds={minedIds}
+                  onTapWord={onTapWord}
+                />
+              ) : (
+                <TranscriptPanel
+                  lines={orderedTranscript}
+                  minedIds={minedIds}
+                  onTapWord={onTapWord}
+                />
+              )
+            }
+          </Tabs>
         )
       ) : (
         <SentencesPanel

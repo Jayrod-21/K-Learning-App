@@ -54,7 +54,13 @@
  *     the exam's submit failure surfaces an inline retry rather than dropping
  *     the user's work.
  */
-import { useCallback, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useState,
+  type Dispatch,
+  type JSX,
+  type SetStateAction,
+} from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { BackButton } from '../components/BackButton';
@@ -78,6 +84,10 @@ import { fetchStudyDraw, recordTopikAnswer } from '../services/topik';
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
 import { errorMessageFor } from '../lib/errorCopy';
+import {
+  buildStudyDrawOptions,
+  type SetSize,
+} from '../lib/topikStudyDraw';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
 import {
   MockMode,
@@ -90,6 +100,12 @@ import './Topik.css';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 
+/** F-078 session right/wrong counts. */
+interface Tally {
+  right: number;
+  wrong: number;
+}
+
 /** The two TOPIK Prep modes the segmented toggle switches between. */
 type TopikMode = 'study' | 'mock';
 
@@ -100,6 +116,15 @@ const MODES: ReadonlyArray<{ id: TopikMode; label: string; kr: string }> = [
 
 function Topik(): JSX.Element {
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // F-078: lifted OUT of StudyMode (SF-2) — `Tabs` re-keys its panel per
+  // mode, and the `view === 'attempts'` branch below replaces the whole
+  // tabbed area, so a tally living inside StudyMode's own state was zeroed
+  // by a Study→Mock→Study round trip OR by following the adjacent
+  // "Previous attempts" link and coming back. `Topik` itself never
+  // unmounts across either navigation, so holding the tally here is what
+  // makes "This session" actually mean the session.
+  const [tally, setTally] = useState<Tally>({ right: 0, wrong: 0 });
 
   // URL params are untrusted input — parse against closed unions and degrade
   // to the default view on anything unrecognised (never interpolated).
@@ -161,7 +186,13 @@ function Topik(): JSX.Element {
         onChange={selectMode}
         className="km-topik__modes-tabs"
       >
-        {(activeId) => (activeId === 'mock' ? <MockMode /> : <StudyMode />)}
+        {(activeId) =>
+          activeId === 'mock' ? (
+            <MockMode />
+          ) : (
+            <StudyMode tally={tally} setTally={setTally} />
+          )
+        }
       </Tabs>
     </section>
   );
@@ -340,15 +371,18 @@ const SET_SIZE_OPTIONS = [
   { value: '50', label: '50 items · 50문항 (max)' },
 ] as const;
 
-/** The set sizes the FilterSelect can emit ('' = server default of 10). */
-type SetSize = '' | '20' | '30' | '50';
-
 /** I/O boundary: FilterSelect emits free strings — accept only known sizes. */
 function parseSetSize(raw: string): SetSize {
   return raw === '20' || raw === '30' || raw === '50' ? raw : '';
 }
 
-function StudyMode(): JSX.Element {
+function StudyMode({
+  tally,
+  setTally,
+}: {
+  tally: Tally;
+  setTally: Dispatch<SetStateAction<Tally>>;
+}): JSX.Element {
   const [idx, setIdx] = useState(0);
   const [picked, setPicked] = useState<string | null>(null);
   const [revealed, setRevealed] = useState(false);
@@ -361,11 +395,10 @@ function StudyMode(): JSX.Element {
   // commitReview and NEVER reset by "New set" or a size change, so the tally
   // survives multiple draws. (Deliberately not persisted: the true daily
   // number needs the F-104 history route; a half-persisted client count
-  // would just be a subtler fabrication.)
-  const [tally, setTally] = useState<{ right: number; wrong: number }>({
-    right: 0,
-    wrong: 0,
-  });
+  // would just be a subtler fabrication.) SF-2: `tally`/`setTally` are now
+  // props lifted to the `Topik` root — see the prop-drilling comment there —
+  // so the count also survives a mode switch or a trip to "Previous
+  // attempts" and back, neither of which unmounts `Topik` itself.
   // The server's grade for the CURRENT item's submit, keyed by item id so a
   // late-resolving response for a previous item can never populate the next
   // item's reveal. Used only to backfill a missing inline explanation — the
@@ -385,7 +418,7 @@ function StudyMode(): JSX.Element {
   // ref (latest closure), and the key carries BOTH the draw key and the size,
   // so a size change is a real refetch — never a stale-limit rerun.
   const realFn = useCallback(
-    () => fetchStudyDraw(setSize === '' ? {} : { limit: Number(setSize) }),
+    () => fetchStudyDraw(buildStudyDrawOptions(setSize)),
     [setSize],
   );
   const { data, loading, error, isMock, refetch } = useEndpointOrMock<
@@ -506,7 +539,11 @@ function StudyMode(): JSX.Element {
           : { right: t.right, wrong: t.wrong + 1 },
       );
     },
-    [buildReviewRow, effectiveExplanation],
+    // `setTally` is a prop now (SF-2 lifted the tally to `Topik`), not a
+    // locally-`useState`d setter — the compiler can't assume its identity
+    // is stable at this component's boundary, so it belongs in the deps
+    // even though a React `useState` setter never actually changes.
+    [buildReviewRow, effectiveExplanation, setTally],
   );
 
   // Skip: leave the item unanswered — tallied as a miss (F-008) — then

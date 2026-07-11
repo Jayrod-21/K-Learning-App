@@ -382,7 +382,15 @@ function BookShelf({
 }
 
 /** One typed shelf: heading + windowed rows (`usePagination` + `ShowMore` —
- *  a big Documents backlog can't flood the screen). */
+ *  a big Documents backlog can't flood the screen).
+ *
+ *  `max: 200` — `GET /uploads` (server/src/routes/uploads.ts:216) carries
+ *  no `LIMIT`, so unlike the Stories window below there is no server cap
+ *  to mirror exactly. Documents accretes indefinitely by design (this is
+ *  also where uploaded documents live), so 200 is a deliberately generous
+ *  fixed ceiling — comfortably above any realistic personal-upload count
+ *  — chosen to match the sibling Stories section's window rather than an
+ *  arbitrary smaller number a real shelf could outgrow. */
 function BookSection({
   en,
   kr,
@@ -394,7 +402,7 @@ function BookSection({
   books: BookUpload[];
   onOpenBook: (id: string) => void;
 }): JSX.Element {
-  const pag = usePagination(books, { initial: 8, step: 8, max: 30 });
+  const pag = usePagination(books, { initial: 8, step: 8, max: 200 });
   return (
     <section className="km-reading__section" aria-label={en}>
       <h2 className="km-reading__section-title">

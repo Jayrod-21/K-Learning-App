@@ -17,7 +17,7 @@
  *                                 plus an honestly-pending note where the
  *                                 per-exam list with completion checkmarks
  *                                 will render (needs an exam-list route,
- *                                 proposed F-118, + attempt history F-104).
+ *                                 F-118, + attempt history F-104).
  *               ?section=…&exam=  the start page (F-079): exam meta + rules,
  *                                 a previous-attempts block (honestly pending
  *                                 on F-104 — never fabricated), and the
@@ -131,7 +131,7 @@ function parseSectionParam(raw: string | null): MockSection | null {
 /**
  * Parse the `exam` search param. `'auto'` = the server-picked exam (the only
  * wired chooser entry today — per-exam ids arrive with the exam-list route,
- * proposed F-118). Unknown values degrade to the chooser.
+ * F-118). Unknown values degrade to the chooser.
  */
 function parseExamParam(raw: string | null): 'auto' | null {
   return raw === 'auto' ? 'auto' : null;
@@ -741,8 +741,8 @@ function sectionNames(section: MockSection): { en: string; kr: string } {
  * Design intent: a list of every TOPIK paper for this section, each with a
  * green checkmark when previously completed. What is wired TODAY: the
  * server-picked exam (`POST /topik/mock` with no `sourceTest`). The per-exam
- * list needs a route that enumerates `topik_tests` (proposed ticket F-118),
- * and the completion checkmarks need attempt history (`GET /topik/attempts`,
+ * list needs a route that enumerates `topik_tests` (ticket F-118), and the
+ * completion checkmarks need attempt history (`GET /topik/attempts`,
  * ticket F-104) — so that area renders an honestly-pending note. NO exam is
  * ever shown as "completed" from fabricated data.
  */
@@ -785,7 +785,7 @@ function ExamChooser({
       </button>
 
       {/* Honest pending state — per-exam browsing + done-checkmarks need the
-          exam-list route (proposed F-118) and attempt history (F-104). */}
+          exam-list route (F-118) and attempt history (F-104). */}
       <Card variant="flat" className="km-mock__pending" role="status">
         <Eyebrow>
           <Bilingual en="Coming soon" kr="준비 중" />

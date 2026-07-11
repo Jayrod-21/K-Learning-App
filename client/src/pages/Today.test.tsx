@@ -25,7 +25,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { JSX } from 'react';
 import type { TodayPlan } from '../types/domain';
 import type { AttemptState } from '../services/topik';
 import { ApiError } from '../services/api';
@@ -497,6 +498,54 @@ describe('Today', () => {
     // disable survives the failure).
     expect(button).toBeEnabled();
     expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('F-101: "Write this topic" hands the exact generated topic to /learn/writing via location.state', async () => {
+    // Pins BOTH halves of the handoff against each other: Writing.test.tsx
+    // only exercises the receiving side with hand-built state, so a rename
+    // of the state key (or route) on either end would pass the rest of the
+    // suite while silently degrading F-101 to a plain navigation. This test
+    // renders the real Today tile, drives the real generator, and reads the
+    // real `location.state` the route received.
+    loadDefaults();
+    generateMock.mockResolvedValue(GENERATED);
+    const user = userEvent.setup();
+
+    function WritingRouteStub(): JSX.Element {
+      const location = useLocation();
+      return (
+        <div>
+          WRITING PAGE
+          <pre data-testid="handoff-state">
+            {JSON.stringify(location.state)}
+          </pre>
+        </div>
+      );
+    }
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<Today />} />
+          <Route path="/learn/writing" element={<WritingRouteStub />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await activateWritingPage(user);
+    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
+    await screen.findByText(GENERATED.promptKr);
+
+    await user.click(
+      screen.getByRole('button', { name: /Write this topic/ }),
+    );
+
+    expect(screen.getByText('WRITING PAGE')).toBeInTheDocument();
+    const raw = screen.getByTestId('handoff-state').textContent;
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw ?? 'null')).toEqual({
+      generatedTopic: GENERATED,
+    });
   });
 
   // ── TOPIK carousel (F-028 / F-029) ──────────────────────────
