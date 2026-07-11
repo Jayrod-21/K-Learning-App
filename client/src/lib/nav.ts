@@ -283,10 +283,11 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'chat',
   },
   {
-    // U1b (PDF book-upload feature) — reached from Settings → Uploads
-    // ("See all uploads") and from tapping a row to open the PDF viewer at
-    // `/uploads/:id` (that route is NOT its own NavItem — it's a dynamic
-    // detail view, same convention as Images' capture view).
+    // U1b (book-upload feature) — reached from Review → Uploads (the
+    // library row; F-039 moved the area out of Settings). Tapping a row
+    // opens the page-image viewer at `/uploads/:id` (that route is NOT its
+    // own NavItem — it's a dynamic detail view, same convention as Images'
+    // capture view). Comment re-homed per F-100.
     id: 'uploads',
     path: '/uploads',
     label: 'Uploads',

@@ -1,12 +1,15 @@
 /**
  * Uploads (U1b) — `/uploads`, the front door for user-uploaded books.
  *
- * Covers: list render (title/type/status pill/size+date), tap-a-row
- * navigation to the viewer (`/uploads/:id`), confirm-gated delete (cancel
- * aborts, accept deletes + removes the row, a failed delete toasts fixed
- * copy without removing the row), the empty/loading/error states, and that
- * the "+ Upload" entry actually opens the shared `UploadTypeModal`. The
- * modal's own upload flow (type→file→submit) is exercised end-to-end in
+ * Covers: list render (title/type/status pill/size+date), the F-058
+ * viewable-rendition filter (rendition-less `ready`-with-no-pages ghosts are
+ * excluded; processing/failed lifecycle rows are not), tap-a-row navigation
+ * to the viewer (`/uploads/:id`), the F-024 back control (→ /review, the
+ * library index that links here), confirm-gated delete (cancel aborts,
+ * accept deletes + removes the row, a failed delete toasts fixed copy
+ * without removing the row), the empty/loading/error states, and that the
+ * "+ Upload" entry actually opens the shared `UploadTypeModal`. The modal's
+ * own upload flow (type→file→submit) is exercised end-to-end in
  * UploadTypeModal.test.tsx — here we only confirm the wiring opens it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -65,6 +68,10 @@ function renderPage(): ReturnType<typeof render> {
         <Routes>
           <Route path="/uploads" element={<Uploads />} />
           <Route path="/uploads/:id" element={<ViewerProbe />} />
+          <Route
+            path="/review"
+            element={<div data-testid="review-probe">review</div>}
+          />
         </Routes>
       </ToastProvider>
     </MemoryRouter>,
@@ -131,6 +138,80 @@ describe('Uploads — list', () => {
     await user.click(screen.getByRole('button', { name: 'View 한국어 문법 사전' }));
 
     expect(await screen.findByTestId('viewer-probe')).toHaveTextContent('viewer:9');
+  });
+
+  // F-024: the listing is a nested page (Review → Uploads) — its back
+  // control targets the library index that links here, deterministically.
+  it('the back control navigates to the Review library index', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('한국어 문법 사전');
+
+    await user.click(screen.getByRole('button', { name: 'Back to Review' }));
+
+    expect(await screen.findByTestId('review-probe')).toBeInTheDocument();
+  });
+});
+
+// F-058 — the listing shows only uploads with a viewable page-image
+// rendition. `ready` rows WITHOUT pages are pre-041 legacy ghosts (their
+// original PDF blob was dropped by the migration, nothing viewable remains)
+// and must be excluded; `processing`/`failed` are lifecycle states of a
+// real rendition and must stay visible.
+describe('Uploads — F-058 viewable-rendition filter', () => {
+  const GHOST_NO_COUNT: BookUpload = {
+    id: '11',
+    title: '유령 업로드',
+    type: 'vocab',
+    status: 'ready',
+    // No pageCount at all — the pre-041 shape.
+    byteSize: 2_000_000,
+    createdAt: '2026-05-01T00:00:00Z',
+  };
+
+  const GHOST_ZERO: BookUpload = {
+    id: '12',
+    title: '빈 업로드',
+    type: 'vocab',
+    status: 'ready',
+    pageCount: 0,
+    byteSize: 500_000,
+    createdAt: '2026-05-02T00:00:00Z',
+  };
+
+  const FAILED: BookUpload = {
+    id: '13',
+    title: '실패한 업로드',
+    type: 'dialogue',
+    status: 'failed',
+    byteSize: 3_000_000,
+    createdAt: '2026-07-03T00:00:00Z',
+  };
+
+  it('excludes ready-with-no-pages ghosts but keeps processing and failed rows', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([
+      READY,
+      GHOST_NO_COUNT,
+      PROCESSING,
+      GHOST_ZERO,
+      FAILED,
+    ]);
+    renderPage();
+
+    // Real renditions (and lifecycle states of one) all render…
+    expect(await screen.findByText('한국어 문법 사전')).toBeInTheDocument();
+    expect(screen.getByText('읽기 연습')).toBeInTheDocument();
+    expect(screen.getByText('실패한 업로드')).toBeInTheDocument();
+    // …the rendition-less ghosts do not.
+    expect(screen.queryByText('유령 업로드')).not.toBeInTheDocument();
+    expect(screen.queryByText('빈 업로드')).not.toBeInTheDocument();
+  });
+
+  it('a listing of ONLY ghosts renders the empty state, not dead rows', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([GHOST_NO_COUNT, GHOST_ZERO]);
+    renderPage();
+    expect(await screen.findByText(/No uploads yet/)).toBeInTheDocument();
+    expect(screen.queryByText('유령 업로드')).not.toBeInTheDocument();
   });
 });
 
