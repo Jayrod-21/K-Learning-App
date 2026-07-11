@@ -23,5 +23,16 @@ export default defineConfig([
       ecmaVersion: 2023,
       globals: globals.browser,
     },
+    rules: {
+      // `Toggle` (components/Toggle.tsx) renders a native `<button
+      // role="switch">` — teach the label/control-association rule about it
+      // so wrapping a Toggle in a `<label>` (Chat.tsx's B-020 English-toggle
+      // row, fix-pass N-1) is recognized as a real label→control association
+      // instead of flagging a false positive.
+      'jsx-a11y/label-has-associated-control': [
+        'error',
+        { controlComponents: ['Toggle'] },
+      ],
+    },
   },
 ])

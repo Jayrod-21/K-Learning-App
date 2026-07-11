@@ -34,7 +34,11 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 import multer, { MulterError } from 'multer';
-import { PayloadTooLargeError, ValidationError } from '../middleware/errors.js';
+import {
+  ContentRejectedError,
+  PayloadTooLargeError,
+  ValidationError,
+} from '../middleware/errors.js';
 import { sanitizeUserInput } from './claudeProxy.js';
 
 // ---------------------------------------------------------------------------
@@ -167,8 +171,12 @@ export function ingestAttachedDocument(
     text = sanitizeUserInput(excerpt, { maxLength: DOC_TURN_MAX_CHARS });
   } catch {
     // PromptInjectionRejectedError — reject at the boundary (see header). The
-    // marker itself is deliberately NOT echoed to the wire.
-    throw new ValidationError(
+    // marker itself is deliberately NOT echoed to the wire. A DISTINCT error
+    // type/code (`content_rejected`, not the generic `validation_error` the
+    // format checks above throw) so the client can tell "your file's content
+    // was flagged" apart from "your file's format/encoding is wrong" instead
+    // of folding both into indistinguishable 400 copy.
+    throw new ContentRejectedError(
       'document contains content that cannot be sent to the tutor',
     );
   }

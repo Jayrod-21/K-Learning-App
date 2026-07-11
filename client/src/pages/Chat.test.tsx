@@ -1684,6 +1684,62 @@ describe('Chat attach menu (F-035)', () => {
       within(menu).getByRole('menuitem', { name: /Upload document/ }),
     ).toBeInTheDocument();
   });
+
+  // B-1 (fix-pass blocker): the menu had no arrow-key roving navigation and
+  // no close-on-Tab-out — a keyboard user tabbing past the last item left
+  // the popup visually open and orphaned. Both cases below FAIL against the
+  // pre-fix code (no ArrowDown/Up/Home/End handling at all; Tab does
+  // nothing so the menu stays open).
+  it('moves focus between menu items with ArrowDown/ArrowUp/Home/End (roving tabindex, wraps at each end)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    const camera = screen.getByRole('menuitem', { name: /Camera/ });
+    const image = screen.getByRole('menuitem', { name: /Upload image/ });
+    const doc = screen.getByRole('menuitem', { name: /Upload document/ });
+    expect(camera).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(image).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(doc).toHaveFocus();
+
+    // Wraps forward from the last item back to the first.
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(camera).toHaveFocus();
+
+    // Wraps backward from the first item to the last.
+    fireEvent.keyDown(document, { key: 'ArrowUp' });
+    expect(doc).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Home' });
+    expect(camera).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'End' });
+    expect(doc).toHaveFocus();
+  });
+
+  it('closes the menu on Tab so it can never be left open+orphaned once focus moves on', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+
+    // Tab from the first item (or any item) — the menu must not still be
+    // rendered afterward, regardless of where the browser's own default
+    // focus-move action then sends focus.
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
 });
 
 // ── Image-in-chat (Slice 3, now behind the "+" menu — F-035) ─────────────
@@ -2127,6 +2183,40 @@ describe('Chat document attach (F-035)', () => {
     expect(hoisted.ref.fileUploadCalls.length).toBe(0);
   });
 
+  // S-1 (fix-pass should-fix): a server-side `content_rejected` 400 (the
+  // shared injection guard flagging otherwise well-formed text) must render
+  // DIFFERENT copy from the generic "wrong format" 400 above — folding both
+  // into the same message would send a user with a genuinely clean `.txt`
+  // off re-encoding/renaming a file that was never going to be accepted.
+  it('renders distinct copy for a server-side content_rejected 400 (not the generic "wrong format" message)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await pickDocViaMenu(user, makeDocFile());
+    await waitFor(() => {
+      expect(hoisted.ref.fileUploadCalls.length).toBe(1);
+    });
+
+    await act(async () => {
+      hoisted.ref.fileUploadCalls[0]?.reject(
+        new ApiError('document contains content that cannot be sent to the tutor', {
+          status: 400,
+          code: 'content_rejected',
+        }),
+      );
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "That document's content can't be sent to the tutor. Try a different file.",
+    );
+    expect(screen.getByRole('alert')).not.toHaveTextContent(
+      "Use a plain text (.txt or .md) file",
+    );
+  });
+
   it('a 409 (stale version) shows the shared attachment-conflict copy and refetches the thread', async () => {
     resetState();
     hoisted.ref.endpoint = { kind: 'data', data: LIST };
@@ -2264,6 +2354,41 @@ describe('Chat auto-naming (F-036)', () => {
     // A second turn in the SAME conversation must not re-trigger naming —
     // the per-session latch already has a confirmed title.
     expect(hoisted.ref.nameCalls.length).toBe(1);
+  });
+
+  // S-2 (fix-pass should-fix): `triggerAutoName`'s rejection branch releases
+  // the `namedRef` latch so a transient failure gets another chance on the
+  // next turn — documented in the source but, until now, never exercised.
+  // This FAILS if that release is ever accidentally dropped/inverted (the
+  // conversation would stay permanently unnamed for the rest of the
+  // session).
+  it('releases the latch on a failed nameConversation call so a later turn retries it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    hoisted.ref.autoName = false;
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await sendAndFinish(user, '첫 메시지', 0);
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(1);
+    });
+
+    await act(async () => {
+      hoisted.ref.nameCalls[0]?.reject(new Error('naming failed'));
+      // Let the rejection handler's latch-release microtask run.
+      await Promise.resolve();
+    });
+
+    await sendAndFinish(user, '두 번째 메시지', 1);
+
+    // The failed call released the latch — a later completed turn gets
+    // another try, rather than permanently wedging the conversation unnamed.
+    await waitFor(() => {
+      expect(hoisted.ref.nameCalls.length).toBe(2);
+    });
+    expect(hoisted.ref.nameCalls[1]?.conversationId).toBe(42);
   });
 
   it('a real title on the loaded history (`conversation.title`) wins over the derived snippet', async () => {

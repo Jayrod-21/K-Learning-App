@@ -144,10 +144,18 @@
  *   The menu itself is a lightweight, non-modal popup (NOT `useModalA11y` —
  *   that hook is for page-covering dialogs with a backdrop + scroll lock;
  *   this is a transient menu the rest of the page stays interactive
- *   around). It follows the WAI-ARIA menu-button pattern: `Escape` or a
- *   click outside closes it and returns focus to the "+" trigger; opening
- *   moves focus to the first item so keyboard users land inside it
- *   immediately.
+ *   around). It follows the WAI-ARIA menu-button pattern: opening moves
+ *   focus to the first item so keyboard users land inside it immediately;
+ *   ArrowUp/ArrowDown/Home/End move a roving-tabindex focus among the three
+ *   items (wrapping at each end); `Escape` closes the menu AND returns focus
+ *   to the "+" trigger; Tab closes the menu WITHOUT trapping focus — the
+ *   browser's own default action still runs, so focus lands wherever it
+ *   naturally would (the next control, or, on Shift+Tab from the first
+ *   item, back to the trigger) rather than being forced onto the trigger.
+ *   A mousedown outside the menu AND outside the trigger closes it the same
+ *   way — no forced refocus — since the click itself may already be
+ *   activating something else; forcing focus back to the trigger in that
+ *   case would fight the click.
  *
  * Threat model (FU-NF-4 closeout + Slice 2 additions):
  *   - **Streaming abort on unmount AND on conversation switch.** A
@@ -313,6 +321,10 @@ const SIDEBAR_COLLAPSED_KEY = 'km.chat.sidebar-collapsed';
 /** Max characters for a derived (first-user-message) sidebar title. */
 const TITLE_SNIPPET_MAX = 42;
 
+/** Number of items in the "+" attach menu (Camera / Upload image / Upload
+ *  document) — the roving-tabindex bound for its keyboard navigation. */
+const ATTACH_ITEM_COUNT = 3;
+
 /**
  * Korean mode labels for the fallback sidebar title (used until we've seen
  * the conversation's first user message — the list endpoint carries no
@@ -333,6 +345,14 @@ const MODE_TITLE_LABELS: Readonly<Record<string, string>> = {
  * no second surface to share copy with. Keyed on the structured
  * status/code only — server prose (which could include a raw UTF-8 decode
  * failure detail) is never echoed.
+ *
+ * Two DIFFERENT 400s reach this route and must not share copy: a generic
+ * format/encoding rejection (empty file, non-UTF-8 bytes, wrong declared
+ * type) vs. the shared prompt-injection guard flagging otherwise-well-formed
+ * text (`docAttach.ts`'s `ContentRejectedError`, `code: 'content_rejected'`).
+ * Folding both into "wrong format" would send a user with a genuinely clean
+ * `.txt` off re-encoding or renaming a file that was never going to be
+ * accepted — the `code` field (structured, not prose) is the discriminator.
  */
 function docUploadErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
@@ -343,6 +363,9 @@ function docUploadErrorMessage(err: unknown): string {
     }
     if (err.status === 413) {
       return 'That file is too large. Pick one under 256 KB.';
+    }
+    if (err.code === 'content_rejected') {
+      return "That document's content can't be sent to the tutor. Try a different file.";
     }
     if (err.status === 400) {
       return "That file couldn't be attached. Use a plain text (.txt or .md) file under 256 KB.";
@@ -932,7 +955,31 @@ export function Chat(): JSX.Element {
   const [attachMenuOpen, setAttachMenuOpen] = useState<boolean>(false);
   const attachTriggerRef = useRef<HTMLButtonElement | null>(null);
   const attachMenuRef = useRef<HTMLDivElement | null>(null);
-  const attachFirstItemRef = useRef<HTMLButtonElement | null>(null);
+  // Roving-tabindex bookkeeping for the three `menuitem`s (Camera / Upload
+  // image / Upload document, in DOM order). Only the item at
+  // `attachActiveIndex` carries `tabIndex={0}`; the rest carry `-1` — the
+  // APG menu-button pattern's roving-tabindex scheme, so a single Tab moves
+  // focus straight out of the menu (see the Tab handler below) instead of
+  // stepping through all three items first.
+  const attachItemRefs = useRef<Array<HTMLButtonElement | null>>(
+    Array<HTMLButtonElement | null>(ATTACH_ITEM_COUNT).fill(null),
+  );
+  const [attachActiveIndex, setAttachActiveIndex] = useState<number>(0);
+  // A REF mirror of `attachActiveIndex`, read by the keydown handler below.
+  // The listener-attaching effect must NOT depend on `attachActiveIndex`
+  // itself: if it did, every arrow-key move would re-run that effect, and
+  // re-running it would re-execute its "menu just opened" reset (see the
+  // next effect) — snapping focus straight back to item 0 on every single
+  // keypress. The ref lets the handler always read the CURRENT index
+  // without the effect needing to re-subscribe when it changes.
+  const attachActiveIndexRef = useRef<number>(0);
+  const setAttachItemRef = useCallback(
+    (index: number) =>
+      (el: HTMLButtonElement | null): void => {
+        attachItemRefs.current[index] = el;
+      },
+    [],
+  );
 
   const closeAttachMenu = useCallback((refocusTrigger: boolean): void => {
     setAttachMenuOpen(false);
@@ -943,17 +990,65 @@ export function Chat(): JSX.Element {
     setAttachMenuOpen((open) => !open);
   }, []);
 
-  // Focus the first item when the menu opens (keyboard users land inside
-  // it immediately); Escape closes + refocuses the trigger; a mousedown
-  // outside the menu AND outside the trigger closes it without moving
+  const focusAttachItem = useCallback((index: number): void => {
+    const wrapped = (index + ATTACH_ITEM_COUNT) % ATTACH_ITEM_COUNT;
+    attachActiveIndexRef.current = wrapped;
+    setAttachActiveIndex(wrapped);
+    attachItemRefs.current[wrapped]?.focus();
+  }, []);
+
+  // Runs ONLY when the menu transitions open (not on every keypress): focus
+  // the first item so keyboard users land inside it immediately, and reset
+  // the roving-tabindex pointer to match.
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    focusAttachItem(0);
+  }, [attachMenuOpen, focusAttachItem]);
+
+  // Keyboard/pointer handling while the menu is open. Escape closes +
+  // refocuses the trigger. ArrowUp/ArrowDown/Home/End move the
+  // roving-tabindex focus among the three items (wrapping at each end). Tab
+  // closes the popup WITHOUT stopping the browser's own default action —
+  // i.e. it doesn't trap focus — so the menu never sits open+orphaned once
+  // focus has moved on to the next (or, on Shift+Tab, the previous) control;
+  // it just stops being visible once focus has left it. A mousedown outside
+  // the menu AND outside the trigger closes it the same way, without moving
   // focus (the click itself is left to do whatever it was going to do).
   useEffect(() => {
     if (!attachMenuOpen) return;
-    attachFirstItemRef.current?.focus();
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.stopPropagation();
         closeAttachMenu(true);
+        return;
+      }
+      if (e.key === 'Tab') {
+        // Don't preventDefault: let the browser move focus (forward past
+        // the last item, or backward — e.g. Shift+Tab from the first item
+        // back to the trigger) exactly as it would for any other control;
+        // we only need to stop rendering the popup so it can't be left
+        // open and visually orphaned once focus is gone.
+        closeAttachMenu(false);
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        focusAttachItem(attachActiveIndexRef.current + 1);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        focusAttachItem(attachActiveIndexRef.current - 1);
+        return;
+      }
+      if (e.key === 'Home') {
+        e.preventDefault();
+        focusAttachItem(0);
+        return;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        focusAttachItem(ATTACH_ITEM_COUNT - 1);
       }
     };
     const onPointerDown = (e: MouseEvent): void => {
@@ -969,7 +1064,7 @@ export function Chat(): JSX.Element {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('mousedown', onPointerDown);
     };
-  }, [attachMenuOpen, closeAttachMenu]);
+  }, [attachMenuOpen, closeAttachMenu, focusAttachItem]);
 
   const retry = (): void => {
     refetch();
@@ -1622,8 +1717,14 @@ export function Chat(): JSX.Element {
           // purpose was invisible to sighted users. A visible bilingual
           // caption now sits beside it (same convention as Settings' named
           // toggle rows); the Toggle's own `ariaLabel` stays the
-          // authoritative accessible name for AT.
-          <span className="km-chat__engToggle">
+          // authoritative accessible name for AT. This wrapper is a real
+          // `<label>` (not a bare `<span>`) precisely BECAUSE it carries
+          // `cursor: pointer` (Chat.css) — a `<button>` is a labelable
+          // element, so wrapping it in a `<label>` makes the whole row
+          // (including the "English · 영어" text) actually clickable via the
+          // browser's built-in label→control delegation, matching the
+          // pointer cursor's affordance instead of contradicting it.
+          <label className="km-chat__engToggle">
             <span className="km-chat__engToggleLabel km-eyebrow">
               <Bilingual en="English" kr="영어" />
             </span>
@@ -1632,7 +1733,7 @@ export function Chat(): JSX.Element {
               checked={showEnglish}
               onChange={setShowEnglish}
             />
-          </span>
+          </label>
         }
       />
 
@@ -1950,10 +2051,15 @@ export function Chat(): JSX.Element {
                       className="km-chat__attachMenu"
                     >
                       <button
-                        ref={attachFirstItemRef}
+                        ref={setAttachItemRef(0)}
                         type="button"
                         role="menuitem"
+                        tabIndex={attachActiveIndex === 0 ? 0 : -1}
                         className="km-chat__attachItem focusring"
+                        onFocus={() => {
+                          attachActiveIndexRef.current = 0;
+                          setAttachActiveIndex(0);
+                        }}
                         onClick={() => {
                           closeAttachMenu(true);
                           cameraInputRef.current?.click();
@@ -1963,9 +2069,15 @@ export function Chat(): JSX.Element {
                         <Bilingual en="Camera" kr="카메라" />
                       </button>
                       <button
+                        ref={setAttachItemRef(1)}
                         type="button"
                         role="menuitem"
+                        tabIndex={attachActiveIndex === 1 ? 0 : -1}
                         className="km-chat__attachItem focusring"
+                        onFocus={() => {
+                          attachActiveIndexRef.current = 1;
+                          setAttachActiveIndex(1);
+                        }}
                         onClick={() => {
                           closeAttachMenu(true);
                           imageInputRef.current?.click();
@@ -1975,9 +2087,15 @@ export function Chat(): JSX.Element {
                         <Bilingual en="Upload image" kr="이미지 업로드" />
                       </button>
                       <button
+                        ref={setAttachItemRef(2)}
                         type="button"
                         role="menuitem"
+                        tabIndex={attachActiveIndex === 2 ? 0 : -1}
                         className="km-chat__attachItem focusring"
+                        onFocus={() => {
+                          attachActiveIndexRef.current = 2;
+                          setAttachActiveIndex(2);
+                        }}
                         onClick={() => {
                           closeAttachMenu(true);
                           docInputRef.current?.click();
