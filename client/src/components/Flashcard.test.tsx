@@ -5,7 +5,7 @@
  * `--flipped` modifier class for CSS to handle the rotateY.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Flashcard } from './Flashcard';
 
@@ -71,6 +71,29 @@ describe('Flashcard', () => {
     await user.keyboard('{Enter}');
     await user.keyboard(' ');
     expect(onFlip).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignores Enter/Space that bubble up from interactive descendants (they belong to those controls)', () => {
+    const onFlip = vi.fn();
+    render(
+      <Flashcard
+        front={<span>F</span>}
+        back={
+          <button type="button" onClick={() => undefined}>
+            Inner action
+          </button>
+        }
+        flipped
+        onFlip={onFlip}
+      />,
+    );
+    const inner = screen.getByRole('button', { name: 'Inner action' });
+    inner.focus();
+    // Pre-fix, both of these preventDefault()'d the inner button's own
+    // activation and flipped the card — silently dropping the action.
+    expect(fireEvent.keyDown(inner, { key: 'Enter' })).toBe(true);
+    expect(fireEvent.keyDown(inner, { key: ' ' })).toBe(true);
+    expect(onFlip).not.toHaveBeenCalled();
   });
 
   it('honours ariaLabel override', () => {

@@ -1,69 +1,85 @@
 /**
- * Grammar screen — the LEARN grammar-practice page (drill + bank management).
+ * Grammar screen — the LEARN grammar-practice page (cards + practice session).
  *
- * Overhaul P1.2, decision D3: the old `list` browse tab is GONE — the single
- * grammar browse (search, F-005 filters, detail Sheet, per-row Bank) lives in
- * the Review library at `/review/grammar` (pages/review/ReviewGrammar.tsx).
- * This screen focuses on practising what's banked. The full KGIU corpus is
- * still fetched here (one wide page — the endpoint's 400 ceiling covers all
- * 285 listable rows) because the drill's fallback pool and the Banked tab's
- * rich detail fetch both draw on it.
+ * Phase 3C-1 rework (F-063/F-064/F-065/F-066/B-024/F-024):
  *
- * Two tabs:
- *   - `banked` — the subset the user has already banked, split into an
- *                Active | Known segmented view. Active rows carry a
- *                **Graduate** action (`POST /grammar/bank/:id/graduate`) that
- *                marks the pattern as known — it leaves the drill pool and its
- *                production card stops surfacing in `/vocab/cards/due`. The
- *                Known view lists graduated patterns with a **Re-admit** action
- *                (`POST /grammar/bank/:id/readmit`) that returns the pattern to
- *                active learning (FSRS state untouched server-side).
- *   - `drill`  — the Pass-9 LIVE production drill. Per pattern, the panel
- *                generates a drill via `POST /grammar-drill` (Claude picks the
- *                type by history rotation), renders the per-type DrillCard, and
- *                scores the learner's answer via `POST /grammar-drill/:id/submit`
- *                (reveal: score + verdict + corrections + reference model). The
- *                drilled pattern comes from the user's BANKED patterns when any
- *                exist, else the full fetched KGIU pool; the rotation cursor is
- *                persisted (localStorage) so Skip/Next progress through patterns
- *                durably — a tab switch or reload no longer resets the drill to
- *                the first corpus row (the live "always N이다" bug). A failed
- *                generate/submit NEVER blanks the screen — it surfaces an
- *                inline `role="alert"` + Retry. In PROD a failed generate
- *                shows a retryable ErrorCard whose Retry RE-GENERATES (no
- *                fixture substitution — see the threat model note below); in
- *                dev/non-PROD the panel falls back to a local mock drill and
- *                shows the 🅂 MockBadge so the dev signal stays honest.
+ *   The page now has three ?view= sub-views on one route, so browser Back and
+ *   deep links behave, and each nested view carries a BackButton (F-024):
+ *
+ *   - `cards`    (default) — the user's saved grammar patterns rendered as
+ *                CARDS in the same mastery vocabulary the vocab flashcards
+ *                use (F-063/F-066): a "Learning | Known" split instead of the
+ *                old banked/graduate jargon. "Mark known" retires a pattern
+ *                from practice + reviews (the self-graduate concept, kept);
+ *                "Relearn" (mirrors the FSRS `relearning` state name) brings
+ *                it back with its FSRS state intact. Rows are grouped by
+ *                proficiency into CollapsibleTiles for clear separation
+ *                (B-024) and the Korean pattern form never wraps (one line,
+ *                ellipsized — Grammar.css). Patterns whose production card is
+ *                due for review carry a "Due" pill, wired to the EXISTING
+ *                `GET /vocab/cards/due` queue (the same queue the vocab
+ *                session drains).
+ *   - `practice` — the Pass-9 LIVE production drill, opened from the
+ *                top-right "Practice" button in the Topbar (F-064). The pool
+ *                is due-first (Anki ordering): patterns whose production card
+ *                is due are drilled before the rest of the rotation. Per
+ *                drill: `POST /grammar-drill` generates, the learner answers,
+ *                `POST /grammar-drill/:id/submit` scores AND advances the
+ *                pattern's production card through the server-owned FSRS
+ *                scheduler — the reveal names the derived rating with the
+ *                same Again/Hard/Good/Easy vocabulary the vocab rating
+ *                buttons use (F-063).
+ *   - `history`  — honest stub (F-065): attempts are persisted server-side
+ *                (`grammar_drill_attempts`) but no read endpoint exists yet,
+ *                so this view says so instead of faking a list. Backend
+ *                ticket: F-110 (grammar drill-attempts read —
+ *                GET /grammar-drill/attempts).
+ *
+ *   NOT on this page (P1.2/D3 unchanged): the corpus browse + Bank action
+ *   live in the Review library at /review/grammar (ReviewGrammar.tsx).
+ *
+ * Grammar's Anki review loop, honestly stated: reviewing a due grammar
+ * production card = DRILLING it (FU-NF-42 — the server maps the Claude
+ * verdict to an FSRS rating; there is deliberately no self-rate UX). What
+ * exists is wired here: due cards surface as "Due" pills + due-first practice
+ * ordering, and every scored drill advances the card. What does NOT exist is
+ * a read API for per-pattern schedule state (state / next due date for
+ * non-due cards) — rows therefore only badge due-NOW patterns rather than
+ * inventing intervals. Backend ticket: F-111 (per-pattern grammar card
+ * schedule read).
  *
  * Data:
- *   useEndpointOrMock('grammar:list', loadGrammarMock(adapted),
- *     { realFn: () => services.grammar.listPatterns() })   → PatternListItem[]
- *   useEndpointOrMock('grammar:bank', () => Promise.resolve([]),
- *     { realFn: services.grammar.listBanked })             → Set<pattern_key>
- *   services.grammar.getPattern(id)                         → detail Sheet
+ *   useEndpointOrMock('grammar:list', …) → PatternListItem[]   (KGIU corpus,
+ *     one wide page — feeds the practice fallback pool + upgrades card rows)
+ *   useEndpointOrMock('grammar:bank', …) → Map<patternKey, BankedMeta>
+ *   useEndpointOrMock('grammar:due',  …) → Set<patternKey>     (due production
+ *     cards, filtered out of the existing /vocab/cards/due queue)
+ *   services.grammar.getPattern(id)      → detail Sheet
  *
  * Threat model:
- *   - **graduatePattern / readmitPattern** mutate only a boolean-ish flag on
- *     a row the server verifies the user owns (404 otherwise); both are
- *     idempotent, id comes from the server's own bank list (never user text),
- *     and failures rewind the optimistic move with an inline error.
- *     (The `bankPattern` POST moved to the library browse with the list tab
- *     — see pages/review/ReviewGrammar.tsx + lib/grammarBank.ts.)
- *   - **getPattern** is a GET — no CSRF surface. A failed detail load
- *     leaves the row tappable and surfaces an inline ErrorCard inside
- *     the Sheet; the rest of the list keeps working.
+ *   - **markKnown / relearn** (graduate/readmit endpoints) mutate only a
+ *     boolean-ish flag on a row the server verifies the user owns (404
+ *     otherwise); both are idempotent, id comes from the server's own bank
+ *     list (never user text), and failures rewind the optimistic move with
+ *     an inline error.
+ *   - **getPattern / getDueCards** are GETs — no CSRF surface. A failed due
+ *     fetch degrades to "no due badges" via the hook's mock fallback (an
+ *     EMPTY set — never fabricated due-ness) and its error is carried on the
+ *     hook for the dev badge; the cards themselves keep working.
  *   - Pattern display + title strings render through React text children,
  *     so injection from a compromised KGIU corpus row cannot escape into
  *     HTML. innerHTML and dangerouslySetInnerHTML are never touched.
- *   - The Pass-9 `POST /grammar-drill` endpoint will need a body-size
- *     guard server-side; the Pass-2 `maxLength={500}` on the textarea
- *     stops a runaway paste, but the server is the source of truth.
+ *   - The Pass-9 `POST /grammar-drill` endpoint enforces its own body caps;
+ *     the `maxLength={500}` on the textarea stops a runaway paste, but the
+ *     server is the source of truth.
  *   - **Fixture-as-real in PROD.** `MockBadge` renders null in production,
  *     so serving `MOCK_DRILLS` + local pseudo-scoring on a generate failure
- *     would present a fabricated drill and a fabricated score as REAL —
- *     the exact failure class `useEndpointOrMock` and MockMode gate. The
- *     DrillPanel generate fallback is therefore gated to non-PROD builds;
- *     in prod a generate failure surfaces a retryable error instead.
+ *     would present a fabricated drill and a fabricated score as REAL — the
+ *     exact failure class `useEndpointOrMock` and MockMode gate. The
+ *     practice-panel generate fallback is therefore gated to non-PROD
+ *     builds; in prod a generate failure surfaces a retryable error.
+ *   - `?view=` is user-controlled input read off the URL; it is parsed
+ *     against a closed set (`parseView`) and never interpolated anywhere.
  */
 import {
   useCallback,
@@ -83,6 +99,8 @@ import { GoldRule } from '../components/GoldRule';
 import { MockBadge } from '../components/MockBadge';
 import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
+import { BackButton } from '../components/BackButton';
+import { CollapsibleTile } from '../components/CollapsibleTile';
 import { KgiuDetailBody } from '../components/KgiuDetailBody';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -90,6 +108,7 @@ import { loadGrammarMock } from '../data/mocks/grammar';
 import { grammarKey } from '../lib/grammarKey';
 import { toServerProficiency } from '../lib/grammarBank';
 import * as grammarService from '../services/grammar';
+import * as vocabService from '../services/vocab';
 import {
   generateDrill,
   submitDrill,
@@ -100,23 +119,36 @@ import { errorMessageFor } from '../lib/errorCopy';
 import type {
   DrillItemPublic,
   DrillSchedule,
+  FsrsRating,
   GrammarPattern,
   KgiuEntryDetail,
   KgiuEntrySummary,
   ServerProficiency,
 } from '../types/domain';
-import { useLocation, useNavigate } from 'react-router-dom';
+import {
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
+import './Grammar.css';
 
-type Tab = 'banked' | 'drill';
+/** The page's nested sub-views, addressed via `?view=` so browser Back works
+ *  and the F-024 BackButton has a canonical parent (`/learn/grammar`). */
+type View = 'cards' | 'practice' | 'history';
+
+/** Parse the untrusted `?view=` param against the closed view set. */
+function parseView(raw: string | null): View {
+  return raw === 'practice' || raw === 'history' ? raw : 'cards';
+}
 
 /**
- * Deep-link payload the Review screen hands to the Drill tab (FU-NF-42 B3).
- * When a grammar production card is activated in Review, it navigates to
- * `/grammar` with this object in `location.state.drillTarget`. The Drill tab
- * then opens focused on this pattern (generating a drill for it) instead of
- * cycling its default `pool[idx]` rotation. `patternKey` is the server dedup
- * key; `display` + `meaning` seed the generate body so the drill renders even
- * when the pattern isn't in the (possibly mock) list fetch.
+ * Deep-link payload the Review screen hands to the practice view (FU-NF-42
+ * B3). When a grammar production card is activated in Review, it navigates to
+ * `/learn/grammar` with this object in `location.state.drillTarget`. The page
+ * opens the practice view focused on this pattern (generating a drill for it)
+ * instead of cycling its default `pool[idx]` rotation. `patternKey` is the
+ * server dedup key; `display` + `meaning` seed the generate body so the drill
+ * renders even when the pattern isn't in the (possibly mock) list fetch.
  */
 export interface DrillTarget {
   patternKey: string;
@@ -124,7 +156,7 @@ export interface DrillTarget {
   meaning: string;
 }
 
-/** The shape we look for in `location.state` when the Drill tab is deep-linked. */
+/** The shape we look for in `location.state` when practice is deep-linked. */
 interface GrammarLocationState {
   drillTarget?: DrillTarget;
 }
@@ -144,11 +176,6 @@ function readDrillTarget(state: unknown): DrillTarget | null {
   return null;
 }
 
-const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
-  { id: 'banked', label: 'Banked' },
-  { id: 'drill', label: 'Drill' },
-];
-
 /**
  * One wide page for the whole corpus — the endpoint's `limit` ceiling. The
  * default server `limit` is 20; 400 covers the full set (285 listable rows:
@@ -158,7 +185,7 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
 const KGIU_LIST_LIMIT = 400;
 
 /**
- * Normalised row shape the banked tab + drill pool render. Both the real
+ * Normalised row shape the cards view + practice pool render. Both the real
  * KGIU summary and the mock GrammarPattern fixture flatten into this — the
  * UI stays single-shape, the per-source quirks live in the adapters below.
  */
@@ -173,7 +200,7 @@ interface PatternListItem {
   pattern: string;
   /** English summary / title ("even if"). */
   title: string;
-  /** Proficiency tag rendered on the row pill. */
+  /** Proficiency tag — drives the B-024 group the row renders under. */
   proficiency: ServerProficiency;
   /** Category from the source row (display metadata post-P1.2). */
   category: string;
@@ -241,18 +268,18 @@ async function loadRealListItems(): Promise<PatternListItem[]> {
 }
 
 /**
- * Server-side bank metadata a banked row needs. Carries BOTH the action id
+ * Server-side bank metadata a card row needs. Carries BOTH the action id
  * (the graduate/readmit endpoints key on grammar_entries.id, NOT the KGIU id)
  * and enough display fields to render the pattern as a row WITHOUT the KGIU
- * list — so the Banked tab + drill pool stay independent of the List tab's
- * level filter (SHOULD-FIX B-SF-1). Keyed by pattern_key in the loaders below.
+ * list — so the cards view + practice pool stay independent of the corpus
+ * fetch (SHOULD-FIX B-SF-1). Keyed by pattern_key in the loaders below.
  */
 interface BankedMeta {
   /** grammar_entries row id — the :id for graduate/readmit. */
   id: number;
   /** Server-side dedup key (also this entry's map key). */
   patternKey: string;
-  /** Non-null ⇒ the user marked this pattern as known/graduated. */
+  /** Non-null ⇒ the user marked this pattern as known. */
   graduatedAt: string | null;
   /** Korean pattern display, from the bank row (level-independent). */
   patternDisplay: string;
@@ -267,14 +294,14 @@ interface BankedMeta {
 }
 
 /**
- * Render a banked pattern as a list row from its OWN bank-row fields, with no
- * dependency on the (level-filtered) KGIU list — this is what keeps a List-tab
- * level filter from hiding banked patterns of other levels (B-SF-1). `isReal`
- * is false because the bank row carries no KGIU id: the detail Sheet renders
- * from these stored fields instead of fetching `getPattern` (which needs a
- * KGIU id, not the grammar_entries id). When the pattern's level IS the one
- * currently loaded, the caller prefers the richer KGIU list row for full
- * detail-fetch fidelity; this is the cross-level fallback.
+ * Render a saved pattern as a list row from its OWN bank-row fields, with no
+ * dependency on the (possibly filtered) KGIU list — this is what keeps the
+ * cards view independent of the corpus fetch (B-SF-1). `isReal` is false
+ * because the bank row carries no KGIU id: the detail Sheet renders from
+ * these stored fields instead of fetching `getPattern` (which needs a KGIU
+ * id, not the grammar_entries id). When the pattern IS in the loaded corpus,
+ * the caller prefers the richer KGIU row for full detail-fetch fidelity;
+ * this is the fallback.
  */
 function bankedMetaToItem(meta: BankedMeta): PatternListItem {
   return {
@@ -292,7 +319,7 @@ function bankedMetaToItem(meta: BankedMeta): PatternListItem {
   };
 }
 
-/** Loader: mock banked map (empty until the user banks something). */
+/** Loader: mock banked map (empty until the user saves something). */
 async function loadMockBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
   return new Map<string, BankedMeta>();
 }
@@ -317,65 +344,123 @@ async function loadRealBankedMeta(): Promise<ReadonlyMap<string, BankedMeta>> {
   );
 }
 
+/**
+ * Loader: mock due set — EMPTY, never fabricated. Due-ness is a scheduling
+ * fact only the server knows; a fixture inventing it would badge rows "Due"
+ * that aren't (the fake-data-as-real class useEndpointOrMock gates).
+ */
+async function loadMockDueKeys(): Promise<ReadonlySet<string>> {
+  return new Set<string>();
+}
+
+/**
+ * Loader: real `GET /vocab/cards/due` → the pattern keys of due grammar
+ * PRODUCTION cards (F-063 — the same Anki due queue the vocab session
+ * drains). The predicate mirrors `isGrammarProductionCard` in Review.tsx:
+ * face + entry id + a non-empty JOINed key must all agree, so a malformed
+ * row degrades to "not badged" rather than a phantom Due pill.
+ */
+async function loadRealDueKeys(): Promise<ReadonlySet<string>> {
+  const cards = await vocabService.getDueCards();
+  const keys = new Set<string>();
+  for (const c of cards) {
+    if (
+      c.face === 'production' &&
+      c.grammar_entry_id !== null &&
+      typeof c.grammarPatternKey === 'string' &&
+      c.grammarPatternKey.length > 0
+    ) {
+      keys.add(c.grammarPatternKey);
+    }
+  }
+  return keys;
+}
+
 function Grammar(): JSX.Element {
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const view = parseView(searchParams.get('view'));
 
   // FU-NF-42 B3: a deep-link from the Review screen lands here with a
-  // `drillTarget` in router state. Read it once on mount so the Drill tab can
-  // open focused on that pattern. We snapshot it into state (rather than
+  // `drillTarget` in router state. Read it once on mount so the practice view
+  // can open focused on that pattern. We snapshot it into state (rather than
   // reading `location.state` every render) so that clearing the history
   // entry's state below — which prevents a Back/refresh from re-triggering the
-  // drill — doesn't yank the target out from under the in-flight drill.
+  // drill — doesn't yank the target out from under the in-flight drill. The
+  // target persists until CONSUMED (Skip / Next clears it): backing out of
+  // practice and returning resumes the targeted pattern, which is correct —
+  // the review gesture that opened it was never completed.
   const [drillTarget, setDrillTarget] = useState<DrillTarget | null>(() =>
     readDrillTarget(location.state),
   );
-  // Default tab is `banked` (the browse `list` tab moved to the library in
-  // P1.2/D3); a Review deep-link still opens straight onto the Drill tab.
-  // NOT `drill` by default: DrillPanel generates a drill on mount (a Claude
-  // round-trip), which shouldn't fire just because the page was opened.
-  const [tab, setTab] = useState<Tab>(() =>
-    readDrillTarget(location.state) ? 'drill' : 'banked',
-  );
 
-  // Scrub the consumed target out of the history entry so a Back navigation or
-  // a reload doesn't replay the deep-link. Runs once on mount when a target was
-  // present; `navigate(replace)` swaps the current entry's state for an empty
-  // one without adding to the stack. Guarded on `location.state` so it doesn't
-  // fight a fresh deep-link arriving while mounted (React Router remounts the
-  // route element on a same-path state change anyway).
+  // Scrub the consumed target out of the history entry AND land on the
+  // practice view (`?view=practice`) in the same replace, so a Back
+  // navigation or a reload doesn't replay the deep-link while the address
+  // bar honestly says where the user is. Runs once on mount when a target
+  // was present; `navigate(replace)` swaps the current entry without adding
+  // to the stack.
   useEffect(() => {
     if (readDrillTarget(location.state)) {
-      navigate(location.pathname, { replace: true, state: null });
+      navigate(`${location.pathname}?view=practice`, {
+        replace: true,
+        state: null,
+      });
     }
     // Mount-only: we captured the target into local state above; re-running on
     // every `location` change would clear a target before the drill consumes it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Clear the focused drill target → return the Drill tab to its rotation. */
+  /** Clear the focused drill target → return practice to its rotation. */
   const clearDrillTarget = useCallback((): void => {
     setDrillTarget(null);
   }, []);
 
+  /** F-064: the top-right Practice button — push the practice view. */
+  const openPractice = useCallback((): void => {
+    setSearchParams({ view: 'practice' });
+  }, [setSearchParams]);
+
+  /** F-065: the practice-history view (honest stub until F-110 lands). */
+  const openHistory = useCallback((): void => {
+    setSearchParams({ view: 'history' });
+  }, [setSearchParams]);
+
   // Pattern list — real first, mock fallback. The hook's `isMock` flips
   // false on a real resolve; that's how the 🅂 badge stays off here. The
-  // whole corpus loads in one wide page: it feeds the drill's fallback pool
-  // and upgrades Banked rows to their richer KGIU rows (full detail fetch).
+  // whole corpus loads in one wide page: it feeds the practice fallback pool
+  // and upgrades card rows to their richer KGIU rows (full detail fetch).
   const listState = useEndpointOrMock<PatternListItem[]>(
     'grammar:list',
     loadMockListItems,
     { realFn: loadRealListItems },
   );
 
-  // Banked map — separate fetch so a failure on one doesn't black out
-  // the other. Map<patternKey, BankedMeta> lets the row-level "Banked"
-  // check run in O(1) AND carries the bank-row id + graduation state the
-  // Banked tab's Graduate / Re-admit actions need.
+  // Saved-pattern map — separate fetch so a failure on one doesn't black out
+  // the other. Map<patternKey, BankedMeta> lets the row-level lookups run in
+  // O(1) AND carries the bank-row id + known state the Mark-known / Relearn
+  // actions need.
   const bankedState = useEndpointOrMock<ReadonlyMap<string, BankedMeta>>(
     'grammar:bank',
     loadMockBankedMeta,
     { realFn: loadRealBankedMeta },
+  );
+
+  // Due production cards (F-063) — wired to the EXISTING /vocab/cards/due
+  // queue. Auxiliary decoration + practice ordering only: a failure degrades
+  // to an empty set (no badges, plain rotation) via the hook's mock fallback,
+  // never a blocked page or fabricated due-ness.
+  const dueState = useEndpointOrMock<ReadonlySet<string>>(
+    'grammar:due',
+    loadMockDueKeys,
+    { realFn: loadRealDueKeys },
+  );
+  const dueKeys = useMemo<ReadonlySet<string>>(
+    () => dueState.data ?? new Set<string>(),
+    [dueState.data],
   );
 
   // Detail Sheet state. We keep the row context alongside the fetch
@@ -385,7 +470,7 @@ function Grammar(): JSX.Element {
   const [detail, setDetail] = useState<KgiuEntryDetail | null>(null);
 
   // Publish the open pattern for the chat FAB's discuss-this-page popup
-  // (Slice 3). Only while the detail Sheet is up — the browse list has no
+  // (Slice 3). Only while the detail Sheet is up — the cards list has no
   // single pattern on screen to discuss.
   useChatContext(
     openRow !== null
@@ -404,25 +489,25 @@ function Grammar(): JSX.Element {
   // use negative ids, real KGIU rows positive — the namespaces never collide.
   const detailIdRef = useRef<number | null>(null);
 
-  // Optimistic graduation overlay — patternKey → desired graduated state
-  // (true = graduate in flight/settling, false = re-admit). Mirrors the
-  // `optimisticBanked` overlay: applied on top of the server map so the row
-  // moves between the Active and Known views immediately, pruned once the
-  // server settle agrees so the map never grows across a session.
-  const [graduationOverrides, setGraduationOverrides] = useState<
+  // Optimistic known-state overlay — patternKey → desired known state
+  // (true = mark-known in flight/settling, false = relearn). Applied on top
+  // of the server map so the row moves between the Learning and Known views
+  // immediately, pruned once the server settle agrees so the map never grows
+  // across a session.
+  const [knownOverrides, setKnownOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map<string, boolean>());
 
   useEffect(() => {
     if (!bankedState.data) return;
     const settled = bankedState.data;
-    setGraduationOverrides((prev) => {
+    setKnownOverrides((prev) => {
       if (prev.size === 0) return prev;
       const next = new Map<string, boolean>();
       for (const [k, wanted] of prev) {
         const meta = settled.get(k);
         // Keep the override until the server view agrees with it; a key the
-        // server doesn't know yet (optimistic bank still settling) keeps its
+        // server doesn't know yet (optimistic save still settling) keeps its
         // override too.
         if (meta === undefined || (meta.graduatedAt !== null) !== wanted) {
           next.set(k, wanted);
@@ -433,14 +518,14 @@ function Grammar(): JSX.Element {
     });
   }, [bankedState.data]);
 
-  /** Effective graduation state for a pattern: overlay first, then server. */
-  const isGraduated = useCallback(
+  /** Effective known state for a pattern: overlay first, then server. */
+  const isKnown = useCallback(
     (patternKey: string): boolean => {
-      const override = graduationOverrides.get(patternKey);
+      const override = knownOverrides.get(patternKey);
       if (override !== undefined) return override;
       return (bankedState.data?.get(patternKey)?.graduatedAt ?? null) !== null;
     },
-    [graduationOverrides, bankedState.data],
+    [knownOverrides, bankedState.data],
   );
 
   const openDetail = useCallback(
@@ -482,31 +567,29 @@ function Grammar(): JSX.Element {
     setDetailLoading(false);
   }, []);
 
-  // Per-row graduation submit-in-flight + last-error.
-  const [graduationPendingKey, setGraduationPendingKey] = useState<
-    string | null
-  >(null);
-  const [graduationError, setGraduationError] = useState<string | null>(null);
+  // Per-row known-state submit-in-flight + last-error.
+  const [knownPendingKey, setKnownPendingKey] = useState<string | null>(null);
+  const [knownError, setKnownError] = useState<string | null>(null);
 
   /**
-   * Flip a banked pattern's graduation state (true = Graduate, false =
-   * Re-admit). Optimistic: the row hops between the Active and Known views
+   * Flip a saved pattern's known state (true = Mark known, false = Relearn).
+   * Optimistic: the row hops between the Learning and Known views
    * immediately; a real failure rewinds the overlay and surfaces an inline
-   * error. Requires the SERVER's bank-row id — a row that's only optimistically
-   * banked (settle in flight) is a no-op here, and its action button is
-   * disabled via `actionableKeys` below.
+   * error. Requires the SERVER's bank-row id — a row that's only
+   * optimistically saved (settle in flight) is a no-op here, and its action
+   * button is disabled via `actionableKeys` below.
    */
   const setKnown = useCallback(
-    async (row: PatternListItem, graduated: boolean): Promise<void> => {
+    async (row: PatternListItem, known: boolean): Promise<void> => {
       const meta = bankedState.data?.get(row.patternKey);
       if (!meta) return;
-      setGraduationPendingKey(row.patternKey);
-      setGraduationError(null);
-      setGraduationOverrides((prev) =>
-        new Map(prev).set(row.patternKey, graduated),
+      setKnownPendingKey(row.patternKey);
+      setKnownError(null);
+      setKnownOverrides((prev) =>
+        new Map(prev).set(row.patternKey, known),
       );
       try {
-        if (graduated) {
+        if (known) {
           await grammarService.graduatePattern(meta.id);
         } else {
           await grammarService.readmitPattern(meta.id);
@@ -517,24 +600,24 @@ function Grammar(): JSX.Element {
       } catch {
         // Rewind the optimistic flip and surface the error. Don't echo
         // server text.
-        setGraduationOverrides((prev) => {
+        setKnownOverrides((prev) => {
           const next = new Map(prev);
           next.delete(row.patternKey);
           return next;
         });
-        setGraduationError(
-          graduated
+        setKnownError(
+          known
             ? "Couldn't mark that pattern as known. Try again."
-            : "Couldn't re-admit that pattern. Try again.",
+            : "Couldn't move that pattern back to learning. Try again.",
         );
       } finally {
-        setGraduationPendingKey(null);
+        setKnownPendingKey(null);
       }
     },
     [bankedState],
   );
 
-  // Stable array identity so the `bankedItems` memo doesn't re-run on
+  // Stable array identity so the `cardItems` memo doesn't re-run on
   // every render — `listState.data ?? []` would otherwise mint a fresh
   // [] each time and bust the memo.
   const items = useMemo<readonly PatternListItem[]>(
@@ -542,8 +625,8 @@ function Grammar(): JSX.Element {
     [listState.data],
   );
 
-  // patternKey → KGIU list row, so a banked pattern that IS in the currently
-  // loaded level can be rendered from its richer KGIU row (enabling the full
+  // patternKey → KGIU list row, so a saved pattern that IS in the loaded
+  // corpus can be rendered from its richer KGIU row (enabling the full
   // detail fetch) rather than the bank-row fallback.
   const itemsByKey = useMemo<ReadonlyMap<string, PatternListItem>>(() => {
     const m = new Map<string, PatternListItem>();
@@ -551,14 +634,14 @@ function Grammar(): JSX.Element {
     return m;
   }, [items]);
 
-  // Banked patterns sourced from the user's ACTUAL bank list (GET /grammar/bank
-  // via `bankedState`), INDEPENDENT of the KGIU list fetch (B-SF-1): a bank
-  // row whose pattern is missing from the fetched corpus still renders from
-  // its own stored fields. We prefer the KGIU list row when the pattern IS
-  // loaded (full detail-fetch fidelity), else fall back via
-  // `bankedMetaToItem`. Insertion order follows the server's
-  // `created_at DESC`, so the Banked tab ordering is stable.
-  const bankedItems = useMemo<readonly PatternListItem[]>(() => {
+  // The user's saved patterns sourced from the ACTUAL bank list (GET
+  // /grammar/bank via `bankedState`), INDEPENDENT of the KGIU list fetch
+  // (B-SF-1): a bank row whose pattern is missing from the fetched corpus
+  // still renders from its own stored fields. We prefer the KGIU list row
+  // when the pattern IS loaded (full detail-fetch fidelity), else fall back
+  // via `bankedMetaToItem`. Insertion order follows the server's
+  // `created_at DESC`, so the ordering is stable.
+  const cardItems = useMemo<readonly PatternListItem[]>(() => {
     const map = bankedState.data;
     if (!map) return [];
     return Array.from(
@@ -567,41 +650,49 @@ function Grammar(): JSX.Element {
     );
   }, [bankedState.data, itemsByKey]);
 
-  // Graduation split. Active = still learning (drill pool + reviews);
-  // known = graduated out of active learning until re-admitted.
-  const activeBankedItems = useMemo<readonly PatternListItem[]>(
-    () => bankedItems.filter((it) => !isGraduated(it.patternKey)),
-    [bankedItems, isGraduated],
+  // Mastery split (F-063/F-066 vocabulary). Learning = still scheduled
+  // (practice pool + due reviews); known = self-marked as known, out of
+  // active learning until relearned.
+  const learningItems = useMemo<readonly PatternListItem[]>(
+    () => cardItems.filter((it) => !isKnown(it.patternKey)),
+    [cardItems, isKnown],
   );
   const knownItems = useMemo<readonly PatternListItem[]>(
-    () => bankedItems.filter((it) => isGraduated(it.patternKey)),
-    [bankedItems, isGraduated],
+    () => cardItems.filter((it) => isKnown(it.patternKey)),
+    [cardItems, isKnown],
   );
-  // The drill's PRIMARY pool is the user's active banked patterns
-  // (`activeBankedItems` — see B-SF-1). `drillableItems` is only the fallback
-  // for an account with NOTHING banked, where there are no banked patterns to
-  // protect, so drilling the fetched corpus is acceptable. The filter still
-  // excludes graduated rows — the drill must never serve a graduated pattern
-  // even via this fallback (the corpus list contains graduated rows too).
+  // The practice PRIMARY pool is the user's learning cards (`learningItems`
+  // — see B-SF-1). `drillableItems` is only the fallback for an account with
+  // NOTHING saved, where there are no chosen patterns to protect, so
+  // practising the fetched corpus is acceptable. The filter still excludes
+  // known rows — practice must never serve a pattern the user marked known,
+  // even via this fallback (the corpus list contains those rows too).
   const drillableItems = useMemo<readonly PatternListItem[]>(
-    () => items.filter((it) => !isGraduated(it.patternKey)),
-    [items, isGraduated],
+    () => items.filter((it) => !isKnown(it.patternKey)),
+    [items, isKnown],
   );
-  // Rows whose bank-row id the server has confirmed — Graduate/Re-admit need
-  // that id, so rows still settling optimistically keep their action disabled.
+  // Rows whose bank-row id the server has confirmed — Mark known / Relearn
+  // need that id, so rows still settling optimistically stay disabled.
   const actionableKeys = useMemo<ReadonlySet<string>>(
     () => new Set<string>(bankedState.data?.keys() ?? []),
     [bankedState.data],
   );
 
-  // 🅂 badge for the Banked tab when BOTH wired fetches fell back to the
-  // mock. The drill tab hits a REAL endpoint (Pass 9), so its mock signal is
-  // owned by `DrillPanel` itself (which renders its own MockBadge only when
-  // the generate endpoint is unreachable and it falls to a local mock
-  // drill). We suppress the banked badge while on the drill tab so the two
+  // 🅂 badge for the cards view when BOTH wired fetches fell back to the
+  // mock. Practice hits a REAL endpoint (Pass 9), so its mock signal is
+  // owned by `PracticePanel` itself (which renders its own MockBadge only
+  // when the generate endpoint is unreachable and it falls to a local mock
+  // drill). We suppress the cards badge off the cards view so the two
   // signals don't fight over the same corner.
   const showMockBadge =
-    tab !== 'drill' && listState.isMock && bankedState.isMock;
+    view === 'cards' && listState.isMock && bankedState.isMock;
+
+  const eyebrow =
+    view === 'practice'
+      ? 'Practice'
+      : view === 'history'
+        ? 'Practice history'
+        : 'Your grammar cards';
 
   return (
     <section
@@ -610,58 +701,61 @@ function Grammar(): JSX.Element {
       style={{ position: 'relative' }}
     >
       {showMockBadge ? <MockBadge /> : null}
+
+      {/* F-024: nested sub-views carry a BackButton to the canonical parent
+          (the cards view). Deterministic `to` — a deep link straight into
+          practice must not history-back out of the app. */}
+      {view !== 'cards' ? (
+        <BackButton to="/learn/grammar" label="Grammar" />
+      ) : null}
+
       <Topbar
         krTitle="문법"
         title="Grammar"
         titleId="grammar-title"
-        eyebrow={tab === 'drill' ? 'Production drill' : 'Banked patterns'}
+        eyebrow={eyebrow}
+        right={
+          view === 'cards' ? (
+            // F-064: the drill entry point is a top-right "Practice" button.
+            <Button
+              variant="gold"
+              size="sm"
+              onClick={openPractice}
+              leadingIcon={<Icon name="play" size={14} />}
+            >
+              Practice
+            </Button>
+          ) : undefined
+        }
       />
 
-      <div className="km-review__tabs" role="tablist" aria-label="Grammar section">
-        {TABS.map((t) => {
-          const selected = tab === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-              onClick={() => {
-                setTab(t.id);
-              }}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {tab === 'banked' ? (
-        <BankedPanel
+      {view === 'cards' ? (
+        <CardsPanel
           loading={listState.loading || bankedState.loading}
           fetchErrored={
             (!listState.data && listState.error !== null) ||
             (!bankedState.data && bankedState.error !== null)
           }
-          activeItems={activeBankedItems}
+          learningItems={learningItems}
           knownItems={knownItems}
+          dueKeys={dueKeys}
           actionableKeys={actionableKeys}
-          pendingKey={graduationPendingKey}
-          actionError={graduationError}
+          pendingKey={knownPendingKey}
+          actionError={knownError}
           onOpen={(row) => {
             void openDetail(row);
           }}
-          onGraduate={(row) => {
+          onMarkKnown={(row) => {
             void setKnown(row, true);
           }}
-          onReadmit={(row) => {
+          onRelearn={(row) => {
             void setKnown(row, false);
           }}
           onBrowse={() => {
             // D3: the single grammar browse (+ Bank) lives in the library.
             navigate('/review/grammar');
           }}
+          onHistory={openHistory}
           onRetry={() => {
             listState.refetch();
             bankedState.refetch();
@@ -669,15 +763,25 @@ function Grammar(): JSX.Element {
         />
       ) : null}
 
-      {tab === 'drill' ? (
-        <DrillPanel
-          loading={listState.loading}
+      {view === 'practice' ? (
+        <PracticePanel
+          // ALL three pool inputs must settle before the panel builds its
+          // session pool (SF-1): generating off a partial pool and letting a
+          // late bank/due settle reshape it mid-answer wiped in-progress
+          // answers. A deep-link target bypasses the gate (it carries its
+          // own pattern).
+          loading={
+            listState.loading || bankedState.loading || dueState.loading
+          }
           items={drillableItems}
-          bankedItems={activeBankedItems}
+          learningItems={learningItems}
+          dueKeys={dueKeys}
           target={drillTarget}
           onClearTarget={clearDrillTarget}
         />
       ) : null}
+
+      {view === 'history' ? <HistoryPanel /> : null}
 
       <DetailSheet
         open={openRow !== null}
@@ -692,84 +796,119 @@ function Grammar(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Banked panel
+// Cards panel — the saved patterns, in vocab-flashcard mastery vocabulary
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Sub-views of the Banked tab. `active` = banked patterns still in the
- * learning loop; `known` = graduated patterns (out of the drill pool and the
- * due-review queue) with a Re-admit path back.
+ * Sub-views of the cards list (F-063/F-066). `learning` = saved patterns
+ * still in the scheduling loop; `known` = patterns the user marked as known
+ * (out of the practice pool and the due-review queue) with a Relearn path
+ * back — the state names mirror the FSRS `learning` / `relearning`
+ * vocabulary the vocab flashcards run on.
  */
-type BankedView = 'active' | 'known';
+type CardsView = 'learning' | 'known';
 
-const BANKED_VIEWS: ReadonlyArray<{ id: BankedView; label: string }> = [
-  { id: 'active', label: 'Active' },
+const CARDS_VIEWS: ReadonlyArray<{ id: CardsView; label: string }> = [
+  { id: 'learning', label: 'Learning' },
   { id: 'known', label: 'Known' },
 ];
 
-interface BankedPanelProps {
+/**
+ * B-024 grouping: the flat, separator-less list read as clutter, so rows are
+ * grouped by the server's closed proficiency set into CollapsibleTiles.
+ * Order is fixed easiest→hardest; only non-empty groups render.
+ */
+const PROFICIENCY_GROUPS: ReadonlyArray<{
+  id: ServerProficiency;
+  label: string;
+}> = [
+  { id: 'basic', label: 'Beginner · L1–L2' },
+  { id: 'L3', label: 'Intermediate · L3' },
+  { id: 'L4', label: 'Upper-intermediate · L4' },
+  { id: 'L5+', label: 'Advanced · L5+' },
+];
+
+interface CardsPanelProps {
   loading: boolean;
   fetchErrored: boolean;
-  /** Banked patterns still in active learning (Graduate available). */
-  activeItems: readonly PatternListItem[];
-  /** Graduated patterns (Re-admit available). */
+  /** Saved patterns still in the learning loop (Mark known available). */
+  learningItems: readonly PatternListItem[];
+  /** Patterns marked known (Relearn available). */
   knownItems: readonly PatternListItem[];
+  /** Pattern keys whose production card is due for review (Due pill). */
+  dueKeys: ReadonlySet<string>;
   /** Keys whose server bank-row id is known — action buttons enabled. */
   actionableKeys: ReadonlySet<string>;
-  /** patternKey of the graduation action currently in flight, if any. */
+  /** patternKey of the known-state action currently in flight, if any. */
   pendingKey: string | null;
-  /** Inline error from the last failed graduate/re-admit, if any. */
+  /** Inline error from the last failed mark-known/relearn, if any. */
   actionError: string | null;
   onOpen: (row: PatternListItem) => void;
-  onGraduate: (row: PatternListItem) => void;
-  onReadmit: (row: PatternListItem) => void;
+  onMarkKnown: (row: PatternListItem) => void;
+  onRelearn: (row: PatternListItem) => void;
   /** Navigate to the library's grammar browse (the single browse, D3). */
   onBrowse: () => void;
+  /** Open the practice-history view (F-065). */
+  onHistory: () => void;
   onRetry: () => void;
 }
 
-function BankedPanel({
+function CardsPanel({
   loading,
   fetchErrored,
-  activeItems,
+  learningItems,
   knownItems,
+  dueKeys,
   actionableKeys,
   pendingKey,
   actionError,
   onOpen,
-  onGraduate,
-  onReadmit,
+  onMarkKnown,
+  onRelearn,
   onBrowse,
+  onHistory,
   onRetry,
-}: BankedPanelProps): JSX.Element {
+}: CardsPanelProps): JSX.Element {
   // Local view toggle — pure presentation, feeds no fetch key, so it lives
-  // here rather than in the page component (unlike the List level filter).
-  const [view, setView] = useState<BankedView>('active');
+  // here rather than in the page component.
+  const [view, setView] = useState<CardsView>('learning');
 
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
-        Loading banked patterns…
+        Loading your grammar cards…
       </div>
     );
   }
   if (fetchErrored) {
     return (
       <ErrorCard
-        message="The banked patterns couldn't be loaded."
+        message="Your grammar cards couldn't be loaded."
         onRetry={onRetry}
       />
     );
   }
 
-  const items = view === 'active' ? activeItems : knownItems;
+  const items = view === 'learning' ? learningItems : knownItems;
+  const dueCount = learningItems.reduce(
+    (n, it) => n + (dueKeys.has(it.patternKey) ? 1 : 0),
+    0,
+  );
+
+  // B-024: group the visible rows by proficiency; only non-empty groups
+  // render, each as a CollapsibleTile so a long deck folds away per level.
+  const groups = PROFICIENCY_GROUPS.map((g) => ({
+    ...g,
+    rows: items.filter((it) => it.proficiency === g.id),
+  })).filter((g) => g.rows.length > 0);
 
   return (
     <>
-      <div className="km-review__tabs" role="group" aria-label="Banked view">
-        {BANKED_VIEWS.map((v) => {
+      <div className="km-review__tabs" role="group" aria-label="Card state">
+        {CARDS_VIEWS.map((v) => {
           const selected = view === v.id;
-          const count = v.id === 'active' ? activeItems.length : knownItems.length;
+          const count =
+            v.id === 'learning' ? learningItems.length : knownItems.length;
           return (
             <button
               key={v.id}
@@ -786,17 +925,27 @@ function BankedPanel({
         })}
       </div>
 
+      {/* Due summary — the same "N due" framing the vocab session uses.
+          Rendered only when something IS due; absence of schedule data is
+          silence, not a fabricated "0 due". */}
+      {view === 'learning' && dueCount > 0 ? (
+        <p className="km-grammar__due-note" role="status">
+          {dueCount} pattern{dueCount === 1 ? '' : 's'} due for review —
+          Practice serves {dueCount === 1 ? 'it' : 'them'} first.
+        </p>
+      ) : null}
+
       {actionError ? <ErrorCard message={actionError} /> : null}
 
       {items.length === 0 ? (
         <Card variant="flat" role="status">
-          {view === 'active' ? (
+          {view === 'learning' ? (
             <>
-              <Eyebrow>Nothing in active learning</Eyebrow>
+              <Eyebrow>Nothing in learning</Eyebrow>
               <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
                 {knownItems.length > 0
-                  ? 'Everything you banked is marked as known. Re-admit a pattern from the Known view to study it again.'
-                  : 'Bank patterns from the grammar library to add them here.'}
+                  ? 'Every card is marked as known. Tap Relearn on a card in the Known view to study it again.'
+                  : 'Save patterns from the grammar library to start learning them here.'}
               </p>
               {knownItems.length === 0 ? (
                 <Button
@@ -811,104 +960,197 @@ function BankedPanel({
             </>
           ) : (
             <>
-              <Eyebrow>Nothing graduated yet</Eyebrow>
+              <Eyebrow>Nothing marked known yet</Eyebrow>
               <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-                When you&apos;re comfortable with a banked pattern, tap
-                Graduate to retire it from drills and reviews. It moves here,
-                and you can re-admit it any time.
+                When you&apos;ve mastered a card, tap Mark known to retire it
+                from practice and reviews. It moves here, and Relearn brings
+                it back any time.
               </p>
             </>
           )}
         </Card>
       ) : (
-        <ul className="km-grammar__list">
-          {items.map((row) => {
-            const pending = pendingKey === row.patternKey;
-            const actionable = actionableKeys.has(row.patternKey);
-            return (
-              <li key={row.patternKey} className="km-grammar__row">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onOpen(row);
-                  }}
-                  className="km-grammar__row-btn focusring"
-                  aria-label={`${row.pattern} ${row.title}`}
-                >
-                  <span className="kr km-grammar__row-kr">{row.pattern}</span>
-                  <span className="km-grammar__row-title">{row.title}</span>
-                  <span className="km-pill km-pill--default km-grammar__row-level">
-                    {row.proficiency}
-                  </span>
-                </button>
-                {view === 'active' ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      onGraduate(row);
-                    }}
-                    disabled={pending || !actionable}
-                    aria-label={`Graduate ${row.pattern}`}
-                  >
-                    {pending ? 'Saving…' : 'Graduate'}
-                  </Button>
-                ) : (
-                  <>
-                    <Pill tone="green">Known</Pill>
-                    <Button
-                      variant="gold"
-                      size="sm"
-                      onClick={() => {
-                        onReadmit(row);
-                      }}
-                      disabled={pending || !actionable}
-                      aria-label={`Re-admit ${row.pattern}`}
-                    >
-                      {pending ? 'Saving…' : 'Re-admit'}
-                    </Button>
-                  </>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        groups.map((g) => (
+          <CollapsibleTile
+            key={g.id}
+            className="km-grammar__group"
+            title={
+              <span className="km-grammar__group-title">
+                {g.label}
+                <span className="km-grammar__group-count">
+                  {g.rows.length}
+                </span>
+              </span>
+            }
+          >
+            {/* Explicit role: `list-style: none` (Grammar.css) makes
+                Safari/VoiceOver drop the implicit list semantics (row
+                count/position), so the "redundant" role is load-bearing —
+                the documented exception to this lint rule. */}
+            {/* eslint-disable-next-line jsx-a11y/no-redundant-roles */}
+            <ul className="km-grammar__list" role="list">
+              {g.rows.map((row) => (
+                <CardRow
+                  key={row.patternKey}
+                  row={row}
+                  view={view}
+                  due={dueKeys.has(row.patternKey)}
+                  pending={pendingKey === row.patternKey}
+                  actionable={actionableKeys.has(row.patternKey)}
+                  onOpen={onOpen}
+                  onMarkKnown={onMarkKnown}
+                  onRelearn={onRelearn}
+                />
+              ))}
+            </ul>
+          </CollapsibleTile>
+        ))
       )}
 
-      {/* D3: banking new patterns happens in the library's single browse. */}
-      {items.length > 0 ? (
+      <div className="km-grammar__panel-links">
+        {/* D3: saving new patterns happens in the library's single browse. */}
+        {items.length > 0 ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onBrowse}
+            trailingIcon={<Icon name="arrow-right" size={12} />}
+          >
+            Browse all patterns
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
-          onClick={onBrowse}
-          trailingIcon={<Icon name="arrow-right" size={12} />}
+          onClick={onHistory}
+          leadingIcon={<Icon name="history" size={12} />}
         >
-          Browse all patterns
+          Practice history
         </Button>
-      ) : null}
+      </div>
     </>
   );
 }
 
+/** One saved-pattern row. The Korean form renders on ONE line (B-024 —
+ *  nowrap + ellipsis in Grammar.css); the EN summary sits beneath it. */
+function CardRow({
+  row,
+  view,
+  due,
+  pending,
+  actionable,
+  onOpen,
+  onMarkKnown,
+  onRelearn,
+}: {
+  row: PatternListItem;
+  view: CardsView;
+  due: boolean;
+  pending: boolean;
+  actionable: boolean;
+  onOpen: (row: PatternListItem) => void;
+  onMarkKnown: (row: PatternListItem) => void;
+  onRelearn: (row: PatternListItem) => void;
+}): JSX.Element {
+  return (
+    <li className="km-grammar__row">
+      <button
+        type="button"
+        onClick={() => {
+          onOpen(row);
+        }}
+        className="km-grammar__row-btn focusring"
+        aria-label={`${row.pattern} ${row.title}`}
+      >
+        <span className="km-grammar__row-head">
+          <span className="kr km-grammar__row-kr">{row.pattern}</span>
+          {due ? <Pill tone="gold">Due</Pill> : null}
+        </span>
+        <span className="km-grammar__row-title">{row.title}</span>
+      </button>
+      {view === 'learning' ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="km-grammar__row-action"
+          onClick={() => {
+            onMarkKnown(row);
+          }}
+          disabled={pending || !actionable}
+          aria-label={`Mark ${row.pattern} as known`}
+        >
+          {pending ? 'Saving…' : 'Mark known'}
+        </Button>
+      ) : (
+        <Button
+          variant="gold"
+          size="sm"
+          className="km-grammar__row-action"
+          onClick={() => {
+            onRelearn(row);
+          }}
+          disabled={pending || !actionable}
+          aria-label={`Relearn ${row.pattern}`}
+        >
+          {pending ? 'Saving…' : 'Relearn'}
+        </Button>
+      )}
+    </li>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
-// Drill panel — Pass-9 live production drill (generate → submit → reveal)
+// History panel — F-065 honest stub (no read endpoint exists yet)
 // ─────────────────────────────────────────────────────────────
 
-interface DrillPanelProps {
+/**
+ * F-065: every practice attempt (answer, score, verdict, feedback) is
+ * persisted server-side in `grammar_drill_attempts`, but the drill router
+ * exposes only the generate + submit POSTs — there is no endpoint to read
+ * attempts back. Rendering a fake or empty "list" would misrepresent that,
+ * so this view states the situation plainly. Backend ticket: F-110
+ * (GET /grammar-drill/attempts — paged, user-scoped).
+ */
+function HistoryPanel(): JSX.Element {
+  return (
+    <Card variant="flat">
+      <Eyebrow>Practice history</Eyebrow>
+      <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+        Not available yet. Your past practice attempts — answers, scores, and
+        feedback — are saved on the server, but there&apos;s no way to fetch
+        them back until the history endpoint ships (ticket F-110). They
+        will appear here once it does.
+      </p>
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Practice panel — Pass-9 live production drill (generate → submit → reveal)
+// ─────────────────────────────────────────────────────────────
+
+interface PracticePanelProps {
   loading: boolean;
   /**
-   * Drillable patterns — the fetched list MINUS graduated ones. The parent
-   * filters graduation out before this panel sees anything, so the fallback
-   * pool below can never serve a pattern the user has marked as known.
+   * Drillable patterns — the fetched list MINUS known ones. The parent
+   * filters known-state out before this panel sees anything, so the fallback
+   * pool below can never serve a pattern the user marked as known.
    */
   items: readonly PatternListItem[];
   /**
-   * The user's ACTIVE banked subset of `items` (banked and not graduated).
-   * When non-empty this is the PREFERRED drill pool — the learner drills the
-   * patterns they chose to bank; the full drillable list is the fallback for
-   * a fresh account with nothing banked yet.
+   * The user's LEARNING subset of `items` (saved and not marked known).
+   * When non-empty this is the PREFERRED practice pool — the learner drills
+   * the patterns they chose to save; the full drillable list is the fallback
+   * for a fresh account with nothing saved yet.
    */
-  bankedItems: readonly PatternListItem[];
+  learningItems: readonly PatternListItem[];
+  /**
+   * Pattern keys whose production card is DUE (F-063). Due patterns form a
+   * session-local queue the panel drains BEFORE the cursor rotation — the
+   * same due-first ordering the vocab session gets from `/vocab/cards/due`.
+   */
+  dueKeys: ReadonlySet<string>;
   /**
    * FU-NF-42 B3: an externally-supplied pattern to drill (a Review deep-link).
    * When set, the panel generates a drill for THIS pattern instead of its
@@ -923,7 +1165,7 @@ interface DrillPanelProps {
   onClearTarget?: () => void;
 }
 
-/** Minimal source a DrillPanel needs to generate a drill for one pattern. */
+/** Minimal source a PracticePanel needs to generate a drill for one pattern. */
 interface DrillSource {
   patternKey: string;
   patternDisplay: string;
@@ -1011,7 +1253,9 @@ const DRILL_GENERATE_ERROR_COPY =
  * Synthesize a plausible reveal for a mock drill so the offline flow can paint
  * the full reveal block (score + verdict + correction + reference model). The
  * reference model is derived from the mock item's own fields — never a real
- * Claude score, hence the 🅂 badge that accompanies it.
+ * Claude score, hence the 🅂 badge that accompanies it. Deliberately carries
+ * NO `schedule`: offline pseudo-scoring must not fabricate an FSRS rating or
+ * interval.
  */
 function mockScoreFor(item: DrillItemPublic, answer: string): DrillScore {
   const used = answer.includes(stripParticle(item.patternDisplay));
@@ -1050,14 +1294,14 @@ function mockReferenceKr(item: DrillItemPublic): string {
  * Persisted drill-rotation cursor (localStorage).
  *
  * ROOT CAUSE of the live "Drill always produces N이다" bug: the rotation index
- * was `useState(0)` inside DrillPanel, which unmounts on EVERY tab switch
- * (`{tab === 'drill' ? <DrillPanel/> : null}`) and on reload — so each visit to
- * the Drill tab restarted the rotation at `items[0]`, the first id-ordered
- * corpus row (N이다). Live evidence: all five `grammar_drill_attempts` rows
- * from the 2026-07-02 session carry `pattern_key = 'kgiu-beginner-002'` and
- * the LB log shows each generate was a fresh mount, never a rotation step.
+ * was `useState(0)` inside the panel, which unmounts on EVERY view switch and
+ * on reload — so each visit restarted the rotation at `items[0]`, the first
+ * id-ordered corpus row (N이다). Live evidence: all five
+ * `grammar_drill_attempts` rows from the 2026-07-02 session carry
+ * `pattern_key = 'kgiu-beginner-002'` and the LB log shows each generate was
+ * a fresh mount, never a rotation step.
  *
- * The cursor therefore lives in localStorage: it survives remounts, tab
+ * The cursor therefore lives in localStorage: it survives remounts, view
  * switches, and reloads, so the learner deterministically progresses through
  * the pool (`pool[cursor % pool.length]`) instead of looping on pattern #1.
  *
@@ -1090,24 +1334,67 @@ function writeDrillCursor(cursor: number): void {
   }
 }
 
-function DrillPanel({
+/** The session's practice pool: the due queue + the cursor rotation. */
+interface DrillPool {
+  /** Patterns whose production card is due — drained FIRST, in order. */
+  due: readonly PatternListItem[];
+  /** The remaining rotation, served via the persisted cursor. */
+  rest: readonly PatternListItem[];
+}
+
+const EMPTY_POOL: DrillPool = { due: [], rest: [] };
+
+/** Partition the practice base into the due queue + the rotation (F-063).
+ *  Base = the learner's saved learning patterns when any exist (drilling
+ *  what they chose to study), else the full fetched KGIU list.
+ *  `learningItems ⊆ items`, so an empty `items` implies an empty pool. */
+function partitionPool(
+  items: readonly PatternListItem[],
+  learningItems: readonly PatternListItem[],
+  dueKeys: ReadonlySet<string>,
+): DrillPool {
+  const base = learningItems.length > 0 ? learningItems : items;
+  if (dueKeys.size === 0) return { due: [], rest: base };
+  const due: PatternListItem[] = [];
+  const rest: PatternListItem[] = [];
+  for (const it of base) {
+    (dueKeys.has(it.patternKey) ? due : rest).push(it);
+  }
+  return { due, rest };
+}
+
+function PracticePanel({
   loading,
   items,
-  bankedItems,
+  learningItems,
+  dueKeys,
   target = null,
   onClearTarget,
-}: DrillPanelProps): JSX.Element {
-  // Which pattern (by index into the pool) we're drilling. Wraps with `%`.
-  // Initialised from the PERSISTED cursor so a remount (tab switch, reload)
-  // resumes the rotation where the learner left off instead of resetting to
-  // pool[0] — see DRILL_CURSOR_STORAGE_KEY for the live bug this fixes.
+}: PracticePanelProps): JSX.Element {
+  // Which pattern (by index into the NON-DUE rotation) we're drilling.
+  // Wraps with `%`. Initialised from the PERSISTED cursor so a remount
+  // (view switch, reload) resumes the rotation where the learner left off
+  // instead of resetting to the first pattern — see
+  // DRILL_CURSOR_STORAGE_KEY for the live bug this fixes.
   const [idx, setIdx] = useState<number>(readDrillCursor);
+  // Session-local walk through the DUE partition (F-063 due-first, B-1).
+  // Due cards are a finite queue the session drains BEFORE the rotation —
+  // exactly like the vocab due session. Deliberately session-local and NOT
+  // fed by the persisted cursor: indexing the partitioned pool with the
+  // monotonically-growing `idx` (`pool[idx % pool.length]`) almost never
+  // landed on the due partition after any prior practice, silently
+  // defeating the due-first ordering the cards view promises.
+  const [duePos, setDuePos] = useState(0);
 
-  // Drill pool: the learner's banked patterns when any exist (drilling what
-  // they chose to study), else the full fetched KGIU list. `bankedItems` is a
-  // subset of `items`, so an empty `items` implies an empty pool and the
-  // existing empty-state gates below still hold.
-  const pool = bankedItems.length > 0 ? bankedItems : items;
+  // Practice pool, SNAPSHOTTED once per session (SF-1): frozen on the first
+  // render after all three pool inputs settle (`loading` gates until then),
+  // so a later bank/due settle can't reshape the pool mid-answer — that
+  // swap re-fired the generate effect and wiped the in-progress answer.
+  const poolRef = useRef<DrillPool | null>(null);
+  if (poolRef.current === null && !loading) {
+    poolRef.current = partitionPool(items, learningItems, dueKeys);
+  }
+  const pool = poolRef.current ?? EMPTY_POOL;
   const [phase, setPhase] = useState<DrillPhase>('generating');
   const [attemptId, setAttemptId] = useState<number | null>(null);
   const [item, setItem] = useState<DrillItemPublic | null>(null);
@@ -1128,14 +1415,21 @@ function DrillPanel({
   const [genTick, setGenTick] = useState(0);
 
   // FU-NF-42 B3: a deep-link target wins over the rotation. When present we
-  // drill exactly that pattern; otherwise we cycle `pool[idx]`. The targeted
-  // pattern can be drilled even when the pool is empty (the list fetch is
-  // mock/empty) — the target carries its own display + meaning.
+  // drill exactly that pattern (it carries its own display + meaning, so it
+  // works even with an empty/mock list fetch). Otherwise the session serves
+  // the DUE queue first, then the persisted `idx` rotation over the rest;
+  // with nothing but due patterns the due queue wraps so practice never
+  // dead-ends.
+  const servingDue =
+    pool.due.length > 0 &&
+    (duePos < pool.due.length || pool.rest.length === 0);
   const source: DrillSource | null = target
     ? targetToSource(target)
-    : pool.length > 0
-      ? rowToSource(pool[idx % pool.length]!)
-      : null;
+    : servingDue
+      ? rowToSource(pool.due[duePos % pool.due.length]!)
+      : pool.rest.length > 0
+        ? rowToSource(pool.rest[idx % pool.rest.length]!)
+        : null;
   const patternKey = source?.patternKey ?? null;
 
   // Generate-in-flight controller so navigating away (Skip/Next) or unmount
@@ -1210,28 +1504,36 @@ function DrillPanel({
         setPhase('ready');
       }
     })();
-    // `idx` + `patternKey` are the stable triggers (`source` is a fresh object
-    // each render). A deep-link target swaps the `patternKey` (vs. the
-    // rotation), so it re-fires the generate cleanly. The display/meaning are
-    // read off the same source, so the minimal deps hold. `genTick` re-fires
-    // the SAME pattern after a PROD generate failure (the ErrorCard's Retry).
+    // `idx`/`duePos` + `patternKey` are the stable triggers (`source` is a
+    // fresh object each render). A deep-link target swaps the `patternKey`
+    // (vs. the rotation), so it re-fires the generate cleanly; `duePos`
+    // covers the single-due-pattern wrap where the key doesn't change. The
+    // display/meaning are read off the same source, so the minimal deps
+    // hold. `genTick` re-fires the SAME pattern after a PROD generate
+    // failure (the ErrorCard's Retry).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, patternKey, genTick]);
+  }, [idx, duePos, patternKey, genTick]);
 
   // Move past the current pattern. With a deep-link target active there is no
-  // `idx` rotation to advance into, so we drop the target (→ parent clears it)
-  // and the panel falls back to its `pool[idx]` rotation. Without a target we
-  // bump `idx` AND persist the new cursor, so the step survives a remount —
-  // Skip / Next pattern now deterministically moves to a different pattern
-  // instead of regenerating the same one after any tab switch.
+  // rotation to advance into, so we drop the target (→ parent clears it) and
+  // the panel falls back to its pool. While the due queue is being drained we
+  // advance the session-local `duePos` — the persisted rotation cursor must
+  // NOT move past rest-patterns it never served. Otherwise we bump `idx` AND
+  // persist the new cursor, so the step survives a remount — Skip / Next
+  // pattern deterministically moves to a different pattern instead of
+  // regenerating the same one after any view switch.
   const advance = useCallback((): void => {
     submitCtrlRef.current?.abort();
     if (target) {
       onClearTarget?.();
       return;
     }
+    if (servingDue) {
+      setDuePos((p) => p + 1);
+      return;
+    }
     setIdx((i) => i + 1);
-  }, [target, onClearTarget]);
+  }, [target, onClearTarget, servingDue]);
 
   // Persist the cursor on every step (and on mount, an idempotent re-write of
   // the value just read). An effect rather than a write inside the setIdx
@@ -1285,19 +1587,21 @@ function DrillPanel({
   }, [item, userInput, isMock, attemptId]);
 
   // A deep-link target carries its own pattern, so it can drill even with an
-  // empty/mock list fetch — only gate the loading/empty states when there's no
-  // target to fall back on.
-  if (loading && items.length === 0 && !target) {
+  // empty/mock list fetch — only gate the loading/empty states when there's
+  // no target to fall back on. The loading gate holds until ALL pool inputs
+  // settle (SF-1): the session pool is frozen from the settled data above,
+  // never from a partial snapshot a late settle would reshape.
+  if (loading && !target) {
     return (
       <div className="km-grammar__state" role="status">
-        Loading drill…
+        Loading practice…
       </div>
     );
   }
-  if (items.length === 0 && !target) {
+  if (pool.due.length + pool.rest.length === 0 && !target) {
     return (
       <div className="km-grammar__state" role="status">
-        No grammar patterns to drill yet. Bank patterns from the grammar
+        No grammar cards to practice yet. Save patterns from the grammar
         library (Review → Grammar) first.
       </div>
     );
@@ -1429,10 +1733,23 @@ function DrillCard({
         maxLength={500}
       />
 
+      {/* WCAG 4.1.3: ONE persistent live region announces the async status
+          changes — "scoring" while in flight, then the score/verdict/
+          schedule when the reveal mounts. Persistent + text-swap because a
+          live region INSERTED already populated (e.g. role="status" inside
+          the reveal itself) is unreliably announced; and a single region
+          keeps it to one announcement per state change. The failure path
+          stays on ErrorCard's role="alert". */}
+      <p role="status" className="km-sr-only">
+        {scoring
+          ? 'Scoring your answer…'
+          : phase === 'revealed' && score !== null
+            ? revealAnnouncement(score)
+            : ''}
+      </p>
       {scoring ? (
-        <div className="km-grammar__state" role="status">
-          Scoring your answer…
-        </div>
+        // Visual only — the live announcement comes from the region above.
+        <div className="km-grammar__state">Scoring your answer…</div>
       ) : null}
 
       {error ? (
@@ -1556,11 +1873,14 @@ function DrillReveal({
       <p className="kr km-grammar__model">{score.referenceModelKr}</p>
       <p className="km-grammar__model-en">{score.referenceModelEn}</p>
 
-      {/* FU-NF-42 B2: server-derived production schedule. Subtle, hanji-styled,
-          and inside the already-announced reveal region (the card carries
-          `aria-describedby={revealId}` while revealed), so AT picks it up with
-          the rest of the grade without a second live announcement. Omitted when
-          the server didn't return a schedule (pre-bump server / offline mock). */}
+      {/* FU-NF-42 B2 + F-063: the server-derived production schedule, named
+          with the SAME Again/Hard/Good/Easy rating vocabulary the vocab
+          session's rating buttons use. Announced to AT via DrillCard's
+          persistent role="status" line (WCAG 4.1.3) — the textarea's
+          `aria-describedby` alone would never surface it, since describedby
+          is only read on focus and the textarea is disabled once revealed.
+          Omitted when the server didn't return a schedule (pre-bump server /
+          offline mock). */}
       {score.schedule ? (
         <p className="km-grammar__schedule">{scheduleLine(score.schedule)}</p>
       ) : null}
@@ -1569,16 +1889,51 @@ function DrillReveal({
 }
 
 /**
- * Render the "added to your review" line from a production schedule.
- * `scheduledDays === 0` (an `again` relearning step) reads as "~10 minutes";
- * a 1-day interval drops the plural so it reads "1 day" not "1 days".
+ * The FSRS rating names, EXACTLY as the vocab session's rating buttons label
+ * them (Review.tsx `RATINGS`) — F-063's shared mastery vocabulary. Grammar
+ * has no self-rate buttons (the server derives the rating from the Claude
+ * verdict), so the reveal NAMES the derived rating instead.
+ */
+const RATING_LABEL: Record<FsrsRating, string> = {
+  again: 'Again',
+  hard: 'Hard',
+  good: 'Good',
+  easy: 'Easy',
+};
+
+/**
+ * Render the schedule line from a production schedule, leading with the
+ * derived FSRS rating (vocab vocabulary — F-063). `scheduledDays <= 0` is a
+ * minute-scale relearning step whose TRUE delay depends on the rating
+ * (server fsrs.ts: RELEARN_DELAY_MS = 50s for `again`,
+ * HARD_STEP_DELAY_MS = 6 min for `hard`) — so the copy branches on the
+ * rating to mirror the vocab session's `<1m` / `6m` button subs instead of
+ * misstating a shared "~10 minutes" (B-034). A 1-day interval drops the
+ * plural so it reads "1 day" not "1 days".
  */
 function scheduleLine(schedule: DrillSchedule): string {
+  const rated = `Rated ${RATING_LABEL[schedule.rating]}`;
   if (schedule.scheduledDays <= 0) {
-    return 'Added to your review · next in ~10 minutes';
+    const soon =
+      schedule.rating === 'again' ? 'in under a minute'
+      : schedule.rating === 'hard' ? 'in ~6 minutes'
+      : // Defensive: good/easy schedule ≥ 1 day on this engine, so this arm
+        // is unreachable today — stay vague rather than invent a number.
+        'later today';
+    return `${rated} · next review ${soon}`;
   }
   const days = schedule.scheduledDays;
-  return `Added to your review · next in ${String(days)} day${days === 1 ? '' : 's'}`;
+  return `${rated} · next review in ${String(days)} day${days === 1 ? '' : 's'}`;
+}
+
+/**
+ * One-line SR announcement for the reveal (WCAG 4.1.3) — score, verdict,
+ * and the schedule when the server returned one. Rendered into DrillCard's
+ * persistent `role="status"` region.
+ */
+function revealAnnouncement(score: DrillScore): string {
+  const schedule = score.schedule ? ` ${scheduleLine(score.schedule)}.` : '';
+  return `Scored ${String(score.score)} of 100 — ${VERDICT_META[score.verdict].label}.${schedule}`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1596,9 +1951,9 @@ interface DetailSheetProps {
 
 /**
  * Pattern-detail Sheet. Post-P1.2 every row that opens this sheet comes from
- * the Banked tab (the browse tab moved to the library), so the old Bank
- * action is gone — a static "Banked" pill states the row's standing instead.
- * Banking new patterns happens on /review/grammar.
+ * the cards view (the browse tab moved to the library), so the old Bank
+ * action is gone — a static "Saved" pill states the row's standing instead.
+ * Saving new patterns happens on /review/grammar.
  */
 function DetailSheet({
   open,
@@ -1633,7 +1988,7 @@ function DetailSheet({
         </div>
 
         <div className="km-review__sheetActions">
-          <Pill tone="gold">Banked</Pill>
+          <Pill tone="gold">Saved</Pill>
         </div>
 
         <hr className="hr-double km-review__sheetRule" />

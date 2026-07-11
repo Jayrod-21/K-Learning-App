@@ -1011,7 +1011,8 @@ export interface ReviewResult {
   due_at: string;
   /**
    * Server-computed whole-day interval to the next review. 0 means the card
-   * lapsed (`again`) and was re-queued ~10 minutes out, not "due now".
+   * is on a minute-scale learning step (`again` → ~50s / under a minute,
+   * `hard` on unlearned material → ~6 minutes), not "due now".
    */
   scheduled_days: number;
 }
@@ -1376,8 +1377,9 @@ export interface DrillScore {
    * Server-derived production schedule (FU-NF-42). The submit route maps the
    * verdict → an FSRS rating, advances the production card, and returns the
    * resulting interval so the reveal can tell the learner when the pattern
-   * comes back. `scheduledDays === 0` (rating `again`) means a ~10-minute
-   * relearning step rather than a day-grained interval. Optional so a server
+   * comes back. `scheduledDays === 0` means a minute-scale learning step
+   * (`again` → ~50s / under a minute, `hard` → ~6 minutes) rather than a
+   * day-grained interval. Optional so a server
    * that predates the FU-NF-42 wire bump (or a synthesized offline-mock score)
    * still type-checks — the reveal line simply omits itself when absent.
    */
@@ -1391,8 +1393,8 @@ export interface DrillSchedule {
   /** ISO timestamp the production card next becomes due. */
   dueAt: string;
   /**
-   * Whole-day interval until the next review. `0` denotes an intra-day
-   * relearning step (the route schedules it ~10 minutes out).
+   * Whole-day interval until the next review. `0` denotes a minute-scale
+   * learning step (`again` → ~50s / under a minute, `hard` → ~6 minutes).
    */
   scheduledDays: number;
 }

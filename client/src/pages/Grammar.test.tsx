@@ -1,17 +1,24 @@
 /**
- * Grammar — the LEARN grammar-practice page (banked + drill, post-P1.2/D3).
+ * Grammar — the LEARN grammar-practice page (Phase 3C-1 shape).
  *
- * The old `list` browse tab (and its Bank action) moved to the library at
- * /review/grammar — those flows are pinned by
- * pages/review/ReviewGrammar.test.tsx + lib/grammarBank.test.ts. Here we
- * pin what stayed: the Banked tab (graduate / re-admit, independence from
- * the corpus fetch), the detail Sheet opened from banked rows, the drill
- * lifecycle, and the handoff link to the library browse.
+ * Post-3C-1 IA under test:
+ *   - `?view=cards` (default) — the saved patterns in vocab mastery
+ *     vocabulary (F-063/F-066): Learning | Known split, Mark known / Relearn
+ *     actions, proficiency grouping (B-024), Due pills wired to the existing
+ *     /vocab/cards/due queue.
+ *   - `?view=practice` — the live drill, entered via the top-right
+ *     "Practice" Topbar button (F-064), due-first pool ordering, BackButton
+ *     to the cards view (F-024).
+ *   - `?view=history` — the F-065 honest stub (no read endpoint yet).
  *
- * Services (grammar) are mocked at module level so the page sees
- * predictable resolves/rejects. `useEndpointOrMock` is **not** mocked — we
- * let it call through to the real implementation against the mocked
- * services, so the realFn-first + fallback + abort paths participate.
+ * The old `list` browse tab (and its Bank action) lives in the library at
+ * /review/grammar — pinned by pages/review/ReviewGrammar.test.tsx +
+ * lib/grammarBank.test.ts.
+ *
+ * Services (grammar, vocab, grammarDrill) are mocked at module level so the
+ * page sees predictable resolves/rejects. `useEndpointOrMock` is **not**
+ * mocked — we let it call through to the real implementation against the
+ * mocked services, so the realFn-first + fallback + abort paths participate.
  */
 import {
   afterEach,
@@ -27,6 +34,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type {
   BankedGrammarList,
+  DueCard,
   KgiuEntryDetail,
   KgiuEntrySummary,
 } from '../types/domain';
@@ -42,6 +50,10 @@ const services = vi.hoisted(() => ({
   readmitPattern: vi.fn(),
 }));
 
+const vocabServices = vi.hoisted(() => ({
+  getDueCards: vi.fn(),
+}));
+
 const drillServices = vi.hoisted(() => ({
   generateDrill: vi.fn(),
   submitDrill: vi.fn(),
@@ -52,6 +64,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../services/grammar', () => services);
+vi.mock('../services/vocab', () => vocabServices);
 vi.mock('../services/grammarDrill', () => drillServices);
 vi.mock('../data/mocks/grammar', () => mocks);
 
@@ -61,9 +74,9 @@ import { ApiError } from '../services/api';
 
 /**
  * Render `<Grammar />` inside a MemoryRouter. `drillTarget`, when supplied,
- * seeds `location.state.drillTarget` so the FU-NF-42 deep-link path (Drill tab
- * opens focused on a specific pattern) can be exercised exactly as the Review
- * screen drives it.
+ * seeds `location.state.drillTarget` so the FU-NF-42 deep-link path (page
+ * opens on the practice view focused on a specific pattern) can be exercised
+ * exactly as the Review screen drives it.
  */
 function renderGrammar(drillTarget?: DrillTarget): ReturnType<typeof render> {
   return render(
@@ -84,6 +97,13 @@ function renderGrammar(drillTarget?: DrillTarget): ReturnType<typeof render> {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+/** Enter the practice view via the F-064 top-right Topbar button. */
+async function openPractice(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await user.click(screen.getByRole('button', { name: 'Practice' }));
 }
 
 const ROW: KgiuEntrySummary = {
@@ -111,8 +131,7 @@ const ROW_2: KgiuEntrySummary = {
 };
 
 /** A BEGINNER-corpus row, a different level than ROW/ROW_2 (intermediate).
- *  Used to prove the List level filter never hides banked patterns of other
- *  levels (B-SF-1): filtering to Beginner narrows the List to this row only. */
+ *  Used to prove the cards view never depends on the corpus fetch (B-SF-1). */
 const BEGINNER_ROW: KgiuEntrySummary = {
   id: 10,
   corpus: 'kgiu_beginner',
@@ -153,6 +172,27 @@ const BANKED_ROW_2 = {
   created_at: '2026-06-01T00:00:00Z',
   graduated_at: null,
 };
+
+/** A due grammar-production card as `GET /vocab/cards/due` returns it
+ *  (post-A4: the pattern key is JOINed on). */
+function dueProductionCard(id: number, patternKey: string): DueCard {
+  return {
+    id,
+    face: 'production',
+    due_at: '2026-07-09T00:00:00Z',
+    stability: '1.2',
+    difficulty: '5.0',
+    fsrs_state: 'review',
+    version: 1,
+    vocab_entry_id: null,
+    grammar_entry_id: 77,
+    source_sentence_id: null,
+    topik_item_id: null,
+    grammarPatternDisplay: '-느라고',
+    grammarSummaryEn: 'because of doing X',
+    grammarPatternKey: patternKey,
+  };
+}
 
 const DETAIL: KgiuEntryDetail = {
   ...ROW,
@@ -218,11 +258,14 @@ const FIXTURE = [
 
 function resetMocks(): void {
   for (const fn of Object.values(services)) (fn as Mock).mockReset();
+  for (const fn of Object.values(vocabServices)) (fn as Mock).mockReset();
   for (const fn of Object.values(drillServices)) (fn as Mock).mockReset();
   (mocks.loadGrammarMock as Mock).mockReset();
   // Default mock fallback resolves with the fixture — happy-path tests
   // don't need to set this per-case. The ErrorCard test overrides it.
   mocks.loadGrammarMock.mockResolvedValue(FIXTURE);
+  // No due cards unless a test says otherwise — due-ness is opt-in.
+  vocabServices.getDueCards.mockResolvedValue([]);
   // The drill rotation persists its cursor to localStorage so it survives
   // remounts (the live always-N이다 fix). Clear it so tests don't bleed a
   // cursor into each other.
@@ -237,26 +280,99 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Grammar — post-D3 shape (banked default, browse in the library)', () => {
-  it('defaults to the Banked tab and offers NO list/browse tab', async () => {
+describe('Grammar — 3C-1 shape (cards default, Practice top-right, no tabs)', () => {
+  it('defaults to the cards view with the Learning split selected and NO tablist', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
     renderGrammar();
 
+    // F-063/F-066: vocab mastery vocabulary — Learning | Known, no
+    // banked/graduate jargon, no tab strip.
     expect(
-      await screen.findByRole('tab', { name: 'Banked' }),
-    ).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('tab', { name: 'Drill' })).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'List' })).not.toBeInTheDocument();
-    // No per-row Bank affordance on this page anymore — banking moved to
-    // the library browse (/review/grammar).
+      await screen.findByRole('button', { name: /^Learning \(0\)/ }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(
+      screen.getByRole('button', { name: /^Known \(0\)/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Graduate/)).not.toBeInTheDocument();
+    // No per-row Bank affordance on this page — banking moved to the
+    // library browse (/review/grammar).
     expect(
       screen.queryByRole('button', { name: /^Bank / }),
     ).not.toBeInTheDocument();
   });
 
-  it('still fetches the FULL corpus page on mount (limit 400, no corpus filter) for the drill pool', async () => {
+  it('renders the F-064 "Practice" button in the Topbar and it opens the practice view', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue({
+      attemptId: 1,
+      item: {
+        type: 'transformation' as const,
+        patternKey: 'GR-kgiu-int-007',
+        patternDisplay: '-더라도',
+        instruction: 'Rewrite using -더라도.',
+        sourceKr: '비가 와요.',
+        sourceEn: "It's raining.",
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    // The button renders in the Topbar's right slot (top-right of the page).
+    const practice = screen.getByRole('button', { name: 'Practice' });
+    expect(practice.closest('.km-topbar')).not.toBeNull();
+    await user.click(practice);
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    // The Practice entry button leaves the chrome on the nested view…
+    expect(
+      screen.queryByRole('button', { name: 'Practice' }),
+    ).not.toBeInTheDocument();
+    // …replaced by the F-024 BackButton to the cards view.
+    expect(
+      screen.getByRole('button', { name: 'Back to Grammar' }),
+    ).toBeInTheDocument();
+  });
+
+  it('the BackButton on the practice view returns to the cards view (F-024)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue({
+      attemptId: 1,
+      item: {
+        type: 'transformation' as const,
+        patternKey: 'GR-kgiu-int-007',
+        patternDisplay: '-더라도',
+        instruction: 'Rewrite using -더라도.',
+        sourceKr: '비가 와요.',
+        sourceEn: "It's raining.",
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: /^Learning \(0\)/ });
+    await openPractice(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Back to Grammar' }),
+    );
+
+    expect(
+      await screen.findByRole('button', { name: /^Learning \(0\)/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Practice' }),
+    ).toBeInTheDocument();
+  });
+
+  it('still fetches the FULL corpus page on mount (limit 400, no corpus filter) for the practice pool', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
@@ -273,7 +389,7 @@ describe('Grammar — post-D3 shape (banked default, browse in the library)', ()
     expect(opts.corpus).toBeUndefined();
   });
 
-  it('the empty Banked state hands off to the library browse', async () => {
+  it('the empty cards state hands off to the library browse', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
 
@@ -281,7 +397,7 @@ describe('Grammar — post-D3 shape (banked default, browse in the library)', ()
     renderGrammar();
 
     expect(
-      await screen.findByText(/Bank patterns from the grammar library/i),
+      await screen.findByText(/Save patterns from the grammar library/i),
     ).toBeInTheDocument();
     await user.click(
       screen.getByRole('button', { name: 'Browse all patterns' }),
@@ -291,7 +407,7 @@ describe('Grammar — post-D3 shape (banked default, browse in the library)', ()
     ).toBeInTheDocument();
   });
 
-  it('a populated Banked list still links to the library browse', async () => {
+  it('a populated cards list still links to the library browse', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
@@ -301,7 +417,7 @@ describe('Grammar — post-D3 shape (banked default, browse in the library)', ()
     renderGrammar();
 
     expect(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+      await screen.findByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
     await user.click(
       screen.getByRole('button', { name: 'Browse all patterns' }),
@@ -310,9 +426,219 @@ describe('Grammar — post-D3 shape (banked default, browse in the library)', ()
       await screen.findByTestId('library-grammar-stub'),
     ).toBeInTheDocument();
   });
+
+  it('groups saved cards under their proficiency header (B-024)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW], // proficiency L4
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    // The group tile is a disclosure button carrying the level label.
+    const group = await screen.findByRole('button', {
+      name: /Upper-intermediate · L4/,
+    });
+    expect(group).toHaveAttribute('aria-expanded', 'true');
+    // The row renders inside it (kr form + en summary on separate lines).
+    expect(
+      screen.getByRole('button', { name: '-더라도 even if / even though' }),
+    ).toBeInTheDocument();
+  });
 });
 
-describe('Grammar — banked tab + drill pool independent of the corpus fetch (B-SF-1)', () => {
+describe('Grammar — F-065 practice history (honest stub)', () => {
+  it('opens the history view from the cards footer and states there is no endpoint yet', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: /^Learning \(0\)/ });
+
+    await user.click(
+      screen.getByRole('button', { name: 'Practice history' }),
+    );
+
+    // The stub is honest: no fake list, an explicit "not available yet"
+    // with the backend ticket reference.
+    expect(
+      await screen.findByText(/Not available yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/F-110/)).toBeInTheDocument();
+    // Nested view → BackButton (F-024).
+    await user.click(
+      screen.getByRole('button', { name: 'Back to Grammar' }),
+    );
+    expect(
+      await screen.findByRole('button', { name: /^Learning \(0\)/ }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Grammar — due wiring (F-063: /vocab/cards/due → Due pills + due-first pool)', () => {
+  /** generateDrill stub that echoes the request pattern. */
+  function echoGenerate(): void {
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 900,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+  }
+
+  it('badges a saved card "Due" when its production card is in the due queue', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    vocabServices.getDueCards.mockResolvedValue([
+      dueProductionCard(9001, 'GR-kgiu-int-008'),
+    ]);
+
+    renderGrammar();
+
+    const dueRow = await screen.findByRole('button', {
+      name: '-느라고 because of doing X',
+    });
+    expect(within(dueRow).getByText('Due')).toBeInTheDocument();
+    // …and only that row.
+    const otherRow = screen.getByRole('button', {
+      name: '-더라도 even if / even though',
+    });
+    expect(within(otherRow).queryByText('Due')).not.toBeInTheDocument();
+    // The due summary note names the count.
+    expect(
+      screen.getByText(/1 pattern due for review/),
+    ).toBeInTheDocument();
+  });
+
+  it('practice serves DUE patterns before the rest of the rotation', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    // Both saved; ROW (-더라도) is FIRST in bank order, but ROW_2 is due.
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    vocabServices.getDueCards.mockResolvedValue([
+      dueProductionCard(9001, 'GR-kgiu-int-008'),
+    ]);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
+
+    await openPractice(user);
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    // Anki ordering: the due pattern is drilled first, not bank-order[0].
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('serves the DUE pattern first even when the persisted rotation cursor is non-zero (B-1)', async () => {
+    // The pre-fix code indexed the due-first pool with the monotonically
+    // growing localStorage cursor (`pool[idx % pool.length]`), so after any
+    // prior practice the session almost never STARTED on the due partition.
+    // The old pinning test passed only because resetMocks() clears
+    // localStorage (cursor 0) — this one seeds a mid-rotation cursor.
+    window.localStorage.setItem('km.grammar.drillCursor', '7');
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    vocabServices.getDueCards.mockResolvedValue([
+      dueProductionCard(9001, 'GR-kgiu-int-008'),
+    ]);
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
+
+    await openPractice(user);
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+  });
+
+  it('waits for the due queue to settle before generating, then pools from the settled snapshot (SF-1)', async () => {
+    // Pre-fix, practice gated only on the LIST fetch: opening it before the
+    // due/bank settles generated a drill off a partial pool, and the late
+    // settle reshaped the pool mid-answer — regenerating the drill and
+    // wiping the in-progress answer.
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    let releaseDue!: (cards: DueCard[]) => void;
+    vocabServices.getDueCards.mockImplementation(
+      () =>
+        new Promise<DueCard[]>((resolve) => {
+          releaseDue = resolve;
+        }),
+    );
+    echoGenerate();
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
+    await openPractice(user);
+
+    // No drill until the pool inputs settle — the session pool is a
+    // snapshot, never a moving target.
+    expect(screen.getByText('Loading practice…')).toBeInTheDocument();
+    expect(drillServices.generateDrill).not.toHaveBeenCalled();
+
+    await act(async () => {
+      releaseDue([dueProductionCard(9001, 'GR-kgiu-int-008')]);
+    });
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    // …and the settled due-ness is honoured: the due pattern drills first.
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+    });
+  });
+
+  it('a failed due fetch degrades to no badges — the cards still render', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+    vocabServices.getDueCards.mockRejectedValue(
+      new ApiError('down', { status: 503, code: 'server' }),
+    );
+
+    renderGrammar();
+
+    expect(
+      await screen.findByRole('button', {
+        name: '-더라도 even if / even though',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Due')).not.toBeInTheDocument();
+    expect(screen.queryByText(/due for review/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Grammar — cards + practice pool independent of the corpus fetch (B-SF-1)', () => {
   /** generateDrill stub that echoes the request pattern (scoped to this block —
    *  the drill describe has its own copy). */
   function echoGenerate(): void {
@@ -331,10 +657,10 @@ describe('Grammar — banked tab + drill pool independent of the corpus fetch (B
     );
   }
 
-  it('shows a banked pattern that is MISSING from the corpus fetch (rendered from its bank-row fields)', async () => {
-    // The corpus fetch returns only the beginner row — the banked
-    // intermediate pattern (ROW → GR-kgiu-int-007) is NOT in it. The Banked
-    // tab must render it anyway, from the bank row's own stored fields.
+  it('shows a saved pattern that is MISSING from the corpus fetch (rendered from its bank-row fields)', async () => {
+    // The corpus fetch returns only the beginner row — the saved
+    // intermediate pattern (ROW → GR-kgiu-int-007) is NOT in it. The cards
+    // view must render it anyway, from the bank row's own stored fields.
     services.listPatterns.mockResolvedValue([BEGINNER_ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
@@ -343,15 +669,15 @@ describe('Grammar — banked tab + drill pool independent of the corpus fetch (B
     renderGrammar();
 
     expect(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+      await screen.findByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
-    // Active count reflects the bank list, not the corpus fetch.
+    // Learning count reflects the bank list, not the corpus fetch.
     expect(
-      screen.getByRole('button', { name: /^Active \(1\)/ }),
+      screen.getByRole('button', { name: /^Learning \(1\)/ }),
     ).toBeInTheDocument();
   });
 
-  it('drills the banked pattern even when the corpus fetch excludes it', async () => {
+  it('practises the saved pattern even when the corpus fetch excludes it', async () => {
     services.listPatterns.mockResolvedValue([BEGINNER_ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
@@ -360,12 +686,12 @@ describe('Grammar — banked tab + drill pool independent of the corpus fetch (B
 
     const user = userEvent.setup();
     renderGrammar();
-    await screen.findByRole('button', { name: 'Graduate -더라도' });
+    await screen.findByRole('button', { name: 'Mark -더라도 as known' });
 
-    // The drill pool is the banked patterns, independent of the corpus
-    // fetch: it drills the banked intermediate pattern, NOT the fetched
+    // The practice pool is the saved patterns, independent of the corpus
+    // fetch: it drills the saved intermediate pattern, NOT the fetched
     // beginner row.
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
@@ -376,11 +702,11 @@ describe('Grammar — banked tab + drill pool independent of the corpus fetch (B
   });
 });
 
-describe('Grammar — detail Sheet (opened from banked rows post-D3)', () => {
-  // Post-P1.2 the only rows on this page live in the Banked tab (the default
-  // tab). A banked pattern whose KGIU row IS in the corpus fetch upgrades to
-  // the richer row, so the real getPattern detail fetch still runs.
-  it('opens detail Sheet and calls getPattern on a banked row tap', async () => {
+describe('Grammar — detail Sheet (opened from card rows)', () => {
+  // The only rows on this page live in the cards view (the default view).
+  // A saved pattern whose KGIU row IS in the corpus fetch upgrades to the
+  // richer row, so the real getPattern detail fetch still runs.
+  it('opens detail Sheet and calls getPattern on a card-row tap', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
@@ -401,6 +727,10 @@ describe('Grammar — detail Sheet (opened from banked rows post-D3)', () => {
     expect(
       await screen.findByText(/Strong concessive/),
     ).toBeInTheDocument();
+    // The row's standing pill uses the plain "Saved" wording (F-066 — the
+    // old "Banked" jargon is gone).
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('Saved')).toBeInTheDocument();
   });
 
   it('renders Formation bullets, Examples, and Dialogue lines when populated (F-018)', async () => {
@@ -551,7 +881,7 @@ describe('Grammar — detail Sheet (opened from banked rows post-D3)', () => {
   });
 });
 
-describe('Grammar — drill tab (live generate → submit → reveal)', () => {
+describe('Grammar — practice view (live generate → submit → reveal)', () => {
   const GEN_TRANSFORM = {
     attemptId: 7,
     item: {
@@ -585,7 +915,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     const user = userEvent.setup();
     renderGrammar();
 
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     // Generate ran with the row's pattern source.
     await waitFor(() => {
@@ -644,7 +974,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     expect(await screen.findByText('Seed — fill the blank')).toBeInTheDocument();
     expect(
@@ -670,7 +1000,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     expect(await screen.findByText('They say')).toBeInTheDocument();
     expect(screen.getByText('새 카페 어때요?')).toBeInTheDocument();
@@ -685,7 +1015,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     // The screen does NOT blank — a mock drill renders + the MockBadge shows.
     expect(await screen.findByTestId('mock-badge')).toBeInTheDocument();
@@ -704,7 +1034,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
     await user.type(textarea, '비가 오더라도 갈 거예요.');
@@ -732,7 +1062,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     const textarea = await screen.findByPlaceholderText(
       /Write your answer using/i,
@@ -790,7 +1120,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
       const user = userEvent.setup();
       renderGrammar();
-      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+      await openPractice(user);
 
       // The honest error state renders (fixed copy, role=alert via ErrorCard)…
       expect(
@@ -833,7 +1163,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
       const user = userEvent.setup();
       renderGrammar();
-      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+      await openPractice(user);
 
       const textarea = await screen.findByPlaceholderText(
         /Write your answer using/i,
@@ -870,7 +1200,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
       const user = userEvent.setup();
       renderGrammar();
-      await user.click(screen.getByRole('tab', { name: 'Drill' }));
+      await openPractice(user);
 
       // Dev/offline still exercises the full flow — badge flags the fixture.
       expect(await screen.findByTestId('mock-badge')).toBeInTheDocument();
@@ -883,9 +1213,9 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
   });
 
-  // ── FU-NF-42 B2: reveal shows the server-derived schedule line ──────────
+  // ── FU-NF-42 B2 + F-063: reveal names the derived FSRS rating ───────────
 
-  it('shows the "next in N days" schedule line on the reveal when the score carries a schedule', async () => {
+  it('shows the "Rated Good · next review in N days" line when the score carries a schedule (vocab rating vocabulary)', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
     drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
@@ -900,18 +1230,18 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
     await user.type(textarea, '비가 오더라도 갈 거예요.');
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
 
     expect(
-      await screen.findByText('Added to your review · next in 3 days'),
+      await screen.findByText('Rated Good · next review in 3 days'),
     ).toBeInTheDocument();
   });
 
-  it('renders the ~10 minutes variant when scheduledDays is 0 (again relearning step)', async () => {
+  it('renders the engine-true "under a minute" copy for a 0-day AGAIN step (B-034/SF-2 — RELEARN_DELAY_MS = 50s)', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
     drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
@@ -927,15 +1257,74 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 와요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Mirrors the vocab session's '<1m' button sub; the old shared
+    // "~10 minutes" line was wrong by ~12x for `again`.
+    expect(
+      await screen.findByText('Rated Again · next review in under a minute'),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the engine-true "~6 minutes" copy for a 0-day HARD step (B-034/SF-2 — HARD_STEP_DELAY_MS = 6min)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      verdict: 'needs_work' as const,
+      schedule: {
+        rating: 'hard',
+        dueAt: '2026-05-30T00:06:00Z',
+        scheduledDays: 0,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openPractice(user);
 
     const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
     await user.type(textarea, '비가 와요.');
     await user.click(screen.getByRole('button', { name: /^submit$/i }));
 
     expect(
-      await screen.findByText('Added to your review · next in ~10 minutes'),
+      await screen.findByText('Rated Hard · next review in ~6 minutes'),
     ).toBeInTheDocument();
+  });
+
+  it('announces the reveal through a live status region (B-2 — WCAG 4.1.3)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+    drillServices.generateDrill.mockResolvedValue(GEN_TRANSFORM);
+    drillServices.submitDrill.mockResolvedValue({
+      ...SCORE,
+      schedule: {
+        rating: 'good',
+        dueAt: '2026-06-02T00:00:00Z',
+        scheduledDays: 3,
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+    await openPractice(user);
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // The reveal is an async status change: without a live region an SR user
+    // gets silence where a sighted user gets the grade. One announcement,
+    // carrying score + verdict + schedule.
+    await screen.findByText('82');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Scored 82 of 100 — Good. Rated Good · next review in 3 days.',
+    );
   });
 
   it('omits the schedule line when the score has no schedule (pre-bump server)', async () => {
@@ -946,7 +1335,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
     await user.type(textarea, '비가 오더라도 갈 거예요.');
@@ -954,16 +1343,16 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     // The reveal lands (score visible) but no schedule line is shown.
     expect(await screen.findByText('82')).toBeInTheDocument();
-    expect(screen.queryByText(/Added to your review/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/next review in/)).not.toBeInTheDocument();
   });
 
   // ── Drill rotation: Skip/Next must move to a DIFFERENT pattern ──────────
   //
-  // Live bug (2026-07-02): the Drill tab regenerated N이다 (the first corpus
-  // row) forever — the rotation index reset to 0 on every DrillPanel remount
-  // (any tab switch / reload), so the learner never progressed. These tests
-  // pin the fixed contract: Skip advances the pattern, banked patterns are
-  // the preferred pool, and the cursor survives a remount.
+  // Live bug (2026-07-02): the practice view regenerated N이다 (the first
+  // corpus row) forever — the rotation index reset to 0 on every panel
+  // remount (any view switch / reload), so the learner never progressed.
+  // These tests pin the fixed contract: Skip advances the pattern, saved
+  // patterns are the preferred pool, and the cursor survives a remount.
 
   /** generateDrill stub that echoes the request so assertions can read which
    *  pattern each generate was for. */
@@ -991,7 +1380,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
@@ -1012,10 +1401,10 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
   });
 
-  it('prefers the banked pool over the full list when the user has banked patterns', async () => {
+  it('prefers the saved pool over the full list when the user has saved patterns', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    // ROW_2 (-느라고) is banked; ROW is not. The drill must start from the
-    // banked pool, not from items[0].
+    // ROW_2 (-느라고) is saved; ROW is not. The drill must start from the
+    // saved pool, not from items[0].
     services.listBanked.mockResolvedValue({
       entries: [
         {
@@ -1036,7 +1425,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
 
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
@@ -1054,7 +1443,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
 
     const user = userEvent.setup();
     renderGrammar();
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    await openPractice(user);
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
@@ -1065,9 +1454,12 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
     });
 
-    // …then leave the Drill tab (unmounts DrillPanel) and come back.
-    await user.click(screen.getByRole('tab', { name: 'Banked' }));
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    // …then leave the practice view (unmounts the panel) and come back.
+    await user.click(
+      screen.getByRole('button', { name: 'Back to Grammar' }),
+    );
+    await screen.findByRole('button', { name: 'Practice' });
+    await openPractice(user);
 
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(3);
@@ -1079,7 +1471,7 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     });
   });
 
-  // ── FU-NF-42 B3: Drill tab opens focused on a deep-link target ──────────
+  // ── FU-NF-42 B3: practice opens focused on a deep-link target ───────────
 
   it('drills the deep-linked pattern from router state instead of the rotation', async () => {
     // The list fetch resolves a DIFFERENT pattern than the deep-link target, so
@@ -1094,8 +1486,8 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
       meaning: 'as a result of (unexpected)',
     });
 
-    // Opens straight on the Drill tab (no manual tab click) and generates for
-    // the targeted pattern.
+    // Opens straight on the practice view (no manual navigation) and
+    // generates for the targeted pattern.
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
@@ -1104,10 +1496,14 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
       patternDisplay: '-는 바람에',
       meaning: 'as a result of (unexpected)',
     });
+    // Nested view chrome: the BackButton is present (F-024).
+    expect(
+      await screen.findByRole('button', { name: 'Back to Grammar' }),
+    ).toBeInTheDocument();
   });
 
   it('still drills a deep-link target when the pattern list is empty', async () => {
-    // No banked patterns at all — the target must carry its own display/meaning.
+    // No saved patterns at all — the target must carry its own display/meaning.
     services.listPatterns.mockResolvedValue([]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
     mocks.loadGrammarMock.mockResolvedValue([]);
@@ -1125,26 +1521,26 @@ describe('Grammar — drill tab (live generate → submit → reveal)', () => {
     expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
       patternKey: 'KGIU-INT-099',
     });
-    // The "no patterns to drill" empty state must NOT win over the target.
+    // The "no cards to practice" empty state must NOT win over the target.
     expect(
-      screen.queryByText(/No grammar patterns to drill yet/i),
+      screen.queryByText(/No grammar cards to practice yet/i),
     ).not.toBeInTheDocument();
   });
 });
 
-// ── Graduation: Banked tab Active | Known views + drill-pool exclusion ──────
+// ── Mastery actions: Learning | Known views + practice-pool exclusion ──────
 //
-// Graduating a pattern retires it from ACTIVE learning: it moves from the
-// Banked tab's Active view to the Known view, and the drill rotation must
-// never serve it. Re-admit is the inverse — the pattern returns to Active
+// Marking a pattern known retires it from ACTIVE learning: it moves from the
+// Learning view to the Known view, and the practice rotation must never
+// serve it. Relearn is the inverse — the pattern returns to Learning
 // (server-side its production card resurfaces in /vocab/cards/due with FSRS
 // state intact; that half is pinned by the server route tests).
 
-describe('Grammar — graduate / re-admit (Banked tab)', () => {
-  it('Graduate moves the pattern to the Known view and out of the drill pool', async () => {
+describe('Grammar — Mark known / Relearn (cards view)', () => {
+  it('Mark known moves the pattern to the Known view and out of the practice pool', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    // Initial bank: both patterns active. After the graduate refetch the
-    // server confirms ROW as graduated.
+    // Initial bank: both patterns learning. After the mark-known refetch the
+    // server confirms ROW as known.
     services.listBanked
       .mockResolvedValueOnce({
         entries: [BANKED_ROW, BANKED_ROW_2],
@@ -1175,17 +1571,17 @@ describe('Grammar — graduate / re-admit (Banked tab)', () => {
     const user = userEvent.setup();
     renderGrammar();
 
-    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
-
-    // Both banked patterns sit in the Active view with a Graduate action.
+    // Both saved patterns sit in the Learning view with a Mark-known action.
     expect(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+      await screen.findByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Graduate -느라고' }),
+      screen.getByRole('button', { name: 'Mark -느라고 as known' }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Graduate -더라도' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Mark -더라도 as known' }),
+    );
 
     // The service was called with the BANK row id (grammar_entries.id), not
     // the KGIU id.
@@ -1193,22 +1589,22 @@ describe('Grammar — graduate / re-admit (Banked tab)', () => {
       expect(services.graduatePattern).toHaveBeenCalledWith(501);
     });
 
-    // The pattern leaves the Active view (optimistic + server settle agree)…
+    // The pattern leaves the Learning view (optimistic + server settle agree)…
     await waitFor(() => {
       expect(
-        screen.queryByRole('button', { name: 'Graduate -더라도' }),
+        screen.queryByRole('button', { name: 'Mark -더라도 as known' }),
       ).not.toBeInTheDocument();
     });
 
-    // …and shows up in the Known view with a Re-admit action.
+    // …and shows up in the Known view with a Relearn action.
     await user.click(screen.getByRole('button', { name: /^Known/ }));
     expect(
-      await screen.findByRole('button', { name: 'Re-admit -더라도' }),
+      await screen.findByRole('button', { name: 'Relearn -더라도' }),
     ).toBeInTheDocument();
 
-    // Drill pool: the rotation starts from the remaining ACTIVE banked
-    // pattern — the graduated one is never drilled.
-    await user.click(screen.getByRole('tab', { name: 'Drill' }));
+    // Practice pool: the rotation starts from the remaining LEARNING
+    // pattern — the known one is never drilled.
+    await openPractice(user);
     await waitFor(() => {
       expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
     });
@@ -1218,10 +1614,10 @@ describe('Grammar — graduate / re-admit (Banked tab)', () => {
     });
   });
 
-  it('Re-admit returns a Known pattern to the Active view (and the drill pool)', async () => {
+  it('Relearn returns a Known pattern to the Learning view (and the practice pool)', async () => {
     services.listPatterns.mockResolvedValue([ROW, ROW_2]);
-    // Initial bank: ROW is graduated, ROW_2 active. After the re-admit
-    // refetch both are active.
+    // Initial bank: ROW is known, ROW_2 learning. After the relearn refetch
+    // both are learning.
     services.listBanked
       .mockResolvedValueOnce({
         entries: [
@@ -1237,40 +1633,38 @@ describe('Grammar — graduate / re-admit (Banked tab)', () => {
     const user = userEvent.setup();
     renderGrammar();
 
-    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
-
-    // The graduated pattern is NOT in the Active view…
+    // The known pattern is NOT in the Learning view…
     expect(
-      await screen.findByRole('button', { name: 'Graduate -느라고' }),
+      await screen.findByRole('button', { name: 'Mark -느라고 as known' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Graduate -더라도' }),
+      screen.queryByRole('button', { name: 'Mark -더라도 as known' }),
     ).not.toBeInTheDocument();
 
     // …it lives in the Known view.
     await user.click(screen.getByRole('button', { name: /^Known/ }));
-    const readmitBtn = await screen.findByRole('button', {
-      name: 'Re-admit -더라도',
+    const relearnBtn = await screen.findByRole('button', {
+      name: 'Relearn -더라도',
     });
-    await user.click(readmitBtn);
+    await user.click(relearnBtn);
 
     await waitFor(() => {
       expect(services.readmitPattern).toHaveBeenCalledWith(501);
     });
 
-    // The Known view empties; the pattern is back in Active learning.
+    // The Known view empties; the pattern is back in the Learning view.
     await waitFor(() => {
       expect(
-        screen.queryByRole('button', { name: 'Re-admit -더라도' }),
+        screen.queryByRole('button', { name: 'Relearn -더라도' }),
       ).not.toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: /^Active/ }));
+    await user.click(screen.getByRole('button', { name: /^Learning/ }));
     expect(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+      await screen.findByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
   });
 
-  it('surfaces an inline error and rewinds the optimistic move when Graduate fails', async () => {
+  it('surfaces an inline error and rewinds the optimistic move when Mark known fails', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue({
       entries: [BANKED_ROW],
@@ -1282,17 +1676,16 @@ describe('Grammar — graduate / re-admit (Banked tab)', () => {
     const user = userEvent.setup();
     renderGrammar();
 
-    await user.click(await screen.findByRole('tab', { name: 'Banked' }));
     await user.click(
-      await screen.findByRole('button', { name: 'Graduate -더라도' }),
+      await screen.findByRole('button', { name: 'Mark -더라도 as known' }),
     );
 
-    // Failure: inline error + the row stays in the Active view.
+    // Failure: inline error + the row stays in the Learning view.
     expect(
       await screen.findByText(/Couldn't mark that pattern as known/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Graduate -더라도' }),
+      screen.getByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
   });
 });

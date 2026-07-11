@@ -1,0 +1,299 @@
+/**
+ * Review.css — co-located styles for the Phase 3C-1 flashcards rework.
+ * Legacy km-review rules still live in styles/index.css; every NEW rule
+ * lands here, and the two flashcard-geometry fixes below override the
+ * legacy declarations via the `.km-review` scope (higher specificity, no
+ * shared-file edit).
+ */
+
+/* ── B-023: consistent rounded geometry ────────────────────────────────
+   The legacy rules gave the flashcard OUTER a 4px radius (a near-pointed
+   corner under the focus ring) while the faces are --radius-lg, and the
+   face content (`__front`/`__back`) painted a square --ink-2 box straight
+   over the rounded face corners. One radius everywhere + clip the faces. */
+.km-review .km-flashcard {
+  border-radius: var(--radius-lg);
+}
+.km-review .km-flashcard__face {
+  overflow: hidden; /* clips the square content box to the rounded face */
+}
+
+/* ── B-022: the examples tile must PUSH content down, not overlay it ───
+   Legacy faces were `position: absolute; inset: 0`, so a back face taller
+   than the 340px min (examples tile open) grew past the card and painted
+   over the rating row. Grid-stacking both faces in one cell keeps the 3D
+   flip (preserve-3d + backface-visibility are untouched) while the inner
+   element's height tracks the tallest face — expansion pushes the rating
+   row down. */
+.km-review .km-flashcard__inner {
+  display: grid;
+}
+.km-review .km-flashcard__face {
+  position: relative;
+  inset: auto;
+  grid-area: 1 / 1;
+}
+
+/* Examples tile chrome (B-022 close affordance + rounded geometry). */
+.km-review__drawerHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.km-review .km-review__drawer {
+  border-radius: var(--radius-sm);
+}
+
+/* ── Shared inline error line ─────────────────────────────────────────── */
+.km-review__inlineError {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--vermilion-ink);
+}
+
+/* ── Landing (F-060) ──────────────────────────────────────────────────── */
+.km-review__landing {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.km-review__sectionHead {
+  margin-bottom: 10px;
+}
+
+.km-review__create {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.km-review__createRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.km-review__createRow .km-review__input {
+  flex: 1;
+  min-width: 0;
+}
+.km-review__input {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--paper);
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  width: 100%;
+}
+.km-review__input::placeholder {
+  color: var(--paper-mute);
+}
+
+.km-review__listRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--paper);
+}
+.km-review__listRowBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.km-review__listRowName {
+  font-size: 15px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.km-review__listRowEn {
+  font-size: 12px;
+  color: var(--paper-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.km-review__dueStrip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.km-review__dueBody {
+  flex: 1;
+  min-width: 0;
+}
+.km-review__dueCount {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--paper);
+}
+
+.km-review__seedBody {
+  font-size: 14px;
+}
+
+/* ── List detail (F-060/F-061) ────────────────────────────────────────── */
+.km-review__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.km-review__detailHead {
+  margin-bottom: 2px;
+}
+.km-review__detailTitle {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.km-review__detailMeta {
+  font-size: 13px;
+  color: var(--paper-mute);
+  margin-top: 4px;
+}
+.km-review__detailTitleEdit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.km-review__titleInput {
+  font-size: 20px;
+}
+.km-review__detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.km-review__entries {
+  padding: 4px 14px;
+}
+.km-review__entryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.km-review__entryRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.km-review__entryRow:last-child {
+  border-bottom: none;
+}
+.km-review__entryKr {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--paper);
+}
+.km-review__entryEn {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--paper-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Honest-truncation note under the entry rows (lists past the server's
+   100-row detail page). */
+.km-review__entriesNote {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+
+/* ── Study session chrome ─────────────────────────────────────────────── */
+.km-review__stripEn {
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+.km-review__sourceLabel {
+  font-size: 13px;
+  color: var(--paper-dim);
+  font-style: italic;
+}
+
+/* ── Completion (F-062) ───────────────────────────────────────────────── */
+.km-review__completeCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 28px 22px;
+}
+.km-review__completeTitle {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 8px 0 0;
+}
+.km-review__completeDeck {
+  font-size: 14px;
+  color: var(--paper-dim);
+}
+.km-review__completeCount {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--paper);
+  margin-top: 10px;
+}
+.km-review__breakdown {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  width: 100%;
+  margin: 14px 0 0;
+}
+.km-review__breakCell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--ink-1);
+}
+.km-review__breakCount {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+}
+.km-review__nextDue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+.km-review__completeLine {
+  font-size: 13px;
+  color: var(--paper-mute);
+}
+.km-review__completeActions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}

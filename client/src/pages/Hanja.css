@@ -1,0 +1,403 @@
+/**
+ * Hanja page — Phase 3C-1 additions (flashcard drill, lists, drawing drill,
+ * quick-nav, back button spacing). Co-located per the redesign convention;
+ * the pre-3C rules (band/feature/index/detail sheet) stay in styles/index.css.
+ * Everything is tokenized so both themes + every accent preset come free.
+ */
+
+/* ── Back button spacing (nested views) ─────────────────────── */
+.km-hanja__back {
+  align-self: flex-start;
+}
+
+/* ── Root quick-nav (Flashcards / My lists) ─────────────────── */
+.km-hanja__quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.km-hanja__quick-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+  color: var(--paper);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms;
+}
+.km-hanja__quick-btn:hover {
+  border-color: var(--gold);
+}
+.km-hanja__quick-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.km-hanja__quick-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+.km-hanja__quick-sub {
+  font-size: 11px;
+  color: var(--paper-mute);
+}
+
+/* ── Shared small form/row primitives (lists + add-to-list) ─── */
+.km-hanja__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.km-hanja__label {
+  display: block;
+  margin-top: 10px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-mute);
+}
+.km-hanja__input {
+  flex: 1;
+  min-width: 160px;
+  padding: 9px 10px;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-0);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 14px;
+}
+.km-hanja__input::placeholder {
+  color: var(--paper-faint);
+}
+.km-hanja__inline-error {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--vermilion-ink);
+}
+.km-hanja__inline-status {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+.km-hanja__danger {
+  color: var(--vermilion-ink);
+}
+
+/* ── Study view (flashcard drill) ───────────────────────────── */
+.km-hanja__study-progress {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--paper-mute);
+  font-variant-numeric: tabular-nums;
+}
+.km-hanja__study-face {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 14px;
+  text-align: center;
+}
+.km-hanja__study-square {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.km-hanja__study-char {
+  position: relative;
+  font-size: 84px;
+  line-height: 1;
+  color: var(--paper);
+}
+.km-hanja__study-backchar {
+  font-size: 40px;
+  line-height: 1;
+  color: var(--vermilion-ink);
+}
+.km-hanja__study-gloss {
+  font-size: 22px;
+}
+.km-hanja__study-sound {
+  color: var(--vermilion-ink);
+}
+.km-hanja__study-en {
+  font-size: 14px;
+  color: var(--paper-dim);
+}
+.km-hanja__study-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.km-hanja__study-hint {
+  font-size: 11px;
+  color: var(--paper-mute);
+}
+.km-hanja__study-hintline {
+  text-align: center;
+  font-size: 12px;
+  color: var(--paper-mute);
+  margin: 12px 0 0;
+}
+.km-hanja__ratings {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.km-hanja__rating {
+  padding: 12px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+  color: var(--paper);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color 140ms;
+}
+.km-hanja__rating:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* Engine-true next-interval hint under each rating label (mirrors the vocab
+   session's .km-review__ratingSub). */
+.km-hanja__rating-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--paper-mute);
+  font-variant-numeric: tabular-nums;
+}
+.km-hanja__rating--again { color: var(--vermilion-ink); }
+.km-hanja__rating--hard  { color: var(--paper-mute); }
+.km-hanja__rating--good  { color: var(--indigo-ink); }
+.km-hanja__rating--easy  { color: var(--moss-ink); }
+.km-hanja__rating--again:hover:not(:disabled) { border-color: var(--vermilion); }
+.km-hanja__rating--hard:hover:not(:disabled)  { border-color: var(--paper-mute); }
+.km-hanja__rating--good:hover:not(:disabled)  { border-color: var(--indigo); }
+.km-hanja__rating--easy:hover:not(:disabled)  { border-color: var(--moss); }
+.km-hanja__study-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--vermilion-ink);
+}
+.km-hanja__complete-seal {
+  display: block;
+  margin-bottom: 8px;
+}
+
+/* ── Lists index + list detail rows ─────────────────────────── */
+.km-hanja__lists-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.km-hanja__list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-1);
+  padding: 4px 8px 4px 4px;
+}
+.km-hanja__list-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--paper);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.km-hanja__list-open:hover {
+  background: var(--ink-2);
+}
+.km-hanja__list-name {
+  font-size: 15px;
+}
+.km-hanja__list-en {
+  font-size: 12px;
+  color: var(--paper-dim);
+}
+.km-hanja__list-meta {
+  font-size: 11px;
+  color: var(--paper-mute);
+}
+.km-hanja__list-del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--paper-mute);
+  cursor: pointer;
+}
+.km-hanja__list-del:hover {
+  color: var(--vermilion-ink);
+  background: var(--ink-2);
+}
+.km-hanja__list-confirm {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.km-hanja__ld-head .km-hanja__row {
+  margin-top: 12px;
+}
+.km-hanja__ld-name {
+  font-size: 22px;
+  margin-top: 2px;
+}
+.km-hanja__ld-en {
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+.km-hanja__ld-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+.km-hanja__ld-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+}
+.km-hanja__ld-char {
+  font-size: 26px;
+  line-height: 1;
+  color: var(--paper);
+}
+.km-hanja__ld-rowmeta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.km-hanja__ld-sound {
+  font-size: 14px;
+  color: var(--vermilion-ink);
+}
+.km-hanja__ld-gloss {
+  font-size: 12px;
+  color: var(--paper-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.km-hanja__ld-note {
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+
+/* ── Drawing drill ──────────────────────────────────────────── */
+.km-hanja__draw-note {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+.km-hanja__draw-stage {
+  position: relative;
+  width: min(320px, 100%);
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-0);
+  overflow: hidden;
+}
+.km-hanja__draw-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 190px;
+  line-height: 1;
+  color: var(--paper);
+  opacity: 0.16;
+  pointer-events: none;
+  user-select: none;
+}
+.km-hanja__draw-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* The pad's ink — read at paint time via getComputedStyle(canvas).color,
+     so strokes follow the theme without a repaint hook. */
+  color: var(--paper);
+  touch-action: none;
+  cursor: crosshair;
+}
+.km-hanja__draw-controls {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── Detail sheet additions ─────────────────────────────────── */
+.km-hanja__detail-draw {
+  flex: 1;
+}
+.km-hanja__addlist {
+  margin-top: 16px;
+}
+.km-hanja__addlist-note {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--paper-dim);
+}
+.km-hanja__addlist-select {
+  flex: 1;
+  min-width: 150px;
+}
+.km-hanja__addlist-loading {
+  font-size: 13px;
+  color: var(--paper-mute);
+}
+.km-hanja__addlist-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
