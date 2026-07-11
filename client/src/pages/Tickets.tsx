@@ -817,6 +817,9 @@ export default function Tickets(): JSX.Element {
   }, [statusFilter, typeFilter]);
 
   useEffect(() => {
+    // Fetch-on-mount / on-filter-change: the loader sets loading=true
+    // synchronously by design (the codebase's fetch-effect convention).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadMine();
     return () => {
       mineCtrlRef.current?.abort();
@@ -879,6 +882,9 @@ export default function Tickets(): JSX.Element {
   }, [statusFilter, typeFilter]);
 
   useEffect(() => {
+    // Fetch-on-mount / on-filter-change: the loader sets loading=true
+    // synchronously by design (the codebase's fetch-effect convention).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadCommunity();
     return () => {
       communityCtrlRef.current?.abort();
