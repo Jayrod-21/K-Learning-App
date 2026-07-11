@@ -1240,7 +1240,7 @@ export default function Settings(): JSX.Element {
 
       {/* ───── Beta feedback (F-023 — in-app ticketing) ─────
           A more prominent global entry (e.g. a ChatFab-style FAB) is a
-          follow-up — ticket F-110; this Settings tile is the F-023 entry
+          follow-up — ticket F-127; this Settings tile is the F-023 entry
           point per spec. */}
       <SettingsGroup icon="chat" eyebrow="베타 피드백" title="Beta feedback">
         <p className="km-settings__ticket-hint">

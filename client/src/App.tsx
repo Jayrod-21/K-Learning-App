@@ -142,7 +142,7 @@ export default function App(): JSX.Element {
                     {/* F-023 — in-app beta feedback/ticketing. Reachable
                         from Settings → "Beta feedback" (a more prominent
                         global entry point, e.g. a ChatFab-style FAB, is a
-                        follow-up — ticket F-110). */}
+                        follow-up — ticket F-127). */}
                     <Route path="tickets" element={<Tickets />} />
                     {/* U1b — page-image book-upload feature (zip-of-images or
                         PDF, normalized server-side into ordered page
