@@ -76,7 +76,20 @@ type GenState =
   | { phase: 'done'; prompt: GeneratedWritingPrompt }
   | { phase: 'error'; message: string };
 
-export function WritingTopicGenerator(): JSX.Element {
+export interface WritingTopicGeneratorProps {
+  /**
+   * F-073 (Writing screen): when provided, the generated result grows a
+   * "Write this topic" action that hands the topic to the caller — the
+   * Writing page makes it the active, gradable task. The Today tile (F-027)
+   * omits it and renders byte-identically to the pre-prop component: the
+   * topic stays display-only inspiration there.
+   */
+  onUseTopic?: (topic: GeneratedWritingPrompt) => void;
+}
+
+export function WritingTopicGenerator({
+  onUseTopic,
+}: WritingTopicGeneratorProps = {}): JSX.Element {
   const [mode, setMode] = useState<WritingGenerateMode>('topik');
   const [state, setState] = useState<GenState>({ phase: 'idle' });
   const modeRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -213,6 +226,20 @@ export function WritingTopicGenerator(): JSX.Element {
               </Pill>
               {state.prompt.lengthHint !== null ? (
                 <Pill>{state.prompt.lengthHint}</Pill>
+              ) : null}
+              {onUseTopic !== undefined ? (
+                // F-073: hand the topic to the host page (it becomes the
+                // active gradable task there). Rendered inside the polite
+                // live region alongside the topic it acts on.
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    onUseTopic(state.prompt);
+                  }}
+                >
+                  <Bilingual en="Write this topic" kr="이 주제로 쓰기" compact />
+                </Button>
               ) : null}
             </div>
           </div>

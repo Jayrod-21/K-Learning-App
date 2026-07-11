@@ -15,9 +15,10 @@
  *      "coming soon" grammar placeholder is gone; B-018 folded it into this
  *      carousel as F-026's grammar page).
  *   3. **Today's tasks carousel** — the Reading / Listening / Writing
- *      TaskCards (one task per page). Real targets: `/learn/listen`
- *      (Reading + Listening — the retired Read screen's content lives
- *      there) and `/learn/writing`. Listening = "Largest gap" (gold).
+ *      TaskCards (one task per page). Real targets: `/learn/reading`
+ *      (the rebuilt Reading page — B-019, closed in Phase 3C-2),
+ *      `/learn/listen` (TTMIK + Iyagi), and `/learn/writing`.
+ *      Listening = "Largest gap" (gold).
  *      Writing = "Register drill". The Writing page also mounts the F-027
  *      `WritingTopicGenerator` (Claude authors a fresh topic, TOPIK-style
  *      or free-write, via `POST /writing/generate`).
@@ -291,12 +292,11 @@ export function Today(): JSX.Element {
   const taskTiles: TaskTile[] = [];
   if (today.data) {
     const candidates: Array<{ task: TodayTask | null } & Omit<TaskTile, 'task'>> = [
-      // Reading + Listening tiles both land on Listen (`/learn/listen`) —
-      // the retired Read screen's content lives there (TTMIK + Iyagi).
-      // B-019 (Reading tile → the rebuilt Reading page) stays BLOCKED on
-      // F-067–F-070: `/learn/reading` is a placeholder until that group
-      // lands, so the Reading tile deliberately keeps this target.
-      { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/learn/listen' },
+      // B-019 (closed, Phase 3C-2): the Reading tile lands on the rebuilt
+      // Reading page — `/learn/reading` is the real F-067–F-070 surface now
+      // (typed book sections, AI stories, resume, chapter reader). The
+      // Listening tile keeps `/learn/listen` (TTMIK + Iyagi).
+      { task: today.data.reading, krTag: '읽기', skill: 'Reading', nav: '/learn/reading' },
       { task: today.data.listening, krTag: '듣기', skill: 'Listening', nav: '/learn/listen' },
       { task: today.data.writing, krTag: '쓰기', skill: 'Writing', nav: '/learn/writing' },
     ];
@@ -446,10 +446,17 @@ export function Today(): JSX.Element {
                 />
                 {tile.task.tag === 'Writing' ? (
                   // F-027: Claude authors a fresh topic (TOPIK-style or
-                  // free-write) right on the writing tile. The generated
-                  // topic is ephemeral display — carrying it into
-                  // /learn/writing for grading is F-073's page-side half.
-                  <WritingTopicGenerator />
+                  // free-write) right on the writing tile. F-101: "Write this
+                  // topic" carries the generated prompt into /learn/writing
+                  // via location.state so it can be written against + graded
+                  // (the Writing page narrows `state.generatedTopic`).
+                  <WritingTopicGenerator
+                    onUseTopic={(topic) =>
+                      navigate('/learn/writing', {
+                        state: { generatedTopic: topic },
+                      })
+                    }
+                  />
                 ) : null}
               </div>
             ))}

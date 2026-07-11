@@ -1,0 +1,57 @@
+/**
+ * MockMode.css — Phase 3C-2 additions co-located with MockMode.tsx.
+ * Base .km-mock layout lives in styles/index.css (untouched); this file
+ * styles only the new F-079 chooser / start-page screens and the F-080
+ * audio-gap note. Tokenized for both themes.
+ */
+
+/* ── F-079 exam chooser ──────────────────────────────────────── */
+.km-mock__chooser-head {
+  display: block;
+  margin: 14px 0 10px;
+}
+
+.km-mock__chooser-card {
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+/* Honest pending blocks (chooser list, start-page previous attempts). */
+.km-mock__pending {
+  margin-bottom: 14px;
+}
+
+.km-mock__pending-copy {
+  margin: 6px 0 0;
+  color: var(--paper-mute);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* ── F-079 start page ────────────────────────────────────────── */
+.km-mock__start-meta {
+  margin: 14px 0;
+}
+
+.km-mock__start-rules {
+  margin: 6px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.km-mock__start-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* ── F-080 audio-gap note (start page + exam head) ───────────── */
+.km-mock__audio-note {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-strong);
+  color: var(--paper-mute);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

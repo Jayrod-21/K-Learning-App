@@ -12,7 +12,7 @@
  * observable and its failure mode is exercised without a server.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -602,8 +602,9 @@ describe('Topik (Study mode)', () => {
       'true',
     );
     // The Mock section select shows the section cards (Reading enabled).
+    // F-079: cards open the exam CHOOSER — the name is "… mock exams".
     expect(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
+      screen.getByRole('button', { name: /Reading mock exams/i }),
     ).toBeInTheDocument();
     // Study item is gone.
     expect(
@@ -626,5 +627,183 @@ describe('Topik (Study mode)', () => {
     expect(
       screen.getByRole('button', { name: /try again/i }),
     ).toBeInTheDocument();
+  });
+
+  // ── Phase 3C-2 ─────────────────────────────────────────────────────────
+
+  it('B-029: the draw size is selectable beyond 10, with 10 kept as the labelled recommended default', async () => {
+    setDraw([ITEM_A, ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    const select = screen.getByRole('combobox', { name: /set size/i });
+    // 10 (the server default) is the placeholder = the recommended default…
+    expect(select).toHaveValue('');
+    expect(
+      screen.getByRole('option', { name: /10 · recommended/i }),
+    ).toBeInTheDocument();
+    // …and larger draws are offered up to the server's max of 50.
+    expect(
+      screen.getByRole('option', { name: /50 items/ }),
+    ).toBeInTheDocument();
+
+    // Step onto item 2, then change the size: a size change is a NEW draw,
+    // so the stepping state resets to the first item.
+    await user.click(screen.getAllByRole('radio')[1]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(screen.getByText(/Item 2 \/ 2/)).toBeInTheDocument();
+
+    await user.selectOptions(select, '30');
+    expect(select).toHaveValue('30');
+    expect(screen.getByText(/Item 1 \/ 2/)).toBeInTheDocument();
+  });
+
+  it('F-078: tallies session right/wrong from real reveals, survives New set, and keeps daily totals honestly pending', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    const tally = screen.getByRole('group', { name: 'Session tally' });
+    expect(within(tally).getAllByText('맞음 0').length).toBeGreaterThan(0);
+    expect(within(tally).getAllByText('틀림 0').length).toBeGreaterThan(0);
+    // The FULL-day number needs GET /topik/attempts (ticket F-104) — the
+    // tile says so instead of fabricating one.
+    expect(
+      within(tally).getByText(
+        /Full-day totals will appear once attempt history is available/,
+      ),
+    ).toBeInTheDocument();
+
+    // A correct reveal increments the right count.
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — correct
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(within(tally).getAllByText('맞음 1').length).toBeGreaterThan(0);
+    expect(within(tally).getAllByText('틀림 0').length).toBeGreaterThan(0);
+
+    // New set keeps the SESSION tally — it counts the session, not the set.
+    await user.click(screen.getByRole('button', { name: /new set/i }));
+    expect(within(tally).getAllByText('맞음 1').length).toBeGreaterThan(0);
+  });
+
+  it('F-078: a skipped item tallies as wrong (matches the results grading)', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /skip/i }));
+
+    const tally = screen.getByRole('group', { name: 'Session tally' });
+    expect(within(tally).getAllByText('틀림 1').length).toBeGreaterThan(0);
+    expect(within(tally).getAllByText('맞음 0').length).toBeGreaterThan(0);
+  });
+
+  it('SF-2: the session tally survives a Study→Mock→Study round trip', async () => {
+    // `Tabs` re-keys its panel per mode (render-one design), so switching to
+    // Mock and back unmounts + remounts StudyMode outright. Before the SF-2
+    // fix the tally lived in StudyMode's own state and was zeroed by this.
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getAllByRole('radio')[1]); // 'b' — correct
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('tab', { name: /mock/i }));
+    await user.click(screen.getByRole('tab', { name: /study/i }));
+
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('SF-2: the session tally survives a trip to Previous attempts and back', async () => {
+    // The `view === 'attempts'` early return in `Topik` replaces the ENTIRE
+    // tabbed area — another unmount path StudyMode's own state couldn't
+    // survive before the fix.
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getAllByRole('radio')[1]);
+    await user.click(screen.getByRole('button', { name: /submit/i }));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole('link', { name: /Previous attempts/i }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Back to TOPIK' }));
+
+    expect(
+      within(screen.getByRole('group', { name: 'Session tally' })).getAllByText(
+        '맞음 1',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('F-082: the landing links to Previous attempts — an honestly-pending review view with a wired jump to Mistakes', async () => {
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('link', { name: /Previous attempts/i }));
+
+    // The nested view replaces the tabbed landing.
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: '지난 시험 · Previous attempts',
+      }),
+    ).toBeInTheDocument();
+    // Honest pending copy — completed-exam grades need GET /topik/attempts
+    // (ticket F-104); nothing is fabricated (no scores/percentages anywhere).
+    expect(
+      screen.getByText(/will appear here once attempt history is available/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    // The wired part that exists today: the jump into Review → Mistakes.
+    expect(
+      screen.getByRole('link', { name: /Review your mistakes/i }),
+    ).toHaveAttribute('href', '/review/mistakes');
+
+    // F-024: the BackButton returns to the TOPIK landing.
+    await user.click(screen.getByRole('button', { name: 'Back to TOPIK' }));
+    expect(
+      screen.getByRole('heading', { level: 1, name: '모의 · TOPIK' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /study/i })).toBeInTheDocument();
+  });
+
+  it('F-082: deep-links straight to the attempts view via ?view=attempts', () => {
+    setDraw([ITEM_A]);
+    render(
+      <MemoryRouter initialEntries={['/learn/topik?view=attempts']}>
+        <Topik />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByRole('heading', {
+        level: 1,
+        name: '지난 시험 · Previous attempts',
+      }),
+    ).toBeInTheDocument();
+    // The study draw is not mounted behind the nested view.
+    expect(
+      screen.queryByText('이 글의 내용과 같은 것은?'),
+    ).not.toBeInTheDocument();
   });
 });

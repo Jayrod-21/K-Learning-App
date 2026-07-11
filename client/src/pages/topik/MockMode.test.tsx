@@ -143,15 +143,59 @@ function renderWithChatProbe(): void {
 }
 
 /**
+ * Walk the F-079 pre-exam navigation and START a section's exam: section card
+ * → exam chooser (server-picked entry) → start page → Start. The fetch fires
+ * only on the final Start click — asserted explicitly in the F-079 tests.
+ */
+async function startExam(
+  user: ReturnType<typeof userEvent.setup>,
+  section: 'Reading' | 'Listening',
+): Promise<void> {
+  await user.click(
+    screen.getByRole('button', {
+      name: new RegExp(`${section} mock exams`, 'i'),
+    }),
+  );
+  await user.click(
+    screen.getByRole('button', {
+      name: new RegExp(`Recommended ${section} exam`, 'i'),
+    }),
+  );
+  await user.click(
+    screen.getByRole('button', { name: '시험 시작 · Start test' }),
+  );
+}
+
+/**
+ * `fireEvent` twin of `startExam` for the fake-timer tests (userEvent
+ * deadlocks against fake timers in happy-dom). The chooser/start navigation
+ * is synchronous URL state, so no flushes are needed between the clicks —
+ * only after the final Start (the exam fetch) — the callers already flush.
+ */
+function fireStartExam(section: 'Reading' | 'Listening'): void {
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: new RegExp(`${section} mock exams`, 'i'),
+    }),
+  );
+  fireEvent.click(
+    screen.getByRole('button', {
+      name: new RegExp(`Recommended ${section} exam`, 'i'),
+    }),
+  );
+  fireEvent.click(
+    screen.getByRole('button', { name: '시험 시작 · Start test' }),
+  );
+}
+
+/**
  * Drive the mock flow start → submit → confirm → results (no answers needed
  * — `submitMockTest` is mocked, so the graded rows come from the fixture).
  */
 async function driveToResults(
   user: ReturnType<typeof userEvent.setup>,
 ): Promise<void> {
-  await user.click(
-    screen.getByRole('button', { name: /Start Reading mock test/i }),
-  );
+  await startExam(user, 'Reading');
   await waitFor(() => {
     expect(screen.getByRole('timer')).toBeInTheDocument();
   });
@@ -181,11 +225,13 @@ describe('MockMode (Mock test)', () => {
 
   it('renders the section select with a disabled Writing card', () => {
     render(<MockMode />, { wrapper: MemoryRouter });
+    // F-079: section cards OPEN the exam chooser (the name says "exams",
+    // not "Start … test" — tapping one must never arm a timer directly).
     expect(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
+      screen.getByRole('button', { name: /Reading mock exams/i }),
     ).toBeEnabled();
     expect(
-      screen.getByRole('button', { name: /Start Listening mock test/i }),
+      screen.getByRole('button', { name: /Listening mock exams/i }),
     ).toBeEnabled();
     const writing = screen.getByRole('button', {
       name: /Writing mock test, coming soon/i,
@@ -197,9 +243,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
 
     // Exam renders: timer, progress, first item, choices.
     await waitFor(() => {
@@ -224,9 +268,7 @@ describe('MockMode (Mock test)', () => {
   it('countdown timer starts at the section budget in h:mm:ss', async () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       // Reading = 70 minutes → 1:10:00 (NOT the old HH:MM "01:10", which read
       // as 1 min 10 s and only changed once a minute — the "frozen timer" FU).
@@ -238,9 +280,7 @@ describe('MockMode (Mock test)', () => {
     svc.fetchMockTest.mockResolvedValueOnce({ ...TEST, section: 'listening' });
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
-    await user.click(
-      screen.getByRole('button', { name: /Start Listening mock test/i }),
-    );
+    await startExam(user, 'Listening');
     await waitFor(() => {
       // Listening = 60 minutes.
       expect(screen.getByRole('timer')).toHaveTextContent('1:00:00');
@@ -253,9 +293,7 @@ describe('MockMode (Mock test)', () => {
     vi.useFakeTimers();
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -299,9 +337,7 @@ describe('MockMode (Mock test)', () => {
     });
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -390,9 +426,7 @@ describe('MockMode (Mock test)', () => {
     });
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -430,9 +464,7 @@ describe('MockMode (Mock test)', () => {
   it('does not announce the countdown on every tick (timer aria-live is off)', async () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -448,9 +480,7 @@ describe('MockMode (Mock test)', () => {
     });
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -473,9 +503,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -560,10 +588,10 @@ describe('MockMode (Mock test)', () => {
       ]),
     );
 
-    // New mock returns to section select.
+    // New mock returns to the section select (URL params dropped too).
     await user.click(screen.getByRole('button', { name: /New mock/i }));
     expect(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
+      screen.getByRole('button', { name: /Reading mock exams/i }),
     ).toBeInTheDocument();
   });
 
@@ -597,9 +625,7 @@ describe('MockMode (Mock test)', () => {
 
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -705,9 +731,7 @@ describe('MockMode (Mock test)', () => {
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
       // Start the Reading section.
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       // Flush the resolved fetch promise so the exam mounts (and starts its
       // faked interval).
       await act(async () => {
@@ -766,9 +790,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
 
     const note = await screen.findByRole('complementary', {
       name: /image described in text/i,
@@ -798,9 +820,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -823,9 +843,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     // loadTopikMockTest is mocked to reject too → the error card surfaces.
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
@@ -846,9 +864,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
 
     // Fixed copy, not the server prose.
     expect(
@@ -872,9 +888,7 @@ describe('MockMode (Mock test)', () => {
     const user = userEvent.setup();
     render(<MockMode />, { wrapper: MemoryRouter });
 
-    await user.click(
-      screen.getByRole('button', { name: /Start Reading mock test/i }),
-    );
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -946,14 +960,14 @@ describe('MockMode (Mock test)', () => {
     expect(
       screen.queryByRole('button', { name: '이어서 하기 · Resume' }),
     ).not.toBeInTheDocument();
-    // Still on the select screen, sections startable.
+    // Still on the select screen, sections choosable.
     const reading = screen.getByRole('button', {
-      name: /Start Reading mock test/i,
+      name: /Reading mock exams/i,
     });
     expect(reading).toBeEnabled();
 
-    // Starting a fresh section clears the notice.
-    await user.click(reading);
+    // Starting a fresh exam (chooser → start page → Start) clears the notice.
+    await startExam(user, 'Reading');
     await waitFor(() => {
       expect(screen.getByRole('timer')).toBeInTheDocument();
     });
@@ -971,9 +985,7 @@ describe('MockMode (Mock test)', () => {
     vi.useFakeTimers();
     try {
       render(<MockMode />, { wrapper: MemoryRouter });
-      fireEvent.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      fireStartExam('Reading');
       await act(async () => {
         await Promise.resolve();
         await Promise.resolve();
@@ -1001,6 +1013,183 @@ describe('MockMode (Mock test)', () => {
     expect(answer?.timeMs).toBe(3_600_000);
   });
 
+  describe('F-079 exam chooser + start page (Phase 3C-2)', () => {
+    it('a section card opens the chooser — wired server-picked entry, honest pending list, no fetch yet', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      // F-024: back to the section select.
+      expect(
+        screen.getByRole('button', { name: 'Back to Sections' }),
+      ).toBeInTheDocument();
+      // The one wired entry today: the server-picked exam.
+      expect(
+        screen.getByRole('button', {
+          name: /Recommended Reading exam, server-picked/i,
+        }),
+      ).toBeInTheDocument();
+      // The per-exam list + completion checkmarks need the exam-list route
+      // (proposed F-118) and attempt history (F-104) — honestly pending, no
+      // exam ever shown as "completed", and nothing fetched by navigating.
+      expect(
+        screen.getByText(
+          /once the exam list and your attempt history are available/i,
+        ),
+      ).toBeInTheDocument();
+      expect(svc.fetchMockTest).not.toHaveBeenCalled();
+      expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    });
+
+    it('the start page requires an explicit Start — the exam fetches ONLY on the Start click', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+      await user.click(
+        screen.getByRole('button', { name: /Recommended Reading exam/i }),
+      );
+
+      // Start page: exam meta + rules…
+      expect(screen.getAllByText(/50문항 · 70분/).length).toBeGreaterThan(0);
+      // …and the previous-attempts block is honestly pending on attempt
+      // history (F-104) — no fabricated grades.
+      expect(
+        screen.getByText(
+          /your grade and past attempts will show here once attempt history is available/i,
+        ),
+      ).toBeInTheDocument();
+      expect(svc.fetchMockTest).not.toHaveBeenCalled();
+
+      await user.click(
+        screen.getByRole('button', { name: '시험 시작 · Start test' }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      // Server-picked: exactly one fetch, no sourceTest third argument.
+      expect(svc.fetchMockTest).toHaveBeenCalledTimes(1);
+      expect(svc.fetchMockTest).toHaveBeenCalledWith(
+        'reading',
+        expect.any(AbortSignal),
+      );
+    });
+
+    it('F-024: BackButtons walk start page → chooser → section select', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+      await user.click(
+        screen.getByRole('button', { name: /Recommended Reading exam/i }),
+      );
+
+      await user.click(
+        screen.getByRole('button', { name: 'Back to Reading exams' }),
+      );
+      // Chooser again — the Start button is gone, the wired entry is back.
+      expect(
+        screen.queryByRole('button', { name: '시험 시작 · Start test' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /Recommended Reading exam/i }),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Back to Sections' }));
+      expect(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('F-024: the exam BackButton exits a running exam to the chooser and flushes a resumable save', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Reading');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      // Answer one item so the flushed save carries real progress.
+      await user.click(screen.getByRole('radio', { name: /나/ }));
+      const savesBefore = svc.saveAttempt.mock.calls.length;
+
+      await user.click(
+        screen.getByRole('button', { name: 'Back to Reading exams' }),
+      );
+
+      await waitFor(() => {
+        expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+      });
+      // Back on the chooser…
+      expect(
+        screen.getByRole('button', { name: /Recommended Reading exam/i }),
+      ).toBeInTheDocument();
+      // …and the runner's unmount cleanup flushed a final save (F-007), so
+      // the attempt is resumable — leaving mid-exam loses nothing.
+      expect(svc.saveAttempt.mock.calls.length).toBeGreaterThan(savesBefore);
+      const lastSave = svc.saveAttempt.mock.calls.at(-1)?.[0] as {
+        picks: Record<string, string>;
+      };
+      expect(lastSave.picks).toMatchObject({ '1001': 'b' });
+      // Leaving is NOT a submit.
+      expect(svc.submitMockTest).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('F-080 listening audio (honest data-gap stub)', () => {
+    it('a Listening exam discloses the audio gap up front — transcripts, no fake play control', async () => {
+      // Per-question audio is not servable (the corpus holds only one
+      // whole-section MP3 per paper, un-ingested and un-segmented — data-gap
+      // ticket F-119); the UI must say so rather than render a dead player.
+      svc.fetchMockTest.mockResolvedValue({ ...TEST, section: 'listening' });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+
+      await user.click(
+        screen.getByRole('button', { name: /Listening mock exams/i }),
+      );
+      await user.click(
+        screen.getByRole('button', { name: /Recommended Listening exam/i }),
+      );
+      // Disclosed BEFORE the timer starts (start page)…
+      expect(
+        screen.getByText(/Audio isn't available yet/),
+      ).toBeInTheDocument();
+
+      await user.click(
+        screen.getByRole('button', { name: '시험 시작 · Start test' }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      // …and again in the exam head. No fabricated player anywhere.
+      expect(
+        screen.getByText(/Audio isn't available yet/),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /play/i }),
+      ).not.toBeInTheDocument();
+      expect(document.querySelector('audio')).toBeNull();
+    });
+
+    it('a Reading exam carries no audio note', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Reading');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText(/Audio isn't available yet/),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe('exam-active context (Overhaul P1.1)', () => {
     function ExamFlagProbe(): JSX.Element {
       const { examActive } = useExamActive();
@@ -1023,9 +1212,7 @@ describe('MockMode (Mock test)', () => {
       // Select phase — no exam yet.
       expect(screen.getByTestId('exam-active')).toHaveTextContent('false');
 
-      await user.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      await startExam(user, 'Reading');
       await waitFor(() => {
         expect(screen.getByRole('timer')).toBeInTheDocument();
       });
@@ -1043,9 +1230,7 @@ describe('MockMode (Mock test)', () => {
       const user = userEvent.setup();
       const { rerender } = render(harness(<MockMode />));
 
-      await user.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      await startExam(user, 'Reading');
       await waitFor(() => {
         expect(screen.getByRole('timer')).toBeInTheDocument();
       });
@@ -1076,9 +1261,7 @@ describe('MockMode (Mock test)', () => {
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });
 
-      await user.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      await startExam(user, 'Reading');
 
       await waitFor(() => {
         expect(screen.getByRole('alert')).toBeInTheDocument();
@@ -1098,9 +1281,7 @@ describe('MockMode (Mock test)', () => {
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });
 
-      await user.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      await startExam(user, 'Reading');
       await waitFor(() => {
         expect(screen.getByRole('timer')).toBeInTheDocument();
       });
@@ -1152,9 +1333,7 @@ describe('MockMode (Mock test)', () => {
     it('renders Korean exam chrome while the TOPIK item content stays raw', async () => {
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });
-      await user.click(
-        screen.getByRole('button', { name: /Start Reading mock test/i }),
-      );
+      await startExam(user, 'Reading');
       await waitFor(() => {
         expect(screen.getByRole('timer')).toBeInTheDocument();
       });

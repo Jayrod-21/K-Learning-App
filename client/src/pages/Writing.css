@@ -1,0 +1,69 @@
+/*
+ * Writing (Phase 3C-2) — colocated styles for the reworked screen.
+ *
+ * The compose/grade surface itself reuses the shared `.km-grammar__*` sheet
+ * rules (textarea, status rows, footer, reveal) exactly as the pre-rework
+ * screen did; this file only carries what 3C-2 added: the back-control row,
+ * the generated-topic marker, the free-write grading note, the topic
+ * generator's placement, and the aria-disabled paint for the Grade button
+ * (which stays focusable while a grade is in flight — see Writing.tsx).
+ * Tokenized throughout so both themes and every accent preset come free.
+ */
+
+/* F-024 back control, pinned above the Topbar (same row Mistakes uses). */
+.km-writing__nav {
+  margin-bottom: 4px;
+}
+
+/* Generated-topic marker pills above the task text (F-073 / F-101). */
+.km-writing__srcrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+/* Muted English gloss under the Korean task text. */
+.km-writing__gloss {
+  font-size: 12px;
+  color: var(--paper-mute);
+  margin-top: -6px;
+  margin-bottom: 12px;
+}
+
+/* Live 자 counter under the textarea. */
+.km-writing__count {
+  font-size: 12px;
+  color: var(--paper-mute);
+  margin-top: -8px;
+  margin-bottom: 12px;
+}
+
+/* Honesty note for free-write topics (graded with the Q54 rubric until the
+   rubric taxonomy widens — see the deferred-ticket note in Writing.tsx). */
+.km-writing__note {
+  font-size: 12.5px;
+  color: var(--paper-mute);
+  margin: -4px 0 12px;
+}
+
+/* The shared topic-generator panel sits under the compose card (F-073). */
+.km-writing__topicgen {
+  margin-top: 16px;
+}
+
+/* The Grade button goes aria-disabled (not `disabled`) while grading so
+   keyboard focus survives the round trip; mirror the shared .km-btn:disabled
+   paint so busy still LOOKS inert (same rule the topic generator carries). */
+.km-writing .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* F-074 Responses stub copy block. */
+.km-writing__stub {
+  font-size: 13.5px;
+  color: var(--paper-mute);
+  line-height: 1.6;
+}

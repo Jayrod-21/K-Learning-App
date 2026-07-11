@@ -1,12 +1,27 @@
 /**
- * Listen screen (F-012) — TTMIK lesson / Iyagi episode audio + read-along.
+ * Listen screen (F-012, reworked Phase 3C-2: F-071 / F-072 / F-024) —
+ * TTMIK lesson / Iyagi episode audio + read-along.
  *
- * Browse view (unchanged): two sections behind sub-tabs (same tablist idiom
- * as Reference) — TTMIK Lessons grouped by level, Iyagi Episodes as a
- * numbered list. Each row shows the title plus an audio indicator
- * (`hasAudio`). Selecting a row swaps the screen into the detail view.
+ * Structure — three URL-addressed views on `/learn/listen` (the same
+ * search-param idiom Grammar/Hanja use, so browser Back works and every
+ * nested view has a deterministic BackButton parent):
  *
- * Detail view (F-012 rework):
+ *   1. LANDING (`/learn/listen`) — F-071: a responsive 2-across grid of
+ *      SQUARE collection tiles (TTMIK Lessons, Iyagi Episodes), flowing
+ *      down. The grid is data-driven off `COLLECTIONS`, so when more audio
+ *      is added a new collection is one more entry — the grid just grows.
+ *      No fetch happens on the landing; tiles are pure navigation.
+ *   2. LISTING (`?corpus=ttmik` / `?corpus=iyagi`) — F-072: the browse list
+ *      windowed to 15 rows via `usePagination` + `ShowMore` (additive
+ *      reveal, never loses the user's place). TTMIK adds a level
+ *      `FilterSelect`; a filter change collapses the window back to 15.
+ *      An `aria-live` stat announces the visible/total counts. F-024: a
+ *      `BackButton` to the landing.
+ *   3. DETAIL (`…&level=&lesson=` / `…&episode=`) — unchanged F-012 body
+ *      (persistent player, Highlights/Transcript sub-tabs, tap-anything
+ *      transcript) with an F-024 `BackButton` to the owning listing.
+ *
+ * Detail view (F-012, unchanged this phase):
  *   1. A REAL `<audio controls>` player that is PERSISTENT across the
  *      lesson sub-tabs. The element is rendered exactly once, ABOVE and
  *      OUTSIDE the tab-switched subtree, and is never keyed on the active
@@ -19,17 +34,16 @@
  *   2. TTMIK lessons get two sub-tabs UNDER the player: Highlights (key
  *      phrases — the original layout) and Transcript (the full ordered
  *      lesson text; `header` lines as section headings, `pair`/`dialog` as
- *      Korean + English, `prose` as explanation notes, `romanization`
- *      subtle). Both arrive in the one detail response, so switching is
- *      instant — no fetch, no spinner, no audio interruption.
+ *      Korean + English, `prose` as explanation notes). Both arrive in the
+ *      one detail response, so switching is instant — no fetch, no spinner,
+ *      no audio interruption.
  *   3. CLICKABLE WORDS — every Korean line (highlights, transcript, and the
  *      Iyagi transcript) renders through the Read tab's tap-anything path:
  *      the shared `lib/tapChain.tokeniseKorean` splitter + the same
  *      `Tapword` control, so tapping a word fires the abortable
- *      lemmatize → define → enrich chain (via the shared `useTapWord` hook —
- *      U3c de-dup; this view carried the machine's original inline copy) and
- *      opens the same `WordPopover` with definition / usage / examples and
- *      Add-to-bank (FU-NF-33 `POST /vocab/mine`, optimistic + rollback).
+ *      lemmatize → define → enrich chain (via the shared `useTapWord` hook)
+ *      and opens the same `WordPopover` with definition / usage / examples
+ *      and Add-to-bank (FU-NF-33 `POST /vocab/mine`, optimistic + rollback).
  *   4. Iyagi episode detail: same persistent player + full clickable
  *      transcript; the hosts line renders from `meta.hosts`, a real
  *      `string[]` on the wire (the old string shape crashed this view).
@@ -43,6 +57,11 @@
  * "no audio" note, no player.
  *
  * Threat model:
+ *   - Search params are UNTRUSTED user input (deep links, tampered URLs).
+ *     `parseListenView` narrows them against a closed corpus set and a
+ *     bounded positive-integer parser; anything malformed falls back UP the
+ *     hierarchy (bad detail params → listing, unknown corpus → landing) —
+ *     never into a request with attacker-shaped path segments.
  *   - All data is server corpus text rendered through React text children —
  *     escaped; no dangerouslySetInnerHTML anywhere on this screen. The tap
  *     chain's popover fields go through the same contract (lib/tapChain).
@@ -70,12 +89,16 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
-import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
-import { Icon } from '../components/Icon';
+import { FilterSelect } from '../components/FilterSelect';
+import { Icon, type IconName } from '../components/Icon';
+import { ShowMore } from '../components/ShowMore';
+import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
 import { Topbar } from '../components/Topbar';
 import { WordPopover } from '../components/WordPopover';
@@ -88,6 +111,7 @@ import {
 } from '../lib/tapChain';
 import { ApiError } from '../services/api';
 import { useChatContext } from '../hooks/useChatContext';
+import { usePagination } from '../hooks/usePagination';
 import { useTapWord } from '../hooks/useTapWord';
 import { errorMessageFor } from '../lib/errorCopy';
 import { navItem } from '../lib/nav';
@@ -105,16 +129,59 @@ import type {
   TtmikLesson,
   TtmikTranscriptLine,
 } from '../types/domain';
+import './Ttmik.css';
 
-type Tab = 'ttmik' | 'iyagi';
+/** The two audio corpora this screen serves (closed set — parse target). */
+type Corpus = 'ttmik' | 'iyagi';
 
-/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+/** Page eyebrow + canonical route — nav.ts owns both (P3b Batch A). */
 const TTMIK_NAV = navItem('ttmik');
+const LISTEN_PATH = TTMIK_NAV.path;
 
-const TABS: ReadonlyArray<{ id: Tab; label: string; kr: string }> = [
-  { id: 'ttmik', label: 'TTMIK Lessons', kr: 'TTMIK 레슨' },
-  { id: 'iyagi', label: 'Iyagi Episodes', kr: '이야기 에피소드' },
+/**
+ * F-071 — the landing grid's data source. One entry per audio collection;
+ * adding a future corpus (podcasts, audiobooks, …) is one more entry here
+ * plus its listing branch — the square-tile grid grows down on its own.
+ */
+const COLLECTIONS: ReadonlyArray<{
+  corpus: Corpus;
+  en: string;
+  kr: string;
+  subEn: string;
+  subKr: string;
+  icon: IconName;
+}> = [
+  {
+    corpus: 'ttmik',
+    en: 'TTMIK Lessons',
+    kr: 'TTMIK 레슨',
+    subEn: 'Structured lessons by level',
+    subKr: '레벨별 구성 레슨',
+    icon: 'headphones',
+  },
+  {
+    corpus: 'iyagi',
+    en: 'Iyagi Episodes',
+    kr: '이야기 에피소드',
+    subEn: 'Natural conversation episodes',
+    subKr: '자연스러운 대화 에피소드',
+    icon: 'mic',
+  },
 ];
+
+/** Listing labels the detail BackButton reuses ("Back to TTMIK Lessons"). */
+const COLLECTION_LABEL: Record<Corpus, string> = {
+  ttmik: 'TTMIK Lessons',
+  iyagi: 'Iyagi Episodes',
+};
+
+/**
+ * F-072 — the listing window: 15 rows per "page", additive reveal. `max`
+ * is a defensive ceiling far above the corpus sizes (~190 TTMIK lessons,
+ * ~170 Iyagi episodes) so every row stays reachable — a cap below the list
+ * length would strand rows the user can never scroll to.
+ */
+const LIST_WINDOW = { initial: 15, step: 15, max: 990 } as const;
 
 /** TTMIK lesson-detail sub-tabs (below the persistent player). */
 type LessonTab = 'highlights' | 'transcript';
@@ -126,12 +193,12 @@ const LESSON_TABS: ReadonlyArray<{ id: LessonTab; label: string; kr: string }> =
 
 /**
  * The open lesson/episode. Discriminated on `corpus` so the detail loader
- * can pick the right endpoint; `title` rides along so the header paints
- * instantly while the transcript loads.
+ * can pick the right endpoint. Derived from search params (untrusted) via
+ * `parseListenView` — every field is a validated positive integer.
  */
 type Selection =
-  | { corpus: 'ttmik'; level: number; number: number; title: string }
-  | { corpus: 'iyagi'; number: number; title: string };
+  | { corpus: 'ttmik'; level: number; number: number }
+  | { corpus: 'iyagi'; number: number };
 
 /** Stable identity for a selection — keys the detail view (see DetailView). */
 function selectionKey(selection: Selection): string {
@@ -140,76 +207,82 @@ function selectionKey(selection: Selection): string {
     : `iyagi:${String(selection.number)}`;
 }
 
+/** Which of the three views the URL addresses. */
+type ListenView =
+  | { kind: 'landing' }
+  | { kind: 'list'; corpus: Corpus }
+  | { kind: 'detail'; selection: Selection };
+
 /**
- * Everything the detail view renders. Discriminated on `corpus`: TTMIK
- * lessons carry the highlights/transcript pair behind sub-tabs; Iyagi
- * episodes carry one flat transcript plus the hosts line.
+ * Bounded positive-int parser for untrusted search params. Digits only
+ * (no signs, exponents, whitespace — `Number()` alone accepts all three),
+ * capped at 4 digits: corpus identifiers are small ordinals, and the bound
+ * keeps a hostile param from minting absurd path segments.
  */
-type DetailData =
-  | {
-      corpus: 'ttmik';
-      /** Context line above the title, e.g. `Level 2 · Lesson 21`. */
-      eyebrow: string;
-      /** Korean counterpart of `eyebrow` — rendered via `<Bilingual/>`. */
-      krEyebrow: string;
-      title: string;
-      /** Fully-resolved `<audio src>`; null → transcript-only. */
-      audioSrc: string | null;
-      highlights: ListenSentence[];
-      transcript: TtmikTranscriptLine[];
+function parsePositiveInt(raw: string | null): number | null {
+  if (raw === null || !/^\d{1,4}$/.test(raw)) return null;
+  const n = Number(raw);
+  return n >= 1 ? n : null;
+}
+
+/**
+ * Narrow the (untrusted) search params to a view. Malformed input falls
+ * back UP the hierarchy — bad detail numbers land on the listing, an
+ * unknown corpus lands on the landing — never into a fetch.
+ */
+function parseListenView(params: URLSearchParams): ListenView {
+  const corpus = params.get('corpus');
+  if (corpus === 'ttmik') {
+    const level = parsePositiveInt(params.get('level'));
+    const lesson = parsePositiveInt(params.get('lesson'));
+    if (level !== null && lesson !== null) {
+      return {
+        kind: 'detail',
+        selection: { corpus: 'ttmik', level, number: lesson },
+      };
     }
-  | {
-      corpus: 'iyagi';
-      eyebrow: string;
-      krEyebrow: string;
-      title: string;
-      /** Hosts line; null when the episode has no hosts listed. */
-      subtitle: string | null;
-      audioSrc: string | null;
-      sentences: ListenSentence[];
-    };
+    return { kind: 'list', corpus: 'ttmik' };
+  }
+  if (corpus === 'iyagi') {
+    const episode = parsePositiveInt(params.get('episode'));
+    if (episode !== null) {
+      return {
+        kind: 'detail',
+        selection: { corpus: 'iyagi', number: episode },
+      };
+    }
+    return { kind: 'list', corpus: 'iyagi' };
+  }
+  return { kind: 'landing' };
+}
+
+/** Canonical URL builders — the ONLY producers of this page's sub-URLs. */
+function listPath(corpus: Corpus): string {
+  return `${LISTEN_PATH}?corpus=${corpus}`;
+}
+function lessonPath(lesson: Pick<TtmikLesson, 'level' | 'number'>): string {
+  return `${listPath('ttmik')}&level=${String(lesson.level)}&lesson=${String(lesson.number)}`;
+}
+function episodePath(number: number): string {
+  return `${listPath('iyagi')}&episode=${String(number)}`;
+}
 
 export default function Ttmik(): JSX.Element {
-  const [tab, setTab] = useState<Tab>('ttmik');
-  const [selection, setSelection] = useState<Selection | null>(null);
+  const [searchParams] = useSearchParams();
+  const view = parseListenView(searchParams);
 
-  // Publish the open lesson/episode for the chat FAB's discuss-this-page
-  // popup (Slice 3). The browse view publishes nothing — there is no single
-  // "thing on screen" to discuss until a row is opened.
-  useChatContext(
-    selection !== null
-      ? {
-          pageLabel: 'Listen · 듣기',
-          summary:
-            selection.corpus === 'ttmik'
-              ? `TTMIK Level ${String(selection.level)} Lesson ${String(
-                  selection.number,
-                )} — ${selection.title}`
-              : `Iyagi Episode ${String(selection.number)} — ${selection.title}`,
-        }
-      : null,
-  );
-
-  const openLesson = useCallback((lesson: TtmikLesson): void => {
-    setSelection({
-      corpus: 'ttmik',
-      level: lesson.level,
-      number: lesson.number,
-      title: lesson.title,
-    });
-  }, []);
-
-  const openEpisode = useCallback((episode: IyagiEpisode): void => {
-    setSelection({
-      corpus: 'iyagi',
-      number: episode.number,
-      title: episode.title,
-    });
-  }, []);
-
-  const closeDetail = useCallback((): void => {
-    setSelection(null);
-  }, []);
+  // F-024: every nested view carries an explicit-parent BackButton (the
+  // Grammar/Hanja idiom) — a deep link straight into a lesson must go back
+  // to its listing, never history-back out of the PWA.
+  let back: JSX.Element | null = null;
+  if (view.kind === 'list') {
+    back = <BackButton to={LISTEN_PATH} label={TTMIK_NAV.label} />;
+  } else if (view.kind === 'detail') {
+    const corpus = view.selection.corpus;
+    back = (
+      <BackButton to={listPath(corpus)} label={COLLECTION_LABEL[corpus]} />
+    );
+  }
 
   return (
     <section
@@ -217,6 +290,7 @@ export default function Ttmik(): JSX.Element {
       aria-labelledby="km-ttmik-title"
       style={{ padding: '0 18px 32px' }}
     >
+      {back !== null ? <div className="km-ttmik__nav">{back}</div> : null}
       <Topbar
         krTitle="듣기"
         title="Listen"
@@ -224,57 +298,64 @@ export default function Ttmik(): JSX.Element {
         eyebrow={
           <Bilingual en={TTMIK_NAV.eyebrow} kr={TTMIK_NAV.krEyebrow} />
         }
-        right={
-          selection !== null ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              leadingIcon={<Icon name="list" size={14} />}
-              onClick={closeDetail}
-              aria-label="Back to all lessons and episodes"
-            >
-              <Bilingual en="Browse" kr="둘러보기" compact />
-            </Button>
-          ) : undefined
-        }
       />
-      {selection !== null ? (
+      {view.kind === 'landing' ? <CollectionTiles /> : null}
+      {view.kind === 'list' && view.corpus === 'ttmik' ? (
+        <TtmikListing />
+      ) : null}
+      {view.kind === 'list' && view.corpus === 'iyagi' ? (
+        <IyagiListing />
+      ) : null}
+      {view.kind === 'detail' ? (
         // Keyed on the selection: opening a DIFFERENT unit remounts the
         // detail (fresh sub-tab, fresh player, fresh popover state), while
         // everything within one unit — including the <audio> element —
         // keeps its identity across every re-render.
-        <DetailView key={selectionKey(selection)} selection={selection} />
-      ) : (
-        <>
-          <div
-            className="km-review__tabs"
-            role="tablist"
-            aria-label="Audio corpus"
-          >
-            {TABS.map((t) => {
-              const selected = tab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-                  onClick={() => {
-                    setTab(t.id);
-                  }}
-                >
-                  <Bilingual en={t.label} kr={t.kr} compact />
-                </button>
-              );
-            })}
-          </div>
-
-          {tab === 'ttmik' ? <TtmikLessonsTab onOpen={openLesson} /> : null}
-          {tab === 'iyagi' ? <IyagiEpisodesTab onOpen={openEpisode} /> : null}
-        </>
-      )}
+        <DetailView
+          key={selectionKey(view.selection)}
+          selection={view.selection}
+        />
+      ) : null}
     </section>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// F-071 — landing: square collection tiles, 2 across
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The landing grid. Real `<button>`s (keyboard-operable for free, the
+ * page's row/quick-nav idiom) whose accessible name is their visible
+ * bilingual content; the icon is decorative. Layout (2-across squares,
+ * flowing down) lives in Ttmik.css on `.km-ttmik__tiles`.
+ */
+function CollectionTiles(): JSX.Element {
+  const navigate = useNavigate();
+  return (
+    <ul className="km-ttmik__tiles" aria-label="Audio collections">
+      {COLLECTIONS.map((c) => (
+        <li key={c.corpus}>
+          <button
+            type="button"
+            className="km-ttmik__tile focusring"
+            onClick={() => {
+              void navigate(listPath(c.corpus));
+            }}
+          >
+            <Icon name={c.icon} size={24} />
+            <span className="km-ttmik__tile-meta">
+              <span className="km-ttmik__tile-title">
+                <Bilingual en={c.en} kr={c.kr} compact />
+              </span>
+              <span className="km-ttmik__tile-sub">
+                <Bilingual en={c.subEn} kr={c.subKr} compact />
+              </span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -298,15 +379,34 @@ function AudioPill({ hasAudio }: { hasAudio: boolean }): JSX.Element {
   );
 }
 
+/**
+ * F-072 — the "Showing X of Y" line above a windowed listing. `aria-live`
+ * so AT hears the count change when a filter narrows the list or Show more
+ * reveals a window (the Mistakes F-045 stat idiom).
+ */
+function ListingStat({
+  shown,
+  total,
+}: {
+  shown: number;
+  total: number;
+}): JSX.Element {
+  return (
+    <p className="km-ttmik__stat" aria-live="polite">
+      <Bilingual
+        en={`Showing ${String(shown)} of ${String(total)}`}
+        kr={`전체 ${String(total)}개 중 ${String(shown)}개 표시`}
+      />
+    </p>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
-// TTMIK Lessons tab — grouped by level, then number
+// TTMIK listing — level filter + 15-row window, grouped by level
 // ─────────────────────────────────────────────────────────────
 
-function TtmikLessonsTab({
-  onOpen,
-}: {
-  onOpen: (lesson: TtmikLesson) => void;
-}): JSX.Element {
+function TtmikListing(): JSX.Element {
+  const navigate = useNavigate();
   const [lessons, setLessons] = useState<TtmikLesson[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -347,23 +447,65 @@ function TtmikLessonsTab({
     setReloadTick((t) => t + 1);
   }, []);
 
-  // Group by level (ascending), lessons ordered by number within a level.
-  // The server already orders (level, number); the sorts are defensive so a
-  // reordering regression upstream never scrambles the browse view.
+  // Canonical order: (level, number) ascending. The server already orders
+  // this way; the sort is defensive so a reordering regression upstream
+  // never scrambles the window.
+  const ordered = useMemo(
+    () =>
+      [...lessons].sort((a, b) => a.level - b.level || a.number - b.number),
+    [lessons],
+  );
+
+  // Level filter (FilterSelect; '' = all levels — its reserved placeholder
+  // value). Derived `activeLevel` guards against a stale selection after a
+  // refetch reshapes the list — an orphaned level silently falls back to
+  // "all" instead of filtering everything out.
+  const [levelFilter, setLevelFilter] = useState<string>('');
+  const levels = useMemo(
+    () => [...new Set(ordered.map((l) => l.level))],
+    [ordered],
+  );
+  const activeLevel = levels.some((l) => String(l) === levelFilter)
+    ? levelFilter
+    : '';
+  const filtered = useMemo(
+    () =>
+      activeLevel === ''
+        ? ordered
+        : ordered.filter((l) => String(l.level) === activeLevel),
+    [ordered, activeLevel],
+  );
+
+  // F-072: 15-row window over the filtered list.
+  const { visible, canShowMore, showMore, reset, remaining } = usePagination(
+    filtered,
+    LIST_WINDOW,
+  );
+
+  const onLevelChange = useCallback(
+    (value: string): void => {
+      setLevelFilter(value);
+      // A new filter is a new list — collapse the window back to page one
+      // so the user isn't dropped mid-way down the previous expansion.
+      reset();
+    },
+    [reset],
+  );
+
+  // Group the VISIBLE window by level for the eyebrow headers. Input is
+  // already (level, number)-sorted, so one linear pass suffices.
   const groups = useMemo(() => {
-    const byLevel = new Map<number, TtmikLesson[]>();
-    for (const lesson of lessons) {
-      const bucket = byLevel.get(lesson.level);
-      if (bucket) bucket.push(lesson);
-      else byLevel.set(lesson.level, [lesson]);
+    const out: { level: number; lessons: TtmikLesson[] }[] = [];
+    for (const lesson of visible) {
+      const last = out[out.length - 1];
+      if (last !== undefined && last.level === lesson.level) {
+        last.lessons.push(lesson);
+      } else {
+        out.push({ level: lesson.level, lessons: [lesson] });
+      }
     }
-    return [...byLevel.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([level, rows]) => ({
-        level,
-        lessons: [...rows].sort((a, b) => a.number - b.number),
-      }));
-  }, [lessons]);
+    return out;
+  }, [visible]);
 
   if (loading) {
     return (
@@ -375,7 +517,7 @@ function TtmikLessonsTab({
   if (error !== null) {
     return <ErrorCard message={error} onRetry={refetch} />;
   }
-  if (groups.length === 0) {
+  if (ordered.length === 0) {
     return (
       <p className="km-reference__empty">
         <Bilingual en="No lessons available yet." kr="아직 레슨이 없어요." />
@@ -385,6 +527,21 @@ function TtmikLessonsTab({
 
   return (
     <div>
+      <div className="km-ttmik__controls">
+        {levels.length > 1 ? (
+          <FilterSelect
+            label="Level · 레벨"
+            placeholder="All levels · 전체"
+            options={levels.map((l) => ({
+              value: String(l),
+              label: `Level ${String(l)}`,
+            }))}
+            value={activeLevel}
+            onChange={onLevelChange}
+          />
+        ) : null}
+        <ListingStat shown={visible.length} total={filtered.length} />
+      </div>
       {groups.map((group) => (
         <div key={`level:${String(group.level)}`} style={{ marginBottom: 18 }}>
           <Eyebrow>
@@ -404,9 +561,13 @@ function TtmikLessonsTab({
                     type="button"
                     className="km-resources__list-open focusring"
                     onClick={() => {
-                      onOpen(lesson);
+                      void navigate(lessonPath(lesson));
                     }}
-                    aria-label={`Open lesson ${String(lesson.number)}: ${lesson.title}`}
+                    // aria-label REPLACES the button's subtree name, so it
+                    // must fold in the AudioPill's state itself — otherwise
+                    // "Audio"/"No audio" is visible to sighted users but
+                    // never announced to AT (SF-2).
+                    aria-label={`Open lesson ${String(lesson.number)}: ${lesson.title} (${lesson.hasAudio ? 'audio' : 'no audio'})`}
                   >
                     <span className="km-reference__row-en">
                       {lesson.number}.
@@ -422,19 +583,23 @@ function TtmikLessonsTab({
           </Card>
         </div>
       ))}
+      <div className="km-ttmik__pager">
+        <ShowMore
+          canShowMore={canShowMore}
+          onShowMore={showMore}
+          remaining={remaining}
+        />
+      </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Iyagi Episodes tab — numbered list
+// Iyagi listing — numbered list, 15-row window
 // ─────────────────────────────────────────────────────────────
 
-function IyagiEpisodesTab({
-  onOpen,
-}: {
-  onOpen: (episode: IyagiEpisode) => void;
-}): JSX.Element {
+function IyagiListing(): JSX.Element {
+  const navigate = useNavigate();
   const [episodes, setEpisodes] = useState<IyagiEpisode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -480,6 +645,12 @@ function IyagiEpisodesTab({
     [episodes],
   );
 
+  // F-072: 15-row window.
+  const { visible, canShowMore, showMore, remaining } = usePagination(
+    ordered,
+    LIST_WINDOW,
+  );
+
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
@@ -502,29 +673,44 @@ function IyagiEpisodesTab({
   }
 
   return (
-    <Card className="km-reference__list" variant="flat">
-      <ul>
-        {ordered.map((episode) => (
-          <li
-            key={`iyagi:${String(episode.number)}`}
-            className="km-reference__row"
-          >
-            <button
-              type="button"
-              className="km-resources__list-open focusring"
-              onClick={() => {
-                onOpen(episode);
-              }}
-              aria-label={`Open episode ${String(episode.number)}: ${episode.title}`}
+    <div>
+      <div className="km-ttmik__controls">
+        <ListingStat shown={visible.length} total={ordered.length} />
+      </div>
+      <Card className="km-reference__list" variant="flat">
+        <ul>
+          {visible.map((episode) => (
+            <li
+              key={`iyagi:${String(episode.number)}`}
+              className="km-reference__row"
             >
-              <span className="km-reference__row-en">#{episode.number}</span>
-              <span className="kr km-reference__row-kr">{episode.title}</span>
-              <AudioPill hasAudio={episode.hasAudio} />
-            </button>
-          </li>
-        ))}
-      </ul>
-    </Card>
+              <button
+                type="button"
+                className="km-resources__list-open focusring"
+                onClick={() => {
+                  void navigate(episodePath(episode.number));
+                }}
+                // Same fold-in as the ttmik row above (SF-2) — the
+                // aria-label replaces the subtree name, so the AudioPill's
+                // state has to travel inside it or AT never hears it.
+                aria-label={`Open episode ${String(episode.number)}: ${episode.title} (${episode.hasAudio ? 'audio' : 'no audio'})`}
+              >
+                <span className="km-reference__row-en">#{episode.number}</span>
+                <span className="kr km-reference__row-kr">{episode.title}</span>
+                <AudioPill hasAudio={episode.hasAudio} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <div className="km-ttmik__pager">
+        <ShowMore
+          canShowMore={canShowMore}
+          onShowMore={showMore}
+          remaining={remaining}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -544,6 +730,35 @@ function SkeletonCard(): JSX.Element {
     </Card>
   );
 }
+
+/**
+ * Everything the detail view renders. Discriminated on `corpus`: TTMIK
+ * lessons carry the highlights/transcript pair behind sub-tabs; Iyagi
+ * episodes carry one flat transcript plus the hosts line.
+ */
+type DetailData =
+  | {
+      corpus: 'ttmik';
+      /** Context line above the title, e.g. `Level 2 · Lesson 21`. */
+      eyebrow: string;
+      /** Korean counterpart of `eyebrow` — rendered via `<Bilingual/>`. */
+      krEyebrow: string;
+      title: string;
+      /** Fully-resolved `<audio src>`; null → transcript-only. */
+      audioSrc: string | null;
+      highlights: ListenSentence[];
+      transcript: TtmikTranscriptLine[];
+    }
+  | {
+      corpus: 'iyagi';
+      eyebrow: string;
+      krEyebrow: string;
+      title: string;
+      /** Hosts line; null when the episode has no hosts listed. */
+      subtitle: string | null;
+      audioSrc: string | null;
+      sentences: ListenSentence[];
+    };
 
 /** Fetch the selected unit's detail, normalised into `DetailData`. */
 async function loadDetail(
@@ -594,18 +809,34 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
   // which is what keeps the <audio> element's identity stable.
   const [lessonTab, setLessonTab] = useState<LessonTab>('highlights');
 
+  // Publish the open lesson/episode for the chat FAB's discuss-this-page
+  // popup (Slice 3). Selections come from the URL (no title), so publish
+  // once the detail lands — `null` while loading skips the publish, and
+  // unmount (back to browse) retracts it.
+  useChatContext(
+    data !== null
+      ? {
+          pageLabel: 'Listen · 듣기',
+          summary:
+            selection.corpus === 'ttmik'
+              ? `TTMIK Level ${String(selection.level)} Lesson ${String(
+                  selection.number,
+                )} — ${data.title}`
+              : `Iyagi Episode ${String(selection.number)} — ${data.title}`,
+        }
+      : null,
+  );
+
   // Add-to-bank state — page-local (see `useTapWord`'s header for why the
   // hook deliberately doesn't own it).
   const [minedIds, setMinedIds] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  // Tap-anything popover machine — the shared `useTapWord` hook (U3c: this
-  // view's inline copy of the machine, from which the hook was extracted in
-  // U3b, is replaced by the hook itself). Same contract as before: tap opens
-  // the popover with a loading stub, runs the abortable
-  // lemmatize → define → enrich chain, and aborts it on close / new tap /
-  // unmount. The chain never touches the <audio> element, so playback is
-  // unaffected by taps, resolutions, or aborts.
+  // Tap-anything popover machine — the shared `useTapWord` hook (U3c). Same
+  // contract as before: tap opens the popover with a loading stub, runs the
+  // abortable lemmatize → define → enrich chain, and aborts it on close /
+  // new tap / unmount. The chain never touches the <audio> element, so
+  // playback is unaffected by taps, resolutions, or aborts.
   const isMined = useCallback(
     (word: string) => minedIds.has(word),
     [minedIds],
@@ -627,16 +858,28 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
 
   const { toast } = useToast();
 
+  // SF-4: `selection` is a fresh object literal minted by `parseListenView`
+  // on every render of the Ttmik root, so depping the effect on the object
+  // itself would spuriously re-fire (abort the in-flight/completed fetch
+  // and refetch the SAME detail, flashing the skeleton) on any parent
+  // re-render that doesn't change the URL — this component is remounted
+  // wholesale (via `key={selectionKey(...)}` in the parent) whenever the
+  // selection genuinely changes, so within one mounted instance the value
+  // never actually changes. Dep on the same primitive string the parent
+  // keys the remount with, so identical selections never re-trigger this.
+  const detailKey = selectionKey(selection);
+
   useEffect(() => {
     const ctrl = new AbortController();
     ctrlRef.current?.abort();
     ctrlRef.current = ctrl;
     // Sync-to-external-system (network fetch) — same documented exception
-    // the Reference tabs use for their kickoff setState.
-    /* eslint-disable react-hooks/set-state-in-effect */
+    // the Reference tabs use for their kickoff setState. (No eslint-disable
+    // needed here: depping on the primitive `detailKey` rather than the
+    // `selection` object, per the SF-4 fix above, reads as a plain
+    // reactive effect to the lint rule's analysis.)
     setLoading(true);
     setError(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
     loadDetail(selection, ctrl.signal)
       .then((detail) => {
         if (ctrl.signal.aborted) return;
@@ -654,7 +897,9 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [selection, reloadTick]);
+    // `selection` intentionally excluded — see `detailKey` comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailKey, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -823,45 +1068,42 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
             />
           </p>
         ) : (
-          <>
-            <div
-              className="km-review__tabs"
-              role="tablist"
-              aria-label="Lesson content"
-            >
-              {visibleLessonTabs.map((t) => {
-                const selected = effectiveTab === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-                    onClick={() => {
-                      setLessonTab(t.id);
-                    }}
-                  >
-                    <Bilingual en={t.label} kr={t.kr} compact />
-                  </button>
-                );
-              })}
-            </div>
-
-            {effectiveTab === 'highlights' ? (
-              <HighlightsPanel
-                rows={orderedHighlights}
-                minedIds={minedIds}
-                onTapWord={onTapWord}
-              />
-            ) : (
-              <TranscriptPanel
-                lines={orderedTranscript}
-                minedIds={minedIds}
-                onTapWord={onTapWord}
-              />
-            )}
-          </>
+          // SF-3: mounts the shared `Tabs` primitive (F-032) instead of a
+          // hand-rolled tablist — full APG contract (roving tabindex,
+          // Arrow/Home/End, a real tabpanel) for free. `Tabs` renders its
+          // panel BELOW this point in the tree; the persistent `<audio>`
+          // above is a sibling rendered unconditionally before this whole
+          // branch, so its DOM position — and therefore its identity
+          // across Highlights ↔ Transcript switches — is untouched.
+          <Tabs
+            tabs={visibleLessonTabs.map((t) => ({
+              id: t.id,
+              label: <Bilingual en={t.label} kr={t.kr} compact />,
+            }))}
+            ariaLabel="Lesson content"
+            active={effectiveTab}
+            onChange={(id) => {
+              // `visibleLessonTabs` only ever supplies 'highlights' |
+              // 'transcript' ids, so this narrowing is exhaustive.
+              setLessonTab(id as LessonTab);
+            }}
+          >
+            {(activeId) =>
+              activeId === 'highlights' ? (
+                <HighlightsPanel
+                  rows={orderedHighlights}
+                  minedIds={minedIds}
+                  onTapWord={onTapWord}
+                />
+              ) : (
+                <TranscriptPanel
+                  lines={orderedTranscript}
+                  minedIds={minedIds}
+                  onTapWord={onTapWord}
+                />
+              )
+            }
+          </Tabs>
         )
       ) : (
         <SentencesPanel
@@ -1037,7 +1279,7 @@ function SentencesPanel({
  *   - `pair`/`dialog`→ clickable Korean + English below.
  *   - `prose`        → explanation note (clickable Korean when present,
  *                      English in the note style).
- *   - `romanization` → subtle italic line, NOT clickable (it isn't Korean).
+ *   - `romanization` → dropped (user directive: no romanization anywhere).
  */
 function TranscriptLineItem({
   line,

@@ -1,0 +1,77 @@
+/**
+ * Topik.css — Phase 3C-2 additions co-located with Topik.tsx.
+ * Base .km-topik layout/typography lives in styles/index.css (untouched);
+ * this file styles only the new landing chrome: the F-078 session tally,
+ * the B-029 size control row, the F-082 attempts link, and the honest
+ * pending copy shared by the stubbed views. Fully tokenized so both themes
+ * and every accent preset come free.
+ */
+
+/* ── F-078 session tally ─────────────────────────────────────── */
+.km-topik__tally {
+  margin-bottom: 12px;
+}
+
+.km-topik__tally-counts {
+  display: flex;
+  gap: 16px;
+  margin: 6px 0 4px;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.km-topik__tally-right {
+  color: var(--moss-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.km-topik__tally-wrong {
+  color: var(--danger-ink);
+}
+
+.km-topik__tally-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--paper-mute);
+}
+
+/* ── B-029 size control + F-082 entry row ────────────────────── */
+.km-topik__controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.km-topik__attempts-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  color: inherit;
+  text-decoration: none;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.km-topik__attempts-link:hover {
+  background: var(--paper-dim);
+}
+
+/* ── F-082 attempts view (honest pending bodies) ─────────────── */
+.km-topik__pending {
+  margin: 0 0 10px;
+  color: var(--paper-mute);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.km-topik__attempts-tile-title {
+  font-weight: 600;
+}

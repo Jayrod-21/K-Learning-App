@@ -1,48 +1,70 @@
 /**
- * Writing screen — TOPIK writing practice graded by the real
- * `POST /grade-writing` rubric grader (F-001: the endpoint existed server-side
- * but was orphaned; this screen is its first caller).
+ * Writing screen (Phase 3C-2 rework) — TOPIK writing practice graded by the
+ * real `POST /grade-writing` rubric grader, plus the Claude topic generator
+ * (F-073) and a deep-link seam for Today-generated topics (F-101).
  *
- * Flow:
- *   1. Pick a rubric (Q53 200–300자 description / Q54 600–700자 essay). The
- *      tab's curated task prompts are FETCHED from `GET /writing/prompts`
- *      (F-014 — the DB replaced the screen's old hardcoded list, so the Today
- *      tile and this screen can never advertise different tasks). Rotate
- *      within the fetched pool with "New prompt".
- *   2. Compose Korean in the textarea (soft-capped at the server's 5,000-char
- *      Zod bound; live 자 count against the rubric's target band).
- *   3. Submit → `services/writing.gradeWriting` (with the served prompt's
- *      `promptId`, so the persisted attempt links to its source row) → reveal
- *      the grade: the three official rubric dimensions (내용 및 과제수행 /
- *      전개구조 / 언어사용) with evidence + improvement notes, the total, an
- *      estimated TOPIK II level, and the overall comment.
- *   4. "Revise & regrade" returns to composing with the text preserved;
- *      "New prompt" advances the rotation and clears the sheet. When the
- *      rubric's pool holds exactly ONE prompt, "New prompt" is disabled
- *      (F-UP-017): rotating would wrap to the same task, so its only effect
- *      would be silently destroying the learner's draft.
+ * Layout: BackButton (F-024) → Topbar → two `Tabs` (Phase-1 primitive):
+ *
+ *   WRITE — the practice surface. The active task comes from ONE of two
+ *   sources, modeled as a discriminated union (`ActiveTask`):
+ *     - 'bank': a curated prompt from `GET /writing/prompts/random?rubric=`
+ *       (B-027: the old flow fetched the deterministic `/prompts` list and
+ *       pinned index 0, so every visit opened the SAME task; the pick is now
+ *       genuinely random, server-side). The Q53/Q54 radiogroup selects which
+ *       rubric's pool to draw from; "New prompt" redraws.
+ *     - 'generated': a Claude-authored topic — adopted from the on-page
+ *       `WritingTopicGenerator` via its "Write this topic" action (F-073),
+ *       or carried in through `location.state.generatedTopic` by the Today
+ *       writing tile (F-101; the history entry is scrubbed on mount so
+ *       Back/refresh can't replay the deep link — the Grammar drill-target
+ *       idiom). Generated topics are gradable: TOPIK-style ones grade
+ *       against their echoed rubric, free-writes against the Q54 rubric
+ *       (the server's own default) with an honest note — the rubric
+ *       taxonomy can't widen past Q53/Q54 without a server-enum + DB CHECK
+ *       change, which is deferred (see the F-117 note on `gradeRubricFor`).
+ *
+ *   The task header (eyebrow + target band + textarea label) derives from
+ *   the ACTIVE task's own rubric/mode — never from a hardcoded Q53 default
+ *   (the other half of B-027: the headers previously could not disagree with
+ *   the tab, so a mis-served prompt would have worn the wrong rubric).
+ *
+ *   RESPONSES — honest stub (F-074). Listing past attempts needs
+ *   `GET /writing/attempts`, which does not exist yet (only the aggregate
+ *   `GET /writing/series` does); ticketed as F-106. No fabricated rows.
+ *
+ * Draft-preservation contract (F-UP-017's successor): the learner's text is
+ * cleared ONLY when a genuinely different task lands after an explicit "New
+ * prompt" redraw, or when a generated topic is adopted. A redraw that
+ * returns the same prompt id, a rubric switch, and a tab round-trip (all
+ * compose state lives at page level, above the re-keyed tab panels) all
+ * preserve the draft. A failed redraw keeps it too — the error state is a
+ * prompt-area problem, never a destroyed sheet.
  *
  * Failure is failure-SAFE, never a dead end (mirrors the Grammar drill): a
  * grade failure keeps the learner's text, surfaces a fixed-string inline
  * `role="alert"` ErrorCard (429 renders the structured `retryAfter` seconds
- * when present — live now that B-016 populates it — never echoed server
- * prose), and Submit stays available as the retry. A prompts-fetch failure
- * renders its own fixed-copy ErrorCard with a Retry that re-runs the fetch.
- * There is no mock fallback for either leg — a fabricated grade (or a prompt
- * id that doesn't exist server-side) would be worse than an honest error.
+ * when present — never echoed server prose), and Grade stays available as
+ * the retry (aria-disabled while in flight, NOT `disabled`, so keyboard
+ * focus survives the round trip). A random-prompt fetch failure renders its
+ * own fixed-copy ErrorCard with a Retry; an empty rubric pool (404) renders
+ * an honest empty state. No mock fallback for any leg.
  *
  * Threat model:
  *   - The grade request is authenticated + user-scoped (session cookie via
- *     api.ts; `RequireAuth` gates the route) and expensive-bucket rate-limited
- *     server-side — the 429 path here is first-class, not exceptional.
- *   - All grade text (evidence fragments, improvements, overall comment) is
- *     Claude output relayed by our server — rendered ONLY through React text
- *     children, so it cannot escape into HTML. No dangerouslySetInnerHTML.
+ *     api.ts; `RequireAuth` gates the route) and expensive-bucket
+ *     rate-limited server-side — the 429 path here is first-class.
+ *   - All grade/topic text (evidence, improvements, comments, generated
+ *     prompts) is Claude output relayed by our server — rendered ONLY
+ *     through React text children, so it cannot escape into HTML. No
+ *     dangerouslySetInnerHTML.
+ *   - `location.state` is attacker-shapeable in principle (any in-app code
+ *     can navigate with state), so `readGeneratedTopic` narrows it field by
+ *     field at runtime — a malformed payload falls back to the bank flow,
+ *     never a crash or a type lie.
  *   - Error copy is a fixed lookup keyed on `ApiError.code`/`status`; server
- *     message strings are never echoed (mirrors the Login.messageFor contract).
+ *     message strings are never echoed (the Login.messageFor contract).
  *   - The sample is soft-capped by `maxLength` (5,000 — the server's own Zod
- *     ceiling) so a runaway paste can't balloon the request; the server bound
- *     remains the source of truth.
+ *     ceiling) so a runaway paste can't balloon the request.
  */
 import {
   useCallback,
@@ -51,7 +73,10 @@ import {
   useRef,
   useState,
   type JSX,
+  type KeyboardEvent,
 } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
@@ -60,16 +85,23 @@ import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
 import { ErrorCard } from '../components/ErrorCard';
+import { Tabs, type TabItem } from '../components/Tabs';
+import { WritingTopicGenerator } from '../components/WritingTopicGenerator';
 import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
-import { fetchWritingPrompts, gradeWriting } from '../services/writing';
-import type { WritingPromptDTO } from '../services/writing';
+import { fetchRandomWritingPrompt, gradeWriting } from '../services/writing';
 import type {
+  GeneratedWritingPrompt,
+  WritingPromptDTO,
+} from '../services/writing';
+import type {
+  GradeWritingBody,
   TopikWritingRubric,
   WritingDimensionScore,
   WritingEstimatedLevel,
   WritingGradeResult,
 } from '../types/domain';
+import './Writing.css';
 
 /**
  * Server-side Zod ceiling on `sample` (gradeWriting.ts: 1..5000). The textarea
@@ -99,8 +131,29 @@ const RUBRIC_META: Record<
   },
 };
 
-/** Rubric tab order — Q53 first (the shorter, friendlier on-ramp). */
+/** Rubric radio order — Q53 first (the shorter, friendlier on-ramp). */
 const RUBRICS: readonly TopikWritingRubric[] = ['topik_ii_53', 'topik_ii_54'];
+
+/**
+ * Rubric used to GRADE a task. Bank prompts carry their own; generated
+ * TOPIK-style topics echo the rubric the server authored against; free-writes
+ * grade against Q54 — the server's own `/grade-writing` default — because the
+ * rubric taxonomy is a closed Q53/Q54 enum end to end (server Zod + DB
+ * CHECK). Widening it (e.g. a `general` rubric with its own dimensions) is a
+ * SCHEMA change, deferred and ticketed as F-117; until then the free-write
+ * surface says so honestly (the `km-writing__note` line) instead of
+ * pretending a bespoke rubric exists.
+ */
+const DEFAULT_GENERATED_RUBRIC: TopikWritingRubric = 'topik_ii_54';
+
+/** The two top-level sections (Phase-1 `Tabs` primitive). */
+const WRITING_TABS: ReadonlyArray<TabItem> = [
+  { id: 'write', label: <Bilingual en="Write" kr="쓰기" compact /> },
+  {
+    id: 'responses',
+    label: <Bilingual en="My responses" kr="내 답안" compact />,
+  },
+];
 
 /**
  * Phases of the grade lifecycle. Deliberately NO 'error' phase (mirrors the
@@ -120,6 +173,89 @@ const LEVEL_META: Record<
   L5: { label: 'TOPIK 5', tone: 'gold' },
   L6: { label: 'TOPIK 6', tone: 'green' },
 };
+
+/**
+ * The task on the compose surface — the union the whole write panel renders
+ * from. `source` decides the grade body (bank prompts link the persisted
+ * attempt via `promptId`; generated topics have no source row) and the
+ * header meta (the ACTUAL rubric/mode, never a hardcoded default — B-027).
+ */
+type ActiveTask =
+  | { source: 'bank'; prompt: WritingPromptDTO }
+  | { source: 'generated'; prompt: GeneratedWritingPrompt };
+
+/** Prompt-area lifecycle. 'empty' is the honest no-active-prompts 404. */
+type TaskState =
+  | { phase: 'loading' }
+  | { phase: 'empty' }
+  | { phase: 'error'; message: string }
+  | { phase: 'ready'; task: ActiveTask };
+
+/** The rubric a task grades against (see DEFAULT_GENERATED_RUBRIC). */
+function gradeRubricFor(task: ActiveTask): TopikWritingRubric {
+  if (task.source === 'bank') return task.prompt.rubric;
+  return task.prompt.rubric ?? DEFAULT_GENERATED_RUBRIC;
+}
+
+/** What the task header shows — derived from the task itself (B-027). */
+interface TaskHeaderMeta {
+  eyebrow: string;
+  krEyebrow: string;
+  /** Target length band ("200–300자"); null when the task carries none. */
+  target: string | null;
+}
+
+function headerMetaFor(task: ActiveTask): TaskHeaderMeta {
+  if (task.source === 'bank') {
+    const m = RUBRIC_META[task.prompt.rubric];
+    return { eyebrow: m.eyebrow, krEyebrow: m.krEyebrow, target: m.target };
+  }
+  if (task.prompt.mode === 'topik') {
+    const m = RUBRIC_META[task.prompt.rubric ?? DEFAULT_GENERATED_RUBRIC];
+    return {
+      eyebrow: m.eyebrow,
+      krEyebrow: m.krEyebrow,
+      // Prefer the topic's own length hint; fall back to the rubric band.
+      target: task.prompt.lengthHint ?? m.target,
+    };
+  }
+  return {
+    eyebrow: 'Free write',
+    krEyebrow: '자유 주제',
+    target: task.prompt.lengthHint,
+  };
+}
+
+/** The shape we look for in `location.state` when a topic is deep-linked. */
+interface WritingLocationState {
+  generatedTopic?: GeneratedWritingPrompt;
+}
+
+/**
+ * Narrow an opaque `location.state` to a `GeneratedWritingPrompt`, or null
+ * when absent/malformed (F-101). Field-by-field runtime checks — router
+ * state is not a trusted boundary, so a bad payload degrades to the bank
+ * flow instead of crashing the page or lying to the grade route.
+ */
+function readGeneratedTopic(state: unknown): GeneratedWritingPrompt | null {
+  if (typeof state !== 'object' || state === null) return null;
+  const c = (state as WritingLocationState).generatedTopic;
+  if (
+    typeof c === 'object' &&
+    c !== null &&
+    typeof c.promptKr === 'string' &&
+    c.promptKr.trim() !== '' &&
+    typeof c.promptEn === 'string' &&
+    (c.mode === 'topik' || c.mode === 'general') &&
+    (c.lengthHint === null || typeof c.lengthHint === 'string') &&
+    (c.rubric === null ||
+      c.rubric === 'topik_ii_53' ||
+      c.rubric === 'topik_ii_54')
+  ) {
+    return c;
+  }
+  return null;
+}
 
 /**
  * Fixed-string error copy keyed on the normalised `ApiError` — server prose is
@@ -144,92 +280,136 @@ function messageFor(err: ApiError): string {
 }
 
 /**
- * Fixed-string error copy for the prompts fetch (same contract as
- * `messageFor` — never echoed server prose). Loading tasks is a cheap GET,
- * so the vocabulary is "retry", not "wait".
+ * Fixed-string error copy for the random-prompt fetch (same contract as
+ * `messageFor` — never echoed server prose). The empty-pool 404 is handled
+ * BEFORE this lookup (it renders the honest empty state, not an error).
  */
 function promptsMessageFor(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'network') {
-      return 'Network unreachable. Reconnect and retry to load the writing tasks.';
+      return 'Network unreachable. Reconnect and retry to load a writing task.';
     }
     if (err.status === 401) {
-      return 'Your session has expired. Sign in again to load the writing tasks.';
+      return 'Your session has expired. Sign in again to load a writing task.';
     }
   }
-  return "The writing tasks couldn't be loaded. Try again in a moment.";
+  return "A writing task couldn't be loaded. Try again in a moment.";
 }
 
 function Writing(): JSX.Element {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // F-101: snapshot a Today-carried topic ONCE on mount (lazy initializer,
+  // not a render-time read) so the history-state scrub below can't yank it
+  // out from under the compose surface — the Grammar drill-target idiom.
+  const [seedTopic] = useState<GeneratedWritingPrompt | null>(() =>
+    readGeneratedTopic(location.state),
+  );
+
+  // Which source feeds the compose surface. 'bank' drives the random-prompt
+  // fetch effect; 'generated' parks it (a generated task is already local).
+  const [source, setSource] = useState<'bank' | 'generated'>(
+    seedTopic !== null ? 'generated' : 'bank',
+  );
+  // The bank rubric the radiogroup selects — which pool "New prompt" draws
+  // from. Independent of the ACTIVE task's rubric (a generated Q54 topic can
+  // sit on the surface while the radios still show the learner's last pick).
   const [rubric, setRubric] = useState<TopikWritingRubric>('topik_ii_53');
-  // Per-rubric prompt rotation cursor, so switching tabs doesn't lose the
-  // learner's place in either task list. Pure UI state — nothing persisted.
-  const [taskIdx, setTaskIdx] = useState<Record<TopikWritingRubric, number>>({
-    topik_ii_53: 0,
-    topik_ii_54: 0,
-  });
+  const [taskState, setTaskState] = useState<TaskState>(
+    seedTopic !== null
+      ? { phase: 'ready', task: { source: 'generated', prompt: seedTopic } }
+      : { phase: 'loading' },
+  );
+  // Monotonic redraw/retry trigger for the fetch effect (the TTMIK idiom).
+  const [drawTick, setDrawTick] = useState(0);
+
   const [sample, setSample] = useState('');
   const [phase, setPhase] = useState<WritingPhase>('composing');
   const [grade, setGrade] = useState<WritingGradeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Prompts for the CURRENT rubric tab, fetched from `GET /writing/prompts`
-  // (F-014). `null` while loading / after a failure; the fetch effect below
-  // re-keys on the rubric, and `promptsTick` is the Retry trigger (the same
-  // monotonic-reload idiom the TTMIK tabs use).
-  const [prompts, setPrompts] = useState<WritingPromptDTO[] | null>(null);
-  const [promptsLoading, setPromptsLoading] = useState(true);
-  const [promptsError, setPromptsError] = useState<string | null>(null);
-  const [promptsTick, setPromptsTick] = useState(0);
-
   const textareaId = useId();
   const gradeId = useId();
+  const rubricGroupId = useId();
 
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const rubricRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  // The last-served bank prompt id — lets a redraw that returns the SAME
+  // prompt keep the learner's draft (F-UP-017's successor: never destroy a
+  // draft for a task that didn't change).
+  const lastBankIdRef = useRef<number | null>(null);
+  // Set by "New prompt": clear the sheet when the redraw lands a DIFFERENT
+  // task. Rubric switches and retries leave it false (draft preserved).
+  const clearOnArrivalRef = useRef(false);
+  // Set by adopt: move focus into the textarea after the commit (the user
+  // just said "write this" — landing them in the sheet is the affordance).
+  const pendingFocusRef = useRef(false);
+
+  // Scrub the consumed deep-link topic out of the history entry so a Back or
+  // reload doesn't replay it (the topic itself lives on in `seedTopic`).
   useEffect(() => {
-    // Stale-fetch safety needs no ref: the cleanup below aborts this
-    // controller before every re-run and on unmount (React guarantee).
+    if (readGeneratedTopic(location.state) !== null) {
+      void navigate(location.pathname, { replace: true, state: null });
+    }
+    // Mount-only: the topic was captured into state above; re-running on
+    // location changes would re-scrub (harmless) or fight in-page navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Bank prompt fetch — one random active prompt for the selected rubric
+  // (B-027). Re-keys on source/rubric/drawTick; parked while a generated
+  // task owns the surface. The cleanup aborts before every re-run and on
+  // unmount, so a stale settle can never clobber newer state.
+  useEffect(() => {
+    if (source !== 'bank') return;
     const ctrl = new AbortController();
     // Sync-to-external-system (network fetch) — same documented exception
     // the Reference/TTMIK tabs use for their kickoff setState.
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setPromptsLoading(true);
-    setPromptsError(null);
-    setPrompts(null);
-    /* eslint-enable react-hooks/set-state-in-effect */
-    fetchWritingPrompts(rubric, ctrl.signal)
-      .then((rows) => {
+    setTaskState({ phase: 'loading' });
+    fetchRandomWritingPrompt(rubric, ctrl.signal)
+      .then((prompt) => {
         if (ctrl.signal.aborted) return;
-        setPrompts(rows);
-        setPromptsLoading(false);
+        const changed = prompt.id !== lastBankIdRef.current;
+        lastBankIdRef.current = prompt.id;
+        setTaskState({ phase: 'ready', task: { source: 'bank', prompt } });
+        if (clearOnArrivalRef.current && changed) {
+          // An explicit "New prompt" landed a genuinely new task — fresh sheet.
+          setSample('');
+          setGrade(null);
+          setError(null);
+          setPhase('composing');
+        }
+        clearOnArrivalRef.current = false;
       })
       .catch((err: unknown) => {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
-        setPromptsError(promptsMessageFor(err));
-        setPromptsLoading(false);
+        clearOnArrivalRef.current = false;
+        if (err instanceof ApiError && err.status === 404) {
+          // The rubric's active pool is empty — honest empty state, not an
+          // error card with a retry that can never succeed.
+          setTaskState({ phase: 'empty' });
+          return;
+        }
+        setTaskState({ phase: 'error', message: promptsMessageFor(err) });
       });
     return () => {
       ctrl.abort();
     };
-  }, [rubric, promptsTick]);
+  }, [source, rubric, drawTick]);
 
-  /** Retry for a failed prompts fetch — re-runs the effect without a reload. */
-  const retryPrompts = useCallback((): void => {
-    setPromptsTick((t) => t + 1);
-  }, []);
+  // Post-commit focus hand-off for `adoptTopic` (flag-guarded; no deps array
+  // so it observes every commit, and the guard makes it a no-op otherwise).
+  useEffect(() => {
+    if (pendingFocusRef.current) {
+      pendingFocusRef.current = false;
+      textareaRef.current?.focus();
+    }
+  });
 
-  // The task on screen: the rotation cursor over the fetched pool. `null`
-  // while loading, after a fetch failure, or when the rubric's pool is empty
-  // — every consumer below guards on it (no grade without a served prompt).
-  const task =
-    prompts !== null && prompts.length > 0
-      ? // Non-null: `idx % length` is a valid index of a non-empty array
-        // (same invariant as Grammar's `pool[idx % pool.length]!`).
-        prompts[taskIdx[rubric] % prompts.length]!
-      : null;
-
-  // In-flight grade controller: a re-submit or unmount aborts the stale call
-  // so its settle can't clobber newer state.
+  // In-flight grade controller: a re-submit, task change, or unmount aborts
+  // the stale call so its settle can't clobber newer state.
   const ctrlRef = useRef<AbortController | null>(null);
   useEffect(() => {
     return () => {
@@ -238,8 +418,10 @@ function Writing(): JSX.Element {
   }, []);
 
   const submit = useCallback(async (): Promise<void> => {
+    if (taskState.phase !== 'ready') return;
     const trimmed = sample.trim();
-    if (trimmed.length === 0 || task === null) return;
+    if (trimmed.length === 0) return;
+    const task = taskState.task;
     ctrlRef.current?.abort();
     const ctrl = new AbortController();
     ctrlRef.current = ctrl;
@@ -247,12 +429,23 @@ function Writing(): JSX.Element {
     setError(null);
     setGrade(null);
     try {
-      const res = await gradeWriting(
-        // `promptId` links the persisted attempt to its `writing_prompts`
-        // source row (F-014); `promptKr` is the question the grader needs.
-        { prompt: task.promptKr, sample: trimmed, rubric, promptId: task.id },
-        ctrl.signal,
-      );
+      // Bank prompts link the persisted attempt to their `writing_prompts`
+      // source row via `promptId` (F-014); generated topics have no source
+      // row, so the key is OMITTED (the route's schema is .strict()).
+      const body: GradeWritingBody =
+        task.source === 'bank'
+          ? {
+              prompt: task.prompt.promptKr,
+              sample: trimmed,
+              rubric: task.prompt.rubric,
+              promptId: task.prompt.id,
+            }
+          : {
+              prompt: task.prompt.promptKr,
+              sample: trimmed,
+              rubric: gradeRubricFor(task),
+            };
+      const res = await gradeWriting(body, ctrl.signal);
       if (ctrl.signal.aborted) return;
       setGrade(res.result);
       setPhase('graded');
@@ -267,7 +460,7 @@ function Writing(): JSX.Element {
       );
       setPhase('composing');
     }
-  }, [sample, task, rubric]);
+  }, [sample, taskState]);
 
   /** Back to composing with the text intact, for a revise-and-regrade pass. */
   const revise = useCallback((): void => {
@@ -276,37 +469,93 @@ function Writing(): JSX.Element {
     setPhase('composing');
   }, []);
 
-  /** Advance the current rubric's prompt rotation and clear the sheet. */
+  /**
+   * Redraw a random prompt from the selected rubric's pool. The sheet clears
+   * only if the redraw lands a DIFFERENT prompt (see the fetch effect); a
+   * failed redraw keeps the draft too.
+   */
   const nextPrompt = useCallback((): void => {
     ctrlRef.current?.abort();
-    setTaskIdx((prev) => ({ ...prev, [rubric]: prev[rubric] + 1 }));
-    setSample('');
-    setGrade(null);
+    clearOnArrivalRef.current = true;
     setError(null);
-    setPhase('composing');
-  }, [rubric]);
+    setDrawTick((t) => t + 1);
+  }, []);
 
-  /** Switch rubric tabs. An in-flight grade for the old task is aborted. */
-  const switchRubric = useCallback(
+  /** Retry for a failed prompt fetch — re-runs the effect, draft untouched. */
+  const retryPrompt = useCallback((): void => {
+    setDrawTick((t) => t + 1);
+  }, []);
+
+  /**
+   * Select a bank rubric (also the way BACK to bank tasks from a generated
+   * topic). Preserves the draft — switching pools is exploratory, and
+   * silently destroying text would repeat the F-UP-017 bug class.
+   */
+  const selectRubric = useCallback(
     (next: TopikWritingRubric): void => {
-      if (next === rubric) return;
+      if (source === 'bank' && next === rubric) return;
       ctrlRef.current?.abort();
+      clearOnArrivalRef.current = false;
+      setSource('bank');
       setRubric(next);
       setGrade(null);
       setError(null);
       setPhase('composing');
     },
-    [rubric],
+    [source, rubric],
   );
+
+  /**
+   * F-073 / F-101: a generated topic becomes the active gradable task. An
+   * explicit user action ("Write this topic"), so the sheet starts fresh and
+   * focus lands in it.
+   */
+  const adoptTopic = useCallback((topic: GeneratedWritingPrompt): void => {
+    ctrlRef.current?.abort();
+    clearOnArrivalRef.current = false;
+    setSource('generated');
+    setTaskState({ phase: 'ready', task: { source: 'generated', prompt: topic } });
+    setSample('');
+    setGrade(null);
+    setError(null);
+    setPhase('composing');
+    pendingFocusRef.current = true;
+  }, []);
+
+  // Roving-tabindex arrows on the rubric radios (WAI-ARIA radiogroup — the
+  // same segmented-control pattern as WritingTopicGenerator's style choice).
+  const onRubricKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
+    const current = RUBRICS.indexOf(rubric);
+    let next: number | null = null;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      next = (current + 1) % RUBRICS.length;
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      next = (current - 1 + RUBRICS.length) % RUBRICS.length;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    const target = RUBRICS[next];
+    if (target === undefined) return;
+    selectRubric(target);
+    rubricRefs.current[next]?.focus();
+  };
 
   const grading = phase === 'grading';
   const graded = phase === 'graded' && grade !== null;
-  const canSubmit = !grading && sample.trim().length > 0 && task !== null;
-  // F-UP-017: with exactly one prompt in the rubric's pool, "rotate" wraps to
-  // the SAME prompt — the button's only effect would be silently clearing the
-  // learner's draft. Disable it instead of lying; the pool size is server
-  // truth, so this re-enables by itself the moment a second prompt exists.
-  const canRotatePrompt = prompts !== null && prompts.length > 1;
+  const canSubmit =
+    !grading && sample.trim().length > 0 && taskState.phase === 'ready';
+
+  const task = taskState.phase === 'ready' ? taskState.task : null;
+  // Header meta comes from the ACTUAL task (B-027); while no task is on the
+  // surface (loading/error/empty) it previews the selected bank rubric.
+  const headerMeta =
+    task !== null
+      ? headerMetaFor(task)
+      : {
+          eyebrow: RUBRIC_META[rubric].eyebrow,
+          krEyebrow: RUBRIC_META[rubric].krEyebrow,
+          target: RUBRIC_META[rubric].target,
+        };
 
   return (
     <section
@@ -314,6 +563,13 @@ function Writing(): JSX.Element {
       aria-labelledby="writing-title"
       style={{ position: 'relative' }}
     >
+      {/* F-024: Writing is a nested LEARN view; the launcher is an overlay
+          (not a route), so the control is history-back with the guarded
+          home fallback for deep links. */}
+      <div className="km-writing__nav">
+        <BackButton />
+      </div>
+
       <Topbar
         krTitle="쓰기"
         title="Writing"
@@ -323,167 +579,297 @@ function Writing(): JSX.Element {
         }
       />
 
-      {/* Rubric tabs ─────────────────────────────────────────── */}
-      <div className="km-review__tabs" role="group" aria-label="Writing task type">
-        {RUBRICS.map((r) => {
-          const selected = rubric === r;
-          return (
-            <button
-              key={r}
-              type="button"
-              aria-pressed={selected}
-              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+      <Tabs tabs={WRITING_TABS} ariaLabel="Writing sections">
+        {(activeTab) =>
+          activeTab === 'responses' ? (
+            <ResponsesStub />
+          ) : (
+            <>
+              {/* Rubric radiogroup ───────────────────────────────── */}
+              <div
+                className="km-review__tabs"
+                role="radiogroup"
+                aria-label="Writing task type"
+                id={rubricGroupId}
+              >
+                {RUBRICS.map((r, i) => {
+                  const selected = rubric === r;
+                  return (
+                    <button
+                      key={r}
+                      ref={(el) => {
+                        rubricRefs.current[i] = el;
+                      }}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      tabIndex={selected ? 0 : -1}
+                      className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
+                      onClick={() => {
+                        selectRubric(r);
+                      }}
+                      onKeyDown={onRubricKeyDown}
+                    >
+                      {RUBRIC_META[r].label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Task prompt + compose sheet ─────────────────────── */}
+              <Card variant="default" style={{ marginBottom: 16 }}>
+                <Eyebrow>
+                  <Bilingual
+                    en={headerMeta.eyebrow}
+                    kr={headerMeta.krEyebrow}
+                  />
+                </Eyebrow>
+                {taskState.phase === 'loading' ? (
+                  <div className="km-grammar__state" role="status">
+                    <Bilingual
+                      en="Loading a writing task…"
+                      kr="쓰기 과제를 불러오는 중…"
+                    />
+                  </div>
+                ) : taskState.phase === 'error' ? (
+                  <ErrorCard
+                    message={taskState.message}
+                    onRetry={retryPrompt}
+                  />
+                ) : taskState.phase === 'empty' ? (
+                  // The rubric's active pool is empty (404) — an honest
+                  // empty state, not a spinner or a doomed retry loop.
+                  <p className="km-reference__empty">
+                    <Bilingual
+                      en="No writing tasks are available for this section yet."
+                      kr="아직 이 영역의 쓰기 과제가 없어요."
+                    />
+                  </p>
+                ) : (
+                  <ComposeSheet
+                    task={taskState.task}
+                    headerMeta={headerMeta}
+                    textareaId={textareaId}
+                    textareaRef={textareaRef}
+                    gradeId={gradeId}
+                    sample={sample}
+                    onSampleChange={setSample}
+                    phase={phase}
+                    graded={graded}
+                    error={error}
+                    canSubmit={canSubmit}
+                    onSubmit={() => void submit()}
+                    onRevise={revise}
+                    onNextPrompt={nextPrompt}
+                  />
+                )}
+              </Card>
+
+              {/* Grade reveal — persistent polite live region so screen
+                  readers hear the result land without a focus jump. */}
+              <div aria-live="polite">
+                {graded ? <GradePanel grade={grade} gradeId={gradeId} /> : null}
+              </div>
+
+              {/* F-073: the shared topic generator (same engine as the
+                  Today tile) — "Write this topic" adopts the result above. */}
+              <div className="km-writing__topicgen">
+                <WritingTopicGenerator onUseTopic={adoptTopic} />
+              </div>
+            </>
+          )
+        }
+      </Tabs>
+    </section>
+  );
+}
+
+/** Props for the compose sheet — all state lives in the page (it must
+ *  survive tab round-trips through the re-keyed `Tabs` panels). */
+interface ComposeSheetProps {
+  task: ActiveTask;
+  headerMeta: TaskHeaderMeta;
+  textareaId: string;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  gradeId: string;
+  sample: string;
+  onSampleChange: (next: string) => void;
+  phase: WritingPhase;
+  graded: boolean;
+  error: string | null;
+  canSubmit: boolean;
+  onSubmit: () => void;
+  onRevise: () => void;
+  onNextPrompt: () => void;
+}
+
+/** The prompt text + textarea + grade controls for the active task. */
+function ComposeSheet({
+  task,
+  headerMeta,
+  textareaId,
+  textareaRef,
+  gradeId,
+  sample,
+  onSampleChange,
+  phase,
+  graded,
+  error,
+  canSubmit,
+  onSubmit,
+  onRevise,
+  onNextPrompt,
+}: ComposeSheetProps): JSX.Element {
+  const grading = phase === 'grading';
+  const isGenerated = task.source === 'generated';
+  // Bank prompts may lack a gloss (null); generated ones always carry one.
+  const gloss: string | null = task.prompt.promptEn;
+  return (
+    <>
+      {isGenerated ? (
+        <div className="km-writing__srcrow">
+          <Pill tone="gold">
+            <Bilingual en="Generated topic" kr="만든 주제" compact />
+          </Pill>
+          {task.prompt.mode === 'general' ? (
+            <Pill>
+              <Bilingual en="Free write" kr="자유 주제" compact />
+            </Pill>
+          ) : null}
+        </div>
+      ) : null}
+
+      <p className="kr km-grammar__context">{task.prompt.promptKr}</p>
+      {gloss !== null && gloss !== '' ? (
+        // Optional English gloss of the task — muted, secondary to the
+        // Korean. Server/Claude text rendered as React children only.
+        <p className="km-writing__gloss">{gloss}</p>
+      ) : null}
+
+      <label
+        htmlFor={textareaId}
+        className="km-grammar__instruction"
+        style={{ display: 'block' }}
+      >
+        <Bilingual
+          en={
+            headerMeta.target !== null
+              ? `Your writing in Korean · target ${headerMeta.target}`
+              : 'Your writing in Korean'
+          }
+          kr={
+            headerMeta.target !== null
+              ? `한국어로 쓰기 · 목표 ${headerMeta.target}`
+              : '한국어로 쓰기'
+          }
+        />
+      </label>
+      <textarea
+        id={textareaId}
+        ref={textareaRef}
+        className="kr km-grammar__textarea focusring"
+        value={sample}
+        onChange={(e) => {
+          onSampleChange(e.target.value);
+        }}
+        placeholder="여기에 한국어로 쓰십시오…"
+        rows={gradeRubricFor(task) === 'topik_ii_54' ? 10 : 6}
+        // readOnly, NOT disabled: the learner may be focused here when the
+        // grade kicks off — disabling would drop focus to <body> (WCAG
+        // 2.4.3). Read-only keeps the text selectable while it's graded.
+        readOnly={grading || graded}
+        aria-describedby={graded ? gradeId : undefined}
+        // Soft cap at the server's own Zod ceiling (1..5000) — defensive;
+        // keeps a runaway paste from authoring a guaranteed 400.
+        maxLength={SAMPLE_MAX_CHARS}
+      />
+      <div className="km-writing__count">{sample.length}자</div>
+
+      {isGenerated && task.prompt.mode === 'general' ? (
+        // Honest note: the grader's rubric taxonomy is Q53/Q54 only (server
+        // enum + DB CHECK); widening it is deferred — ticketed F-117.
+        <p className="km-writing__note">
+          <Bilingual
+            en="Free writes are graded with the TOPIK Q54 essay rubric for now."
+            kr="자유 주제 글은 당분간 TOPIK 54번 기준으로 채점돼요."
+          />
+        </p>
+      ) : null}
+
+      {grading ? (
+        <div className="km-grammar__state" role="status">
+          <Bilingual
+            en="Grading your writing… this can take up to a minute."
+            kr="채점 중이에요… 1분 정도 걸릴 수 있어요."
+          />
+        </div>
+      ) : null}
+
+      {error !== null ? <ErrorCard message={error} /> : null}
+
+      <div className="km-grammar__footer">
+        {!graded ? (
+          <>
+            {task.source === 'bank' ? (
+              <Button variant="ghost" onClick={onNextPrompt} disabled={grading}>
+                <Bilingual en="New prompt" kr="새 과제" />
+              </Button>
+            ) : null}
+            <Button
+              variant="gold"
+              // aria-disabled while grading (focus survives the round trip;
+              // the click guard is the real re-entry gate); hard-disabled
+              // only while there is nothing submittable to begin with.
+              aria-disabled={grading || undefined}
+              disabled={!grading && !canSubmit}
               onClick={() => {
-                switchRubric(r);
+                if (grading) return; // aria-disabled doesn't block clicks.
+                onSubmit();
               }}
             >
-              {RUBRIC_META[r].label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Task prompt ─────────────────────────────────────────── */}
-      <Card variant="default" style={{ marginBottom: 16 }}>
-        <Eyebrow>
-          <Bilingual
-            en={RUBRIC_META[rubric].eyebrow}
-            kr={RUBRIC_META[rubric].krEyebrow}
-          />
-        </Eyebrow>
-        {promptsLoading ? (
-          <div className="km-grammar__state" role="status">
-            <Bilingual
-              en="Loading writing tasks…"
-              kr="쓰기 과제를 불러오는 중…"
-            />
-          </div>
-        ) : promptsError !== null ? (
-          <ErrorCard message={promptsError} onRetry={retryPrompts} />
-        ) : task === null ? (
-          // Fetched fine, but the rubric's active pool is empty — an honest
-          // empty state, not a spinner that never resolves.
-          <p className="km-reference__empty">
-            <Bilingual
-              en="No writing tasks are available for this section yet."
-              kr="아직 이 영역의 쓰기 과제가 없어요."
-            />
-          </p>
+              {grading ? (
+                <Bilingual en="Grading…" kr="채점 중…" />
+              ) : (
+                <Bilingual en="Grade my writing" kr="채점하기" />
+              )}
+            </Button>
+          </>
         ) : (
           <>
-            <p className="kr km-grammar__context">{task.promptKr}</p>
-            {task.promptEn !== null ? (
-              // Optional English gloss of the task — muted, secondary to the
-              // Korean. Server text rendered as React children only (escaped).
-              <p
-                style={{
-                  fontSize: 12,
-                  color: 'var(--paper-mute)',
-                  marginTop: -6,
-                  marginBottom: 12,
-                }}
-              >
-                {task.promptEn}
-              </p>
+            <Button variant="ghost" onClick={onRevise}>
+              <Bilingual en="Revise & regrade" kr="고쳐서 다시 채점" />
+            </Button>
+            {task.source === 'bank' ? (
+              <Button variant="gold" onClick={onNextPrompt}>
+                <Bilingual en="New prompt" kr="새 과제" />
+              </Button>
             ) : null}
-
-            <label
-              htmlFor={textareaId}
-              className="km-grammar__instruction"
-              style={{ display: 'block' }}
-            >
-              <Bilingual
-                en={`Your writing in Korean · target ${RUBRIC_META[rubric].target}`}
-                kr={`한국어로 쓰기 · 목표 ${RUBRIC_META[rubric].target}`}
-              />
-            </label>
-            <textarea
-              id={textareaId}
-              className="kr km-grammar__textarea focusring"
-              value={sample}
-              onChange={(e) => {
-                setSample(e.target.value);
-              }}
-              placeholder="여기에 한국어로 쓰십시오…"
-              rows={rubric === 'topik_ii_54' ? 10 : 6}
-              disabled={grading || graded}
-              aria-describedby={graded ? gradeId : undefined}
-              // Soft cap at the server's own Zod ceiling (1..5000) — defensive;
-              // keeps a runaway paste from authoring a guaranteed 400.
-              maxLength={SAMPLE_MAX_CHARS}
-            />
-            <div
-              style={{
-                fontSize: 12,
-                color: 'var(--paper-mute)',
-                marginTop: -8,
-                marginBottom: 12,
-              }}
-            >
-              {sample.length}자
-            </div>
-
-            {grading ? (
-              <div className="km-grammar__state" role="status">
-                <Bilingual
-                  en="Grading your writing… this can take up to a minute."
-                  kr="채점 중이에요… 1분 정도 걸릴 수 있어요."
-                />
-              </div>
-            ) : null}
-
-            {error ? <ErrorCard message={error} /> : null}
-
-            <div className="km-grammar__footer">
-              {!graded ? (
-                <>
-                  <Button
-                    variant="ghost"
-                    onClick={nextPrompt}
-                    disabled={grading || !canRotatePrompt}
-                    title={
-                      canRotatePrompt
-                        ? undefined
-                        : 'Only one task is available for this section right now.'
-                    }
-                  >
-                    <Bilingual en="New prompt" kr="새 과제" />
-                  </Button>
-                  <Button variant="gold" onClick={() => void submit()} disabled={!canSubmit}>
-                    {grading ? (
-                      <Bilingual en="Grading…" kr="채점 중…" />
-                    ) : (
-                      <Bilingual en="Grade my writing" kr="채점하기" />
-                    )}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button variant="ghost" onClick={revise}>
-                    <Bilingual en="Revise & regrade" kr="고쳐서 다시 채점" />
-                  </Button>
-                  <Button
-                    variant="gold"
-                    onClick={nextPrompt}
-                    disabled={!canRotatePrompt}
-                    title={
-                      canRotatePrompt
-                        ? undefined
-                        : 'Only one task is available for this section right now.'
-                    }
-                  >
-                    <Bilingual en="New prompt" kr="새 과제" />
-                  </Button>
-                </>
-              )}
-            </div>
           </>
         )}
-      </Card>
+      </div>
+    </>
+  );
+}
 
-      {/* Grade reveal ────────────────────────────────────────── */}
-      {graded ? <GradePanel grade={grade} gradeId={gradeId} /> : null}
-    </section>
+/**
+ * F-074 honest stub — past writing responses. Listing attempts needs
+ * `GET /writing/attempts`, which does not exist yet (only the aggregate
+ * `GET /writing/series` does); ticketed as F-106. Until it lands this tab
+ * says so plainly — it never fabricates rows.
+ */
+function ResponsesStub(): JSX.Element {
+  return (
+    <Card variant="default">
+      <Eyebrow>
+        <Bilingual en="My responses" kr="내 답안" />
+      </Eyebrow>
+      <p className="km-writing__stub">
+        <Bilingual
+          en="Every graded response is already saved with its score. Browsing them here is coming soon."
+          kr="채점된 글은 점수와 함께 모두 저장돼 있어요. 곧 여기에서 볼 수 있어요."
+        />
+      </p>
+    </Card>
   );
 }
 

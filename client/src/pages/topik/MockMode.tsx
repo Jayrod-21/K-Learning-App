@@ -1,11 +1,30 @@
 /**
  * MockMode — the TOPIK answer-stripped, server-graded Mock-Test flow (FU-NF-39).
  *
- * A three-phase state machine:
+ * A three-phase state machine, with the pre-exam navigation URL-driven
+ * (Phase 3C-2 / F-079):
  *
- *   select  → section cards (Reading 50/~70min, Listening 50/~60min; Writing
- *             disabled "coming soon" → FU-NF-47). Tapping a section fetches an
- *             answer-stripped exam (`fetchMockTest`) and enters `exam`.
+ *   select  → the pre-exam screens, chosen by the `section`/`exam` search
+ *             params (untrusted input — parsed against closed unions):
+ *               (no section)      section cards (Reading 50/~70min, Listening
+ *                                 50/~60min; Writing disabled "coming soon" →
+ *                                 FU-NF-47). Tapping a section NAVIGATES to
+ *                                 the exam chooser — it no longer starts the
+ *                                 timer under the user's finger.
+ *               ?section=…        the exam chooser (F-079). Today it offers
+ *                                 ONE wired entry — the server-picked exam
+ *                                 (`POST /topik/mock` with no sourceTest) —
+ *                                 plus an honestly-pending note where the
+ *                                 per-exam list with completion checkmarks
+ *                                 will render (needs an exam-list route,
+ *                                 F-118, + attempt history F-104).
+ *               ?section=…&exam=  the start page (F-079): exam meta + rules,
+ *                                 a previous-attempts block (honestly pending
+ *                                 on F-104 — never fabricated), and the
+ *                                 explicit Start button that actually fetches
+ *                                 the exam and arms the timer.
+ *             Every nested screen carries a BackButton (F-024) whose `to` is
+ *             the canonical parent URL, so browser back works identically.
  *   exam    → a wall-clock countdown (deadline = start + the section's allotted
  *             minutes, or + the saved remaining when resuming (F-007); a ~1s
  *             interval only re-samples the clock; auto-submits at 0), one item
@@ -57,7 +76,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AskAboutThisButton } from '../../components/AskAboutThisButton';
+import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
 import { Button } from '../../components/Button';
@@ -94,8 +115,27 @@ import type {
   MockTest,
   TopikMockItem,
 } from '../../types/domain';
+import './MockMode.css';
 
 const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
+
+/**
+ * Parse the `section` search param (untrusted input) against the closed
+ * MockSection union — anything unrecognised degrades to "no section chosen"
+ * rather than reaching a request path or a template.
+ */
+function parseSectionParam(raw: string | null): MockSection | null {
+  return raw === 'reading' || raw === 'listening' ? raw : null;
+}
+
+/**
+ * Parse the `exam` search param. `'auto'` = the server-picked exam (the only
+ * wired chooser entry today — per-exam ids arrive with the exam-list route,
+ * F-118). Unknown values degrade to the chooser.
+ */
+function parseExamParam(raw: string | null): 'auto' | null {
+  return raw === 'auto' ? 'auto' : null;
+}
 
 /** Section card metadata — drives the select screen + the exam's timer budget. */
 interface SectionMeta {
@@ -149,6 +189,32 @@ type NetPhase = 'idle' | 'loading' | 'submitting' | 'error';
 type NetErrorKind = 'fetch' | 'submit';
 
 export function MockMode(): JSX.Element {
+  // URL-driven pre-exam navigation (F-079/F-024): which of the three pre-exam
+  // screens shows is owned by the search params, so BackButton and browser
+  // back are the same deterministic operation.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlSection = parseSectionParam(searchParams.get('section'));
+  // The exam param is only meaningful under a valid section.
+  const urlExam =
+    urlSection !== null ? parseExamParam(searchParams.get('exam')) : null;
+
+  // Rewrite ONLY this component's params (section/exam), preserving the
+  // parent's (`mode`, owned by Topik.tsx) — MockMode never navigates the
+  // whole page, it moves within its own sub-views.
+  const goToView = useCallback(
+    (section: MockSection | null, exam: 'auto' | null): void => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (section === null) next.delete('section');
+        else next.set('section', section);
+        if (section === null || exam === null) next.delete('exam');
+        else next.set('exam', exam);
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
+
   // Exam phase machine.
   const [phase, setPhase] = useState<'select' | 'exam' | 'results'>('select');
   // The loaded answer-stripped exam (null until a section is fetched).
@@ -211,6 +277,46 @@ export function MockMode(): JSX.Element {
     ctrlRef.current = ctrl;
     return ctrl;
   }, []);
+
+  // F-024: leaving an in-flight exam (or the results screen) via BackButton /
+  // browser back regresses the URL below `?section=…&exam=…` — this effect
+  // notices and tears the phase machine back down to the URL-driven `select`
+  // state. The ExamRunner's unmount cleanup flushes a final progress save
+  // (F-007), so a mid-exam exit is resumable, never lost. The in-flight
+  // fetch/submit controller is aborted so a late resolve can't flip the phase
+  // back after the user left. (Set-state in an effect is the deliberate
+  // sync-to-external-system case here: the external system is the URL.)
+  //
+  // `examUrlBoundRef` guards a real race: RESUME enters the exam phase from
+  // the bare select URL and syncs the params via setSearchParams — which
+  // react-router applies inside a transition, one tick LATER than the phase
+  // flip. Tearing down on the first `exam-phase + no params` render would
+  // kill every resumed exam instantly; instead the teardown arms only after
+  // this effect has seen the exam bound to its URL once.
+  const examUrlBoundRef = useRef(false);
+  useEffect(() => {
+    if (phase === 'select') {
+      examUrlBoundRef.current = false;
+      return;
+    }
+    if (urlSection !== null && urlExam !== null) {
+      examUrlBoundRef.current = true;
+      return;
+    }
+    if (!examUrlBoundRef.current) return; // URL not yet caught up (resume)
+    examUrlBoundRef.current = false;
+    ctrlRef.current?.abort();
+    pendingSubmitRef.current = null;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setTest(null);
+    setResult(null);
+    setErrorMsg(null);
+    setIsMock(false);
+    setNet('idle');
+    setInitialExam(null);
+    setPhase('select');
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [phase, urlSection, urlExam]);
 
   // On mount, look for a saved in-progress attempt to offer resuming (F-007).
   // A missing/failed fetch simply means no banner — it never blocks the screen.
@@ -276,6 +382,10 @@ export function MockMode(): JSX.Element {
           setIsMock(false);
           setNet('idle');
           setResumable(null);
+          // Sync the URL to the resumed exam so the back-guard effect above
+          // sees a consistent `?section=…&exam=auto` and doesn't immediately
+          // tear the resumed exam down.
+          goToView(attempt.section, 'auto');
           setPhase('exam');
         })
         .catch(() => {
@@ -289,7 +399,7 @@ export function MockMode(): JSX.Element {
           setNet('idle');
         });
     },
-    [beginCall],
+    [beginCall, goToView],
   );
 
   // Start a section: fetch the answer-stripped exam, falling back to the
@@ -426,7 +536,9 @@ export function MockMode(): JSX.Element {
     setResumable(null);
     setResumeFailed(false);
     setPhase('select');
-  }, []);
+    // Drop the nested-view params so the URL agrees with the section select.
+    goToView(null, null);
+  }, [goToView]);
 
   return (
     <div className="km-mock" style={{ position: 'relative' }}>
@@ -459,7 +571,7 @@ export function MockMode(): JSX.Element {
 
       {net !== 'loading' && net !== 'submitting' && net !== 'error' ? (
         <>
-          {phase === 'select' ? (
+          {phase === 'select' && urlSection === null ? (
             <>
               {resumable !== null ? (
                 <ResumeBanner
@@ -487,8 +599,33 @@ export function MockMode(): JSX.Element {
                   />
                 </p>
               ) : null}
-              <SectionSelect onStart={startSection} />
+              <SectionSelect
+                onChoose={(section) => {
+                  goToView(section, null);
+                }}
+              />
             </>
+          ) : null}
+
+          {phase === 'select' && urlSection !== null && urlExam === null ? (
+            // F-079: the exam chooser for the picked section.
+            <ExamChooser
+              section={urlSection}
+              onPickServerExam={() => {
+                goToView(urlSection, 'auto');
+              }}
+            />
+          ) : null}
+
+          {phase === 'select' && urlSection !== null && urlExam !== null ? (
+            // F-079: the start page — the exam only fetches (and the timer
+            // only arms) on the explicit Start click.
+            <StartPage
+              section={urlSection}
+              onStart={() => {
+                startSection(urlSection);
+              }}
+            />
           ) : null}
 
           {phase === 'exam' && test !== null ? (
@@ -518,10 +655,11 @@ export function MockMode(): JSX.Element {
 // ─────────────────────────────────────────────────────────────
 
 interface SectionSelectProps {
-  onStart: (section: MockSection) => void;
+  /** Navigate to the section's exam chooser (F-079) — does NOT start a test. */
+  onChoose: (section: MockSection) => void;
 }
 
-function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
+function SectionSelect({ onChoose }: SectionSelectProps): JSX.Element {
   return (
     <div className="km-mock__select">
       <p className="km-mock__lead">
@@ -541,7 +679,10 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
               aria-label={
                 disabled
                   ? `${s.en} mock test, coming soon`
-                  : `Start ${s.en} mock test, ${String(s.items)} items, about ${String(s.mins)} minutes`
+                  : // F-079: the card OPENS the section's exam chooser (it no
+                    // longer starts a timed exam under the tap) — the name
+                    // says so, and the meta still sets expectations.
+                    `${s.en} mock exams, ${String(s.items)} items, about ${String(s.mins)} minutes`
               }
               className={cn(
                 'km-mock__section focusring',
@@ -550,8 +691,8 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
               onClick={() => {
                 // Writing is deferred (FU-NF-47); the card is disabled so this
                 // never fires for it, but the union-narrowing guard keeps the
-                // call type-safe (`onStart` accepts only MockSection).
-                if (!disabled && s.id !== 'writing') onStart(s.id);
+                // call type-safe (`onChoose` accepts only MockSection).
+                if (!disabled && s.id !== 'writing') onChoose(s.id);
               }}
             >
               {/* P3b: title + meta are chrome — the section NAME pair renders
@@ -575,13 +716,162 @@ function SectionSelect({ onStart }: SectionSelectProps): JSX.Element {
                 </span>
               ) : (
                 <span className="km-mock__section-go">
-                  <Bilingual en="Start" kr="시작" compact />{' '}
+                  <Bilingual en="Choose" kr="선택" compact />{' '}
                   <Icon name="arrow-right" size={13} />
                 </span>
               )}
             </button>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/** Section display names — shared by the chooser / start page / exam head. */
+function sectionNames(section: MockSection): { en: string; kr: string } {
+  return section === 'reading'
+    ? { en: 'Reading', kr: '읽기' }
+    : { en: 'Listening', kr: '듣기' };
+}
+
+/**
+ * F-079 — the exam chooser for one section.
+ *
+ * Design intent: a list of every TOPIK paper for this section, each with a
+ * green checkmark when previously completed. What is wired TODAY: the
+ * server-picked exam (`POST /topik/mock` with no `sourceTest`). The per-exam
+ * list needs a route that enumerates `topik_tests` (ticket F-118), and the
+ * completion checkmarks need attempt history (`GET /topik/attempts`,
+ * ticket F-104) — so that area renders an honestly-pending note. NO exam is
+ * ever shown as "completed" from fabricated data.
+ */
+function ExamChooser({
+  section,
+  onPickServerExam,
+}: {
+  section: MockSection;
+  onPickServerExam: () => void;
+}): JSX.Element {
+  const names = sectionNames(section);
+  return (
+    <div className="km-mock__chooser">
+      {/* F-024: back to the section select. */}
+      <BackButton to="/learn/topik?mode=mock" label="Sections" />
+      <Eyebrow className="km-mock__chooser-head">
+        <Bilingual en={`${names.en} · mock exams`} kr={`${names.kr} · 모의고사`} />
+      </Eyebrow>
+
+      <button
+        type="button"
+        className="km-mock__section km-mock__chooser-card focusring"
+        aria-label={`Recommended ${names.en} exam, server-picked`}
+        onClick={onPickServerExam}
+      >
+        <span className="km-mock__section-en">
+          <Bilingual en="Recommended exam" kr="추천 시험" />
+        </span>
+        <span className="km-mock__section-kr">
+          <Bilingual
+            en="A full past paper, picked for you"
+            kr="기출 시험지 한 세트를 골라 드려요"
+            compact
+          />
+        </span>
+        <span className="km-mock__section-go">
+          <Bilingual en="Choose" kr="선택" compact />{' '}
+          <Icon name="arrow-right" size={13} />
+        </span>
+      </button>
+
+      {/* Honest pending state — per-exam browsing + done-checkmarks need the
+          exam-list route (F-118) and attempt history (F-104). */}
+      <Card variant="flat" className="km-mock__pending" role="status">
+        <Eyebrow>
+          <Bilingual en="Coming soon" kr="준비 중" />
+        </Eyebrow>
+        <p className="km-mock__pending-copy">
+          <Bilingual
+            en="Browsing every past paper — with a green checkmark on the ones you've completed — will appear here once the exam list and your attempt history are available."
+            kr="모든 기출 시험지 목록과 완료한 시험의 초록색 체크 표시는 시험 목록과 응시 기록이 준비되면 여기에 표시될 거예요."
+          />
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+/**
+ * F-079 — the start page. The exam is fetched (and the countdown armed) ONLY
+ * on the explicit Start click, never by navigation. The previous-attempts
+ * block (grade + when, for a repeat sitting) needs `GET /topik/attempts`
+ * (ticket F-104) and renders honestly pending until that route exists.
+ * F-080: for Listening, the audio data gap is disclosed BEFORE the timer
+ * starts — items are served as transcripts; the raw section MP3s are not
+ * ingested or segmented per question (see the exam-head note / ticket F-119).
+ */
+function StartPage({
+  section,
+  onStart,
+}: {
+  section: MockSection;
+  onStart: () => void;
+}): JSX.Element {
+  const names = sectionNames(section);
+  const mins = SECTION_MINUTES[section];
+  return (
+    <div className="km-mock__start">
+      {/* F-024: back to this section's exam chooser. */}
+      <BackButton
+        to={`/learn/topik?mode=mock&section=${section}`}
+        label={`${names.en} exams`}
+      />
+
+      <Card variant="flat" className="km-mock__start-meta">
+        <Eyebrow>
+          <Bilingual
+            en={`${names.en} · recommended exam`}
+            kr={`${names.kr} · 추천 시험`}
+          />
+        </Eyebrow>
+        <p className="km-mock__start-rules">
+          <Bilingual
+            en={`50 items · ${String(mins)} minutes, timed. Answers are graded after you submit; unanswered items count as incorrect. The test auto-submits when time runs out.`}
+            kr={`50문항 · ${String(mins)}분, 시간 제한이 있어요. 답은 제출한 뒤에 채점되고, 답하지 않은 문제는 오답으로 처리돼요. 시간이 다 되면 자동으로 제출돼요.`}
+          />
+        </p>
+        {section === 'listening' ? (
+          <p className="km-mock__audio-note" role="note">
+            <Bilingual
+              en="Audio isn't available yet — each question shows its transcript instead."
+              kr="아직 듣기 음원이 없어요 — 각 문제는 대본으로 표시돼요."
+            />
+          </p>
+        ) : null}
+      </Card>
+
+      {/* Honest pending state — previous attempts on this exam (grade +
+          date) need attempt history (GET /topik/attempts, ticket F-104). */}
+      <Card variant="flat" className="km-mock__pending" role="status">
+        <Eyebrow>
+          <Bilingual en="Previous attempts" kr="지난 응시 기록" />
+        </Eyebrow>
+        <p className="km-mock__pending-copy">
+          <Bilingual
+            en="If you've taken this exam before, your grade and past attempts will show here once attempt history is available. Coming soon."
+            kr="이 시험을 본 적이 있다면, 응시 기록이 준비되는 대로 성적과 지난 기록이 여기에 표시될 거예요. 준비 중이에요."
+          />
+        </p>
+      </Card>
+
+      <div className="km-mock__start-row">
+        <Button
+          variant="gold"
+          onClick={onStart}
+          trailingIcon={<Icon name="arrow-right" size={14} />}
+        >
+          <Bilingual en="Start test" kr="시험 시작" />
+        </Button>
       </div>
     </div>
   );
@@ -979,6 +1269,32 @@ function ExamRunner({
 
   return (
     <div className="km-mock__exam">
+      {/* F-024: an explicit way out of a running exam. Leaving unmounts the
+          runner, whose cleanup flushes a final progress save (F-007), so the
+          attempt is resumable from the banner — nothing is lost. The `to`
+          URL drops the `exam` param; MockMode's back-guard effect exits the
+          exam phase. */}
+      <BackButton
+        to={`/learn/topik?mode=mock&section=${test.section}`}
+        label={`${sectionLabel} exams`}
+      />
+
+      {test.section === 'listening' ? (
+        // F-080 (honest stub): per-question audio is not servable today. The
+        // raw corpus DOES hold one whole-section MP3 per paper (e.g.
+        // `60th-TOPIK-II-Listening-Audio.mp3`), but nothing is ingested —
+        // there is no audio column/DTO field, no serving route, and no
+        // per-question timestamps to cut clips from. A play control per item
+        // needs that ingest + segmentation + route — data-gap ticket F-119.
+        // Until then, say so once, up front, instead of faking a player.
+        <p className="km-mock__audio-note" role="note">
+          <Bilingual
+            en="Audio isn't available yet — each question shows its transcript instead."
+            kr="아직 듣기 음원이 없어요 — 각 문제는 대본으로 표시돼요."
+          />
+        </p>
+      ) : null}
+
       <div className="km-mock__exam-head">
         <Pill tone="red">
           <Bilingual en="Timed · live" kr="실전 · 시간 제한" compact />

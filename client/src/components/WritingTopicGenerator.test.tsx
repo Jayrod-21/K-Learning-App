@@ -96,6 +96,24 @@ describe('WritingTopicGenerator', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders no "Write this topic" action when onUseTopic is absent (Today\'s prop-less usage)', async () => {
+    // The docstring promises the prop-less form (Today's tile) is
+    // byte-identical to pre-F-073 behavior — display-only inspiration, no
+    // action to adopt it. The 9 other prop-less tests here never assert
+    // this ABSENCE, so a future `onUseTopic = someFallback` default would
+    // silently break Today's display-only contract without failing a test.
+    generateMock.mockResolvedValue(TOPIK_PROMPT);
+    const user = userEvent.setup();
+    render(<WritingTopicGenerator />);
+
+    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
+    await screen.findByText(TOPIK_PROMPT.promptKr);
+
+    expect(
+      screen.queryByRole('button', { name: /Write this topic/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it('sends mode=general when Free write is chosen, and omits the length pill when the hint is null', async () => {
     generateMock.mockResolvedValue(GENERAL_PROMPT);
     const user = userEvent.setup();

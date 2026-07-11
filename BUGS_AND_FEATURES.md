@@ -1303,6 +1303,48 @@ Delivered on `feat/phase3c1-cards`, full 4-phase /fixpass PASS (re-review: all 4
 
 ---
 
+## 🌊 Phase 3C-2 follow-up tickets (filed 2026-07-10)
+
+Backend routes / corpus data the Phase 3C-2 content-surface reworks (Reading · Listen · Writing · TOPIK) honest-stubbed or reserved UI for. Client is CLIENT-only; these are the server/data halves for the mini-phase. (IDs canonicalized after a parallel-builder collision — these are the authoritative assignments, matching the `F-11x` references baked into the page code.)
+
+### F-116 · `POST /reading/translate` — whole-passage translation (reading F-070 backend)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** API (BACKEND) · **Beta:** —
+- **What:** Reading's F-070 passage-selection popup ships as an honest "coming soon" shell (`Reading.tsx` `TranslateSheet`) — there's no passage-translate route (reading.ts serves passages + single-word define/enrich only). Add a Claude whole-passage translation route behind the proxy (expensiveLimiter, sanitized passage input, Zod-validated output). When it lands, only the popup's fetch needs wiring.
+
+### F-117 · Widen the writing rubric taxonomy beyond Q53/Q54 (writing B-027 remainder)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (DATABASE, API) · **Beta:** —
+- **What:** B-027's client half is fixed (honest headers + random selection), but the rubric is still hard-locked to `topik_ii_53/54` in the server Zod enum + `writing_prompts`/`writing_attempts` DB CHECK. Widen the taxonomy (+ a real free-write rubric for `/grade-writing`) so free-writes stop grading against a Q54 fallback. Removes the on-sheet deferral note.
+
+### F-118 · `GET /topik/tests` — enumerate TOPIK papers (TOPIK F-079 chooser backend)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** The F-079 mock-exam chooser can't list per-section exams because no route enumerates `topik_tests` (the `/topik/items` DTO carries no test number). Add a read returning available papers (test_number, topik_level, section, item counts). Feeds the chooser list; pairs with F-104 for the completed-checkmarks + previous-attempts.
+
+### F-119 · TOPIK listening audio — ingest + serve per-question (TOPIK F-080 data gap)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA (BACKEND) · **Beta:** —
+- **What:** F-080 (per-question listening audio) is a data gap: audio exists only as one whole-section MP3 per paper (`~/data/korean-master/corpus/TOPIK TEST/.../*-Listening-Audio.mp3`, ~24 files), un-ingested, with no DB column/DTO field, no serving route, and no per-question timestamps. Ingest + segment (or serve with cue points), add a DTO audio field + route; then wire per-question play controls. The client discloses the gap honestly today.
+
+### F-120 · TOPIK question images — extract + serve (TOPIK F-081 data gap)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (BACKEND) · **Beta:** —
+- **What:** F-081 (question-paired images) is a data gap: images live only inside the test-paper PDFs; the DB has only `has_image` + `image_text`. Extract `has_image` items' figures, store + serve the assets, add a DTO image URL; then render alongside `image_text`. The client renders the honest text-description affordance today.
+
+### F-121 · `ShowMore` final-reveal focus lands on an off-screen node (visible-focus polish)
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (A11Y) · **Beta:** —
+- **What:** The Phase 3C-2 fix for the `components/ShowMore.tsx` focus-drop (button unmounts on final reveal → focus fell to `<body>`) hands focus off to the revealed content region, which fully fixes the focus-loss defect but the target isn't reliably in-viewport, so it doesn't satisfy WCAG 2.4.7 (visible focus) for sighted keyboard users. Strict improvement over the original bug; polish the handoff to land on a visible, scrolled-into-view element. Affects all ShowMore consumers (Progress, ReviewVocab, Listen).
+
+---
+
+## ✅ Phase 3C-2 — Content/exam surfaces (Reading · Listen · Writing · TOPIK) — DONE, PR pending
+
+Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/11 should-fixes FIXED, 0 regressions; cross-cutting ShowMore + Tabs changes verified against all consumers), full client suite 1463/1463.
+- **Reading:** F-067 ✅ (typed sections) · F-068 ✅ (AI story-gen, wired) · F-069 ✅ (per-upload resume, wired) · F-070 ⏳ passage-translate honest stub (→ **F-116**) · **B-019 ✅ closed** (Today Reading tile → /learn/reading).
+- **Listen:** F-071 ✅ (2-across square grid) · F-072 ✅ (15/page) · B-025/B-026 correctly not-built (deferred/data).
+- **Writing:** F-073 ✅ (on-page generator) · **F-101 ✅ closed** (Today→Writing handoff wired both ends) · **B-027 ✅** (honest headers + random selection; rubric-widen → **F-117**) · F-074 ⏳ responses stub (→ **F-106**).
+- **TOPIK:** B-029 ✅ (uncapped draw) · F-078/F-079/F-082 ⏳ honest stubs (→ **F-104** attempts + **F-118** /topik/tests) · F-080 ⏳ audio data gap (→ **F-119**) · F-081 ⏳ image data gap (→ **F-120**).
+- **Cross-cutting:** `components/ShowMore.tsx` focus-drop fixed (all consumers); Ttmik hand-rolled tablist → shared `Tabs`.
+- **New tickets filed:** F-116 · F-117 · F-118 · F-119 · F-120 · F-121.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>

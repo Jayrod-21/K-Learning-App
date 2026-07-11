@@ -1,9 +1,11 @@
 /**
  * TopikImageNote — the "image described in text" affordance for TOPIK items
- * with `hasImage` (FU-NF-39 follow-up). The corpus stores NO image assets for
- * these items — only a bracketed text description (see `lib/topikImage.ts`).
- * This block renders that description prominently so the item stays
- * answerable, or an honest fallback note when no description was captured.
+ * with `hasImage` (FU-NF-39 follow-up, F-081). The corpus stores NO image
+ * assets for these items — only a bracketed text description (see
+ * `lib/topikImage.ts`). This block renders that description prominently so
+ * the item stays answerable, or an honest fallback note when no description
+ * was captured. The data gap (extract + serve the real figures) is tracked
+ * as **F-120** (`BUGS_AND_FEATURES.md`) — filed, not proposed.
  *
  * Shared by Study mode (Topik.tsx) and the Mock exam (MockMode.tsx) so the
  * two flows present image items identically. Renders the description as a
