@@ -6,8 +6,8 @@
  *   - Vocabulary   → /review/vocab     (corpus browse + My Lists)
  *   - Grammar      → /review/grammar   (single KGIU browse, D3)
  *   - TOPIK exams  → /review/mistakes  (the exams shelf: Mistakes today;
- *                     a dedicated past-exams surface takes over this row
- *                     when it lands — see the P3B ticket in the report)
+ *                     the dedicated past-exams surface — ticket F-103 —
+ *                     takes over this row when it lands)
  *   - Uploads      → /uploads          (book PDFs, U1b)
  *
  * F-043 renamed the page (and the bottom-nav tab, via lib/nav.ts) from
@@ -16,7 +16,9 @@
  * the quick-launch LEARN chips (flashcards/grammar drill — the hexagon
  * LEARN launcher owns that flow), the standalone Mistakes/Dictionary rows
  * (Dictionary stays reachable via LibrarySubnav on the browse pages), the
- * interim "Scan images" row, and the inert "coming soon" placeholders.
+ * interim "Scan images" row (leaving `/images` with no in-app entry point —
+ * its re-entry home is ticket F-102), and the inert "coming soon"
+ * placeholders.
  *
  * Each row's title AND its one-line contents description come from the nav
  * manifest's en/kr pairs and render through `<Bilingual/>`, so the
@@ -70,8 +72,8 @@ const SECTIONS: ReadonlyArray<LibrarySection> = [
     // The exams shelf (F-042): Mistakes and past TOPIK exams share this
     // section. No dedicated past-exams surface is wired yet, so the row
     // lands on Mistakes — the one exams surface that exists today. When
-    // the past-exams page ships it takes over `to` (and Mistakes becomes
-    // a link inside it).
+    // the past-exams page ships (ticket F-103) it takes over `to` (and
+    // Mistakes becomes a link inside it).
     key: 'exams',
     label: 'TOPIK exams',
     kr: '기출 시험',

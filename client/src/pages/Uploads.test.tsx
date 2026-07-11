@@ -140,14 +140,15 @@ describe('Uploads — list', () => {
     expect(await screen.findByTestId('viewer-probe')).toHaveTextContent('viewer:9');
   });
 
-  // F-024: the listing is a nested page (Review → Uploads) — its back
+  // F-024: the listing is a nested page (Library → Uploads) — its back
   // control targets the library index that links here, deterministically.
-  it('the back control navigates to the Review library index', async () => {
+  it('the back control navigates to the Library index', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('한국어 문법 사전');
 
-    await user.click(screen.getByRole('button', { name: 'Back to Review' }));
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(screen.getByRole('button', { name: 'Back to Library' }));
 
     expect(await screen.findByTestId('review-probe')).toBeInTheDocument();
   });

@@ -15,9 +15,11 @@
  *   - F-056: an "Uploads" view lists the user's grammar-from-uploads,
  *     grouped by source book. Wired to REAL endpoints (`GET /uploads` +
  *     `GET /grammar/kgiu?source_upload_id=` — the U3a ownership-guarded
- *     filter), but U2's extraction does not yet populate
- *     `kgiu_entries.source_upload_id`, so every group is empty today and
- *     the view renders its honest empty state until U2 lands.
+ *     filter), but the U2 extraction pipeline (ticket F-108) does not yet
+ *     populate `kgiu_entries.source_upload_id`, so every group is empty
+ *     today and the view renders its honest empty state until F-108 lands.
+ *     (USER-SAVED grammar provenance — the F-053 twin — is the separate
+ *     ticket F-107.)
  *
  * Bank semantics (ported intact):
  *   - Body built by `kgiuBankBody` (lib/grammarBank) — the single choke
@@ -54,6 +56,7 @@ import { Icon } from '../../components/Icon';
 import { KgiuDetailBody } from '../../components/KgiuDetailBody';
 import { Sheet } from '../../components/Sheet';
 import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
+import { Tabs } from '../../components/Tabs';
 import { Topbar } from '../../components/Topbar';
 import {
   GRAMMAR_LEVEL_FILTERS,
@@ -61,6 +64,7 @@ import {
   type LevelFilter,
 } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { navItem } from '../../lib/nav';
 import { grammarKey } from '../../lib/grammarKey';
 import { kgiuBankBody } from '../../lib/grammarBank';
 import * as grammarService from '../../services/grammar';
@@ -72,6 +76,10 @@ import type {
   KgiuEntrySummary,
 } from '../../types/domain';
 import './ReviewGrammar.css';
+
+/** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
+ *  tab to "Library"), so the eyebrow and back label can never go stale. */
+const LIBRARY_NAV = navItem('review');
 
 /** A pattern is renderable/bankable only if its display string is non-blank. */
 function hasPattern(p: KgiuEntrySummary): boolean {
@@ -229,7 +237,7 @@ export default function ReviewGrammar(): JSX.Element {
         krTitle="문법"
         title="Grammar"
         titleId="km-review-grammar-title"
-        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
       />
 
       {/* F-024 — the section strip (Vocabulary/Dictionary links) is gone
@@ -237,51 +245,50 @@ export default function ReviewGrammar(): JSX.Element {
           index is an explicit, deterministic BackButton. */}
       <BackButton
         to="/review"
-        label="Review library"
+        label={LIBRARY_NAV.label}
         className="km-review-grammar__back"
       />
 
-      <div
-        className="km-review__tabs km-resources__tabs"
-        role="tablist"
-        aria-label="Grammar section"
-      >
-        {VIEWS.map((v) => {
-          const selected = view === v.id;
-          return (
-            <button
-              key={v.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-              onClick={() => {
-                setView(v.id);
-              }}
-            >
-              <Bilingual en={v.label} kr={v.kr} compact />
-            </button>
-          );
-        })}
-      </div>
-
+      {/* Bank failures surface page-level (the action exists in BOTH views
+          and in the detail Sheet), above the tabbed area so the re-keyed
+          tabpanel never unmounts the message mid-read. */}
       {bankError ? <ErrorCard message={bankError} /> : null}
 
-      {view === 'browse' ? (
-        <GrammarBrowse
-          banked={banked}
-          pendingKey={pendingKey}
-          onOpen={openDetail}
-          onBank={bank}
-        />
-      ) : (
-        <GrammarUploads
-          banked={banked}
-          pendingKey={pendingKey}
-          onOpen={openDetail}
-          onBank={bank}
-        />
-      )}
+      {/* Browse/Uploads switch — the shared Tabs primitive (F-032), which
+          delivers the full W3C APG tabs contract (roving tabindex, Arrow/
+          Home/End keys, labelled tabpanel) that a hand-rolled
+          role="tablist" strip would only promise. Controlled: `view` stays
+          page state so the detail Sheet + bank state sit above both views. */}
+      <Tabs
+        tabs={VIEWS.map((v) => ({
+          id: v.id,
+          label: <Bilingual en={v.label} kr={v.kr} compact />,
+        }))}
+        ariaLabel="Grammar section"
+        active={view}
+        onChange={(id) => {
+          // Narrow the callback string onto the closed View vocabulary.
+          if (id === 'browse' || id === 'uploads') setView(id);
+        }}
+      >
+        {(activeId) =>
+          activeId === 'uploads' ? (
+            <GrammarUploads
+              banked={banked}
+              pendingKey={pendingKey}
+              onOpen={openDetail}
+              onBank={bank}
+            />
+          ) : (
+            <GrammarBrowse
+              banked={banked}
+              pendingKey={pendingKey}
+              onOpen={openDetail}
+              onBank={bank}
+            />
+          )
+        }
+      </Tabs>
 
       <GrammarDetailSheet
         row={openRow}
@@ -390,7 +397,8 @@ function GrammarBrowse({
   // F-055: difficulty (book_level) is the single remaining filter.
   const [level, setLevel] = useState<LevelFilter>('all');
   // U1 scaffolding — sort-by-source filter (see SourceFilterRow's header
-  // doc). Inert until U2 tags kgiu_entries with source_upload_id.
+  // doc). Inert until the U2 extraction pipeline (F-108) tags kgiu_entries
+  // with source_upload_id.
   const [source, setSource] = useState<string>(ALL_SOURCES);
 
   useEffect(() => {
@@ -495,8 +503,9 @@ function GrammarBrowse({
 
 // ─────────────────────────────────────────────────────────────
 // Uploads (F-056) — the user's grammar-from-uploads, grouped by
-// source book. Real endpoints; empty until U2's extraction tags
-// kgiu_entries.source_upload_id (see the file header).
+// source book. Real endpoints; empty until the U2 extraction
+// pipeline (F-108) tags kgiu_entries.source_upload_id (see the
+// file header).
 // ─────────────────────────────────────────────────────────────
 
 interface UploadGrammarGroup {

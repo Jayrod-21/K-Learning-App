@@ -61,11 +61,12 @@
  * best-effort fallback and self-corrects on `load`.
  *
  * OCR / "Extract text" (F-059): the control is rendered DISABLED with
- * explicit "coming soon" copy — no OCR backend exists yet (U2 is a later,
- * separate phase; `server/src/routes/uploads.ts` header is authoritative:
- * "NO extraction/OCR happens here"). Deliberately honest: a live-looking
- * button POSTing to a nonexistent endpoint would be a fabricated feature.
- * When U2 lands, wire this button to its trigger route and drop `disabled`.
+ * explicit "coming soon" copy — no OCR backend exists yet (the U2
+ * extraction pipeline is ticket F-108; `server/src/routes/uploads.ts`
+ * header is authoritative: "NO extraction/OCR happens here"). Deliberately
+ * honest: a live-looking button POSTing to a nonexistent endpoint would be
+ * a fabricated feature. When F-108 lands, wire this button to its trigger
+ * route and drop `disabled`.
  *
  * Reorder tool (Jared: vFlat retakes can land out of order — design doc
  * REVISION): a "Reorder pages" mode with a numeric "move page N to position"
@@ -738,10 +739,11 @@ export default function UploadViewer(): JSX.Element {
               />
             </Button>
 
-            {/* F-059 — honestly disabled until the U2 OCR pipeline exists
-                server-side (module header §"OCR"). The "coming soon" is in
-                the VISIBLE label, not a hover-only tooltip, so keyboard and
-                touch users get the same information. */}
+            {/* F-059 — honestly disabled until the U2 OCR pipeline (ticket
+                F-108) exists server-side (module header §"OCR"). The
+                "coming soon" is in the VISIBLE label, not a hover-only
+                tooltip, so keyboard and touch users get the same
+                information. */}
             <Button
               variant="ghost"
               size="sm"

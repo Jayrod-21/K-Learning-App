@@ -22,6 +22,9 @@ const hoisted = vi.hoisted(() => ({
     | { kind: 'loading' }
     | { kind: 'data'; data: Mistake[] }
     | { kind: 'error' },
+  /** The options the page handed to useEndpointOrMock on its last render —
+   *  lets tests exercise the REAL `realFn` closure (fetch-limit contract). */
+  lastOptions: null as { realFn?: () => unknown } | null,
 }));
 
 const FAKE_ERR = new Error('boom') as unknown as ApiError;
@@ -39,11 +42,17 @@ function resultFor(): UseEndpointOrMockResult<Mistake[]> {
 }
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
-  useEndpointOrMock: vi.fn(() => resultFor()),
+  useEndpointOrMock: vi.fn(
+    (_key: string, _mockFn: unknown, options?: { realFn?: () => unknown }) => {
+      hoisted.lastOptions = options ?? null;
+      return resultFor();
+    },
+  ),
 }));
 vi.mock('../services/topik', () => ({ fetchMistakes: vi.fn() }));
 
 import Mistakes from './Mistakes';
+import { fetchMistakes } from '../services/topik';
 
 /** Study-mode miss — July 6. */
 const MISTAKE: Mistake = {
@@ -65,6 +74,24 @@ const MISTAKE: Mistake = {
     ],
     explanation: '정답은 나입니다.',
     hasImage: false,
+  },
+};
+
+/**
+ * Second study-mode miss in the SAME (local day, mode) session as MISTAKE —
+ * five minutes later, so both timestamps share a local calendar day for any
+ * real UTC offset. Distinct item so the two tiles are tellable apart.
+ */
+const MISTAKE_SAME_SESSION: Mistake = {
+  ...MISTAKE,
+  responseId: 'r3',
+  picked: 'c', // wrong — 'b' is correct
+  answeredAt: '2026-07-06T09:05:00.000Z',
+  item: {
+    ...MISTAKE.item,
+    id: 'i3',
+    number: 20,
+    prompt: '빈칸에 알맞은 말을 고르십시오.',
   },
 };
 
@@ -91,8 +118,8 @@ const MISTAKE_MOCK: Mistake = {
   },
 };
 
-function renderPage(): void {
-  render(
+function renderPage(): ReturnType<typeof render> {
+  return render(
     <MemoryRouter>
       <Mistakes />
     </MemoryRouter>,
@@ -122,6 +149,8 @@ function ChatSeedProbe(): JSX.Element {
 describe('Mistakes page (F-021 + P3b rework)', () => {
   beforeEach(() => {
     hoisted.state = { kind: 'loading' };
+    hoisted.lastOptions = null;
+    vi.mocked(fetchMistakes).mockClear();
   });
 
   // ── F-044: collapsible question tiles ─────────────────────────────────
@@ -185,6 +214,71 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(options[2]).toHaveTextContent(/모의고사/);
   });
 
+  it('F-044: multiple same-day same-mode misses merge into ONE session option with the real count', async () => {
+    hoisted.state = {
+      kind: 'data',
+      data: [MISTAKE, MISTAKE_SAME_SESSION, MISTAKE_MOCK],
+    };
+    const user = userEvent.setup();
+    renderPage();
+    const select = screen.getByRole('combobox', { name: /Session/ });
+    const options = within(select).getAllByRole('option');
+    // Placeholder + TWO sessions — the two study misses share one bucket.
+    expect(options).toHaveLength(3);
+    expect(options[1]).toHaveTextContent(/학습/);
+    expect(options[1]).toHaveTextContent(/2 missed/);
+    expect(options[2]).toHaveTextContent(/모의고사/);
+    expect(options[2]).toHaveTextContent(/1 missed/);
+
+    // Filtering to the merged session shows BOTH of its tiles (log order —
+    // insertion order within the bucket), and nothing from the other one.
+    await user.selectOptions(select, (options[1] as HTMLOptionElement).value);
+    const first = screen.getByRole('button', { name: /읽기 · 12번 · 학습/ });
+    const second = screen.getByRole('button', { name: /읽기 · 20번 · 학습/ });
+    expect(
+      first.compareDocumentPosition(second) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      screen.queryByRole('button', { name: /듣기 · 8번 · 모의고사/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('2 missed in this session')).toBeInTheDocument();
+  });
+
+  it('F-044: a data reshape that orphans the selected session falls back to "All sessions", not an empty list', async () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE, MISTAKE_MOCK] };
+    const user = userEvent.setup();
+    const view = renderPage();
+    const select = screen.getByRole('combobox', { name: /Session/ });
+    const mockOption = within(select)
+      .getAllByRole('option')
+      .find((o) => /모의고사/.test(o.textContent ?? '')) as HTMLOptionElement;
+    await user.selectOptions(select, mockOption.value);
+    expect(screen.getByText('1 missed in this session')).toBeInTheDocument();
+
+    // The log reshapes under the selection (e.g. the mock session aged out
+    // of the 30-day window on a refetch) — its key no longer exists.
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    view.rerender(
+      <MemoryRouter>
+        <Mistakes />
+      </MemoryRouter>,
+    );
+
+    // The stale key degrades to the all-sessions scope: full list + total
+    // stat, NOT a silently empty filtered view.
+    const reshapedSelect = screen.getByRole('combobox', {
+      name: /Session/,
+    }) as HTMLSelectElement;
+    expect(reshapedSelect.value).toBe('');
+    expect(
+      screen.getByText('1 missed in the last 30 days'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /읽기 · 12번 · 학습/ }),
+    ).toBeInTheDocument();
+  });
+
   it('F-044: selecting a session filters the tile list to that session only', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE, MISTAKE_MOCK] };
     const user = userEvent.setup();
@@ -230,6 +324,34 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(screen.getByText('1 missed in this session')).toBeInTheDocument();
   });
 
+  // ── F-045: fetch-cap honesty (the server silently defaults limit=100) ─
+
+  it('F-045: the real fetch asks for the server max (limit 200), never the silent 100 default', () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    renderPage();
+    // The page hands useEndpointOrMock a realFn closure — run it and assert
+    // the wire contract it encodes.
+    expect(hoisted.lastOptions?.realFn).toBeDefined();
+    hoisted.lastOptions?.realFn?.();
+    expect(vi.mocked(fetchMistakes)).toHaveBeenCalledWith({ limit: 200 });
+  });
+
+  it('F-045: a log that fills the fetch cap softens the stat to "most recent N" — no fabricated period total', () => {
+    const bulk: Mistake[] = Array.from({ length: 200 }, (_, i) => ({
+      ...MISTAKE,
+      responseId: `bulk-${String(i)}`,
+    }));
+    hoisted.state = { kind: 'data', data: bulk };
+    renderPage();
+    expect(
+      screen.getByText('Your most recent 200 missed'),
+    ).toBeInTheDocument();
+    // The truncated fetch must NOT be presented as a 30-day total.
+    expect(
+      screen.queryByText(/missed in the last 30 days/),
+    ).not.toBeInTheDocument();
+  });
+
   // ── F-020: Chat handoff (behaviour preserved through the rework) ──────
 
   it('F-020: an expanded miss carries an "Ask about this" handoff seeded with the item', async () => {
@@ -256,7 +378,7 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(probe.textContent).toContain('mode=topik_prep');
   });
 
-  // ── F-024: back control to the Review library ─────────────────────────
+  // ── F-024: back control to the Library index ──────────────────────────
 
   it('F-024: the BackButton navigates to the canonical parent route /review', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };
@@ -272,11 +394,12 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
         </Routes>
       </MemoryRouter>,
     );
-    await user.click(screen.getByRole('button', { name: 'Back to Review' }));
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(screen.getByRole('button', { name: 'Back to Library' }));
     expect(screen.getByTestId('review-library')).toBeInTheDocument();
   });
 
-  // ── F-046: writing review (stubbed pending KM-3B-M3) ──────────────────
+  // ── F-046: writing review (stubbed pending F-106) ─────────────────────
 
   it('F-046: the writing-review section renders its two parts as collapsed tiles with honest coming-soon copy', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };

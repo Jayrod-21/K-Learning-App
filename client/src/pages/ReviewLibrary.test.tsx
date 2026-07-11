@@ -92,9 +92,9 @@ describe('ReviewLibrary (P3B landing)', () => {
 
   it('the TOPIK exams shelf lands on Mistakes (no dedicated past-exams surface yet)', async () => {
     // Deliberate stub-wiring (F-042): Mistakes is the one exams surface
-    // that exists; the dedicated past-exams page is a reported follow-up
-    // ticket. When it ships, this section's target changes and this test
-    // must be updated with it.
+    // that exists; the dedicated past-exams page is ticket F-103. When it
+    // ships, this section's target changes and this test must be updated
+    // with it.
     const user = userEvent.setup();
     renderLibrary();
     const row = screen.getByRole('button', { name: /TOPIK exams/ });

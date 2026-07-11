@@ -18,9 +18,9 @@
  * less ghosts: `ready` rows with no pages (pre-041 legacy rows whose PDF
  * blob was dropped and that were never re-uploaded). Those ghosts render a
  * viewer that can never show anything; hiding them is the filter's whole
- * value. A literal source-format filter needs the server to retain
- * `source_format` first — ticketed, see the F-058 disposition note in the
- * phase report.
+ * value. F-058 is done-as-respecced to this viewable-rendition filter; a
+ * literal source-format filter needs the server to retain `source_format`
+ * first — ticket F-109.
  *
  * Threat model: all list/delete calls ride the `SameSite=Strict` session
  * cookie (services/api.ts); the server scopes every row to the caller by
@@ -46,6 +46,9 @@ import { deleteUpload, listUploads } from '../services/uploads';
 import type { BookUpload, BookUploadStatus, BookUploadType } from '../types/domain';
 
 const UPLOADS_NAV = navItem('uploads');
+
+/** Parent-tab name source — nav.ts owns the pair (F-043: "Library"). */
+const LIBRARY_NAV = navItem('review');
 
 const STATUS_META: Record<
   BookUploadStatus,
@@ -136,10 +139,13 @@ export default function Uploads(): JSX.Element {
 
   const remove = useCallback(
     async (upload: BookUpload): Promise<void> => {
+      // Destructive-action gate: if `window` is ever undefined (SSR, exotic
+      // test env), fail CLOSED — an unconfirmable irreversible delete must
+      // not proceed by default.
       const ok =
         typeof window !== 'undefined'
           ? window.confirm(`Delete "${upload.title}"? This cannot be undone.`)
-          : true;
+          : false;
       if (!ok) return;
       setPendingDeleteId(upload.id);
       try {
@@ -162,7 +168,7 @@ export default function Uploads(): JSX.Element {
       {/* F-024 — canonical parent is the Review library index (the row that
           links here), so an explicit `to` beats history-back: it lands right
           no matter how the user arrived (reader flow, deep link, refresh). */}
-      <BackButton to="/review" label="Review" />
+      <BackButton to="/review" label={LIBRARY_NAV.label} />
       <Topbar
         krTitle="업로드"
         title="Uploads"

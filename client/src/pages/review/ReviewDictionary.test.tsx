@@ -19,6 +19,7 @@ import {
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { ApiError } from '../../services/api';
 import type { KrdictSearchEntry, VocabEntry } from '../../types/domain';
 
 const krdictSvc = vi.hoisted(() => ({ searchKrdict: vi.fn() }));
@@ -89,7 +90,8 @@ describe('ReviewDictionary — "All Words" chrome (F-050 rename + F-024)', () =>
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('학교');
-    await user.click(screen.getByRole('button', { name: 'Back to Review' }));
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(screen.getByRole('button', { name: 'Back to Library' }));
     expect(screen.getByTestId('review-index')).toBeInTheDocument();
   });
 });
@@ -164,6 +166,174 @@ describe('ReviewDictionary (browse + search)', () => {
       'aria-pressed',
       'true',
     );
+  });
+});
+
+describe('ReviewDictionary — 초성 × search interplay (F-050)', () => {
+  it('a typed search supersedes the 초성 selection — no double filter, no resurfacing on clear', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('학교');
+
+    await user.click(screen.getByRole('button', { name: 'ㅁ' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ initial: 'ㅁ' }),
+        expect.anything(),
+      );
+    });
+
+    // Typing switches to a whole-dictionary search: `q` rides the wire and
+    // `initial` must NOT combine with it (double-filtering would silently
+    // hide matches outside the ㅁ section).
+    krdictSvc.searchKrdict.mockClear();
+    await user.type(
+      screen.getByRole('searchbox', { name: 'Search all words' }),
+      '문',
+    );
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ q: '문' }),
+        expect.anything(),
+      );
+    });
+    for (const call of krdictSvc.searchKrdict.mock.calls) {
+      expect(call[0]).not.toHaveProperty('initial');
+    }
+
+    // Clearing the search returns to browse-ALL — the superseded 초성 was
+    // reset, not parked: no fetch carries it and "전체" is the pressed chip.
+    krdictSvc.searchKrdict.mockClear();
+    await user.clear(screen.getByRole('searchbox', { name: 'Search all words' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalled();
+    });
+    for (const call of krdictSvc.searchKrdict.mock.calls) {
+      expect(call[0]).not.toHaveProperty('initial');
+    }
+    expect(screen.getByRole('button', { name: '전체' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'ㅁ' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('the 초성 selection survives a genre pivot and reapplies when the genre clears', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('학교');
+
+    await user.click(screen.getByRole('button', { name: 'ㅁ' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ initial: 'ㅁ' }),
+        expect.anything(),
+      );
+    });
+
+    // Pivot to the curated-corpus backend — the KRDICT-only 초성 bar hides.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Genre' }),
+      'business',
+    );
+    await screen.findByText('회의');
+    expect(
+      screen.queryByRole('group', { name: 'Browse by initial consonant' }),
+    ).not.toBeInTheDocument();
+
+    // Clearing the genre returns to KRDICT with the SAME 초성 section, the
+    // chip pressed again.
+    krdictSvc.searchKrdict.mockClear();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Genre' }), '');
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ initial: 'ㅁ', offset: 0 }),
+        expect.anything(),
+      );
+    });
+    expect(screen.getByRole('button', { name: 'ㅁ' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+});
+
+describe('ReviewDictionary — error paths + Retry', () => {
+  it('surfaces the 503 "not available yet" copy with a Retry that recovers', async () => {
+    krdictSvc.searchKrdict
+      .mockRejectedValueOnce(
+        new ApiError('krdict table missing', { status: 503, code: 'unavailable' }),
+      )
+      .mockResolvedValue({ entries: [KRDICT_HIT], total: 1 });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText('The dictionary isn’t available yet.'),
+    ).toBeInTheDocument();
+    // Fixed copy only — the server prose must not render.
+    expect(screen.queryByText('krdict table missing')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+  });
+
+  it('a failed browse shows fixed copy with a Retry that recovers', async () => {
+    krdictSvc.searchKrdict
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 500, code: 'server' }),
+      )
+      .mockResolvedValue({ entries: [KRDICT_HIT], total: 1 });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText('Could not load the words.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewDictionary — pager', () => {
+  it('pages the KRDICT browse with Prev/Next and an honest range readout', async () => {
+    krdictSvc.searchKrdict.mockResolvedValue({
+      entries: [KRDICT_HIT],
+      total: 90,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('학교');
+
+    expect(screen.getByText('1–30 of 90')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Prev' })).toBeDisabled();
+
+    krdictSvc.searchKrdict.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 30 }),
+        expect.anything(),
+      );
+    });
+    expect(await screen.findByText('31–60 of 90')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Prev' })).toBeEnabled();
+
+    // Prev returns to page 1.
+    krdictSvc.searchKrdict.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Prev' }));
+    await waitFor(() => {
+      expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 0 }),
+        expect.anything(),
+      );
+    });
+    expect(await screen.findByText('1–30 of 90')).toBeInTheDocument();
   });
 });
 

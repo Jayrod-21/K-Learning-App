@@ -19,13 +19,12 @@
  * the /topik/mistakes DTO does not yet carry the `topik_responses.attempt_id`
  * that migration 046 added, so two mock sittings on the same day merge into
  * one group. Exact per-sitting grouping needs the DTO extension — ticket
- * KM-3B-M2 (see the final report); the heuristic is honest and self-corrects
- * once the field lands.
+ * F-105; the heuristic is honest and self-corrects once the field lands.
  *
  * F-045 — per-exam score. The score (correct / total) of a past mock exam is
  * NOT derivable from a wrong-answers-only log, and no attempt-history route
  * exists yet (migration 046 shipped the schema for F-078/F-082; the
- * GET /topik/attempts route is pending — ticket KM-3B-M1). Until it lands the
+ * GET /topik/attempts route is pending — ticket F-104). Until it lands the
  * page surfaces the stat that IS derivable and honest: the missed count, per
  * session (in the selector labels) and for the visible scope (the live stat
  * line). No fabricated scores.
@@ -33,7 +32,7 @@
  * F-046 — writing review, stubbed. `writing_attempts` rows ARE persisted by
  * POST /grade-writing (migration 038), but the only read is the aggregate
  * GET /writing/series — there is no per-response history endpoint yet
- * (ticket KM-3B-M3, twin of F-074). The section renders its two designed
+ * (ticket F-106, twin of F-074). The section renders its two designed
  * parts (TOPIK writing responses · generated-prompt responses) as collapsed
  * tiles with an honest "coming soon" body. Nothing is fabricated.
  *
@@ -64,6 +63,18 @@ const CHOICE_MARKERS = ['①', '②', '③', '④'] as const;
 /** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
 const MISTAKES_NAV = navItem('mistakes');
 
+/** Parent-tab name source — nav.ts owns the pair (F-043: "Library"). */
+const LIBRARY_NAV = navItem('review');
+
+/**
+ * Explicit fetch cap = the server's maximum (`/topik/mistakes` limit is
+ * 1–200, default 100). Riding the silent default truncated a >100-miss
+ * window while the stat line still claimed a period TOTAL. At the cap the
+ * copy softens to "most recent N" — the real total needs the F-104
+ * attempt-history route.
+ */
+const MISTAKES_FETCH_LIMIT = 200;
+
 function whenLabel(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
@@ -90,7 +101,7 @@ function sessionDayKey(iso: string): string {
 }
 
 /** One selectable review session (F-044) — see the module note on the
- *  (local day, mode) heuristic and ticket KM-3B-M2. */
+ *  (local day, mode) heuristic and ticket F-105. */
 interface MistakeSession {
   /** FilterSelect option value. Never `''` (reserved for "all sessions"). */
   key: string;
@@ -120,7 +131,7 @@ function groupSessions(mistakes: Mistake[]): MistakeSession[] {
     const day = whenLabel(first.answeredAt);
     const dayLabel = day === '' ? 'Unknown date' : day;
     // F-045: missed count is the honest per-session stat available today —
-    // correct/total needs GET /topik/attempts (ticket KM-3B-M1).
+    // correct/total needs GET /topik/attempts (ticket F-104).
     const label = `${dayLabel} · ${modeLabel(first.mode)} · ${String(group.length)} missed`;
     return { key, label, mistakes: group };
   });
@@ -233,7 +244,7 @@ function MistakeTile({ mistake }: { mistake: Mistake }): JSX.Element {
 
 /**
  * F-046 — Writing review, two designed parts, both honestly stubbed until a
- * per-response history endpoint exists (ticket KM-3B-M3; see module note).
+ * per-response history endpoint exists (ticket F-106; see module note).
  * Static — no fetch happens here, so the section renders regardless of the
  * mistakes load state and can never add an error path of its own.
  */
@@ -276,9 +287,12 @@ export default function Mistakes(): JSX.Element {
   const { data, loading, error, isMock, refetch } = useEndpointOrMock<Mistake[]>(
     'topik.mistakes',
     loadMistakesMock,
-    { realFn: () => fetchMistakes() },
+    { realFn: () => fetchMistakes({ limit: MISTAKES_FETCH_LIMIT }) },
   );
   const mistakes = data ?? [];
+  // Log filled the fetch cap → the window may hold MORE than we fetched, so
+  // the all-sessions stat must not claim a period total (see the constant).
+  const atFetchLimit = mistakes.length >= MISTAKES_FETCH_LIMIT;
 
   // F-044 session filter. `''` = all sessions (FilterSelect's reserved
   // placeholder value). Derived `active` guards against a stale key after a
@@ -296,7 +310,7 @@ export default function Mistakes(): JSX.Element {
       {/* F-024: nested Review-library sub-page → explicit back control with a
           deterministic parent route (deep links never exit the PWA). */}
       <div className="km-mistakes__nav">
-        <BackButton to="/review" label="Review" />
+        <BackButton to="/review" label={LIBRARY_NAV.label} />
       </div>
       <Topbar
         krTitle="틀린 문제"
@@ -343,13 +357,22 @@ export default function Mistakes(): JSX.Element {
             />
             {/* aria-live: the count re-announces when the filter changes.
                 F-045: missed count only — a real correct/total score needs
-                GET /topik/attempts (ticket KM-3B-M1), never fabricated. */}
+                GET /topik/attempts (ticket F-104), never fabricated. */}
             <p className="km-mistakes__stat" aria-live="polite">
               {active === '' ? (
-                <Bilingual
-                  en={`${String(visible.length)} missed in the last 30 days`}
-                  kr={`최근 30일간 ${String(visible.length)}문제 틀렸어요`}
-                />
+                atFetchLimit ? (
+                  // At the cap "N in the last 30 days" would present a
+                  // truncated fetch as a period total — say what we KNOW.
+                  <Bilingual
+                    en={`Your most recent ${String(visible.length)} missed`}
+                    kr={`최근에 틀린 ${String(visible.length)}문제`}
+                  />
+                ) : (
+                  <Bilingual
+                    en={`${String(visible.length)} missed in the last 30 days`}
+                    kr={`최근 30일간 ${String(visible.length)}문제 틀렸어요`}
+                  />
+                )
               ) : (
                 <Bilingual
                   en={`${String(visible.length)} missed in this session`}

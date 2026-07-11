@@ -38,6 +38,15 @@ beforeEach(() => {
 });
 
 describe('LibrarySubnav (P3b bilingual chrome)', () => {
+  it('names the landmark "Library sections" — the F-043 tab name, not the retired "Review library"', () => {
+    renderAt('/review/vocab');
+    // AT users navigate by this landmark name; it must match the renamed
+    // Library tab, not the pre-F-043 "Review library" copy.
+    expect(
+      screen.getByRole('navigation', { name: 'Library sections' }),
+    ).toBeInTheDocument();
+  });
+
   it('renders the three sections with bilingual accessible names, Korean visible by default', () => {
     renderAt('/review/vocab');
     // Accessible names carry BOTH languages (compact sr-only reading);

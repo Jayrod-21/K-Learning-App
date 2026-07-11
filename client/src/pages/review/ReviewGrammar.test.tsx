@@ -168,7 +168,12 @@ describe('ReviewGrammar — browse (the old Reference Grammar tab)', () => {
     expect(
       screen.queryByRole('group', { name: 'Filter grammar by topic' }),
     ).not.toBeInTheDocument();
-    // The library section strip (Vocabulary/Dictionary links) is removed.
+    // The library section strip (Vocabulary/Dictionary links) is removed —
+    // guard both the current LibrarySubnav landmark name and the pre-F-043
+    // one so neither vintage can creep back.
+    expect(
+      screen.queryByRole('navigation', { name: 'Library sections' }),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('navigation', { name: 'Review library section' }),
     ).not.toBeInTheDocument();
@@ -486,10 +491,51 @@ describe('ReviewGrammar — BackButton (F-024)', () => {
     renderPage();
     await screen.findByText(/1 pattern/);
 
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
     await user.click(
-      screen.getByRole('button', { name: 'Back to Review library' }),
+      screen.getByRole('button', { name: 'Back to Library' }),
     );
     expect(await screen.findByText('Review hub stub')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — Browse/Uploads tabs (shared Tabs, W3C APG contract)', () => {
+  it('delivers the full tabs contract: roving tabindex, arrow/Home keys, labelled tabpanel', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    const browseTab = screen.getByRole('tab', { name: /Browse/ });
+    const uploadsTab = screen.getByRole('tab', { name: /Uploads/ });
+
+    // Selected tab carries the tab stop; the other is roving (-1).
+    expect(browseTab).toHaveAttribute('aria-selected', 'true');
+    expect(browseTab).toHaveAttribute('tabindex', '0');
+    expect(uploadsTab).toHaveAttribute('aria-selected', 'false');
+    expect(uploadsTab).toHaveAttribute('tabindex', '-1');
+
+    // The active panel is a real tabpanel wired to the selected tab.
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', browseTab.id);
+    expect(browseTab).toHaveAttribute('aria-controls', panel.id);
+
+    // ArrowRight: focus AND selection move to Uploads (automatic
+    // activation) — the roving tab stop follows.
+    browseTab.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(uploadsTab).toHaveFocus();
+    expect(uploadsTab).toHaveAttribute('aria-selected', 'true');
+    expect(uploadsTab).toHaveAttribute('tabindex', '0');
+    expect(browseTab).toHaveAttribute('tabindex', '-1');
+    expect(
+      await screen.findByText(/No grammar from your uploads yet/),
+    ).toBeInTheDocument();
+
+    // Home: back to the first tab, panel follows.
+    await user.keyboard('{Home}');
+    expect(browseTab).toHaveFocus();
+    expect(browseTab).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
   });
 });
 

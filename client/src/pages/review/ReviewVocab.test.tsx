@@ -186,18 +186,25 @@ describe('ReviewVocab — stacked layout (F-052) + chrome', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('영향');
-    await user.click(screen.getByRole('button', { name: 'Back to Review' }));
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(screen.getByRole('button', { name: 'Back to Library' }));
     expect(screen.getByTestId('review-index')).toBeInTheDocument();
   });
 
-  it('renders the title + "Review library" eyebrow with Korean in both-mode', async () => {
+  it('renders the title + the manifest "Library" eyebrow with Korean in both-mode', async () => {
     renderPage();
     await screen.findByText('영향');
     expect(
       screen.getByRole('heading', { level: 1, name: '단어 · Vocabulary' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('복습 자료실')).toBeInTheDocument();
-    expect(screen.getByText('Review library')).toBeInTheDocument();
+    // Eyebrow = the parent tab's nav-manifest pair (Library · 자료실).
+    // getAllByText for 'Library': the BackButton's visible label carries
+    // the same manifest string on this page.
+    expect(screen.getByText('자료실')).toBeInTheDocument();
+    expect(screen.getAllByText('Library').length).toBeGreaterThan(0);
+    // The stale hand-written pair must not linger (F-043 sweep).
+    expect(screen.queryByText('Review library')).not.toBeInTheDocument();
+    expect(screen.queryByText('복습 자료실')).not.toBeInTheDocument();
   });
 
   it('shows no "My uploads" section while no saved-from-upload vocab exists (F-053)', async () => {

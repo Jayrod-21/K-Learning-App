@@ -66,6 +66,7 @@ import {
   type LevelFilter,
 } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { navItem } from '../../lib/nav';
 import * as vocabService from '../../services/vocab';
 import { ApiError } from '../../services/api';
 import type {
@@ -75,6 +76,10 @@ import type {
   VocabEntry,
 } from '../../types/domain';
 import './ReviewVocab.css';
+
+/** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
+ *  tab to "Library"), so the eyebrow and back label can never go stale. */
+const LIBRARY_NAV = navItem('review');
 
 // ─────────────────────────────────────────────────────────────
 // F-049 filter vocabularies — closed lists mirroring the server enums
@@ -126,13 +131,13 @@ export default function ReviewVocab(): JSX.Element {
       aria-labelledby="km-review-vocab-title"
     >
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
-      <BackButton to="/review" label="Review" />
+      <BackButton to="/review" label={LIBRARY_NAV.label} />
 
       <Topbar
         krTitle="단어"
         title="Vocabulary"
         titleId="km-review-vocab-title"
-        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
       />
 
       <LibrarySubnav />
@@ -189,10 +194,10 @@ export default function ReviewVocab(): JSX.Element {
  *
  * So the honest render is nothing: the "only shown IF such saved items
  * exist" condition is false for every user until a saved-from-uploads
- * endpoint lands (proposed ticket in the P3B report: record provenance on
- * the save paths + `GET /vocab/saved-from-uploads`). Wiring this section to
- * the U3a tagged-rows query instead would fabricate "saved" semantics the
- * data doesn't have.
+ * endpoint lands (ticket F-107: record provenance on the save paths +
+ * `GET /vocab/saved-from-uploads`). Wiring this section to the U3a
+ * tagged-rows query instead would fabricate "saved" semantics the data
+ * doesn't have.
  */
 function SavedFromUploads(): JSX.Element | null {
   return null;

@@ -26,7 +26,7 @@
  * closed vocabulary validated at the select boundary (`toGenre`) — an
  * out-of-vocabulary value degrades to "no genre", never reaches the wire.
  */
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
@@ -41,6 +41,7 @@ import { Topbar } from '../../components/Topbar';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
 import { DOMAIN_FILTERS, PAGE_SIZE } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { navItem } from '../../lib/nav';
 import { searchKrdict } from '../../services/krdict';
 import * as vocabService from '../../services/vocab';
 import { ApiError } from '../../services/api';
@@ -49,6 +50,10 @@ import type {
   KrdictSearchEntry,
   VocabEntry,
 } from '../../types/domain';
+
+/** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
+ *  tab to "Library"), so the eyebrow and back label can never go stale. */
+const LIBRARY_NAV = navItem('review');
 
 const INITIAL_CONSONANTS = [
   'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ',
@@ -132,6 +137,9 @@ export default function ReviewDictionary(): JSX.Element {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Monotonic reload trigger so Retry re-runs the fetch effect without
+  // changing the query/filters (same pattern as ReviewVocab's browse).
+  const [reloadTick, setReloadTick] = useState(0);
   const ctrlRef = useRef<AbortController | null>(null);
 
   // `q` empty → browse (page 1 on mount, no search needed); typing switches
@@ -216,7 +224,11 @@ export default function ReviewDictionary(): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, browsing, initial, genre]);
+  }, [q, offset, browsing, initial, genre, reloadTick]);
+
+  const retry = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
 
   const rowCount = page.rows.length;
 
@@ -226,13 +238,13 @@ export default function ReviewDictionary(): JSX.Element {
       aria-labelledby="km-review-dictionary-title"
     >
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
-      <BackButton to="/review" label="Review" />
+      <BackButton to="/review" label={LIBRARY_NAV.label} />
 
       <Topbar
         krTitle="전체 단어"
         title="All Words"
         titleId="km-review-dictionary-title"
-        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
       />
 
       <LibrarySubnav />
@@ -275,7 +287,9 @@ export default function ReviewDictionary(): JSX.Element {
             )}
           </div>
         ) : error ? (
-          <ErrorCard message={error} />
+          // Every error path gets a real Retry (incl. the 503 "not available
+          // yet" case — the KRDICT load may have finished by the retry).
+          <ErrorCard message={error} onRetry={retry} />
         ) : rowCount === 0 ? (
           <p className="km-reference__empty">
             <Bilingual en="No words found." kr="검색 결과가 없어요." />

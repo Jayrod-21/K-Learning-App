@@ -33,7 +33,7 @@ export function LibrarySubnav(): JSX.Element {
   const { pathname } = useLocation();
 
   return (
-    <nav className="km-review__tabs" aria-label="Review library section">
+    <nav className="km-review__tabs" aria-label="Library sections">
       {SECTION_IDS.map((id) => {
         const item = navItem(id);
         const selected = pathname === item.path;
