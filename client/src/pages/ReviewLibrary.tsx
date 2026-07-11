@@ -1,26 +1,29 @@
 /**
- * ReviewLibrary — the `/review` library index (Overhaul P1.2 assembly).
+ * ReviewLibrary — the `/review` LIBRARY landing (Overhaul P3B, F-042/F-043).
  *
- * A directory over the library's REAL sub-routes (the P1.1 `/reference?tab=`
- * placeholder links are gone — Reference dissolved into the routes below):
+ * A four-section directory over the library's real routes, in fixed order:
  *
- *   - Mistakes            → /review/mistakes
- *   - Vocabulary          → /review/vocab       (corpus browse + My Lists)
- *   - Dictionary          → /review/dictionary  (KRDICT, D2: separate page)
- *   - Grammar             → /review/grammar     (single browse, D3)
- *   - Scan images         → /images             (OCR mining; INTERIM home
- *                            until the P4 IA decision — see ROWS note)
- *   - Past TOPIK exams    → coming soon (designed placeholder; P4)
- *   - Uploads             → coming soon (designed placeholder; P4/P6)
+ *   - Vocabulary   → /review/vocab     (corpus browse + My Lists)
+ *   - Grammar      → /review/grammar   (single KGIU browse, D3)
+ *   - TOPIK exams  → /review/mistakes  (the exams shelf: Mistakes today;
+ *                     a dedicated past-exams surface takes over this row
+ *                     when it lands — see the P3B ticket in the report)
+ *   - Uploads      → /uploads          (book PDFs, U1b)
  *
- * Above the directory sit two QUICK-LAUNCH hot-buttons into the LEARN flow
- * (`/learn/vocab` flashcards + `/learn/grammar` drill) — real targets,
- * deliberately simple chips; the fuller hot-button treatment is P4.
+ * F-043 renamed the page (and the bottom-nav tab, via lib/nav.ts) from
+ * "Review" to "Library"; the `review` NavItemId and the `/review` path are
+ * hard route contracts and stay as-is. F-042 removed the P1.2-era extras:
+ * the quick-launch LEARN chips (flashcards/grammar drill — the hexagon
+ * LEARN launcher owns that flow), the standalone Mistakes/Dictionary rows
+ * (Dictionary stays reachable via LibrarySubnav on the browse pages), the
+ * interim "Scan images" row, and the inert "coming soon" placeholders.
  *
- * NOTE: this page REPURPOSES the `/review` path — the FSRS vocab flashcards
- * that used to live here are now at `/learn/vocab` (LEARN menu → "Vocab
- * flashcards"). No redirect shim exists for the old meaning by design; see
- * `lib/redirects.tsx`.
+ * Each row's title AND its one-line contents description come from the nav
+ * manifest's en/kr pairs and render through `<Bilingual/>`, so the
+ * language-display setting applies everywhere.
+ *
+ * No BackButton: `/review` is a primary bottom-nav tab (same as
+ * Today/Progress), not a sub-page.
  *
  * No I/O — pure navigation; no threat model beyond the router's own.
  */
@@ -28,139 +31,106 @@ import type { JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import { Icon, type IconName } from '../components/Icon';
-import { Pill } from '../components/Pill';
 import { Topbar } from '../components/Topbar';
 import { navItem, type NavItemId } from '../lib/nav';
+import './ReviewLibrary.css';
 
-/** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
+/** Page title + eyebrow source — nav.ts owns the en/kr pairs (F-043). */
 const LIBRARY_NAV = navItem('review');
 
-interface LibraryRow {
+interface LibrarySection {
   readonly key: string;
   readonly label: string;
   readonly kr: string;
+  /** One-line contents description (chrome register, en/kr pair). */
+  readonly desc: string;
+  readonly krDesc: string;
   readonly icon: IconName;
-  /** Destination — absent means the row is a "coming soon" placeholder. */
-  readonly to?: string;
+  readonly to: string;
 }
 
-function rowFor(id: NavItemId): LibraryRow {
+function sectionFor(id: NavItemId): LibrarySection {
   const item = navItem(id);
   return {
     key: id,
     label: item.label,
     kr: item.kr,
+    desc: item.eyebrow,
+    krDesc: item.krEyebrow,
     icon: item.icon,
     to: item.path,
   };
 }
 
-const ROWS: ReadonlyArray<LibraryRow> = [
-  rowFor('mistakes'),
-  // The dissolved Reference tabs — first-class library routes since P1.2.
-  rowFor('review-vocab'),
-  rowFor('review-dictionary'),
-  rowFor('review-grammar'),
-  // INTERIM home for `/images` (photo/OCR vocab mining) — the page lost its
-  // entry point when the More sheet retired in P1.1. Sits with the
-  // bring-your-own-material rows (Uploads); its FINAL home is a P4 decision
-  // (fold into uploads vs. the chat image feature — OVERHAUL_DESIGN.md).
-  { ...rowFor('images'), label: 'Scan images', kr: '이미지 스캔' },
-  // Designed "coming soon" placeholders — routes + endpoints land in P4/P6.
-  { key: 'exams', label: 'Past TOPIK exams', kr: '기출 시험', icon: 'spark' },
-  { key: 'uploads', label: 'Uploads', kr: '자료 업로드', icon: 'upload' },
-];
-
-/** Quick-launch hot-buttons → the LEARN flow (real targets; simple for now —
- *  the fuller treatment is P4). */
-const HOT_BUTTONS: ReadonlyArray<{
-  readonly id: NavItemId;
-  readonly label: string;
-  readonly kr: string;
-}> = [
-  { id: 'flashcards', label: 'Vocab flashcards', kr: '단어 카드' },
-  { id: 'grammar', label: 'Grammar drill', kr: '문법 연습' },
+/** The four library sections, in the F-042 order. */
+const SECTIONS: ReadonlyArray<LibrarySection> = [
+  sectionFor('review-vocab'),
+  sectionFor('review-grammar'),
+  {
+    // The exams shelf (F-042): Mistakes and past TOPIK exams share this
+    // section. No dedicated past-exams surface is wired yet, so the row
+    // lands on Mistakes — the one exams surface that exists today. When
+    // the past-exams page ships it takes over `to` (and Mistakes becomes
+    // a link inside it).
+    key: 'exams',
+    label: 'TOPIK exams',
+    kr: '기출 시험',
+    desc: 'Mistakes · past exams',
+    krDesc: '틀린 문제 · 기출',
+    icon: 'spark',
+    to: navItem('mistakes').path,
+  },
+  sectionFor('uploads'),
 ];
 
 function ReviewLibrary(): JSX.Element {
   const navigate = useNavigate();
 
   return (
-    <section className="screen km-library" aria-labelledby="review-title">
+    <section className="screen km-library" aria-labelledby="library-title">
       <Topbar
-        krTitle="복습"
-        title="Review"
-        titleId="review-title"
+        krTitle={LIBRARY_NAV.kr}
+        title={LIBRARY_NAV.label}
+        titleId="library-title"
         eyebrow={
           <Bilingual en={LIBRARY_NAV.eyebrow} kr={LIBRARY_NAV.krEyebrow} />
         }
       />
 
+      {/* role="list" on the div (not a <ul>) matches the app-wide pattern —
+          the global CSS reset strips list semantics, so the role restores
+          them explicitly for AT. */}
       <div
-        className="km-library__quick"
-        role="group"
-        aria-label="Quick launch"
+        className="km-library__list"
+        role="list"
+        aria-label="Library sections"
       >
-        {HOT_BUTTONS.map((hb) => {
-          const item = navItem(hb.id);
-          return (
+        {SECTIONS.map((s) => (
+          <div key={s.key} role="listitem">
             <button
-              key={hb.id}
               type="button"
-              className="km-library__chip focusring"
+              className="km-library__row focusring"
               onClick={() => {
-                navigate(item.path);
+                navigate(s.to);
               }}
             >
-              <Icon name={item.icon} size={16} />
-              <span>
-                <Bilingual en={hb.label} kr={hb.kr} compact />
+              <Icon name={s.icon} size={20} />
+              <span className="km-library__rowmeta">
+                <span className="km-library__rowlabel">
+                  <Bilingual en={s.label} kr={s.kr} />
+                </span>
+                {/* `compact`: the description is tight secondary chrome —
+                    in 'both' mode only the primary language shows while
+                    the accessible name keeps both (same call as
+                    LibrarySubnav). */}
+                <span className="km-library__rowdesc">
+                  <Bilingual en={s.desc} kr={s.krDesc} compact />
+                </span>
               </span>
+              <Icon name="chevron-right" size={16} />
             </button>
-          );
-        })}
-      </div>
-
-      <div className="km-library__list" role="list" aria-label="Review library">
-        {ROWS.map((row) => {
-          const { to } = row;
-          return (
-            <div key={row.key} role="listitem">
-              {to !== undefined ? (
-                <button
-                  type="button"
-                  className="km-library__row focusring"
-                  onClick={() => {
-                    navigate(to);
-                  }}
-                >
-                  <Icon name={row.icon} size={20} />
-                  <span className="km-library__rowmeta">
-                    {/* P3b: the row's en/kr pair renders through the
-                        bilingual primitive so the language-display setting
-                        applies (was two hand-stacked single-language spans). */}
-                    <span className="km-library__rowlabel">
-                      <Bilingual en={row.label} kr={row.kr} />
-                    </span>
-                  </span>
-                  <Icon name="chevron-right" size={16} />
-                </button>
-              ) : (
-                <div className="km-library__row km-library__row--soon">
-                  <Icon name={row.icon} size={20} />
-                  <span className="km-library__rowmeta">
-                    <span className="km-library__rowlabel">
-                      <Bilingual en={row.label} kr={row.kr} />
-                    </span>
-                  </span>
-                  <Pill>
-                    <Bilingual en="Coming soon" kr="준비 중" compact />
-                  </Pill>
-                </div>
-              )}
-            </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </section>
   );

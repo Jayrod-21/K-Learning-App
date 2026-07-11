@@ -25,7 +25,7 @@
  *
  * `path` is the React Router route. `kr` is the Korean sublabel (LearnMenu
  * rows, a11y labels). `icon` is a key into the `<Icon/>` registry.
- * `headerTitle` is the serif Korean title pattern (e.g. `복습 · Review`).
+ * `headerTitle` is the serif Korean title pattern (e.g. `오늘 · Today`).
  *
  * Eyebrows (Overhaul P3b): `eyebrow` is the ENGLISH eyebrow, `krEyebrow` its
  * Korean counterpart — the same flat en/kr convention as `label`/`kr`.
@@ -97,14 +97,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
     // REPURPOSED id (P1.1): `review` is now the library index at `/review`.
     // The FSRS vocab-flashcards page that used to own this id/path is
-    // `flashcards` at `/learn/vocab` below.
+    // `flashcards` at `/learn/vocab` below. P3B (F-043): the tab reads
+    // "Library" — the id and the `/review` path are hard route contracts
+    // and stay as-is.
     id: 'review',
     path: '/review',
-    label: 'Review',
-    kr: '복습',
-    eyebrow: 'Library',
-    krEyebrow: '자료실',
-    headerTitle: '복습 · Review',
+    label: 'Library',
+    kr: '자료실',
+    eyebrow: 'Vocabulary · grammar · exams · uploads',
+    krEyebrow: '단어 · 문법 · 기출 · 업로드',
+    headerTitle: '자료실 · Library',
     icon: 'folder',
   },
   {

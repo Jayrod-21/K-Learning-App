@@ -50,7 +50,7 @@ describe('BottomNav (P1.1)', () => {
       'Today · 오늘',
       'Progress · 성장',
       'Learn · 배움',
-      'Review · 복습',
+      'Library · 자료실',
       'Settings · 설정',
     ]);
   });
@@ -68,9 +68,9 @@ describe('BottomNav (P1.1)', () => {
     ).toHaveLength(1);
   });
 
-  it('lights Review for library sub-pages (/review/mistakes) via longest-prefix', () => {
+  it('lights Library for library sub-pages (/review/mistakes) via longest-prefix', () => {
     renderNavAt('/review/mistakes');
-    expect(screen.getByRole('button', { name: 'Review · 복습' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Library · 자료실' })).toHaveAttribute(
       'aria-current',
       'page',
     );
