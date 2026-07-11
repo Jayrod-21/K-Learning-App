@@ -17,17 +17,19 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import type { TopikAnswerResult, TopikItem } from '../types/domain';
+import type { AttemptHistoryResult } from '../services/topik';
 
-// Hoisted state the mocked hook reads from.
-const hookState: {
-  current: {
-    data: TopikItem[] | null;
-    loading: boolean;
-    error: { message: string } | null;
-    isMock: boolean;
-    refetch: () => void;
-  };
-} = {
+/** Shape of `useEndpointOrMock`'s return value, for the per-key mock states below. */
+interface HookResult<T> {
+  data: T | null;
+  loading: boolean;
+  error: { message: string } | null;
+  isMock: boolean;
+  refetch: () => void;
+}
+
+// Hoisted state the mocked hook reads from — the Study draw's call site.
+const hookState: { current: HookResult<TopikItem[]> } = {
   current: {
     data: null,
     loading: true,
@@ -37,8 +39,42 @@ const hookState: {
   },
 };
 
+// F-078/F-104: the daily-total call site (StudyMode) — defaults to a ready,
+// empty page so existing Study-mode tests (which don't care about the daily
+// total) render it as an honest "no mock exams today" line without needing
+// a per-test override.
+const dailyHookState: { current: HookResult<AttemptHistoryResult> } = {
+  current: {
+    data: { attempts: [], total: 0 },
+    loading: false,
+    error: null,
+    isMock: false,
+    refetch: vi.fn(),
+  },
+};
+
+// F-082: the "Previous attempts" review call site (AttemptsReview) — same
+// default-empty shape; only exercised by tests that navigate to
+// `?view=attempts`.
+const attemptsReviewHookState: { current: HookResult<AttemptHistoryResult> } = {
+  current: {
+    data: { attempts: [], total: 0 },
+    loading: false,
+    error: null,
+    isMock: false,
+    refetch: vi.fn(),
+  },
+};
+
+// `Topik.tsx` now makes THREE distinct `useEndpointOrMock` calls (study draw,
+// daily total, attempts review) — the mock routes by `key` so each call site
+// gets its own state instead of every call sharing one global object.
 vi.mock('../hooks/useEndpointOrMock', () => ({
-  useEndpointOrMock: () => hookState.current,
+  useEndpointOrMock: (key: string) => {
+    if (key === 'topik-daily-total') return dailyHookState.current;
+    if (key === 'topik-attempts-review') return attemptsReviewHookState.current;
+    return hookState.current;
+  },
 }));
 
 // Service mock — `vi.hoisted` is required because `vi.mock` is hoisted above
@@ -62,10 +98,12 @@ vi.mock('../services/topik', () => ({
   // Never actually invoked — useEndpointOrMock is mocked and ignores realFn —
   // but stubbed so the module's named export exists for the screen's import.
   fetchStudyDraw: () => Promise.reject(new Error('not used in tests')),
+  fetchAttemptHistory: () => Promise.reject(new Error('not used in tests')),
   // Mock-mode services exist for MockMode's import; never called in these
   // Study-mode tests (no section is started).
   fetchMockTest: () => Promise.reject(new Error('not used in tests')),
   submitMockTest: () => Promise.reject(new Error('not used in tests')),
+  fetchAvailableTests: () => Promise.reject(new Error('not used in tests')),
   // MockMode fetches any resumable attempt on mount (F-007) — no attempt here,
   // so no resume banner; saves/clears are best-effort no-ops.
   fetchAttempt: () => Promise.resolve(null),
@@ -173,6 +211,23 @@ describe('Topik (Study mode)', () => {
     hookState.current = {
       data: null,
       loading: true,
+      error: null,
+      isMock: false,
+      refetch: vi.fn(),
+    };
+    // Reset the two F-104 call sites to their default (ready, empty) state
+    // between tests — a test that overrides one (e.g. to assert a populated
+    // "Completed exams" list) must not leak into the next.
+    dailyHookState.current = {
+      data: { attempts: [], total: 0 },
+      loading: false,
+      error: null,
+      isMock: false,
+      refetch: vi.fn(),
+    };
+    attemptsReviewHookState.current = {
+      data: { attempts: [], total: 0 },
+      loading: false,
       error: null,
       isMock: false,
       refetch: vi.fn(),
@@ -659,7 +714,7 @@ describe('Topik (Study mode)', () => {
     expect(screen.getByText(/Item 1 \/ 2/)).toBeInTheDocument();
   });
 
-  it('F-078: tallies session right/wrong from real reveals, survives New set, and keeps daily totals honestly pending', async () => {
+  it('F-078: tallies session right/wrong from real reveals, survives New set, and renders the real (empty) daily mock total', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
     render(<Topik />, { wrapper: MemoryRouter });
@@ -667,12 +722,11 @@ describe('Topik (Study mode)', () => {
     const tally = screen.getByRole('group', { name: 'Session tally' });
     expect(within(tally).getAllByText('맞음 0').length).toBeGreaterThan(0);
     expect(within(tally).getAllByText('틀림 0').length).toBeGreaterThan(0);
-    // The FULL-day number needs GET /topik/attempts (ticket F-104) — the
-    // tile says so instead of fabricating one.
+    // The daily total is now wired to GET /topik/attempts (F-104) — the
+    // mocked hook state defaults to an empty completed-attempt page, so the
+    // tile renders the honest empty state, never a fabricated number.
     expect(
-      within(tally).getByText(
-        /Full-day totals will appear once attempt history is available/,
-      ),
+      within(tally).getByText(/No mock exams completed today yet/),
     ).toBeInTheDocument();
 
     // A correct reveal increments the right count.
@@ -685,6 +739,68 @@ describe('Topik (Study mode)', () => {
     // New set keeps the SESSION tally — it counts the session, not the set.
     await user.click(screen.getByRole('button', { name: /new set/i }));
     expect(within(tally).getAllByText('맞음 1').length).toBeGreaterThan(0);
+  });
+
+  it("F-078/F-104: renders a real, nonzero daily mock total — summed from TODAY's completed attempts, excluding older ones", () => {
+    dailyHookState.current = {
+      data: {
+        attempts: [
+          {
+            attemptId: '1',
+            section: '읽기',
+            sourceTest: 90,
+            topikLevel: 'TOPIK II',
+            correct: 42,
+            totalItems: 50,
+            completedAt: new Date().toISOString(), // today
+          },
+          {
+            attemptId: '2',
+            section: '듣기',
+            sourceTest: 12,
+            topikLevel: 'TOPIK I',
+            correct: 10,
+            totalItems: 30,
+            completedAt: '2020-01-01T00:00:00.000Z', // NOT today — excluded
+          },
+        ],
+        total: 2,
+      },
+      loading: false,
+      error: null,
+      isMock: false,
+      refetch: vi.fn(),
+    };
+    setDraw([ITEM_A]);
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    const tally = screen.getByRole('group', { name: 'Session tally' });
+    // 42 right + (50-42)=8 wrong from TODAY's attempt only; yesterday's
+    // 10/30 attempt must not bleed into the total.
+    expect(within(tally).getByText(/42 right/)).toBeInTheDocument();
+    expect(within(tally).getByText(/8 wrong/)).toBeInTheDocument();
+    expect(within(tally).queryByText(/10 right/)).not.toBeInTheDocument();
+  });
+
+  it('F-078/F-104: daily total shows a loading state, then a retryable error wired to refetch()', async () => {
+    const onRetry = vi.fn();
+    dailyHookState.current = {
+      data: null,
+      loading: false,
+      error: { message: 'network down' },
+      isMock: false,
+      refetch: onRetry,
+    };
+    setDraw([ITEM_A]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    const tally = screen.getByRole('group', { name: 'Session tally' });
+    expect(
+      within(tally).getByText(/Couldn't load today's mock total/),
+    ).toBeInTheDocument();
+    await user.click(within(tally).getByRole('button', { name: /retry/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('F-078: a skipped item tallies as wrong (matches the results grading)', async () => {
@@ -755,7 +871,7 @@ describe('Topik (Study mode)', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('F-082: the landing links to Previous attempts — an honestly-pending review view with a wired jump to Mistakes', async () => {
+  it('F-082: the landing links to Previous attempts — wired from F-104, honest empty state, jump to Mistakes', async () => {
     setDraw([ITEM_A]);
     const user = userEvent.setup();
     render(<Topik />, { wrapper: MemoryRouter });
@@ -769,10 +885,11 @@ describe('Topik (Study mode)', () => {
         name: '지난 시험 · Previous attempts',
       }),
     ).toBeInTheDocument();
-    // Honest pending copy — completed-exam grades need GET /topik/attempts
-    // (ticket F-104); nothing is fabricated (no scores/percentages anywhere).
+    // Wired to GET /topik/attempts (F-104) — the mocked hook state defaults
+    // to an empty completed-attempt page, so this renders the honest empty
+    // state; nothing is fabricated (no scores/percentages anywhere).
     expect(
-      screen.getByText(/will appear here once attempt history is available/),
+      screen.getByText(/You haven't completed a mock exam yet/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
     // The wired part that exists today: the jump into Review → Mistakes.
@@ -786,6 +903,63 @@ describe('Topik (Study mode)', () => {
       screen.getByRole('heading', { level: 1, name: '모의 · TOPIK' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /study/i })).toBeInTheDocument();
+  });
+
+  it('F-082: populates the Completed exams list from real attempt history (grade, correct/total)', async () => {
+    setDraw([ITEM_A]);
+    attemptsReviewHookState.current = {
+      data: {
+        attempts: [
+          {
+            attemptId: '501',
+            section: '읽기',
+            sourceTest: 91,
+            topikLevel: 'TOPIK II',
+            correct: 40,
+            totalItems: 50,
+            completedAt: '2026-06-01T12:00:00.000Z',
+          },
+        ],
+        total: 1,
+      },
+      loading: false,
+      error: null,
+      isMock: false,
+      refetch: vi.fn(),
+    };
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('link', { name: /Previous attempts/i }));
+
+    // The grade renders as a compact Bilingual (shared numerals in both
+    // languages), so these numbers legitimately appear more than once in the
+    // DOM (visible + sr-only reading) — matches this file's established
+    // getAllByText convention for compact bilingual content.
+    expect(screen.getAllByText(/40\/50/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/80%/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/haven't completed a mock exam/i)).not.toBeInTheDocument();
+  });
+
+  it('F-082: shows a loading state, then a retryable error, for the Completed exams list', async () => {
+    setDraw([ITEM_A]);
+    const onRetry = vi.fn();
+    attemptsReviewHookState.current = {
+      data: null,
+      loading: false,
+      error: { message: 'network down' },
+      isMock: false,
+      refetch: onRetry,
+    };
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+    await user.click(screen.getByRole('link', { name: /Previous attempts/i }));
+
+    expect(
+      screen.getByText(/Couldn't load your completed exams/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /try again/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
   it('F-082: deep-links straight to the attempts view via ?view=attempts', () => {

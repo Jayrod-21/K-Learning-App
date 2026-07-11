@@ -530,6 +530,120 @@ router.get('/items', cheapLimiter(), validateQuery(ItemsQuerySchema), async (req
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /topik/tests — enumerate available TOPIK papers (F-118).
+//
+// Feeds the F-079 Mock exam chooser's per-paper list (today it renders an
+// honest-pending note — see MockMode.tsx's `ExamChooser`). Reference data,
+// like /items: topik_tests/topik_items carry no ownership, so this is not
+// user-scoped — but the route still sits behind `requireAuth` like every
+// route in this router.
+// ---------------------------------------------------------------------------
+
+const TestsQuerySchema = z.object({
+  section: SectionSchema.optional(),
+  topik_level: TopikLevelSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().nonnegative().default(0),
+});
+
+/** One TOPIK paper summary — a (test_number, topik_level, section) group. */
+interface TopikTestSummaryDTO {
+  testNumber: number;
+  topikLevel: TopikLevel;
+  section: SectionKr;
+  /**
+   * The ANSWERABLE item count for this paper's section, capped at
+   * `OFFICIAL_MOCK_SECTION_SIZE` — matches EXACTLY what `POST /topik/mock`
+   * would serve for this (test_number, topik_level, section), so the chooser
+   * never advertises a count the exam itself would not deliver (F-UP-007:
+   * the corpus carries more items per test than the official exam).
+   */
+  itemCount: number;
+}
+
+interface TestSummaryRow {
+  test_number: number;
+  topik_level: TopikLevel;
+  section: SectionEnum;
+  item_count: number;
+}
+
+/**
+ * GET /topik/tests — enumerate available TOPIK papers (F-118).
+ *
+ * Groups `topik_items` by their parent (test_number, topik_level, section) —
+ * the natural key migration 029 introduced (D-1: TOPIK I/II sittings share
+ * every test_number) — and reports the ANSWERABLE item count for each,
+ * capped at `OFFICIAL_MOCK_SECTION_SIZE` (the same survivor guard + cap
+ * `/mock` and `/mock/submit` use), so a client browsing papers sees exactly
+ * what a mock would serve. A paper with ZERO answerable items is excluded
+ * (there is nothing to take — mirrors `/items`' `total == browsable pool`
+ * posture). `section`/`topik_level` filters are optional and ANDed; the
+ * response `total` is the filtered PAPER count for pagination (not an item
+ * count), mirroring `GET /items`'s `{ items, total }` shape.
+ */
+router.get('/tests', cheapLimiter(), validateQuery(TestsQuerySchema), async (req, res, next) => {
+  try {
+    const q = (req as typeof req & {
+      validatedQuery: z.infer<typeof TestsQuerySchema>;
+    }).validatedQuery;
+
+    const filters: string[] = [];
+    const params: unknown[] = [];
+    if (q.section !== undefined) {
+      params.push(q.section);
+      filters.push(`i.section = $${params.length}::topik_section`);
+    }
+    if (q.topik_level !== undefined) {
+      params.push(q.topik_level);
+      filters.push(`t.topik_level = $${params.length}`);
+    }
+    const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+
+    const countResult = await query<{ total: string }>(
+      `SELECT count(*)::text AS total
+         FROM (
+                SELECT t.test_number, t.topik_level, t.section
+                  FROM topik_tests t
+                  JOIN topik_items i ON i.topik_test_id = t.id
+                 ${whereClause}
+                 GROUP BY t.test_number, t.topik_level, t.section
+                HAVING count(*) FILTER (WHERE ${ANSWERABLE_ITEM_SQL}) > 0
+              ) papers`,
+      params,
+    );
+    const total = Number(countResult.rows[0]?.total ?? '0');
+
+    const pageParams = [...params, q.limit, q.offset];
+    const limitPlaceholder = `$${params.length + 1}`;
+    const offsetPlaceholder = `$${params.length + 2}`;
+    const { rows } = await query<TestSummaryRow>(
+      `SELECT t.test_number, t.topik_level, t.section::text AS section,
+              LEAST(count(*) FILTER (WHERE ${ANSWERABLE_ITEM_SQL}), ${OFFICIAL_MOCK_SECTION_SIZE})::int AS item_count
+         FROM topik_tests t
+         JOIN topik_items i ON i.topik_test_id = t.id
+        ${whereClause}
+        GROUP BY t.test_number, t.topik_level, t.section
+       HAVING count(*) FILTER (WHERE ${ANSWERABLE_ITEM_SQL}) > 0
+        ORDER BY t.test_number DESC, t.topik_level DESC, t.section
+        LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+      pageParams,
+    );
+
+    const tests: TopikTestSummaryDTO[] = rows.map((r) => ({
+      testNumber: r.test_number,
+      topikLevel: r.topik_level,
+      section: SECTION_ENUM_TO_KR[r.section],
+      itemCount: Number(r.item_count),
+    }));
+
+    res.status(200).json({ tests, total });
+  } catch (err) {
+    next(err);
+  }
+});
+
 const MistakesQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(30),
   limit: z.coerce.number().int().min(1).max(200).default(100),
@@ -937,6 +1051,181 @@ router.delete('/attempt', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /topik/attempts — completed-attempt history (F-104 / A1).
+// ---------------------------------------------------------------------------
+
+const AttemptsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().default(0),
+});
+
+/** One completed-attempt history entry, as `GET /topik/attempts` serves it. */
+interface TopikAttemptHistoryDTO {
+  attemptId: string;
+  section: SectionKr;
+  sourceTest: number;
+  /** Best-effort re-derivation — see `resolveServedTotal`; null if it fails. */
+  topikLevel: TopikLevel | null;
+  correct: number;
+  /** The exam's served item count (capped at OFFICIAL_MOCK_SECTION_SIZE). */
+  totalItems: number;
+  completedAt: string;
+}
+
+interface AttemptHistoryRow {
+  attempt_id: string;
+  section: SectionEnum;
+  source_test: number;
+  completed_at: Date;
+  correct: string;
+  answered: string;
+}
+
+/**
+ * Best-effort re-derivation of the (topik_level, servedTotal) a completed
+ * attempt's mock section was assembled from (F-104 / A1).
+ *
+ * `topik_attempts` does NOT store `topik_level` — migration 037 predates the
+ * per-level natural key D-1 introduced (migration 029), and this pass is
+ * routes-only (no migration). So this reuses the SAME deterministic resolver
+ * `POST /topik/mock` and `/mock/submit` used to pick a paper (`resolveMockTest`,
+ * with NO requestedLevel — neither route's client has ever sent one: `PUT
+ * /topik/attempt`'s body has no `topikLevel` field, and `MockSubmitBody`
+ * carries one only for a client that has never populated it) and then
+ * reproduces the IDENTICAL LIMIT-`OFFICIAL_MOCK_SECTION_SIZE`-capped serve
+ * query `/mock`/`/mock/submit` use for `totalItems`, so the reported total
+ * matches EXACTLY what the exam would serve for that (section, sourceTest)
+ * today.
+ *
+ * Returns null when the corpus row backing this paper is gone
+ * (`resolveMockTest` → null — e.g. the items were since removed) — there is
+ * nothing left to re-derive. The caller falls back to the attempt's actual
+ * `topik_responses` answered-count for `totalItems` in that case: a safe,
+ * non-fabricated LOWER BOUND, never a guess above what is actually known.
+ */
+async function resolveServedTotal(
+  section: SectionEnum,
+  sourceTest: number,
+): Promise<{ topikLevel: TopikLevel; totalItems: number } | null> {
+  const resolved = await resolveMockTest(section, sourceTest, undefined);
+  if (resolved === null) return null;
+  const { rows } = await query<{ total_items: string }>(
+    `SELECT count(*)::text AS total_items
+       FROM (
+              SELECT 1
+                FROM topik_items i
+                JOIN topik_tests t ON t.id = i.topik_test_id
+               WHERE t.test_number = $1
+                 AND t.topik_level = $2
+                 AND i.section = $3::topik_section
+                 AND ${ANSWERABLE_ITEM_SQL}
+               ORDER BY i.item_number
+               LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}
+            ) capped`,
+    [sourceTest, resolved.topikLevel, section],
+  );
+  return {
+    topikLevel: resolved.topikLevel,
+    totalItems: Number(rows[0]?.total_items ?? '0'),
+  };
+}
+
+/**
+ * GET /topik/attempts — completed mock-attempt history (F-104 / A1).
+ *
+ * Feeds F-078's daily total, F-079's per-exam completion checkmarks + grade,
+ * and F-082's "Previous attempts" review list. User-scoped (`getUserId` — no
+ * IDOR), newest-first (`topik_attempts.updated_at` DESC, `id` DESC tiebreak —
+ * the moment `status` flipped to 'completed', per the 046 trigger). Only
+ * `status = 'completed'` rows are returned — an in-progress ('active') or
+ * abandoned attempt is not graded history.
+ *
+ * `correct`/`answered` are exact aggregates over the attempt's OWN
+ * `topik_responses` rows (046 stamps `attempt_id` at submit time — see
+ * `/mock/submit`). `totalItems`/`topikLevel` are NOT stored on the attempt
+ * row — see `resolveServedTotal` for how they are re-derived. An
+ * all-skipped submit writes ZERO `topik_responses` rows (see
+ * `/mock/submit`'s doc); `correct`/`answered` are then legitimately 0 — the
+ * exam still happened and still enters history, with `totalItems` still
+ * resolved from the corpus.
+ *
+ * Zod-validated paging only (`limit` 1..100 default 20, `offset` >= 0) — no
+ * filters, matching the ticket's "optional paging" scope.
+ */
+router.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(AttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (req as typeof req & {
+        validatedQuery: z.infer<typeof AttemptsQuerySchema>;
+      }).validatedQuery;
+
+      const countResult = await query<{ total: string }>(
+        `SELECT count(*)::text AS total
+           FROM topik_attempts
+          WHERE user_id = $1
+            AND status = 'completed'`,
+        [userId],
+      );
+      const total = Number(countResult.rows[0]?.total ?? '0');
+
+      // LEFT JOIN LATERAL: one correlated aggregate per attempt (correct /
+      // answered from its OWN topik_responses rows), rather than a GROUP BY
+      // over a join — a completed attempt with ZERO responses (an
+      // all-skipped submit) still yields exactly one row here (coalesced to
+      // 0/0), never disappearing from history for lack of answers.
+      const { rows } = await query<AttemptHistoryRow>(
+        `SELECT a.id::text AS attempt_id,
+                a.section::text AS section,
+                a.source_test,
+                a.updated_at AS completed_at,
+                coalesce(r.correct, 0)::text AS correct,
+                coalesce(r.answered, 0)::text AS answered
+           FROM topik_attempts a
+           LEFT JOIN LATERAL (
+                  SELECT count(*) FILTER (WHERE is_correct) AS correct,
+                         count(*) AS answered
+                    FROM topik_responses
+                   WHERE attempt_id = a.id
+                ) r ON true
+          WHERE a.user_id = $1
+            AND a.status = 'completed'
+          ORDER BY a.updated_at DESC, a.id DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+
+      // Sequential, not Promise.all: resolveServedTotal issues 1-2 small
+      // indexed queries per row and a history page is small (<=100, default
+      // 20) — this is a personal single-user app (see
+      // project_korean_master_personal_scope), so the extra round trips are
+      // an acceptable, much simpler alternative to one giant multi-lateral-
+      // join query duplicating ANSWERABLE_ITEM_SQL across two aliases.
+      const attempts: TopikAttemptHistoryDTO[] = [];
+      for (const row of rows) {
+        const served = await resolveServedTotal(row.section, row.source_test);
+        attempts.push({
+          attemptId: row.attempt_id,
+          section: SECTION_ENUM_TO_KR[row.section],
+          sourceTest: row.source_test,
+          topikLevel: served?.topikLevel ?? null,
+          correct: Number(row.correct),
+          totalItems: served?.totalItems ?? Number(row.answered),
+          completedAt: row.completed_at.toISOString(),
+        });
+      }
+
+      res.status(200).json({ attempts, total });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 /**
  * The mock section schema — like `SectionSchema` (accepts enum OR Korean label),

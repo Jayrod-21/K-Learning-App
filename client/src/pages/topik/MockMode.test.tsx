@@ -28,6 +28,8 @@ const svc = vi.hoisted(() => ({
   fetchAttempt: vi.fn(),
   saveAttempt: vi.fn(),
   clearAttempt: vi.fn(),
+  fetchAvailableTests: vi.fn(),
+  fetchAttemptHistory: vi.fn(),
 }));
 
 vi.mock('../../services/topik', () => ({
@@ -36,6 +38,8 @@ vi.mock('../../services/topik', () => ({
   fetchAttempt: svc.fetchAttempt,
   saveAttempt: svc.saveAttempt,
   clearAttempt: svc.clearAttempt,
+  fetchAvailableTests: svc.fetchAvailableTests,
+  fetchAttemptHistory: svc.fetchAttemptHistory,
 }));
 
 // Keep the offline fallbacks out of the way — they must never be reached when
@@ -215,12 +219,21 @@ describe('MockMode (Mock test)', () => {
     svc.fetchAttempt.mockReset();
     svc.saveAttempt.mockReset();
     svc.clearAttempt.mockReset();
+    svc.fetchAvailableTests.mockReset();
+    svc.fetchAttemptHistory.mockReset();
     svc.fetchMockTest.mockResolvedValue(TEST);
     svc.submitMockTest.mockResolvedValue(RESULT);
     // No saved attempt by default (no resume banner); saves/clears are no-ops.
     svc.fetchAttempt.mockResolvedValue(null);
     svc.saveAttempt.mockResolvedValue(undefined);
     svc.clearAttempt.mockResolvedValue(undefined);
+    // F-118/F-104: the exam chooser's past-paper list + completion
+    // checkmarks, and the start page's previous-attempts block. Default to
+    // empty pages so the many existing tests that merely WALK the chooser/
+    // start page (without asserting on this data) see the honest empty
+    // state rather than a crash from an unmocked call.
+    svc.fetchAvailableTests.mockResolvedValue({ tests: [], total: 0 });
+    svc.fetchAttemptHistory.mockResolvedValue({ attempts: [], total: 0 });
   });
 
   it('renders the section select with a disabled Writing card', () => {
@@ -1014,7 +1027,7 @@ describe('MockMode (Mock test)', () => {
   });
 
   describe('F-079 exam chooser + start page (Phase 3C-2)', () => {
-    it('a section card opens the chooser — wired server-picked entry, honest pending list, no fetch yet', async () => {
+    it('a section card opens the chooser — wired server-picked entry + F-118 past-paper list (honest empty), no exam fetch yet', async () => {
       const user = userEvent.setup();
       render(<MockMode />, { wrapper: MemoryRouter });
 
@@ -1026,22 +1039,121 @@ describe('MockMode (Mock test)', () => {
       expect(
         screen.getByRole('button', { name: 'Back to Sections' }),
       ).toBeInTheDocument();
-      // The one wired entry today: the server-picked exam.
+      // The server-picked entry.
       expect(
         screen.getByRole('button', {
           name: /Recommended Reading exam, server-picked/i,
         }),
       ).toBeInTheDocument();
-      // The per-exam list + completion checkmarks need the exam-list route
-      // (proposed F-118) and attempt history (F-104) — honestly pending, no
-      // exam ever shown as "completed", and nothing fetched by navigating.
-      expect(
-        screen.getByText(
-          /once the exam list and your attempt history are available/i,
-        ),
-      ).toBeInTheDocument();
+      // F-118/F-104: the past-paper list is now WIRED — the default mock
+      // resolves an empty page, so this renders the honest empty state
+      // (never "coming soon", never a fabricated exam).
+      await waitFor(() => {
+        expect(
+          screen.getByText(/No past papers are available for this section yet/i),
+        ).toBeInTheDocument();
+      });
+      expect(svc.fetchAvailableTests).toHaveBeenCalledWith(
+        { section: 'reading' },
+        expect.any(AbortSignal),
+      );
       expect(svc.fetchMockTest).not.toHaveBeenCalled();
       expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+    });
+
+    it('the exam chooser lists F-118 past papers with a checkmark on ones F-104 reports completed', async () => {
+      svc.fetchAvailableTests.mockResolvedValue({
+        tests: [
+          { testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 },
+          { testNumber: 83, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 },
+        ],
+        total: 2,
+      });
+      svc.fetchAttemptHistory.mockResolvedValue({
+        attempts: [
+          {
+            attemptId: '1',
+            section: '읽기',
+            sourceTest: 91,
+            topikLevel: 'TOPIK II',
+            correct: 40,
+            totalItems: 50,
+            completedAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+      });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      const done = await screen.findByRole('button', {
+        name: /TOPIK II test 91, 50 items, completed/i,
+      });
+      expect(done).toBeInTheDocument();
+      // Test 83 has no matching attempt — no ", completed" in its name.
+      expect(
+        screen.getByRole('button', { name: /TOPIK II test 83, 50 items/i }),
+      ).not.toHaveAccessibleName(/completed/i);
+
+      // Picking a SPECIFIC past paper carries its test_number to the start
+      // page, then to the exam fetch (not the server-picked "recommended" path).
+      await user.click(done);
+      expect(screen.getByText('읽기 · 91회')).toBeInTheDocument();
+      await user.click(
+        screen.getByRole('button', { name: '시험 시작 · Start test' }),
+      );
+      await waitFor(() => {
+        expect(svc.fetchMockTest).toHaveBeenCalledWith(
+          'reading',
+          expect.any(AbortSignal),
+          91,
+        );
+      });
+    });
+
+    it("the exam chooser's checkmarks degrade silently when attempt history fails (the list itself still renders)", async () => {
+      svc.fetchAvailableTests.mockResolvedValue({
+        tests: [{ testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 }],
+        total: 1,
+      });
+      svc.fetchAttemptHistory.mockRejectedValue(new Error('offline'));
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      const row = await screen.findByRole('button', {
+        name: /TOPIK II test 91, 50 items/i,
+      });
+      expect(row).not.toHaveAccessibleName(/completed/i);
+      // No error surfaced for a checkmark-only fetch failure — it is a
+      // best-effort annotation, not the primary surface.
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('the exam chooser surfaces a retryable error when the F-118 list itself fails to load', async () => {
+      svc.fetchAvailableTests.mockRejectedValueOnce(new Error('offline'));
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      await screen.findByRole('alert');
+      svc.fetchAvailableTests.mockResolvedValueOnce({
+        tests: [{ testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 }],
+        total: 1,
+      });
+      await user.click(screen.getByRole('button', { name: /try again/i }));
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: /TOPIK II test 91/i }),
+        ).toBeInTheDocument();
+      });
     });
 
     it('the start page requires an explicit Start — the exam fetches ONLY on the Start click', async () => {
@@ -1051,19 +1163,27 @@ describe('MockMode (Mock test)', () => {
       await user.click(
         screen.getByRole('button', { name: /Reading mock exams/i }),
       );
+      // The chooser itself calls fetchAttemptHistory (F-104 checkmarks) —
+      // capture that count so the assertion below is specifically about the
+      // START PAGE (recommended path), not the chooser's own annotation fetch.
+      const attemptHistoryCallsFromChooser = svc.fetchAttemptHistory.mock.calls.length;
       await user.click(
         screen.getByRole('button', { name: /Recommended Reading exam/i }),
       );
 
       // Start page: exam meta + rules…
       expect(screen.getAllByText(/50문항 · 70분/).length).toBeGreaterThan(0);
-      // …and the previous-attempts block is honestly pending on attempt
-      // history (F-104) — no fabricated grades.
+      // …and the previous-attempts block is an honest note: the recommended
+      // path doesn't know WHICH test_number the server will pick until Start
+      // resolves it, so there is genuinely nothing to look up yet (F-104).
       expect(
         screen.getByText(
-          /your grade and past attempts will show here once attempt history is available/i,
+          /Pick a specific past paper from the exam list to see your previous attempts on it/i,
         ),
       ).toBeInTheDocument();
+      expect(svc.fetchAttemptHistory.mock.calls.length).toBe(
+        attemptHistoryCallsFromChooser,
+      );
       expect(svc.fetchMockTest).not.toHaveBeenCalled();
 
       await user.click(
