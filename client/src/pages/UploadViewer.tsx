@@ -38,6 +38,36 @@
  * route is deliberately cache-friendly, so a same-URL retry could otherwise
  * just replay a cached bad response forever.
  *
+ * Zoom + fit model (F-057): the viewer opens AUTO FIT-WIDTH — `zoom` is a
+ * multiplier of the CONTAINER width (1 = the page exactly fills the scroll
+ * box; the old model's 1 = "natural pixel size" is gone, since a 2271-px-wide
+ * vFlat scan at natural size was unusable on any phone). Zoom is implemented
+ * as a real CSS `width`, NOT `transform: scale()` — a transform never grows
+ * the element's layout box, so the old transform-based zoom could paint
+ * pixels the `overflow: auto` container refused to scroll to. A width-based
+ * zoom keeps layout geometry and scroll extent honest at every level.
+ *
+ * Rotation (F-057): a single "Rotate" control cycles 0° → 90° → 180° → 270°
+ * clockwise and persists across page navigation (a book scanned sideways is
+ * sideways on every page — per-page rotation would mean 500 taps). 180° keeps
+ * the element's box (a center rotation is box-preserving) so it's a bare
+ * `transform`. 90°/270° swap the visual axes, and a bare transform would
+ * leave a portrait-sized layout box behind a landscape-looking page — so the
+ * sideways branch in `PageImage` sizes an explicit wrapper box to the
+ * ROTATED dimensions (from the image's `naturalWidth/Height` + the measured
+ * container width) and centers the rotated `<img>` inside it; layout,
+ * scrolling, and fit-width all stay correct. Before the natural dimensions
+ * are known (image still loading) a plain in-place rotation renders as a
+ * best-effort fallback and self-corrects on `load`.
+ *
+ * OCR / "Extract text" (F-059): the control is rendered DISABLED with
+ * explicit "coming soon" copy — no OCR backend exists yet (the U2
+ * extraction pipeline is ticket F-108; `server/src/routes/uploads.ts`
+ * header is authoritative: "NO extraction/OCR happens here"). Deliberately
+ * honest: a live-looking button POSTing to a nonexistent endpoint would be
+ * a fabricated feature. When F-108 lands, wire this button to its trigger
+ * route and drop `disabled`.
+ *
  * Reorder tool (Jared: vFlat retakes can land out of order — design doc
  * REVISION): a "Reorder pages" mode with a numeric "move page N to position"
  * control (keyboard-operable by construction — a plain labelled
@@ -52,6 +82,11 @@
  * stable DB id (not just its display number) to submit a valid full-order
  * PATCH. That route is implemented server-side (see `services/uploads.ts`'s
  * header) — the reorder UI below is live, not blocked on a pending contract.
+ *
+ * Back control (F-024): the viewer is reached from BOTH the Uploads list and
+ * the reader's "view original scan" deep-link, so there is no single
+ * canonical parent — `BackButton` runs in history-back mode (`to` omitted)
+ * with `/uploads` as the guarded deep-link fallback.
  *
  * Abort discipline: `getUpload` (meta), `listPages` (reorder's page-id list),
  * and `reorderPages` (the PATCH) are the only network calls this component
@@ -68,8 +103,10 @@ import {
   type ChangeEvent,
   type CSSProperties,
   type JSX,
+  type SyntheticEvent,
 } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
+import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { ErrorCard } from '../components/ErrorCard';
@@ -80,11 +117,16 @@ import { errorMessageFor } from '../lib/errorCopy';
 import { ApiError } from '../services/api';
 import { getUpload, listPages, pageUrl, reorderPages } from '../services/uploads';
 import type { BookUpload, Page } from '../types/domain';
+import './UploadViewer.css';
 
-const MIN_SCALE = 0.5;
-const MAX_SCALE = 2.5;
-const SCALE_STEP = 0.25;
-const DEFAULT_SCALE = 1;
+/** Zoom is a multiplier of the container width — 1 = exact fit-width. */
+const FIT_ZOOM = 1;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 2.5;
+const ZOOM_STEP = 0.25;
+
+/** Clockwise page rotation, degrees. Only quarter turns make sense for scans. */
+type Rotation = 0 | 90 | 180 | 270;
 
 type MetaState = 'loading' | 'ready' | 'error';
 type PagesState = 'idle' | 'loading' | 'ready' | 'error';
@@ -101,24 +143,116 @@ function parseInitialPage(raw: string | null): number | null {
   return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
+/** The image's intrinsic bitmap dimensions, captured on `load`. */
+interface NaturalSize {
+  w: number;
+  h: number;
+}
+
+interface PageLayout {
+  /** Explicit rotated-box wrapper — only for 90°/270° with known geometry. */
+  wrapperStyle: CSSProperties | null;
+  imgStyle: CSSProperties;
+}
+
+/** Pixel length, rounded to 2 decimals (sub-hundredth px is render noise). */
+function px(n: number): string {
+  return `${String(Math.round(n * 100) / 100)}px`;
+}
+
+/**
+ * Compute the page image's layout for the current zoom/rotation (module
+ * header §"Zoom + fit model" / §"Rotation" explains WHY each branch exists).
+ * Pure — trivially unit-reasonable, and keeps `PageImage`'s render lean.
+ */
+function pageLayout(
+  zoom: number,
+  rotation: Rotation,
+  containerWidth: number,
+  natural: NaturalSize | null,
+): PageLayout {
+  const sideways = rotation === 90 || rotation === 270;
+
+  if (!sideways) {
+    // 0°/180°: the box is axis-aligned either way (a 180° center rotation
+    // preserves the layout box), so a percentage width is all that's needed
+    // — no measurements, works before the image has even loaded.
+    return {
+      wrapperStyle: null,
+      imgStyle: {
+        width: `${String(zoom * 100)}%`,
+        height: 'auto',
+        maxWidth: 'none',
+        ...(rotation === 180 ? { transform: 'rotate(180deg)' } : {}),
+      },
+    };
+  }
+
+  if (natural !== null && containerWidth > 0) {
+    // 90°/270°: the visual axes swap, so size an explicit wrapper box to the
+    // ROTATED dimensions and center the rotated <img> inside it. The <img>'s
+    // CSS height becomes the visual WIDTH after a quarter turn — set it to
+    // the target display width and let `width: auto` preserve the aspect.
+    const displayW = containerWidth * zoom;
+    const displayH = (displayW * natural.w) / natural.h;
+    return {
+      wrapperStyle: {
+        position: 'relative',
+        width: px(displayW),
+        height: px(displayH),
+      },
+      imgStyle: {
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        height: px(displayW),
+        width: 'auto',
+        maxWidth: 'none',
+        transform: `translate(-50%, -50%) rotate(${String(rotation)}deg)`,
+      },
+    };
+  }
+
+  // Sideways but geometry not yet known (image still loading, or a zero-width
+  // measurement): rotate in place as a best-effort preview. The box is wrong
+  // for a beat; the `load` handler records the natural size and the next
+  // render takes the exact branch above.
+  return {
+    wrapperStyle: null,
+    imgStyle: {
+      width: `${String(zoom * 100)}%`,
+      height: 'auto',
+      maxWidth: 'none',
+      transform: `rotate(${String(rotation)}deg)`,
+    },
+  };
+}
+
 /**
  * One page's `<img>`, own load/error/retry state. Keyed by the parent on
  * `${pageNumber}-${retryToken}` — a page nav OR a retry both remount this
  * component fresh, so `status` always starts at `'loading'` for whatever is
- * currently being requested; no effect needed to "reset" anything.
+ * currently being requested; no effect needed to "reset" anything. The
+ * natural size is captured per-instance on `load` (the `src` never changes
+ * within one instance, so it can't go stale).
  */
 function PageImage({
   src,
   alt,
-  style,
+  zoom,
+  rotation,
+  containerWidth,
   onRetry,
 }: {
   src: string;
   alt: string;
-  style: CSSProperties;
+  zoom: number;
+  rotation: Rotation;
+  containerWidth: number;
   onRetry: () => void;
 }): JSX.Element {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [natural, setNatural] = useState<NaturalSize | null>(null);
 
   if (status === 'error') {
     return (
@@ -129,6 +263,36 @@ function PageImage({
     );
   }
 
+  const { wrapperStyle, imgStyle } = pageLayout(
+    zoom,
+    rotation,
+    containerWidth,
+    natural,
+  );
+
+  const img = (
+    <img
+      src={src}
+      alt={alt}
+      style={{
+        ...imgStyle,
+        ...(status === 'loaded' ? {} : { display: 'none' }),
+      }}
+      onLoad={(e: SyntheticEvent<HTMLImageElement>) => {
+        const el = e.currentTarget;
+        // Guard 0×0 (a decode that reported no dimensions — never divide by
+        // it in `pageLayout`); the sideways fallback branch covers that case.
+        if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+          setNatural({ w: el.naturalWidth, h: el.naturalHeight });
+        }
+        setStatus('loaded');
+      }}
+      onError={() => {
+        setStatus('error');
+      }}
+    />
+  );
+
   return (
     <>
       {status === 'loading' ? (
@@ -136,17 +300,13 @@ function PageImage({
           <Bilingual en="Loading this page…" kr="이 페이지를 불러오는 중…" />
         </div>
       ) : null}
-      <img
-        src={src}
-        alt={alt}
-        style={{ ...style, display: status === 'loaded' ? style.display ?? 'block' : 'none' }}
-        onLoad={() => {
-          setStatus('loaded');
-        }}
-        onError={() => {
-          setStatus('error');
-        }}
-      />
+      {wrapperStyle !== null ? (
+        <div className="km-upload-viewer__rotated" style={wrapperStyle}>
+          {img}
+        </div>
+      ) : (
+        img
+      )}
     </>
   );
 }
@@ -163,8 +323,8 @@ export default function UploadViewer(): JSX.Element {
   const [metaState, setMetaState] = useState<MetaState>('loading');
   const [pageNum, setPageNum] = useState(1);
   const [jumpValue, setJumpValue] = useState('');
-  const [scale, setScale] = useState(DEFAULT_SCALE);
-  const [fit, setFit] = useState(false);
+  const [zoom, setZoom] = useState(FIT_ZOOM);
+  const [rotation, setRotation] = useState<Rotation>(0);
   const [retryToken, setRetryToken] = useState(0);
 
   const [reorderOpen, setReorderOpen] = useState(false);
@@ -177,6 +337,34 @@ export default function UploadViewer(): JSX.Element {
   const metaCtrlRef = useRef<AbortController | null>(null);
   const pagesCtrlRef = useRef<AbortController | null>(null);
   const reorderCtrlRef = useRef<AbortController | null>(null);
+
+  // Measured width of the page scroll box — the sideways-rotation branch of
+  // `pageLayout` needs real pixels (a quarter-turned page can't be sized
+  // with percentages; see the module header). Captured via callback ref
+  // (the box only mounts once `canView`, so a mount-time effect would
+  // measure nothing) + re-measured on window resize. Scrollbar-width drift
+  // after a zoom is deliberately ignored — a ~15 px error on a fit
+  // calculation is invisible, and chasing it needs a ResizeObserver loop.
+  const pageBoxRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const attachPageBox = useCallback((el: HTMLDivElement | null): void => {
+    pageBoxRef.current = el;
+    if (el !== null) {
+      setContainerWidth(el.clientWidth);
+    }
+  }, []);
+  useEffect(() => {
+    const onResize = (): void => {
+      const el = pageBoxRef.current;
+      if (el !== null) {
+        setContainerWidth(el.clientWidth);
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+    };
+  }, []);
 
   const pageCount = meta?.pageCount;
 
@@ -283,15 +471,16 @@ export default function UploadViewer(): JSX.Element {
   };
 
   const zoomIn = (): void => {
-    setFit(false);
-    setScale((s) => Math.min(MAX_SCALE, Number((s + SCALE_STEP).toFixed(2))));
+    setZoom((z) => Math.min(MAX_ZOOM, Number((z + ZOOM_STEP).toFixed(2))));
   };
   const zoomOut = (): void => {
-    setFit(false);
-    setScale((s) => Math.max(MIN_SCALE, Number((s - SCALE_STEP).toFixed(2))));
+    setZoom((z) => Math.max(MIN_ZOOM, Number((z - ZOOM_STEP).toFixed(2))));
   };
   const fitWidth = (): void => {
-    setFit(true);
+    setZoom(FIT_ZOOM);
+  };
+  const rotate = (): void => {
+    setRotation((r) => ((r + 90) % 360) as Rotation);
   };
 
   const loadPages = useCallback((): void => {
@@ -403,15 +592,14 @@ export default function UploadViewer(): JSX.Element {
   const title = meta?.title ?? 'Book';
   const canView = metaState === 'ready' && meta?.status === 'ready' && !!pageCount && pageCount > 0;
 
-  const imgStyle: CSSProperties = fit
-    ? { width: '100%', height: 'auto', maxWidth: '100%' }
-    : { width: 'auto', height: 'auto', maxWidth: 'none', transform: `scale(${String(scale)})`, transformOrigin: 'top left' };
-
   return (
     <section
       className="screen km-upload-viewer"
       aria-labelledby="km-upload-viewer-title"
     >
+      {/* F-024 — no single canonical parent (Uploads list OR the reader's
+          scan deep-link), so history-back with a guarded /uploads fallback. */}
+      <BackButton fallbackTo="/uploads" />
       <Topbar
         krTitle={title}
         title={title}
@@ -436,16 +624,7 @@ export default function UploadViewer(): JSX.Element {
         />
       ) : (
         <>
-          <div
-            className="km-upload-viewer__toolbar"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              gap: 8,
-              padding: '8px 0',
-            }}
-          >
+          <div className="km-upload-viewer__toolbar">
             <Button
               variant="ghost"
               size="sm"
@@ -475,8 +654,7 @@ export default function UploadViewer(): JSX.Element {
               max={pageCount}
               value={jumpValue}
               placeholder="Page #"
-              className="km-field__input"
-              style={{ width: 84 }}
+              className="km-field__input km-upload-viewer__jump"
               aria-label="Jump to page"
               onChange={(e: ChangeEvent<HTMLInputElement>) => {
                 setJumpValue(e.target.value);
@@ -499,26 +677,53 @@ export default function UploadViewer(): JSX.Element {
               variant="ghost"
               size="sm"
               onClick={zoomOut}
-              disabled={fit || scale <= MIN_SCALE}
+              disabled={zoom <= MIN_ZOOM}
               aria-label="Zoom out"
             >
               −
             </Button>
             <span className="km-resources__pager-count">
-              {fit ? 'Fit' : `${String(Math.round(scale * 100))}%`}
+              {zoom === FIT_ZOOM ? 'Fit' : `${String(Math.round(zoom * 100))}%`}
             </span>
             <Button
               variant="ghost"
               size="sm"
               onClick={zoomIn}
-              disabled={fit || scale >= MAX_SCALE}
+              disabled={zoom >= MAX_ZOOM}
               aria-label="Zoom in"
             >
               +
             </Button>
-            <Button variant="ghost" size="sm" onClick={fitWidth}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={fitWidth}
+              disabled={zoom === FIT_ZOOM}
+              aria-label="Fit width"
+            >
               <Bilingual en="Fit width" kr="너비 맞춤" compact />
             </Button>
+
+            {/* F-057 rotation — the accessible name carries the CURRENT
+                angle so a screen-reader user gets the same "where am I"
+                feedback the visual readout beside it provides. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={rotate}
+              aria-label={
+                rotation === 0
+                  ? 'Rotate page'
+                  : `Rotate page (rotated ${String(rotation)}°)`
+              }
+            >
+              <Bilingual en="Rotate" kr="회전" compact />
+            </Button>
+            {rotation !== 0 ? (
+              <span className="km-resources__pager-count">
+                {rotation}°
+              </span>
+            ) : null}
 
             <Button
               variant="ghost"
@@ -533,6 +738,24 @@ export default function UploadViewer(): JSX.Element {
                 compact
               />
             </Button>
+
+            {/* F-059 — honestly disabled until the U2 OCR pipeline (ticket
+                F-108) exists server-side (module header §"OCR"). The
+                "coming soon" is in the VISIBLE label, not a hover-only
+                tooltip, so keyboard and touch users get the same
+                information. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled
+              aria-label="Extract text (OCR) — coming soon"
+            >
+              <Bilingual
+                en="Extract text (coming soon)"
+                kr="텍스트 추출 (준비 중)"
+                compact
+              />
+            </Button>
           </div>
 
           {reorderOpen ? (
@@ -540,7 +763,6 @@ export default function UploadViewer(): JSX.Element {
               className="km-upload-viewer__reorder"
               role="group"
               aria-label="Reorder pages controls"
-              style={{ padding: '8px 0' }}
             >
               {pagesState === 'loading' ? (
                 <div role="status">
@@ -549,7 +771,7 @@ export default function UploadViewer(): JSX.Element {
               ) : pagesState === 'error' ? (
                 <ErrorCard message="Could not load page order. Try again." onRetry={loadPages} />
               ) : pages ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div className="km-upload-viewer__reorder-controls">
                   <label htmlFor="km-move-to-page">
                     <Bilingual
                       en={`Move page ${String(pageNum)} to position`}
@@ -563,8 +785,7 @@ export default function UploadViewer(): JSX.Element {
                     min={1}
                     max={pages.length}
                     value={moveTarget}
-                    className="km-field__input"
-                    style={{ width: 84 }}
+                    className="km-field__input km-upload-viewer__jump"
                     aria-label={`Move page ${String(pageNum)} to position`}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => {
                       setMoveTarget(e.target.value);
@@ -589,15 +810,14 @@ export default function UploadViewer(): JSX.Element {
             </div>
           ) : null}
 
-          <div
-            className="km-upload-viewer__page"
-            style={{ overflow: 'auto', width: '100%' }}
-          >
+          <div className="km-upload-viewer__page" ref={attachPageBox}>
             <PageImage
               key={`${String(pageNum)}-${String(retryToken)}`}
               src={id ? pageUrl(id, pageNum, undefined, retryToken) : ''}
               alt={`Page ${String(pageNum)} of ${title}`}
-              style={imgStyle}
+              zoom={zoom}
+              rotation={rotation}
+              containerWidth={containerWidth}
               onRetry={() => {
                 setRetryToken((t) => t + 1);
               }}

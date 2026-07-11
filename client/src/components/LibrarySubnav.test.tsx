@@ -38,22 +38,31 @@ beforeEach(() => {
 });
 
 describe('LibrarySubnav (P3b bilingual chrome)', () => {
+  it('names the landmark "Library sections" — the F-043 tab name, not the retired "Review library"', () => {
+    renderAt('/review/vocab');
+    // AT users navigate by this landmark name; it must match the renamed
+    // Library tab, not the pre-F-043 "Review library" copy.
+    expect(
+      screen.getByRole('navigation', { name: 'Library sections' }),
+    ).toBeInTheDocument();
+  });
+
   it('renders the three sections with bilingual accessible names, Korean visible by default', () => {
     renderAt('/review/vocab');
     // Accessible names carry BOTH languages (compact sr-only reading);
     // visually the Korean-first default shows the Korean label alone.
     const vocab = screen.getByRole('button', { name: '단어 · Vocabulary' });
-    const dict = screen.getByRole('button', { name: '사전 · Dictionary' });
+    const dict = screen.getByRole('button', { name: '전체 단어 · All Words' });
     const grammar = screen.getByRole('button', { name: '문법 · Grammar' });
     expect(visibleText(vocab)).toBe('단어');
-    expect(visibleText(dict)).toBe('사전');
+    expect(visibleText(dict)).toBe('전체 단어');
     expect(visibleText(grammar)).toBe('문법');
   });
 
   it('marks only the current section with aria-current="page"', () => {
     renderAt('/review/dictionary');
     expect(
-      screen.getByRole('button', { name: '사전 · Dictionary' }),
+      screen.getByRole('button', { name: '전체 단어 · All Words' }),
     ).toHaveAttribute('aria-current', 'page');
     expect(
       screen.getByRole('button', { name: '단어 · Vocabulary' }),

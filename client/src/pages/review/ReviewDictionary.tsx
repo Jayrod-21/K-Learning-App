@@ -1,45 +1,88 @@
 /**
- * ReviewDictionary — `/review/dictionary`, the Review library's KRDICT page.
+ * ReviewDictionary — `/review/dictionary`, the Review library's "All Words"
+ * page (F-050 renamed it from "Dictionary"; the route/id are contracts and
+ * stay put — see lib/nav.ts).
  *
- * Overhaul P1.2: the Reference page dissolved into first-class library
- * routes; this page is its former **Dictionary tab**. Decision D2 keeps the
- * dictionary a SEPARATE page (not merged into the vocabulary browse): the
- * full KRDICT (≈54k headwords) is a lookup corpus, not a study corpus.
+ * Overhaul P1.2 kept the full KRDICT (≈54k headwords) a SEPARATE page
+ * (decision D2: a lookup corpus, not a study corpus). P3B (F-050) makes it
+ * searchable two ways ON TOP of free-text search:
  *
- * Behaviour (unchanged from the extracted tab):
- *   - Browse-first: an empty query loads page 1 of the whole dictionary
- *     (the server's browse-all path returns a real page + total).
- *   - 초성 index: the 14 base consonants narrow the browse to one section;
- *     "전체" (all) returns to the whole dictionary.
- *   - Typing switches to search; clearing returns to browse. A search
- *     supersedes any 초성 selection.
+ *   - First Hangul character: the 초성 index (14 base consonants) narrows
+ *     the KRDICT browse to one section; "전체" (all) returns to the whole
+ *     dictionary. A typed search supersedes any 초성 selection.
+ *   - Genre: the SAME genres as the vocabulary page (`content_domain`).
+ *     KRDICT rows carry no genre — the curated corpus is the only
+ *     genre-tagged data — so selecting a genre pivots the page onto the
+ *     existing `GET /vocab/entries` search (`domain` param, free text
+ *     still applies); clearing it returns to KRDICT. One page, two
+ *     honest backends, discriminated by `page.kind`.
+ *
+ * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
  * Threat model: the search box is user-controlled — the server Zod-validates
  * `q` and parameterises the SQL; all strings render through React text
  * children. The client's defence is RATE (debounce + per-fetch abort so a
- * slow response never paints over a newer one).
+ * slow response never paints over a newer one). The genre dropdown is a
+ * closed vocabulary validated at the select boundary (`toGenre`) — an
+ * out-of-vocabulary value degrades to "no genre", never reaches the wire.
  */
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
+import {
+  FilterSelect,
+  type FilterSelectOption,
+} from '../../components/FilterSelect';
 import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { Topbar } from '../../components/Topbar';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
-import { PAGE_SIZE } from '../../lib/libraryFilters';
+import { DOMAIN_FILTERS, PAGE_SIZE } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { navItem } from '../../lib/nav';
 import { searchKrdict } from '../../services/krdict';
+import * as vocabService from '../../services/vocab';
 import { ApiError } from '../../services/api';
-import type { KrdictSearchEntry } from '../../types/domain';
+import type {
+  ContentDomain,
+  KrdictSearchEntry,
+  VocabEntry,
+} from '../../types/domain';
+
+/** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
+ *  tab to "Library"), so the eyebrow and back label can never go stale. */
+const LIBRARY_NAV = navItem('review');
 
 const INITIAL_CONSONANTS = [
   'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ',
   'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
 ] as const;
 
+/** Genre dropdown — the SAME genres as the vocabulary page (F-050), minus
+ *  the 'all' sentinel (FilterSelect's `''` placeholder IS "all"). */
+const GENRE_OPTIONS: ReadonlyArray<FilterSelectOption> = DOMAIN_FILTERS.filter(
+  (f) => f.id !== 'all',
+).map((f) => ({ value: f.id, label: f.label }));
+
+/** Select-boundary guard: '' (placeholder) or anything out-of-vocabulary
+ *  means "no genre lens" (null → the KRDICT path). */
+function toGenre(value: string): ContentDomain | null {
+  return DOMAIN_FILTERS.some((f) => f.id !== 'all' && f.id === value)
+    ? (value as ContentDomain)
+    : null;
+}
+
+/** The two result shapes this page can hold, discriminated by backend. */
+type ResultPage =
+  | { kind: 'krdict'; rows: KrdictSearchEntry[] }
+  | { kind: 'vocab'; rows: VocabEntry[] };
+
+const EMPTY_PAGE: ResultPage = { kind: 'krdict', rows: [] };
+
 /**
- * 초성 (initial-consonant) index for the Dictionary browse — a tappable row of
+ * 초성 (initial-consonant) index for the KRDICT browse — a tappable row of
  * the 14 base consonants plus "전체" (all). Selecting one narrows the browse to
  * that consonant's section; "전체" returns to the whole dictionary.
  */
@@ -87,20 +130,26 @@ export default function ReviewDictionary(): JSX.Element {
   const { input, q, setInput, clear } = useDebouncedSearch();
   const [offset, setOffset] = useState(0);
   const [initial, setInitial] = useState<string | null>(null);
-  const [rows, setRows] = useState<KrdictSearchEntry[]>([]);
+  // F-050 — genre lens. null = the KRDICT path; a genre pivots the page
+  // onto the curated-corpus search (the only genre-tagged data).
+  const [genre, setGenre] = useState<ContentDomain | null>(null);
+  const [page, setPage] = useState<ResultPage>(EMPTY_PAGE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Monotonic reload trigger so Retry re-runs the fetch effect without
+  // changing the query/filters (same pattern as ReviewVocab's browse).
+  const [reloadTick, setReloadTick] = useState(0);
   const ctrlRef = useRef<AbortController | null>(null);
 
-  // `q` empty → browse the whole dictionary (page 1 on mount, no search
-  // needed); typing switches to search; clearing returns to browse.
+  // `q` empty → browse (page 1 on mount, no search needed); typing switches
+  // to search; clearing returns to browse. Applies to both backends.
   const browsing = q.trim().length === 0;
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOffset(0);
-  }, [q, initial]);
+  }, [q, initial, genre]);
 
   // A whole-dictionary search supersedes any 초성 section selection.
   useEffect(() => {
@@ -112,7 +161,7 @@ export default function ReviewDictionary(): JSX.Element {
 
   useEffect(() => {
     // Browse on an empty query, search on a non-empty one. Both hit the
-    // network (the server's browse-all path returns a real page + total).
+    // network. Genre set → the curated-corpus backend; genre clear → KRDICT.
     // Sync-to-external-system case.
     const ctrl = new AbortController();
     ctrlRef.current?.abort();
@@ -121,19 +170,40 @@ export default function ReviewDictionary(): JSX.Element {
     setLoading(true);
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
-    // Omit `q` entirely when browsing so the service hits the browse-all path.
-    searchKrdict(
-      {
-        ...(browsing ? (initial !== null ? { initial } : {}) : { q }),
-        limit: PAGE_SIZE,
-        offset,
-      },
-      ctrl.signal,
-    )
-      .then((page) => {
+    const request: Promise<{ page: ResultPage; total: number }> =
+      genre !== null
+        ? vocabService
+            .searchEntriesPage(
+              {
+                ...(browsing ? {} : { q }),
+                domain: genre,
+                limit: PAGE_SIZE,
+                offset,
+              },
+              ctrl.signal,
+            )
+            .then((res) => ({
+              page: { kind: 'vocab' as const, rows: res.entries },
+              // `total` is optional (pre-bump server) — degrade to a single
+              // page rather than NaN, same as the vocabulary page.
+              total: res.total ?? offset + res.entries.length,
+            }))
+        : searchKrdict(
+            {
+              ...(browsing ? (initial !== null ? { initial } : {}) : { q }),
+              limit: PAGE_SIZE,
+              offset,
+            },
+            ctrl.signal,
+          ).then((res) => ({
+            page: { kind: 'krdict' as const, rows: res.entries },
+            total: res.total,
+          }));
+    request
+      .then((res) => {
         if (ctrl.signal.aborted) return;
-        setRows(page.entries);
-        setTotal(page.total);
+        setPage(res.page);
+        setTotal(res.total);
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -145,8 +215,8 @@ export default function ReviewDictionary(): JSX.Element {
             : errorMessageFor(
                 err,
                 browsing
-                  ? 'Could not load the dictionary.'
-                  : 'Could not search the dictionary.',
+                  ? 'Could not load the words.'
+                  : 'Could not search the words.',
               ),
         );
         setLoading(false);
@@ -154,18 +224,27 @@ export default function ReviewDictionary(): JSX.Element {
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, browsing, initial]);
+  }, [q, offset, browsing, initial, genre, reloadTick]);
+
+  const retry = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  const rowCount = page.rows.length;
 
   return (
     <section
       className="screen km-reference km-resources"
       aria-labelledby="km-review-dictionary-title"
     >
+      {/* F-024 — nested library sub-page: deterministic back to the index. */}
+      <BackButton to="/review" label={LIBRARY_NAV.label} />
+
       <Topbar
-        krTitle="사전"
-        title="Dictionary"
+        krTitle="전체 단어"
+        title="All Words"
         titleId="km-review-dictionary-title"
-        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
       />
 
       <LibrarySubnav />
@@ -176,9 +255,21 @@ export default function ReviewDictionary(): JSX.Element {
           onChange={setInput}
           onClear={clear}
           placeholder="Search 54,000 dictionary entries"
-          ariaLabel="Search dictionary"
+          ariaLabel="Search all words"
         />
-        {browsing ? (
+        {/* F-050 — genre lens (same genres as the vocabulary page). */}
+        <FilterSelect
+          label="Genre"
+          options={GENRE_OPTIONS}
+          value={genre ?? ''}
+          onChange={(v) => {
+            setGenre(toGenre(v));
+          }}
+        />
+        {/* 초성 index applies to the KRDICT browse only: hidden while a
+            search or the genre lens (curated-corpus backend, no 초성
+            support) is active. */}
+        {browsing && genre === null ? (
           <InitialIndexBar
             selected={initial}
             onSelect={(c) => {
@@ -187,44 +278,67 @@ export default function ReviewDictionary(): JSX.Element {
             }}
           />
         ) : null}
-        {loading && rows.length === 0 ? (
+        {loading && rowCount === 0 ? (
           <div className="km-grammar__state" role="status">
             {browsing ? (
-              <Bilingual en="Loading dictionary…" kr="사전을 불러오는 중…" />
+              <Bilingual en="Loading words…" kr="단어를 불러오는 중…" />
             ) : (
               <Bilingual en="Searching…" kr="검색 중…" />
             )}
           </div>
         ) : error ? (
-          <ErrorCard message={error} />
-        ) : rows.length === 0 ? (
+          // Every error path gets a real Retry (incl. the 503 "not available
+          // yet" case — the KRDICT load may have finished by the retry).
+          <ErrorCard message={error} onRetry={retry} />
+        ) : rowCount === 0 ? (
           <p className="km-reference__empty">
-            <Bilingual
-              en="No dictionary entries found."
-              kr="검색 결과가 없어요."
-            />
+            <Bilingual en="No words found." kr="검색 결과가 없어요." />
           </p>
         ) : (
           <>
             <Card className="km-reference__list" variant="flat">
               <ul>
-                {rows.map((entry) => (
-                  <li key={`krdict:${String(entry.id)}`} className="km-reference__row">
-                    <div className="km-resources__dict-row">
-                      <span className="kr km-reference__row-kr">{entry.headword}</span>
-                      {entry.part_of_speech ? (
-                        <span className="km-pill km-pill--default km-resources__pos">
-                          {entry.part_of_speech}
-                        </span>
-                      ) : null}
-                      <span className="km-reference__row-en">
-                        {entry.definition_english ??
-                          entry.definition_korean ??
-                          ''}
-                      </span>
-                    </div>
-                  </li>
-                ))}
+                {page.kind === 'krdict'
+                  ? page.rows.map((entry) => (
+                      <li
+                        key={`krdict:${String(entry.id)}`}
+                        className="km-reference__row"
+                      >
+                        <div className="km-resources__dict-row">
+                          <span className="kr km-reference__row-kr">
+                            {entry.headword}
+                          </span>
+                          {entry.part_of_speech ? (
+                            <span className="km-pill km-pill--default km-resources__pos">
+                              {entry.part_of_speech}
+                            </span>
+                          ) : null}
+                          <span className="km-reference__row-en">
+                            {entry.definition_english ??
+                              entry.definition_korean ??
+                              ''}
+                          </span>
+                        </div>
+                      </li>
+                    ))
+                  : page.rows.map((entry) => (
+                      <li
+                        key={`vocab:${String(entry.id)}`}
+                        className="km-reference__row"
+                      >
+                        <div className="km-resources__dict-row">
+                          <span className="kr km-reference__row-kr">
+                            {entry.korean ?? ''}
+                          </span>
+                          <span className="km-pill km-pill--default km-resources__pos">
+                            {entry.proficiency ?? '—'}
+                          </span>
+                          <span className="km-reference__row-en">
+                            {entry.english ?? ''}
+                          </span>
+                        </div>
+                      </li>
+                    ))}
               </ul>
             </Card>
             <Pager

@@ -1,0 +1,17 @@
+/**
+ * ReviewLibrary (Overhaul P3B, F-042/F-043) — co-located styles for the
+ * Library landing.
+ *
+ * The page's structural classes (.km-library, __list, __row, __rowmeta,
+ * __rowlabel) predate co-location and still live in styles/index.css —
+ * shared with nothing, but left in place to keep shared-file churn at zero
+ * during the parallel P3 builds. Only NEW styles land here.
+ */
+
+/* One-line contents description under a section row's title. Sized/toned
+   like the retired .km-library__rowkr sub-line it replaces. */
+.km-library__rowdesc {
+  font-size: 11px;
+  color: var(--paper-mute);
+  margin-top: 2px;
+}

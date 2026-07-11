@@ -887,8 +887,9 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **Notes:** Lives in the migrated Uploads area (F-039).
 
 ### F-058 · Uploads listing shows only PDF versions
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done-as-respecced (Phase 3B) · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** The Uploads area only shows the PDF versions of uploads.
+- **Disposition:** A literal "PDF-only" filter is unimplementable and product-wrong — the server discards the original format at ingest (migration 041, no `source_format` column) and a literal filter would hide zip-based corpus books. Phase 3B shipped the honest equivalent: a **viewable-rendition filter** (excludes only un-renderable ghost rows, keeps processing/failed lifecycle rows). A literal source-format filter needs a server column first — tracked in **F-109**.
 
 ### F-059 · Manual OCR trigger button
 - **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
@@ -1220,6 +1221,44 @@ Delivered on `feat/phase3a-core-surfaces`, full 4-phase /fixpass PASS (re-review
 - **Progress:** F-030 ✅ (where-you-stand carousel: trend→vs→all) · F-031 ✅ (word-mastery pagination) · F-032 ✅ (Word/Grammar/Hanja mastery tabs; Grammar tab awaits F-099) · F-041 ✅ (Hanja Mastery, aggregate-only pending F-075 per-character list).
 - **Settings:** F-038 ✅ (collapsible tiles, collapsed default) · F-039 ✅ (Uploads removed — ⚠️ **PRE-DEPLOY BLOCKER: F-057–F-059 Review→Uploads must land before deploy**, else uploads are only reachable by typing /uploads) · F-040 ✅ (per-type notification timing + SMS placeholder).
 - **New tickets filed:** F-097 (dead-CSS sweep) · F-098 (BEM casing) · F-099 (grammar-mastery route) · F-100 (nav.ts comment) · F-101 (F-027→F-073 page half).
+
+---
+
+## 🌊 Phase 3B follow-up tickets (filed 2026-07-10)
+
+Surfaced by the Phase 3B builders + /fixpass reviewers; several backend routes are net-new work the client already reserves UI for.
+
+### F-102 · `/images` needs an in-app re-entry point
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (NAV) · **Beta:** —
+- **What:** F-042 removed the interim "Scan images" row from the Library landing, which was `/images`'s ONLY in-app entry point — the OCR image-mining page is now reachable only by typing the URL (route still registered at `client/src/App.tsx:139`). Give it a home: a Library row, the LEARN launcher, or fold it into Uploads/the chat image feature (pending the P4 IA decision on image capture).
+
+### F-103 · Dedicated "Past TOPIK exams" surface
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **What:** The Library "TOPIK exams" section currently lands on Mistakes as an honest stub (sanctioned by F-042). Build the dedicated past-exams page (list of completed sittings + scores) under the exams shelf; re-point the Library section's target to it, and Mistakes becomes a link inside it. Depends on F-104. The pinning test `ReviewLibrary.test.tsx` must be updated when this lands.
+
+### F-104 · `GET /topik/attempts` — completed-attempt history with per-exam score
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** No route returns completed TOPIK attempts with a per-exam score (correct/total, section, sourceTest, completedAt). Schema is ready (migration 046: `topik_attempts.status`, `topik_responses.attempt_id`) — the route is missing in `server/src/routes/topik.ts`. **Unblocks F-045** (Mistakes score-out-of-total, currently honest missed-count only), F-078, F-082, and F-103. (Was code-comment ticket "KM-3B-M1".)
+
+### F-105 · `attempt_id` in the `GET /topik/mistakes` DTO
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** Mistakes groups sessions by a (local-day, mode) heuristic that merges two same-day mock sittings. Expose `attempt_id` in the `/topik/mistakes` DTO so the session selector groups by true sitting (F-044 exactness). (Was "KM-3B-M2".)
+
+### F-106 · `GET /writing/attempts` — per-response writing history
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** `writing_attempts` rows are persisted by `POST /grade-writing`, but the only read is aggregate `GET /writing/series`. Add a per-response history GET (promptKr, rubric, sample, totalScore/maxTotal, gradedAt, nullable promptId to split TOPIK-prompt vs Claude-generated). **Unblocks F-046** (Mistakes writing-review, currently a pending stub) and is the twin of F-074. (Was "KM-3B-M3".)
+
+### F-107 · Upload provenance on vocab/grammar save paths + saved-from-uploads read
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API, DATABASE) · **Beta:** —
+- **What:** F-053/F-056 ("My Uploads" sub-pages) render honest-empty because nothing records which upload a saved word/pattern came from. Add optional `source_upload_id` to the save paths (`POST /vocab/mine` + list adds; the grammar equivalent) and a `GET /vocab/saved-from-uploads` (grouped by upload); then wire the reserved `SavedFromUploads` sections. Distinct from F-108 (that populates *extracted-corpus* provenance; this is *user-saved* provenance).
+
+### F-108 · U2 extraction/OCR pipeline (backend)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **What:** No OCR/extraction backend exists (`server/src/routes/uploads.ts` header: extraction is a later separate phase, "U2"). Build the OCR trigger route + pipeline reading `book_pages` images; populate `kgiu_entries.source_upload_id` at curation. **Unblocks F-059** (the viewer's honestly-disabled "Extract text" button) and makes F-056's grammar-from-upload view return real rows.
+
+### F-109 · Retain `source_format` on uploads (enables literal source-format filter)
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (DATABASE) · **Beta:** —
+- **What:** The server discards the original zip/PDF at ingest (migration 041) and stores no `source_format` column, so F-058's literal "PDF-only" filter is unimplementable client-side (and would wrongly hide zip-based corpus books). F-058 shipped the honest equivalent — a viewable-rendition filter. If a literal source-format filter is ever wanted, add the server column first. **F-058 is done-as-respecced.**
 
 ---
 

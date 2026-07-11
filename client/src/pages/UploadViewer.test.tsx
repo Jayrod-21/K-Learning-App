@@ -7,12 +7,17 @@
  * Covers: meta fetch (`page_count` via `getUpload`) drives the page-N-of-M
  * label, page nav (prev/next/jump) changes which page URL renders, a
  * per-page load failure shows Retry (not a broken-image icon) and Retry
- * re-mounts the image, the reorder tool (load current order, move-to-N,
- * optimistic update, PATCH call, rollback-on-failure), and abort-on-unmount
- * for every network call this component makes directly.
+ * re-mounts the image, the F-057 zoom model (auto fit-width default,
+ * width-based zoom, rotation that really transforms — including the
+ * quarter-turn branch's measured rotated-box geometry), the F-059 OCR
+ * control (honestly disabled — no U2 backend exists), the F-024 back
+ * control (guarded deep-link fallback → /uploads), the reorder tool (load
+ * current order, move-to-N, optimistic update, PATCH call,
+ * rollback-on-failure), and abort-on-unmount for every network call this
+ * component makes directly.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
@@ -71,6 +76,10 @@ function renderViewer(id = '9', search = ''): ReturnType<typeof render> {
       <ToastProvider>
         <Routes>
           <Route path="/uploads/:id" element={<UploadViewer />} />
+          <Route
+            path="/uploads"
+            element={<div data-testid="uploads-probe">uploads</div>}
+          />
         </Routes>
       </ToastProvider>
     </MemoryRouter>,
@@ -271,6 +280,177 @@ describe('UploadViewer — per-page error + retry', () => {
     await user.click(screen.getByLabelText('Next page'));
     await screen.findByText('2 / 5');
     expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/2');
+  });
+});
+
+// F-057 zoom model: `zoom` is a multiplier of the CONTAINER width (1 = exact
+// fit-width — the default), implemented as a real CSS width, never
+// `transform: scale()` (a transform doesn't grow the layout box, so the old
+// scale-based zoom could paint pixels the scroll container refused to reach).
+describe('UploadViewer — F-057 zoom + auto fit-width', () => {
+  it('opens auto fit-width: the page spans the container and the readout shows Fit', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    settleImage('load');
+
+    const img = document.querySelector('img');
+    expect(img?.style.width).toBe('100%');
+    expect(screen.getByText('Fit')).toBeInTheDocument();
+    // Already at fit — the reset control has nothing to do.
+    expect(screen.getByRole('button', { name: 'Fit width' })).toBeDisabled();
+  });
+
+  it('zoom in/out change the rendered width relative to fit, and Fit width restores it', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+    settleImage('load');
+
+    await user.click(screen.getByRole('button', { name: 'Zoom in' }));
+    expect(document.querySelector('img')?.style.width).toBe('125%');
+    expect(screen.getByText('125%')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Zoom out' }));
+    await user.click(screen.getByRole('button', { name: 'Zoom out' }));
+    expect(document.querySelector('img')?.style.width).toBe('75%');
+
+    const fitBtn = screen.getByRole('button', { name: 'Fit width' });
+    expect(fitBtn).not.toBeDisabled();
+    await user.click(fitBtn);
+    expect(document.querySelector('img')?.style.width).toBe('100%');
+    expect(screen.getByText('Fit')).toBeInTheDocument();
+  });
+
+  it('zoom clamps at its bounds — the buttons disable at min/max', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const out = (): HTMLElement => screen.getByRole('button', { name: 'Zoom out' });
+    const zoomIn = (): HTMLElement => screen.getByRole('button', { name: 'Zoom in' });
+
+    await user.click(out());
+    await user.click(out());
+    expect(document.querySelector('img')?.style.width).toBe('50%');
+    expect(out()).toBeDisabled();
+
+    for (let i = 0; i < 8; i += 1) {
+      await user.click(zoomIn());
+    }
+    expect(document.querySelector('img')?.style.width).toBe('250%');
+    expect(zoomIn()).toBeDisabled();
+  });
+});
+
+describe('UploadViewer — F-057 rotation', () => {
+  it('Rotate cycles 90° → 180° → 270° → 0°, really transforming the page image', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+    settleImage('load');
+
+    const rotateBtn = (): HTMLElement =>
+      screen.getByRole('button', { name: /Rotate page/ });
+    const imgTransform = (): string =>
+      document.querySelector('img')?.style.transform ?? '';
+
+    expect(imgTransform()).not.toContain('rotate');
+
+    await user.click(rotateBtn());
+    expect(imgTransform()).toContain('rotate(90deg)');
+    // The accessible name carries the current angle (screen-reader parity
+    // with the visual readout).
+    expect(
+      screen.getByRole('button', { name: 'Rotate page (rotated 90°)' }),
+    ).toBeInTheDocument();
+
+    await user.click(rotateBtn());
+    expect(imgTransform()).toBe('rotate(180deg)');
+
+    await user.click(rotateBtn());
+    expect(imgTransform()).toContain('rotate(270deg)');
+
+    await user.click(rotateBtn());
+    expect(imgTransform()).not.toContain('rotate');
+    expect(
+      screen.getByRole('button', { name: 'Rotate page' }),
+    ).toBeInTheDocument();
+  });
+
+  it('a quarter turn sizes an explicit rotated box from the container width + natural size', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    // Give the scroll box a real measured width (happy-dom lays out nothing,
+    // so clientWidth is 0 unless stubbed)…
+    const box = document.querySelector('.km-upload-viewer__page');
+    if (!(box instanceof HTMLElement)) throw new Error('no page box rendered');
+    Object.defineProperty(box, 'clientWidth', { value: 800, configurable: true });
+    fireEvent(window, new Event('resize'));
+
+    // …and the image real natural dimensions (portrait 1000×1500), then load.
+    const img = document.querySelector('img');
+    if (!(img instanceof HTMLImageElement)) throw new Error('no <img> rendered');
+    Object.defineProperty(img, 'naturalWidth', { value: 1000, configurable: true });
+    Object.defineProperty(img, 'naturalHeight', { value: 1500, configurable: true });
+    fireEvent.load(img);
+
+    await user.click(screen.getByRole('button', { name: /Rotate page/ }));
+
+    // Rotated 90° at fit-width: the img's CSS height becomes the visual
+    // width → pinned to the measured 800px; the wrapper carries the ROTATED
+    // layout box (800 wide, 800·1000/1500 ≈ 533.33 tall) so scroll extent
+    // stays honest.
+    const rotated = document.querySelector('img');
+    expect(rotated?.style.transform).toContain('rotate(90deg)');
+    expect(rotated?.style.height).toBe('800px');
+    const wrapper = document.querySelector('.km-upload-viewer__rotated');
+    if (!(wrapper instanceof HTMLElement)) throw new Error('no rotated box rendered');
+    expect(wrapper.style.width).toBe('800px');
+    expect(wrapper.style.height).toBe('533.33px');
+  });
+
+  it('rotation persists across page navigation (a sideways book is sideways on every page)', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+    settleImage('load');
+
+    await user.click(screen.getByRole('button', { name: /Rotate page/ }));
+    await user.click(screen.getByLabelText('Next page'));
+    await screen.findByText('2 / 5');
+
+    expect(document.querySelector('img')?.style.transform).toContain('rotate(90deg)');
+  });
+});
+
+// F-059 — no OCR backend exists yet (U2 is a later, separate phase — see
+// server/src/routes/uploads.ts). The control is rendered honestly disabled
+// with VISIBLE coming-soon copy, never wired to a nonexistent endpoint.
+describe('UploadViewer — F-059 OCR control (not yet available)', () => {
+  it('renders Extract text disabled with visible coming-soon copy', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const btn = screen.getByRole('button', {
+      name: 'Extract text (OCR) — coming soon',
+    });
+    expect(btn).toBeDisabled();
+    // The "coming soon" lives in the visible label — not a hover tooltip.
+    expect(screen.getByText('Extract text (coming soon)')).toBeInTheDocument();
+  });
+});
+
+describe('UploadViewer — F-024 back control', () => {
+  it('deep-link entry (no in-app history) falls back to the Uploads listing', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+
+    expect(await screen.findByTestId('uploads-probe')).toBeInTheDocument();
   });
 });
 

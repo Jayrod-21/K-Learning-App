@@ -1,15 +1,16 @@
 /**
- * ReviewVocab — the library's vocabulary page (P1.2).
+ * ReviewVocab — the library's vocabulary page (P3B redesign).
  *
- * Ports the old Reference.tsx tests for the Vocabulary tab (corpus browse,
- * F-003 filters, the stale-rows fix), the "This Week" suggest-only strip,
- * and the add-to-list picker — plus the UNIFIED My-Lists surface (the P1.2
- * dedup): create / open / remove-entry (from Reference) and rename (from
- * the old Review.tsx sheet), reachable via the `?tab=lists` deep link.
+ * Covers the stacked single-surface layout: My Lists on TOP (F-052), the
+ * vocab-only "This Week" strip (F-047 — grammar content removed), the
+ * browse with genre/difficulty DROPDOWN filters (F-049), the 15/+15/30
+ * client window (F-051), the create-a-list-from-the-picker flow (F-048),
+ * the conditional My-Uploads section (F-053 — empty until the backend
+ * exists), and the BackButton (F-024).
  *
  * Services are module-mocked; the component's own state/effects run for
- * real so debounce, pagination, optimistic flips, and 409-idempotency
- * participate in the assertions.
+ * real so debounce, pagination windowing, optimistic flips, and
+ * 409-idempotency participate in the assertions.
  */
 import {
   afterEach,
@@ -25,11 +26,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ToastProvider } from '../../components/ToastProvider';
 import { ApiError } from '../../services/api';
-import type {
-  KgiuEntrySummary,
-  ServerVocabList,
-  VocabEntry,
-} from '../../types/domain';
+import type { ServerVocabList, VocabEntry } from '../../types/domain';
 
 const vocabSvc = vi.hoisted(() => ({
   searchEntriesPage: vi.fn(),
@@ -53,9 +50,8 @@ const suggestSvc = vi.hoisted(() => ({
 }));
 
 // U1 sort-by-source filter scaffolding (SourceFilterRow) — listUploads is
-// best-effort and defaults to empty so every PRE-EXISTING test in this file
-// (which knows nothing about uploads) sees no source row at all, matching
-// its pre-U1 behaviour exactly.
+// best-effort and defaults to empty so every test that knows nothing about
+// uploads sees no source row at all.
 const uploadsSvc = vi.hoisted(() => ({
   listUploads: vi.fn(),
 }));
@@ -73,22 +69,20 @@ const VOCAB_ROWS: VocabEntry[] = [
   { id: 2, corpus: 'vocab_2000_intermediate', korean: '환경', english: 'environment', proficiency: 'L3', theme: null },
 ];
 
+/** A full 30-row server page for the F-051 windowing tests. */
+function fullPage(offset = 0): VocabEntry[] {
+  return Array.from({ length: 30 }, (_, i) => ({
+    id: offset + i + 100,
+    corpus: 'vocab_2000_intermediate',
+    korean: `단어${String(offset + i + 1)}`,
+    english: `word ${String(offset + i + 1)}`,
+    proficiency: 'L3',
+    theme: null,
+  }));
+}
+
 const SUGGEST_VOCAB: VocabEntry[] = [
   { id: 11, corpus: 'vocab_2000_intermediate', korean: '결과', english: 'result', proficiency: 'L3', theme: null },
-];
-
-const SUGGEST_GRAMMAR: KgiuEntrySummary[] = [
-  {
-    id: 100,
-    corpus: 'kgiu_intermediate',
-    source_id: 'KGIU-INT-009',
-    pattern: '-는 반면에',
-    title_en: 'whereas',
-    category: 'contrast',
-    proficiency: 'L4',
-    unit: 'Unit 9',
-    source_pages: null,
-  },
 ];
 
 const SERVER_LIST: ServerVocabList = {
@@ -102,13 +96,14 @@ const SERVER_LIST: ServerVocabList = {
   updated_at: 'y',
 };
 
-/** `initialPath` lets a test land with the `?tab=lists` deep link. */
+/** `initialPath` lets a test land with the legacy `?tab=lists` deep link. */
 function renderPage(initialPath = '/review/vocab'): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
       <ToastProvider>
         <Routes>
           <Route path="/review/vocab" element={<ReviewVocab />} />
+          <Route path="/review" element={<div data-testid="review-index" />} />
         </Routes>
       </ToastProvider>
     </MemoryRouter>,
@@ -160,20 +155,120 @@ beforeEach(() => {
   grammarSvc.bankPattern.mockResolvedValue({ id: 1 });
 
   suggestSvc.fetchWeeklyVocabSuggestions.mockResolvedValue(SUGGEST_VOCAB);
-  suggestSvc.fetchWeeklyGrammarSuggestions.mockResolvedValue(SUGGEST_GRAMMAR);
+  suggestSvc.fetchWeeklyGrammarSuggestions.mockResolvedValue([]);
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)', () => {
-  it('renders the curated corpus rows with the real total in the pager', async () => {
+describe('ReviewVocab — stacked layout (F-052) + chrome', () => {
+  it('renders My Lists ABOVE the corpus browse with no tab switch needed', async () => {
+    renderPage();
+    // Both surfaces are present simultaneously — no tabs.
+    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
+    expect(await screen.findByText('영향')).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+
+    // And My Lists comes FIRST in document order (F-052).
+    const listsHeading = screen.getByRole('heading', { name: '내 단어장 · My lists' });
+    const browseHeading = screen.getByRole('heading', { name: '말뭉치 둘러보기 · Browse the corpus' });
+    const position = listsHeading.compareDocumentPosition(browseHeading);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  it('still lands correctly on the legacy ?tab=lists deep link (lists are on top now)', async () => {
+    renderPage('/review/vocab?tab=lists');
+    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
+  });
+
+  it('has a BackButton to the library index (F-024)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(screen.getByRole('button', { name: 'Back to Library' }));
+    expect(screen.getByTestId('review-index')).toBeInTheDocument();
+  });
+
+  it('renders the title + the manifest "Library" eyebrow with Korean in both-mode', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    expect(
+      screen.getByRole('heading', { level: 1, name: '단어 · Vocabulary' }),
+    ).toBeInTheDocument();
+    // Eyebrow = the parent tab's nav-manifest pair (Library · 자료실).
+    // getAllByText for 'Library': the BackButton's visible label carries
+    // the same manifest string on this page.
+    expect(screen.getByText('자료실')).toBeInTheDocument();
+    expect(screen.getAllByText('Library').length).toBeGreaterThan(0);
+    // The stale hand-written pair must not linger (F-043 sweep).
+    expect(screen.queryByText('Review library')).not.toBeInTheDocument();
+    expect(screen.queryByText('복습 자료실')).not.toBeInTheDocument();
+  });
+
+  it('shows no "My uploads" section while no saved-from-upload vocab exists (F-053)', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    expect(screen.queryByText(/My uploads/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — This Week is vocab-only (F-047)', () => {
+  it('never fetches or renders grammar suggestions on the vocabulary page', async () => {
+    // Even a server that WOULD return grammar picks never gets asked, and
+    // no grammar suggestion ever renders.
+    suggestSvc.fetchWeeklyGrammarSuggestions.mockResolvedValue([
+      {
+        id: 100,
+        corpus: 'kgiu_intermediate',
+        source_id: 'KGIU-INT-009',
+        pattern: '-는 반면에',
+        title_en: 'whereas',
+        category: 'contrast',
+        proficiency: 'L4',
+        unit: 'Unit 9',
+        source_pages: null,
+      },
+    ]);
+    renderPage();
+    // The vocab pick renders…
+    expect(
+      await screen.findByRole('button', { name: 'Add 결과' }),
+    ).toBeInTheDocument();
+    // …but the grammar suggestion fetch is skipped entirely and no grammar
+    // pick exists anywhere on the page.
+    expect(suggestSvc.fetchWeeklyGrammarSuggestions).not.toHaveBeenCalled();
+    expect(screen.queryByText('-는 반면에')).not.toBeInTheDocument();
+  });
+
+  it('adds a vocab pick and flips the button to ✓ Added', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const addBtn = await screen.findByRole('button', { name: 'Add 결과' });
+    await user.click(addBtn);
+
+    expect(vocabSvc.bankEntry).toHaveBeenCalledWith(11);
+    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+  });
+
+  it('treats a 409 (already banked) as success — idempotent flip, no error', async () => {
+    vocabSvc.bankEntry.mockRejectedValueOnce(
+      new ApiError('already banked', { status: 409, code: 'conflict' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Add 결과' }));
+
+    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — Browse (search + F-049 dropdown filters)', () => {
+  it('renders the curated corpus rows', async () => {
     renderPage();
     expect(await screen.findByText('영향')).toBeInTheDocument();
     expect(screen.getByText('환경')).toBeInTheDocument();
-    // Pager reflects the server's real total (3,131), not the page length.
-    expect(screen.getByText(/of 3131/)).toBeInTheDocument();
   });
 
   it('searches the corpus after the debounce', async () => {
@@ -195,14 +290,16 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
     });
   });
 
-  it('domain + level filters refetch with the matching query params and reset paging (F-003)', async () => {
+  it('genre + difficulty dropdowns refetch with the matching params and reset paging (F-049)', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('영향');
 
+    const genre = screen.getByRole('combobox', { name: 'Genre' });
+    const difficulty = screen.getByRole('combobox', { name: 'Difficulty' });
+
     vocabSvc.searchEntriesPage.mockClear();
-    const topicGroup = screen.getByRole('group', { name: 'Filter vocabulary by topic' });
-    await user.click(within(topicGroup).getByRole('button', { name: 'Business' }));
+    await user.selectOptions(genre, 'business');
     await waitFor(() => {
       expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
         expect.objectContaining({ domain: 'business', offset: 0 }),
@@ -211,8 +308,7 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
     });
 
     vocabSvc.searchEntriesPage.mockClear();
-    const levelGroup = screen.getByRole('group', { name: 'Filter vocabulary by level' });
-    await user.click(within(levelGroup).getByRole('button', { name: 'Beginner' }));
+    await user.selectOptions(difficulty, 'beginner');
     await waitFor(() => {
       expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -224,20 +320,86 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
       );
     });
 
-    // Back to All → the params are omitted again (never sent as 'all').
+    // Back to the "All" placeholder → the params are omitted again (never
+    // sent as 'all' or '').
     vocabSvc.searchEntriesPage.mockClear();
-    await user.click(within(topicGroup).getByRole('button', { name: 'All' }));
-    await user.click(within(levelGroup).getByRole('button', { name: 'All' }));
+    await user.selectOptions(genre, '');
+    await user.selectOptions(difficulty, '');
     await waitFor(() => {
-      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
-        expect.not.objectContaining({ domain: expect.anything() }),
-        expect.anything(),
-      );
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalled();
+      const lastArgs: unknown = vocabSvc.searchEntriesPage.mock.lastCall?.[0];
+      expect(lastArgs).not.toHaveProperty('domain');
+      expect(lastArgs).not.toHaveProperty('book_level');
     });
   });
 
-  it('a failed Next-page fetch shows an ErrorCard + Retry instead of stale rows (stale-rows fix)', async () => {
+  it('offers all 3 difficulty bands in the dropdown (F-049)', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    const difficulty = screen.getByRole('combobox', { name: 'Difficulty' });
+    const labels = within(difficulty)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(labels).toEqual(['All', 'Beginner', 'Intermediate', 'Advanced']);
+  });
+});
+
+describe('ReviewVocab — 15/+15/30 client window (F-051)', () => {
+  it('shows 15 rows, expands to 30 via Show more, then exposes the pager', async () => {
+    vocabSvc.searchEntriesPage.mockResolvedValue({
+      entries: fullPage(0),
+      total: 3131,
+      limit: 30,
+      offset: 0,
+    });
     const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText('단어1');
+    expect(screen.getByText('단어15')).toBeInTheDocument();
+    expect(screen.queryByText('단어16')).not.toBeInTheDocument();
+    // The pager stays hidden while the window is collapsed — its "1–30"
+    // range would over-claim what is on screen.
+    expect(screen.queryByText(/of 3131/)).not.toBeInTheDocument();
+
+    // The expander announces exactly what the next click reveals.
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
+    expect(screen.getByText('단어30')).toBeInTheDocument();
+    // Window exhausted → expander gone, server pager appears with a range
+    // that now matches the visible rows exactly.
+    expect(
+      screen.queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/1–30 of 3131/)).toBeInTheDocument();
+  });
+
+  it('collapses the window back to 15 when a filter changes', async () => {
+    vocabSvc.searchEntriesPage.mockResolvedValue({
+      entries: fullPage(0),
+      total: 3131,
+      limit: 30,
+      offset: 0,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('단어1');
+
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
+    expect(screen.getByText('단어30')).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Genre' }),
+      'business',
+    );
+    await waitFor(() => {
+      expect(screen.queryByText('단어16')).not.toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Show more (15)' }),
+    ).toBeInTheDocument();
+  });
+
+  it('a failed Next-page fetch shows an ErrorCard + Retry instead of stale rows', async () => {
     const PAGE_2: VocabEntry[] = [
       {
         id: 3,
@@ -250,7 +412,7 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
     ];
     vocabSvc.searchEntriesPage
       .mockResolvedValueOnce({
-        entries: VOCAB_ROWS,
+        entries: fullPage(0),
         total: 3131,
         limit: 30,
         offset: 0,
@@ -264,9 +426,12 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
         limit: 30,
         offset: 30,
       });
-
+    const user = userEvent.setup();
     renderPage();
-    await screen.findByText('영향');
+    await screen.findByText('단어1');
+
+    // Expand the window fully to reach the pager, then move to page 2.
+    await user.click(screen.getByRole('button', { name: 'Show more (15)' }));
     expect(screen.getByText(/1–30 of 3131/)).toBeInTheDocument();
 
     // The Next-page fetch fails — the failure must surface, not the stale
@@ -276,7 +441,7 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
       await screen.findByText('Could not load vocabulary.'),
     ).toBeInTheDocument();
     expect(screen.queryByText('vocab page failed')).not.toBeInTheDocument();
-    expect(screen.queryByText('영향')).not.toBeInTheDocument();
+    expect(screen.queryByText('단어1')).not.toBeInTheDocument();
     expect(screen.queryByText(/31–60/)).not.toBeInTheDocument();
 
     // Retry re-runs the failed page fetch and renders the real page 2.
@@ -286,50 +451,8 @@ describe('ReviewVocab — default Browse view (the old Reference Vocabulary tab)
   });
 });
 
-describe('ReviewVocab — This Week (suggest-only, transitional home)', () => {
-  it('adds a vocab pick and flips the button to ✓ Added', async () => {
-    const user = userEvent.setup();
-    renderPage();
-    const addBtn = await screen.findByRole('button', { name: 'Add 결과' });
-    await user.click(addBtn);
-
-    expect(vocabSvc.bankEntry).toHaveBeenCalledWith(11);
-    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
-  });
-
-  it('treats a 409 (already banked) as success — idempotent flip, no error', async () => {
-    vocabSvc.bankEntry.mockRejectedValueOnce(
-      new ApiError('already banked', { status: 409, code: 'conflict' }),
-    );
-    const user = userEvent.setup();
-    renderPage();
-    await user.click(await screen.findByRole('button', { name: 'Add 결과' }));
-
-    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
-  });
-
-  it('adds a grammar pick through the bank path with a GR-shaped key', async () => {
-    const user = userEvent.setup();
-    renderPage();
-    await user.click(
-      await screen.findByRole('button', { name: 'Add -는 반면에' }),
-    );
-
-    await waitFor(() => {
-      // The key satisfies the server's /^GR-[a-z0-9_-]{1,64}$/ — the raw
-      // source_id 'KGIU-INT-009' would have been rejected with a 400.
-      expect(grammarSvc.bankPattern).toHaveBeenCalledWith(
-        expect.objectContaining({
-          pattern_key: 'GR-kgiu-int-009',
-          pattern_display: '-는 반면에',
-        }),
-      );
-    });
-  });
-});
-
-describe('ReviewVocab — add a corpus word to a list', () => {
-  it('opens the picker and posts the entry id', async () => {
+describe('ReviewVocab — add a corpus word to a list (F-048)', () => {
+  it('opens the picker and posts the entry id to an existing list', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('영향');
@@ -342,35 +465,80 @@ describe('ReviewVocab — add a corpus word to a list', () => {
       expect(vocabSvc.addListEntries).toHaveBeenCalledWith(7, [1]);
     });
   });
-});
 
-describe('ReviewVocab — bilingual chrome (P3b)', () => {
-  it('renders the title + "Review library" eyebrow with Korean in both-mode', async () => {
-    renderPage();
-    await screen.findByText('영향');
-    expect(
-      screen.getByRole('heading', { level: 1, name: '단어 · Vocabulary' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText('복습 자료실')).toBeInTheDocument();
-    expect(screen.getByText('Review library')).toBeInTheDocument();
-  });
-});
-
-describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
-  it('opens the lists view via the ?tab=lists deep link', async () => {
-    renderPage('/review/vocab?tab=lists');
-    expect(
-      screen.getByRole('tab', { name: '내 단어장 · My lists' }),
-    ).toHaveAttribute('aria-selected', 'true');
-    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
-  });
-
-  it('creates a list and opens it to show entries', async () => {
+  it('creates a NEW list from the picker, seeded with the tapped word', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('영향');
 
-    await user.click(screen.getByRole('tab', { name: '내 단어장 · My lists' }));
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog');
+
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Name for the new list' }),
+      '새 목록',
+    );
+    await user.click(
+      within(dialog).getByRole('button', { name: /Create list/ }),
+    );
+
+    await waitFor(() => {
+      expect(vocabSvc.createList).toHaveBeenCalledWith({
+        name_kr: '새 목록',
+        kind: 'vocab',
+        seed_entry_ids: [1],
+      });
+    });
+    // One round-trip — no separate addListEntries call for the new list.
+    expect(vocabSvc.addListEntries).not.toHaveBeenCalled();
+  });
+
+  it('offers the create-a-list affordance even when the user has no lists yet', async () => {
+    vocabSvc.listLists.mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText(/No lists yet — create one below/),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('textbox', { name: 'Name for the new list' }),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces a create failure inside the sheet without closing it', async () => {
+    vocabSvc.createList.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Name for the new list' }),
+      '새 목록',
+    );
+    await user.click(
+      within(dialog).getByRole('button', { name: /Create list/ }),
+    );
+
+    expect(
+      await within(dialog).findByText('Could not create the list.'),
+    ).toBeInTheDocument();
+    // The raw server prose is never echoed.
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — My lists (the top-of-page surface)', () => {
+  it('creates a list and opens it to show entries', async () => {
+    const user = userEvent.setup();
+    renderPage();
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
 
     // Create flow — default kind stays 'vocab'.
@@ -397,7 +565,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
 
   it('includes the optional English label and kind in the create body', async () => {
     const user = userEvent.setup();
-    renderPage('/review/vocab?tab=lists');
+    renderPage();
     await screen.findByText('병원 어휘');
 
     await user.type(
@@ -422,7 +590,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
 
   it('removes an entry from an open list (optimistic)', async () => {
     const user = userEvent.setup();
-    renderPage('/review/vocab?tab=lists');
+    renderPage();
 
     await user.click(
       await screen.findByRole('button', { name: /Open 병원 어휘/ }),
@@ -436,9 +604,9 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1);
   });
 
-  it('renames a list from the detail sheet (capability kept from the old Review sheet)', async () => {
+  it('renames a list from the detail sheet', async () => {
     const user = userEvent.setup();
-    renderPage('/review/vocab?tab=lists');
+    renderPage();
 
     await user.click(
       await screen.findByRole('button', { name: /Open 병원 어휘/ }),
@@ -469,7 +637,7 @@ describe('ReviewVocab — My lists (THE unified surface, P1.2 dedup)', () => {
     vi.stubGlobal('confirm', confirmFn);
     try {
       const user = userEvent.setup();
-      renderPage('/review/vocab?tab=lists');
+      renderPage();
       await screen.findByText('병원 어휘');
 
       await user.click(

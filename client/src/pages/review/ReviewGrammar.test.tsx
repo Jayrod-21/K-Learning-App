@@ -1,11 +1,18 @@
 /**
- * ReviewGrammar — the library's single grammar browse (P1.2, D3).
+ * ReviewGrammar — the library's single grammar browse (P1.2, D3), reworked
+ * in Phase 3B (F-054/F-055/F-056/F-024).
  *
  * Ports the old Reference.tsx Grammar-tab tests (full fetch, F-004 detail
- * Sheet, F-005 filters, the stale-rows fix) AND the LEARN Grammar screen's
- * list-tab Bank tests (the Bank action moved here with the browse). Services
- * are module-mocked; the component's own state/effects run for real so the
- * debounce, filters, optimistic bank flip, and stale-guards participate.
+ * Sheet, the stale-rows fix) AND the LEARN Grammar screen's list-tab Bank
+ * tests (the Bank action moved here with the browse), then adds the 3B
+ * surfaces: the F-054 removals are asserted as REGRESSIONS (search box,
+ * genre filter, and the Vocabulary/Dictionary strip must stay gone), F-055's
+ * difficulty dropdown drives the real query param, F-024's BackButton
+ * navigates to the real /review route, and F-056's Uploads view exercises
+ * the real listUploads → per-upload listPatterns fan-out (grouping, the
+ * zero-row drop, the error+Retry path, and banking from a group row).
+ * Services are module-mocked; the component's own state/effects run for
+ * real so the filters, optimistic bank flip, and stale-guards participate.
  */
 import {
   afterEach,
@@ -33,9 +40,9 @@ const grammarSvc = vi.hoisted(() => ({
   getPattern: vi.fn(),
 }));
 
-// U1 sort-by-source filter scaffolding (SourceFilterRow) — best-effort,
-// defaults to empty so every PRE-EXISTING test in this file sees no source
-// row, matching its pre-U1 behaviour exactly.
+// Uploads service — feeds BOTH the U1 sort-by-source filter row (browse
+// view) and the F-056 Uploads view. Defaults to empty so browse-focused
+// tests see no source row and an empty Uploads view.
 const uploadsSvc = vi.hoisted(() => ({
   listUploads: vi.fn(),
 }));
@@ -104,6 +111,9 @@ function renderPage(): ReturnType<typeof render> {
     <MemoryRouter initialEntries={['/review/grammar']}>
       <Routes>
         <Route path="/review/grammar" element={<ReviewGrammar />} />
+        {/* F-024 destination — a stub so the BackButton test asserts a REAL
+            navigation, not just a click. */}
+        <Route path="/review" element={<div>Review hub stub</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -142,6 +152,108 @@ describe('ReviewGrammar — browse (the old Reference Grammar tab)', () => {
         expect.anything(),
       );
     });
+  });
+
+  it('F-054 — search box, genre filter, and the Vocabulary/Dictionary strip are gone', async () => {
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    // Search-all-grammar-patterns is removed.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText('Search all grammar patterns'),
+    ).not.toBeInTheDocument();
+    // Genre/topic (content_domain) filter is removed — grammar has no
+    // genre axis.
+    expect(
+      screen.queryByRole('group', { name: 'Filter grammar by topic' }),
+    ).not.toBeInTheDocument();
+    // The library section strip (Vocabulary/Dictionary links) is removed —
+    // guard both the current LibrarySubnav landmark name and the pre-F-043
+    // one so neither vintage can creep back.
+    expect(
+      screen.queryByRole('navigation', { name: 'Library sections' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('navigation', { name: 'Review library section' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Vocabulary/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Dictionary/ }),
+    ).not.toBeInTheDocument();
+    // No fetch ever carries the removed params.
+    for (const call of grammarSvc.listPatterns.mock.calls) {
+      expect(call[0]).not.toHaveProperty('domain');
+      expect(call[0]).not.toHaveProperty('q');
+    }
+  });
+
+  it('F-055 — the difficulty dropdown drives book_level and the placeholder clears it', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    // A labelled native select (FilterSelect) — the label IS the accessible
+    // name, so AT users hear what the control filters.
+    const select = screen.getByRole('combobox', { name: 'Difficulty' });
+
+    grammarSvc.listPatterns.mockClear();
+    await user.selectOptions(select, 'advanced');
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.objectContaining({ book_level: 'advanced' }),
+        expect.anything(),
+      );
+    });
+
+    // Back to the "All levels" placeholder → the param is omitted again
+    // (never sent as 'all' or '').
+    grammarSvc.listPatterns.mockClear();
+    await user.selectOptions(
+      select,
+      screen.getByRole('option', { name: 'All levels' }),
+    );
+    await waitFor(() => {
+      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+        expect.not.objectContaining({ book_level: expect.anything() }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('a failed filter fetch shows an ErrorCard instead of the stale rows + stale count', async () => {
+    grammarSvc.listPatterns
+      .mockResolvedValueOnce([ROW]) // mount ('All levels')
+      .mockRejectedValueOnce(
+        new ApiError('grammar filter failed', { status: 500, code: 'server' }),
+      )
+      .mockResolvedValue([ROW]); // Retry
+
+    const user = userEvent.setup();
+    renderPage();
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Difficulty' }),
+      'advanced',
+    );
+    expect(
+      await screen.findByText('Could not load grammar.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('grammar filter failed')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '-는 반면에 whereas' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/1 pattern/)).not.toBeInTheDocument();
+
+    // Retry re-runs the filtered fetch and restores the list + count.
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '-는 반면에 whereas' }),
+    ).toBeInTheDocument();
   });
 
   it('opens the detail Sheet on row tap — fetches getPattern(id) and renders the explanation (F-004/F-018)', async () => {
@@ -261,77 +373,6 @@ describe('ReviewGrammar — browse (the old Reference Grammar tab)', () => {
       within(dialog).queryByText(/Contrasts two clauses/),
     ).not.toBeInTheDocument();
   });
-
-  it('domain + level filters refetch with the matching query params (F-005)', async () => {
-    const user = userEvent.setup();
-    renderPage();
-    await screen.findByText(/1 pattern/);
-
-    grammarSvc.listPatterns.mockClear();
-    const topicGroup = screen.getByRole('group', { name: 'Filter grammar by topic' });
-    await user.click(within(topicGroup).getByRole('button', { name: 'Research' }));
-    await waitFor(() => {
-      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
-        expect.objectContaining({ domain: 'research' }),
-        expect.anything(),
-      );
-    });
-
-    grammarSvc.listPatterns.mockClear();
-    const levelGroup = screen.getByRole('group', { name: 'Filter grammar by level' });
-    await user.click(within(levelGroup).getByRole('button', { name: 'Advanced' }));
-    await waitFor(() => {
-      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
-        expect.objectContaining({ domain: 'research', book_level: 'advanced' }),
-        expect.anything(),
-      );
-    });
-
-    // Back to All → the param is omitted again (never sent as 'all').
-    grammarSvc.listPatterns.mockClear();
-    await user.click(within(topicGroup).getByRole('button', { name: 'All' }));
-    await waitFor(() => {
-      expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
-        expect.not.objectContaining({ domain: expect.anything() }),
-        expect.anything(),
-      );
-    });
-  });
-
-  it('a failed filter fetch shows an ErrorCard instead of the stale rows + stale count', async () => {
-    grammarSvc.listPatterns
-      .mockResolvedValueOnce([ROW]) // mount ('All')
-      .mockRejectedValueOnce(
-        new ApiError('grammar filter failed', { status: 500, code: 'server' }),
-      )
-      .mockResolvedValue([ROW]); // Retry
-
-    const user = userEvent.setup();
-    renderPage();
-    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
-
-    const levelGroup = screen.getByRole('group', {
-      name: 'Filter grammar by level',
-    });
-    await user.click(
-      within(levelGroup).getByRole('button', { name: 'Advanced' }),
-    );
-    expect(
-      await screen.findByText('Could not load grammar.'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('grammar filter failed')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: '-는 반면에 whereas' }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/1 pattern/)).not.toBeInTheDocument();
-
-    // Retry re-runs the filtered fetch and restores the list + count.
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '-는 반면에 whereas' }),
-    ).toBeInTheDocument();
-  });
 });
 
 describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', () => {
@@ -444,6 +485,60 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
   });
 });
 
+describe('ReviewGrammar — BackButton (F-024)', () => {
+  it('navigates to the /review library index', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    // The label comes from navItem('review') — the tab is "Library" (F-043).
+    await user.click(
+      screen.getByRole('button', { name: 'Back to Library' }),
+    );
+    expect(await screen.findByText('Review hub stub')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — Browse/Uploads tabs (shared Tabs, W3C APG contract)', () => {
+  it('delivers the full tabs contract: roving tabindex, arrow/Home keys, labelled tabpanel', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/1 pattern/);
+
+    const browseTab = screen.getByRole('tab', { name: /Browse/ });
+    const uploadsTab = screen.getByRole('tab', { name: /Uploads/ });
+
+    // Selected tab carries the tab stop; the other is roving (-1).
+    expect(browseTab).toHaveAttribute('aria-selected', 'true');
+    expect(browseTab).toHaveAttribute('tabindex', '0');
+    expect(uploadsTab).toHaveAttribute('aria-selected', 'false');
+    expect(uploadsTab).toHaveAttribute('tabindex', '-1');
+
+    // The active panel is a real tabpanel wired to the selected tab.
+    const panel = screen.getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', browseTab.id);
+    expect(browseTab).toHaveAttribute('aria-controls', panel.id);
+
+    // ArrowRight: focus AND selection move to Uploads (automatic
+    // activation) — the roving tab stop follows.
+    browseTab.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(uploadsTab).toHaveFocus();
+    expect(uploadsTab).toHaveAttribute('aria-selected', 'true');
+    expect(uploadsTab).toHaveAttribute('tabindex', '0');
+    expect(browseTab).toHaveAttribute('tabindex', '-1');
+    expect(
+      await screen.findByText(/No grammar from your uploads yet/),
+    ).toBeInTheDocument();
+
+    // Home: back to the first tab, panel follows.
+    await user.keyboard('{Home}');
+    expect(browseTab).toHaveFocus();
+    expect(browseTab).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText(/1 pattern/)).toBeInTheDocument();
+  });
+});
+
 describe('ReviewGrammar — U1 sort-by-source filter scaffolding', () => {
   it('renders no source row when the user has no ready uploads', async () => {
     uploadsSvc.listUploads.mockResolvedValue([]);
@@ -480,6 +575,112 @@ describe('ReviewGrammar — U1 sort-by-source filter scaffolding', () => {
 
     expect(
       screen.getByRole('button', { name: /View PDF/ }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — Uploads view (F-056)', () => {
+  /** Switch from the default Browse view to the Uploads view. */
+  async function openUploadsView(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<void> {
+    await screen.findByText(/1 pattern/); // browse settled first
+    await user.click(screen.getByRole('tab', { name: /Uploads/ }));
+  }
+
+  it('shows the empty state (and fetches nothing per-source) when no ready upload exists', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    expect(
+      await screen.findByText(/No grammar from your uploads yet/),
+    ).toBeInTheDocument();
+    // No upload → no per-source pattern query was ever issued.
+    const sourceScoped = grammarSvc.listPatterns.mock.calls.filter((call) =>
+      Object.hasOwn(call[0] as object, 'source_upload_id'),
+    );
+    expect(sourceScoped).toHaveLength(0);
+  });
+
+  it('groups patterns by source upload and drops grammar-free uploads', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([
+      READY_UPLOAD, // id '9' — carries ROW
+      { ...READY_UPLOAD, id: '11', title: '단어만 있는 책', type: 'vocab' },
+    ]);
+    grammarSvc.listPatterns.mockImplementation(
+      async (opts?: { source_upload_id?: string }) => {
+        if (opts?.source_upload_id === '9') return [ROW];
+        if (opts?.source_upload_id === '11') return []; // grammar-free
+        return [ROW]; // the browse view's unscoped fetch
+      },
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    // The grammar-bearing upload renders as a titled group with its rows.
+    const heading = await screen.findByRole('heading', {
+      name: /한국어 문법 사전/,
+    });
+    const group = heading.closest('section');
+    expect(group).not.toBeNull();
+    expect(
+      within(group as HTMLElement).getByRole('button', {
+        name: '-는 반면에 whereas',
+      }),
+    ).toBeInTheDocument();
+
+    // The grammar-free upload was QUERIED (it could have carried grammar)
+    // but renders no group.
+    expect(grammarSvc.listPatterns).toHaveBeenCalledWith(
+      expect.objectContaining({ source_upload_id: '11', limit: 400 }),
+      expect.anything(),
+    );
+    expect(screen.queryByText('단어만 있는 책')).not.toBeInTheDocument();
+  });
+
+  it('a failed uploads fetch surfaces an ErrorCard whose Retry recovers', async () => {
+    uploadsSvc.listUploads.mockRejectedValue(
+      new ApiError('uploads down', { status: 500, code: 'server' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    expect(
+      await screen.findByText('Could not load your uploads.'),
+    ).toBeInTheDocument();
+    // Fixed copy — the server prose must not render.
+    expect(screen.queryByText('uploads down')).not.toBeInTheDocument();
+
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByText(/No grammar from your uploads yet/),
+    ).toBeInTheDocument();
+  });
+
+  it('banking works from an upload group row (shared bank state)', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([READY_UPLOAD]);
+    grammarSvc.listPatterns.mockImplementation(
+      async (opts?: { source_upload_id?: string }) => {
+        if (opts?.source_upload_id === '9') return [ROW];
+        return [ROW];
+      },
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+    await screen.findByRole('heading', { name: /한국어 문법 사전/ });
+
+    await user.click(screen.getByRole('button', { name: 'Bank -는 반면에' }));
+    await waitFor(() => {
+      expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      await screen.findByRole('button', { name: 'Already banked' }),
     ).toBeInTheDocument();
   });
 });

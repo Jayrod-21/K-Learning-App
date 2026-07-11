@@ -25,7 +25,7 @@
  *
  * `path` is the React Router route. `kr` is the Korean sublabel (LearnMenu
  * rows, a11y labels). `icon` is a key into the `<Icon/>` registry.
- * `headerTitle` is the serif Korean title pattern (e.g. `복습 · Review`).
+ * `headerTitle` is the serif Korean title pattern (e.g. `오늘 · Today`).
  *
  * Eyebrows (Overhaul P3b): `eyebrow` is the ENGLISH eyebrow, `krEyebrow` its
  * Korean counterpart — the same flat en/kr convention as `label`/`kr`.
@@ -97,14 +97,16 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
     // REPURPOSED id (P1.1): `review` is now the library index at `/review`.
     // The FSRS vocab-flashcards page that used to own this id/path is
-    // `flashcards` at `/learn/vocab` below.
+    // `flashcards` at `/learn/vocab` below. P3B (F-043): the tab reads
+    // "Library" — the id and the `/review` path are hard route contracts
+    // and stay as-is.
     id: 'review',
     path: '/review',
-    label: 'Review',
-    kr: '복습',
-    eyebrow: 'Library',
-    krEyebrow: '자료실',
-    headerTitle: '복습 · Review',
+    label: 'Library',
+    kr: '자료실',
+    eyebrow: 'Vocabulary · grammar · exams · uploads',
+    krEyebrow: '단어 · 문법 · 기출 · 업로드',
+    headerTitle: '자료실 · Library',
     icon: 'folder',
   },
   {
@@ -223,13 +225,17 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   {
     // P1.2, decision D2 — the KRDICT dictionary stays its OWN page (a
     // lookup corpus, not merged into the vocabulary browse).
+    // F-050 (P3B): renamed "Dictionary" → "All Words" — the page is the
+    // whole-corpus word browse (KRDICT + a genre lens over the curated
+    // corpus), not just a lookup tool. The route/id stay `review-dictionary`
+    // (paths are contracts; labels are copy).
     id: 'review-dictionary',
     path: '/review/dictionary',
-    label: 'Dictionary',
-    kr: '사전',
+    label: 'All Words',
+    kr: '전체 단어',
     eyebrow: 'KRDICT · 54k entries',
     krEyebrow: 'KRDICT · 표제어 5.4만',
-    headerTitle: '사전 · Dictionary',
+    headerTitle: '전체 단어 · All Words',
     icon: 'search',
   },
   {
@@ -277,10 +283,11 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'chat',
   },
   {
-    // U1b (PDF book-upload feature) — reached from Settings → Uploads
-    // ("See all uploads") and from tapping a row to open the PDF viewer at
-    // `/uploads/:id` (that route is NOT its own NavItem — it's a dynamic
-    // detail view, same convention as Images' capture view).
+    // U1b (book-upload feature) — reached from Review → Uploads (the
+    // library row; F-039 moved the area out of Settings). Tapping a row
+    // opens the page-image viewer at `/uploads/:id` (that route is NOT its
+    // own NavItem — it's a dynamic detail view, same convention as Images'
+    // capture view). Comment re-homed per F-100.
     id: 'uploads',
     path: '/uploads',
     label: 'Uploads',

@@ -67,7 +67,8 @@ describe('nav manifest (P1.1)', () => {
     // `flashcards` at /learn/vocab; `review` is the library.
     expect(navItem('flashcards').path).toBe('/learn/vocab');
     expect(navItem('flashcards').label).toBe('Vocab flashcards');
-    expect(navItem('review').eyebrow).toBe('Library');
+    // F-043 (P3B): the tab READS "Library"; the id/path contract holds.
+    expect(navItem('review').label).toBe('Library');
     // Mistakes lives under the library.
     expect(navItem('mistakes').path).toBe('/review/mistakes');
     // ttmik keeps its id but reads "Listen" at /learn/listen.

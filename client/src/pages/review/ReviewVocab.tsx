@@ -1,141 +1,210 @@
 /**
  * ReviewVocab — `/review/vocab`, the Review library's vocabulary page.
  *
- * Overhaul P1.2: the Reference page dissolved into first-class library
- * routes; this page is its former **Vocabulary tab** (curated `vocab_2000`
- * corpus — searchable, paginated against the server's real `total`, with
- * the F-003 genre/`domain` + difficulty/`book_level` filters) PLUS the
- * canonical **My Lists** surface (see components/MyVocabLists — the P1.2
- * dedup of the Review.tsx/Reference.tsx duplicate).
+ * P3B redesign (pre-beta) — the page is now ONE stacked surface, top to
+ * bottom (the old Browse/My-lists tab switch is gone):
  *
- * Views ("Browse" is the default):
- *   - Browse   — the corpus browse; each row carries an add-to-list picker.
- *   - My lists — the unified list manager. Deep-linkable via `?tab=lists`
- *     (consumed once on mount — the param is a hint, not a contract), which
- *     is what the LEARN flashcards page links to.
+ *   1. My Lists (F-052) — the canonical list manager (components/
+ *      MyVocabLists), moved to the TOP of the page. The `?tab=lists` deep
+ *      link (LEARN flashcards still emits it) simply lands here — lists are
+ *      the first thing on the page, so the param needs no handling.
+ *   2. My Uploads (F-053) — vocab saved from the user's book uploads,
+ *      grouped by source upload; rendered ONLY when such items exist (see
+ *      `SavedFromUploads` — the backend can't supply this yet).
+ *   3. This Week — the suggest-only strip, VOCAB ONLY (F-047: grammar
+ *      content left this page; the library has a Grammar tab).
+ *   4. Browse — the curated corpus. Genre + difficulty DROPDOWN filters
+ *      (F-049, FilterSelect) sit above the list; the list windows 15 rows
+ *      with show-more to 30 (F-051, usePagination + ShowMore), and the
+ *      server pager appears once the window is fully expanded. Each row
+ *      keeps its add-to-list picker, which now also offers "create a list"
+ *      inline (F-048 — create + add in one round-trip via seed_entry_ids).
  *
- * The "This Week" suggestion strip renders above the views — a transitional
- * home after the Reference dissolution; decision D4 moves the suggestion
- * function into the LEARN pages in P4.
+ * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
  * Threat model: the search box is user-controlled — the server Zod-validates
  * `q` and parameterises the SQL; strings render through React text children;
  * the client's defence is RATE (debounce + per-fetch abort). List mutations
- * ride the `SameSite=Strict` session cookie (services/api.ts).
+ * ride the `SameSite=Strict` session cookie (services/api.ts). The filter
+ * dropdowns are closed vocabularies validated at the select boundary
+ * (`toDomainFilter` / `toLevelFilter`) — an out-of-vocabulary value
+ * degrades to 'all', never reaches the wire.
  */
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type JSX,
 } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Eyebrow } from '../../components/Eyebrow';
-import { Icon } from '../../components/Icon';
 import {
-  FilterGroup,
-  Pager,
-  SearchBox,
-} from '../../components/LibraryControls';
+  FilterSelect,
+  type FilterSelectOption,
+} from '../../components/FilterSelect';
+import { Icon } from '../../components/Icon';
+import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { MyVocabLists } from '../../components/MyVocabLists';
 import { Sheet } from '../../components/Sheet';
+import { ShowMore } from '../../components/ShowMore';
 import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
 import { Topbar } from '../../components/Topbar';
 import { WeeklySuggestions } from '../../components/WeeklySuggestions';
 import { useToast } from '../../components/useToast';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
+import { usePagination } from '../../hooks/usePagination';
 import {
   DOMAIN_FILTERS,
   PAGE_SIZE,
-  VOCAB_LEVEL_FILTERS,
   type DomainFilter,
   type LevelFilter,
 } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { navItem } from '../../lib/nav';
 import * as vocabService from '../../services/vocab';
 import { ApiError } from '../../services/api';
-import type { ServerVocabList, VocabEntry } from '../../types/domain';
+import type {
+  BookLevel,
+  ContentDomain,
+  ServerVocabList,
+  VocabEntry,
+} from '../../types/domain';
+import './ReviewVocab.css';
 
-type View = 'browse' | 'lists';
+/** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
+ *  tab to "Library"), so the eyebrow and back label can never go stale. */
+const LIBRARY_NAV = navItem('review');
 
-const VIEWS: ReadonlyArray<{ id: View; label: string; kr: string }> = [
-  { id: 'browse', label: 'Browse', kr: '둘러보기' },
-  { id: 'lists', label: 'My lists', kr: '내 단어장' },
+// ─────────────────────────────────────────────────────────────
+// F-049 filter vocabularies — closed lists mirroring the server enums
+// ─────────────────────────────────────────────────────────────
+
+/** Genre dropdown options — every genre (`content_domain`), minus the 'all'
+ *  sentinel (FilterSelect's placeholder `''` IS the "all" state). */
+const GENRE_OPTIONS: ReadonlyArray<FilterSelectOption> = DOMAIN_FILTERS.filter(
+  (f) => f.id !== 'all',
+).map((f) => ({ value: f.id, label: f.label }));
+
+/**
+ * Difficulty dropdown options — all 3 `book_level` bands (F-049). The
+ * curated corpus carries only beginner/intermediate rows today, so
+ * 'advanced' returns an honest empty state rather than a 400 — the server
+ * enum accepts all three.
+ */
+const DIFFICULTY_OPTIONS: ReadonlyArray<FilterSelectOption> = [
+  { value: 'beginner', label: 'Beginner' },
+  { value: 'intermediate', label: 'Intermediate' },
+  { value: 'advanced', label: 'Advanced' },
 ];
 
-function isView(value: string | null): value is View {
-  return value !== null && VIEWS.some((v) => v.id === value);
+const BOOK_LEVELS: ReadonlyArray<BookLevel> = [
+  'beginner',
+  'intermediate',
+  'advanced',
+];
+
+/** Select-boundary guard: FilterSelect emits a raw string ('' = placeholder).
+ *  Anything outside the closed genre vocabulary collapses to 'all'. */
+function toDomainFilter(value: string): DomainFilter {
+  return DOMAIN_FILTERS.some((f) => f.id !== 'all' && f.id === value)
+    ? (value as ContentDomain)
+    : 'all';
 }
 
-/** Old Reference `?tab=` values that should land on the lists view. */
-function initialView(tabParam: string | null): View {
-  if (isView(tabParam)) return tabParam;
-  return 'browse';
+/** Select-boundary guard for the difficulty dropdown — same contract. */
+function toLevelFilter(value: string): LevelFilter {
+  return BOOK_LEVELS.some((l) => l === value)
+    ? (value as BookLevel)
+    : 'all';
 }
 
 export default function ReviewVocab(): JSX.Element {
-  // Initial view honours the `?tab=lists` deep link (from /learn/vocab and
-  // the retired /reference shim); later switches are local state only.
-  const [searchParams] = useSearchParams();
-  const [view, setView] = useState<View>(() =>
-    initialView(searchParams.get('tab')),
-  );
-
   return (
     <section
       className="screen km-reference km-resources"
       aria-labelledby="km-review-vocab-title"
     >
+      {/* F-024 — nested library sub-page: deterministic back to the index. */}
+      <BackButton to="/review" label={LIBRARY_NAV.label} />
+
       <Topbar
         krTitle="단어"
         title="Vocabulary"
         titleId="km-review-vocab-title"
-        eyebrow={<Bilingual en="Review library" kr="복습 자료실" />}
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
       />
 
       <LibrarySubnav />
 
-      <WeeklySuggestions />
-
-      <div
-        className="km-review__tabs km-resources__tabs"
-        role="tablist"
-        aria-label="Vocabulary section"
+      {/* F-052 — My Lists leads the page. */}
+      <section
+        className="km-vocab__section"
+        aria-labelledby="km-vocab-lists-h"
       >
-        {VIEWS.map((v) => {
-          const selected = view === v.id;
-          return (
-            <button
-              key={v.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
-              onClick={() => {
-                setView(v.id);
-              }}
-            >
-              <Bilingual en={v.label} kr={v.kr} compact />
-            </button>
-          );
-        })}
-      </div>
+        <h2 id="km-vocab-lists-h" className="km-review__sectionTitle">
+          <Bilingual en="My lists" kr="내 단어장" />
+        </h2>
+        <MyVocabLists />
+      </section>
 
-      {view === 'browse' ? <VocabBrowse /> : null}
-      {view === 'lists' ? <MyVocabLists /> : null}
+      {/* F-053 — saved-from-uploads vocab, grouped by upload (conditional). */}
+      <SavedFromUploads />
+
+      {/* F-047 — vocab picks only; grammar suggestions live on the Grammar
+          tab's side of the library now. */}
+      <WeeklySuggestions showGrammar={false} />
+
+      <section
+        className="km-vocab__section"
+        aria-labelledby="km-vocab-browse-h"
+      >
+        <h2 id="km-vocab-browse-h" className="km-review__sectionTitle">
+          <Bilingual en="Browse the corpus" kr="말뭉치 둘러보기" />
+        </h2>
+        <VocabBrowse />
+      </section>
     </section>
   );
 }
 
 // ─────────────────────────────────────────────────────────────
-// Browse — curated corpus, searchable + paginated (F-003 filters)
+// F-053 — "My uploads" (saved-from-upload vocab, grouped by upload)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * F-053 contract: show vocab the user SAVED from their book uploads (tap a
+ * word in an upload → add it to a list → it files here), grouped by source
+ * upload — and render the section ONLY when such items exist.
+ *
+ * Backend audit (P3B): no endpoint can supply this data today —
+ *   - `POST /vocab/mine` (the tap-a-word save path) records NO upload
+ *     provenance: it upserts a shared `user_mined` entry keyed by
+ *     krdict-id/lemma only (server/src/routes/vocab.ts).
+ *   - `GET /vocab/entries?source_upload_id=` returns the SHARED corpus rows
+ *     a digitized book tagged (U3a) — words extracted FROM the book, not
+ *     words the user chose to save.
+ *   - `vocab_list_entries` rows carry no upload provenance either
+ *     (server/src/routes/vocabLists.ts, migration 049 XOR columns).
+ *
+ * So the honest render is nothing: the "only shown IF such saved items
+ * exist" condition is false for every user until a saved-from-uploads
+ * endpoint lands (ticket F-107: record provenance on the save paths +
+ * `GET /vocab/saved-from-uploads`). Wiring this section to the U3a
+ * tagged-rows query instead would fabricate "saved" semantics the data
+ * doesn't have.
+ */
+function SavedFromUploads(): JSX.Element | null {
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Browse — curated corpus, searchable; F-049 dropdown filters + F-051 window
 // ─────────────────────────────────────────────────────────────
 
 function VocabBrowse(): JSX.Element {
@@ -150,22 +219,40 @@ function VocabBrowse(): JSX.Element {
   const [reloadTick, setReloadTick] = useState(0);
   // Add-to-list target row — opens the picker Sheet.
   const [addTarget, setAddTarget] = useState<VocabEntry | null>(null);
-  // F-003 filters: genre (content_domain) + difficulty (book_level). 'all'
+  // F-049 filters: genre (content_domain) + difficulty (book_level). 'all'
   // omits the param so the endpoint returns every row.
   const [domain, setDomain] = useState<DomainFilter>('all');
   const [level, setLevel] = useState<LevelFilter>('all');
-  // U1 scaffolding — sort-by-source filter (see SourceFilterRow's header
-  // doc). Inert until U2 tags vocab_entries with source_upload_id.
+  // U1/U3a — sort-by-source filter (see SourceFilterRow's header doc).
   const [source, setSource] = useState<string>(ALL_SOURCES);
   const ctrlRef = useRef<AbortController | null>(null);
 
-  // Reset to the first page whenever the query or a filter changes so the
-  // pager never points past the new result set. Sync-to-derived-state on a
-  // key change — same documented exception the hooks use.
+  // F-051 — client window over the fetched server page: 15 visible, one
+  // show-more step to the 30-row cap (= PAGE_SIZE, so a fully expanded
+  // window shows exactly the fetched page).
+  const {
+    visible,
+    canShowMore,
+    showMore,
+    reset: resetWindow,
+    remaining,
+  } = usePagination<VocabEntry>(rows);
+
+  // Reset to the first page AND collapse the window whenever the query or a
+  // filter changes, so neither the pager nor the window points past the new
+  // result set. Sync-to-derived-state on a key change — same documented
+  // exception the hooks use.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setOffset(0);
-  }, [q, domain, level, source]);
+    resetWindow();
+  }, [q, domain, level, source, resetWindow]);
+
+  // Collapse the window on a server-page move too (Prev/Next) — a new page
+  // must never open pre-expanded.
+  useEffect(() => {
+    resetWindow();
+  }, [offset, resetWindow]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -221,18 +308,27 @@ function VocabBrowse(): JSX.Element {
         placeholder="Search the 2,000 corpus"
         ariaLabel="Search vocabulary"
       />
-      <FilterGroup
-        ariaLabel="Filter vocabulary by topic"
-        options={DOMAIN_FILTERS}
-        value={domain}
-        onChange={setDomain}
-      />
-      <FilterGroup
-        ariaLabel="Filter vocabulary by level"
-        options={VOCAB_LEVEL_FILTERS}
-        value={level}
-        onChange={setLevel}
-      />
+      {/* F-049 — dropdown filters ABOVE the list. FilterSelect is a labelled
+          native select; '' (the "All" placeholder) maps to the 'all'
+          sentinel through the boundary guards. */}
+      <div className="km-vocab__filters">
+        <FilterSelect
+          label="Genre"
+          options={GENRE_OPTIONS}
+          value={domain === 'all' ? '' : domain}
+          onChange={(v) => {
+            setDomain(toDomainFilter(v));
+          }}
+        />
+        <FilterSelect
+          label="Difficulty"
+          options={DIFFICULTY_OPTIONS}
+          value={level === 'all' ? '' : level}
+          onChange={(v) => {
+            setLevel(toLevelFilter(v));
+          }}
+        />
+      </div>
       <SourceFilterRow
         ariaLabel="Filter vocabulary by source book"
         value={source}
@@ -260,7 +356,7 @@ function VocabBrowse(): JSX.Element {
         <>
           <Card className="km-reference__list" variant="flat">
             <ul>
-              {rows.map((entry) => (
+              {visible.map((entry) => (
                 <li key={`vocab:${String(entry.id)}`} className="km-reference__row">
                   <div className="km-resources__entry-row">
                     <span className="kr km-reference__row-kr">
@@ -288,17 +384,30 @@ function VocabBrowse(): JSX.Element {
               ))}
             </ul>
           </Card>
-          <Pager
-            offset={offset}
-            pageSize={PAGE_SIZE}
-            total={total}
-            onPrev={() => {
-              setOffset((o) => Math.max(0, o - PAGE_SIZE));
-            }}
-            onNext={() => {
-              setOffset((o) => o + PAGE_SIZE);
-            }}
+          {/* F-051 — reveal 16–30 of the fetched page. `remaining` comes from
+              the hook (never `total - visible`), so the label never
+              over-promises rows the capped window can't reach. */}
+          <ShowMore
+            canShowMore={canShowMore}
+            onShowMore={showMore}
+            remaining={remaining}
           />
+          {/* The server pager appears only once the window is fully expanded:
+              its "N–M of T" range then matches EXACTLY what is on screen
+              (a "1–30" readout over 15 visible rows would over-claim). */}
+          {!canShowMore ? (
+            <Pager
+              offset={offset}
+              pageSize={PAGE_SIZE}
+              total={total}
+              onPrev={() => {
+                setOffset((o) => Math.max(0, o - PAGE_SIZE));
+              }}
+              onNext={() => {
+                setOffset((o) => o + PAGE_SIZE);
+              }}
+            />
+          ) : null}
         </>
       )}
 
@@ -313,7 +422,7 @@ function VocabBrowse(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Add-to-list Sheet — pick a list to add a vocab row into
+// Add-to-list Sheet — pick (or create, F-048) a list for a vocab row
 // ─────────────────────────────────────────────────────────────
 
 interface AddToListSheetProps {
@@ -327,12 +436,18 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<number | null>(null);
+  // F-048 — inline "create a list" state. Creating from here seeds the list
+  // with the tapped entry (`seed_entry_ids`) so create + add is ONE
+  // round-trip, not create-then-hunt-for-the-list.
+  const [newListName, setNewListName] = useState('');
+  const [creating, setCreating] = useState(false);
   const ctrlRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (entry === null) {
       setLists([]);
       setError(null);
+      setNewListName('');
       return;
     }
     const ctrl = new AbortController();
@@ -388,7 +503,31 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
     [entry, onClose, toast],
   );
 
-  const krLabel = useMemo(() => entry?.korean ?? '', [entry]);
+  // F-048 — create a NEW list seeded with this entry (one POST).
+  const createAndAdd = useCallback(async (): Promise<void> => {
+    if (entry === null || creating) return;
+    const name = newListName.trim();
+    if (!name) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await vocabService.createList({
+        name_kr: name,
+        kind: 'vocab',
+        seed_entry_ids: [entry.id],
+      });
+      toast({
+        message: `Created ${res.list.name_kr} — word added.`,
+        tone: 'success',
+      });
+      setNewListName('');
+      onClose();
+    } catch (err) {
+      setError(errorMessageFor(err, 'Could not create the list.'));
+    } finally {
+      setCreating(false);
+    }
+  }, [entry, creating, newListName, onClose, toast]);
 
   return (
     <Sheet open={entry !== null} onClose={onClose} ariaLabel="Add to a list">
@@ -398,7 +537,9 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
             <Eyebrow>
               <Bilingual en="Add to list" kr="목록에 추가" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">{krLabel}</div>
+            <div className="kr-display km-review__sheetTitle">
+              {entry?.korean ?? ''}
+            </div>
             <div className="km-review__sheetMeta">{entry?.english ?? ''}</div>
           </div>
           <Button
@@ -422,8 +563,8 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
         {!loading && lists.length === 0 && !error ? (
           <p className="km-reference__empty">
             <Bilingual
-              en="No lists yet — create one in the My lists view first."
-              kr="아직 목록이 없어요 — 내 단어장에서 먼저 만들어 주세요."
+              en="No lists yet — create one below."
+              kr="아직 목록이 없어요 — 아래에서 만들어 주세요."
             />
           </p>
         ) : null}
@@ -451,6 +592,43 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
             ))}
           </ul>
         ) : null}
+
+        {/* F-048 — create a list right here; the new list is seeded with
+            this word. */}
+        <div className="km-vocab__sheetCreate">
+          <input
+            type="text"
+            value={newListName}
+            onChange={(e) => {
+              setNewListName(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void createAndAdd();
+              }
+            }}
+            placeholder="New list name (Korean)"
+            className="kr focusring km-resources__create-input"
+            aria-label="Name for the new list"
+            maxLength={120}
+            disabled={creating}
+          />
+          <Button
+            variant="gold"
+            size="sm"
+            onClick={() => {
+              void createAndAdd();
+            }}
+            disabled={newListName.trim().length === 0 || creating}
+          >
+            {creating ? (
+              <Bilingual en="Creating…" kr="만드는 중…" compact />
+            ) : (
+              <Bilingual en="Create list" kr="목록 만들기" compact />
+            )}
+          </Button>
+        </div>
       </div>
     </Sheet>
   );
