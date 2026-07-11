@@ -1369,7 +1369,7 @@ Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/
 - **What:** `Deploy/set-km-app-password.sh`'s verify step runs `SELECT current_user || chr(58) || (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)` and string-compares the result to `'km_app:f'`. But `||`-concatenating a boolean casts it to text as **`'false'`**, not `'f'` (the `-tA` short form only applies to a bool *column*, not one concatenated into a string), so the check yields `'km_app:false'` and the script `return 1`s — even though km_app is correctly set up and authenticates. Hit live during the Wave-1 deploy (2026-07-11); worked around by continuing the runbook manually after confirming km_app auth by hand. **Fix:** compare against `'km_app:false'`, OR change the query to `... rolsuper::text = 'false'` / select the bool as a column. Every future deploy aborts at this step until fixed.
 
 ### F-127 · Global entry point (FAB) for the beta ticketing page
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done (shipped Wave 1) · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** F-023's `/tickets` page currently has a single entry point — a "Beta feedback" tile in Settings. For beta testers to report from anywhere, add a more prominent global entry (a `ChatFab`-style floating button, mirroring `components/ChatFab.tsx`) that opens `/tickets`. The Settings tile stays as the canonical entry per the F-023 spec; this is discoverability polish. Referenced in `App.tsx` + `Settings.tsx` code comments.
 
 ---
