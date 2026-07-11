@@ -1,10 +1,11 @@
 /**
- * ReviewLibrary — the /review library index (P1.2 assembly).
+ * ReviewLibrary — the /review Library landing (Overhaul P3B, F-042/F-043).
  *
- * A directory page over REAL library routes: link rows navigate to
- * /review/mistakes, /review/vocab, /review/dictionary, /review/grammar;
- * the quick-launch hot-buttons jump into the LEARN flow; coming-soon rows
- * (past exams, uploads) are designed inert placeholders.
+ * Four sections in fixed order — Vocabulary → Grammar → TOPIK exams →
+ * Uploads — each navigating to its real route (TOPIK exams lands on
+ * Mistakes until a dedicated past-exams surface ships). The P1.2 extras
+ * (quick-launch LEARN chips, standalone Mistakes/Dictionary rows, the
+ * interim Scan-images row, "coming soon" placeholders) are gone.
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -41,99 +42,103 @@ function renderLibrary(): void {
   );
 }
 
-describe('ReviewLibrary (P1.2 index)', () => {
-  it('renders the library title and all seven rows', () => {
+describe('ReviewLibrary (P3B landing)', () => {
+  it('F-043: titles the page "Library" via the nav manifest pair', () => {
     renderLibrary();
     expect(
-      screen.getByRole('heading', { level: 1, name: '복습 · Review' }),
+      screen.getByRole('heading', { level: 1, name: '자료실 · Library' }),
     ).toBeInTheDocument();
-    const list = screen.getByRole('list', { name: 'Review library' });
-    expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(7);
+    // The retired title must not linger anywhere on the page.
+    expect(screen.queryByText('Review')).not.toBeInTheDocument();
+    expect(screen.queryByText('복습')).not.toBeInTheDocument();
   });
 
-  it('P3b: the eyebrow and directory rows render Korean in both-mode', () => {
+  it('renders the manifest eyebrow pair (contents summary, both scripts)', () => {
     renderLibrary();
-    // Topbar eyebrow — the nav manifest pair (Library · 자료실).
-    expect(screen.getByText('자료실')).toBeInTheDocument();
-    expect(screen.getByText('Library')).toBeInTheDocument();
-    // Rows render their en/kr pair through <Bilingual> (both halves present).
-    const list = screen.getByRole('list', { name: 'Review library' });
-    expect(within(list).getByText('틀린 문제')).toBeInTheDocument();
-    expect(within(list).getByText('Mistakes')).toBeInTheDocument();
-    expect(within(list).getByText('기출 시험')).toBeInTheDocument();
+    expect(
+      screen.getByText('Vocabulary · grammar · exams · uploads'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('단어 · 문법 · 기출 · 업로드')).toBeInTheDocument();
   });
 
-  it('links Mistakes to its re-homed /review/mistakes path', async () => {
-    const user = userEvent.setup();
+  it('F-042: exactly four sections, in order Vocabulary → Grammar → TOPIK exams → Uploads', () => {
     renderLibrary();
-    await user.click(screen.getByRole('button', { name: /Mistakes/ }));
-    expect(screen.getByTestId('location')).toHaveTextContent('/review/mistakes');
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    const rowText = within(list)
+      .getAllByRole('button')
+      .map((b) => b.textContent ?? '');
+    expect(rowText).toHaveLength(4);
+    expect(rowText[0]).toContain('Vocabulary');
+    expect(rowText[1]).toContain('Grammar');
+    expect(rowText[2]).toContain('TOPIK exams');
+    expect(rowText[3]).toContain('Uploads');
   });
 
   it.each([
     ['Vocabulary', '/review/vocab'],
-    ['Dictionary', '/review/dictionary'],
     ['Grammar', '/review/grammar'],
-  ])(
-    'links %s to its first-class library route %s (Reference dissolved)',
-    async (label, target) => {
-      const user = userEvent.setup();
-      renderLibrary();
-      // Scope to the directory list — the quick-launch chips reuse similar
-      // wording ("Vocab flashcards", "Grammar drill").
-      const list = screen.getByRole('list', { name: 'Review library' });
-      await user.click(
-        within(list).getByRole('button', { name: new RegExp(label) }),
-      );
-      expect(screen.getByTestId('location')).toHaveTextContent(target);
-    },
-  );
-
-  it('gives /images its interim entry point — "Scan images" navigates there (QA O-1/B-1)', async () => {
-    // The page was orphaned when the More sheet retired; this row is the
-    // reachability fix until the P4 IA decision. If the row is removed
-    // without a replacement entry point, this test must fail.
+    ['TOPIK exams', '/review/mistakes'],
+    ['Uploads', '/uploads'],
+  ])('navigates the %s section to %s on tap', async (label, target) => {
     const user = userEvent.setup();
     renderLibrary();
-    const list = screen.getByRole('list', { name: 'Review library' });
-    const row = within(list).getByRole('button', { name: /Scan images/ });
-    expect(row).toHaveTextContent('이미지 스캔');
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    await user.click(
+      within(list).getByRole('button', { name: new RegExp(label) }),
+    );
+    expect(screen.getByTestId('location')).toHaveTextContent(target);
+  });
+
+  it('the TOPIK exams shelf lands on Mistakes (no dedicated past-exams surface yet)', async () => {
+    // Deliberate stub-wiring (F-042): Mistakes is the one exams surface
+    // that exists; the dedicated past-exams page is a reported follow-up
+    // ticket. When it ships, this section's target changes and this test
+    // must be updated with it.
+    const user = userEvent.setup();
+    renderLibrary();
+    const row = screen.getByRole('button', { name: /TOPIK exams/ });
+    expect(row).toHaveTextContent('기출 시험');
     await user.click(row);
-    expect(screen.getByTestId('location')).toHaveTextContent('/images');
+    expect(screen.getByTestId('location')).toHaveTextContent('/review/mistakes');
   });
 
-  it.each([
-    ['Vocab flashcards', '/learn/vocab'],
-    ['Grammar drill', '/learn/grammar'],
-  ])(
-    'quick-launch hot-button %s jumps into the LEARN flow at %s',
-    async (label, target) => {
-      const user = userEvent.setup();
-      renderLibrary();
-      const quick = screen.getByRole('group', { name: 'Quick launch' });
-      await user.click(within(quick).getByRole('button', { name: new RegExp(label) }));
-      expect(screen.getByTestId('location')).toHaveTextContent(target);
-    },
-  );
-
-  it('renders past-exams and uploads as inert "Coming soon" rows', () => {
+  it('renders each section bilingually with its contents description', () => {
     renderLibrary();
-    expect(screen.getByText('Past TOPIK exams')).toBeInTheDocument();
-    expect(screen.getByText('Uploads')).toBeInTheDocument();
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
-    // Placeholders are not buttons — nothing to activate.
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    // Titles carry both scripts (both-mode default renders "kr · en").
+    expect(within(list).getByText('단어')).toBeInTheDocument();
+    expect(within(list).getByText('Vocabulary')).toBeInTheDocument();
+    // Description line: compact bilingual — Korean visible in ko-primary
+    // both-mode, the English half preserved in the accessible reading.
+    // (`getAllByText`: the compact variant renders the visible segment AND
+    // an sr-only copy carrying the same Korean string.)
+    expect(within(list).getAllByText('말뭉치 · 내 단어장')).not.toHaveLength(0);
+    expect(within(list).getByText('Corpus · my lists')).toBeInTheDocument();
+    expect(within(list).getAllByText('틀린 문제 · 기출')).not.toHaveLength(0);
+  });
+
+  it('F-042: the removed P1.2 surfaces are gone — chips, extra rows, placeholders', () => {
+    renderLibrary();
+    // Quick-launch hot-buttons into LEARN: removed (the hexagon owns LEARN).
     expect(
-      screen.queryByRole('button', { name: /Past TOPIK exams/ }),
+      screen.queryByRole('group', { name: 'Quick launch' }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Uploads/ })).not.toBeInTheDocument();
-  });
-
-  it('no row points at the retired /reference page', () => {
-    renderLibrary();
-    // The P1.1 placeholder linked rows to /reference?tab=… — those links are
-    // gone with the dissolution (the shim still redirects old bookmarks).
-    for (const btn of screen.getAllByRole('button')) {
-      expect(btn.getAttribute('href') ?? '').not.toContain('/reference');
-    }
+    expect(
+      screen.queryByRole('button', { name: /flashcards/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /drill/i }),
+    ).not.toBeInTheDocument();
+    // Standalone Dictionary + interim Scan-images rows: removed (Dictionary
+    // stays reachable via LibrarySubnav on the browse sub-pages).
+    expect(screen.queryByText('Dictionary')).not.toBeInTheDocument();
+    expect(screen.queryByText('Scan images')).not.toBeInTheDocument();
+    // Inert "coming soon" placeholders: removed — every row navigates.
+    expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
+    expect(screen.queryByText('준비 중')).not.toBeInTheDocument();
+    // Nothing else is interactive: the four section rows are the ONLY
+    // buttons on the page.
+    expect(screen.getAllByRole('button')).toHaveLength(4);
   });
 });
