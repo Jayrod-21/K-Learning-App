@@ -1,0 +1,95 @@
+/*
+ * Settings page (Phase 3a) — page-scoped styles.
+ *
+ * Colocated with Settings.tsx (never index.css — the global sheet is shared
+ * mutable state across parallel feature branches). Legacy .km-settings__*
+ * rules still live in index.css; ONLY the Phase-3a additions live here.
+ * Tokens only, so both themes and every accent preset come free.
+ */
+
+/* F-038 — the group Card is now a CollapsibleTile. The tile owns its own
+ * header/content padding; the legacy `.km-settings__group` padding would
+ * double it. Two-class specificity so this wins regardless of sheet order. */
+.km-settings__group.km-collapsible {
+  padding: 0;
+}
+
+/* The group head renders INSIDE the tile's header button now — its legacy
+ * below-header margin would push the chevron row apart. */
+.km-collapsible__header .km-settings__group-head {
+  margin-bottom: 0;
+}
+
+/* Mock (🅂) marker — was an inline style on the old header; now a class so
+ * the header button stays style-free. */
+.km-settings__group-mock {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* ── Notification schedules (F-040) ───────────────────────────── */
+
+.km-settings__sched-note {
+  margin: 0 0 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--paper-mute);
+}
+
+.km-settings__sched-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.km-settings__sched-row--last {
+  border-bottom: none;
+}
+
+/* The inert SMS preview (.km-settings__sched-row--placeholder) deliberately
+ * gets NO row-level opacity: dimming the whole subtree would drag the 11px
+ * --paper-mute hint text below the 4.5:1 AA threshold (WCAG 1.4.3 exempts
+ * disabled CONTROLS, not the copy explaining them). Its disabled look comes
+ * from the per-control :disabled rule below plus the "Coming soon" badge —
+ * the label and hint text keep their full-contrast tokens. The class stays
+ * on the row in Settings.tsx as the semantic hook for that state. */
+
+.km-settings__sched-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.km-settings__sched-field {
+  padding: 8px 10px;
+  border-radius: 3px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.km-settings__sched-field:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.km-settings__sched-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-mute);
+}

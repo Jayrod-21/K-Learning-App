@@ -1189,6 +1189,38 @@ New tickets from Phase 0:
 - **Fix hint:** New seed migration (add-only INSERTs into `writing_prompts` with `rubric` + `is_active`) — content work, not code. Keep prompt lengths well under the DB CHECK ceilings.
 - **Notes:** Deferred from the P2-G3 /fixpass (B-027 Phase-0 note: "add prompt content depth").
 
+### F-097 · App-wide dead-CSS sweep of the shared `index.css` global sheet
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (HYGIENE) · **Beta:** —
+- **What:** The shared `client/src/styles/index.css` accumulates orphaned rule blocks whenever a page rework deletes markup, because parallel branches deliberately avoid editing the shared sheet mid-flight. Phase 3A's fix-pass swept the settings-channel/toggle and `.km-today__queue*` orphans, but `.km-progress__trendKr` (pre-existing on `rebuild`, out of the 3A diff scope) remains. Do one deliberate sweep of the whole sheet for classes with zero `.tsx` consumers.
+- **Fix hint:** Grep each `.km-*` selector against the client tree; delete only zero-consumer blocks. Distinct from **F-086** (px→rem migration) — this is dead-rule removal, not unit conversion.
+
+### F-098 · BEM element-casing convention + mechanical rename
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (CONSISTENCY) · **Beta:** —
+- **What:** BEM element casing drifts per page — Settings is kebab-case (`__sched-row`), Today is camelCase (`__tileIcon`), Progress mixes both. Pick one convention (kebab-case recommended, it dominates the older pages), document it, and mechanically rename. Deferred from the Phase 3A /fixpass as high-churn / low-value to do inline; worth doing before Phase 3B compounds it.
+
+### F-099 · Grammar-mastery read route (server) for the Progress Grammar tab
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API, UI) · **Beta:** —
+- **What:** Progress's F-032 mastery tabs ship Words + Hanja live, but the Grammar tab shows an honest "coming soon" placeholder because no `/grammar/mastery`-style aggregate read route exists yet (P4 plan of record). Build the read route (FSRS bucket counts over the user's grammar cards) and wire the tab — the client already reserves the panel for real data.
+- **Notes:** Pairs with F-063 (grammar-mastery model). Progress Grammar tab is wired to accept a real panel with no further client rework.
+
+### F-100 · Fix the stale `nav.ts` Uploads comment (fold into F-057–F-059)
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (DOC) · **Beta:** —
+- **What:** After F-039 removed Uploads from Settings, a comment in `client/src/lib/nav.ts` (~line 280) still says the Uploads page is "reached from Settings → Uploads." Left untouched during Phase 3A to avoid a shared-file edit across parallel branches. Fix it when `nav.ts` is next open — naturally, when Review→Uploads (F-057–F-059) lands and re-homes the entry point.
+
+### F-101 · Carry a Today-generated writing topic into the Writing screen (F-027 → F-073 page half)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **What:** The Today Writing tile's Claude-generated topic (F-027, `POST /writing/generate`) is currently display-only — the server persists nothing. Add the page-side half of F-073: carry a generated topic into `/learn/writing` (via `location.state`) so the user can actually write against it and have it graded. Build-once/surface-twice: the `WritingTopicGenerator` component is already reusable on the Writing screen.
+
+---
+
+## ✅ Phase 3A — Core surfaces (Today · Progress · Settings) — DONE, PR pending
+
+Delivered on `feat/phase3a-core-surfaces`, full 4-phase /fixpass PASS (re-review 10 FIXED / 0 regressions), full client suite 1305/1305.
+- **Today:** F-026 ✅ (vocab/grammar lead carousel) · B-018 ✅ (grammar tile → real page, no "coming soon") · F-027 ✅ (Claude generate-topic, TOPIK/general) · F-028 ✅ (TOPIK carousel reorder + corner resume banner) · F-029 ✅ (all carousels loop) · F-024 ⏭️ n/a (no nested sub-views) · **B-019 still 🔴 BLOCKED** on the rebuilt Reading page (F-067–F-070); Reading tile behavior preserved verbatim.
+- **Progress:** F-030 ✅ (where-you-stand carousel: trend→vs→all) · F-031 ✅ (word-mastery pagination) · F-032 ✅ (Word/Grammar/Hanja mastery tabs; Grammar tab awaits F-099) · F-041 ✅ (Hanja Mastery, aggregate-only pending F-075 per-character list).
+- **Settings:** F-038 ✅ (collapsible tiles, collapsed default) · F-039 ✅ (Uploads removed — ⚠️ **PRE-DEPLOY BLOCKER: F-057–F-059 Review→Uploads must land before deploy**, else uploads are only reachable by typing /uploads) · F-040 ✅ (per-type notification timing + SMS placeholder).
+- **New tickets filed:** F-097 (dead-CSS sweep) · F-098 (BEM casing) · F-099 (grammar-mastery route) · F-100 (nav.ts comment) · F-101 (F-027→F-073 page half).
+
 ---
 
 <!-- Templates — copy when adding items.

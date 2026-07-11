@@ -1,26 +1,34 @@
 /**
- * Today — the action hub (Overhaul P1.2, Slice A): loading + rendered +
- * interaction.
+ * Today — the action hub (Overhaul P1.2, Slice A; P3a rework): loading +
+ * rendered + interaction.
  *
  * We mock `useEndpointOrMock` to control the data the screen reads. Both
  * fetches (today plan + the F-007 open-exam lookup) share the same hook, so
  * we dispatch on the `key` arg. Both are realFn-backed (`/plan/today`,
  * `/topik/attempt`); the hook mock here stands in for any source, so the
- * screen assertions hold regardless of which resolved. `services/topik` is
- * also mocked so the realFn closure can never touch the network.
+ * screen assertions hold regardless of which resolved. `services/topik` and
+ * `services/writing` are also mocked so no realFn/generator closure can
+ * touch the network.
  *
- * P1.2 contract pinned here: Today NO LONGER renders the F-017 stats
- * carousel or the compact SkillsCompare TOPIK-level snapshot (both moved to
- * Progress — see Progress.test.tsx); it DOES render the R/L/W task carousel,
- * the grammar-practice + TOPIK-recommendation placeholders, the open-exam
- * panel, and the review-mistakes shortcut.
+ * P3a contract pinned here:
+ *   - F-026/B-018: the lead action is a looping "Review and drills" carousel
+ *     — vocab due-count tile → /learn/vocab, grammar drills tile →
+ *     /learn/grammar. NO "coming soon" placeholder survives anywhere.
+ *   - F-027: the Writing task page mounts the topic generator (full
+ *     component behavior covered in WritingTopicGenerator.test.tsx; the
+ *     integration + 429 copy are exercised here).
+ *   - F-028: the TOPIK carousel is recommended-study first (→ /learn/topik),
+ *     review-mistakes second (→ /review/mistakes; the old standalone
+ *     shortcut row is gone), with the saved-attempt resume banner in the
+ *     corner slot — present only when an attempt exists.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { TodayPlan } from '../types/domain';
 import type { AttemptState } from '../services/topik';
+import { ApiError } from '../services/api';
 
 // Hook mock — control loading + data per key. `vi.hoisted` is necessary
 // because `vi.mock` is hoisted above imports; sharing mutable state requires
@@ -28,23 +36,38 @@ import type { AttemptState } from '../services/topik';
 const hoisted = vi.hoisted(() => {
   type HookState =
     | { kind: 'loading' }
-    | { kind: 'data'; data: unknown };
+    | { kind: 'data'; data: unknown }
+    | { kind: 'error' };
   return {
-    today: { state: { kind: 'loading' } as HookState },
-    attempt: { state: { kind: 'loading' } as HookState },
+    today: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
+    attempt: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
   };
 });
 
 vi.mock('../hooks/useEndpointOrMock', () => ({
   useEndpointOrMock: (key: string) => {
-    const s = key === 'today' ? hoisted.today.state : hoisted.attempt.state;
+    const source = key === 'today' ? hoisted.today : hoisted.attempt;
+    const s = source.state;
     if (s.kind === 'loading') {
       return {
         data: null,
         loading: true,
         error: null,
         isMock: false,
-        refetch: () => undefined,
+        refetch: source.refetch,
+      };
+    }
+    if (s.kind === 'error') {
+      // PROD-shaped failure: no mock fallback — data stays null, the screen
+      // shows its error state. (Plain Error: the screen branches on `data`,
+      // never on the error's type.) `refetch` is a live spy so tests can
+      // assert the Retry button is actually WIRED, not merely rendered.
+      return {
+        data: null,
+        loading: false,
+        error: new Error('plan failed'),
+        isMock: false,
+        refetch: source.refetch,
       };
     }
     return {
@@ -52,7 +75,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       loading: false,
       error: null,
       isMock: true,
-      refetch: () => undefined,
+      refetch: source.refetch,
     };
   },
 }));
@@ -64,9 +87,21 @@ vi.mock('../services/topik', () => ({
   fetchAttempt: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
 
+// The F-027 generator calls this directly (not via the hook) — mocked so the
+// generate flow is controllable and network-free.
+vi.mock('../services/writing', () => ({
+  generateWritingPrompt: vi.fn(() =>
+    Promise.reject(new Error('not wired in tests')),
+  ),
+}));
+
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
 import { Today } from './Today';
 import { getChatContext } from '../lib/chatContext';
+import { generateWritingPrompt } from '../services/writing';
+import type { GeneratedWritingPrompt } from '../services/writing';
+
+const generateMock = vi.mocked(generateWritingPrompt);
 
 const PLAN: TodayPlan = {
   reviewCount: 24,
@@ -97,15 +132,25 @@ const ATTEMPT: AttemptState = {
   updatedAt: '2026-07-01T09:00:00.000Z',
 };
 
+/** A Claude-authored topic, as POST /writing/generate returns it. */
+const GENERATED: GeneratedWritingPrompt = {
+  promptKr: '환경 보호를 위한 개인의 역할에 대해 쓰십시오.',
+  promptEn: 'Write about the individual’s role in protecting the environment.',
+  lengthHint: '600-700자',
+  mode: 'topik',
+  rubric: 'topik_ii_54',
+};
+
 function renderTodayAt(path = '/'): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/" element={<Today />} />
-        {/* Overhaul targets: the review-queue CTA lands on the re-homed
-            flashcards page; task tiles land on /learn/*; the exam panel on
-            /learn/topik; the shortcut row on /review/mistakes. */}
+        {/* Overhaul targets: lead-carousel tiles land on /learn/vocab and
+            /learn/grammar; task tiles on /learn/*; the TOPIK carousel on
+            /learn/topik and /review/mistakes. */}
         <Route path="/learn/vocab" element={<div>FLASHCARDS PAGE</div>} />
+        <Route path="/learn/grammar" element={<div>GRAMMAR PAGE</div>} />
         <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
         <Route path="/learn/topik" element={<div>TOPIK PAGE</div>} />
         <Route path="/review/mistakes" element={<div>MISTAKES PAGE</div>} />
@@ -120,16 +165,29 @@ function loadDefaults(): void {
   hoisted.attempt.state = { kind: 'data', data: null };
 }
 
+/** Bring the Writing task page on-screen (page 3 — off-screen pages are
+ *  aria-hidden + inert) and return the tasks region. */
+async function activateWritingPage(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<HTMLElement> {
+  const region = screen.getByRole('region', { name: "Today's tasks" });
+  await user.click(within(region).getByRole('tab', { name: 'Page 3 of 3' }));
+  return region;
+}
+
 describe('Today', () => {
   beforeEach(() => {
     // Every fetch starts pending; each test opts specific keys into data.
     hoisted.today.state = { kind: 'loading' };
     hoisted.attempt.state = { kind: 'loading' };
+    hoisted.today.refetch.mockClear();
+    hoisted.attempt.refetch.mockClear();
+    generateMock.mockReset();
+    generateMock.mockRejectedValue(new Error('not wired in tests'));
   });
 
   it('renders loading skeletons while the fetches are pending', () => {
     renderTodayAt();
-    // Skeleton cards + the exam panel's pending state announce aria-busy.
     const busy = document.querySelectorAll('[aria-busy="true"]');
     expect(busy.length).toBeGreaterThan(0);
     // Nothing is published to the chat-context store while loading — the
@@ -153,49 +211,127 @@ describe('Today', () => {
     expect(getChatContext()).toBeNull();
   });
 
-  it('renders the title, review queue lead, and the R/L/W task carousel when loaded', () => {
+  // ── Lead carousel: vocab + grammar (F-026 / B-018 / F-029) ──
+
+  it('renders the title and the lead Review-and-drills carousel with vocab + grammar pages', () => {
     loadDefaults();
     renderTodayAt();
 
     expect(
       screen.getByRole('heading', { level: 1, name: '오늘 · Today' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('24 cards due')).toBeInTheDocument();
 
-    // The three tasks are now carousel pages (reshaped from the old grid).
-    const region = screen.getByRole('region', { name: "Today's tasks" });
-    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    expect(lead).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(lead).getAllByRole('tab')).toHaveLength(2);
+
+    // Page 1 — the live vocab due count.
+    expect(within(lead).getByText('24 cards due')).toBeInTheDocument();
+    expect(within(lead).getByText('지금 복습')).toBeInTheDocument();
+    // Page 2 — the grammar drills tile exists in the DOM (off-screen).
+    expect(within(lead).getByText('Grammar drills')).toBeInTheDocument();
+  });
+
+  it('navigates to /learn/vocab (flashcards) when the vocab queue tile is clicked', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const cta = screen.getByRole('button', {
+      name: /Open review — 24 cards due/,
+    });
+    await user.click(cta);
+
+    expect(screen.getByText('FLASHCARDS PAGE')).toBeInTheDocument();
+  });
+
+  it('navigates to /learn/grammar from the grammar drills tile (B-018 — real page, not "coming soon")', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Grammar is lead-carousel page 2 — bring it on-screen via its dot
+    // first (off-screen pages are aria-hidden + inert).
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Open grammar drills' }),
+    );
+
+    expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
+  });
+
+  it('loops the lead carousel: a real forward swipe on the last page wraps to page 1 (F-029)', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    const viewport = lead.querySelector('.km-carousel__viewport');
+    expect(viewport).not.toBeNull();
+
+    // Drive Today.tsx's OWN carousel through the primitive's pointer state
+    // machine (same gesture as SwipeCarousel.test.tsx's swipeLeft helper) so
+    // dropping the `loop` prop from Today.tsx fails this test — the ticket's
+    // acceptance criterion is that THESE carousels loop, not just that the
+    // primitive can. Start on the LAST page (2 of 2), swipe forward…
+    fireEvent.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    const pointer = { pointerId: 7, isPrimary: true };
+    fireEvent.pointerDown(viewport!, {
+      ...pointer, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 140, clientY: 52 });
+    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 80, clientY: 55 });
+    fireEvent.pointerUp(viewport!, { ...pointer, clientX: 80, clientY: 55 });
+
+    // …and land wrapped on page 1 (without `loop` this damps at the edge).
     expect(
-      within(region).getAllByRole('tab'),
-    ).toHaveLength(3);
+      within(lead).getByRole('tab', { name: 'Page 1 of 2' }),
+    ).toHaveAttribute('aria-selected', 'true');
+  });
 
-    // All three task titles exist in the DOM (off-screen pages included).
-    expect(screen.getByText('도시화와 환경')).toBeInTheDocument();
-    expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
-    expect(screen.getByText(/Paragraph in/)).toBeInTheDocument();
-    // Largest gap pill on Listening tile.
-    expect(screen.getByText('Largest gap')).toBeInTheDocument();
-    // Register drill pill on Writing tile.
-    expect(screen.getByText('Register drill')).toBeInTheDocument();
+  it('renders NO coming-soon placeholder anywhere (B-018)', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
+    expect(screen.queryByText('준비 중')).not.toBeInTheDocument();
+    expect(screen.queryByText('Daily grammar drills')).not.toBeInTheDocument();
+  });
+
+  it('degrades a plan failure to an ErrorCard on the vocab page while the grammar tile keeps working', async () => {
+    hoisted.today.state = { kind: 'error' };
+    hoisted.attempt.state = { kind: 'data', data: null };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Vocab page (page 1, active) shows the honest error state.
+    expect(
+      screen.getByText("Today's plan is unavailable."),
+    ).toBeInTheDocument();
+    // The Retry button must be WIRED, not merely rendered: clicking it fires
+    // the plan hook's refetch (and only the plan's — the attempt lookup is a
+    // separate concern and must not be retried collaterally).
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
+    expect(hoisted.attempt.refetch).not.toHaveBeenCalled();
+
+    // The grammar tile has no plan dependency — still fully functional.
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Open grammar drills' }),
+    );
+    expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
   });
 
   it('no longer renders the stats carousel or the TOPIK-level snapshot (moved to Progress)', () => {
     loadDefaults();
     renderTodayAt();
 
-    // F-017 "Progress by skill" carousel — moved to the Progress page.
     expect(
       screen.queryByRole('region', { name: 'Progress by skill' }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/Progress by skill/),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('img', { name: /trend over the last/ }),
-    ).not.toBeInTheDocument();
-
-    // Compact SkillsCompare snapshot — its reference radiogroup and skill
-    // progressbars must be gone from Today.
+    expect(screen.queryByText(/Progress by skill/)).not.toBeInTheDocument();
     expect(
       screen.queryByRole('radiogroup', { name: 'Reference level' }),
     ).not.toBeInTheDocument();
@@ -210,17 +346,23 @@ describe('Today', () => {
     expect(screen.queryByText('1 cards due')).not.toBeInTheDocument();
   });
 
-  it('navigates to /learn/vocab (flashcards) when the review queue card is clicked', async () => {
+  // ── Tasks carousel (unchanged targets; loops per F-029) ─────
+
+  it('renders the R/L/W task carousel with per-task pills', () => {
     loadDefaults();
-    const user = userEvent.setup();
     renderTodayAt();
 
-    const cta = screen.getByRole('button', {
-      name: /Open review — 24 cards due/,
-    });
-    await user.click(cta);
+    const region = screen.getByRole('region', { name: "Today's tasks" });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(region).getAllByRole('tab')).toHaveLength(3);
 
-    expect(screen.getByText('FLASHCARDS PAGE')).toBeInTheDocument();
+    // All three task titles exist in the DOM (off-screen pages included).
+    expect(screen.getByText('도시화와 환경')).toBeInTheDocument();
+    expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
+    expect(screen.getByText(/Paragraph in/)).toBeInTheDocument();
+    // Largest gap pill on Listening tile; Register drill on Writing.
+    expect(screen.getByText('Largest gap')).toBeInTheDocument();
+    expect(screen.getByText('Register drill')).toBeInTheDocument();
   });
 
   it('navigates to /learn/writing when the Writing task page is clicked (F-001)', async () => {
@@ -228,12 +370,7 @@ describe('Today', () => {
     const user = userEvent.setup();
     renderTodayAt();
 
-    // Writing is carousel page 3 — bring it on-screen via its dot first
-    // (off-screen pages are aria-hidden + inert), then tap the tile.
-    const region = screen.getByRole('region', { name: "Today's tasks" });
-    await user.click(
-      within(region).getByRole('tab', { name: 'Page 3 of 3' }),
-    );
+    await activateWritingPage(user);
     const tile = screen.getByRole('button', { name: /Paragraph in/ });
     await user.click(tile);
 
@@ -270,9 +407,157 @@ describe('Today', () => {
     expect(within(region).getAllByRole('tab')).toHaveLength(2);
   });
 
+  // ── F-027 — Claude topic generator on the Writing task page ─
+
+  it('mounts the topic generator on the Writing page only, and renders a generated topic', async () => {
+    loadDefaults();
+    generateMock.mockResolvedValue(GENERATED);
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    // Exactly one generator on the screen (the Writing page's — its page is
+    // aria-hidden until selected, so include hidden in the sweep).
+    expect(screen.getAllByRole('radiogroup', { hidden: true })).toHaveLength(1);
+
+    await activateWritingPage(user);
+    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
+
+    // The topic renders as escaped text: Korean task, English gloss, hint.
+    expect(
+      await screen.findByText(GENERATED.promptKr),
+    ).toBeInTheDocument();
+    expect(screen.getByText(GENERATED.promptEn)).toBeInTheDocument();
+    expect(screen.getByText('600-700자')).toBeInTheDocument();
+    // Default style is TOPIK — the closed-enum body reflects it.
+    expect(generateMock).toHaveBeenCalledWith(
+      { mode: 'topik' },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('offers the TOPIK-style vs free-write choice and sends the chosen mode', async () => {
+    loadDefaults();
+    generateMock.mockResolvedValue({
+      ...GENERATED,
+      mode: 'general',
+      rubric: null,
+      lengthHint: null,
+    });
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await activateWritingPage(user);
+    await user.click(screen.getByRole('radio', { name: /Free write/ }));
+    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
+
+    expect(await screen.findByText(GENERATED.promptKr)).toBeInTheDocument();
+    expect(generateMock).toHaveBeenCalledWith(
+      { mode: 'general' },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('surfaces the expensive-bucket 429 with real retry copy, not a dead end', async () => {
+    loadDefaults();
+    generateMock.mockRejectedValue(
+      new ApiError('too many requests', {
+        status: 429,
+        code: 'rate_limited',
+        retryAfter: 42,
+      }),
+    );
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await activateWritingPage(user);
+    const button = screen.getByRole('button', { name: /Generate topic/ });
+    await user.click(button);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Rate-limited. Try again in about 42 seconds.',
+    );
+    // The button is the retry — it must stay enabled (no hard OR soft
+    // disable survives the failure).
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute('aria-disabled');
+  });
+
+  // ── TOPIK carousel (F-028 / F-029) ──────────────────────────
+
+  it('orders the TOPIK carousel recommended-study first, review-mistakes second', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'TOPIK exams' });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(region).getAllByRole('tab')).toHaveLength(2);
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    expect(
+      within(panels[0]).getByRole('button', {
+        name: 'Open TOPIK study practice',
+        hidden: true,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(panels[1]).getByRole('button', {
+        name: 'Review mistakes',
+        hidden: true,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('navigates to /learn/topik (study) from the recommended tile', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Open TOPIK study practice' }),
+    );
+    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
+  });
+
+  it('navigates to /review/mistakes from the second TOPIK carousel page (shortcut row folded in)', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'TOPIK exams' });
+    await user.click(within(region).getByRole('tab', { name: 'Page 2 of 2' }));
+    await user.click(screen.getByRole('button', { name: 'Review mistakes' }));
+
+    expect(screen.getByText('MISTAKES PAGE')).toBeInTheDocument();
+  });
+
+  it('surfaces a saved mock attempt as the corner resume banner → /learn/topik', async () => {
+    loadDefaults();
+    hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const banner = screen.getByRole('button', {
+      name: 'Resume exam — Listening mock, 12 answered',
+    });
+    await user.click(banner);
+    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
+  });
+
+  it('renders NO resume banner when no attempt is saved (honest empty state)', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    // No fabricated resume CTA, and the old open-exam panel is gone.
+    expect(
+      screen.queryByRole('button', { name: /Resume exam/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/No exam in progress/)).not.toBeInTheDocument();
+  });
+
   // ── P3b — bilingual page chrome ────────────────────────────
 
-  it('renders the section eyebrows bilingually in both-mode (Korean + English segments)', () => {
+  it('renders the section eyebrows and tile chrome bilingually in both-mode', () => {
     loadDefaults();
     renderTodayAt();
 
@@ -282,104 +567,11 @@ describe('Today', () => {
     // TOPIK section eyebrow.
     expect(screen.getByText('시험')).toBeInTheDocument();
     expect(screen.getByText('TOPIK')).toBeInTheDocument();
-    // Review-queue chrome carries Korean too.
+    // Lead-carousel chrome carries Korean too.
     expect(screen.getByText('지금 복습')).toBeInTheDocument();
     expect(screen.getByText('복습할 카드 24장')).toBeInTheDocument();
-    // Review shortcut is one bilingual pair now, not two hand-stacked spans.
+    expect(screen.getByText('문법 드릴')).toBeInTheDocument();
+    // Review mistakes lives in the TOPIK carousel now.
     expect(screen.getByText('오답 복습')).toBeInTheDocument();
-  });
-
-  // ── Placeholders (P1.2 — real backing lands in P4) ─────────
-
-  it('renders the grammar-practice placeholder as a designed coming-soon panel', () => {
-    loadDefaults();
-    renderTodayAt();
-
-    // P3b: the eyebrow renders each language as its own <Bilingual/> segment
-    // (the baked "kr · en" string is gone).
-    expect(screen.getByText('문법 연습')).toBeInTheDocument();
-    expect(screen.getByText('Grammar practice')).toBeInTheDocument();
-    expect(
-      screen.queryByText('문법 연습 · Grammar practice'),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText('Daily grammar drills')).toBeInTheDocument();
-    // Real copy, not a blank panel.
-    expect(
-      screen.getByText(/Due grammar patterns queue here/),
-    ).toBeInTheDocument();
-    // P3b: the trimmed copy is bilingual (kr via <Bilingual/>).
-    expect(
-      screen.getByText('복습 예정 문형이 여기에 모여요.'),
-    ).toBeInTheDocument();
-    // Both placeholder slots (grammar + TOPIK recommendation) carry the pill,
-    // bilingually (Coming soon · 준비 중).
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
-    expect(screen.getAllByText('준비 중')).toHaveLength(2);
-  });
-
-  it('renders the TOPIK-recommendation placeholder inside the exam carousel', () => {
-    loadDefaults();
-    renderTodayAt();
-
-    const region = screen.getByRole('region', { name: 'TOPIK exams' });
-    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
-    expect(within(region).getAllByRole('tab')).toHaveLength(2);
-    expect(
-      within(region).getByText('Recommended for you'),
-    ).toBeInTheDocument();
-    expect(
-      within(region).getByText(/Mock-exam picks based on your practice/),
-    ).toBeInTheDocument();
-    expect(
-      within(region).getByText('맞춤 모의고사 추천이 여기에 나와요.'),
-    ).toBeInTheDocument();
-  });
-
-  // ── Open exam (F-007 attempt surfaced) ─────────────────────
-
-  it('surfaces a saved mock attempt as a Resume exam CTA that opens /learn/topik', async () => {
-    loadDefaults();
-    hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    expect(screen.getByText('Exam in progress')).toBeInTheDocument();
-    expect(screen.getByText(/Listening mock/)).toBeInTheDocument();
-    // P3b: the SECTION_LABELS pair renders its Korean half via <Bilingual/>.
-    expect(screen.getByText('듣기 모의고사')).toBeInTheDocument();
-    expect(screen.getByText(/12 answered/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /Resume exam/ }));
-    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
-  });
-
-  it('offers the TOPIK page directly when no attempt is saved (honest empty state)', async () => {
-    loadDefaults();
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    // No fabricated resume: the null attempt reads as "no exam in progress".
-    expect(screen.getByText(/No exam in progress/)).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /Resume exam/ }),
-    ).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole('button', { name: /Open TOPIK practice/ }),
-    );
-    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
-  });
-
-  // ── Review shortcut ────────────────────────────────────────
-
-  it('navigates to /review/mistakes from the review shortcut row', async () => {
-    loadDefaults();
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    await user.click(
-      screen.getByRole('button', { name: /Review mistakes/ }),
-    );
-    expect(screen.getByText('MISTAKES PAGE')).toBeInTheDocument();
   });
 });

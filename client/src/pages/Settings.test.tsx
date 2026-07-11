@@ -1,7 +1,10 @@
 /**
- * Settings page — Pass 3 wired profile + Pass 2 local-only halves.
+ * Settings page — Pass 3 wired profile + Phase 3a groups.
  *
  * Coverage:
+ *   - F-038: every group is a CollapsibleTile that STARTS COLLAPSED; tests
+ *     open a tile (via `expandGroup`) the way a user does before touching
+ *     its controls.
  *   - Profile inputs hydrate from `fetchMe` (the explicit /auth/me probe
  *     bound through `useEndpointOrMock`).
  *   - Typing in Name triggers a debounced `patchMe` with only the changed
@@ -9,9 +12,11 @@
  *   - A failing PATCH rolls the input back to the last-known-server value
  *     and surfaces an inline ErrorCard. The user can edit again to clear
  *     the error.
- *   - The localStorage notif + appearance halves are untouched by the
- *     server wiring (palette swatch click still works; channel chip
- *     gating still keys off the profile email).
+ *   - F-039: the Uploads section is GONE (migrates to Review→Uploads,
+ *     F-057–F-059).
+ *   - F-040: notification schedules hydrate from /notifications/schedules,
+ *     PUT per-kind timing on change (never before hydration), and the SMS
+ *     channel renders as a labelled, disabled placeholder.
  *
  * Mocking strategy: we stub `services/auth` to control fetchMe/patchMe
  * directly, and stub the in-process `useAuth` context to provide a
@@ -50,6 +55,8 @@ const mocks = vi.hoisted(() => {
     regenerateRecoveryCodes: vi.fn(),
     fetchPrefs: vi.fn(),
     putPrefs: vi.fn(),
+    fetchSchedules: vi.fn(),
+    putSchedules: vi.fn(),
     refresh: vi.fn(async () => undefined),
     // Mutable from the test bodies — the useAuth mock reads it on each call.
     currentUser: {
@@ -88,6 +95,18 @@ vi.mock('../services/settings', () => ({
   },
 }));
 
+// F-040: only the two network calls are stubbed — the kind guards/constants
+// stay real so Settings.tsx narrows wire rows exactly as it will in prod.
+vi.mock('../services/notifications', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../services/notifications')>();
+  return {
+    ...actual,
+    fetchSchedules: mocks.fetchSchedules,
+    putSchedules: mocks.putSchedules,
+  };
+});
+
 vi.mock('../hooks/useAuth', () => ({
   useAuth: () => ({
     status: 'authenticated' as const,
@@ -110,11 +129,11 @@ import { ToastProvider } from '../components/ToastProvider';
 
 /**
  * Settings now consumes `useTheme` (A4 theme-mode control), `useAccent`
- * (Redesign §14a accent picker), `useToast` (A3 prefs-sync-failure surface
- * + U1b upload toast), and `useNavigate` (U1b "See all uploads" link), so
- * every render needs ThemeProvider + AccentProvider + ToastProvider + a
- * Router in the tree alongside SettingsProvider. This helper wraps the
- * page in the same provider order App.tsx uses.
+ * (Redesign §14a accent picker), and `useToast` (A3 prefs-sync-failure
+ * surface + F-040 schedule-save failures), so every render needs
+ * ThemeProvider + AccentProvider + ToastProvider alongside SettingsProvider
+ * (Router included to match the App.tsx tree). This helper wraps the page
+ * in the same provider order App.tsx uses.
  */
 function renderSettings(): ReturnType<typeof render> {
   return render(
@@ -132,6 +151,20 @@ function renderSettings(): ReturnType<typeof render> {
       </ThemeProvider>
     </MemoryRouter>,
   );
+}
+
+/**
+ * F-038: every Settings group starts COLLAPSED inside a CollapsibleTile —
+ * collapsed bodies are aria-hidden + inert, so role queries can't see their
+ * controls. Tests open a tile exactly the way a user does: click its header
+ * disclosure button. `fireEvent` suffices (a plain synchronous button click
+ * with no debounce/timer interplay).
+ */
+function expandGroup(name: RegExp): void {
+  const header = screen.getByRole('button', { name });
+  if (header.getAttribute('aria-expanded') === 'false') {
+    fireEvent.click(header);
+  }
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────
@@ -168,6 +201,12 @@ beforeEach(() => {
   // prefs tests override these.
   mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
   mocks.putPrefs.mockResolvedValue(DEFAULT_PREFS);
+  mocks.fetchSchedules.mockReset();
+  mocks.putSchedules.mockReset();
+  // Default: a fresh user — the server stores nothing until the first PUT
+  // (nothing is implicitly on), so the client paints its suggested defaults.
+  mocks.fetchSchedules.mockResolvedValue({ schedules: [] });
+  mocks.putSchedules.mockResolvedValue({ schedules: [] });
   mocks.refresh.mockReset();
   mocks.refresh.mockResolvedValue(undefined);
   mocks.currentUser = {
@@ -195,7 +234,7 @@ afterEach(() => {
 // ─── Tests ────────────────────────────────────────────────────
 
 describe('Settings — profile hydration', () => {
-  it('renders the three groups (Profile / Notifications / Appearance)', () => {
+  it('renders the four groups (Profile / 2FA / Notifications / Appearance)', () => {
     mocks.fetchMe.mockResolvedValue({
       id: 1,
       email: 'jay@example.com',
@@ -204,6 +243,7 @@ describe('Settings — profile hydration', () => {
 
     renderSettings();
     expect(screen.getByText('Profile')).toBeInTheDocument();
+    expect(screen.getByText('Two-Factor Authentication')).toBeInTheDocument();
     expect(screen.getByText('Notifications')).toBeInTheDocument();
     expect(screen.getByText('Appearance')).toBeInTheDocument();
   });
@@ -245,6 +285,7 @@ describe('Settings — profile hydration', () => {
     } satisfies User);
 
     renderSettings();
+    expandGroup(/Profile/);
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     const email = screen.getByLabelText('Email') as HTMLInputElement;
@@ -263,6 +304,7 @@ describe('Settings — profile hydration', () => {
     } satisfies User);
 
     renderSettings();
+    expandGroup(/Profile/);
 
     await waitFor(() => {
       expect(
@@ -287,6 +329,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
     } satisfies User);
 
     renderSettings();
+    expandGroup(/Profile/);
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     // Replace 'Jay' with 'Jared'. user.clear + user.type chains; the
@@ -328,6 +371,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
     );
 
     renderSettings();
+    expandGroup(/Profile/);
 
     const email = screen.getByLabelText('Email') as HTMLInputElement;
     await user.clear(email);
@@ -395,6 +439,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
       } satisfies User);
 
     renderSettings();
+    expandGroup(/Profile/);
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     await waitFor(() => {
       expect(name.value).toBe('Jay');
@@ -477,6 +522,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
     renderSettings();
+    expandGroup(/Profile/);
 
     const phone = screen.getByLabelText('Phone') as HTMLInputElement;
     // Wait for the server-truth sync to land the seeded value.
@@ -526,6 +572,7 @@ describe('Settings — debounced PATCH /auth/me', () => {
     } satisfies User);
 
     renderSettings();
+    expandGroup(/Profile/);
 
     const name = screen.getByLabelText('Name') as HTMLInputElement;
     // Replace the value with the same string → no diff.
@@ -549,6 +596,7 @@ describe('Settings — local-only halves still work', () => {
     } satisfies User);
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     // The removed pickers must not render.
     expect(screen.queryByText('Paper')).not.toBeInTheDocument();
@@ -566,108 +614,93 @@ describe('Settings — local-only halves still work', () => {
     expect(mocks.patchMe).not.toHaveBeenCalled();
   });
 
-  it('clearing the profile Email disables the local Email channel chip', async () => {
+  it('F-040: the channel chips are gone and clearing Email no longer mutates the stored notif intents', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
       id: 1,
       email: 'jay@example.com',
       display_name: 'Jay',
     } satisfies User);
-    mocks.patchMe.mockResolvedValue({
-      id: 1,
-      email: 'jay@example.com',
-      display_name: 'Jay',
-    } satisfies User);
 
-    // Seed an enabled email channel — that's what the clearing should reset.
+    // Seed a notif blob identical to the server default so hydration is a
+    // no-op write-wise — any change to it after clearing Email would be the
+    // retired Pass-2 coupling resurfacing.
     window.localStorage.setItem(
       'km.settings',
       JSON.stringify({
         name: '',
         email: '',
         phone: '',
-        notif: {
-          channel: { email: true, sms: false },
-          reviewsDue: false,
-          daily: false,
-          weekly: false,
-        },
-        palette: {
-          paper: 'hanji',
-          accent: 'vermilion',
-          correct: 'moss',
-          wrong: 'vermilion',
-        },
+        notif: DEFAULT_PREFS.notif,
+        languageDisplay: DEFAULT_PREFS.languageDisplay,
       }),
     );
 
     renderSettings();
+    expandGroup(/Profile/);
+
+    // The old aria-pressed channel chips are gone from the page entirely.
+    expect(screen.queryByText('Channels')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Email', hidden: true }),
+    ).not.toBeInTheDocument();
 
     const emailInput = screen.getByLabelText('Email') as HTMLInputElement;
     expect(emailInput.value).toBe('jay@example.com');
-    const emailChip = screen.getByRole('button', { name: 'Email' });
-    expect(emailChip).toHaveAttribute('aria-pressed', 'true');
-
     await user.clear(emailInput);
     expect(emailInput.value).toBe('');
-    expect(emailChip).toBeDisabled();
-    expect(emailChip).toHaveAttribute('aria-pressed', 'false');
+
+    // Flush the provider's 200ms localStorage debounce — if the coupling
+    // still existed, notif.channel.email would have been forced to false.
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+    });
+    const stored = JSON.parse(
+      window.localStorage.getItem('km.settings') ?? '{}',
+    ) as { notif?: { channel?: { email?: boolean } } };
+    expect(stored.notif?.channel?.email).toBe(true);
   });
 });
 
 describe('Settings — prefs server-sync (Pass 9)', () => {
-  it('hydrates notif from the server on mount (server wins on load)', async () => {
-    mocks.fetchMe.mockResolvedValue({
-      id: 1,
-      email: 'jay@example.com',
-      display_name: 'Jay',
-    } satisfies User);
-    // Server holds a NON-default notif pref → the toggle should adopt it.
-    // (The wire `palette` is a passthrough echo since the v2 flatten — no UI
-    // reflects it anymore, so notif is the hydration probe.)
-    mocks.fetchPrefs.mockResolvedValue({
-      ...DEFAULT_PREFS,
-      notif: { ...DEFAULT_PREFS.notif, daily: true },
-      palette: { paper: 'linen', accent: 'coral', correct: 'pine', wrong: 'amber' },
-    });
-
-    renderSettings();
-
-    // The Daily toggle reflects the server's `true` once hydration lands.
-    await waitFor(() => {
-      expect(
-        screen.getByRole('switch', { name: 'Daily reminder' }),
-      ).toHaveAttribute('aria-checked', 'true');
-    });
-  });
-
-  it('debounces a putPrefs with the full prefs object on a notif change (palette echoed)', async () => {
+  it('notif intents have no UI (F-040) but hydrate + echo verbatim through the prefs PUT', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
       id: 1,
       email: 'jay@example.com',
       display_name: 'Jay',
     } satisfies User);
-    // Server prefs: defaults except a stored palette → mount hydration is a
-    // notif/language no-op, and the PUT must echo the stored paper/correct/
-    // wrong back verbatim (v2 flatten: the client never edits them). The
+    // Server holds NON-default notif intents + a stored legacy palette. The
     // stored accent ('mint') is ADOPTED on hydrate, which doubles as a
     // deterministic hydration-settled marker for the pre-hydration PUT guard.
+    const storedNotif = {
+      channel: { email: true, sms: true },
+      reviewsDue: false,
+      daily: true,
+      weekly: false,
+    };
     const storedPalette = { paper: 'linen', accent: 'mint', correct: 'pine', wrong: 'amber' };
     mocks.fetchPrefs.mockResolvedValue({
       ...DEFAULT_PREFS,
+      notif: storedNotif,
       palette: storedPalette,
     });
 
     renderSettings();
-
-    // Hydration has landed once the server accent is adopted (the PUT guard
-    // stays closed until then).
     await waitFor(() => {
       expect(document.documentElement.dataset.accent).toBe('mint');
     });
 
-    await user.click(screen.getByRole('switch', { name: 'Daily reminder' }));
+    // The old intent controls are gone — the Notifications tile carries
+    // schedule rows now, not "Send me" toggles or channel chips.
+    expandGroup(/Notifications/);
+    expect(screen.queryByText('Send me')).not.toBeInTheDocument();
+    expect(screen.queryByText('Channels')).not.toBeInTheDocument();
+
+    // A real Appearance change PUTs the full prefs object with the SERVER's
+    // notif + palette echoed verbatim — nothing clobbered back to defaults.
+    expandGroup(/Appearance/);
+    await user.click(screen.getByRole('radio', { name: 'Cyber Blue' }));
 
     // Nothing fires before the debounce window elapses.
     expect(mocks.putPrefs).not.toHaveBeenCalled();
@@ -680,12 +713,11 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
     });
     const body = mocks.putPrefs.mock.calls[0][0] as {
-      notif: { daily: boolean };
-      palette: { paper: string };
+      notif: unknown;
+      palette: unknown;
     };
-    expect(body.notif.daily).toBe(true);
-    // The server's stored legacy palette is echoed, never clobbered.
-    expect(body.palette).toEqual(storedPalette);
+    expect(body.notif).toEqual(storedNotif);
+    expect(body.palette).toEqual({ ...storedPalette, accent: 'blue' });
   });
 
   it('a failed putPrefs never breaks the screen — surfaces a non-blocking toast (A3)', async () => {
@@ -701,6 +733,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     );
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     // Let hydration fully SETTLE (fetch resolve + effect commit) — the change
     // PUT is suppressed until it does (pre-hydration guard).
@@ -711,10 +744,12 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       await vi.advanceTimersByTimeAsync(10);
     });
 
-    const daily = screen.getByRole('switch', { name: 'Daily reminder' });
-    await user.click(daily);
-    // The local notif change still applied instantly (provider is the cache).
-    expect(daily).toHaveAttribute('aria-checked', 'true');
+    // Change probe: an accent pick (the notif toggles moved to
+    // /notifications/schedules with F-040).
+    const mint = screen.getByRole('radio', { name: 'Han Mint' });
+    await user.click(mint);
+    // The local change still applied instantly (provider is the cache).
+    expect(document.documentElement.dataset.accent).toBe('mint');
 
     await act(async () => {
       vi.advanceTimersByTime(500);
@@ -722,7 +757,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
 
     // A3 ErrorCard-vs-Toast split: the sync failure is transient/background,
     // so it surfaces as a non-blocking toast (NOT an inline ErrorCard). The
-    // screen is intact, the change is durable locally, and the toggle keeps
+    // screen is intact, the change is durable locally, and the pick keeps
     // its state.
     await waitFor(() => {
       expect(screen.getByText(/saved on this device/i)).toBeInTheDocument();
@@ -730,7 +765,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     // It's a polite toast (role=status), not an alert/ErrorCard.
     const toast = screen.getByText(/saved on this device/i).closest('.km-toast');
     expect(toast).not.toBeNull();
-    expect(daily).toHaveAttribute('aria-checked', 'true');
+    expect(mint).toHaveAttribute('aria-checked', 'true');
 
     // The Retry action re-attempts the PUT.
     mocks.putPrefs.mockResolvedValueOnce(DEFAULT_PREFS);
@@ -748,17 +783,20 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       display_name: 'Jay',
     } satisfies User);
     // Server holds non-default prefs; hydration writes them into the provider.
+    // languageDisplay is the visible hydration probe (notif lost its UI with
+    // F-040; the wire palette has been a passthrough echo since v2).
     mocks.fetchPrefs.mockResolvedValue({
       ...DEFAULT_PREFS,
       notif: { ...DEFAULT_PREFS.notif, daily: true },
-      palette: { paper: 'ivory', accent: 'plum', correct: 'teal', wrong: 'slate' },
+      languageDisplay: { mode: 'en', primary: 'ko', subScale: 0.7 },
     });
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     await waitFor(() => {
       expect(
-        screen.getByRole('switch', { name: 'Daily reminder' }),
+        screen.getByRole('radio', { name: 'English' }),
       ).toHaveAttribute('aria-checked', 'true');
     });
 
@@ -773,17 +811,18 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
   it('a pre-hydration edit never PUTs (clobber guard); server wins on load; post-hydration edits sync promptly', async () => {
     // SF-3 rework (pre-hydration PUT guard): pin the ordering when the user
     // edits WHILE the server hydration is still in flight. Contract A5 stays:
-    // "server wins on load — last-writer-wins". What MUST hold now:
+    // "server wins on load — last-writer-wins". What MUST hold now (probe is
+    // the accent pick — the notif toggles moved to schedules with F-040):
     //   1. A pre-hydration edit applies instantly to the provider (offline-
     //      cache UX, durable in localStorage) but NEVER fires a PUT — a PUT at
     //      that point would carry the seeded LEGACY_PALETTE_DEFAULT/default
     //      baselines and clobber the server-stored blob.
-    //   2. The late real settle wins on load: the toggle ends on the SERVER
-    //      value AND the server's accent is adopted (data-accent + km.accent).
+    //   2. The late real settle wins on load: the server's accent is adopted
+    //      (data-accent + km.accent) over the pre-hydration pick.
     //   3. Neither the settle nor the hydrate-adopt spawns an echo PUT — the
     //      PUT count stays at zero until a real post-hydration edit.
     //   4. A post-hydration edit saves promptly and echoes the server-stored
-    //      palette (paper/correct/wrong) verbatim with the adopted accent —
+    //      palette (paper/correct/wrong) verbatim with the new accent —
     //      nothing is clobbered back to defaults.
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
@@ -801,12 +840,12 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     );
 
     renderSettings();
+    expandGroup(/Appearance/);
 
-    // User flips Daily while hydration is still pending. The local provider
-    // applies it instantly (offline-cache UX)…
-    const daily = screen.getByRole('switch', { name: 'Daily reminder' });
-    await user.click(daily);
-    expect(daily).toHaveAttribute('aria-checked', 'true');
+    // User picks an accent while hydration is still pending. The local
+    // provider applies it instantly (offline-cache UX)…
+    await user.click(screen.getByRole('radio', { name: 'Han Mint' }));
+    expect(document.documentElement.dataset.accent).toBe('mint');
 
     // …but (1) the debounced PUT is SUPPRESSED — flush well past the window.
     await act(async () => {
@@ -814,9 +853,9 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     });
     expect(mocks.putPrefs).not.toHaveBeenCalled();
 
-    // Now the slow server settle lands holding DIFFERENT prefs (daily=false)
-    // plus a stored palette with a non-default accent.
-    const storedPalette = { paper: 'ivory', accent: 'mint', correct: 'teal', wrong: 'slate' };
+    // Now the slow server settle lands holding a stored palette with a
+    // DIFFERENT accent.
+    const storedPalette = { paper: 'ivory', accent: 'blue', correct: 'teal', wrong: 'slate' };
     await act(async () => {
       releaseHydration({
         notif: DEFAULT_PREFS.notif,
@@ -826,15 +865,12 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       });
     });
 
-    // (2) Server wins on load: the toggle reflects the server's daily=false and
-    //     the server's accent is adopted locally.
+    // (2) Server wins on load: the server's accent is adopted locally over
+    //     the pre-hydration pick.
     await waitFor(() => {
-      expect(daily).toHaveAttribute('aria-checked', 'false');
+      expect(document.documentElement.dataset.accent).toBe('blue');
     });
-    await waitFor(() => {
-      expect(document.documentElement.dataset.accent).toBe('mint');
-    });
-    expect(window.localStorage.getItem('km.accent')).toBe('mint');
+    expect(window.localStorage.getItem('km.accent')).toBe('blue');
 
     // (3) Flush every timer: neither the hydration write nor the hydrate-adopt
     //     may spawn a PUT — the count stays at zero.
@@ -843,9 +879,9 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     });
     expect(mocks.putPrefs).not.toHaveBeenCalled();
 
-    // (4) A post-hydration edit saves promptly and echoes the server's stored
-    //     palette verbatim (adopted accent included).
-    await user.click(daily);
+    // (4) A post-hydration pick saves promptly and echoes the server's stored
+    //     palette verbatim with the new accent.
+    await user.click(screen.getByRole('radio', { name: 'Han Mint' }));
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
@@ -853,11 +889,9 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
       expect(mocks.putPrefs).toHaveBeenCalledTimes(1);
     });
     const body = mocks.putPrefs.mock.calls[0][0] as {
-      notif: { daily: boolean };
       palette: unknown;
     };
-    expect(body.notif.daily).toBe(true);
-    expect(body.palette).toEqual(storedPalette);
+    expect(body.palette).toEqual({ ...storedPalette, accent: 'mint' });
   });
 });
 
@@ -880,6 +914,7 @@ describe('Settings — accent cross-device sync', () => {
     });
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     // The real settle adopts the server's accent: attribute + localStorage +
     // the picker selection all converge on 'blue'.
@@ -918,6 +953,7 @@ describe('Settings — accent cross-device sync', () => {
     });
 
     renderSettings();
+    expandGroup(/Appearance/);
     await waitFor(() => {
       expect(document.documentElement.dataset.accent).toBe('blue');
     });
@@ -987,6 +1023,7 @@ describe('Settings — text size (F-025 cross-device sync)', () => {
   it('renders an S/M/L radiogroup with real accessible names, Medium checked by default', () => {
     meOk();
     renderSettings();
+    expandGroup(/Appearance/);
     const group = screen.getByRole('radiogroup', { name: 'Text size' });
     expect(within(group).getByRole('radio', { name: 'Small' })).toBeInTheDocument();
     expect(within(group).getByRole('radio', { name: 'Large' })).toBeInTheDocument();
@@ -1011,6 +1048,7 @@ describe('Settings — text size (F-025 cross-device sync)', () => {
     });
 
     renderSettings();
+    expandGroup(/Appearance/);
     await waitFor(() => {
       expect(document.documentElement.dataset.accent).toBe('blue');
     });
@@ -1043,6 +1081,7 @@ describe('Settings — text size (F-025 cross-device sync)', () => {
     mocks.fetchPrefs.mockResolvedValue({ ...DEFAULT_PREFS, textSize: 'lg' });
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     await waitFor(() => {
       expect(document.documentElement.dataset.textSize).toBe('lg');
@@ -1103,6 +1142,7 @@ describe('Settings — text size (F-025 cross-device sync)', () => {
     );
 
     renderSettings();
+    expandGroup(/Appearance/);
 
     // Pick Small while hydration is in flight — instant locally…
     await user.click(screen.getByRole('radio', { name: 'Small' }));
@@ -1141,6 +1181,7 @@ describe('Settings — theme-mode control (A4)', () => {
       display_name: 'Jay',
     } satisfies User);
     renderSettings();
+    expandGroup(/Appearance/);
     const group = screen.getByRole('radiogroup', { name: 'Theme mode' });
     expect(within(group).getByRole('radio', { name: 'Light' })).toBeInTheDocument();
     expect(within(group).getByRole('radio', { name: 'Dark' })).toBeInTheDocument();
@@ -1155,6 +1196,7 @@ describe('Settings — theme-mode control (A4)', () => {
       display_name: 'Jay',
     } satisfies User);
     renderSettings();
+    expandGroup(/Appearance/);
 
     await user.click(screen.getByRole('radio', { name: 'Dark' }));
     expect(document.documentElement.dataset.theme).toBe('dark');
@@ -1181,6 +1223,7 @@ describe('Settings — theme-mode control (A4)', () => {
       display_name: 'Jay',
     } satisfies User);
     renderSettings();
+    expandGroup(/Appearance/);
 
     const light = screen.getByRole('radio', { name: 'Light' });
     const dark = screen.getByRole('radio', { name: 'Dark' });
@@ -1246,6 +1289,7 @@ describe('Settings — Two-Factor Authentication', () => {
     expect(
       await screen.findByText('Two-Factor Authentication'),
     ).toBeInTheDocument();
+    expandGroup(/Two-Factor/);
     await waitFor(() => {
       expect(screen.getByText('Enabled')).toBeInTheDocument();
     });
@@ -1257,6 +1301,7 @@ describe('Settings — Two-Factor Authentication', () => {
 
     renderSettings();
     await screen.findByText('Two-Factor Authentication');
+    expandGroup(/Two-Factor/);
 
     expect(
       screen.queryByRole('button', { name: /disable/i }),
@@ -1274,6 +1319,7 @@ describe('Settings — Two-Factor Authentication', () => {
 
     renderSettings();
     await screen.findByText('Two-Factor Authentication');
+    expandGroup(/Two-Factor/);
 
     const user = userEvent.setup();
     await user.click(
@@ -1304,6 +1350,7 @@ describe('Settings — Two-Factor Authentication', () => {
 
     renderSettings();
     await screen.findByText('Two-Factor Authentication');
+    expandGroup(/Two-Factor/);
 
     const user = userEvent.setup();
     await user.click(
@@ -1371,6 +1418,7 @@ describe('Settings — language display control', () => {
   it('renders in the Appearance group with Both selected by default, revealing order + slider', () => {
     meOk();
     renderSettings();
+    expandGroup(/Appearance/);
     const group = screen.getByRole('radiogroup', { name: 'Language display' });
     const both = within(group).getByRole('radio', { name: 'Both' });
     expect(both).toHaveAttribute('aria-checked', 'true');
@@ -1387,6 +1435,7 @@ describe('Settings — language display control', () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     meOk();
     renderSettings();
+    expandGroup(/Appearance/);
     await flushHydration();
 
     const group = screen.getByRole('radiogroup', { name: 'Language display' });
@@ -1449,6 +1498,7 @@ describe('Settings — language display control', () => {
     meOk();
     mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
     renderSettings();
+    expandGroup(/Appearance/);
     await flushHydration();
 
     const english = screen.getByRole('radio', { name: 'English' });
@@ -1486,6 +1536,7 @@ describe('Settings — language display control', () => {
     meOk();
     mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
     renderSettings();
+    expandGroup(/Appearance/);
     await flushHydration();
 
     await user.click(screen.getByRole('radio', { name: 'Korean' }));
@@ -1515,6 +1566,7 @@ describe('Settings — language display control', () => {
     meOk();
     mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
     renderSettings();
+    expandGroup(/Appearance/);
     await flushHydration();
 
     const order = screen.getByRole('radiogroup', { name: 'Bilingual order' });
@@ -1541,6 +1593,7 @@ describe('Settings — language display control', () => {
     meOk();
     mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
     renderSettings();
+    expandGroup(/Appearance/);
     await flushHydration();
 
     const slider = screen.getByRole('slider', {
@@ -1583,6 +1636,7 @@ describe('Settings — language display control', () => {
       languageDisplay: { mode: 'en', primary: 'en', subScale: 0.6 },
     });
     renderSettings();
+    expandGroup(/Appearance/);
 
     await waitFor(() => {
       expect(
@@ -1594,5 +1648,368 @@ describe('Settings — language display control', () => {
       vi.advanceTimersByTime(500);
     });
     expect(mocks.putPrefs).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Collapsible groups (F-038) ──────────────────────────────────────
+
+describe('Settings — collapsible groups (F-038)', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('every group renders collapsed: header aria-expanded=false wired to a hidden body', () => {
+    meOk();
+    renderSettings();
+    for (const name of [
+      /Profile/,
+      /Two-Factor/,
+      /Notifications/,
+      /Appearance/,
+    ]) {
+      const header = screen.getByRole('button', { name });
+      expect(header).toHaveAttribute('aria-expanded', 'false');
+      const bodyId = header.getAttribute('aria-controls');
+      expect(bodyId).not.toBeNull();
+      const body = document.getElementById(bodyId ?? '');
+      expect(body).not.toBeNull();
+      expect(body).toHaveAttribute('aria-hidden', 'true');
+    }
+  });
+
+  it('expanding the Profile tile reveals its controls; collapsing hides them again', () => {
+    meOk();
+    renderSettings();
+    // Collapsed: the Name input is hidden from the accessibility tree
+    // (aria-hidden body), so role queries can't reach it.
+    expect(
+      screen.queryByRole('textbox', { name: 'Name' }),
+    ).not.toBeInTheDocument();
+
+    expandGroup(/Profile/);
+    expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Profile/ }));
+    expect(
+      screen.queryByRole('textbox', { name: 'Name' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('the text-size control (F-025) still lives inside the Appearance tile', () => {
+    meOk();
+    renderSettings();
+    expect(
+      screen.queryByRole('radiogroup', { name: 'Text size' }),
+    ).not.toBeInTheDocument();
+    expandGroup(/Appearance/);
+    expect(
+      screen.getByRole('radiogroup', { name: 'Text size' }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ─── Uploads removal (F-039) ─────────────────────────────────────────
+
+describe('Settings — Uploads removed (F-039)', () => {
+  it('no Uploads section, upload button, or uploads link renders anywhere (even hidden)', () => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+    // Text queries do NOT filter aria-hidden content, so these hold even
+    // for collapsed tiles — the section is gone, not merely folded away.
+    expect(screen.queryByText('Uploads')).not.toBeInTheDocument();
+    expect(screen.queryByText('Upload a book')).not.toBeInTheDocument();
+    expect(screen.queryByText('See all uploads')).not.toBeInTheDocument();
+    expect(screen.queryByText('책 업로드')).not.toBeInTheDocument();
+  });
+});
+
+// ─── Notification schedules (F-040) ──────────────────────────────────
+
+describe('Settings — notification schedules (F-040)', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  /** Expand the Notifications tile and wait for the schedules hydration to
+   *  land (the rows are DISABLED until it does — no localStorage backs them). */
+  async function openHydratedNotifications(): Promise<void> {
+    expandGroup(/Notifications/);
+    await waitFor(() => {
+      expect(
+        screen.getByRole('switch', { name: 'Daily reminder' }),
+      ).toBeEnabled();
+    });
+  }
+
+  it('adopts stored server schedules on load (time, weekday, enabled); sms rows never bleed in', async () => {
+    meOk();
+    mocks.fetchSchedules.mockResolvedValue({
+      schedules: [
+        {
+          kind: 'daily_reminder',
+          channel: 'email',
+          timeOfDay: '21:30',
+          tz: 'Asia/Seoul',
+          weekday: null,
+          enabled: true,
+          placeholder: false,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+        {
+          kind: 'weekly_report',
+          channel: 'email',
+          timeOfDay: '07:45',
+          tz: 'Asia/Seoul',
+          weekday: 3,
+          enabled: false,
+          placeholder: false,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+        // A stored sms row is placeholder data — it must not overwrite the
+        // editable email rows OR light up the inert preview.
+        {
+          kind: 'daily_reminder',
+          channel: 'sms',
+          timeOfDay: '11:11',
+          tz: 'Asia/Seoul',
+          weekday: null,
+          enabled: true,
+          placeholder: true,
+          updatedAt: '2026-07-01T00:00:00.000Z',
+        },
+      ],
+    });
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    // The stored email rows hydrate the controls…
+    expect(
+      screen.getByRole('switch', { name: 'Daily reminder' }),
+    ).toHaveAttribute('aria-checked', 'true');
+    expect(
+      (screen.getByLabelText('Daily reminder time') as HTMLInputElement).value,
+    ).toBe('21:30');
+    expect(
+      (screen.getByLabelText('Weekly report time') as HTMLInputElement).value,
+    ).toBe('07:45');
+    expect(
+      (screen.getByLabelText('Weekly report day') as HTMLSelectElement).value,
+    ).toBe('3');
+    // …a never-stored kind keeps its suggested default…
+    expect(
+      (screen.getByLabelText('Reviews due time') as HTMLInputElement).value,
+    ).toBe('18:00');
+    // …and the sms preview stays inert and unlit.
+    const smsDaily = screen.getByRole('switch', {
+      name: 'Daily reminder (SMS)',
+    });
+    expect(smsDaily).toBeDisabled();
+    expect(smsDaily).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('enabling a type debounces ONE partial PUT: email channel, suggested time, device tz, no weekday', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    const daily = screen.getByRole('switch', { name: 'Daily reminder' });
+    await user.click(daily);
+    // Optimistic locally, nothing on the wire before the debounce elapses.
+    expect(daily).toHaveAttribute('aria-checked', 'true');
+    expect(mocks.putSchedules).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putSchedules).toHaveBeenCalledTimes(1);
+    });
+    const rows = mocks.putSchedules.mock.calls[0][0] as Array<
+      Record<string, unknown>
+    >;
+    expect(rows).toEqual([
+      {
+        kind: 'daily_reminder',
+        channel: 'email',
+        timeOfDay: '08:00',
+        tz: expect.any(String),
+        enabled: true,
+      },
+    ]);
+    // The server's .strict() schema forbids weekday off weekly_report — the
+    // key must be OMITTED, not undefined.
+    expect(rows[0]).not.toHaveProperty('weekday');
+  });
+
+  it('weekly day + time edits coalesce into one PUT carrying weekday', async () => {
+    meOk();
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    fireEvent.change(screen.getByLabelText('Weekly report day'), {
+      target: { value: '1' },
+    });
+    fireEvent.change(screen.getByLabelText('Weekly report time'), {
+      target: { value: '10:15' },
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putSchedules).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.putSchedules.mock.calls[0][0]).toEqual([
+      {
+        kind: 'weekly_report',
+        channel: 'email',
+        timeOfDay: '10:15',
+        tz: expect.any(String),
+        weekday: 1,
+        enabled: false,
+      },
+    ]);
+  });
+
+  it('edits to two kinds inside the debounce window batch into a single PUT', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    await user.click(screen.getByRole('switch', { name: 'Daily reminder' }));
+    await user.click(screen.getByRole('switch', { name: 'Reviews due' }));
+
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    await waitFor(() => {
+      expect(mocks.putSchedules).toHaveBeenCalledTimes(1);
+    });
+    const rows = mocks.putSchedules.mock.calls[0][0] as Array<{
+      kind: string;
+      enabled: boolean;
+    }>;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.kind).sort()).toEqual([
+      'daily_reminder',
+      'reviews_due',
+    ]);
+    expect(rows.every((r) => r.enabled)).toBe(true);
+  });
+
+  it('never PUTs before hydration — the rows are disabled until the GET settles', async () => {
+    meOk();
+    let releaseSchedules!: (v: { schedules: never[] }) => void;
+    mocks.fetchSchedules.mockReturnValue(
+      new Promise<{ schedules: never[] }>((resolve) => {
+        releaseSchedules = resolve;
+      }),
+    );
+
+    renderSettings();
+    expandGroup(/Notifications/);
+
+    const daily = screen.getByRole('switch', { name: 'Daily reminder' });
+    expect(daily).toBeDisabled();
+    expect(screen.getByLabelText('Daily reminder time')).toBeDisabled();
+
+    // A click on the disabled switch is a no-op — nothing dirties, nothing
+    // fires, even well past the debounce window.
+    fireEvent.click(daily);
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putSchedules).not.toHaveBeenCalled();
+    expect(daily).toHaveAttribute('aria-checked', 'false');
+
+    // The settle unlocks the rows.
+    await act(async () => {
+      releaseSchedules({ schedules: [] });
+    });
+    await waitFor(() => {
+      expect(daily).toBeEnabled();
+    });
+  });
+
+  it('a failed PUT keeps the choice on screen and Retry re-sends it', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    meOk();
+    mocks.putSchedules.mockRejectedValueOnce(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    const daily = screen.getByRole('switch', { name: 'Daily reminder' });
+    await user.click(daily);
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    // Author-controlled failure copy; the optimistic state is NOT rolled
+    // back (the dirty set keeps it pending for the retry).
+    await waitFor(() => {
+      expect(
+        screen.getByText(/notification schedule could not be saved/i),
+      ).toBeInTheDocument();
+    });
+    expect(daily).toHaveAttribute('aria-checked', 'true');
+
+    // Retry re-sends the SAME still-dirty row (the default mock resolves).
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => {
+      expect(mocks.putSchedules).toHaveBeenCalledTimes(2);
+    });
+    expect(mocks.putSchedules.mock.calls[1][0]).toEqual([
+      expect.objectContaining({ kind: 'daily_reminder', enabled: true }),
+    ]);
+  });
+
+  it('SMS renders as a labelled disabled placeholder — same three types, never interactive', async () => {
+    meOk();
+
+    renderSettings();
+    await openHydratedNotifications();
+
+    // Clearly labelled as not-live.
+    expect(screen.getByText('Coming soon')).toBeInTheDocument();
+    expect(screen.getByText(/isn’t available yet/)).toBeInTheDocument();
+
+    // All three types are offered, every control disabled.
+    for (const name of [
+      'Daily reminder (SMS)',
+      'Reviews due (SMS)',
+      'Weekly report (SMS)',
+    ]) {
+      expect(screen.getByRole('switch', { name })).toBeDisabled();
+    }
+    expect(screen.getByLabelText('Daily reminder (SMS) time')).toBeDisabled();
+    expect(screen.getByLabelText('Weekly report (SMS) day')).toBeDisabled();
+
+    // And nothing an errant click could do ever reaches the wire.
+    fireEvent.click(screen.getByRole('switch', { name: 'Daily reminder (SMS)' }));
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.putSchedules).not.toHaveBeenCalled();
   });
 });

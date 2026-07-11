@@ -1,0 +1,102 @@
+/*
+ * WritingTopicGenerator (F-027) — colocated styles.
+ *
+ * A compact panel: label row, style radiogroup + generate button, and the
+ * generated-topic result. Tokenized throughout so both themes and every
+ * accent preset come free. The segmented radiogroup mirrors the app's other
+ * segmented controls (Topik mode toggle) at chrome size.
+ */
+
+.km-topicgen {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-1);
+  box-shadow: var(--shadow-sm);
+}
+
+.km-topicgen__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--paper-dim);
+}
+
+.km-topicgen__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.km-topicgen__modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--ink-2);
+}
+
+.km-topicgen__mode {
+  padding: 6px 12px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--paper-mute);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.km-topicgen__mode--active {
+  background: var(--ink-1);
+  color: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+
+/* The Generate button goes aria-disabled (not `disabled`) while a call is in
+   flight so keyboard focus stays put; mirror the shared .km-btn:disabled
+   paint here so busy still LOOKS inert. Re-entry is blocked in the handler. */
+.km-topicgen .km-btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Generated topic — Korean task line, English gloss, tag pills. */
+.km-topicgen__result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 10px;
+}
+
+.km-topicgen__kr {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--paper);
+}
+
+.km-topicgen__en {
+  font-size: 12.5px;
+  color: var(--paper-mute);
+}
+
+.km-topicgen__tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.km-topicgen__error {
+  font-size: 12.5px;
+  color: var(--danger-ink);
+}
