@@ -28,6 +28,10 @@
   --kmp-vocab: #147e5a;
   --kmp-grammar: #b07a1f;
   --kmp-overall: var(--paper);
+  /* F-129 — belt-and-suspenders: the page body must never scroll sideways.
+   * Wide content (charts/tables) gets its own `overflow-x: auto` container
+   * below; this is the backstop in case anything else ever miscalculates. */
+  overflow-x: hidden;
 }
 [data-theme='dark'] .km-progress {
   --kmp-reading: #d9594a;
@@ -40,11 +44,34 @@
   margin: 4px 0 14px;
 }
 
-.km-progress__card {
+/* ── F-128 reskin — skyline header + dancheong divider + collapsible sections ── */
+.km-progress__skyline {
+  margin: 0 0 12px;
+}
+
+.km-progress__rail-divider {
+  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
+   * nearest positioned ancestor — give it one with real height. */
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
+
+/* F-141 — replaces the old `.km-progress__card` margin (every section is
+ * now a CollapsibleTile, not a bare Card, so this targets its className). */
+.km-progress__section {
   margin-top: 14px;
 }
 
+.km-progress__empty {
+  padding: 2px 0 0;
+}
+
 .km-progress__card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   font-weight: 600;
   margin: 2px 0 10px;
 }
@@ -118,6 +145,44 @@
 .km-progress__crosshair {
   stroke: var(--paper-faint);
   stroke-width: 1;
+}
+
+/* F-142 — a dashed least-squares trend line over the Overall series (drawn
+ * BEHIND that series' own dots, painted before them in markup) and a larger
+ * ring on every series' latest point so "where you are right now" reads at
+ * a glance without gating on hover.
+ *
+ * SF2 (REVIEW_batch1-fidelity.md): this line and the pre-existing TOPIK
+ * `.km-progress__refline` threshold both used to resolve to `--paper-faint`
+ * in LIGHT theme (only the dark override told them apart) — legible only by
+ * dash spacing (6 4 vs 4 3), a soft failure mode if both draw on the same
+ * chart. `--paper-mute` is a step darker/more legible than `--paper-faint`
+ * in BOTH themes (it already was the dark-theme override here — this just
+ * stops relying on a theme-specific override to get that step, and
+ * `.km-progress__refline` keeps `--paper-faint` unchanged, so the two lines
+ * are now visually distinct in both worlds, not just Night). */
+.km-progress__trendfit {
+  stroke: var(--paper-mute);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+.km-progress__dot--latest {
+  stroke-width: 2.5;
+}
+/* SF3 (REVIEW_batch1-fidelity.md) — this caption is real prose text ("Dashed
+ * line: overall trend across attempts"), not a decorative graphical element
+ * like the axis ticks/refline above, so it needs the TEXT contrast bar
+ * (WCAG AA, >= 4.5:1) rather than the graphical-object bar (>= 3:1).
+ * `--paper-faint` measures ~2.0:1 (light) / ~3.2:1 (dark) against this
+ * page's card surfaces — well under 4.5:1 — so this new caption used the
+ * wrong token; `--paper-dim` is the token every OTHER caption on this page
+ * already uses (`.km-progress__note`, `.km-progress__readout`,
+ * `.km-progress__legend`, `.km-progress__state`) and clears AA in both
+ * themes (see the extended `tokensContrast.test.ts` guard). */
+.km-progress__trendnote {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--paper-dim);
 }
 
 .km-progress__series--reading { stroke: var(--kmp-reading); }
@@ -209,6 +274,13 @@
   gap: 4px;
   font-size: 12px;
   color: var(--paper-dim);
+  /* F-129 — a flex item's default min-width is its content's min-content
+   * size, which ignores the wrapping container: a long option string (e.g.
+   * "Attempt 12 · 12/31") could otherwise force this row past the viewport
+   * at ~360px instead of wrapping. `flex-basis` gives it a sane starting
+   * width to wrap around. */
+  min-width: 0;
+  flex: 1 1 140px;
 }
 
 .km-progress__select {
@@ -219,6 +291,15 @@
   padding: 6px 8px;
   font: inherit;
   font-size: 13px;
+  max-width: 100%;
+}
+
+/* F-128 device #5 — the attempt-count subway line + its caption. */
+.km-progress__subwaywrap {
+  margin: 10px 0 14px;
+}
+.km-progress__subwaynote {
+  margin-top: 6px;
 }
 
 .km-progress__tablewrap {
@@ -318,6 +399,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* F-129 — the actual mobile-clipping bug: a CSS grid item's default
+   * min-width is `auto` (its content's min-content size), which IGNORES
+   * `overflow`/`text-overflow` and instead grows the grid track to fit a
+   * long English gloss — pushing `.km-mastery__row` (and the page) past the
+   * viewport at ~360px instead of truncating. `min-width: 0` lets the
+   * ellipsis actually engage. */
+  min-width: 0;
 }
 .km-mastery__badge {
   font-size: 11px;
@@ -458,6 +546,10 @@
 .km-progress__trendSkill {
   font-weight: 600;
   font-size: 14px;
+  /* F-129 — defensive: a flex child's default min-width is its unshrunk
+   * content size, which can force `.km-progress__trendHead` wider than its
+   * container at narrow widths. */
+  min-width: 0;
 }
 
 .km-progress__trendKr {

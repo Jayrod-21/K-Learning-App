@@ -6,9 +6,18 @@
  * tokens, so both themes and every accent preset come free.
  */
 
-/* The Card provides radius/surface/elevation; the tile zeroes its padding
- * so the header button can be the full-bleed hit target. */
+/* The Card (or, under `surface="city"`, CityCard) provides radius/surface/
+ * elevation; the tile zeroes its padding so the header button can be the
+ * full-bleed hit target. */
 .km-collapsible {
+  padding: 0;
+}
+
+/* `surface="city"` — CityCard.css's `.km-citycard` rule also sets its own
+ * 20px padding; this two-class selector outranks that single-class rule
+ * (equal specificity would otherwise depend on which stylesheet happens to
+ * load last) without `!important`. */
+.km-citycard.km-collapsible {
   padding: 0;
 }
 

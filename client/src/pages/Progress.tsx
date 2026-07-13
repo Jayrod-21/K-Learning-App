@@ -1,39 +1,64 @@
 /**
- * Progress — the stats hub (Overhaul P1.2, Slice A).
+ * Progress — the stats hub (Overhaul P1.2, Slice A; reskinned + reworked
+ * for Wave-2 "Seoul, Day & Night" — F-128/F-129/F-141/F-142/F-143).
  *
- * P1.2 rebalanced Today/Progress: Today is now the ACTION hub, and every
- * "where am I" surface lives here. The page renders, top to bottom:
+ * Three top-level sections, each a `CollapsibleTile` (F-141) so the page
+ * reads as a foldable stack instead of three permanently-stacked cards. The
+ * TOPIK-compare section is the one exception the ticket calls out by name —
+ * it defaults OPEN; the other two default collapsed:
  *
- *   1. **Where you stand** — `SkillsCompare` (variant `full`) over the LATEST
- *      diagnostic attempt, with the TOPIK-1→Native reference picker. This is
- *      the single headline compare surface (moved off Today, where it was the
- *      `compact` snapshot). A **Retake diagnostic** button lives in this
- *      populated card. Below it, the card's bottom section is the **attempt
- *      history carousel** (F-030): a looping `SwipeCarousel` (F-029) of
- *      (1) **Trend** — the inline-SVG line chart of diagnostic scores across
- *      attempts with its keyboard-reachable hover readout, (2) **Attempt vs
- *      attempt** — two pickers + a signed delta table (page present only
- *      with ≥ 2 attempts), and (3) **All attempts** — the chart's accessible
- *      twin table; every plotted value readable without a pointer. The old
- *      standalone Trend / All-attempts cards were folded into this carousel
- *      so the page reads as one history surface, not three stacked cards.
- *   2. **Progress by skill** (F-017, moved from Today) — a `SwipeCarousel`
- *      of five `SkillTrendPanel` pages (Reading / Listening / Vocab /
- *      Grammar / Writing), each a `LineChart` of that skill's 30-day series.
- *      Independent of the diagnostic history — it renders (or errors) on its
- *      own fetch, so a user with practice activity but no diagnostic still
- *      sees their trends.
- *   3. **Mastery** (F-032) — ONE tabbed card (`Tabs` primitive) with three
- *      panels sharing the same area instead of stacked cards:
- *        - **Words** (F-013) — per-word FSRS buckets, filterable list,
- *          windowed client-side with `usePagination` + `ShowMore` (F-031:
- *          15 initial, +15 per click, 30 max) on top of the existing
- *          30-per-page server pager.
- *        - **Grammar** — a designed "coming soon" placeholder (the real
- *          route + section land in P4).
- *        - **Hanja** (F-041) — the aggregate banked/practicing/new counts +
- *          the Encountered-vs-L4 band from `GET /hanja/progress`, with a
- *          graceful invitation when the user hasn't touched any hanja yet.
+ *   1. **TOPIK compare** (`defaultCollapsed={false}`) — `SkillsCompare`
+ *      (variant `full`) over the LATEST diagnostic attempt under its own
+ *      "Where you stand" headline, with the TOPIK-1→Native reference picker,
+ *      a **Retake diagnostic** button, a `SubwayProgress` read of how many
+ *      attempts the user has banked so far (device #5), a milestone
+ *      `SealStamp` when the latest attempt is a new personal best (device
+ *      #7), and the **attempt history carousel** (F-030): a looping
+ *      `SwipeCarousel` (F-029) of (a) **Trend** — the inline-SVG line chart
+ *      of diagnostic scores across attempts, now with a dashed least-squares
+ *      trend line over the derived Overall series and an emphasized marker
+ *      on each series' latest point (F-142), (b) **Attempt vs attempt** —
+ *      two pickers + a signed delta table (≥ 2 attempts only), and
+ *      (c) **All attempts** — the chart's accessible twin table.
+ *   2. **Progress by skill** (F-017, moved from Today; `defaultCollapsed`) —
+ *      a `SwipeCarousel` of five `SkillTrendPanel` pages (Reading /
+ *      Listening / Vocab / Grammar / Writing), each a `LineChart` of that
+ *      skill's 30-day series. Independent of the diagnostic history — it
+ *      renders (or errors) on its own fetch, so a user with practice
+ *      activity but no diagnostic still sees their trends.
+ *   3. **Mastery** (F-032; `defaultCollapsed`) — ONE tabbed area (`Tabs`
+ *      primitive) with three panels sharing the same space instead of
+ *      stacked cards: Words (F-013, per-word FSRS buckets, F-031 windowed
+ *      list), Grammar (a designed "coming soon" placeholder — the real
+ *      route lands in P4), Hanja (F-041, the aggregate banked/practicing/new
+ *      bands + Encountered-vs-L4 from `GET /hanja/progress`).
+ *
+ * `CollapsibleTile` keeps a collapsed section's body MOUNTED (aria-hidden +
+ * inert, not unmounted) — every fetch below still fires on page load
+ * regardless of which sections start folded; collapsing only affects what a
+ * screen reader/keyboard user can currently reach, never data freshness.
+ *
+ * F-128 reskin: the page opens with a `SkylineHeader` (device #4) carrying
+ * the real `<h1>`, a `DancheongRail` accent underneath (device #2), a
+ * `.km-giwa`/`.km-hangul-watermark` texture on the empty state (devices
+ * #3/#6), a `.km-rain-sheen` ambient overlay on the page root (device #8,
+ * Night-only per its own CSS gate), and `.km-najeon` on the milestone seal
+ * (device #9, sparingly). Every `CollapsibleTile` section renders
+ * `surface="city"` — the shared CityCard-backed variant added to close
+ * `REVIEW_batch1-fidelity.md` C-1 (this page's sections used to be plain
+ * `Card`s while Today's Writing tile hand-rolled the same glow inline; the
+ * shared variant removes both workarounds at once). Tone follows the
+ * mockup's own per-section palette: TOPIK compare stays `accent` (tracks
+ * the global accent pick — it's the featured/open-by-default section),
+ * Progress by skill is `plain` (a quiet neutral edge for read-only trend
+ * data), Mastery is `blue` (fixed hue, matching the prototype's mastery
+ * signboard). `rail` (device #2, the leading-edge DancheongRail) rides on
+ * all three, matching every other card family on this page.
+ *
+ * F-143 ("remove 'begin today's plan' + 'gaps/next steps' blocks") found no
+ * such blocks anywhere on THIS page — that copy lives on `Diagnostic.tsx`'s
+ * results screen, not Progress. Nothing here needed removing; a regression
+ * test below pins that these strings never appear on Progress.
  *
  * Data:
  *   useEndpointOrMock('diagnostic.history', …, { realFn: getHistory })       → DiagnosticHistoryResponse
@@ -71,17 +96,21 @@
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
-import { Card } from '../components/Card';
 import { Button } from '../components/Button';
+import { CollapsibleTile } from '../components/CollapsibleTile';
+import { DancheongRail } from '../components/DancheongRail';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { LineChart } from '../components/LineChart';
 import { Pill } from '../components/Pill';
+import { SealStamp } from '../components/SealStamp';
 import { ShowMore } from '../components/ShowMore';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillReference, SkillRow } from '../components/SkillsCompare';
+import { SkylineHeader } from '../components/SkylineHeader';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { SwipeCarousel } from '../components/SwipeCarousel';
 import { Tabs } from '../components/Tabs';
 import type { TabItem } from '../components/Tabs';
@@ -89,6 +118,7 @@ import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
+import { cn } from '../lib/cn';
 import { encounteredBarAria } from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
@@ -307,7 +337,7 @@ function SkillTrendPanel({
  * Renders independently of the diagnostic history (its own fetch), so a
  * user with practice activity but zero diagnostic runs still sees trends.
  */
-function SkillTrendsCard({
+function SkillTrendsBody({
   series,
 }: {
   series: UseEndpointOrMockResult<AllSkillSeries>;
@@ -316,11 +346,9 @@ function SkillTrendsCard({
 
   if (series.loading) {
     return (
-      <Card className="km-progress__card" aria-busy="true">
-        <div className="km-progress__state" role="status">
-          <Bilingual en="Loading skill trends…" kr="불러오는 중…" />
-        </div>
-      </Card>
+      <div className="km-progress__state" role="status" aria-busy="true">
+        <Bilingual en="Loading skill trends…" kr="불러오는 중…" />
+      </div>
     );
   }
   if (seriesData === null) {
@@ -336,27 +364,23 @@ function SkillTrendsCard({
     // noisy; one ErrorCard with a real retry is clearer. Partial failure
     // still renders the carousel with per-panel "Couldn't load" states.
     return (
-      <div className="km-progress__card">
-        <ErrorCard
-          message="Progress trends couldn’t be loaded."
-          onRetry={series.refetch}
-        />
-      </div>
+      <ErrorCard
+        message="Progress trends couldn’t be loaded."
+        onRetry={series.refetch}
+      />
     );
   }
   return (
-    <Card className="km-progress__card">
-      {/* P3b trim — "실력 추이" repeated the title's meaning; the eyebrow
-          keeps only the window meta, the title carries the bilingual name. */}
+    <>
+      {/* F-141 — the section's own CollapsibleTile header now carries the
+          bilingual name ("Progress by skill" / "실력 추이"); this eyebrow
+          keeps only the window meta so the name is never said twice. */}
       <Eyebrow>
         <Bilingual
           en={`Last ${String(TREND_WINDOW_DAYS)} days`}
           kr={`최근 ${String(TREND_WINDOW_DAYS)}일`}
         />
       </Eyebrow>
-      <div className="km-progress__card-title">
-        <Bilingual en="Progress by skill" kr="실력 추이" />
-      </div>
       <SwipeCarousel ariaLabel="Progress by skill">
         {SERIES_PANELS.map((p) => (
           <SkillTrendPanel
@@ -368,7 +392,7 @@ function SkillTrendsCard({
           />
         ))}
       </SwipeCarousel>
-    </Card>
+    </>
   );
 }
 
@@ -431,6 +455,45 @@ function consecutiveRuns(points: readonly SeriesPoint[]): SeriesPoint[][] {
   return runs;
 }
 
+/**
+ * Least-squares linear regression over (i, score) pairs — F-142's "clearer
+ * trend line": one smoothed direction line for the Overall series, drawn
+ * alongside (not instead of) the raw connect-the-dots line so a noisy
+ * per-attempt wobble doesn't read as "no progress." Returns null under 3
+ * points (a 2-point regression is identical to the raw line — drawing it
+ * would just double the same segment) or a degenerate all-equal-x input
+ * (unreachable here since `i` is the unique attempt index; guarded anyway
+ * so a future caller can't divide by zero). Endpoints are clamped into the
+ * chart's 0–100 score axis like every other plotted value.
+ */
+function regressionTrend(
+  points: readonly SeriesPoint[],
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const n = points.length;
+  if (n < 3) return null;
+  const meanX = points.reduce((acc, p) => acc + p.i, 0) / n;
+  const meanY = points.reduce((acc, p) => acc + p.score, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (const p of points) {
+    const dx = p.i - meanX;
+    num += dx * (p.score - meanY);
+    den += dx * dx;
+  }
+  if (den === 0) return null;
+  const slope = num / den;
+  const intercept = meanY - slope * meanX;
+  const first = points[0]?.i ?? 0;
+  const last = points[n - 1]?.i ?? 0;
+  const clamp = (v: number): number => Math.min(100, Math.max(0, v));
+  return {
+    x1: first,
+    y1: clamp(intercept + slope * first),
+    x2: last,
+    y2: clamp(intercept + slope * last),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────
 // Page
 // ─────────────────────────────────────────────────────────────
@@ -481,7 +544,7 @@ function Progress(): JSX.Element {
 
   return (
     <section
-      className="screen km-progress"
+      className="screen km-progress km-rain-sheen"
       aria-labelledby="progress-title"
       style={{ position: 'relative' }}
     >
@@ -489,50 +552,108 @@ function Progress(): JSX.Element {
         <MockBadge />
       ) : null}
 
-      <Eyebrow>
-        {/* P3b: the page eyebrow renders nav.ts's en/kr pair bilingually. */}
-        <Bilingual en={PROGRESS_NAV.eyebrow} kr={PROGRESS_NAV.krEyebrow} />
-      </Eyebrow>
-      <h1 id="progress-title" className="kr-display km-progress__title">
-        {/* P3a: page-title chrome follows the language-display setting. */}
-        <Bilingual kr="성장" en="Progress" />
-      </h1>
+      {/* F-128 device #4 — the Namsan skyline strip carries the real
+          page heading; SkylineHeader itself renders plain markup (no
+          heading semantics of its own), so `aria-labelledby` above still
+          points at a real <h1>. */}
+      <SkylineHeader
+        className="km-progress__skyline"
+        title={
+          <>
+            <Eyebrow>
+              {/* P3b: the page eyebrow renders nav.ts's en/kr pair bilingually. */}
+              <Bilingual en={PROGRESS_NAV.eyebrow} kr={PROGRESS_NAV.krEyebrow} />
+            </Eyebrow>
+            <h1 id="progress-title" className="kr-display km-progress__title">
+              {/* P3a: page-title chrome follows the language-display setting. */}
+              <Bilingual kr="성장" en="Progress" />
+            </h1>
+          </>
+        }
+      />
 
-      {hist.loading ? (
-        <div className="km-progress__state" role="status">
-          <Bilingual en="Loading progress…" kr="불러오는 중…" />
-        </div>
-      ) : null}
+      {/* F-128 device #2 — a short dancheong-rail accent under the
+          skyline. Purely decorative (DancheongRail is aria-hidden itself). */}
+      <div className="km-progress__rail-divider">
+        <DancheongRail tone="accent" />
+      </div>
 
-      {!hist.loading && fatalError !== null ? (
-        <ErrorCard
-          message={errorMessageFor(
-            fatalError,
-            'Could not load your progress history.',
-          )}
-          onRetry={hist.refetch}
-        />
-      ) : null}
+      {/* F-141 — every section is a CollapsibleTile. The TOPIK-compare
+          section is the one the ticket names explicitly as default-OPEN;
+          the other two default-collapsed. CollapsibleTile keeps a
+          collapsed body mounted (aria-hidden + inert), so every fetch below
+          still runs on page load regardless of fold state. */}
+      <CollapsibleTile
+        className="km-progress__section"
+        defaultCollapsed={false}
+        surface="city"
+        tone="accent"
+        rail
+        title={<Bilingual en="TOPIK compare" kr="TOPIK 비교" />}
+      >
+        {hist.loading ? (
+          <div className="km-progress__state" role="status">
+            <Bilingual en="Loading progress…" kr="불러오는 중…" />
+          </div>
+        ) : fatalError !== null ? (
+          <ErrorCard
+            message={errorMessageFor(
+              fatalError,
+              'Could not load your progress history.',
+            )}
+            onRetry={hist.refetch}
+          />
+        ) : snapshots !== null ? (
+          snapshots.length === 0 ? (
+            <EmptyBlockBody />
+          ) : (
+            <CompareCardBody snapshots={snapshots} />
+          )
+        ) : null}
+      </CollapsibleTile>
 
-      {!hist.loading && fatalError === null && snapshots !== null ? (
-        snapshots.length === 0 ? (
-          <EmptyBlock />
-        ) : (
-          <HistoryBlocks snapshots={snapshots} />
-        )
-      ) : null}
+      <CollapsibleTile
+        className="km-progress__section"
+        defaultCollapsed
+        surface="city"
+        tone="plain"
+        rail
+        title={<Bilingual en="Progress by skill" kr="실력 추이" />}
+      >
+        <SkillTrendsBody series={series} />
+      </CollapsibleTile>
 
-      <SkillTrendsCard series={series} />
-
-      <MasterySection />
+      <CollapsibleTile
+        className="km-progress__section"
+        defaultCollapsed
+        surface="city"
+        tone="blue"
+        rail
+        title={<Bilingual en="Mastery" kr="숙달" />}
+      >
+        <MasteryBody />
+      </CollapsibleTile>
     </section>
   );
 }
 
-function EmptyBlock(): JSX.Element {
+/**
+ * F-143 — the ticket asked to remove a "begin today's plan" block and a
+ * "gaps / next steps" block from Progress. Neither exists on this page (that
+ * copy lives on `Diagnostic.tsx`'s results screen); there was nothing to cut
+ * here. Progress.test.tsx pins a regression assertion that these strings
+ * never appear on this page.
+ */
+function EmptyBlockBody(): JSX.Element {
   const navigate = useNavigate();
   return (
-    <Card className="km-progress__card">
+    // F-128 devices #3/#6 — a faint giwa roof texture + a giant "성장"
+    // hangul watermark behind the empty state (both are decorative CSS
+    // layered under the content — see seoul-devices.css).
+    <div
+      className="km-progress__empty km-giwa km-hangul-watermark"
+      data-glyph="성장"
+    >
       <Eyebrow>
         <Bilingual en="No attempts yet" kr="아직 기록 없음" />
       </Eyebrow>
@@ -554,7 +675,7 @@ function EmptyBlock(): JSX.Element {
       >
         <Bilingual en="Take the diagnostic" kr="진단 시작" />
       </Button>
-    </Card>
+    </div>
   );
 }
 
@@ -566,8 +687,27 @@ interface HistoryProps {
   snapshots: DiagnosticHistorySnapshot[];
 }
 
-function HistoryBlocks({ snapshots }: HistoryProps): JSX.Element {
-  return <CompareCard snapshots={snapshots} />;
+/**
+ * F-128 personal-best check for the milestone SealStamp (device #7): true
+ * only when the latest attempt's derived Overall beats every prior
+ * attempt's Overall. Needs >= 2 attempts — a single attempt has nothing to
+ * beat, so a first attempt is never announced as a "new best".
+ */
+function isNewBest(snapshots: readonly DiagnosticHistorySnapshot[]): boolean {
+  const n = snapshots.length;
+  if (n < 2) return false;
+  const latest = snapshots[n - 1];
+  if (latest === undefined) return false;
+  const latestOverall = overallOf(latest);
+  if (latestOverall === null) return false;
+  const priorBest = snapshots
+    .slice(0, n - 1)
+    .reduce<number | null>((best, s) => {
+      const o = overallOf(s);
+      if (o === null) return best;
+      return best === null ? o : Math.max(best, o);
+    }, null);
+  return priorBest !== null && latestOverall > priorBest;
 }
 
 /**
@@ -611,14 +751,16 @@ function HistoryPage({
  * and the attempt-history carousel (F-030) as the card's bottom section:
  * Trend → Attempt vs attempt (≥ 2 attempts only) → All attempts, looping
  * (F-029). One card answers every history question instead of three stacked
- * cards competing for the page.
+ * cards competing for the page. No longer its own `Card` (F-141 moved the
+ * outer surface to the page's `CollapsibleTile`) — this returns the
+ * section's CONTENT only.
  */
-function CompareCard({ snapshots }: HistoryProps): JSX.Element {
+function CompareCardBody({ snapshots }: HistoryProps): JSX.Element {
   const navigate = useNavigate();
   const n = snapshots.length;
   const latest = snapshots[snapshots.length - 1];
   if (latest === undefined) {
-    // Unreachable: the caller renders HistoryBlocks only when n >= 1.
+    // Unreachable: the caller renders CompareCardBody only when n >= 1.
     // Guarded for noUncheckedIndexedAccess.
     return <></>;
   }
@@ -669,7 +811,7 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
   ];
 
   return (
-    <Card className="km-progress__card">
+    <>
       {/* P3b: the old eyebrow paired two UNRELATED halves ("Latest attempt" /
           "실력 비교") — each label now carries its own true translation. */}
       <Eyebrow>
@@ -677,7 +819,42 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
       </Eyebrow>
       <div className="km-progress__card-title">
         <Bilingual en="Where you stand" kr="현재 실력" />
+        {isNewBest(snapshots) ? (
+          // F-128 device #7 — a milestone seal when the latest attempt is a
+          // new personal best. `km-najeon` (device #9) gives it a sparing
+          // mother-of-pearl sheen — this IS the "jewel" moment the doc
+          // reserves that device for, not ambient wallpaper.
+          <SealStamp
+            milestone
+            size="sm"
+            tone="accent"
+            label={<Bilingual en="New best" kr="최고 기록" compact />}
+            className="km-najeon"
+          />
+        ) : null}
       </div>
+
+      {/* F-128 device #5 — the subway-line reading of the attempt COUNT: a
+          growing metro line, one station per attempt, filled up to the
+          latest. Distinct from the Trend chart below (which reads SCORE
+          over time) — this reads volume, how many runs are banked so far. */}
+      <div className="km-progress__subwaywrap">
+        <SubwayProgress
+          steps={n}
+          current={n - 1}
+          tone="accent"
+          label="Diagnostic attempts so far"
+          valueText={`Attempt ${String(n)} of ${String(n)}`}
+        />
+        <p className="km-progress__note km-progress__subwaynote">
+          <Bilingual
+            en={`${String(n)} attempt${n === 1 ? '' : 's'} so far`}
+            kr={`총 ${String(n)}회 진단`}
+            compact
+          />
+        </p>
+      </div>
+
       <SkillsCompare
         variant="full"
         skills={toSkillRows(latest)}
@@ -701,7 +878,7 @@ function CompareCard({ snapshots }: HistoryProps): JSX.Element {
           {pages}
         </SwipeCarousel>
       </div>
-    </Card>
+    </>
   );
 }
 
@@ -857,6 +1034,16 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
   // Label every attempt when they fit; thin to ~8 labels beyond that.
   const labelStep = n <= 8 ? 1 : Math.ceil(n / 8);
 
+  // F-142 — a dashed least-squares trend line over the Overall series only
+  // (the derived aggregate is the one line worth smoothing; per-dimension
+  // noise is exactly what the raw lines already show honestly).
+  const overallSeriesPoints: SeriesPoint[] = [];
+  snapshots.forEach((s, i) => {
+    const score = seriesScore(s, 'overall');
+    if (score !== null) overallSeriesPoints.push({ i, score });
+  });
+  const overallTrend = regressionTrend(overallSeriesPoints);
+
   return (
     <div>
       <div className="km-progress__chartwrap">
@@ -957,15 +1144,34 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
                       />
                     ) : null,
                 )}
-                {points.map((p) => (
-                  <circle
-                    key={`dot-${series.key}-${String(p.i)}`}
-                    className={`km-progress__dot km-progress__fill--${series.key}`}
-                    cx={xFor(p.i, n)}
-                    cy={yFor(p.score)}
-                    r={4}
+                {series.key === 'overall' && overallTrend !== null ? (
+                  <line
+                    className="km-progress__trendfit"
+                    x1={xFor(overallTrend.x1, n)}
+                    y1={yFor(overallTrend.y1)}
+                    x2={xFor(overallTrend.x2, n)}
+                    y2={yFor(overallTrend.y2)}
                   />
-                ))}
+                ) : null}
+                {points.map((p, idx) => {
+                  // Every attempt already gets a marker (F-142 "visible data
+                  // points"); the latest per series is emphasized (larger,
+                  // thicker ring) so the current standing reads at a glance.
+                  const isLatest = idx === points.length - 1;
+                  return (
+                    <circle
+                      key={`dot-${series.key}-${String(p.i)}`}
+                      className={cn(
+                        'km-progress__dot',
+                        `km-progress__fill--${series.key}`,
+                        isLatest && 'km-progress__dot--latest',
+                      )}
+                      cx={xFor(p.i, n)}
+                      cy={yFor(p.score)}
+                      r={isLatest ? 5.5 : 4}
+                    />
+                  );
+                })}
                 {/* Selective direct label: the Overall endpoint only — the
                     legend + readout + table carry everything else. */}
                 {series.key === 'overall' && lastPoint !== undefined ? (
@@ -1061,6 +1267,17 @@ function TrendChart({ snapshots }: HistoryProps): JSX.Element {
           </li>
         ))}
       </ul>
+
+      {/* F-142 — names what the dashed overlay means; only appears when it's
+          actually drawn (>= 3 attempts). */}
+      {overallTrend !== null ? (
+        <p className="km-progress__trendnote">
+          <Bilingual
+            en="Dashed line: overall trend across attempts"
+            kr="점선: 전체 회차 추이"
+          />
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -1645,24 +1862,19 @@ const MASTERY_TABS: ReadonlyArray<TabItem> = [
  * so each panel owns its fetch lifecycle — an aborted switch never leaks a
  * request or state into the next tab.
  */
-function MasterySection(): JSX.Element {
+function MasteryBody(): JSX.Element {
   return (
-    <Card className="km-progress__card">
-      <div className="km-progress__card-title">
-        <Bilingual en="Mastery" kr="숙달" />
-      </div>
-      <Tabs tabs={MASTERY_TABS} ariaLabel="Mastery">
-        {(activeId) =>
-          activeId === 'grammar' ? (
-            <GrammarMasteryPanel />
-          ) : activeId === 'hanja' ? (
-            <HanjaMasteryPanel />
-          ) : (
-            <WordMasteryPanel />
-          )
-        }
-      </Tabs>
-    </Card>
+    <Tabs tabs={MASTERY_TABS} ariaLabel="Mastery">
+      {(activeId) =>
+        activeId === 'grammar' ? (
+          <GrammarMasteryPanel />
+        ) : activeId === 'hanja' ? (
+          <HanjaMasteryPanel />
+        ) : (
+          <WordMasteryPanel />
+        )
+      }
+    </Tabs>
   );
 }
 

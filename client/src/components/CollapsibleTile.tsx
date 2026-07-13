@@ -1,12 +1,31 @@
 /**
- * CollapsibleTile (F-038) — a Card whose body collapses behind its header.
+ * CollapsibleTile (F-038) — a themed surface whose body collapses behind
+ * its header.
  *
- * Built ON the Card visual language (it literally composes `<Card>`) so a
- * collapsed tile is indistinguishable from a plain card at rest — same
- * radius, surface, and elevation. The header row (caller-supplied title +
- * a rotating chevron) is one full-width `<button>`; the whole row is the
- * hit target, not just the chevron, because a 24px icon is a hostile
- * touch target on the phone-width shell.
+ * `surface` picks the outer shell:
+ *   - `'card'` (default) — composes the plain `<Card>` every screen already
+ *     used before the Seoul redesign. A collapsed tile is indistinguishable
+ *     from a plain card at rest — same radius, surface, elevation.
+ *     BACKWARD-COMPATIBLE: every pre-existing consumer (Review, Settings,
+ *     Hanja, Topik, Grammar, Mistakes, Today's Grammar/Hanja/TOPIK tiles,
+ *     Progress before this prop existed) never passes `surface`, so it
+ *     renders byte-identically to before this prop was added.
+ *   - `'city'` — composes `CityCard` instead (DESIGN_SEOUL_DAY_NIGHT.md
+ *     device #1/#2: Night neon-signboard glow, Day hanji-paper + dancheong
+ *     rail), for Wave-2 pages that want their fold-away sections to read as
+ *     signboards rather than plain cards (see `REVIEW_batch1-fidelity.md`
+ *     C-1: two pages had independently hand-rolled/omitted this exact glow
+ *     because `CollapsibleTile` only offered the plain `Card` — this variant
+ *     removes both workarounds). `tone`/`rail`/`feat` forward straight to
+ *     `CityCard` and are ignored under `surface="card"`.
+ *
+ * The header row (caller-supplied title + a rotating chevron) is one
+ * full-width `<button>` regardless of surface; the whole row is the hit
+ * target, not just the chevron, because a 24px icon is a hostile touch
+ * target on the phone-width shell. Both surfaces get their outer padding
+ * zeroed (`.km-collapsible` / the `.km-citycard.km-collapsible` override in
+ * CollapsibleTile.css) so the header button can be the full-bleed hit
+ * target either way.
  *
  * Collapse animation: the body is a CSS grid row animating
  * `grid-template-rows: 1fr ↔ 0fr`. This is the robust form of the classic
@@ -35,6 +54,7 @@
 import { useId, useState } from 'react';
 import type { JSX, ReactNode } from 'react';
 import { Card } from './Card';
+import { CityCard, type CityCardTone } from './CityCard';
 import { Icon } from './Icon';
 import { cn } from '../lib/cn';
 import './CollapsibleTile.css';
@@ -46,8 +66,18 @@ export interface CollapsibleTileProps {
   defaultCollapsed?: boolean;
   /** Body content, revealed when expanded. */
   children: ReactNode;
-  /** Extra class(es) on the outer Card. */
+  /** Extra class(es) on the outer surface. */
   className?: string;
+  /** Outer surface — `'card'` (default, backward-compatible) or `'city'`
+   *  (CityCard-backed signboard). See the file-top doc comment. */
+  surface?: 'card' | 'city';
+  /** CityCard tone — only meaningful under `surface="city"`. */
+  tone?: CityCardTone;
+  /** CityCard leading-edge DancheongRail — only meaningful under
+   *  `surface="city"`. */
+  rail?: boolean;
+  /** CityCard featured emphasis — only meaningful under `surface="city"`. */
+  feat?: boolean;
 }
 
 export function CollapsibleTile({
@@ -55,48 +85,74 @@ export function CollapsibleTile({
   defaultCollapsed = false,
   children,
   className,
+  surface = 'card',
+  tone = 'accent',
+  rail = false,
+  feat = false,
 }: CollapsibleTileProps): JSX.Element {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const id = useId();
   const bodyId = `${id}-body`;
 
+  const header = (
+    <button
+      type="button"
+      className="km-collapsible__header focusring"
+      aria-expanded={!collapsed}
+      aria-controls={bodyId}
+      onClick={() => {
+        setCollapsed((c) => !c);
+      }}
+    >
+      <span className="km-collapsible__title">{title}</span>
+      <Icon
+        name="chevron-down"
+        size={16}
+        className={cn(
+          'km-collapsible__chevron',
+          !collapsed && 'km-collapsible__chevron--open',
+        )}
+      />
+    </button>
+  );
+
+  const body = (
+    <div
+      id={bodyId}
+      className={cn(
+        'km-collapsible__body',
+        collapsed && 'km-collapsible__body--collapsed',
+      )}
+      aria-hidden={collapsed}
+      inert={collapsed}
+    >
+      {/* Two wrappers, deliberately: __clip owns the 0fr overflow clip;
+          __content owns the padding (padding on the clipped element would
+          survive the row's collapse to 0 and leave a visible strip). */}
+      <div className="km-collapsible__clip">
+        <div className="km-collapsible__content">{children}</div>
+      </div>
+    </div>
+  );
+
+  if (surface === 'city') {
+    return (
+      <CityCard
+        tone={tone}
+        rail={rail}
+        feat={feat}
+        className={cn('km-collapsible', className)}
+      >
+        {header}
+        {body}
+      </CityCard>
+    );
+  }
+
   return (
     <Card className={cn('km-collapsible', className)}>
-      <button
-        type="button"
-        className="km-collapsible__header focusring"
-        aria-expanded={!collapsed}
-        aria-controls={bodyId}
-        onClick={() => {
-          setCollapsed((c) => !c);
-        }}
-      >
-        <span className="km-collapsible__title">{title}</span>
-        <Icon
-          name="chevron-down"
-          size={16}
-          className={cn(
-            'km-collapsible__chevron',
-            !collapsed && 'km-collapsible__chevron--open',
-          )}
-        />
-      </button>
-      <div
-        id={bodyId}
-        className={cn(
-          'km-collapsible__body',
-          collapsed && 'km-collapsible__body--collapsed',
-        )}
-        aria-hidden={collapsed}
-        inert={collapsed}
-      >
-        {/* Two wrappers, deliberately: __clip owns the 0fr overflow clip;
-            __content owns the padding (padding on the clipped element would
-            survive the row's collapse to 0 and leave a visible strip). */}
-        <div className="km-collapsible__clip">
-          <div className="km-collapsible__content">{children}</div>
-        </div>
-      </div>
+      {header}
+      {body}
     </Card>
   );
 }

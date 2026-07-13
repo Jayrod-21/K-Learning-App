@@ -1,15 +1,23 @@
 /**
  * CollapsibleTile — disclosure toggling (click + native keyboard),
- * defaultCollapsed, and the aria wiring (`aria-expanded`, `aria-controls`
- * → body id, body hidden + inert while collapsed).
+ * defaultCollapsed, the aria wiring (`aria-expanded`, `aria-controls` →
+ * body id, body hidden + inert while collapsed), and the `surface` variant
+ * (`'card'` default vs. `'city'`, the CityCard-backed signboard — see
+ * REVIEW_batch1-fidelity.md C-1).
  */
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CollapsibleTile } from './CollapsibleTile';
+import type { CollapsibleTileProps } from './CollapsibleTile';
 
 function renderTile(
-  props: Partial<{ defaultCollapsed: boolean; className: string }> = {},
+  props: Partial<
+    Pick<
+      CollapsibleTileProps,
+      'defaultCollapsed' | 'className' | 'surface' | 'tone' | 'rail' | 'feat'
+    >
+  > = {},
 ): ReturnType<typeof render> {
   return render(
     <CollapsibleTile title="Study streak" {...props}>
@@ -89,5 +97,47 @@ describe('CollapsibleTile', () => {
     const root = container.querySelector('.km-collapsible');
     expect(root).not.toBeNull();
     expect(root).toHaveClass('km-card', 'extra-class');
+  });
+
+  // ── surface variant (C-1 fix: a shared CityCard-backed signboard) ──
+
+  it('defaults to the plain Card surface when `surface` is omitted (backward-compatible)', () => {
+    const { container } = renderTile();
+    const root = container.querySelector('.km-collapsible');
+    expect(root).not.toBeNull();
+    expect(root).toHaveClass('km-card');
+    expect(root).not.toHaveClass('km-citycard');
+  });
+
+  it('surface="city" renders a CityCard root carrying tone/rail/feat, with identical a11y wiring', () => {
+    const { container } = renderTile({
+      surface: 'city',
+      tone: 'blue',
+      rail: true,
+      feat: true,
+      className: 'extra-class',
+    });
+    const root = container.querySelector('.km-collapsible');
+    expect(root).not.toBeNull();
+    expect(root).toHaveClass(
+      'km-citycard',
+      'km-tone--blue',
+      'km-citycard--feat',
+      'extra-class',
+    );
+    expect(root).not.toHaveClass('km-card');
+    // The DancheongRail `rail` prop composes as a decorative aria-hidden
+    // sibling inside the CityCard root — confirms it actually forwarded.
+    expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
+
+    // Same disclosure contract as the `card` surface.
+    const header = screen.getByRole('button', { name: 'Study streak' });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('BODY CONTENT')).toBeInTheDocument();
+  });
+
+  it('surface="city" without `rail` renders no DancheongRail (rail defaults false, like CityCard)', () => {
+    const { container } = renderTile({ surface: 'city' });
+    expect(container.querySelector('.km-dancheong-rail')).toBeNull();
   });
 });
