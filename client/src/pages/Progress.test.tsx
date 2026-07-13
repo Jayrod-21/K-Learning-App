@@ -1,8 +1,9 @@
 /**
- * Progress page (the P1.2 stats hub, reworked in Phase 3a) — compare surface
- * + attempt-history carousel + per-skill trends carousel + tabbed mastery,
- * over a mocked `useEndpointOrMock` (same harness style as Hanja/Diagnostic
- * page tests).
+ * Progress page (the P1.2 stats hub, reworked in Phase 3a; reskinned +
+ * reworked for Wave-2 "Seoul, Day & Night" — F-128/F-129/F-141/F-142/F-143)
+ * — compare surface + attempt-history carousel + per-skill trends carousel +
+ * tabbed mastery, over a mocked `useEndpointOrMock` (same harness style as
+ * Hanja/Diagnostic page tests).
  *
  * The hook is mocked with a per-key dispatch so each test controls the
  * `diagnostic.history` and `progress.series` reads directly; the page's
@@ -11,6 +12,16 @@
  * comparison + attempts tables, carousel tabs/panels), which is also what
  * makes the charts usable without a pointer.
  *
+ * F-141 — every section is now a `CollapsibleTile`. "Progress by skill" and
+ * "Mastery" default COLLAPSED (their body is aria-hidden + inert, so
+ * `getByRole` correctly can't see inside until expanded); `renderPage()`
+ * below expands both immediately after render so every PRE-EXISTING test in
+ * this file keeps exercising real, visible content without adding an expand
+ * step to each one individually. The dedicated collapse/expand behavior
+ * itself is covered by its own describe block, which renders WITHOUT that
+ * auto-expand. "TOPIK compare" defaults OPEN (the ticket names it
+ * explicitly) and needs no click.
+ *
  * Phase-3a contract pinned here:
  *   - F-030: the compare card's bottom section is a LOOPING attempt-history
  *     SwipeCarousel ordered Trend → Attempt vs attempt → All attempts (the
@@ -18,7 +29,7 @@
  *   - F-031: the word list is windowed 15 → +15 → 30 via ShowMore on top of
  *     the 30-per-page server pager, and the window collapses on filter/page
  *     changes.
- *   - F-032: Word / Grammar / Hanja mastery are tabs sharing ONE card.
+ *   - F-032: Word / Grammar / Hanja mastery are tabs sharing ONE area.
  *   - F-041: the Hanja tab renders GET /hanja/progress bands, with a
  *     graceful invitation for a user with no hanja activity and a real
  *     error/retry path.
@@ -277,6 +288,15 @@ function renderPage(): void {
       </Routes>
     </MemoryRouter>,
   );
+  // F-141 — "Progress by skill" and "Mastery" default COLLAPSED; every test
+  // below this line was written against the pre-collapsible page (their
+  // content always visible), so open both here rather than adding an expand
+  // step to every one of them. "TOPIK compare" defaults open already and
+  // needs no click. `fireEvent` (not `userEvent`) keeps this synchronous —
+  // the toggle is plain `useState`, so the click flushes before this
+  // function returns.
+  fireEvent.click(screen.getByRole('button', { name: /Progress by skill/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Mastery/ }));
 }
 
 /** The F-030 attempt-history carousel region (inside the compare card). */
@@ -1300,23 +1320,24 @@ describe('Progress page — P3b bilingual chrome + verbage trims', () => {
     expect(screen.getByText('회차 비교')).toBeInTheDocument();
   });
 
-  it('trims the eyebrow/title redundancy: one bilingual label per card', () => {
+  it('trims the eyebrow/title redundancy: one bilingual label per section', () => {
     renderPage();
 
-    // Mastery (F-032) — ONE bilingual card title over the tab strip; the
-    // section names live on the tabs, not on stacked per-section titles.
+    // Mastery (F-032/F-141) — ONE bilingual label, now the CollapsibleTile
+    // section header itself (not a second title stacked inside the body);
+    // the sub-section names live on the tabs, not on repeated titles.
     expect(screen.getAllByText('숙달')).toHaveLength(1);
     expect(
-      screen.getByText('숙달').closest('.km-progress__card-title'),
+      screen.getByText('숙달').closest('.km-collapsible__title'),
     ).not.toBeNull();
     expect(screen.queryByText('단어 숙달')).not.toBeInTheDocument();
     expect(screen.queryByText('문법 숙달')).not.toBeInTheDocument();
 
     // Progress by skill — the eyebrow keeps only the window meta; "실력
-    // 추이" is the title's Korean, once.
+    // 추이" is the CollapsibleTile section header's Korean, once.
     expect(screen.getAllByText('실력 추이')).toHaveLength(1);
     expect(
-      screen.getByText('실력 추이').closest('.km-progress__card-title'),
+      screen.getByText('실력 추이').closest('.km-collapsible__title'),
     ).not.toBeNull();
     expect(screen.getByText('Last 30 days')).toBeInTheDocument();
     expect(screen.getByText('최근 30일')).toBeInTheDocument();
@@ -1327,5 +1348,216 @@ describe('Progress page — P3b bilingual chrome + verbage trims', () => {
     expect(screen.getByText('All attempts')).toBeInTheDocument();
     expect(screen.getByText('전체 회차')).toBeInTheDocument();
     expect(screen.getByText('Oldest first')).toBeInTheDocument();
+  });
+});
+
+describe('Progress page — collapsible sections (F-141)', () => {
+  /** Renders WITHOUT the `renderPage()` auto-expand, so the real default
+   *  (collapsed) state is observable. */
+  function renderRaw(): void {
+    render(
+      <MemoryRouter>
+        <Routes>
+          <Route path="/" element={<Progress />} />
+          <Route path="/diagnostic" element={<div>DIAGNOSTIC PAGE</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  it('opens the TOPIK-compare section by default (no click needed)', () => {
+    renderRaw();
+
+    const header = screen.getByRole('button', { name: /TOPIK compare/ });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    // Its content (the compare surface) is already visible without a click.
+    expect(screen.getByText('Where you stand')).toBeInTheDocument();
+  });
+
+  it('collapses "Progress by skill" and "Mastery" by default, and each toggles open/closed on click', async () => {
+    const user = userEvent.setup();
+    renderRaw();
+
+    const skillHeader = screen.getByRole('button', { name: /Progress by skill/ });
+    const masteryHeader = screen.getByRole('button', { name: /Mastery/ });
+    expect(skillHeader).toHaveAttribute('aria-expanded', 'false');
+    expect(masteryHeader).toHaveAttribute('aria-expanded', 'false');
+    // Collapsed content is aria-hidden + inert — the default (visible-only)
+    // role query correctly can't see inside yet.
+    expect(
+      screen.queryByRole('region', { name: 'Progress by skill' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('tablist', { name: 'Mastery' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(skillHeader);
+    expect(skillHeader).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      screen.getByRole('region', { name: 'Progress by skill' }),
+    ).toBeInTheDocument();
+
+    // Round-trip: clicking again re-collapses it — not a one-way reveal.
+    await user.click(skillHeader);
+    expect(skillHeader).toHaveAttribute('aria-expanded', 'false');
+    expect(
+      screen.queryByRole('region', { name: 'Progress by skill' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(masteryHeader);
+    expect(masteryHeader).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('tablist', { name: 'Mastery' })).toBeInTheDocument();
+  });
+
+  it('keeps a collapsed section\'s data fetch running (mounted, not torn down)', async () => {
+    // F-141 — CollapsibleTile keeps the body MOUNTED while collapsed
+    // (aria-hidden + inert, never unmounted), so the Mastery tab's fetch
+    // fires on page load even before the user ever expands the section.
+    renderRaw();
+    await waitFor(() => {
+      expect(masterySvc.fetchMastery).toHaveBeenCalled();
+    });
+  });
+});
+
+describe('Progress page — F-142 richer trend lines + visible data points', () => {
+  it('renders a marker for every plotted attempt, without needing hover/focus', () => {
+    renderPage();
+
+    const chart = screen.getByRole('img', {
+      name: /Line chart of diagnostic scores across 3 attempts/,
+    });
+    // HISTORY_3: 5 series (4 dimensions + Overall) × 3 attempts, every
+    // dimension present on every attempt — 15 always-visible markers.
+    expect(chart.querySelectorAll('.km-progress__dot')).toHaveLength(15);
+  });
+
+  it('emphasizes each series\' latest point and draws a dashed Overall trend line (>= 3 attempts)', () => {
+    renderPage();
+
+    const chart = screen.getByRole('img', {
+      name: /Line chart of diagnostic scores across 3 attempts/,
+    });
+    // One emphasized "latest" marker per series (5 series).
+    expect(chart.querySelectorAll('.km-progress__dot--latest')).toHaveLength(5);
+    // The regression trend line over the Overall series.
+    expect(chart.querySelectorAll('.km-progress__trendfit')).toHaveLength(1);
+    expect(
+      screen.getByText(/Dashed line: overall trend across attempts/),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the trend line under 3 attempts (a 2-point regression would just double the raw line)', () => {
+    hookOverride.current = { data: historyOf(2) };
+    renderPage();
+
+    // Trend is always the carousel's first (default-active) page — no
+    // navigation needed regardless of how many pages exist.
+    const chart = screen.getByRole('img', {
+      name: /Line chart of diagnostic scores across 2 attempts/,
+    });
+    expect(chart.querySelectorAll('.km-progress__trendfit')).toHaveLength(0);
+    expect(
+      screen.queryByText(/Dashed line: overall trend across attempts/),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('Progress page — F-143 (blocks were never on this page)', () => {
+  it('never renders a "begin today\'s plan" or "gaps / next steps" block', () => {
+    // That copy lives on Diagnostic.tsx's results screen, not Progress —
+    // this pins the negative so a future change can't reintroduce it here.
+    renderPage();
+
+    expect(screen.queryByText(/Begin today’s plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/오늘의 계획 시작/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Next steps$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/다음 단계/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Derived from your gaps/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/약점 기반/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Progress page — F-128 Seoul devices (subway line + milestone seal)', () => {
+  it('reads the attempt count as a subway-line progressbar', () => {
+    renderPage(); // HISTORY_3 — 3 attempts.
+
+    const bar = screen.getByRole('progressbar', {
+      name: 'Diagnostic attempts so far',
+    });
+    expect(bar).toHaveAttribute('aria-valuenow', '3');
+    expect(bar).toHaveAttribute('aria-valuemax', '3');
+  });
+
+  it('shows a "New best" milestone seal when the latest attempt beats every prior one', () => {
+    renderPage(); // HISTORY_3 overall: 42 → 53 → 67 (rising).
+
+    expect(screen.getByText('New best')).toBeInTheDocument();
+  });
+
+  it('omits the milestone seal when the latest attempt is not an improvement', () => {
+    hookOverride.current = {
+      data: {
+        snapshots: [
+          HISTORY_3.snapshots[2] as DiagnosticHistorySnapshot, // overall 67
+          HISTORY_3.snapshots[0] as DiagnosticHistorySnapshot, // overall 42 (latest, worse)
+        ],
+      },
+    };
+    renderPage();
+
+    expect(screen.queryByText('New best')).not.toBeInTheDocument();
+  });
+
+  it('omits the milestone seal with only one attempt (nothing to beat yet)', () => {
+    hookOverride.current = { data: historyOf(1) };
+    renderPage();
+
+    expect(screen.queryByText('New best')).not.toBeInTheDocument();
+  });
+});
+
+describe('Progress page — F-129 mobile: wide content stays in its own scroll container', () => {
+  it('wraps every table in its own overflow-x:auto container, never the page body', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    // All attempts table (F-030 carousel page 3).
+    await goToHistoryPage(user, 3);
+    const attemptsTable = screen.getByRole('table', {
+      name: /All diagnostic attempts/,
+    });
+    expect(attemptsTable.closest('.km-progress__tablewrap')).not.toBeNull();
+
+    // Attempt-vs-attempt table (F-030 carousel page 2).
+    await goToHistoryPage(user, 2);
+    const compareTable = screen.getByRole('table', {
+      name: /Score change from attempt/,
+    });
+    expect(compareTable.closest('.km-progress__tablewrap')).not.toBeNull();
+  });
+
+  it('renders a long mastery translation without crashing (ellipsis, not overflow)', async () => {
+    masterySvc.fetchMastery.mockResolvedValue({
+      summary: { new: 1, learning: 0, reviewing: 0, mastered: 0, total: 1 },
+      words: [
+        {
+          id: 1,
+          korean: '단어',
+          english:
+            'a very long English gloss that would blow out a narrow row if the grid track had no min-width floor',
+          bucket: 'new',
+          stability: 0,
+          reps: 0,
+          lapses: 0,
+          dueAt: null,
+        },
+      ],
+      total: 1,
+    });
+    renderPage();
+
+    const gloss = await screen.findByText(/a very long English gloss/);
+    expect(gloss).toHaveClass('km-mastery__en');
   });
 });

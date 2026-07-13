@@ -1,118 +1,109 @@
 /*
- * Today — page-scoped styles for the action hub (Overhaul P1.2, Slice A;
- * reworked in P3a for F-026/F-027/F-028/F-029 + B-018).
+ * Today — page-scoped styles for the action hub. Wave-2 "Seoul Day & Night"
+ * reskin (F-128) + tightened layout (F-133).
  *
- * What lives here: the carousel page wrappers, the ActionTile accent tiles
- * (the F-026 vocab/grammar lead carousel + the F-028 TOPIK carousel), and
- * the resume-exam corner banner. The P1.2 coming-soon panel, open-exam
- * panel, and review-shortcut row styles were removed WITH their components
- * (B-018/F-028 replaced them — no orphaned rules left behind). The retired
- * .km-today__queue* rules in styles/index.css were deleted in the P3a
- * fix-pass once the parallel P3a branches had merged.
+ * What lives here: the hero/section spacing, the `ActivityTile` chrome
+ * (button-wraps-CityCard, per DESIGN_SEOUL_DAY_NIGHT.md devices #1/#2), the
+ * Writing inline-expand tile's Night neon override (CollapsibleTile itself
+ * composes the plain `Card` primitive — a shared component out of this
+ * page's edit scope — so its Night glow is reproduced here with the SAME
+ * token formula CityCard.css uses, scoped to `.km-today__writingTile`
+ * only), and the resume-exam corner banner.
  *
- * Colocated with Today.tsx. Same design tokens as the rest of the app, so
- * both themes and every accent preset come free.
+ * Token-driven only (no hard-coded hex anywhere in this file) — every color
+ * comes from styles/index.css's Day/Night/accent-aware custom properties, so
+ * both themes and every accent preset (F-131) come free.
  */
 
-/* Carousel page wrappers — the small inset keeps a tile's focus ring inside
-   the carousel viewport's overflow clip. The task page stacks the TaskCard
-   with the F-027 topic generator on the Writing page. */
-.km-today__taskPage {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 2px 2px 4px;
+.km-today {
+  padding-bottom: 20px;
 }
 
-.km-today__taskPage .km-taskcard {
-  width: 100%;
+.km-today__hero {
+  margin: 0 0 8px;
 }
 
+.km-today__sectionEyebrow {
+  margin: 18px 0 8px;
+}
+
+.km-today__section {
+  margin-bottom: 6px;
+}
+
+/* Carousel page wrapper — small inset keeps a tile's focus ring inside the
+ * carousel viewport's overflow clip. Relative units + full-width content
+ * only (F-129): nothing here ever forces a fixed px width past the
+ * viewport. */
 .km-today__tilePage {
-  padding: 2px 2px 4px;
+  padding: 2px 2px 6px;
+  max-width: 100%;
 }
 
 /* Clear the corner-slot resume banner (top:8px + ~28px pill) so it never
-   overlaps the tile's icon chip while pages slide underneath it. */
+ * overlaps a tile's icon chip while pages slide underneath it. */
 .km-today__tilePage--banner {
-  padding-top: 44px;
+  padding-top: 40px;
 }
 
-/* ActionTile — full-width accent tile (icon chip · pill/headline/meta ·
-   arrow). The whole tile is the gesture, mirroring TaskCard. */
-.km-today__tile {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+/* ActivityTile ───────────────────────────────────────────────────────── */
+
+/* The real interactive element. CityCard supplies 100% of the visible
+ * surface — this button is reset to invisible chrome so the card reads as
+ * the whole tile, with a hover lift shared by every tile regardless of
+ * tone (F-131: no tone hard-codes its own hover behavior). */
+.km-today__tileBtn {
+  display: block;
   width: 100%;
-  min-height: 118px;
-  padding: 18px 20px;
+  max-width: 100%;
   text-align: left;
-  background: var(--ink-1);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
-  color: var(--paper);
-  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
+  border-radius: var(--radius-lg);
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
-.km-today__tile:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+.km-today__tileBtn:hover {
+  transform: translateY(-2px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .km-today__tile {
+  .km-today__tileBtn {
     transition: none;
   }
-  .km-today__tile:hover {
+  .km-today__tileBtn:hover {
     transform: none;
   }
 }
 
-.km-today__tile--vermilion {
-  background: var(--vermilion-soft);
-  border-color: var(--vermilion);
+/* Tighten CityCard's default 20px padding for this hub's smaller tiles
+ * (F-133) — a compound selector, so it wins over CityCard.css's single
+ * `.km-citycard` rule without editing that file. */
+.km-today__tileCard.km-citycard {
+  padding: 14px 16px;
 }
 
-.km-today__tile--violet {
-  background: var(--violet-soft);
-  border-color: var(--violet);
-}
-
-.km-today__tile--ochre {
-  background: var(--ochre-soft);
-  border-color: var(--ochre);
+.km-today__tileTop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .km-today__tileIcon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   flex: none;
-  background: var(--ink-1);
-  border: 1px solid var(--line-strong);
-  border-radius: 12px;
-  color: var(--paper-dim);
-}
-
-.km-today__tile--vermilion .km-today__tileIcon {
-  border-color: var(--vermilion);
-  color: var(--vermilion-ink);
-}
-
-.km-today__tile--violet .km-today__tileIcon {
-  border-color: var(--violet);
-  color: var(--violet-ink);
-}
-
-.km-today__tile--ochre .km-today__tileIcon {
-  border-color: var(--ochre);
-  color: var(--ochre-ink);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--km-tone, var(--vermilion)) 14%, transparent);
+  color: var(--km-tone, var(--vermilion));
 }
 
 .km-today__tileBody {
@@ -121,21 +112,16 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 3px;
 }
 
 .km-today__tileHeadline {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
-}
-
-/* Stat treatment — the vocab due count keeps the old queue CTA's display
-   face + size (§10: stat numbers use the display face). */
-.km-today__tileHeadline--stat {
-  font-family: var(--font-display);
-  font-size: 22px;
-  letter-spacing: -0.015em;
+  color: var(--paper);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .km-today__tileMeta {
@@ -143,17 +129,90 @@
   color: var(--paper-dim);
 }
 
-/* Mute the secondary language of bilingual tile chrome (P3b convention —
-   the primary keeps the element's own ink). */
 .km-today__tileHeadline .km-bilingual__sub,
 .km-today__tileMeta .km-bilingual__sub {
   color: var(--paper-mute);
   font-weight: 400;
 }
 
-/* Resume-exam corner banner (F-028) — rides SwipeCarousel's cornerSlot,
-   pinned top-left over BOTH pages. Chrome-sized: it is a shortcut, not a
-   page-level CTA. */
+/* "Done today" row (F-138) — a plain text line + an honest SealStamp
+ * milestone, never a fabricated bar/percentage (F-137's "no highlights"
+ * spirit applies here too: this is metadata, not a glowing progress meter). */
+.km-today__tileProgress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* TOPIK's "Review mistakes" shortcut, folded into the suggested-learning
+ * page instead of its own carousel tab (F-135). */
+.km-today__topikExtra {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.km-today__linkBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  min-height: 44px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-pill);
+  color: var(--paper-dim);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.km-today__linkBtn:hover {
+  color: var(--vermilion-ink);
+}
+
+.km-today__errorWrap {
+  border-radius: var(--radius-lg);
+}
+
+/* Writing inline-expand tile (F-134) ───────────────────────────────────
+ * CollapsibleTile composes the plain `Card` primitive (shared component,
+ * out of this page's edit scope) — Day already reads as a hanji-paper
+ * surface indistinguishable from CityCard's own Day styling, so only Night
+ * needs a page-scoped override to pick up the neon-signboard glow. Same
+ * token formula as CityCard.css's `[data-theme="dark"] .km-citycard` rule.
+ */
+.km-today__writingWrap {
+  position: relative;
+}
+
+[data-theme="dark"] .km-today__writingTile.km-collapsible {
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--ink-2) 85%, transparent),
+    color-mix(in srgb, var(--ink-1) 90%, transparent)
+  );
+  border: 1.5px solid color-mix(in srgb, var(--vermilion) 55%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--vermilion) 12%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--vermilion) 50%, transparent),
+    inset 0 0 18px -8px color-mix(in srgb, var(--vermilion) 35%, transparent);
+}
+
+.km-today__writingTile .km-collapsible__header {
+  padding: 14px 16px;
+}
+
+.km-today__writingTile .km-collapsible__content {
+  padding: 0 16px 16px;
+}
+
+/* Resume-exam corner banner — rides SwipeCarousel's cornerSlot, pinned
+ * top-left over every page. Chrome-sized: a shortcut, not a page-level CTA. */
 .km-today__resume {
   display: inline-flex;
   align-items: center;
