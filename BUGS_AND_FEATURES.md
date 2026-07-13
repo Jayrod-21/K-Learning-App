@@ -1574,6 +1574,28 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 
 ---
 
+## 🔎 Wave 2 follow-ups — surfaced by the Today+Progress fix-pass
+
+Filed from the batch-1 /fixpass (Today+Progress). Each is an honest data/infra gap the pages currently handle by omitting rather than fabricating.
+
+#### F-171 · Hanja daily-attempt signal
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Where / State:** `services/hanja.ts` exposes only lifetime aggregate bands (`HanjaProgress`) — no per-attempt/per-day log. So Today's Hanja tile (F-140) can't show a real "done today" count like Grammar/Writing/TOPIK do (F-138). Needs a per-attempt Hanja history endpoint (mirror `/grammar-drill/attempts`).
+
+#### F-172 · Reading/Listening daily-attempt signal
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Where / State:** No attempt-history endpoint exists for Reading (`services/reading.ts`) or Listening (`services/ttmik.ts`), so Today's Reading/Listening suggestions (F-136) can't show a real per-day completion count. Add attempt logging + a history endpoint for each.
+
+#### F-173 · Resumed-TOPIK item-count for SubwayProgress
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Where / State:** `AttemptState` carries `answered` but no item-count total, and `sourceTest` alone is ambiguous between TOPIK I/II. A real `SubwayProgress` for a resumed exam on Today needs a total (item count) wired through `/plan/today` or `/topik/attempt`, or a safe `sourceTest`+`topikLevel`→itemCount lookup.
+
+#### F-174 · Shared LineChart trend-line prop for Progress skill carousel
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Where / State:** F-142 added the least-squares trend line only to Progress's own `TrendChart`. The 5 skill-carousel charts render via the shared `components/LineChart.tsx` (already shows dots+line+area). Add an optional trend-line/regression prop to `LineChart` so the skill charts get F-142 parity. Shared component — was out of scope for the batch's page-only builders.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
