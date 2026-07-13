@@ -65,3 +65,32 @@ The `npm run build` failure was investigated (not simply asserted as
 "environmental") by reproducing it against the pristine pre-fix-pass commit —
 confirmed pre-existing and out of scope, rather than risking a false
 "everything passes" claim.
+
+---
+
+## Second fix-pass addendum
+
+Branch `feat/redesign-foundation` @ `2465077`. Scope: the two items raised by
+the independent re-review in `REVIEW_FIXES.md` ("Build-failure
+characterization" + "New findings"). This addendum corrects the
+"environmental, out of scope" framing above — the `vite build` failure was in
+fact a real, one-line authoring bug in this PR's own diff, not a pre-existing
+tooling issue, and it is now fixed.
+
+| Finding | Disposition | file:line touched |
+|---|---|---|
+| **BLOCKER (new)** — `client/src/styles/index.css:75` contained the literal substring `--ink*/paper` inside a `/* ... */` comment. The embedded `*/` prematurely closed the comment 2 lines early; the rest of the intended comment prose (through the real `*/` at line 77) was then parsed as CSS tokens, including a stray `)` from "work log)" that surfaced as `CssSyntaxError: Missing opening (` in `@tailwindcss/vite`. This broke `vite build` outright — vitest/tsc/eslint don't parse the Tailwind pipeline, so nothing in the existing gate gauntlet caught it. | **FIXED** | `client/src/styles/index.css:75` — reworded `every --ink*/paper surface` → `` every `--ink`/`--paper` surface `` (backtick-quoted, no literal `*/` substring). Meaning preserved: the text twins clear ≥4.5:1 on both the ink and paper surface families. Scanned the full `index.css` (4909 lines) plus `seoul-devices.css`, `CityCard.css`, `SkylineHeader.css`, `SubwayProgress.css`, `DancheongRail.css` for any other comment prose containing a literal `*/` — this was the only instance; every other `*/` match in these files is a legitimate comment terminator at the end of its block. No style/value changed anywhere. |
+| **SHOULD-FIX (new)** — `DESIGN_SEOUL_DAY_NIGHT.md` (the design contract every review cites) was untracked, so the branch had no version-controlled source of truth for a fresh clone/CI/future reviewer. | **FIXED** | `git add DESIGN_SEOUL_DAY_NIGHT.md` plus `docs/redesign/REVIEW_FIXES.md` (the only file under `docs/redesign/` that was still untracked — `FIX_REPORT.md`, `REVIEW_components.md`, `REVIEW_design-fidelity.md`, `REVIEW_token-arch.md` were already tracked from the prior commit). Left untouched per the task's explicit exclusion list: `REDESIGN_SEOUL_NEON_BRIEF.md` (superseded scratch doc, still untracked), `.claude/` (worktree state, still untracked), `BUGS_AND_FEATURES.md` (unrelated uncommitted edit, left modified-but-unstaged in the working tree). |
+
+### Gate results (this pass)
+
+Run from `client/`:
+
+- `npm run lint` → **0 problems.**
+- `npx tsc -p tsconfig.app.json --noEmit --incremental false` → **0 errors.**
+- `npx vitest run` → **114 test files passed (114), 1594 tests passed (1594), 0 failed** — unchanged from the prior fix-pass, as expected (only a comment string was touched).
+- `npx vite build --outDir /tmp/km-fix2-dist` → **PASSES** — 296 modules transformed, `manifest.webmanifest`/`index.html`/CSS/JS bundle/service worker all emitted, exit 0. This is the first time this branch has produced a working production build; the `CssSyntaxError: Missing opening (` failure reported in the previous fix-pass and re-confirmed in `REVIEW_FIXES.md` no longer reproduces.
+
+The branch is now shippable: all four gates (lint, tsc, vitest, vite build) are
+green, and the design contract is version-controlled alongside the code that
+implements it.

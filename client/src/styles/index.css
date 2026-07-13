@@ -72,7 +72,7 @@
 
   /* Dancheong (단청) palette — Day Seoul's temple-paint set. Four hues +
    * soft chip tints + deepened `-ink` text twins (each ≥4.5:1 on its own
-   * soft chip AND on every --ink*/paper surface — see repo contrast note in
+   * soft chip AND on every `--ink`/`--paper` surface — see repo contrast note in
    * DESIGN_SEOUL_DAY_NIGHT.md work log). `-verm` doubles as the seal-stamp
    * red. Un-suffixed value is the accent/border/glow-carrying fill. */
   --dan-jade:      #2E7D6B;  --dan-jade-soft:   #E6E9D6;  --dan-jade-ink:   #2A7261;
