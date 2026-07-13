@@ -122,3 +122,119 @@ Concretely, before this PR merges into `rebuild`:
 2. **New SHOULD-FIX:** commit `DESIGN_SEOUL_DAY_NIGHT.md` (and `REDESIGN_SEOUL_NEON_BRIEF.md`) to the repository so the design contract this whole redesign is built against is actually version-controlled and available to future reviewers/CI.
 
 Everything else — all 9 original BLOCKER/SHOULD-FIX findings, the test quality, the praise-item integrity, lint/tsc/vitest — is genuinely solid and does not need another round. Once items 1–2 above are addressed (expected to be minutes of work, not a new fix-pass cycle), this is ready to PR into `rebuild`.
+
+---
+
+## Second fix-pass verification (commit 93014e7)
+
+Reviewer: independent re-reviewer (fresh — did not write `93014e7`, did not
+perform the second fix-pass, did not perform the review immediately above).
+Scope: verify that `93014e7` ("fix(redesign): unbreak vite build (stray `*/`
+in index.css comment) + commit design trail") genuinely closes the two open
+items from the "Recommendation" section above — the `vite build` BLOCKER and
+the untracked `DESIGN_SEOUL_DAY_NIGHT.md` SHOULD-FIX — without collateral
+damage. Every item below was independently re-derived (diffed, grepped, or
+re-run), not taken on the commit message's word.
+
+### Verdict: **PASS**
+
+The `vite build` BLOCKER is genuinely fixed by a comment-only reword — zero
+CSS values/selectors/tokens changed — and the design-trail docs are now
+tracked. All four gates (lint, tsc, vitest, and — the previously-missing,
+load-bearing one — `vite build`) pass clean when I re-ran them independently.
+No collateral changes rode along. Branch is ready to PR into `rebuild`.
+
+### Checklist
+
+1. **Build bug fixed, comment-only change.** `git diff 2465077 93014e7 --
+   client/src/styles/index.css` shows exactly one changed line, `index.css:75`:
+   `--ink*/paper` → `` `--ink`/`--paper` `` (backtick-wrapped token names, no
+   literal `*/` substring remains). This is inside the existing `/* ... */`
+   Dancheong-palette comment block (opened `index.css:73`, closed `index.css:78`
+   — both unchanged) — no selector, property, value, or token declaration on
+   any line was touched. **PASS.**
+   I also grepped for the underlying bug *pattern* (a non-whitespace character
+   immediately followed by `*/`, i.e. an accidental early comment terminator)
+   across every `.css` file under `client/src` (33 files, listed via `find
+   client/src -iname "*.css"`), not just the five named in my brief:
+   `grep -rnP '\S\*/' client/src --include="*.css"` → **zero matches.** No
+   other instance of this bug class exists anywhere in the tree. **PASS.**
+2. **No unintended changes rode along.** `git diff 2465077 93014e7 --stat` →
+   exactly 4 files: `client/src/styles/index.css` (+1/-1, the comment reword),
+   `DESIGN_SEOUL_DAY_NIGHT.md` (new, 193 lines), `docs/redesign/REVIEW_FIXES.md`
+   (new-to-this-diff at this point — 124 lines, this very file pre-append),
+   `docs/redesign/FIX_REPORT.md` (+29 lines, an addendum). No component/page
+   `.tsx`/`.ts`/`.css` file besides `index.css` appears in the stat. **PASS.**
+   Note (pre-existing, out of scope, not touched by `93014e7` or by me):
+   `git status` at the time of this review showed a locally modified
+   `BUGS_AND_FEATURES.md` and untracked `.claude/` + `REDESIGN_SEOUL_NEON_BRIEF.md`
+   in the working tree. These are not part of `93014e7`'s diff (confirmed by
+   `git show 93014e7 --stat`, which lists only the 4 files above) and are
+   irrelevant to this branch's mergeability — flagging only for completeness.
+3. **Gates re-run independently, from `client/`:**
+   - `npm run lint` → **clean, 0 problems, 0 output.**
+   - `npx tsc -p tsconfig.app.json --noEmit --incremental false` → **clean,
+     0 errors, exit 0, 0 output.**
+   - `npx vitest run` → **114 test files passed (114), 1594 tests passed
+     (1594), 0 failed.** Exact match to both `FIX_REPORT.md` and the prior
+     re-review's numbers.
+   - `npx vite build --outDir /tmp/km-rr2-dist --emptyOutDir` → **exit 0,
+     succeeds.** `296 modules transformed`, real CSS emitted
+     (`assets/index-gSIf16QB.css`, 152.02 kB / 25.57 kB gzip — non-trivial
+     size, not an empty/truncated stylesheet), real JS emitted
+     (`assets/index-Cetp8yHg.js`, 790.35 kB / 231.36 kB gzip), plus
+     `manifest.webmanifest`, `sw.js`, `workbox-*.js`, icons, and `index.html`
+     all present in `/tmp/km-rr2-dist/`. Only warning is the pre-existing
+     "chunk larger than 500 kB" advisory (unrelated to this fix, not a build
+     failure). **This is the load-bearing check the first fix-pass missed —
+     it now passes cleanly.**
+4. **No regression to earlier work — spot-confirmed still intact** (expected,
+   since the `2465077`→`93014e7` diff literally cannot touch these — none of
+   the files below appear in that diff's stat):
+   - 3× `@media (prefers-reduced-motion: no-preference)` gates — still present,
+     `client/src/components/SkylineHeader.css:58`,
+     `client/src/styles/seoul-devices.css:60,163`.
+   - `:root:not([data-theme])` structure — still at `index.css:276`, selector
+     byte-identical.
+   - `--km-tone` centralization — still at `index.css:903-915` /
+     `seoul-devices.css:152-157`, consumed via `var(--km-tone)` /
+     `color-mix(in srgb, var(--km-tone) ...)`, not inlined anywhere.
+   - `CityCard.css` SF-A tokenization — still `color-mix(in srgb, var(--ink-2)
+     85%, transparent)` / `color-mix(in srgb, var(--ink-1) 90%, transparent)`
+     at `CityCard.css:34-41`; zero raw `rgb(`/`#` literals reintroduced.
+   - All 5 test files present: `client/src/components/{CityCard,SkylineHeader,
+     SubwayProgress,DancheongRail}.test.tsx` + `client/src/styles/
+     tokensContrast.test.ts` (the 5th — the contrast-guard file referenced by
+     `index.css:189`'s "Guarded by tokensContrast.test.ts" comment).
+   **PASS** on all five.
+5. **Design trail tracked.** `git ls-files | grep -E
+   "DESIGN_SEOUL_DAY_NIGHT|docs/redesign"` → returns all 6 expected paths:
+   `DESIGN_SEOUL_DAY_NIGHT.md`, `docs/redesign/FIX_REPORT.md`,
+   `docs/redesign/REVIEW_FIXES.md`, `docs/redesign/REVIEW_components.md`,
+   `docs/redesign/REVIEW_design-fidelity.md`,
+   `docs/redesign/REVIEW_token-arch.md`. **PASS.**
+   Minor residual gap (not a blocker, not in this fix-pass's stated scope):
+   `REDESIGN_SEOUL_NEON_BRIEF.md` — flagged as a SHOULD-FIX companion doc in
+   this file's own "Recommendation" section above (item 2) — is still
+   untracked (confirmed via the same `git status` in item 2 above). It was
+   not part of the two items `93014e7`'s commit message claims to fix
+   (build bug + `DESIGN_SEOUL_DAY_NIGHT.md`), so its absence isn't a broken
+   promise, but it remains an open loose end from the prior review's
+   recommendation. Non-blocking.
+
+### New findings
+
+None that block merge. The one residual item is #5's `REDESIGN_SEOUL_NEON_BRIEF.md`
+gap noted above (NIT — untracked companion doc, not required by this commit's
+own stated scope, not cited as authoritative by any `docs/redesign/*.md`
+review the way `DESIGN_SEOUL_DAY_NIGHT.md` is).
+
+### Final ship recommendation
+
+**Ready to PR into `rebuild`.** Both open items from the prior re-review are
+closed: the `vite build` BLOCKER is fixed with a verified comment-only change
+(no CSS semantics altered), and the design contract is now version-controlled.
+All four gates — lint, tsc, vitest, and the previously-missing `vite build` —
+pass independently and cleanly. Optional, non-blocking follow-up: commit
+`REDESIGN_SEOUL_NEON_BRIEF.md` in a future small PR for the same reasoning
+the original review gave for `DESIGN_SEOUL_DAY_NIGHT.md`.

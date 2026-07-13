@@ -1405,6 +1405,175 @@ All phases through the full 4-phase /fixpass: Phase 1 primitives · Phase 2 back
 
 ---
 
+## 🌃 Wave 2 — beta feedback: redesign + per-page polish (design-approved, build pending)
+
+Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes — a full visual redesign ("Seoul Day & Night") and mobile responsiveness — plus ~40 per-page changes. Design phase COMPLETE: identity locked in `DESIGN_SEOUL_DAY_NIGHT.md`; every page mocked at fidelity (artifacts: prototype, Learn ×2, final batch). Build proceeds page-by-page off `feat/redesign-foundation`, each reskinned to the locked design + its feature set, full-suite-gated + 4-phase /fixpass (design-fidelity reviewer added), deployed zero-downtime in batches.
+
+### Cross-cutting
+
+#### F-128 · Visual redesign — "Seoul Day & Night" identity
+- **Status:** 🟡 design-approved, build in progress · **Priority:** P1 · **Category:** design
+- **What:** App is "too plain." Full day↔night Seoul duality — `data-theme="light"` = Day Seoul (hanji, dancheong, daylight), `data-theme="dark"` = Night Seoul (neon). All 9 character devices: neon signboards / hanji cards, dancheong rail, 기와 roof texture, Namsan skyline header, subway-line progress, hangul watermark, seal stamps (印), rain-neon sheen, mother-of-pearl (자개). Accent picker orthogonal (works both worlds). WCAG AA both, reduced-motion, mobile-first.
+- **Contract:** `DESIGN_SEOUL_DAY_NIGHT.md` (authoritative). Components: `SkylineHeader`, `SubwayProgress`, `SealStamp`, `DancheongRail`, `CityCard` + utilities `.km-rain-sheen`/`.km-najeon`/`.km-hangul-watermark`/`.km-giwa`. Retheme shared primitives.
+- **Key files:** `client/src/styles/index.css` (tokens), new `client/src/components/*`, `client/src/hooks/accent-context.ts`.
+
+#### F-129 · Mobile responsiveness — horizontal overflow
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Where:** Content clips off-screen-right on **Progress, Vocab, Grammar** (and audit all pages). Body must never scroll sideways; wide content gets its own `overflow-x:auto`.
+- **Fix hint:** mobile-first; relative units; `max-width:100%`; flex/grid + gap not fixed widths.
+
+#### F-130 · Mobile touch-swipe broken
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Where:** Carousels + PDF viewer — swipe gestures don't register on touch. `components/SwipeCarousel.tsx` + PDF viewer (Uploads).
+
+#### F-131 · Accent-color hover states
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug
+- **Where:** Hover/active states are hardcoded red regardless of chosen accent; must follow `data-accent` (coral/blue/mint).
+
+#### F-132 · Auto-theme by time of day
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **What:** Optionally auto-switch Day/Night Seoul by local time (noted in `DESIGN_SEOUL_DAY_NIGHT.md`). Manual override always wins.
+
+### Today
+
+#### F-133 · Tighten layout / reduce white space
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
+
+#### F-134 · Writing tile expands inline (not separate page)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
+
+#### F-135 · Tasks-title IA cleanup
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
+
+#### F-136 · Suggested learning = R/W/L/TOPIK + daily reading rotation
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Suggested-learning covers Reading/Writing/Listening/TOPIK, with the reading suggestion rotating daily.
+
+#### F-137 · TOPIK progress bar — no highlights
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Where:** remove the highlight styling on the Today TOPIK progress bar.
+
+#### F-138 · Per-tile daily progress bars tied to real daily exercises
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
+
+#### F-139 · Remove "words" tile
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
+
+#### F-140 · Hanja tile in the Today carousel
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
+
+### Progress
+
+#### F-141 · Everything collapsible (TOPIK-compares default open)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Key files:** `pages/Progress.tsx`, `components/CollapsibleTile.tsx`
+
+#### F-142 · Better trend + data points on all graphs
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** richer trendlines and visible data points across every Progress chart.
+
+#### F-143 · Remove "begin today's plan" + "gaps / next steps"
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop those two blocks from Progress.
+
+### Library — Vocab
+
+#### F-144 · Remove leftover grammar UI from Vocab
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug · **Where:** F-047 removed WeeklySuggestions grammar but leftover `km-grammar__*` UI persists in Vocab ("WHY IS GRAMMAR IN HERE"). Grammar belongs only under Library→Grammar.
+
+#### F-145 · Vocab mobile responsiveness
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile · (see F-129)
+
+#### F-146 · Collapsible My Lists
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+#### F-147 · Create-list popup (vocab-only)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** create-list is a popup, scoped to vocab.
+
+#### F-148 · This-Week popup
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+#### F-149 · "Search for a word" label
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Where:** label the Vocab search field.
+
+#### F-150 · No grammar in All Words dictionary
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** All-Words dictionary must exclude grammar entries.
+
+#### F-151 · More genres
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** expand the genre set in Vocab.
+
+### Library — Grammar
+
+#### F-152 · Bank/banked → Mastered button + label
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** F-063 reworked the model but "Bank/banked" labels persist; replace with a Mastered button + mastery labeling.
+
+#### F-153 · 15-at-a-time
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** paginate grammar list 15 at a time (`usePagination`).
+
+### Library — Mistakes
+
+#### F-154 · Square question-tiles, date-divided, click→popup
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** small square question-number tiles in a grid, divided by session/date; tap → popup with the question, your answer, jump-to-explanation.
+
+### Library — Uploads
+
+#### F-155 · PDF mobile swipe
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile · (paired with F-130) — swipe/arrow page-turn on the PDF viewer must work on touch.
+
+### Flashcards
+
+#### F-156 · Add-to-review = 15, not 200
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** "add to review" batches 15, not 200.
+
+#### F-157 · Create-list popup (flashcards)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+### Grammar practice
+
+#### F-158 · Pick a form to drill continuously
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** choose a single grammar form and drill it continuously (form-picker → endless drill).
+
+### TOPIK
+
+#### F-159 · Study/Mock chooser popup (semi-transparent)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** entering TOPIK shows a semi-transparent Study-vs-Mock chooser popup.
+
+### Listen
+
+#### F-160 · TTMIK / iyagi missing audio
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug · **Where:** audio not playing for TTMIK + iyagi sources.
+
+#### F-161 · "Next page" not show-15
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Listen list uses next-page pagination instead of a show-15/expand.
+
+#### F-162 · Preserve scroll on back
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** returning to the Listen list restores scroll position.
+
+### Writing
+
+#### F-163 · AI Prompt as top-level option
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** surface "AI Prompt" as a top-level Writing choice.
+
+### Hanja
+
+#### F-164 · Spacing
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Key files:** `pages/Hanja.tsx`
+
+#### F-165 · Drawing-drill anki right/wrong loop → mastery pool
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** drawing drill runs an Anki-style right/wrong loop feeding a mastery pool.
+
+#### F-166 · Create-list popup + Add-hanja picker
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+#### F-167 · Index tiles colored by mastery (green/yellow/red)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Hanja index tiles colored by mastery state.
+
+#### F-168 · Index "+"-to-list popup + "added to list" toast
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+#### F-169 · Index shows hangul sound, not the word
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** index tile label shows the hangul reading/sound, not the gloss word.
+
+#### F-170 · Live progress bar (Hanja)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
