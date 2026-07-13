@@ -1,0 +1,92 @@
+/*
+ * SubwayProgress — component-scoped styles (DESIGN_SEOUL_DAY_NIGHT.md
+ * device #5). Colocated per the ShowMore.css convention.
+ *
+ * A flat metro line (`::before` on the track) with a colored fill drawn
+ * over it up to the current station, and a row of station dots overlaid
+ * on top. Night gives the fill + filled/current dots a neon-tube glow;
+ * Day stays flat (the dancheong/accent color alone carries the state).
+ */
+
+.km-subway__track {
+  position: relative;
+  height: 20px;
+  min-width: 120px;
+}
+
+.km-subway__track::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--line-strong);
+  border-radius: var(--radius-pill);
+}
+
+.km-subway__fill {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  height: 2px;
+  max-width: calc(100% - 10px);
+  transform: translateY(-50%);
+  background: var(--km-tone);
+  border-radius: var(--radius-pill);
+  transition: width 240ms ease;
+}
+
+[data-theme="dark"] .km-subway__fill {
+  box-shadow: 0 0 8px var(--km-tone);
+}
+
+.km-subway__stations {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+}
+
+.km-subway__station {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ink-1);
+  border: 2px solid var(--line-strong);
+  transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.km-subway__station--done {
+  background: var(--km-tone);
+  border-color: var(--km-tone);
+}
+
+.km-subway__station--current {
+  background: var(--ink-1);
+  border-color: var(--km-tone);
+  /* A touch larger — the "ringed, currently here" station reads as the
+   * focal point of the line even before color is considered. */
+  width: 13px;
+  height: 13px;
+}
+
+.km-subway__station--ahead {
+  background: var(--ink-1);
+  border-color: var(--line-strong);
+}
+
+[data-theme="dark"] .km-subway__station--done,
+[data-theme="dark"] .km-subway__station--current {
+  box-shadow: 0 0 8px var(--km-tone);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-subway__fill,
+  .km-subway__station {
+    transition: none;
+  }
+}

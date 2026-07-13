@@ -1,0 +1,91 @@
+/*
+ * SkylineHeader — component-scoped styles (DESIGN_SEOUL_DAY_NIGHT.md
+ * device #4). Colocated per the ShowMore.css convention.
+ *
+ * Both the Day and Night `<g>` layers always render in the DOM; CSS picks
+ * which one is visible off `[data-theme]` on <html> (an ancestor selector,
+ * not a JS theme read) so the strip is correct on first paint.
+ */
+
+.km-skyline {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--city-gradient);
+}
+
+.km-skyline__svg {
+  display: block;
+  width: 100%;
+  height: 120px;
+}
+
+/* Theme toggle — one layer visible, one collapsed (not just hidden: fully
+ * removed from paint/layout so its reduced-motion-gated animation, if any,
+ * never runs on the inactive layer). */
+.km-skyline__night { display: none; }
+[data-theme="dark"] .km-skyline__day { display: none; }
+[data-theme="dark"] .km-skyline__night { display: block; }
+
+/* Day fills */
+.km-skyline .km-skyline__day .km-skyline__bldg { fill: var(--ink-2); }
+.km-skyline .km-skyline__day .km-skyline__roof { fill: var(--dan-verm); opacity: 0.85; }
+.km-skyline .km-skyline__day .km-skyline__beacon { fill: var(--dan-verm); }
+
+/* Night fills */
+.km-skyline .km-skyline__night .km-skyline__bldg { fill: var(--ink-2); }
+.km-skyline .km-skyline__night .km-skyline__window { fill: var(--neon-amber); }
+.km-skyline .km-skyline__night .km-skyline__tower { fill: var(--paper-mute); }
+.km-skyline .km-skyline__night .km-skyline__towerglow {
+  fill: none;
+  stroke: var(--vermilion);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+/* Solid fill, not a gradient `url(#id)` reference — an SVG `<defs>` id
+ * would collide if this component renders more than once on a page. */
+.km-skyline .km-skyline__night .km-skyline__horizon {
+  fill: var(--vermilion);
+  opacity: 0.5;
+}
+
+/* Gentle parallax — far/near layers drift at slightly different rates.
+ * `transform-box: fill-box` keeps the translate relative to each group's
+ * own bounding box rather than the SVG viewport origin. Reduced-motion
+ * users get NO animation (the rule only exists under `no-preference`), so
+ * the layers simply render at their static authored position — never a
+ * half-finished frame. */
+@media (prefers-reduced-motion: no-preference) {
+  .km-skyline__far,
+  .km-skyline__near {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .km-skyline__far {
+    animation: km-skyline-drift-far 50s ease-in-out infinite;
+  }
+  .km-skyline__near {
+    animation: km-skyline-drift-near 34s ease-in-out infinite;
+  }
+}
+@keyframes km-skyline-drift-far {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(-3px); }
+}
+@keyframes km-skyline-drift-near {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(4px); }
+}
+
+.km-skyline__title {
+  position: absolute;
+  left: 20px;
+  bottom: 14px;
+  margin: 0;
+  color: var(--paper);
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+[data-theme="dark"] .km-skyline__title {
+  text-shadow: 0 0 10px var(--vermilion);
+}

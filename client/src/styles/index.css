@@ -1,109 +1,168 @@
 @import "tailwindcss";
+@import "./seoul-devices.css";
 
 /* ─────────────────────────────────────────────────────────────────────────
- * Korean Master — "Modern Seoul" design tokens.
+ * Korean Master — "Seoul, Day & Night" design tokens.
  *
- * "A skyline by day. Neon by night." Light is airy daylight — cool
- * blue-tinted whites, glassy white cards, soft floating shadows. Dark is a
- * neon night city — near-black navy, glass-edged surfaces, colored glow
- * shadows. One confident neon accent (user-selectable — see the
- * `[data-accent]` blocks below), color-coded skill hues, real depth on
- * every box. Light is the default; `data-theme="dark"` on `<html>` flips
- * to the night palette.
+ * One city, two moods — not two color themes. `data-theme="light"` = DAY
+ * SEOUL (hanji paper, palace *dancheong* color, hanok roofs, seal stamps).
+ * `data-theme="dark"` = NIGHT SEOUL (neon signboards, glow, a rain-slick
+ * skyline). Both are first-class; see `DESIGN_SEOUL_DAY_NIGHT.md` at the
+ * repo root for the full contract the character-device components
+ * (CityCard, SkylineHeader, SubwayProgress, SealStamp, DancheongRail —
+ * `src/components/`) and the utility mixins (`src/styles/seoul-devices.css`)
+ * build against.
  *
- * Token NAMES are retained verbatim from the original hanji-era sheet
- * (`--ink*`, `--paper*`, `--vermilion*`, …) — every component keys off
- * them; only the VALUES moved to the Seoul palette.
+ * Two token layers, kept in sync on purpose:
+ *   1. PALETTE — the doc's own vocabulary: `--dan-jade/verm/cobalt/ochre`
+ *      (Day dancheong set) and `--neon-coral/blue/mint/amber` (Night neon
+ *      set), each with a `-soft` chip tint and (dancheong only, since Day
+ *      text needs deepening to clear AA on light paper) a `-ink` text twin.
+ *      New components read this layer directly.
+ *   2. LEGACY/STRUCTURAL — the original hanji-era names every existing
+ *      component + the 4643-line rest of this sheet keys off
+ *      (`--ink*` = surfaces, `--paper*` = text ink, `--vermilion/indigo/
+ *      moss/ochre/violet/cyan` = accent + skill hues). Renaming these is
+ *      mass breakage across ~30 components — instead this layer is
+ *      RETUNED to the exact Day/Night hex above and, wherever a direct
+ *      concept match exists (accent↔dan/neon, hanja↔ochre, vocab↔cobalt,
+ *      success↔jade/mint), var-chained onto layer 1 so there is one source
+ *      of truth. Grammar/Reading have no dancheong counterpart in the doc's
+ *      four-color set, so `--violet`/`--cyan` keep their own dedicated
+ *      Seoul-tuned hues.
+ *
+ * `--ink`/`--paper` naming note (read once): in THIS sheet `--ink` is the
+ * app/card SURFACE family (bg, ink-1/2/3) and `--paper` is the TEXT-ink
+ * family — the inverse of the design doc's own `--ground`/`--paper`/`--ink`
+ * vocabulary. That doc vocabulary is honored via `--ground*` (new, aliases
+ * `--ink`) for the app bg and via the mapping table above for text/surface —
+ * doc-authored components should read `--ink-1`/`--ink-2` for card surfaces
+ * and `--paper`/`--paper-mute` for text, per this mapping, not introduce a
+ * second colliding `--paper` meaning "surface".
  * ──────────────────────────────────────────────────────────────────────── */
 
 :root,
 [data-theme="light"] {
-  /* Surfaces — cool daylight, glassy (mockup-exact, v2) */
-  --ink:   #EDF1F8;   /* app base bg */
-  --ink-1: #FFFFFF;   /* card paper */
-  --ink-2: #F4F7FC;   /* elevated */
-  --ink-3: #FFFFFF;   /* highest (popovers, sheets) */
+  /* ── Day Seoul: surfaces — warm hanji, not cool glass ─────────────── */
+  --ink:   #EFE7D6;   /* app base bg ("--ground" in the doc) */
+  --ink-1: #FAF6EC;   /* card paper ("--paper" in the doc) */
+  --ink-2: #F3ECDB;   /* elevated ("--paper-2" in the doc) */
+  --ink-3: #FDFBF3;   /* highest (popovers, sheets) */
 
-  /* Type — near-black navy ink.
+  /* Sky gradient stops for the body's ambient city-gradient (§ body, below)
+   * and for SkylineHeader's day sky. Bottom stop IS --ink (single source of
+   * truth — the gradient settles into the flat app bg). */
+  --ground-top: #DCE9EC;
+  --ground-mid: #F2ECDD;
+  --ground-sky: var(--ground-top);
+  --city-gradient: linear-gradient(180deg, var(--ground-top) 0%, var(--ground-mid) 34%, var(--ink) 100%);
+
+  /* Type — pine ink on paper.
    * --paper-mute carries secondary/meta/eyebrow TEXT, so it must clear
-   * WCAG AA (>= 4.5:1) on every light surface it can host on — the darkest
-   * is the page base --ink #EDF1F8. #626C84 computes 4.64:1 on --ink and
-   * 5.25:1 on --ink-1 white while staying visibly lighter than --paper-dim
-   * (guarded by tokensContrast.test.ts). */
-  --paper:       #131826;
-  --paper-dim:   #57617A;
-  --paper-mute:  #626C84;
-  --paper-faint: #B7BECD;
+   * WCAG AA (>= 4.5:1) on every light surface it can host on. #6B614D
+   * computes 4.96:1 on --ink (the hardest host) and 5.65:1 on --ink-1,
+   * clearing AA while staying visibly lighter than --paper-dim (guarded by
+   * tokensContrast.test.ts). The doc's literal mute hex (#8A7D63) reads
+   * ~3.3–3.8:1 on these hosts and was deepened for AA — see the file's
+   * design-doc note above. */
+  --paper:       #27331F;
+  --paper-dim:   #40492F;
+  --paper-mute:  #6B614D;
+  --paper-faint: #B9AF95;
 
-  /* Hero accent — NEON coral (default preset; the [data-accent] blocks
-   * further down re-point this family at runtime). NOTE contrast: the solid
-   * fill IS the bright neon coral from the mockup — white text on it only
-   * reaches ≈3.4:1, so type on the fill uses the near-black --on-vermilion
-   * ink (≈5.7:1, AA) — the same dark-ink-on-bright-fill move the dark theme
-   * and the mint accent make. */
-  --vermilion:        #FF3E6C;   /* CTA fill — neon coral */
-  --vermilion-bright: #FF3E6C;   /* glow, gradients, chips */
-  --vermilion-soft:   #FFE6ED;
+  /* Dancheong (단청) palette — Day Seoul's temple-paint set. Four hues +
+   * soft chip tints + deepened `-ink` text twins (each ≥4.5:1 on its own
+   * soft chip AND on every --ink*/paper surface — see repo contrast note in
+   * DESIGN_SEOUL_DAY_NIGHT.md work log). `-verm` doubles as the seal-stamp
+   * red. Un-suffixed value is the accent/border/glow-carrying fill. */
+  --dan-jade:      #2E7D6B;  --dan-jade-soft:   #E6E9D6;  --dan-jade-ink:   #2A7261;
+  --dan-verm:      #C0492E;  --dan-verm-soft:   #F3E0D6;  --dan-verm-ink:   #AB4129;
+  --dan-cobalt:    #2B5F9E;  --dan-cobalt-soft: #DDE6F1;  --dan-cobalt-ink: #2B5F9E;
+  --dan-ochre:     #C98A1E;  --dan-ochre-soft:  #F4E6C4;  --dan-ochre-ink:  #8B5F15;
+
+  /* Hero accent — Day default is Neon Coral's daylight face: dancheong
+   * vermilion (단청 seal red). The [data-accent] blocks below re-point this
+   * family to dan-cobalt (blue) / dan-jade (mint) at runtime. White text on
+   * every dancheong fill clears AA (coral 4.96:1, cobalt 6.49:1, jade
+   * 4.93:1) — no near-black --on-vermilion needed in Day (Night still needs
+   * it; see the dark block). */
+  --vermilion:        var(--dan-verm);
+  --vermilion-bright: var(--dan-verm);
+  --vermilion-soft:   var(--dan-verm-soft);
+  --vermilion-ink:    var(--dan-verm-ink);
   /* Text colour for type that sits ON the vermilion fill — buttons, seal
    * stamp, badges. Not a surface — never apply as `background`. */
-  --on-vermilion:     #0A0C12;
-  --danger:           var(--vermilion);
-  --danger-soft:      var(--vermilion-soft);
+  --on-vermilion:     #FFFFFF;
+  --danger:           var(--dan-verm);
+  --danger-soft:      var(--dan-verm-soft);
   /* Focus indicator color (`.focusring` outline). Var-chained so it tracks
-   * the active accent + theme, EXCEPT where the raw accent fails the WCAG
-   * 1.4.11 3:1 non-text floor against the page bg — mint-light re-points
-   * it to a deepened mint below. Coral #FF3E6C is 3.01:1 and blue #2563EB
-   * is 4.56:1 vs --ink #EDF1F8; all dark fills clear 6:1. */
+   * the active accent + theme — every Day dancheong fill clears the WCAG
+   * 1.4.11 3:1 non-text floor against --ink comfortably (verm 4.03:1,
+   * cobalt 5.28:1, jade 4.01:1), so no accent needs the old deepened-ring
+   * escape hatch in Day. */
   --focus-ring:       var(--vermilion);
 
-  /* Category / skill hues — soft chips are the mockup's solid pastels */
-  --indigo:      #4F7BFF;  --indigo-soft: #E7EEFF;   /* Vocab */
-  --moss:        #12C08A;  --moss-soft:   #DEF7EF;   /* success/correct */
-  --ochre:       #F7A424;  --ochre-soft:  #FEF1DA;   /* Hanja */
-  --violet:      #7C5CFC;  --violet-soft: #EFEAFE;   /* Grammar */
-  --cyan:        #0EB8D6;  --cyan-soft:   #E0F6FB;   /* Reading */
+  /* Category / skill hues — mapped to their nearest dancheong tone
+   * (DESIGN_SEOUL_DAY_NIGHT.md §2): Hanja↔ochre (literal — hanja already
+   * used ochre), Vocab↔cobalt (blue family), success/correct↔jade (the
+   * doc's "good" semantic IS jade in Day). Grammar and Reading have no
+   * spare dancheong hue (jade/verm/cobalt/ochre are claimed by
+   * success/accent/vocab/hanja) — they keep their own Seoul-tuned hues,
+   * pulled toward the same muted-jewel-tone saturation. */
+  --indigo:      var(--dan-cobalt);  --indigo-soft: var(--dan-cobalt-soft);  /* Vocab */
+  --moss:        var(--dan-jade);    --moss-soft:   var(--dan-jade-soft);    /* success/correct */
+  --ochre:       var(--dan-ochre);   --ochre-soft:  var(--dan-ochre-soft);   /* Hanja */
+  --violet:      #6B4E8C;  --violet-soft: #ECE3F1;   /* Grammar (no dancheong counterpart) */
+  --cyan:        #256E7D;  --cyan-soft:   #DCEEF0;   /* Reading (no dancheong counterpart) */
 
-  /* On-surface TEXT twins (§3a fix-pass) — whenever a category/accent hue
-   * is the *foreground* (pill labels, eyebrows, stat counts, icons), read
-   * the `-ink` twin instead of the raw hue. The light values are deepened
-   * so each computes ≥4.5:1 (WCAG AA) on the darkest light-theme host it
-   * sits on — its own *-soft chip, --ink-2, and for the accent even the
-   * 16% ghost-hover mix. The raw hues stay bright for fills, chips,
-   * borders, glows and gradients. (Static since the v2 flatten: the old
-   * user-projectable correct/wrong palette presets are gone — --moss and
-   * --danger are fixed theme tokens now.) */
-  --vermilion-ink: #BB183C;   /* coral accent as text (light) */
-  --indigo-ink:    #1C55FF;
-  --moss-ink:      #0B7756;
-  --ochre-ink:     #965D05;
-  --violet-ink:    #643EFB;
-  --cyan-ink:      #097285;
-  --danger-ink:    #BB183C;
+  /* On-surface TEXT twins — whenever a category/accent hue is the
+   * *foreground* (pill labels, eyebrows, stat counts, icons), read the
+   * `-ink` twin instead of the raw hue. Indigo/moss/ochre chain straight
+   * onto their dancheong `-ink` (already ≥4.5:1 on their own soft chip —
+   * see contrast note above); violet/cyan's own fill already clears 4.5:1
+   * on its own soft chip, so the twin is a passthrough. */
+  --vermilion-ink: var(--dan-verm-ink);
+  --indigo-ink:    var(--dan-cobalt-ink);
+  --moss-ink:      var(--dan-jade-ink);
+  --ochre-ink:     var(--dan-ochre-ink);
+  --violet-ink:    var(--violet);
+  --cyan-ink:      var(--cyan);
+  --danger-ink:    var(--dan-verm-ink);
 
   /* Legacy accent aliases — a few dev-panel styles still read --gold*.
-   * Var-chained so they track whatever accent is active. (NEW) */
+   * Var-chained so they track whatever accent is active. */
   --gold:       var(--vermilion);
   --gold-light: var(--vermilion-bright);
   --gold-soft:  var(--vermilion-soft);
 
-  /* Hairlines — glass, cool */
-  --line:        rgba(20, 30, 60, 0.08);
-  --line-strong: rgba(20, 30, 60, 0.16);
+  /* Hairlines — warm hanji, per the doc's exact Day line color. */
+  --line:        #E0D6BF;
+  --line-strong: #C9BC9C;
 
-  /* NEW — shape scale */
-  --radius-sm:   15px;
-  --radius:      16px;
-  --radius-lg:   22px;   /* cards */
-  --radius-pill: 999px;
+  /* Shape scale. Day cards are squarer/crafted (hanji paper, doc §2:
+   * "~8px Day paper"); Night is rounded/modern (~18px). `--radius-lg`
+   * (Card, CollapsibleTile, …) derives from the same day/night card
+   * radius so every card-shaped surface shifts world together. */
+  --radius-sm:        15px;
+  --radius:           16px;
+  --radius-pill:      999px;
+  --radius-card-day:   8px;
+  --radius-card-night: 18px;
+  --radius-lg: var(--radius-card-day);
 
-  /* NEW — elevation (soft daytime float, accent-tinted) */
-  --shadow-sm:   0 1px 0 rgba(20,35,80,0.05), 0 6px 16px -10px rgba(30,45,90,0.20);
-  --shadow:      0 1px 0 rgba(20,35,80,0.06), 0 14px 34px -16px rgba(40,55,110,0.22), 0 4px 12px -8px rgba(40,55,110,0.14);
-  --shadow-lift: 0 24px 50px -18px rgba(255,62,108,0.28), 0 8px 18px -10px rgba(40,55,110,0.20);
-  --glow:        0 10px 26px -10px var(--vermilion);
+  /* Elevation — soft daytime float, warm-tinted (paper/wood shadow, not
+   * cool glass). --card-hairline gives Day cards the doc's "hairline
+   * border" hanji-paper read; Night's ring lives in --shadow's inset
+   * 1px instead (see the dark block). */
+  --shadow-sm:   0 1px 0 rgba(60,45,20,0.05), 0 6px 14px -10px rgba(80,60,30,0.18);
+  --shadow:      0 1px 0 rgba(60,45,20,0.06), 0 12px 28px -16px rgba(80,60,30,0.20), 0 4px 10px -8px rgba(80,60,30,0.12);
+  --shadow-lift: 0 20px 40px -18px color-mix(in srgb, var(--vermilion) 28%, transparent), 0 8px 16px -10px rgba(80,60,30,0.18);
+  --glow:        0 8px 20px -10px color-mix(in srgb, var(--vermilion) 45%, transparent);
+  --card-hairline: 1px solid var(--line);
 
-  /* NEW — rounded display face for headings/buttons/chrome labels (§10).
-   * Korean display titles keep .kr-display's Noto Serif KR. */
+  /* Rounded display face for headings/buttons/chrome labels. Korean
+   * display titles keep .kr-display's Noto Serif KR (Day is serif-forward
+   * per the doc — see .kr-display below). */
   --font-display: 'Nunito', ui-rounded, 'Segoe UI', system-ui, sans-serif;
 
   /* Reusable layout constants — unchanged. */
@@ -113,78 +172,162 @@
 }
 
 [data-theme="dark"] {
-  /* Neon night city. Radius/font/layout tokens cascade from the block above. */
-  --ink:   #080A11;
-  --ink-1: #141A28;
-  --ink-2: #1B2233;
-  --ink-3: #222B40;
+  /* Night Seoul: neon signboards over a dark Namsan skyline. Radius/font/
+   * layout tokens cascade from the light block above. */
+  --ink:   #07080F;
+  --ink-1: #12172a;
+  --ink-2: #1a2038;
+  --ink-3: #222b45;
 
-  /* --paper-mute is AA-checked against the LIGHTEST dark host it can sit
-   * on (--ink-3 popovers/sheets): #8A95B3 computes 4.73:1 there and
-   * 5.82:1 on --ink-1 cards (the old #6A7593 only reached 3.79:1 on
-   * cards). Guarded by tokensContrast.test.ts. */
-  --paper:       #EDF2FF;
-  --paper-dim:   #A0ABC9;
-  --paper-mute:  #8A95B3;
-  --paper-faint: #49536E;
+  --ground-top: #161d3a;
+  --ground-mid: #0b0d1c;
+  --ground-sky: var(--ground-top);
+  --city-gradient: linear-gradient(180deg, var(--ground-top) 0%, var(--ground-mid) 42%, var(--ink) 100%);
 
-  /* Dark: bright coral fill + DARK ink text = high-contrast neon look */
-  --vermilion:        #FF4D74;
-  --vermilion-bright: #FF6B8A;
-  --vermilion-soft:   #2C1420;
+  /* --paper-mute is AA-checked against every dark host it can sit on
+   * (--ink/--ink-1/--ink-2/--ink-3): #8B96C8 (the doc's exact Night mute)
+   * clears 5.58–6.94:1 across all four. Guarded by tokensContrast.test.ts. */
+  --paper:       #EAEEFB;
+  --paper-dim:   #CBD2ED;
+  --paper-mute:  #8B96C8;
+  --paper-faint: #5C6690;
+
+  /* Neon palette — Night Seoul's glow set (DESIGN_SEOUL_DAY_NIGHT.md §2).
+   * `-bright` is the lighter stop for neon-tube gradients/glows; `-soft` is
+   * a SOLID deep tint (not the doc's literal translucent rgba — see the
+   * file's design-doc note: --*-soft feeds the tokensContrast.test.ts
+   * ink-on-soft-chip check, which requires an opaque resolvable hex; the
+   * doc's rgba alpha look is reproduced at point-of-use in CityCard.css via
+   * `color-mix(in srgb, var(--neon-*) N%, transparent)` instead).
+   * neon-blue is nudged from the doc's literal #4F7BFF to #5C87FF so it
+   * clears 4.5:1 against --ink-2 as glowing title text, not just 3:1 as a
+   * fill — the doc's own hue family, one AA notch brighter. */
+  --neon-coral:  #FF3E6C;  --neon-coral-bright: #FF6B8A;  --neon-coral-soft: #2C1420;
+  --neon-blue:   #5C87FF;  --neon-blue-bright:  #8FB0FF;  --neon-blue-soft:  #16213D;
+  --neon-mint:   #12C08A;  --neon-mint-bright:  #5BF0C0;  --neon-mint-soft:  #0C2B22;
+  --neon-amber:  #FFB43D;                                  --neon-amber-soft: #2B2110;
+
+  /* Dark: bright coral fill + DARK ink text = high-contrast neon look
+   * (white on neon-coral is only 3.41:1 — fails AA; near-black clears
+   * 5.73:1). Every Night accent pairs the same way — see the accent
+   * blocks below. */
+  --vermilion:        var(--neon-coral);
+  --vermilion-bright: var(--neon-coral-bright);
+  --vermilion-soft:   var(--neon-coral-soft);
   --on-vermilion:     #0A0C12;
 
-  /* Soft chips are the mockup's solid deep tints */
-  --indigo: #5B8CFF;  --indigo-soft: #131F3D;
-  --moss:   #2BE0A6;  --moss-soft:   #0C2B22;
-  --ochre:  #FFB43D;  --ochre-soft:  #2B2110;
+  /* Skill hues mapped to their neon counterpart where a direct one exists
+   * (Vocab↔neon-blue, Hanja↔neon-amber, success/correct↔neon-mint — the
+   * doc's Night "good" semantic); Grammar/Reading keep their own neon-ish
+   * hues (already bright enough to read as neon without a dancheong-style
+   * remap). */
+  --indigo: var(--neon-blue);   --indigo-soft: var(--neon-blue-soft);
+  --moss:   var(--neon-mint);   --moss-soft:   var(--neon-mint-soft);
+  --ochre:  var(--neon-amber);  --ochre-soft:  var(--neon-amber-soft);
   --violet: #9B7CFF;  --violet-soft: #1D1638;
   --cyan:   #33D6EF;  --cyan-soft:   #0C2530;
 
-  /* On-surface TEXT twins (§3a fix-pass) — dark counterparts. Brightened
-   * (or passed through) so each clears ≥4.5:1 even on the LIGHTEST dark
-   * host: its *-soft chip and --ink-3 (popovers/sheets).
-   * moss/ochre/cyan already clear that bar as-is and pass through. */
-  --vermilion-ink: #FF7190;   /* coral accent as text (dark) */
-  --indigo-ink:    #7AA2FF;
+  /* On-surface TEXT twins — dark counterparts. Brightened (or passed
+   * through) so each clears ≥4.5:1 on its own soft chip.
+   * moss/ochre/cyan/violet already clear that bar as their raw hue. */
+  --vermilion-ink: var(--neon-coral-bright);
+  --indigo-ink:    var(--neon-blue-bright);
   --moss-ink:      var(--moss);
   --ochre-ink:     var(--ochre);
   --violet-ink:    #AE96FF;
   --cyan-ink:      var(--cyan);
-  --danger-ink:    #FF7190;
+  --danger:        var(--neon-coral);
+  --danger-soft:   var(--neon-coral-soft);
+  --danger-ink:    var(--neon-coral-bright);
 
-  --line:        rgba(150, 180, 255, 0.10);
-  --line-strong: rgba(150, 180, 255, 0.16);
+  --line:        rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  /* Night keeps the current-scale card radius (~18px, doc §2) — rounder,
+   * modern, vs Day's squarer hanji paper. */
+  --radius-lg: var(--radius-card-night);
 
   --shadow-sm:   0 0 0 1px rgba(150,180,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.7);
   --shadow:      0 0 0 1px rgba(150,180,255,0.10), 0 20px 44px -18px rgba(0,0,0,0.75);
   --shadow-lift: 0 0 0 1px rgba(255,77,116,0.35), 0 26px 60px -18px rgba(0,0,0,0.85), 0 0 34px -6px rgba(255,77,116,0.45);
   --glow:        0 0 26px -4px var(--vermilion-bright);
+  /* Night's "hairline" is the glass ring already baked into --shadow's
+   * inset 1px — a second visible border would double up. */
+  --card-hairline: none;
+}
+
+/* Respect the OS theme before the ThemeProvider's `data-theme` attribute
+ * lands on <html> (first paint / no-JS) — mirrors the dark block above.
+ * `:not([data-theme])` stops matching the instant JS sets EITHER explicit
+ * value, so an explicit `data-theme="light"` choice always wins even when
+ * the OS prefers dark; no specificity war with the attribute rules below. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --ink:   #07080F;
+    --ink-1: #12172a;
+    --ink-2: #1a2038;
+    --ink-3: #222b45;
+    --ground-top: #161d3a;
+    --ground-mid: #0b0d1c;
+    --ground-sky: var(--ground-top);
+    --city-gradient: linear-gradient(180deg, var(--ground-top) 0%, var(--ground-mid) 42%, var(--ink) 100%);
+    --paper:       #EAEEFB;
+    --paper-dim:   #CBD2ED;
+    --paper-mute:  #8B96C8;
+    --paper-faint: #5C6690;
+    --neon-coral:  #FF3E6C;  --neon-coral-bright: #FF6B8A;  --neon-coral-soft: #2C1420;
+    --neon-blue:   #5C87FF;  --neon-blue-bright:  #8FB0FF;  --neon-blue-soft:  #16213D;
+    --neon-mint:   #12C08A;  --neon-mint-bright:  #5BF0C0;  --neon-mint-soft:  #0C2B22;
+    --neon-amber:  #FFB43D;                                  --neon-amber-soft: #2B2110;
+    --vermilion: var(--neon-coral); --vermilion-bright: var(--neon-coral-bright);
+    --vermilion-soft: var(--neon-coral-soft); --on-vermilion: #0A0C12;
+    --indigo: var(--neon-blue); --indigo-soft: var(--neon-blue-soft);
+    --moss:   var(--neon-mint); --moss-soft:   var(--neon-mint-soft);
+    --ochre:  var(--neon-amber); --ochre-soft: var(--neon-amber-soft);
+    --violet: #9B7CFF; --violet-soft: #1D1638;
+    --cyan:   #33D6EF; --cyan-soft:   #0C2530;
+    --vermilion-ink: var(--neon-coral-bright);
+    --indigo-ink: var(--neon-blue-bright);
+    --moss-ink: var(--moss); --ochre-ink: var(--ochre);
+    --violet-ink: #AE96FF; --cyan-ink: var(--cyan);
+    --danger: var(--neon-coral); --danger-soft: var(--neon-coral-soft); --danger-ink: var(--neon-coral-bright);
+    --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
+    --radius-lg: var(--radius-card-night);
+    --shadow-sm:   0 0 0 1px rgba(150,180,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.7);
+    --shadow:      0 0 0 1px rgba(150,180,255,0.10), 0 20px 44px -18px rgba(0,0,0,0.75);
+    --shadow-lift: 0 0 0 1px rgba(255,77,116,0.35), 0 26px 60px -18px rgba(0,0,0,0.85), 0 0 34px -6px rgba(255,77,116,0.45);
+    --glow:        0 0 26px -4px var(--vermilion-bright);
+    --card-hairline: none;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Accent presets — a RUNTIME user choice (Settings ▸ Appearance ▸ Accent).
  *
  * `AccentProvider` stamps `data-accent="coral|blue|mint"` on `<html>`
- * (persisted in localStorage["km.accent"], same pattern as km.theme), and
- * these blocks re-point the --vermilion family so everything downstream —
- * CTA fill, --glow (var-chained to --vermilion-bright), soft chips, the
- * hexagon gradient — switches instantly with no reload.
+ * (persisted in localStorage["km.accent"], same pattern as km.theme). Per
+ * DESIGN_SEOUL_DAY_NIGHT.md §2, the SAME accent knob re-points --vermilion
+ * to a DIFFERENT palette layer per world: Day → dancheong (coral→dan-verm,
+ * blue→dan-cobalt, mint→dan-jade); Night → neon (coral→neon-coral,
+ * blue→neon-blue, mint→neon-mint). CTA fill, --glow (var-chained to
+ * --vermilion-bright), soft chips, and the hexagon gradient all switch
+ * instantly with no reload.
  *
- * Coral restates the base values for explicitness. --danger is PINNED to
- * the coral red in the blue/mint blocks: error semantics stay red no
- * matter which accent hue is active (the base `--danger: var(--vermilion)`
- * would otherwise follow the accent).
+ * Coral restates the base values for explicitness (the base blocks already
+ * default to dan-verm/neon-coral). --danger is PINNED to the vermilion/coral
+ * red in the blue/mint blocks: critical/error semantics stay dan-verm (Day)
+ * / neon-coral (Night) no matter which accent hue is active — the same
+ * mapping the doc gives its good/warn/critical semantic triad.
  *
- * Contrast (§3a, recomputed for the v2 neon values): each solid fill
- * carries its --on-vermilion at ≥4.5:1 — coral #FF3E6C + near-black ink
- * ≈ 5.7:1 (white would be ≈3.4:1 and fail), blue #2563EB + white ≈ 5.1:1,
- * mint #0F9E7A + near-black ink ≈ 5.8:1. Dark fills all pair with
- * #0A0C12 at ≥6:1.
- * The accent AS TEXT (ghost buttons, gold pills, active nav) never reads
- * --vermilion directly — it reads --vermilion-ink, deepened (light) /
- * brightened (dark) per accent so small text clears AA on every host
- * surface it can sit on (verified in the v2 contrast matrix).
+ * Contrast: every Day fill clears AA with WHITE text (verm 4.96:1, cobalt
+ * 6.49:1, jade 4.93:1) — no near-black --on-vermilion needed in Day. Every
+ * Night fill clears AA with NEAR-BLACK text instead (white fails all three:
+ * coral 3.41:1, blue 3.74:1, mint 2.35:1; near-black clears coral 5.73:1,
+ * blue 5.22–5.92:1, mint 8.32:1). The accent AS TEXT (ghost buttons, gold
+ * pills, active nav) never reads --vermilion directly — it reads
+ * --vermilion-ink, which chains onto the palette layer's own `-ink`
+ * (Day, deepened for AA on soft chips) or `-bright` (Night, already AA on
+ * its soft chip) twin.
  *
  * Cascade note: the light accent blocks are LATER in the sheet than
  * [data-theme="dark"] at equal specificity, so every dark combo needs (and
@@ -192,61 +335,58 @@
  * token the light block sets — otherwise light values would leak into dark.
  * ──────────────────────────────────────────────────────────────────────── */
 [data-accent="coral"] {
-  --vermilion:        #FF3E6C;
-  --vermilion-bright: #FF3E6C;
-  --vermilion-soft:   #FFE6ED;
-  --vermilion-ink:    #BB183C;
-  --on-vermilion:     #0A0C12;
+  --vermilion:        var(--dan-verm);
+  --vermilion-bright: var(--dan-verm);
+  --vermilion-soft:   var(--dan-verm-soft);
+  --vermilion-ink:    var(--dan-verm-ink);
+  --on-vermilion:     #FFFFFF;
 }
 [data-theme="dark"][data-accent="coral"] {
-  --vermilion:        #FF4D74;
-  --vermilion-bright: #FF6B8A;
-  --vermilion-soft:   #2C1420;
-  --vermilion-ink:    #FF7190;
+  --vermilion:        var(--neon-coral);
+  --vermilion-bright: var(--neon-coral-bright);
+  --vermilion-soft:   var(--neon-coral-soft);
+  --vermilion-ink:    var(--neon-coral-bright);
   --on-vermilion:     #0A0C12;
 }
 [data-accent="blue"] {
-  --vermilion:        #2563EB;
-  --vermilion-bright: #4F7BFF;
-  --vermilion-soft:   rgba(79, 123, 255, 0.10);
-  --vermilion-ink:    #1554DF;
+  --vermilion:        var(--dan-cobalt);
+  --vermilion-bright: var(--dan-cobalt);
+  --vermilion-soft:   var(--dan-cobalt-soft);
+  --vermilion-ink:    var(--dan-cobalt-ink);
   --on-vermilion:     #FFFFFF;
-  --danger:           #FF3E6C;
-  --danger-soft:      #FFE6ED;
+  --danger:           var(--dan-verm);
+  --danger-soft:      var(--dan-verm-soft);
 }
 [data-theme="dark"][data-accent="blue"] {
-  --vermilion:        #5B8CFF;
-  --vermilion-bright: #7AA2FF;
-  --vermilion-soft:   rgba(91, 140, 255, 0.14);
-  --vermilion-ink:    #7AA2FF;
+  --vermilion:        var(--neon-blue);
+  --vermilion-bright: var(--neon-blue-bright);
+  --vermilion-soft:   var(--neon-blue-soft);
+  --vermilion-ink:    var(--neon-blue-bright);
   --on-vermilion:     #0A0C12;
-  --danger:           #FF4D74;
-  --danger-soft:      #2C1420;
+  --danger:           var(--neon-coral);
+  --danger-soft:      var(--neon-coral-soft);
 }
 [data-accent="mint"] {
-  --vermilion:        #0F9E7A;
-  --vermilion-bright: #10C79A;
-  --vermilion-soft:   rgba(16, 199, 154, 0.10);
-  --vermilion-ink:    #0B7258;
-  --on-vermilion:     #0A0C12;  /* see contrast note above */
-  --danger:           #FF3E6C;
-  --danger-soft:      #FFE6ED;
-  /* Mint fill #0F9E7A is only 2.99:1 vs --ink #EDF1F8 — below the WCAG
-   * 1.4.11 3:1 non-text floor for focus indicators. The ring alone reads
-   * this deepened mint (3.58:1); fills/glows keep the brand hue. */
-  --focus-ring:       #0D8F6F;
+  --vermilion:        var(--dan-jade);
+  --vermilion-bright: var(--dan-jade);
+  --vermilion-soft:   var(--dan-jade-soft);
+  --vermilion-ink:    var(--dan-jade-ink);
+  --on-vermilion:     #FFFFFF;
+  --danger:           var(--dan-verm);
+  --danger-soft:      var(--dan-verm-soft);
+  /* dan-jade #2E7D6B is 4.01:1 vs --ink #EFE7D6 — already clears the WCAG
+   * 1.4.11 3:1 non-text floor, so (unlike the old brighter mint preset)
+   * the ring can just follow the var chain; no deepened escape hatch
+   * needed in Day. */
 }
 [data-theme="dark"][data-accent="mint"] {
-  --vermilion:        #2BE0A6;
-  --vermilion-bright: #5BF0C0;
-  --vermilion-soft:   rgba(43, 224, 166, 0.14);
-  --vermilion-ink:    #5BF0C0;
+  --vermilion:        var(--neon-mint);
+  --vermilion-bright: var(--neon-mint-bright);
+  --vermilion-soft:   var(--neon-mint-soft);
+  --vermilion-ink:    var(--neon-mint-bright);
   --on-vermilion:     #0A0C12;
-  --danger:           #FF4D74;
-  --danger-soft:      #2C1420;
-  /* Restore the var chain: dark mint #2BE0A6 is 11.6:1 vs --ink — the
-   * light-only deepening above must not dim the neon night ring. */
-  --focus-ring:       var(--vermilion);
+  --danger:           var(--neon-coral);
+  --danger-soft:      var(--neon-coral-soft);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -282,20 +422,37 @@ html, body, #root {
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
-  /* Faint ambient city-light glow (§9) — a whisper, not a picture. The
-   * gradients read off the accent + indigo tokens, so they re-tint with
-   * both the theme AND the runtime accent choice. Replaces the old hanji
-   * paper-grain dots. */
+  /* Faint ambient city-light glow, layered OVER the Day/Night sky gradient
+   * (`--city-gradient`, DESIGN_SEOUL_DAY_NIGHT.md §2 "--ground/--ground-sky"
+   * — a vertical hanji-sky wash by day, a Namsan-horizon wash by night).
+   * The radial glows read off the accent + indigo tokens, so they re-tint
+   * with both the theme AND the runtime accent choice. */
   background-image:
     radial-gradient(1100px 460px at 82% -8%, color-mix(in srgb, var(--vermilion-bright) 10%, transparent), transparent 70%),
-    radial-gradient(900px 420px at -5% 8%, color-mix(in srgb, var(--indigo) 10%, transparent), transparent 70%);
+    radial-gradient(900px 420px at -5% 8%, color-mix(in srgb, var(--indigo) 10%, transparent), transparent 70%),
+    var(--city-gradient);
   background-attachment: fixed;
+}
+
+/* Rain-neon sheen (device #8, DESIGN_SEOUL_DAY_NIGHT.md §4) — a very
+ * subtle diagonal wet-street reflection over the Night ambient body.
+ * Night-only; Day gets no sheen layer. `.km-rain-sheen` (seoul-devices.css)
+ * gives components their own opt-in copy of the same mixin. */
+[data-theme="dark"] body {
+  background-image:
+    radial-gradient(1100px 460px at 82% -8%, color-mix(in srgb, var(--vermilion-bright) 10%, transparent), transparent 70%),
+    radial-gradient(900px 420px at -5% 8%, color-mix(in srgb, var(--indigo) 10%, transparent), transparent 70%),
+    repeating-linear-gradient(115deg, transparent 0 13px, rgba(255,255,255,.014) 13px 14px),
+    var(--city-gradient);
 }
 
 /* Rounded display face (§10) — headings + chrome. Korean display titles
  * keep their serif: `.kr-display` is a class selector, so it beats these
- * element selectors wherever both apply. */
+ * element selectors wherever both apply. Night Seoul is electric/rounded
+ * (doc §3 "Night = rounded/neon... with a neon glow") — the app's main
+ * headline glows the active accent in Night; Day stays calm ink-on-paper. */
 h1, h2 { font-family: var(--font-display); }
+[data-theme="dark"] h1 { text-shadow: 0 0 10px color-mix(in srgb, var(--vermilion) 70%, transparent); }
 
 /* Korean type — body sans, display serif. */
 .kr {
@@ -605,8 +762,13 @@ h1, h2 { font-family: var(--font-display); }
 }
 
 /* Card ──────────────────────────────────────────────────────────────────
- * Outlined → elevated (§5): hairline borders are gone; depth comes from
- * the theme-aware shadow tokens. */
+ * Day/Night retheme: Day reads as hanji paper (hairline `--card-hairline`
+ * + soft warm shadow, doc device #1); Night keeps its glass-ring read (the
+ * ring already lives in --shadow's inset 1px, so --card-hairline is `none`
+ * there — no double border). Radius comes from --radius-lg, which itself
+ * derives from --radius-card-day/night (squarer by day, rounder by night).
+ * This is the calm, everyday surface — the neon-signboard GLOW treatment
+ * is CityCard's job (src/components/CityCard.tsx), not every Card. */
 .km-card {
   border-radius: var(--radius-lg);
   padding: 22px 22px;
@@ -614,12 +776,12 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-card--default {
   background: var(--ink-1);
-  border: none;
+  border: var(--card-hairline);
   box-shadow: var(--shadow);
 }
 .km-card--flat {
   background: var(--ink-2);
-  border: none;
+  border: var(--card-hairline);
   box-shadow: var(--shadow-sm);
 }
 .km-card--accent {
@@ -716,6 +878,42 @@ h1, h2 { font-family: var(--font-display); }
 .km-seal--md { width: 28px; height: 28px; font-size: 16px; line-height: 28px; border-radius: 9px; }
 .km-seal--lg { width: 44px; height: 44px; font-size: 24px; line-height: 44px; border-radius: 14px; }
 
+/* SealStamp — milestone variant (device #7, DESIGN_SEOUL_DAY_NIGHT.md).
+ * Additive: only applies with `milestone` set. `--km-tone`
+ * (styles/seoul-devices.css) resolves accent/blue/mint/plain the same way
+ * CityCard/DancheongRail/SubwayProgress do. Hand-stamped rotation is a
+ * static tilt, not an animation — no reduced-motion gate needed. */
+.km-seal--milestone {
+  background: var(--km-tone);
+  color: var(--on-vermilion);
+  border-radius: 30% 70% 65% 35% / 40% 35% 65% 60%;
+  rotate: -6deg;
+  box-shadow: var(--shadow-sm);
+}
+[data-theme="dark"] .km-seal--milestone {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--km-tone) 60%, transparent);
+}
+.km-seal--milestone.km-tone--plain {
+  background: transparent;
+  color: var(--paper);
+  border: 2px solid var(--line-strong);
+  box-shadow: none;
+}
+[data-theme="dark"] .km-seal--milestone.km-tone--plain {
+  box-shadow: none;
+}
+
+.km-seal-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.km-seal-group__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--paper);
+}
+
 /* DoubleRule — Modern Seoul restyle. Was the hanji-era twin-hairline +
  * rotated vermilion diamond; now a single hairline with an optional small
  * round accent dot between the halves. Class names kept (`__line`,
@@ -802,6 +1000,12 @@ h1, h2 { font-family: var(--font-display); }
   font-family: inherit;
 }
 .km-bottomnav__cell--active { color: var(--vermilion-ink); }
+/* Night: the active tab reads as a lit signboard letter (doc device #1 —
+ * "Bottom nav... active item glows"). Day stays flat ink, matching a
+ * paper/vermilion nav with no glow. */
+[data-theme="dark"] .km-bottomnav__cell--active {
+  text-shadow: 0 0 8px color-mix(in srgb, var(--vermilion) 60%, transparent);
+}
 .km-bottomnav__label {
   font-family: var(--font-display);
   font-size: 10px;

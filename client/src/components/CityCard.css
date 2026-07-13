@@ -1,0 +1,67 @@
+/*
+ * CityCard — component-scoped styles (DESIGN_SEOUL_DAY_NIGHT.md device #1).
+ * Colocated per the ShowMore.css convention.
+ *
+ * Day: hanji paper — warm surface, hairline border, soft low shadow, ink
+ * title (no glow — Day's craft is the rail/seal-stamp, not literal light).
+ * Night: neon signboard — dark gradient body, a bright neon-tube border in
+ * `--km-tone` (styles/seoul-devices.css), inner+outer glow, glowing title.
+ * `plain` drops the glow/border-color entirely in both worlds.
+ */
+
+.km-citycard {
+  position: relative;
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  color: var(--paper);
+  background: var(--ink-1);
+  border: var(--card-hairline);
+  box-shadow: var(--shadow-sm);
+}
+
+.km-citycard--feat {
+  box-shadow: var(--shadow);
+}
+
+.km-citycard__title {
+  margin: 0 0 10px;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--paper);
+}
+
+[data-theme="dark"] .km-citycard {
+  background: linear-gradient(
+    160deg,
+    rgba(30, 37, 66, 0.85),
+    rgba(16, 20, 40, 0.9)
+  );
+  border: 1.5px solid color-mix(in srgb, var(--km-tone) 55%, transparent);
+  border-radius: 15px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--km-tone) 12%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--km-tone) 50%, transparent),
+    inset 0 0 18px -8px color-mix(in srgb, var(--km-tone) 35%, transparent);
+}
+
+[data-theme="dark"] .km-citycard.km-tone--plain {
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--shadow);
+}
+
+[data-theme="dark"] .km-citycard--feat {
+  border-width: 2px;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--km-tone) 18%, transparent),
+    0 0 30px -6px color-mix(in srgb, var(--km-tone) 65%, transparent),
+    inset 0 0 22px -8px color-mix(in srgb, var(--km-tone) 45%, transparent);
+}
+
+[data-theme="dark"] .km-citycard__title {
+  color: var(--paper);
+  text-shadow: 0 0 10px var(--km-tone);
+}
+
+[data-theme="dark"] .km-citycard.km-tone--plain .km-citycard__title {
+  text-shadow: none;
+}

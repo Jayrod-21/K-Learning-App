@@ -1,0 +1,176 @@
+/*
+ * Seoul character-device utilities — DESIGN_SEOUL_DAY_NIGHT.md §4/§5.
+ *
+ * Cross-cutting mixins used by more than one component (so they live here,
+ * not co-located with a single component). Token-driven only — no hard-coded
+ * hex. Every animated utility has a static fallback under
+ * `prefers-reduced-motion: reduce` (in addition to the app-wide reduced-
+ * motion block in index.css, which already zeroes durations/delays — the
+ * rules below additionally swap any *ambient* animation off entirely so a
+ * reduced-motion user never renders a stalled mid-frame of a gradient
+ * shimmer).
+ *
+ * Imported once from styles/index.css.
+ */
+
+/* ── device #8: rain-neon sheen ──────────────────────────────────────────
+ * A very subtle diagonal wet-street reflection overlay. Night ambient
+ * areas only (behind a skyline, over a hub bg) — Day gets no sheen. Apply
+ * to a `position: relative` container; the sheen paints as a full-cover,
+ * pointer-events-none `::before` so it never intercepts taps/clicks. */
+.km-rain-sheen {
+  position: relative;
+}
+.km-rain-sheen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background-image: repeating-linear-gradient(
+    115deg,
+    transparent 0 13px,
+    rgba(255, 255, 255, 0.014) 13px 14px
+  );
+}
+[data-theme="dark"] .km-rain-sheen::before {
+  opacity: 1;
+}
+
+/* ── device #9: 자개 najeon (mother-of-pearl) ────────────────────────────
+ * An iridescent shimmer for special highlights ONLY — achievement accents,
+ * streak flames, a mastered-badge sheen, the accent on a hero CTA. Used
+ * sparingly (it's the jewel, not the wallpaper): apply as a background on
+ * a small element, not a section ground. The hue sweep reads off the
+ * active accent + a couple of neighbours so it stays in-family with
+ * whichever accent/theme is active, rather than a fixed rainbow. */
+.km-najeon {
+  background-image: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in srgb, var(--vermilion) 55%, transparent) 20%,
+    color-mix(in srgb, var(--indigo) 55%, transparent) 40%,
+    color-mix(in srgb, var(--moss) 55%, transparent) 60%,
+    color-mix(in srgb, var(--vermilion) 55%, transparent) 80%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  background-position: 0% 50%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .km-najeon--shimmer {
+    animation: km-najeon-shimmer 5s ease-in-out infinite;
+  }
+}
+@keyframes km-najeon-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* ── device #6: hangul watermark ─────────────────────────────────────────
+ * A giant, very faint 자모/character set behind a section header or empty
+ * state. Set `data-glyph="한"` (or the section's Korean word) on a
+ * `position: relative` container — no extra markup needed. Texture only:
+ * `aria-hidden` is implicit because the glyph is CSS `content`, never
+ * exposed to the accessibility tree. */
+.km-hangul-watermark {
+  position: relative;
+  isolation: isolate;
+}
+.km-hangul-watermark::before {
+  content: attr(data-glyph);
+  position: absolute;
+  right: -0.1em;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: -1;
+  font-family: 'Noto Serif KR', 'Nanum Myeongjo', serif;
+  font-size: 7em;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--paper);
+  opacity: 0.05;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── device #3: 기와 giwa (roof texture) ──────────────────────────────────
+ * Subtle tiled-roof arcs behind Day section grounds/empty states, at very
+ * low contrast; Night swaps to a faint city-grid texture. Apply directly
+ * to the section/empty-state element — it layers UNDER any existing
+ * background-image the caller already set (comma-joined), so it never
+ * clobbers a card's own surface color (set via `background-color`, not
+ * `background`, by callers that combine the two). */
+.km-giwa {
+  background-image: repeating-radial-gradient(
+    circle at 50% 0,
+    color-mix(in srgb, var(--paper) 6%, transparent) 0 2px,
+    transparent 2px 22px
+  );
+  background-size: 44px 22px;
+}
+[data-theme="dark"] .km-giwa {
+  background-image: repeating-linear-gradient(
+      0deg,
+      color-mix(in srgb, var(--paper) 4%, transparent) 0 1px,
+      transparent 1px 28px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--paper) 4%, transparent) 0 1px,
+      transparent 1px 28px
+    );
+  background-size: 28px 28px;
+}
+
+/* ── neon-glow helper ─────────────────────────────────────────────────────
+ * Text/box glow, keyed off `--glow-color` (defaults to the active accent)
+ * so callers can override per-use: `style={{ '--glow-color': 'var(--neon-blue)' }}`.
+ * Night-only by default — Day's "glow" is the seal-stamp/dancheong-rail
+ * craft, not literal light-bloom, so these no-op in Day unless a caller
+ * opts in with `.km-neon-glow--both`. */
+.km-neon-text,
+.km-neon-box {
+  --glow-color: var(--vermilion);
+}
+[data-theme="dark"] .km-neon-text,
+.km-neon-text.km-neon-glow--both {
+  text-shadow: 0 0 10px var(--glow-color);
+}
+[data-theme="dark"] .km-neon-box,
+.km-neon-box.km-neon-glow--both {
+  box-shadow: 0 0 16px -2px color-mix(in srgb, var(--glow-color) 65%, transparent);
+}
+
+/* ── shared tone variable ─────────────────────────────────────────────────
+ * `CityCard`, `DancheongRail`, and `SealStamp`'s milestone variant all take
+ * the same four-value tone prop (accent/blue/mint/plain) and need the SAME
+ * per-theme color resolution — Day reads the dancheong set, Night the neon
+ * set, `accent` tracks whichever `[data-accent]` the user picked. Centralised
+ * here as `--km-tone` so the three components (and any future one) stay in
+ * lockstep instead of re-deriving the mapping three times. */
+.km-tone--accent { --km-tone: var(--vermilion); }
+.km-tone--blue   { --km-tone: var(--dan-cobalt); }
+[data-theme="dark"] .km-tone--blue { --km-tone: var(--neon-blue); }
+.km-tone--mint   { --km-tone: var(--dan-jade); }
+[data-theme="dark"] .km-tone--mint { --km-tone: var(--neon-mint); }
+.km-tone--plain  { --km-tone: var(--line-strong); }
+
+/* One-time neon flicker-on (doc §7 "a one-time subtle neon flicker-on as a
+ * screen mounts") — opt-in via `.km-neon-flicker`, Night only, honours
+ * reduced-motion by simply never animating (the element renders at its
+ * settled, fully-lit end state instead of the flicker keyframes). */
+@media (prefers-reduced-motion: no-preference) {
+  [data-theme="dark"] .km-neon-flicker {
+    animation: km-neon-flicker-in 900ms steps(1, end);
+  }
+}
+@keyframes km-neon-flicker-in {
+  0%   { opacity: 0.2; }
+  8%   { opacity: 1; }
+  12%  { opacity: 0.4; }
+  20%  { opacity: 1; }
+  28%  { opacity: 0.6; }
+  36%  { opacity: 1; }
+  100% { opacity: 1; }
+}
