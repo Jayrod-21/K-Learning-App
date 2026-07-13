@@ -135,6 +135,51 @@ describe('secondary text contrast (--paper-mute, WCAG AA)', () => {
   }
 });
 
+describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA)', () => {
+  // CityCard's Night signboard body, DancheongRail's Night edge glow, and
+  // SubwayProgress's fill/station dots all resolve `--km-tone` (the shared
+  // accent/blue/mint/plain mapping in seoul-devices.css). SealStamp's
+  // milestone variant is the one consumer that puts TEXT directly on that
+  // fill (`background: var(--km-tone); color: var(--on-vermilion);` —
+  // index.css .km-seal--milestone), so that's the pairing to guard.
+  //
+  // `plain` is excluded on purpose: its milestone treatment is
+  // `background: transparent; color: var(--paper); border: ...` (index.css
+  // .km-seal--milestone.km-tone--plain) — not a text-on-fill pairing at
+  // all, so there is nothing for THIS check to assert about it.
+  //
+  // blue -> dan-cobalt (Day) / neon-blue (Night); mint -> dan-jade (Day) /
+  // neon-mint (Night). `accent` itself already tracks --vermilion, which is
+  // covered by the existing accent-preset contrast reasoning (index.css
+  // comments at the accent-preset block) — not re-derived here.
+  const DAY_COMBOS = [
+    ['blue', 'dan-cobalt'],
+    ['mint', 'dan-jade'],
+  ] as const;
+  const NIGHT_COMBOS = [
+    ['blue', 'neon-blue'],
+    ['mint', 'neon-mint'],
+  ] as const;
+
+  for (const [tone, fillToken] of DAY_COMBOS) {
+    it(`light (:root): --on-vermilion on --${fillToken} (tone="${tone}") >= 4.5:1`, () => {
+      const vars = tokenBlock(LIGHT_SEL);
+      const text = resolve(vars, 'on-vermilion');
+      const fill = resolve(vars, fillToken);
+      expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  for (const [tone, fillToken] of NIGHT_COMBOS) {
+    it(`dark ([data-theme="dark"]): --on-vermilion on --${fillToken} (tone="${tone}") >= 4.5:1`, () => {
+      const vars = new Map([...tokenBlock(LIGHT_SEL), ...tokenBlock(DARK_SEL)]);
+      const text = resolve(vars, 'on-vermilion');
+      const fill = resolve(vars, fillToken);
+      expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+});
+
 describe('focus ring contrast (--focus-ring vs page bg, WCAG 1.4.11)', () => {
   // The `.focusring` outline is a non-text UI indicator — it needs >= 3:1
   // against the raw page background (--ink) for every theme x accent combo.

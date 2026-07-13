@@ -46,8 +46,14 @@ export function SubwayProgress({
   valueText,
   className,
 }: SubwayProgressProps): JSX.Element {
-  const total = Math.max(1, Math.floor(steps));
-  const active = Math.min(Math.max(0, Math.floor(current)), total - 1);
+  // Guard against NaN/Infinity (e.g. a caller passing a bad computed ratio
+  // like `current={0 / 0}`) — `Math.floor`/`Math.min`/`Math.max` all
+  // propagate NaN silently, which would otherwise render a broken
+  // `aria-valuenow={NaN}` and a station loop with no clear "current" dot.
+  const safeSteps = Number.isFinite(steps) ? steps : 1;
+  const safeCurrent = Number.isFinite(current) ? current : 0;
+  const total = Math.max(1, Math.floor(safeSteps));
+  const active = Math.min(Math.max(0, Math.floor(safeCurrent)), total - 1);
   const fillPct = total > 1 ? (active / (total - 1)) * 100 : 100;
 
   return (

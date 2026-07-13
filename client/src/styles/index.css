@@ -260,7 +260,18 @@
  * lands on <html> (first paint / no-JS) — mirrors the dark block above.
  * `:not([data-theme])` stops matching the instant JS sets EITHER explicit
  * value, so an explicit `data-theme="light"` choice always wins even when
- * the OS prefers dark; no specificity war with the attribute rules below. */
+ * the OS prefers dark; no specificity war with the attribute rules below.
+ *
+ * DO NOT drop `:not([data-theme])` — it is what makes this two-direction
+ * override provably correct. Without it (e.g. "simplified" to a bare
+ * `:root` inside this media query), this block's specificity (0,1,0) would
+ * TIE the base `:root, [data-theme="light"]` rule above (also (0,1,0)) on
+ * every element, and the cascade would then fall back to SOURCE ORDER
+ * instead of intent — since this block comes later in the sheet, it would
+ * always win, permanently forcing Night on any dark-OS user even after
+ * they explicitly pick `data-theme="light"`. This has been traced by hand
+ * against all four OS×explicit-choice combinations (see
+ * docs/redesign/REVIEW_token-arch.md) — it is correct as written. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     --ink:   #07080F;
@@ -453,6 +464,16 @@ body {
  * headline glows the active accent in Night; Day stays calm ink-on-paper. */
 h1, h2 { font-family: var(--font-display); }
 [data-theme="dark"] h1 { text-shadow: 0 0 10px color-mix(in srgb, var(--vermilion) 70%, transparent); }
+/* Day is serif-forward (doc §3: "Latin headings in a serif or
+ * high-contrast treatment... calm, editorial, ink-on-paper") — Night stays
+ * on the rounded Nunito `--font-display` + neon glow above; only Day's
+ * Latin headings switch face. 'Noto Serif' pairs with the app's existing
+ * Noto Serif KR (Korean display) so both scripts read as one editorial
+ * family; Georgia is the widely-available serif fallback. */
+:root[data-theme="light"] h1,
+:root[data-theme="light"] h2 {
+  font-family: 'Noto Serif', Georgia, serif;
+}
 
 /* Korean type — body sans, display serif. */
 .kr {

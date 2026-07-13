@@ -31,13 +31,16 @@
 }
 
 [data-theme="dark"] .km-citycard {
+  /* Token-derived, not literal hex: `color-mix(... transparent)` keeps the
+   * intended alpha so `--city-gradient` (the ambient body glow) still reads
+   * through the signboard body, while the stops themselves track `--ink-2`
+   * / `--ink-1` — a future retune of those tokens follows here too. */
   background: linear-gradient(
     160deg,
-    rgba(30, 37, 66, 0.85),
-    rgba(16, 20, 40, 0.9)
+    color-mix(in srgb, var(--ink-2) 85%, transparent),
+    color-mix(in srgb, var(--ink-1) 90%, transparent)
   );
   border: 1.5px solid color-mix(in srgb, var(--km-tone) 55%, transparent);
-  border-radius: 15px;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--km-tone) 12%, transparent),
     0 0 22px -6px color-mix(in srgb, var(--km-tone) 50%, transparent),
@@ -45,7 +48,7 @@
 }
 
 [data-theme="dark"] .km-citycard.km-tone--plain {
-  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  border: 1.5px solid var(--line-strong);
   box-shadow: var(--shadow);
 }
 

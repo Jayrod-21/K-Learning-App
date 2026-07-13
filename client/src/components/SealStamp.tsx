@@ -42,6 +42,11 @@ export interface SealStampProps {
    * with `milestone` — plain badge usage has no room for it. */
   label?: ReactNode;
   tone?: SealTone;
+  /** Always applied to the glyph badge itself (never the outer `label`
+   * wrapper) — so a caller can position/size the glyph the same way
+   * whether or not `label` is also passed. The wrapper's own layout
+   * (inline-flex + gap) is a fixed class (`km-seal-group`), not something
+   * a caller needs `className` to control. */
   className?: string;
   style?: CSSProperties;
 }
@@ -69,7 +74,7 @@ export function SealStamp({
         SIZE_CLASS[size],
         `km-tone--${tone}`,
         milestone && 'km-seal--milestone',
-        !label && className,
+        className,
       )}
       style={style}
       aria-hidden="true"
@@ -83,7 +88,7 @@ export function SealStamp({
   }
 
   return (
-    <span className={cn('km-seal-group', className)}>
+    <span className="km-seal-group">
       {badge}
       <span className="km-seal-group__label">{label}</span>
     </span>
