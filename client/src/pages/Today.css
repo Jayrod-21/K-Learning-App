@@ -4,11 +4,11 @@
  *
  * What lives here: the hero/section spacing, the `ActivityTile` chrome
  * (button-wraps-CityCard, per DESIGN_SEOUL_DAY_NIGHT.md devices #1/#2), the
- * Writing inline-expand tile's Night neon override (CollapsibleTile itself
- * composes the plain `Card` primitive — a shared component out of this
- * page's edit scope — so its Night glow is reproduced here with the SAME
- * token formula CityCard.css uses, scoped to `.km-today__writingTile`
- * only), and the resume-exam corner banner.
+ * Writing inline-expand tile's tightened padding (`CollapsibleTile` renders
+ * `surface="city"` there — the shared CityCard-backed variant owns the
+ * Night neon glow / Day hanji-paper treatment itself; nothing to duplicate
+ * here since `REVIEW_batch1-fidelity.md` C-1's fix), and the resume-exam
+ * corner banner.
  *
  * Token-driven only (no hard-coded hex anywhere in this file) — every color
  * comes from styles/index.css's Day/Night/accent-aware custom properties, so
@@ -19,8 +19,25 @@
   padding-bottom: 20px;
 }
 
-.km-today__hero {
-  margin: 0 0 8px;
+/* F-128 device #4 — the skyline strip now carries the real <h1> overlaid on
+ * it (C-2 fix: matches Progress's `.km-progress__skyline` treatment, so the
+ * app's two hub pages share one header recipe instead of two). */
+.km-today__skyline {
+  margin: 0 0 12px;
+}
+
+.km-today__title {
+  margin: 4px 0 14px;
+}
+
+/* C-3 — the dancheong-rail divider under the header (folded into the C-2
+ * unification; matches Progress's `.km-progress__rail-divider`).
+ * `DancheongRail` is `position: absolute; inset: <edge> 0` against its
+ * nearest positioned ancestor — give it one with real height. */
+.km-today__rail-divider {
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
 }
 
 .km-today__sectionEyebrow {
@@ -180,29 +197,13 @@
 }
 
 /* Writing inline-expand tile (F-134) ───────────────────────────────────
- * CollapsibleTile composes the plain `Card` primitive (shared component,
- * out of this page's edit scope) — Day already reads as a hanji-paper
- * surface indistinguishable from CityCard's own Day styling, so only Night
- * needs a page-scoped override to pick up the neon-signboard glow. Same
- * token formula as CityCard.css's `[data-theme="dark"] .km-citycard` rule.
+ * `CollapsibleTile` now renders `surface="city"` here (the shared
+ * CityCard-backed variant, `REVIEW_batch1-fidelity.md` C-1) — the Night
+ * neon-signboard glow and the leading-edge DancheongRail come from that
+ * shared component itself, so the page-scoped glow duplicate this file
+ * used to carry is gone. Only the tile's own tighter padding (matching its
+ * `CityCard` ActivityTile siblings, F-133) stays page-scoped.
  */
-.km-today__writingWrap {
-  position: relative;
-}
-
-[data-theme="dark"] .km-today__writingTile.km-collapsible {
-  background: linear-gradient(
-    160deg,
-    color-mix(in srgb, var(--ink-2) 85%, transparent),
-    color-mix(in srgb, var(--ink-1) 90%, transparent)
-  );
-  border: 1.5px solid color-mix(in srgb, var(--vermilion) 55%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--vermilion) 12%, transparent),
-    0 0 22px -6px color-mix(in srgb, var(--vermilion) 50%, transparent),
-    inset 0 0 18px -8px color-mix(in srgb, var(--vermilion) 35%, transparent);
-}
-
 .km-today__writingTile .km-collapsible__header {
   padding: 14px 16px;
 }

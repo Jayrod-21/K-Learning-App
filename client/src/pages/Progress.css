@@ -150,22 +150,39 @@
 /* F-142 — a dashed least-squares trend line over the Overall series (drawn
  * BEHIND that series' own dots, painted before them in markup) and a larger
  * ring on every series' latest point so "where you are right now" reads at
- * a glance without gating on hover. */
+ * a glance without gating on hover.
+ *
+ * SF2 (REVIEW_batch1-fidelity.md): this line and the pre-existing TOPIK
+ * `.km-progress__refline` threshold both used to resolve to `--paper-faint`
+ * in LIGHT theme (only the dark override told them apart) — legible only by
+ * dash spacing (6 4 vs 4 3), a soft failure mode if both draw on the same
+ * chart. `--paper-mute` is a step darker/more legible than `--paper-faint`
+ * in BOTH themes (it already was the dark-theme override here — this just
+ * stops relying on a theme-specific override to get that step, and
+ * `.km-progress__refline` keeps `--paper-faint` unchanged, so the two lines
+ * are now visually distinct in both worlds, not just Night). */
 .km-progress__trendfit {
-  stroke: var(--paper-faint);
+  stroke: var(--paper-mute);
   stroke-width: 1.5;
   stroke-dasharray: 6 4;
-}
-[data-theme='dark'] .km-progress__trendfit {
-  stroke: var(--paper-mute);
 }
 .km-progress__dot--latest {
   stroke-width: 2.5;
 }
+/* SF3 (REVIEW_batch1-fidelity.md) — this caption is real prose text ("Dashed
+ * line: overall trend across attempts"), not a decorative graphical element
+ * like the axis ticks/refline above, so it needs the TEXT contrast bar
+ * (WCAG AA, >= 4.5:1) rather than the graphical-object bar (>= 3:1).
+ * `--paper-faint` measures ~2.0:1 (light) / ~3.2:1 (dark) against this
+ * page's card surfaces — well under 4.5:1 — so this new caption used the
+ * wrong token; `--paper-dim` is the token every OTHER caption on this page
+ * already uses (`.km-progress__note`, `.km-progress__readout`,
+ * `.km-progress__legend`, `.km-progress__state`) and clears AA in both
+ * themes (see the extended `tokensContrast.test.ts` guard). */
 .km-progress__trendnote {
   margin: 8px 0 0;
   font-size: 12px;
-  color: var(--paper-faint);
+  color: var(--paper-dim);
 }
 
 .km-progress__series--reading { stroke: var(--kmp-reading); }

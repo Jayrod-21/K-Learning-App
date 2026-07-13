@@ -1447,6 +1447,35 @@ describe('Progress page — F-142 richer trend lines + visible data points', () 
     ).toBeInTheDocument();
   });
 
+  it('SF1: the trend line\'s rendered coordinates match the hand-computed OLS regression (REVIEW_batch1-progress.md SF1)', () => {
+    // HISTORY_3's Overall (mean) series is 42, 53, 67 at attempt indices
+    // 0, 1, 2 — hand-verified in the review: meanX=1, meanY=54,
+    // Σ(dx·dy)=25, Σ(dx²)=2 → slope=12.5, intercept=41.5. Endpoints in
+    // score-space: x=0 → y=41.5, x=2 → y=66.5 (both inside [0,100], so
+    // clamping is a no-op here). This test would FAIL if the slope/
+    // intercept formula regressed (flipped sign, wrong denominator,
+    // off-by-one on first/last) even though every OTHER F-142 test only
+    // gates on element COUNT and couldn't catch that.
+    renderPage();
+
+    const chart = screen.getByRole('img', {
+      name: /Line chart of diagnostic scores across 3 attempts/,
+    });
+    const line = chart.querySelector('.km-progress__trendfit');
+    expect(line).not.toBeNull();
+
+    // x-coordinates map attempt index i=0..2 through the chart's fixed
+    // PAD/INNER_W geometry (W=640, PAD.left=36, PAD.right=76, n=3) — exact
+    // integers, no floating-point slop.
+    expect(line).toHaveAttribute('x1', '36');
+    expect(line).toHaveAttribute('x2', '564');
+    // y-coordinates additionally pass through the score→pixel mapping
+    // (PAD.top=14, INNER_H=216), which is NOT float-exact — compare
+    // numerically instead of by exact string.
+    expect(Number(line?.getAttribute('y1'))).toBeCloseTo(140.36, 1);
+    expect(Number(line?.getAttribute('y2'))).toBeCloseTo(86.36, 1);
+  });
+
   it('omits the trend line under 3 attempts (a 2-point regression would just double the raw line)', () => {
     hookOverride.current = { data: historyOf(2) };
     renderPage();

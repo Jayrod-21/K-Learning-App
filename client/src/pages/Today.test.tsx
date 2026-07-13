@@ -289,6 +289,12 @@ async function activateWritingPage(
   return region;
 }
 
+// BLOCKER B1 (REVIEW_batch1-today.md) — F-138's local-day math is now
+// covered by `client/src/lib/localDay.test.ts` (the function moved to
+// `lib/localDay.ts` to satisfy `react-refresh/only-export-components`,
+// which forbids a page component file from also exporting plain
+// functions/types).
+
 describe('Today', () => {
   beforeEach(() => {
     hoisted.today.state = { kind: 'loading' };
@@ -764,6 +770,25 @@ describe('Today', () => {
     // milestone stamp rendered (never a fabricated one at zero).
     expect(screen.getByText('0 drills today')).toBeInTheDocument();
     expect(screen.getAllByText('Done today')).toHaveLength(2);
+  });
+
+  it('S1: the Writing tile\'s "done today" count is visible on the always-visible header face, without expanding the tile', async () => {
+    loadDefaults();
+    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_MIXED };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Suggested learning' });
+    await user.click(within(region).getByRole('tab', { name: 'Page 2 of 4' }));
+
+    // Still collapsed (F-134 default) — the count reads at a glance
+    // anyway, matching Grammar/TOPIK, because it now lives in `title`
+    // (the header row CollapsibleTile always renders), not `children`
+    // (the collapsed, aria-hidden+inert body).
+    const header = within(region).getByRole('button', { name: /Paragraph in/ });
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('1 essay graded today')).toBeInTheDocument();
+    expect(screen.getByText('Done today')).toBeInTheDocument();
   });
 
   it('F-138: shows no count at all while an attempt-history source is still loading (never a fabricated zero)', () => {

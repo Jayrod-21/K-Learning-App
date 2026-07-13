@@ -13,14 +13,19 @@
  * `SubwayProgress` (device #5) is deliberately NOT used here — every genuine
  * multi-step total this page could show (an in-progress mock exam's item
  * count) is not available client-side without fabricating a denominator or a
- * disproportionate extra fetch; see the F-138 section below and the PR
- * report for the follow-up ticket. Everything real stays real: per-tile
- * "done today" counts come from actual attempt-history endpoints, never a
- * fabricated target or a landing-page-visit counter.
+ * disproportionate extra fetch; see the F-138 section below. Tracked as a
+ * durable follow-up in `BUGS_AND_FEATURES.md` — "Resumed-TOPIK item-count for
+ * SubwayProgress" — rather than left as a dangling PR-description note.
+ * Everything real stays real: per-tile "done today" counts come from actual
+ * attempt-history endpoints, never a fabricated target or a landing-page-visit
+ * counter.
  *
  * Layout, top to bottom:
- *   1. `SkylineHeader` (decorative, aria-hidden) + `Topbar` (real h1: date
- *      eyebrow + 오늘 · Today).
+ *   1. `SkylineHeader` carrying the real h1 in its `title` slot (date
+ *      eyebrow + 오늘 · Today, overlaid on the skyline) + a `DancheongRail`
+ *      divider underneath — the same header recipe Progress uses (C-2/C-3
+ *      fix, `REVIEW_batch1-fidelity.md`), so the app's two hub pages no
+ *      longer render two different header treatments.
  *   2. **Review & drills carousel** (lead action) — Grammar drills tile
  *      (→ /learn/grammar) and a Hanja study tile (→ /learn/hanja, F-140).
  *      F-139 removes the old vocab/"words" due-count tile entirely — the
@@ -55,7 +60,9 @@
  * only exposes lifetime aggregate bands; `services/reading`/`services/ttmik`
  * expose no per-attempt log at all) — those tiles show their existing
  * server-supplied content with no daily-count claim, which is the honest
- * choice over fabricating one. Noted as a follow-up in the PR report.
+ * choice over fabricating one. Tracked as durable follow-ups in
+ * `BUGS_AND_FEATURES.md` — "Hanja daily-attempt signal" and "Reading/Listening
+ * daily-attempt signal" — rather than left as a dangling PR-description note.
  *
  * Threat model:
  *   Fixture/server text rendered as React children → escaped by React. Pass
@@ -71,7 +78,6 @@ import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
 import { Bilingual } from '../components/Bilingual';
 import { Eyebrow } from '../components/Eyebrow';
-import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
 import { Icon } from '../components/Icon';
@@ -96,6 +102,7 @@ import { fetchWritingAttempts } from '../services/writing';
 import { listAttempts as listGrammarAttempts } from '../services/grammarDrill';
 import type { DrillAttemptsPage, TodayPlan, TodayTask } from '../types/domain';
 import { cn } from '../lib/cn';
+import { isLocalToday } from '../lib/localDay';
 import './Today.css';
 
 /**
@@ -121,24 +128,6 @@ function formatDateEyebrow(d: Date, locale: 'en-US' | 'ko-KR'): string {
     month: 'long',
     day: 'numeric',
   });
-}
-
-/**
- * True when the ISO timestamp `iso` falls on the same LOCAL calendar day as
- * `ref`. Attempt-history endpoints return newest-first history with no
- * "today only" filter, so F-138's per-tile daily counts are derived here —
- * in the viewer's local time (what "today" means to the person looking at
- * the screen), not the server's UTC day boundary. Malformed timestamps
- * resolve false rather than throwing.
- */
-function isLocalToday(iso: string, ref: Date): boolean {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return false;
-  return (
-    d.getFullYear() === ref.getFullYear() &&
-    d.getMonth() === ref.getMonth() &&
-    d.getDate() === ref.getDate()
-  );
 }
 
 /**
@@ -201,16 +190,24 @@ const SECTION_LABELS: Record<AttemptState['section'], { label: string; kr: strin
 // mirroring `loadOpenAttemptMock`'s convention.
 // ─────────────────────────────────────────────────────────────
 
+// S2 — the real fetches below request `limit: 100`, the server's own
+// validated ceiling for these three routes (`z.coerce.number().max(100)` in
+// `server/src/routes/{grammarDrill,writing,topik}.ts`) — comfortably above
+// any realistic single-day count of graded drills/essays/mock attempts, so
+// the "done today" filter below never silently under-counts a genuinely
+// active day the way the old `limit: 20` could. These mock fixtures just
+// echo that same bound back (matching what the real endpoint would echo),
+// not a claim about how many attempts actually exist.
 async function loadGrammarAttemptsMock(): Promise<DrillAttemptsPage> {
   await mockDelay();
-  return { attempts: [], total: 0, limit: 20, offset: 0 };
+  return { attempts: [], total: 0, limit: 100, offset: 0 };
 }
 
 async function loadWritingAttemptsMock(): Promise<
   Awaited<ReturnType<typeof fetchWritingAttempts>>
 > {
   await mockDelay();
-  return { attempts: [], limit: 20, offset: 0 };
+  return { attempts: [], limit: 100, offset: 0 };
 }
 
 async function loadTopikAttemptsMock(): Promise<AttemptHistoryResult> {
@@ -333,20 +330,25 @@ export function Today(): JSX.Element {
   );
   // F-138: real per-tile "done today" signals. Independent fetches — a
   // failure/mock-fallback on one never blocks the others or the plan.
+  // S2: `limit: 100` is the server's own validated ceiling for all three
+  // routes (see the mock-loader comment above) — well above any realistic
+  // single-day count, so the client-side "done today" filter below can't
+  // silently under-count an active day the way the previous `limit: 20`
+  // could for a power user.
   const grammarAttempts = useEndpointOrMock<DrillAttemptsPage>(
     'today.grammarAttempts',
     loadGrammarAttemptsMock,
-    { realFn: () => listGrammarAttempts({ limit: 20 }) },
+    { realFn: () => listGrammarAttempts({ limit: 100 }) },
   );
   const writingAttempts = useEndpointOrMock<
     Awaited<ReturnType<typeof fetchWritingAttempts>>
   >('today.writingAttempts', loadWritingAttemptsMock, {
-    realFn: () => fetchWritingAttempts({ limit: 20 }),
+    realFn: () => fetchWritingAttempts({ limit: 100 }),
   });
   const topikAttempts = useEndpointOrMock<AttemptHistoryResult>(
     'today.topikAttempts',
     loadTopikAttemptsMock,
-    { realFn: () => fetchAttemptHistory({ limit: 20 }) },
+    { realFn: () => fetchAttemptHistory({ limit: 100 }) },
   );
 
   useChatContext(
@@ -441,48 +443,50 @@ export function Today(): JSX.Element {
     suggestedPages.push(
       <div key="writing" className={cn('km-today__tilePage', pagePadding())}>
         {/* F-134: expands INLINE via CollapsibleTile instead of navigating
-            away. DancheongRail (device #2) rides as a standalone sibling —
-            CollapsibleTile composes the plain `Card` primitive (out of this
-            page's edit scope), so the Night neon-signboard glow is applied
-            as a page-scoped override in Today.css (`.km-today__writingTile`)
-            using the same token formula CityCard.css uses, rather than
-            editing the shared component. */}
-        <div className="km-today__writingWrap">
-          <DancheongRail tone="accent" />
-          <CollapsibleTile
-            className="km-today__writingTile"
-            defaultCollapsed
-            title={
-              <span className="km-today__tileTop">
-                <span className="km-today__tileIcon" aria-hidden="true">
-                  <Icon name="pen" size={20} />
-                </span>
-                <span className="km-today__tileBody">
-                  {renderTag(t.tag, gapTag)}
-                  <span className="km-today__tileHeadline kr">{t.title}</span>
-                  <span className="km-today__tileMeta">
-                    <Bilingual
-                      en={`Writing · ${t.level} · ${String(t.mins)} min`}
-                      kr={`쓰기 · ${t.level} · ${String(t.mins)}분`}
-                    />
-                  </span>
-                </span>
+            away. `surface="city"` (the shared CityCard-backed variant, see
+            REVIEW_batch1-fidelity.md C-1) gives it the same Night
+            neon-signboard / Day hanji-paper treatment as its ActivityTile
+            siblings, including the leading-edge DancheongRail via `rail` —
+            no more page-scoped CSS copy of CityCard's glow formula. S1: the
+            "done today" count rides in `title` (the always-visible header
+            face), not inside `children` (the collapsed body) — so it reads
+            at a glance like Grammar/TOPIK's, without expanding the tile. */}
+        <CollapsibleTile
+          className="km-today__writingTile"
+          surface="city"
+          tone="accent"
+          rail
+          defaultCollapsed
+          title={
+            <span className="km-today__tileTop">
+              <span className="km-today__tileIcon" aria-hidden="true">
+                <Icon name="pen" size={20} />
               </span>
-            }
-          >
-            <WritingTopicGenerator
-              onUseTopic={(topic) => {
-                navigate('/learn/writing', { state: { generatedTopic: topic } });
-              }}
-            />
-            <DoneTodayRow
-              count={writingDoneToday}
-              tone="accent"
-              labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
-              labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
-            />
-          </CollapsibleTile>
-        </div>
+              <span className="km-today__tileBody">
+                {renderTag(t.tag, gapTag)}
+                <span className="km-today__tileHeadline kr">{t.title}</span>
+                <span className="km-today__tileMeta">
+                  <Bilingual
+                    en={`Writing · ${t.level} · ${String(t.mins)} min`}
+                    kr={`쓰기 · ${t.level} · ${String(t.mins)}분`}
+                  />
+                </span>
+                <DoneTodayRow
+                  count={writingDoneToday}
+                  tone="accent"
+                  labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
+                  labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
+                />
+              </span>
+            </span>
+          }
+        >
+          <WritingTopicGenerator
+            onUseTopic={(topic) => {
+              navigate('/learn/writing', { state: { generatedTopic: topic } });
+            }}
+          />
+        </CollapsibleTile>
       </div>,
     );
   }
@@ -583,15 +587,32 @@ export function Today(): JSX.Element {
     >
       {isMock ? <MockBadge /> : null}
 
-      <div className="km-today__hero">
-        <SkylineHeader />
-      </div>
-      <Topbar
-        krTitle="오늘"
-        title="Today"
-        titleId="today-title"
-        eyebrow={<Bilingual en={dateEn} kr={dateKr} />}
+      {/* F-128 device #4 — the skyline strip carries the real <h1> overlaid
+          on it (C-2 fix, REVIEW_batch1-fidelity.md: Today used to render a
+          bare skyline strip plus a separate `Topbar` heading BELOW it, while
+          Progress overlaid its heading in SkylineHeader's own `title` slot —
+          two different header treatments for the app's two hub pages). Both
+          hubs now share one recipe. */}
+      <SkylineHeader
+        className="km-today__skyline"
+        title={
+          <>
+            <Eyebrow>
+              <Bilingual en={dateEn} kr={dateKr} />
+            </Eyebrow>
+            <h1 id="today-title" className="kr-display km-today__title">
+              <Bilingual kr="오늘" en="Today" />
+            </h1>
+          </>
+        }
       />
+
+      {/* C-3 — the same dancheong-rail divider Progress renders under its
+          header (folded into the C-2 header-unification fix), so both hub
+          headers share one consistent stack rather than Today having none. */}
+      <div className="km-today__rail-divider">
+        <DancheongRail tone="accent" />
+      </div>
 
       {/* Review & drills carousel — Grammar (unchanged target) + Hanja
           (F-140). F-139 removed the vocab/"words" due-count tile — the

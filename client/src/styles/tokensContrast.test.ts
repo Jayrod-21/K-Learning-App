@@ -135,6 +135,36 @@ describe('secondary text contrast (--paper-mute, WCAG AA)', () => {
   }
 });
 
+describe('secondary text contrast (--paper-dim, WCAG AA)', () => {
+  // SF3 (REVIEW_batch1-fidelity.md): a new Wave-2 caption
+  // (`.km-progress__trendnote`, Progress.css) originally reused
+  // `--paper-faint` at 12px — measured at ~2.0:1 (light) / ~3.2:1 (dark) on
+  // this page's card surfaces, well under the 4.5:1 AA floor for real body
+  // text (as opposed to `--paper-faint`'s OTHER, decorative-only uses —
+  // axis ticks, threshold lines, hairline borders — which only need the
+  // graphical-object bar, 3:1). The fix moved that caption to `--paper-dim`,
+  // the token every other caption on Progress already uses. This guards
+  // that choice the same way the `--paper-mute` block above guards its own
+  // token, so a future re-tint can't silently regress either pairing.
+  const themes: ReadonlyArray<[string, Map<string, string>]> = [
+    ['light (:root)', tokenBlock(LIGHT_SEL)],
+    ['dark ([data-theme="dark"])', tokenBlock(DARK_SEL)],
+  ];
+  const SURFACES = ['ink', 'ink-1', 'ink-2', 'ink-3'] as const;
+
+  for (const [label, own] of themes) {
+    const vars = new Map([...tokenBlock(LIGHT_SEL), ...own]);
+
+    for (const surface of SURFACES) {
+      it(`${label}: --paper-dim on --${surface} >= 4.5:1`, () => {
+        const dim = resolve(vars, 'paper-dim');
+        const host = resolve(vars, surface);
+        expect(contrast(dim, host)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
 describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA)', () => {
   // CityCard's Night signboard body, DancheongRail's Night edge glow, and
   // SubwayProgress's fill/station dots all resolve `--km-tone` (the shared

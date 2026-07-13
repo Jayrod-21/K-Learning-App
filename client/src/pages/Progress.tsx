@@ -43,11 +43,17 @@
  * `.km-giwa`/`.km-hangul-watermark` texture on the empty state (devices
  * #3/#6), a `.km-rain-sheen` ambient overlay on the page root (device #8,
  * Night-only per its own CSS gate), and `.km-najeon` on the milestone seal
- * (device #9, sparingly). `CityCard` is NOT used here: `CollapsibleTile`
- * (mandatory for F-141) hardcodes the plain `Card` surface internally, and
- * `CollapsibleTile.tsx` is a shared component maintained outside this page —
- * swapping its wrapper to `CityCard` would require changing that shared
- * file, so it was deliberately left as `Card` rather than touched here.
+ * (device #9, sparingly). Every `CollapsibleTile` section renders
+ * `surface="city"` — the shared CityCard-backed variant added to close
+ * `REVIEW_batch1-fidelity.md` C-1 (this page's sections used to be plain
+ * `Card`s while Today's Writing tile hand-rolled the same glow inline; the
+ * shared variant removes both workarounds at once). Tone follows the
+ * mockup's own per-section palette: TOPIK compare stays `accent` (tracks
+ * the global accent pick — it's the featured/open-by-default section),
+ * Progress by skill is `plain` (a quiet neutral edge for read-only trend
+ * data), Mastery is `blue` (fixed hue, matching the prototype's mastery
+ * signboard). `rail` (device #2, the leading-edge DancheongRail) rides on
+ * all three, matching every other card family on this page.
  *
  * F-143 ("remove 'begin today's plan' + 'gaps/next steps' blocks") found no
  * such blocks anywhere on THIS page — that copy lives on `Diagnostic.tsx`'s
@@ -580,6 +586,9 @@ function Progress(): JSX.Element {
       <CollapsibleTile
         className="km-progress__section"
         defaultCollapsed={false}
+        surface="city"
+        tone="accent"
+        rail
         title={<Bilingual en="TOPIK compare" kr="TOPIK 비교" />}
       >
         {hist.loading ? (
@@ -606,6 +615,9 @@ function Progress(): JSX.Element {
       <CollapsibleTile
         className="km-progress__section"
         defaultCollapsed
+        surface="city"
+        tone="plain"
+        rail
         title={<Bilingual en="Progress by skill" kr="실력 추이" />}
       >
         <SkillTrendsBody series={series} />
@@ -614,6 +626,9 @@ function Progress(): JSX.Element {
       <CollapsibleTile
         className="km-progress__section"
         defaultCollapsed
+        surface="city"
+        tone="blue"
+        rail
         title={<Bilingual en="Mastery" kr="숙달" />}
       >
         <MasteryBody />
