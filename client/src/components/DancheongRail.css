@@ -1,0 +1,45 @@
+/*
+ * DancheongRail — component-scoped styles (DESIGN_SEOUL_DAY_NIGHT.md
+ * device #2). Colocated per the ShowMore.css convention.
+ *
+ * Positioned absolutely against a `position: relative` ancestor (CityCard
+ * sets this) and rounds only its leading (left) corners to `inherit` the
+ * parent's radius, so it never juts a square corner past a rounded card.
+ */
+
+.km-dancheong-rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+  pointer-events: none;
+  /* Day: the fixed four-band temple-paint stripe — always these four
+   * hues, regardless of `tone` (Night is the one that tone-swaps). */
+  background: repeating-linear-gradient(
+    180deg,
+    var(--dan-jade) 0 8px,
+    var(--dan-verm) 8px 16px,
+    var(--dan-cobalt) 16px 24px,
+    var(--dan-ochre) 24px 32px
+  );
+}
+
+.km-dancheong-rail--feat {
+  width: 7px;
+}
+
+[data-theme="dark"] .km-dancheong-rail {
+  width: 3px;
+  background: var(--km-tone);
+  box-shadow: 0 0 10px var(--km-tone);
+}
+[data-theme="dark"] .km-dancheong-rail.km-tone--plain {
+  box-shadow: none;
+}
+[data-theme="dark"] .km-dancheong-rail--feat {
+  width: 4px;
+  box-shadow: 0 0 16px var(--km-tone);
+}
