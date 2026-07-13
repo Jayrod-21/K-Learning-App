@@ -1,12 +1,14 @@
 /**
- * Mistakes page (F-021, reworked P3b: F-044/F-045/F-046/F-024) — render
+ * Mistakes page (F-021, reworked P3b: F-044/F-045/F-046/F-024; Wave-2
+ * F-128/F-154 — square question-tile grid + Sheet popup) — render
  * behaviour over a mocked `useEndpointOrMock`.
  *
  * The hook is mocked so we drive the loading / data / empty / error surfaces
  * directly (mirrors Hanja.test.tsx). Fixtures pass through `vi.hoisted` so the
- * hoisted `vi.mock` factory can reference them. The CollapsibleTile /
+ * hoisted `vi.mock` factory can reference them. The CollapsibleTile / Sheet /
  * FilterSelect / BackButton primitives are REAL — the tests exercise the
- * actual disclosure, filtering, and navigation behaviour, not mocks of it.
+ * actual disclosure, popup, filtering, and navigation behaviour, not mocks
+ * of it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -126,9 +128,24 @@ function renderPage(): ReturnType<typeof render> {
   );
 }
 
-/** The study-mode question's tile toggle (header carries section · number). */
-function studyTileToggle(): HTMLElement {
-  return screen.getByRole('button', { name: /읽기 · 12번 · 학습/ });
+/**
+ * F-154 — the square question-number tile for a given mistake. Every tile's
+ * accessible name is `Question ${number}, ${section}, ${modeLabel} — tap to
+ * review`, so a plain number match is enough to disambiguate.
+ */
+function questionTile(number: number): HTMLElement {
+  return screen.getByRole('button', {
+    name: new RegExp(`^Question ${String(number)}, `),
+  });
+}
+
+/** Open the study-mode question's tile (item.number === 12) and return the
+ *  resolved popup dialog. */
+async function openStudyMistake(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<HTMLElement> {
+  await user.click(questionTile(12));
+  return screen.findByRole('dialog');
 }
 
 /**
@@ -153,50 +170,79 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     vi.mocked(fetchMistakes).mockClear();
   });
 
-  // ── F-044: collapsible question tiles ─────────────────────────────────
+  // ── F-154: square question-tile grid, divided by session/date ─────────
 
-  it('F-044: each miss renders as a tile that starts COLLAPSED (aria-expanded=false, body hidden)', () => {
-    hoisted.state = { kind: 'data', data: [MISTAKE] };
+  it('F-154: each miss renders as a small square question-number tile, grouped under its own date/session divider', () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE, MISTAKE_MOCK] };
     renderPage();
-    const toggle = studyTileToggle();
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    // The disclosure body is the aria-controls target and is hidden from AT.
-    const bodyId = toggle.getAttribute('aria-controls');
-    expect(bodyId).toBeTruthy();
-    const body = document.getElementById(bodyId as string);
-    expect(body).not.toBeNull();
-    expect(body).toHaveAttribute('aria-hidden', 'true');
-    // Interactive content inside the collapsed body is NOT reachable.
+    // Two distinct (day, mode) groups → two dividers, each carrying the
+    // session label (day · mode · missed count), matching the km-final.html
+    // Mistakes mock (date-divided groups of square tiles).
+    // Scoped to the divider itself — the same session label also appears
+    // (unavoidably) as a <select><option>, which getByText would otherwise
+    // also match.
     expect(
-      screen.queryByRole('button', { name: 'Ask about this' }),
-    ).not.toBeInTheDocument();
+      screen.getByText(/학습 · 1 missed/, { selector: '.km-mistakes__divider' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/모의고사 · 1 missed/, {
+        selector: '.km-mistakes__divider',
+      }),
+    ).toBeInTheDocument();
+    // Each tile is a real button carrying just the question number visibly,
+    // with the full identity in its accessible name.
+    const tile = questionTile(12);
+    expect(tile).toHaveTextContent('12');
+    expect(tile).toHaveAccessibleName('Question 12, 읽기, 학습 — tap to review');
+    // No popup open yet — the Sheet dialog doesn't exist until a tile is
+    // tapped.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('F-044: expanding a tile reveals the full review — prompt, correct answer, wrong-pick tag, explanation', async () => {
+  it('F-154: tapping a tile opens the Sheet popup with the question, the answer key, and a "See explanation" reveal', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };
     const user = userEvent.setup();
     renderPage();
-    const toggle = studyTileToggle();
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    const body = document.getElementById(
-      toggle.getAttribute('aria-controls') as string,
-    ) as HTMLElement;
-    expect(body).toHaveAttribute('aria-hidden', 'false');
-    // Full review content (scoped to the body region — the header snippet
-    // also carries the prompt, so page-global text queries would be soft).
-    expect(within(body).getByText('알맞은 것을 고르십시오.')).toBeInTheDocument();
-    expect(within(body).getByText('정답은 나입니다.')).toBeInTheDocument();
-    expect(within(body).getByText('Your answer')).toBeInTheDocument();
-    expect(within(body).getByText('Correct answer')).toBeInTheDocument();
-    expect(within(body).getByText('정답')).toBeInTheDocument();
+    const dialog = await openStudyMistake(user);
+
+    // The question (+ the user's wrong pick, the correct option) is visible
+    // immediately — no reveal needed for "the question, the user's answer".
+    expect(within(dialog).getByText('알맞은 것을 고르십시오.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Your answer')).toBeInTheDocument();
     expect(
-      within(body).getAllByText('나 정답').length,
+      within(dialog).getAllByText('나 정답').length,
     ).toBeGreaterThanOrEqual(1);
-    // The Ask handoff is now reachable.
+
+    // The explanation is NOT shown until the jump-to-explanation reveal —
+    // this app has no separate explanation route, so the reveal expands it
+    // in place rather than fabricating a deep link.
     expect(
-      screen.getByRole('button', { name: 'Ask about this' }),
+      within(dialog).queryByText('정답은 나입니다.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Ask about this' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /See explanation/ }),
+    );
+    expect(within(dialog).getByText('정답은 나입니다.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Correct answer')).toBeInTheDocument();
+    // The Ask handoff is now reachable inside the revealed section.
+    expect(
+      within(dialog).getByRole('button', { name: 'Ask about this' }),
     ).toBeInTheDocument();
+  });
+
+  it('F-154: closing the popup removes the dialog', async () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    const user = userEvent.setup();
+    renderPage();
+    await openStudyMistake(user);
+    await user.click(
+      screen.getByRole('button', { name: 'Close question detail' }),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   // ── F-044: session selector ───────────────────────────────────────────
@@ -230,17 +276,18 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(options[2]).toHaveTextContent(/모의고사/);
     expect(options[2]).toHaveTextContent(/1 missed/);
 
-    // Filtering to the merged session shows BOTH of its tiles (log order —
-    // insertion order within the bucket), and nothing from the other one.
+    // Filtering to the merged session shows BOTH of its tiles, in the SAME
+    // group (log order — insertion order within the bucket), and nothing
+    // from the other one.
     await user.selectOptions(select, (options[1] as HTMLOptionElement).value);
-    const first = screen.getByRole('button', { name: /읽기 · 12번 · 학습/ });
-    const second = screen.getByRole('button', { name: /읽기 · 20번 · 학습/ });
+    const first = questionTile(12);
+    const second = questionTile(20);
     expect(
       first.compareDocumentPosition(second) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
     expect(
-      screen.queryByRole('button', { name: /듣기 · 8번 · 모의고사/ }),
+      screen.queryByRole('button', { name: /^Question 8, / }),
     ).not.toBeInTheDocument();
     expect(screen.getByText('2 missed in this session')).toBeInTheDocument();
   });
@@ -274,12 +321,10 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(
       screen.getByText('1 missed in the last 30 days'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /읽기 · 12번 · 학습/ }),
-    ).toBeInTheDocument();
+    expect(questionTile(12)).toBeInTheDocument();
   });
 
-  it('F-044: selecting a session filters the tile list to that session only', async () => {
+  it('F-044: selecting a session filters the tile grid to that session\'s group only', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE, MISTAKE_MOCK] };
     const user = userEvent.setup();
     renderPage();
@@ -288,18 +333,20 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
       .getAllByRole('option')
       .find((o) => /모의고사/.test(o.textContent ?? '')) as HTMLOptionElement;
     await user.selectOptions(select, mockOption.value);
-    // Only the mock-exam session's tile remains.
+    // Only the mock-exam session's tile (and its divider) remains.
+    expect(questionTile(8)).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /듣기 · 8번 · 모의고사/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /읽기 · 12번 · 학습/ }),
+      screen.queryByText(/학습 · 1 missed/, {
+        selector: '.km-mistakes__divider',
+      }),
     ).not.toBeInTheDocument();
-    // Clearing back to the placeholder restores the full list.
-    await user.selectOptions(select, '');
     expect(
-      screen.getByRole('button', { name: /읽기 · 12번 · 학습/ }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /^Question 12, / }),
+    ).not.toBeInTheDocument();
+    // Clearing back to the placeholder restores every group.
+    await user.selectOptions(select, '');
+    expect(questionTile(12)).toBeInTheDocument();
+    expect(questionTile(8)).toBeInTheDocument();
   });
 
   // ── F-045: honest per-session / per-scope stats ───────────────────────
@@ -354,7 +401,7 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
 
   // ── F-020: Chat handoff (behaviour preserved through the rework) ──────
 
-  it('F-020: an expanded miss carries an "Ask about this" handoff seeded with the item', async () => {
+  it('F-020: a mistake opened from its tile carries an "Ask about this" handoff seeded with the item', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };
     const user = userEvent.setup();
     render(
@@ -366,8 +413,14 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
       </MemoryRouter>,
     );
 
-    await user.click(studyTileToggle()); // expand first — collapsed body is inert
-    await user.click(screen.getByRole('button', { name: 'Ask about this' }));
+    const dialog = await openStudyMistake(user);
+    // The handoff lives behind the explanation reveal (F-154).
+    await user.click(
+      within(dialog).getByRole('button', { name: /See explanation/ }),
+    );
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Ask about this' }),
+    );
 
     // The navigation carried the mistake's fields into the Chat seed.
     const probe = screen.getByTestId('chat-seed');

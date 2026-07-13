@@ -3,8 +3,9 @@
  * in Phase 3B (F-054/F-055/F-056/F-024).
  *
  * Ports the old Reference.tsx Grammar-tab tests (full fetch, F-004 detail
- * Sheet, the stale-rows fix) AND the LEARN Grammar screen's list-tab Bank
- * tests (the Bank action moved here with the browse), then adds the 3B
+ * Sheet, the stale-rows fix) AND the LEARN Grammar screen's list-tab
+ * mastery tests (F-152: the action moved here with the browse and is now
+ * "Mastered", not "Bank"), then adds the 3B
  * surfaces: the F-054 removals are asserted as REGRESSIONS (search box,
  * genre filter, and the Vocabulary/Dictionary strip must stay gone), F-055's
  * difficulty dropdown drives the real query param, F-024's BackButton
@@ -375,14 +376,14 @@ describe('ReviewGrammar — browse (the old Reference Grammar tab)', () => {
   });
 });
 
-describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', () => {
-  it('calls bankPattern with the coerced body on Bank tap and flips the chip', async () => {
+describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list tab, D3)', () => {
+  it('calls bankPattern with the coerced body on tap and flips to Mastered', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/1 pattern/);
 
     await user.click(
-      screen.getByRole('button', { name: 'Bank -는 반면에' }),
+      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
     );
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
@@ -394,15 +395,15 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     expect(body.pattern_display).toBe('-는 반면에');
     expect(body.summary_en).toBe('whereas');
     expect('register' in body).toBe(false);
-    // Optimistic chip flip.
+    // Optimistic chip flip — F-152: "Mastered", not "Banked".
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: 'Already banked' }),
+        screen.getByRole('button', { name: 'Already mastered' }),
       ).toBeInTheDocument();
     });
   });
 
-  it('renders already-banked rows as Banked (reconciles with the LEARN bank)', async () => {
+  it('renders already-mastered rows as Mastered (reconciles with the LEARN bank)', async () => {
     grammarSvc.listBanked.mockResolvedValue({
       entries: [
         {
@@ -421,14 +422,14 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     });
     renderPage();
     expect(
-      await screen.findByRole('button', { name: 'Already banked' }),
+      await screen.findByRole('button', { name: 'Already mastered' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Bank -는 반면에' }),
+      screen.queryByRole('button', { name: 'Mark -는 반면에 mastered' }),
     ).not.toBeInTheDocument();
   });
 
-  it('treats a 409 (already banked) as success — the flip stays', async () => {
+  it('treats a 409 (already mastered) as success — the flip stays', async () => {
     grammarSvc.bankPattern.mockRejectedValueOnce(
       new ApiError('already banked', { status: 409, code: 'conflict' }),
     );
@@ -436,12 +437,14 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     renderPage();
     await screen.findByText(/1 pattern/);
 
-    await user.click(screen.getByRole('button', { name: 'Bank -는 반면에' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
+    );
     expect(
-      await screen.findByRole('button', { name: 'Already banked' }),
+      await screen.findByRole('button', { name: 'Already mastered' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/Couldn't bank that pattern/),
+      screen.queryByText(/Couldn't mark that pattern mastered/),
     ).not.toBeInTheDocument();
   });
 
@@ -453,18 +456,20 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     renderPage();
     await screen.findByText(/1 pattern/);
 
-    await user.click(screen.getByRole('button', { name: 'Bank -는 반면에' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
+    );
     expect(
-      await screen.findByText(/Couldn't bank that pattern. Try again./),
+      await screen.findByText(/Couldn't mark that pattern mastered. Try again./),
     ).toBeInTheDocument();
     expect(screen.queryByText('boom')).not.toBeInTheDocument();
-    // The row reverted to bankable.
+    // The row reverted to markable.
     expect(
-      screen.getByRole('button', { name: 'Bank -는 반면에' }),
+      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
     ).toBeInTheDocument();
   });
 
-  it('the detail Sheet carries the Bank action too', async () => {
+  it('the detail Sheet carries the Mastered action too', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/1 pattern/);
@@ -474,13 +479,15 @@ describe('ReviewGrammar — Bank action (moved from the LEARN list tab, D3)', ()
     );
     const dialog = await screen.findByRole('dialog');
     await user.click(
-      within(dialog).getByRole('button', { name: '문형 담기 · Bank pattern' }),
+      within(dialog).getByRole('button', { name: '숙달로 표시 · Mark mastered' }),
     );
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
     expect(
-      await within(dialog).findByRole('button', { name: '이미 담김 · Already banked' }),
+      await within(dialog).findByRole('button', {
+        name: '이미 숙달됨 · Already mastered',
+      }),
     ).toBeInTheDocument();
   });
 });
@@ -662,7 +669,7 @@ describe('ReviewGrammar — Uploads view (F-056)', () => {
     ).toBeInTheDocument();
   });
 
-  it('banking works from an upload group row (shared bank state)', async () => {
+  it('marking mastered works from an upload group row (shared mastery state)', async () => {
     uploadsSvc.listUploads.mockResolvedValue([READY_UPLOAD]);
     grammarSvc.listPatterns.mockImplementation(
       async (opts?: { source_upload_id?: string }) => {
@@ -675,12 +682,87 @@ describe('ReviewGrammar — Uploads view (F-056)', () => {
     await openUploadsView(user);
     await screen.findByRole('heading', { name: /한국어 문법 사전/ });
 
-    await user.click(screen.getByRole('button', { name: 'Bank -는 반면에' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
+    );
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
     expect(
-      await screen.findByRole('button', { name: 'Already banked' }),
+      await screen.findByRole('button', { name: 'Already mastered' }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — F-153 15-at-a-time pagination', () => {
+  /** Build N distinct, bankable-looking rows for pagination fixtures. */
+  function buildRows(n: number): KgiuEntrySummary[] {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 200 + i,
+      corpus: 'kgiu_intermediate',
+      source_id: `KGIU-INT-${String(200 + i)}`,
+      pattern: `-패턴${String(i)}`,
+      title_en: `pattern ${String(i)}`,
+      category: 'contrast',
+      proficiency: 'L4',
+      unit: 'Unit 1',
+      source_pages: null,
+    }));
+  }
+
+  it('shows 15 rows initially and reveals 15 more per "Show more" tap', async () => {
+    const rows = buildRows(22);
+    grammarSvc.listPatterns.mockResolvedValue(rows);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/22 patterns/);
+
+    expect(
+      screen.getByRole('button', { name: '-패턴0 pattern 0' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '-패턴14 pattern 14' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '-패턴15 pattern 15' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Show more/ }));
+    expect(
+      screen.getByRole('button', { name: '-패턴15 pattern 15' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '-패턴21 pattern 21' }),
+    ).toBeInTheDocument();
+    // All 22 now shown — the control has nothing left to reveal.
+    expect(
+      screen.queryByRole('button', { name: /Show more/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a filter change resets the window back to 15', async () => {
+    const rows = buildRows(20);
+    grammarSvc.listPatterns.mockResolvedValue(rows);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/20 patterns/);
+
+    await user.click(screen.getByRole('button', { name: /Show more/ }));
+    expect(
+      screen.getByRole('button', { name: '-패턴19 pattern 19' }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Difficulty' }),
+      'advanced',
+    );
+    await screen.findByText(/20 patterns/);
+    // Back to a fresh 15-row window under the new filter.
+    expect(
+      screen.queryByRole('button', { name: '-패턴19 pattern 19' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '-패턴14 pattern 14' }),
     ).toBeInTheDocument();
   });
 });

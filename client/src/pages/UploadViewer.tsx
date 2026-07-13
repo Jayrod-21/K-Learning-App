@@ -94,6 +94,43 @@
  * `signal.aborted` before every state write after an `await`/`.then` —
  * mirrors `pages/Uploads.tsx`'s pattern. The per-page `<img>` itself needs no
  * such guard (see above — nothing to leak once the DOM node is gone).
+ *
+ * F-128 "Seoul Day & Night" reskin: the header adopts the same
+ * `SkylineHeader` + `DancheongRail` hub-header recipe as Today/Progress/
+ * Uploads (devices #4/#2) instead of a bare `Topbar`, and the page-image box
+ * is wrapped in a `CityCard` (device #1, `tone="plain"` + `rail`) — the
+ * "PDF signboard/paper" surface from the design mock. Purely visual; none
+ * of the load/zoom/rotate/reorder logic above changes.
+ *
+ * F-155 mobile swipe (paired with F-130): the toolbar's Prev/Next buttons
+ * were the ONLY way to turn a page — touch swipe never worked because
+ * nothing listened for it. `onPagePointerDown/Move/Up/Cancel/Leave` below
+ * arm a horizontal-swipe-to-turn-page gesture on `.km-upload-viewer__page`,
+ * reusing `components/SwipeCarousel.tsx`'s exact Pointer Events model
+ * (unifying touch/mouse/pen in one handler set) and its documented gotchas:
+ * an 8px axis lock decides swipe-vs-scroll on the first move, a vertical-
+ * dominant gesture is surrendered immediately (so the page still scrolls),
+ * `setPointerCapture` is deferred until the axis locks 'h' (so it can't
+ * break interactive content under an undecided gesture), and
+ * `pointerleave`/`lostpointercapture` end an unfinished gesture so a stuck
+ * ref can never swallow a future swipe (see SwipeCarousel's header for the
+ * full "stuck-drag safety" rationale — identical reasoning applies here).
+ *
+ * One deliberate difference from `SwipeCarousel`: there is no sliding
+ * "track" of adjacent pages. The lazy-mount contract above (only the
+ * CURRENT page's `<img>` ever exists in the DOM) is load-bearing for a
+ * 500-page book, and a live cross-fade/slide between two pages would need
+ * the next page's image mounted mid-drag, which breaks that invariant. The
+ * gesture instead nudges the CURRENT page a few px toward the drag (a
+ * lightweight "this is draggable" affordance, damped 3:1 past the first/
+ * last page same as the carousel) and, past a snap threshold on release,
+ * commits a discrete page change — `goPrev`/`goNext`, the same functions the
+ * arrow buttons call, so keyboard/click paging is untouched. The gesture is
+ * only armed when `zoom <= FIT_ZOOM` (`swipeEligible` below): above fit-
+ * width the page image itself overflows the box horizontally, and a
+ * horizontal drag there is a legitimate pan over the zoomed-in page, not a
+ * page-turn — `touchAction` on the box switches to the browser's native
+ * `'auto'` panning in that state instead of the swipe-reserving `'pan-y'`.
  */
 import {
   useCallback,
@@ -109,9 +146,12 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
+import { CityCard } from '../components/CityCard';
+import { DancheongRail } from '../components/DancheongRail';
 import { ErrorCard } from '../components/ErrorCard';
+import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
-import { Topbar } from '../components/Topbar';
+import { SkylineHeader } from '../components/SkylineHeader';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
 import { ApiError } from '../services/api';
@@ -124,6 +164,24 @@ const FIT_ZOOM = 1;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.25;
+
+/**
+ * F-155 swipe-to-turn-page thresholds — mirrors
+ * `components/SwipeCarousel.tsx`'s tuned constants (same feel across the
+ * app's two hand-rolled pointer-drag gestures). Not imported from there:
+ * they're module-private consts, not exported, and the two gestures commit
+ * differently (a discrete page change here vs. an index snap there) so
+ * duplicating four small numbers is simpler than threading a shared config
+ * object across an unrelated component boundary.
+ */
+/** Movement (px) before a gesture commits to an axis. */
+const SWIPE_AXIS_LOCK_PX = 8;
+/** Snap threshold floor (px) when the box's measured width is unknown/small. */
+const SWIPE_MIN_SNAP_PX = 48;
+/** Snap threshold as a fraction of the page box's width. */
+const SWIPE_SNAP_FRACTION = 0.2;
+/** Overscroll damping divisor at the first/last page. */
+const SWIPE_EDGE_DAMPING = 3;
 
 /** Clockwise page rotation, degrees. Only quarter turns make sense for scans. */
 type Rotation = 0 | 90 | 180 | 270;
@@ -353,6 +411,19 @@ export default function UploadViewer(): JSX.Element {
       setContainerWidth(el.clientWidth);
     }
   }, []);
+
+  // F-155 swipe-to-turn-page drag bookkeeping — mirrors SwipeCarousel's
+  // split between a ref (per-gesture identity/axis, mutated only by
+  // handlers, never read during render) and state (`dragX`, the live px
+  // offset that actually needs to repaint). See the module header for the
+  // full interaction-model writeup.
+  const swipeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    axis: 'none' | 'h' | 'v';
+  } | null>(null);
+  const [swipeDragX, setSwipeDragX] = useState<number | null>(null);
   useEffect(() => {
     const onResize = (): void => {
       const el = pageBoxRef.current;
@@ -462,6 +533,100 @@ export default function UploadViewer(): JSX.Element {
 
   const goPrev = (): void => goToPage(pageNum - 1);
   const goNext = (): void => goToPage(pageNum + 1);
+
+  // F-155 — only fit-width-or-narrower is eligible for the swipe-to-turn
+  // gesture (module header explains why: above fit, a horizontal drag is a
+  // legitimate pan over the zoomed page, not a page turn).
+  const swipeEligible = zoom <= FIT_ZOOM;
+
+  const endSwipe = (): void => {
+    swipeRef.current = null;
+    setSwipeDragX(null);
+  };
+
+  const onPagePointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!swipeEligible) return;
+    // Only the primary pointer with the left/first button may arm a
+    // gesture — same guard as SwipeCarousel, for the same reason (a
+    // right-click's pointerup a context menu can suppress; a second touch
+    // must never restart/corrupt an in-progress drag).
+    if (!e.isPrimary || e.button !== 0) return;
+    if (swipeRef.current !== null) return;
+    swipeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      axis: 'none',
+    };
+  };
+
+  const onPagePointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = swipeRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+
+    if (d.axis === 'none') {
+      if (Math.abs(dx) < SWIPE_AXIS_LOCK_PX && Math.abs(dy) < SWIPE_AXIS_LOCK_PX) return;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        d.axis = 'h';
+        const el = pageBoxRef.current;
+        if (el && typeof el.setPointerCapture === 'function') {
+          try {
+            el.setPointerCapture(e.pointerId);
+          } catch {
+            // Capture is an enhancement; the drag works without it.
+          }
+        }
+      } else {
+        // Vertical-dominant: this is a page scroll, not a swipe. Surrender
+        // immediately (same "stuck-drag safety" reasoning as SwipeCarousel
+        // — an immortal ref here would swallow every future swipe if a
+        // mouse released off-box never delivered us a pointerup).
+        endSwipe();
+        return;
+      }
+    }
+    if (d.axis !== 'h') return;
+
+    // Damp overscroll at the first/last page so the edge feels solid.
+    const overscroll =
+      (pageNum <= 1 && dx > 0) || (!!pageCount && pageNum >= pageCount && dx < 0);
+    setSwipeDragX(overscroll ? dx / SWIPE_EDGE_DAMPING : dx);
+  };
+
+  const onPagePointerUp = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = swipeRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+
+    if (d.axis === 'h') {
+      // Decide off the raw event delta, not the damped state — no staleness.
+      const dx = e.clientX - d.startX;
+      const width = pageBoxRef.current?.offsetWidth ?? 0;
+      const threshold = Math.max(SWIPE_MIN_SNAP_PX, width * SWIPE_SNAP_FRACTION);
+      if (dx <= -threshold) goNext();
+      else if (dx >= threshold) goPrev();
+    }
+    endSwipe();
+  };
+
+  const onPagePointerCancel = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = swipeRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+    endSwipe();
+  };
+
+  const onPagePointerLeave = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = swipeRef.current;
+    if (d === null || d.pointerId !== e.pointerId) return;
+    // Once the axis locks 'h' the pointer is captured, so moves keep coming
+    // and a leave is not a concern. A gesture still in the capture-less
+    // 'none' phase can never complete once the pointer leaves (a mouse
+    // pointerup off-element would never reach us) — end it here so it
+    // can't permanently block future gestures.
+    if (d.axis !== 'h') endSwipe();
+  };
 
   const submitJump = (): void => {
     const n = Number(jumpValue);
@@ -600,12 +765,31 @@ export default function UploadViewer(): JSX.Element {
       {/* F-024 — no single canonical parent (Uploads list OR the reader's
           scan deep-link), so history-back with a guarded /uploads fallback. */}
       <BackButton fallbackTo="/uploads" />
-      <Topbar
-        krTitle={title}
-        title={title}
-        titleId="km-upload-viewer-title"
-        eyebrow={<Bilingual en="View-only" kr="보기 전용" />}
+
+      {/* F-128 device #4 — same hub-header recipe as Today/Progress/Uploads:
+          the skyline strip carries the real <h1> in its `title` slot instead
+          of a bare `Topbar`. */}
+      <SkylineHeader
+        className="km-upload-viewer__skyline"
+        title={
+          <>
+            <Eyebrow>
+              <Bilingual en="View-only" kr="보기 전용" />
+            </Eyebrow>
+            <h1
+              id="km-upload-viewer-title"
+              className="kr-display km-upload-viewer__title"
+            >
+              {title}
+            </h1>
+          </>
+        }
       />
+      {/* F-128 device #2 — the dancheong-rail divider under the header,
+          matching the Today/Progress/Uploads hub-header recipe. */}
+      <div className="km-upload-viewer__rail-divider">
+        <DancheongRail tone="accent" />
+      </div>
 
       {metaState === 'loading' ? (
         <div className="km-grammar__state" role="status">
@@ -810,19 +994,51 @@ export default function UploadViewer(): JSX.Element {
             </div>
           ) : null}
 
-          <div className="km-upload-viewer__page" ref={attachPageBox}>
-            <PageImage
-              key={`${String(pageNum)}-${String(retryToken)}`}
-              src={id ? pageUrl(id, pageNum, undefined, retryToken) : ''}
-              alt={`Page ${String(pageNum)} of ${title}`}
-              zoom={zoom}
-              rotation={rotation}
-              containerWidth={containerWidth}
-              onRetry={() => {
-                setRetryToken((t) => t + 1);
-              }}
+          {/* F-128 device #1/#2 — the "PDF signboard/paper" surface from the
+              design mock: the page image sits on a CityCard, leading-edge
+              rail included. */}
+          <CityCard tone="plain" rail className="km-upload-viewer__card">
+            <div
+              className="km-upload-viewer__page"
+              ref={attachPageBox}
+              style={{ touchAction: swipeEligible ? 'pan-y' : 'auto' }}
+              onPointerDown={onPagePointerDown}
+              onPointerMove={onPagePointerMove}
+              onPointerUp={onPagePointerUp}
+              onPointerCancel={onPagePointerCancel}
+              onPointerLeave={onPagePointerLeave}
+              // Belt-and-braces, mirrors SwipeCarousel: if a captured 'h'
+              // drag has its capture revoked externally, drop the gesture
+              // rather than stranding `swipeDragX` mid-drag.
+              onLostPointerCapture={endSwipe}
+            >
+              <div
+                className={`km-upload-viewer__pageDrag${
+                  swipeDragX !== null ? ' km-upload-viewer__pageDrag--dragging' : ''
+                }`}
+                style={{ transform: `translateX(${String(swipeDragX ?? 0)}px)` }}
+              >
+                <PageImage
+                  key={`${String(pageNum)}-${String(retryToken)}`}
+                  src={id ? pageUrl(id, pageNum, undefined, retryToken) : ''}
+                  alt={`Page ${String(pageNum)} of ${title}`}
+                  zoom={zoom}
+                  rotation={rotation}
+                  containerWidth={containerWidth}
+                  onRetry={() => {
+                    setRetryToken((t) => t + 1);
+                  }}
+                />
+              </div>
+            </div>
+          </CityCard>
+          <p className="km-upload-viewer__hint">
+            <Bilingual
+              en="Swipe or use the arrows to change page."
+              kr="스와이프하거나 화살표로 페이지를 넘기세요."
+              compact
             />
-          </div>
+          </p>
         </>
       )}
     </section>

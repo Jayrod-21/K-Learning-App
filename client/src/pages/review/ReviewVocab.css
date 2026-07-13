@@ -1,11 +1,44 @@
 /*
- * ReviewVocab — component-scoped styles (P3B: F-049/F-051/F-052/F-048).
+ * ReviewVocab — component-scoped styles (P3B: F-049/F-051/F-052/F-048;
+ * F-128 Seoul reskin + F-144/145/146/148/149 Wave-2 polish).
  *
  * Colocated per the LineChart.css convention (the global sheet is shared
  * mutable state across parallel feature branches). Layout-only rules —
  * colors/typography ride the shared tokens already applied by the reused
  * classes (km-review__sectionTitle, km-resources__create-input, …).
+ *
+ * F-129/F-145 — mobile-first: `.km-vocab` gets a defensive `overflow-x:
+ * hidden` backstop (same convention as `.km-progress` in Progress.css) in
+ * case anything below miscalculates; every new row/flex group this file
+ * adds already keeps `min-width: 0` on its shrinking text children.
  */
+.km-vocab {
+  overflow-x: hidden;
+}
+
+/* ── F-128 device #4/#2 — skyline header + dancheong divider ─────────────
+ * Same recipe as pages/Today.css / pages/Progress.css / pages/Uploads.tsx's
+ * matching styles. */
+.km-vocab__skyline {
+  margin: 0 0 12px;
+}
+
+.km-vocab__title {
+  margin: 4px 0 0;
+}
+
+.km-vocab__rail-divider {
+  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
+   * nearest positioned ancestor — give it one with real height. */
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
+
+/* F-146 — `.km-vocab__listsTile` on the My Lists CollapsibleTile is a bare
+ * selector hook (fixpass/test targeting) — it rides the SAME `.km-vocab
+ * __section` margin rhythm as every other stacked section below it, so no
+ * separate spacing rule is needed here. */
 
 /* Stacked page sections (F-052 — My Lists on top, Browse below). */
 .km-vocab__section {
@@ -52,4 +85,37 @@
   gap: 12px;
   padding: 12px 14px;
   margin-bottom: 16px;
+  /* F-129/F-145 — a flex child's default min-width is its unshrunk content
+   * size; the name div already sets `minWidth: 0` inline, but the Button
+   * sibling needs to stay content-sized without forcing the row wide. */
+  flex-wrap: wrap;
+}
+
+/* F-148 — the "This week" popup trigger. A small standalone row between My
+ * Lists and Browse (replacing the always-inline WeeklySuggestions card). */
+.km-vocab__weekTrigger {
+  display: flex;
+  margin-top: 14px;
+}
+
+/* F-149 — the visible caption above the search field (SearchBox itself has
+ * no label slot). Matches FilterSelect's own label sizing/tone below it so
+ * every field on this page reads as consistently labelled. */
+.km-vocab__searchLabel {
+  margin: 18px 0 6px;
+}
+
+/* F-144 — this page's own loading-state rule, replacing the borrowed
+ * `.km-grammar__state` (styles/index.css) this page's two loading divs used
+ * to render through. Identical styling — only the name changed, so nothing
+ * visually shifts; the class simply no longer says "grammar" on a page that
+ * must never surface grammar UI. */
+.km-vocab__state {
+  margin: 24px 0;
+  padding: 18px 20px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--paper-mute);
+  line-height: 1.5;
 }

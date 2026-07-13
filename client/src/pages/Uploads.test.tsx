@@ -330,3 +330,32 @@ describe('Uploads — the "+ Upload" entry', () => {
     expect(await screen.findByRole('dialog', { name: 'Upload a book' })).toBeInTheDocument();
   });
 });
+
+// F-128 "Seoul Day & Night" reskin — the hub-header recipe (SkylineHeader +
+// DancheongRail) replaces the bare Topbar, and each row is a CityCard.
+describe('Uploads — F-128 reskin', () => {
+  it('renders the skyline hub-header, the rail divider, and a CityCard per row', async () => {
+    renderPage();
+    await screen.findByText('한국어 문법 사전');
+
+    expect(document.querySelector('.km-uploads__skyline')).toBeInTheDocument();
+    expect(document.querySelector('.km-uploads__rail-divider')).toBeInTheDocument();
+    // Two rows (READY + PROCESSING) → two CityCards.
+    expect(document.querySelectorAll('.km-uploads__card.km-citycard')).toHaveLength(2);
+
+    // The real <h1> still carries the page title and the section's
+    // aria-labelledby target — the reskin didn't drop the heading contract.
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveAttribute('id', 'km-uploads-title');
+  });
+
+  it('textures the empty state with the giwa/hangul-watermark devices', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    renderPage();
+
+    const empty = await screen.findByText(/No uploads yet/);
+    const wrap = empty.closest('.km-reference__empty');
+    expect(wrap).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(wrap).toHaveAttribute('data-glyph', '책');
+  });
+});

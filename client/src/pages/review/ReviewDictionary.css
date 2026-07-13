@@ -1,0 +1,40 @@
+/*
+ * ReviewDictionary — component-scoped styles (F-128 Seoul reskin +
+ * F-149/F-150 Wave-2 polish).
+ *
+ * This page had no co-located stylesheet before this pass (it rode
+ * `.km-resources`/`.km-reference` from styles/index.css entirely); adding
+ * one here rather than touching that shared sheet, per the LineChart.css
+ * convention every other Wave-2 page uses.
+ */
+
+/* F-129/F-145 — mobile-first defensive backstop (same convention as
+ * `.km-progress`/`.km-vocab`): this page has no wide fixed-width content of
+ * its own, but the backstop costs nothing and keeps the family consistent. */
+.km-dictionary {
+  overflow-x: hidden;
+}
+
+/* ── F-128 device #4/#2 — skyline header + dancheong divider ─────────────
+ * Same recipe as pages/Today.css / pages/Progress.css / ReviewVocab.css. */
+.km-dictionary__skyline {
+  margin: 0 0 12px;
+}
+
+.km-dictionary__title {
+  margin: 4px 0 0;
+}
+
+.km-dictionary__rail-divider {
+  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
+   * nearest positioned ancestor — give it one with real height. */
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
+
+/* F-149 — the visible caption above the search field (SearchBox itself has
+ * no label slot). Matches FilterSelect's own label sizing/tone below it. */
+.km-dictionary__searchLabel {
+  margin: 18px 0 6px;
+}

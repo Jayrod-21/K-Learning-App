@@ -103,6 +103,29 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/review/mistakes');
   });
 
+  it('F-128: reskins with the hub-header recipe — skyline + dancheong rail + a CityCard per row', () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/review']}>
+        <Routes>
+          <Route path="*" element={<ReviewLibrary />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    // Device #4 — the Namsan skyline strip carries the real <h1> (same hub
+    // recipe as Today/Progress).
+    expect(container.querySelector('.km-skyline')).not.toBeNull();
+    // Device #2 — the dancheong-rail divider under the skyline.
+    expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
+    // Device #1 — every section row is now a CityCard-backed signboard, one
+    // per row, carrying the per-section tone (F-042's four sections).
+    const cards = container.querySelectorAll('.km-library__row .km-citycard');
+    expect(cards).toHaveLength(4);
+    expect(container.querySelector('.km-tone--accent')).not.toBeNull();
+    expect(container.querySelector('.km-tone--blue')).not.toBeNull();
+    expect(container.querySelector('.km-tone--mint')).not.toBeNull();
+    expect(container.querySelector('.km-tone--plain')).not.toBeNull();
+  });
+
   it('renders each section bilingually with its contents description', () => {
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });

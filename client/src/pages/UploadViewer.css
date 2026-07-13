@@ -5,7 +5,39 @@
  * `pageLayout()` in the component — its width/height/transform are computed
  * per render from zoom × rotation × measured container width, so they can't
  * live in a static sheet.
+ *
+ * F-128 "Seoul Day & Night" reskin (see the component's module header):
+ * `.km-upload-viewer__skyline`/`.km-upload-viewer__rail-divider` match the
+ * Today/Progress/Uploads hub-header recipe; `.km-upload-viewer__card` is
+ * `CityCard`'s own surface (no padding override needed — unlike Uploads'
+ * list rows, nothing inside already carries its own edge padding, so the
+ * card's default 20px inset IS the page's margin, matching the design
+ * mock's `.pdf` card). Token-driven only — no hard-coded hex.
+ *
+ * F-155 mobile swipe: `.km-upload-viewer__pageDrag` is the live drag-offset
+ * layer (component sets its `transform: translateX(...)` inline per-frame);
+ * this sheet only owns the snap-back transition and its reduced-motion
+ * override, mirroring `components/SwipeCarousel.css`'s identical pattern
+ * for its track.
  */
+
+.km-upload-viewer__skyline {
+  margin: 0 0 12px;
+}
+
+.km-upload-viewer__title {
+  margin: 4px 0 14px;
+}
+
+/* Matches `.km-today__rail-divider` / `.km-progress__rail-divider` /
+ * `.km-uploads__rail-divider` — the rail is `position: absolute; inset:
+ * <edge> 0` against its nearest positioned ancestor, so it needs one with
+ * real height. */
+.km-upload-viewer__rail-divider {
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
 
 .km-upload-viewer__toolbar {
   display: flex;
@@ -30,10 +62,49 @@
   flex-wrap: wrap;
 }
 
+.km-upload-viewer__card {
+  /* Mobile-first (F-129 spirit): the card itself never forces width past
+   * its container — it's a block box that fills whatever `.screen` gives
+   * it, same as the plain box it replaces. */
+  max-width: 100%;
+}
+
 /* The one scroll container for the page image. `overflow: auto` (not the
    viewport) owns panning a zoomed page — the zoom model sizes real layout
-   boxes (never transform-scale), so the scroll extent here is always exact. */
+   boxes (never transform-scale), so the scroll extent here is always exact.
+   `touchAction` is set INLINE by the component (`'pan-y'` vs `'auto'`,
+   toggled by whether the swipe gesture is eligible at the current zoom) —
+   see the component's module header §"F-155". */
 .km-upload-viewer__page {
   overflow: auto;
   width: 100%;
+  /* A swipe drag across the page must not smear a text selection through
+   * the loading/error copy underneath it — same rationale as
+   * SwipeCarousel's viewport. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* F-155 — the live drag-offset layer. Follows the finger 1:1 while
+ * dragging (no easing lag, `--dragging` kills the transition exactly like
+ * SwipeCarousel's track); on release it either resets to 0 (under
+ * threshold — "spring back") or the page changes and a fresh `PageImage`
+ * mounts already at rest, so there is nothing left to animate TO. */
+.km-upload-viewer__pageDrag {
+  transition: transform 200ms ease;
+}
+.km-upload-viewer__pageDrag--dragging {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .km-upload-viewer__pageDrag {
+    transition: none;
+  }
+}
+
+.km-upload-viewer__hint {
+  margin: 8px 0 0;
+  text-align: center;
+  color: var(--paper-mute);
+  font-size: 12px;
 }

@@ -6,6 +6,11 @@
  * __rowlabel) predate co-location and still live in styles/index.css —
  * shared with nothing, but left in place to keep shared-file churn at zero
  * during the parallel P3 builds. Only NEW styles land here.
+ *
+ * Mobile-first (F-129/F-145 family): the page has no fixed widths and no
+ * horizontal-scrolling content, so no `overflow-x` backstop is needed here
+ * (unlike Progress/Vocab, which carry wide charts/rows) — the rows below are
+ * pure flex with wrapping-safe children.
  */
 
 /* One-line contents description under a section row's title. Sized/toned
@@ -14,4 +19,66 @@
   font-size: 11px;
   color: var(--paper-mute);
   margin-top: 2px;
+}
+
+/* -- F-128 device #4/#2 -- skyline header + dancheong divider -----------
+ * Same recipe as pages/Today.css / pages/Progress.css (see those files'
+ * matching comments) -- the app's hub pages share one header treatment. */
+.km-library__skyline {
+  margin: 0 0 12px;
+}
+
+.km-library__title {
+  margin: 4px 0 0;
+}
+
+.km-library__rail-divider {
+  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
+   * nearest positioned ancestor -- give it one with real height (same note
+   * as Today.css/Progress.css's rail-divider). */
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
+
+/* -- F-128 device #1/#2 -- CityCard is now each row's visible surface ----
+ * `.km-library__row` (styles/index.css) is the pre-redesign flat-card look
+ * (background/border/padding on the button itself); CityCard is nested
+ * INSIDE the button as the new surface (same split `pages/Today.tsx`'s
+ * ActivityTile uses -- the button owns 100% of the interaction/a11y, the
+ * card is a purely decorative wrapper). This page-scoped, two-class
+ * selector resets the old surface without touching the shared rule (same
+ * technique as `.km-today__tileCard.km-citycard` in Today.css / the
+ * `.km-citycard.km-collapsible` override in CollapsibleTile.css). */
+.km-library .km-library__row {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: var(--radius-lg);
+  transition: transform 120ms ease;
+}
+
+.km-library .km-library__row:hover {
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-library .km-library__row {
+    transition: none;
+  }
+  .km-library .km-library__row:hover {
+    transform: none;
+  }
+}
+
+.km-library__rowCard.km-citycard {
+  padding: 14px 16px;
+}
+
+.km-library__rowTop {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }

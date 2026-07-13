@@ -26,17 +26,29 @@
  * cookie (services/api.ts); the server scopes every row to the caller by
  * `user_id` (IDOR-safe — routes/uploads.ts). Server error prose is never
  * echoed — `errorMessageFor` maps to fixed copy.
+ *
+ * F-128 "Seoul Day & Night" reskin: the header adopts the same
+ * `SkylineHeader` + `DancheongRail` recipe as the Today/Progress hubs
+ * (device #4 skyline, device #2 rail divider) instead of a bare `Topbar`,
+ * each row is a `CityCard` (device #1, `tone="plain"` + `rail`) rather than
+ * a flat bordered list, and the empty state gets the `.km-giwa`/
+ * `.km-hangul-watermark` texture pairing (devices #3/#6) other reskinned
+ * screens use. `.km-rain-sheen` (device #8) ambient-textures the page root;
+ * it's a Night-only no-op by its own CSS gate. Purely visual — none of the
+ * data flow, filtering, or delete-confirmation logic above changes.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
-import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
+import { DancheongRail } from '../components/DancheongRail';
 import { ErrorCard } from '../components/ErrorCard';
+import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { Pill, type PillTone } from '../components/Pill';
-import { Topbar } from '../components/Topbar';
+import { SkylineHeader } from '../components/SkylineHeader';
 import { UploadTypeModal } from '../components/UploadTypeModal';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -44,6 +56,7 @@ import { navItem } from '../lib/nav';
 import { ApiError } from '../services/api';
 import { deleteUpload, listUploads } from '../services/uploads';
 import type { BookUpload, BookUploadStatus, BookUploadType } from '../types/domain';
+import './Uploads.css';
 
 const UPLOADS_NAV = navItem('uploads');
 
@@ -164,19 +177,36 @@ export default function Uploads(): JSX.Element {
   );
 
   return (
-    <section className="screen km-uploads" aria-labelledby="km-uploads-title">
+    <section
+      className="screen km-uploads km-rain-sheen"
+      aria-labelledby="km-uploads-title"
+    >
       {/* F-024 — canonical parent is the Review library index (the row that
           links here), so an explicit `to` beats history-back: it lands right
           no matter how the user arrived (reader flow, deep link, refresh). */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
-      <Topbar
-        krTitle="업로드"
-        title="Uploads"
-        titleId="km-uploads-title"
-        eyebrow={
-          <Bilingual en={UPLOADS_NAV.eyebrow} kr={UPLOADS_NAV.krEyebrow} />
+
+      {/* F-128 device #4 — same hub-header recipe as Today/Progress: the
+          skyline strip carries the real <h1> in its `title` slot instead of
+          a bare `Topbar`. */}
+      <SkylineHeader
+        className="km-uploads__skyline"
+        title={
+          <>
+            <Eyebrow>
+              <Bilingual en={UPLOADS_NAV.eyebrow} kr={UPLOADS_NAV.krEyebrow} />
+            </Eyebrow>
+            <h1 id="km-uploads-title" className="kr-display km-uploads__title">
+              <Bilingual en="Uploads" kr="업로드" />
+            </h1>
+          </>
         }
       />
+      {/* F-128 device #2 — the dancheong-rail divider under the header,
+          matching the Today/Progress hub-header recipe. */}
+      <div className="km-uploads__rail-divider">
+        <DancheongRail tone="accent" />
+      </div>
 
       <Button
         variant="gold"
@@ -197,21 +227,32 @@ export default function Uploads(): JSX.Element {
       ) : error ? (
         <ErrorCard message={error} onRetry={load} />
       ) : rows.length === 0 ? (
-        <p className="km-reference__empty">
+        // F-128 devices #3/#6 — the giwa roof-tile texture + a faint hangul
+        // watermark dress the empty state, matching Today/Progress's empty
+        // states, rather than a bare paragraph.
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="책"
+        >
           <Bilingual
             en="No uploads yet. Upload a scanned book (PDF or zip) to get started."
             kr="아직 업로드가 없어요. 스캔한 책(PDF 또는 zip)을 업로드해 보세요."
           />
         </p>
       ) : (
-        <Card className="km-reference__list" variant="flat">
-          <ul>
-            {rows.map((upload) => {
-              const status = STATUS_META[upload.status];
-              const kind = TYPE_META[upload.type];
-              const pending = pendingDeleteId === upload.id;
-              return (
-                <li key={upload.id} className="km-reference__row">
+        <ul className="km-uploads__list">
+          {rows.map((upload) => {
+            const status = STATUS_META[upload.status];
+            const kind = TYPE_META[upload.type];
+            const pending = pendingDeleteId === upload.id;
+            return (
+              <li key={upload.id} className="km-uploads__row">
+                {/* F-128 device #1/#2 — each row is its own CityCard
+                    (neon signboard / hanji paper) with the leading-edge
+                    DancheongRail, replacing the old single flat bordered
+                    list. `tone="plain"` — an upload row carries no skill
+                    color of its own. */}
+                <CityCard tone="plain" rail className="km-uploads__card">
                   <div className="km-resources__list-row">
                     <button
                       type="button"
@@ -257,11 +298,11 @@ export default function Uploads(): JSX.Element {
                       <Icon name="trash" size={14} />
                     </Button>
                   </div>
-                </li>
-              );
-            })}
-          </ul>
-        </Card>
+                </CityCard>
+              </li>
+            );
+          })}
+        </ul>
       )}
 
       <UploadTypeModal
