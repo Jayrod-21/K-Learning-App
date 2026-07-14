@@ -609,6 +609,64 @@ describe('MockMode (Mock test)', () => {
     ).toBeInTheDocument();
   });
 
+  // SHOULD-FIX (`REVIEW_mobile-touch.md`) — the submit-confirm alertdialog
+  // passed useModalA11y an unmemoized inline `onClose`, and the 1s countdown
+  // re-render (`setRemaining`, `MockMode.tsx`) retriggered the hook's
+  // open/close effect every tick while the dialog was open — each retrigger
+  // queues a `previouslyActive.focus()` microtask (`useModalA11y.ts`'s
+  // cleanup), thrashing focus in/out of the open dialog once a second. With
+  // a stable `onClose` (`useCallback`), the effect's deps (`[open, onClose]`)
+  // never change while the dialog stays open, so it never re-runs from
+  // ticking alone — no extra `.focus()` calls. This spies on
+  // `HTMLElement.prototype.focus` to prove exactly that: zero additional
+  // focus calls across several countdown ticks with the confirm dialog open.
+  it('does not thrash focus while the countdown ticks with the submit-confirm dialog open (SHOULD-FIX regression)', async () => {
+    const T0 = 1_700_000_000_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(T0);
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      fireStartExam('Reading');
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Submit test/i }));
+      const dialog = screen.getByRole('alertdialog', { name: 'Confirm submit' });
+      expect(dialog).toBeInTheDocument();
+
+      // Focus lands inside the dialog on open (useModalA11y's initial-focus
+      // effect) — capture it, then reset the spy so only POST-open calls
+      // (the thing under test) count.
+      const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+      focusSpy.mockClear();
+
+      // Advance the wall clock + the faked 1s interval several times while
+      // the dialog stays open — the exact precondition the bug needed.
+      for (let i = 0; i < 4; i += 1) {
+        nowSpy.mockReturnValue(T0 + (i + 1) * 1000);
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      }
+
+      // The dialog is still open and untouched — no spurious close, and no
+      // element (inside or outside the dialog) was refocused by the ticking.
+      expect(screen.getByRole('alertdialog', { name: 'Confirm submit' })).toBe(dialog);
+      expect(focusSpy).not.toHaveBeenCalled();
+
+      focusSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+      nowSpy.mockRestore();
+    }
+  });
+
   it('F-009: gates the review explanation on !isCorrect (hidden on a correct pick, shown on a miss)', async () => {
     // A single-item mock so the row-level gating is unambiguous: the ONE
     // reveal is correct, so its explanation must be entirely absent from the

@@ -294,6 +294,61 @@ describe('ReviewVocab — no leftover grammar UI (F-144)', () => {
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
   });
 
+  // Batch-3 fix-pass — the PROOF test that was missing before, and the one
+  // that would have caught this shipping twice: the two prior fixes only
+  // ever restricted the CREATE-kind picker. The server can still return an
+  // existing `kind: 'grammar'` list (made before those fixes existed, or via
+  // any other kind-creating surface) alongside the vocab ones — that row
+  // used to render right here, in "My lists", regardless of this page's
+  // `kinds={['vocab']}`. This sweeps the ENTIRE rendered tree for any
+  // "Grammar"/"문법" text or option, with the fetch mocked to actually
+  // exercise that leak path (not just an empty/vocab-only response, which
+  // is all every prior test ever used).
+  it('never surfaces "Grammar"/문법 ANYWHERE on the page, even when the server returns a pre-existing grammar-kind list mixed with vocab lists (root cause: listLists() was never kind-filtered for DISPLAY, only the create picker was)', async () => {
+    vocabSvc.listLists.mockResolvedValue([
+      SERVER_LIST,
+      {
+        id: 42,
+        name_kr: '중급 문법',
+        name_en: 'Intermediate grammar',
+        kind: 'grammar',
+        version: 1,
+        entry_count: 6,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+    ]);
+    const { container } = renderPage();
+    await screen.findByText('병원 어휘');
+
+    // The grammar-kind list itself must never render on this page.
+    expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
+    expect(screen.queryByText('Intermediate grammar')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /중급 문법/ }),
+    ).not.toBeInTheDocument();
+
+    // Generic sweep: nothing labelled Grammar/문법 anywhere in the tree,
+    // EXCEPT the LibrarySubnav's "Grammar" navigation link to the sibling
+    // `/review/grammar` route — that is a legitimate, different affordance
+    // (a route link, not grammar CONTENT on this page), so its text is
+    // excluded from the sweep rather than the sweep being skipped.
+    const nav = screen.getByRole('navigation', { name: 'Library sections' });
+    const navText = nav.textContent ?? '';
+    const restOfPage = (container.textContent ?? '').replace(navText, '');
+    expect(restOfPage).not.toMatch(/Grammar/);
+    expect(restOfPage).not.toMatch(/문법/);
+
+    // And no grammar-kind option is reachable through the create flow either
+    // (belt + suspenders with the dedicated create-picker test above).
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+    expect(within(dialog).queryByText(/문법/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^Grammar$/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
+  });
+
   // F-147 — the create-list flow is a Sheet popup (behind a trigger button),
   // not an always-visible inline card.
   it('renders the create-list flow as a Sheet popup, not an always-inline card', async () => {
@@ -616,6 +671,50 @@ describe('ReviewVocab — add a corpus word to a list (F-048)', () => {
     await waitFor(() => {
       expect(vocabSvc.addListEntries).toHaveBeenCalledWith(7, [1]);
     });
+  });
+
+  // BLOCKER fix-pass (`REVIEW_mobile-today-vocab.md`) — the "My Lists" tile
+  // on this same page already had a proof test for a mixed-kind server
+  // response (see the F-144 describe block above); this sheet is the
+  // SECOND, independently-fetching surface the reviewer found still leaked
+  // grammar, and no existing test ever opened it with a mixed-kind
+  // response. This is that missing test.
+  it('never offers a grammar-kind list as an add-to-list pick target, even when the server returns a mixed-kind response (root cause: AddToListSheet fetched listLists() with no kind filter at all)', async () => {
+    vocabSvc.listLists.mockResolvedValue([
+      SERVER_LIST,
+      {
+        id: 42,
+        name_kr: '중급 문법',
+        name_en: 'Intermediate grammar',
+        kind: 'grammar',
+        version: 1,
+        entry_count: 6,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add to a list' });
+
+    // The vocab list is a legitimate pick target...
+    expect(
+      within(dialog).getByRole('button', { name: /병원 어휘/ }),
+    ).toBeInTheDocument();
+    // ...but the grammar-kind list must never render as one, by name or by
+    // any button role.
+    expect(within(dialog).queryByText('중급 문법')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Intermediate grammar')).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: /중급 문법/ }),
+    ).not.toBeInTheDocument();
+
+    // Confirms the server was actually ASKED to narrow the fetch, not just
+    // filtered client-side after an unscoped call (S-1's preferred fix).
+    expect(vocabSvc.listLists).toHaveBeenCalledWith({ kind: 'vocab' });
   });
 
   it('creates a NEW list from the picker, seeded with the tapped word', async () => {

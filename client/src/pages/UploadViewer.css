@@ -65,6 +65,14 @@
    * SwipeCarousel's viewport. */
   -webkit-user-select: none;
   user-select: none;
+  /* SHOULD-FIX (`REVIEW_mobile-touch.md`) — matches SwipeCarousel.css's
+   * viewport: a fast horizontal fling at the first/last page (or at the
+   * edge of a zoomed-in pan) must not trigger the browser's edge-swipe-back
+   * navigation gesture. Applies in both `touchAction` regimes the component
+   * toggles (`pan-y` at fit-width, `auto` while zoomed) — contain is safe
+   * either way since it only affects overscroll behavior, not the pan/scroll
+   * itself. */
+  overscroll-behavior-x: contain;
 }
 
 /* F-155 — the live drag-offset layer. Follows the finger 1:1 while

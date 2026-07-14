@@ -41,6 +41,19 @@
  * pass) still renders its OWN loading state through the shared
  * `.km-grammar__state` rule — flagged for a follow-up there.
  *
+ * Batch-3 fix-pass — the `kinds` prop above only ever scoped what a NEW
+ * list could be CREATED as; `MyVocabLists`' own "My lists" tile still
+ * rendered every one of the user's lists exactly as `GET /vocab/lists`
+ * returned them, unfiltered by kind. That's the actual, still-live root
+ * cause of "grammar keeps showing on the Vocab page" after the two prior
+ * fixes above: a pre-existing `kind: 'grammar'` list (or one made through
+ * any other kind-creating surface) rendered right here regardless of this
+ * page's `kinds={['vocab']}`. `MyVocabLists` now filters its fetched rows
+ * by `kinds` before rendering — see that file's header doc — and its two
+ * remaining `.km-grammar__state` loading-state divs (cosmetic classname
+ * only, not the bug above) are renamed to `.km-vocab__state` for the same
+ * reason F-144 renamed this page's own.
+ *
  * F-148 — "This Week" is now a `Sheet` popup (a small trigger button opens
  * it) instead of an always-inline card, so the page reads as My Lists →
  * Browse with the suggestion strip tucked behind a tap, matching the
@@ -691,11 +704,26 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
     ctrlRef.current = ctrl;
     setLoading(true);
     setError(null);
+    // BLOCKER fix (`REVIEW_mobile-today-vocab.md`) — this sheet is a
+    // vocab-only picker (it seeds a vocab entry into a list, `add`/
+    // `createAndAdd` below), but `listLists()` used to fetch every kind,
+    // unfiltered, so a pre-existing grammar-kind list rendered here as a
+    // legitimate pick target. `kind: 'vocab'` asks the server's own
+    // `?kind=` filter (`vocabService.listLists`'s doc comment) to narrow
+    // this the same way `MyVocabLists`'s "My Lists" tile on this same page
+    // already does — the create flow below already hardcoded `kind:
+    // 'vocab'` for what a NEW list becomes; this is the matching fix for
+    // the list this sheet DISPLAYS.
     vocabService
-      .listLists()
+      .listLists({ kind: 'vocab' })
       .then((rows) => {
         if (ctrl.signal.aborted) return;
-        setLists(rows);
+        // Belt-and-suspenders, mirroring `MyVocabLists.tsx`'s `visibleLists`:
+        // the server-side `kind` filter above is the real fix, but a second,
+        // cheap client-side filter means a server that ever ignored the
+        // param (a regression, a proxy that drops query strings, etc.)
+        // still can't put a non-vocab list in front of this picker.
+        setLists(rows.filter((l) => l.kind === 'vocab'));
         setLoading(false);
       })
       .catch((err: unknown) => {

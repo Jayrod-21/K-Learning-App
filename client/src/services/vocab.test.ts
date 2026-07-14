@@ -413,6 +413,22 @@ describe('lists CRUD', () => {
     expect(typeof lists[0]?.id).toBe('number');
   });
 
+  it('listLists sends `kind` as a query param when narrowed, and omits it entirely when not (S-1 follow-up)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValue({
+      lists: [],
+      limit: 50,
+      offset: 0,
+    });
+
+    await listLists({ kind: 'vocab' });
+    expect(spy).toHaveBeenCalledWith('/vocab/lists', {
+      params: { kind: 'vocab' },
+    });
+
+    await listLists();
+    expect(spy).toHaveBeenLastCalledWith('/vocab/lists', { params: {} });
+  });
+
   it('createList POSTs /vocab/lists with name_kr and unwraps the envelope', async () => {
     const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({
       list: {

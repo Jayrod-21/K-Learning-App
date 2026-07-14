@@ -44,6 +44,7 @@ import type {
   VocabEntry,
   VocabEntryDetail,
   VocabListDetailResponse,
+  VocabListKind,
 } from '../types/domain';
 
 /** Pagination + filter for `GET /vocab/entries`. */
@@ -304,9 +305,29 @@ export async function mineWord(
 
 // ── Vocab lists (migration 012) ────────────────────────────────────────
 
-/** GET /vocab/lists — the user's lists (soft-deleted excluded server-side). */
-export async function listLists(): Promise<ServerVocabList[]> {
-  const res = await api.get<ListListsResponse>('/vocab/lists');
+/**
+ * GET /vocab/lists — the user's lists (soft-deleted excluded server-side).
+ *
+ * `kind` narrows the query server-side via `?kind=` (`server/src/routes/
+ * vocabLists.ts`'s `IndexQuerySchema`, same route family `services/hanja.ts`'s
+ * `fetchHanjaLists` already uses for the hanja kind) — omit it to get every
+ * kind (the pre-existing, backward-compatible default every caller before
+ * this got). Filtering server-side, not just client-side after the fact,
+ * matters for two reasons: (1) it's the only way to keep a non-vocab list
+ * from ever reaching a vocab-scoped picker in the first place, and (2) the
+ * route's `limit` defaults to 20 rows ordered by `updated_at DESC` — a
+ * client-side `.filter()` after an unscoped fetch can only ever see whatever
+ * mixed-kind slice of 20 the server happened to return, so a real vocab list
+ * outside that window would silently never appear. Passing `kind` applies the
+ * `LIMIT` AFTER the kind predicate server-side, so up to 20 real `vocab` (or
+ * whichever kind) lists come back, not up to 20 lists-of-any-kind.
+ */
+export async function listLists(params?: {
+  kind?: VocabListKind;
+}): Promise<ServerVocabList[]> {
+  const res = await api.get<ListListsResponse>('/vocab/lists', {
+    params: stripUndef({ kind: params?.kind }),
+  });
   // BIGINT `id` arrives as a JSON string — coerce to match the declared type.
   return res.lists.map(numericId);
 }

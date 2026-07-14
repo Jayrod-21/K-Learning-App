@@ -590,6 +590,26 @@ export default function UploadViewer(): JSX.Element {
     }
     if (d.axis !== 'h') return;
 
+    // SHOULD-FIX (`REVIEW_mobile-touch.md` — "same tap-through bug, unfixed
+    // sibling"): this handler claims parity with `SwipeCarousel.tsx`'s
+    // Pointer Events model (module header, F-155) but never got its
+    // `preventDefault` treatment. Once the axis has locked horizontal,
+    // `touch-action: pan-y` (the box's inline style above, only when
+    // `swipeEligible`) is what stops the browser from starting a native
+    // scroll for this gesture in the first place, but real touch devices'
+    // own gesture arbitration can still race the 8px JS axis lock during
+    // the first couple of samples — this is the explicit, same-tick veto,
+    // on every 'h' move, not just the first. It also suppresses the
+    // trailing synthetic click a spring-back drag would otherwise replay
+    // onto whatever's underneath (the page-turn zones sit over the same
+    // `<img>`/toolbar surface a tap would otherwise hit). Guarded by
+    // `cancelable` exactly like `SwipeCarousel`: once a real browser has
+    // already committed to a native vertical pan for this touch, subsequent
+    // events for it become non-cancelable, so this becomes a no-op rather
+    // than vetoing a scroll that already started — see `SwipeCarousel.tsx`'s
+    // `onPointerMove` for the full race reasoning.
+    if (e.cancelable) e.preventDefault();
+
     // Damp overscroll at the first/last page so the edge feels solid.
     const overscroll =
       (pageNum <= 1 && dx > 0) || (!!pageCount && pageNum >= pageCount && dx < 0);

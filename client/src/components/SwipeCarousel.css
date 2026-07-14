@@ -12,8 +12,20 @@
   position: relative;
   /* The browser owns vertical pans (page scroll); horizontal pans come to
      us as pointer events. Without this, touch drags on the carousel would
-     either hijack scrolling or never reach our handlers. */
+     either hijack scrolling or never reach our handlers. Must live on THIS
+     element (not an ancestor) — touch-action only affects the element the
+     touch actually contacts, and this is the element the pointer handlers
+     are attached to (SwipeCarousel.tsx `viewportRef`). */
   touch-action: pan-y;
+  /* Stop a horizontal drag from chaining into the browser's own OS-level
+     gesture (Safari/Chrome edge-swipe-back navigation, scroll chaining to
+     a parent). `touch-action: pan-y` already tells the engine horizontal
+     panning isn't a native scroll here, but `overscroll-behavior-x` is the
+     separate, purpose-built property for "don't hand this axis's gesture
+     to anything outside this element" — belt-and-braces against the
+     browser claiming a real-device swipe before our JS axis lock (8px)
+     gets to see it. */
+  overscroll-behavior-x: contain;
   /* A mouse drag across the track must move pages, not smear a text
      selection through the chart labels and readout inside them. */
   -webkit-user-select: none;

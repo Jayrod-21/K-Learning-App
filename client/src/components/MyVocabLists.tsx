@@ -33,6 +33,19 @@
  *     vocab/grammar/hanja/mixed set for backward compatibility with any
  *     future second consumer that genuinely needs the full picker.
  *
+ * Batch-3 fix-pass (ROOT CAUSE of the recurring "grammar still shows on
+ * `/review/vocab`" report, after the two fixes above): `kinds` only ever
+ * gated the CREATE picker. `GET /vocab/lists` returns every one of the
+ * user's lists regardless of kind, and `load()` rendered that response
+ * verbatim — so any list of a kind outside `kinds` (a `grammar` list made
+ * before this component existed, seeded test data, or a future consumer
+ * that lets a user pick a non-vocab kind) still rendered right here, in the
+ * "My lists" tile the ticket was about, with no test ever catching it
+ * because every existing test's `listLists()` mock returned vocab-only
+ * rows. `visibleLists` below now filters the fetched rows down to `kinds`
+ * before anything renders — the DISPLAY is scoped to the same contract as
+ * the create picker, not just the picker itself.
+ *
  * Threat model:
  *   - List CRUD is POST/PATCH/DELETE → CSRF surface, defended by the session
  *     cookie's `SameSite=Strict` (services/api.ts). Names render as React
@@ -100,11 +113,27 @@ export function MyVocabLists({
   const [createOpen, setCreateOpen] = useState(false);
   const [openList, setOpenList] = useState<ServerVocabList | null>(null);
 
+  // Server-side narrowing (S-1 follow-up, `REVIEW_mobile-today-vocab.md`):
+  // a single-kind mount (the only shape any real consumer uses today — the
+  // Vocab page's `kinds={['vocab']}`) can ask the server's own `?kind=`
+  // filter (`vocabService.listLists`'s doc comment) for just that kind,
+  // instead of always fetching every kind and relying solely on
+  // `visibleLists` below. This is a primitive string derived from `kinds`,
+  // NOT the `kinds` array itself, deliberately: `kinds` is typically a fresh
+  // array literal from the caller on every render (see `ReviewVocab.tsx`'s
+  // `kinds={['vocab']}`), so putting the ARRAY in `load`'s deps would churn
+  // `load`'s identity every render and — via the mount effect below — refire
+  // the network fetch every render. `serverKind` is a plain string (or
+  // `undefined`), which React's `Object.is` dep comparison treats as stable
+  // across renders as long as the actual requested kind hasn't changed, so
+  // `load` stays referentially stable exactly like before this change.
+  const serverKind = kinds.length === 1 ? kinds[0] : undefined;
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     vocabService
-      .listLists()
+      .listLists(serverKind !== undefined ? { kind: serverKind } : undefined)
       .then((rows) => {
         setLists(rows);
         setLoading(false);
@@ -113,7 +142,7 @@ export function MyVocabLists({
         setError(errorMessageFor(err, 'Could not load lists.'));
         setLoading(false);
       });
-  }, []);
+  }, [serverKind]);
 
   useEffect(() => {
     // Sync-to-external-system (a network fetch) — the same kickoff-fetch
@@ -159,6 +188,19 @@ export function MyVocabLists({
     [load, toast],
   );
 
+  // ROOT CAUSE FIX (see this file's header doc) — `kinds` must scope what
+  // renders here, not just what a NEW list can be created as. Filtered at
+  // render time off the current `kinds` prop (not inside `load`'s
+  // useCallback) so this never needs the `kinds` ARRAY in a hook dependency
+  // array (see `serverKind` above for why that matters for `load`'s
+  // identity). Now that `load` also asks the server to narrow by
+  // `serverKind` when there's exactly one kind, this client-side filter is
+  // defense-in-depth rather than the only guard: it still does real work for
+  // a multi-kind mount (the `ALL_KINDS` default, where there's no single
+  // `serverKind` to send) and as a backstop if the server ever returned a
+  // kind outside what was asked for.
+  const visibleLists = lists.filter((l) => kinds.includes(l.kind));
+
   return (
     <div className="km-resources__panel">
       {/* F-147 — the create form is a Sheet popup behind this trigger,
@@ -178,12 +220,12 @@ export function MyVocabLists({
       </div>
 
       {loading ? (
-        <div className="km-grammar__state" role="status">
+        <div className="km-vocab__state" role="status">
           <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
         </div>
-      ) : error && lists.length === 0 ? (
+      ) : error && visibleLists.length === 0 ? (
         <ErrorCard message={error} onRetry={load} />
-      ) : lists.length === 0 ? (
+      ) : visibleLists.length === 0 ? (
         <p className="km-reference__empty">
           <Bilingual
             en="No lists yet. Create one above, then add words from the Browse view."
@@ -204,7 +246,7 @@ export function MyVocabLists({
           ) : null}
           <Card className="km-reference__list" variant="flat">
             <ul>
-              {lists.map((list) => (
+              {visibleLists.map((list) => (
                 <li
                   key={`list:${String(list.id)}`}
                   className="km-reference__row"
@@ -632,7 +674,7 @@ function ListDetailSheet({
         <hr className="hr-double km-review__sheetRule" />
 
         {loading ? (
-          <div className="km-grammar__state" role="status">
+          <div className="km-vocab__state" role="status">
             <Bilingual en="Loading words…" kr="단어를 불러오는 중…" />
           </div>
         ) : null}

@@ -1,14 +1,13 @@
 /*
  * Today — page-scoped styles for the action hub. Wave-2 "Seoul Day & Night"
- * reskin (F-128) + tightened layout (F-133).
+ * reskin (F-128) + tightened layout (F-133), restructured into three
+ * carousels per direct user feedback (mobile-hardening pass — see the
+ * Today.tsx module header for the full rationale).
  *
  * What lives here: the hero/section spacing, the `ActivityTile` chrome
  * (button-wraps-CityCard, per DESIGN_SEOUL_DAY_NIGHT.md devices #1/#2), the
- * Writing inline-expand tile's tightened padding (`CollapsibleTile` renders
- * `surface="city"` there — the shared CityCard-backed variant owns the
- * Night neon glow / Day hanji-paper treatment itself; nothing to duplicate
- * here since `REVIEW_batch1-fidelity.md` C-1's fix), and the resume-exam
- * corner banner.
+ * Suggested-learning peek slider (native CSS scroll-snap — see that section
+ * below for the full mechanism), and the resume-exam corner banner.
  *
  * Token-driven only (no hard-coded hex anywhere in this file) — every color
  * comes from styles/index.css's Day/Night/accent-aware custom properties, so
@@ -196,20 +195,106 @@
   border-radius: var(--radius-lg);
 }
 
-/* Writing inline-expand tile (F-134) ───────────────────────────────────
- * `CollapsibleTile` now renders `surface="city"` here (the shared
- * CityCard-backed variant, `REVIEW_batch1-fidelity.md` C-1) — the Night
- * neon-signboard glow and the leading-edge DancheongRail come from that
- * shared component itself, so the page-scoped glow duplicate this file
- * used to carry is gone. Only the tile's own tighter padding (matching its
- * `CityCard` ActivityTile siblings, F-133) stays page-scoped.
+/* Suggested-learning peek slider (Carousel 2) ───────────────────────────
+ * Direct user feedback restructure: Reading/Listening/Writing render as a
+ * horizontal PEEK slider — the centered tile reads full weight, its
+ * neighbors sit partially visible at each edge, and a swipe glides the row
+ * one tile at a time (never a hard page-cut, "like a spin table" per the
+ * user's own description).
+ *
+ * Built on native CSS scroll-snap instead of `SwipeCarousel`'s hand-rolled
+ * pointer-drag engine — the browser owns the drag/fling/momentum entirely,
+ * so it just works on touch with zero JS gesture code to get wrong.
+ * `SwipeCarousel` stays a hard, one-page-at-a-time model on purpose for
+ * Carousels 1/3 — this is deliberately a different, continuous-scroll
+ * widget (see Today.tsx for why it is NOT given
+ * `aria-roledescription="carousel"`): a plain labeled `<section>`
+ * containing real, independently-focusable buttons. Tab order + the
+ * browser's native scroll-into-view on focus already make it keyboard
+ * accessible with zero extra wiring.
  */
-.km-today__writingTile .km-collapsible__header {
-  padding: 14px 16px;
+.km-today__peekOuter {
+  /* Claw back .km-today__tilePage's 2px inset (unused here — this section
+     renders its own track directly) so the peek padding below still lines
+     up visually with the ActivityTile edges in Carousels 1/3. */
+  margin: 0 -2px;
 }
 
-.km-today__writingTile .km-collapsible__content {
-  padding: 0 16px 16px;
+.km-today__peekTrack {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 11%;
+  gap: 12px;
+  padding: 4px 11% 10px;
+  /* Contain horizontal rubber-banding to this rail — a fling at either end
+     must never bleed into the browser's own edge-swipe (back/forward)
+     gesture on mobile Safari/Chrome. */
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  /* Hide the scrollbar chrome — this is a touch-first peek rail, not a
+     desktop data table; the scroll-snap tiles themselves are the only
+     affordance a mouse/trackpad user needs. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.km-today__peekTrack::-webkit-scrollbar {
+  display: none;
+}
+
+.km-today__peekItem {
+  flex: 0 0 78%;
+  max-width: 78%;
+  min-width: 0;
+  scroll-snap-align: center;
+  /* A fast fling must land on the NEXT tile, never skip past it — "glides
+     one step" per the user's ask, not a free-running fling through
+     several. */
+  scroll-snap-stop: always;
+}
+
+/* Progressive center emphasis — in browsers that support scroll-driven
+ * animations, the in-view tile pops slightly larger/brighter as it nears
+ * the center of the track, keyed to the tile's OWN position via a `view()`
+ * timeline. Pure CSS — no JS scroll listener fighting the browser's native
+ * momentum scroll (which would also be the wrong tool: recomputing a
+ * "nearest to center" index on every scroll frame is unnecessary jank risk
+ * for a purely cosmetic cue). Unsupported browsers simply render every
+ * tile at equal, fully legible weight — a flat but fully functional peek
+ * row, never a broken one.
+ */
+@supports (animation-timeline: view()) {
+  @keyframes km-today-peek-pop {
+    0%,
+    100% {
+      opacity: 0.72;
+      transform: scale(0.94);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .km-today__peekItem {
+    animation: km-today-peek-pop linear both;
+    animation-timeline: view(inline);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .km-today__peekItem {
+    animation: none;
+  }
+}
+
+.km-today__peekEmpty {
+  margin: 4px 2px;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--paper-dim);
 }
 
 /* Resume-exam corner banner — rides SwipeCarousel's cornerSlot, pinned

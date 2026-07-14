@@ -715,6 +715,76 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     expect(screen.getByText('1 / 5')).toBeInTheDocument();
   });
 
+  // SHOULD-FIX (`REVIEW_mobile-touch.md` — "same tap-through bug, unfixed
+  // sibling"): this handler claimed parity with `SwipeCarousel.tsx`'s
+  // Pointer Events model but never called `preventDefault`, so a horizontal
+  // page-swipe on a real phone could register as a tap/fail to advance
+  // instead of turning the page. Mirrors
+  // `SwipeCarousel.test.tsx`'s "calls preventDefault on every move once the
+  // axis locks horizontal, not before" — a cancelable event's `dispatchEvent`
+  // return value is `true` iff `preventDefault` was NOT called.
+  it('calls preventDefault on every move once the axis locks horizontal, not before', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    fireEvent.pointerDown(box, {
+      pointerId: 20, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+
+    // Still inside the 8px axis-lock window — undecided, so the browser
+    // must remain free to claim the gesture (no preventDefault yet).
+    const undecided = fireEvent.pointerMove(box, {
+      pointerId: 20, isPrimary: true, pointerType: 'touch',
+      clientX: 204, clientY: 51,
+    });
+    expect(undecided).toBe(true);
+
+    // This move crosses the threshold with a horizontal-dominant delta —
+    // the axis locks 'h' and this SAME move must already be vetoed.
+    const locking = fireEvent.pointerMove(box, {
+      pointerId: 20, isPrimary: true, pointerType: 'touch',
+      clientX: 180, clientY: 52,
+    });
+    expect(locking).toBe(false);
+
+    // Every subsequent 'h'-axis move keeps vetoing, not just the first.
+    const continuing = fireEvent.pointerMove(box, {
+      pointerId: 20, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 53,
+    });
+    expect(continuing).toBe(false);
+
+    fireEvent.pointerUp(box, {
+      pointerId: 20, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 53,
+    });
+  });
+
+  it('leaves a vertical-dominant touch drag alone, preserving native scroll (no preventDefault)', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    fireEvent.pointerDown(box, {
+      pointerId: 21, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    // Vertical-dominant move — the axis locks 'v' and surrenders. This
+    // component must never veto a gesture it surrendered.
+    const notPrevented = fireEvent.pointerMove(box, {
+      pointerId: 21, isPrimary: true, pointerType: 'touch',
+      clientX: 202, clientY: 120,
+    });
+    expect(notPrevented).toBe(true);
+
+    fireEvent.pointerUp(box, {
+      pointerId: 21, isPrimary: true, pointerType: 'touch',
+      clientX: 202, clientY: 120,
+    });
+  });
+
   it('right-click and non-primary pointers never arm the swipe gesture', async () => {
     renderViewer();
     await screen.findByText('1 / 5');

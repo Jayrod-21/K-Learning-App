@@ -185,4 +185,100 @@ describe('useModalA11y', () => {
     render(<Wrap />);
     expect(document.body.style.overflow).toBe('auto');
   });
+
+  // ── Ref-counted body-scroll lock (Bug 1 — overlapping modals) ──────
+  //
+  // A minimal harness that does nothing but hold the lock for as long as
+  // it's mounted+open — isolates the lock's ref-counting from the rest of
+  // the Harness's focus/Esc machinery, which is irrelevant here.
+  function LockOnly({ open }: { open: boolean }): JSX.Element | null {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    useModalA11y({ open, onClose: vi.fn(), containerRef });
+    if (!open) return null;
+    return <div ref={containerRef} role="dialog" aria-label="lock-only" />;
+  }
+
+  it('locks body scroll on open and restores the true original on close (single modal)', () => {
+    document.body.style.overflow = 'auto';
+    const { unmount } = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+    unmount();
+    expect(document.body.style.overflow).toBe('auto');
+  });
+
+  it('ref-counts overlapping locks: only the LAST modal to close restores the true original overflow', () => {
+    // This is the exact leak this hook was rewritten to close: under the
+    // old capture-per-instance implementation, modal B (opened while A was
+    // still open) would capture 'hidden' — A's lock — as ITS baseline, and
+    // writing that back on B's close would leave the app stuck unscrollable
+    // forever, even though both modals are now closed.
+    document.body.style.overflow = 'auto';
+
+    const a = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Modal B opens while A is still mounted (an overlapping/auto-opening
+    // Sheet stacked on top of another, per the bug report).
+    const b = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // A closes FIRST while B is still open — the lock must NOT release yet
+    // (B still needs body scroll locked).
+    a.unmount();
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // B closes last — only now, with the count back to 0, does the real
+    // original overflow come back. Under the old (buggy) implementation
+    // this would incorrectly restore 'hidden' (B's captured baseline) and
+    // the assertion below would fail.
+    b.unmount();
+    expect(document.body.style.overflow).toBe('auto');
+  });
+
+  it('ref-counts overlapping locks regardless of close order (LIFO)', () => {
+    document.body.style.overflow = 'auto';
+
+    const a = render(<LockOnly open />);
+    const b = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    // Closing in the "expected" nested order (last-opened closes first)
+    // must also land on the true original, not just the overlapping-order
+    // case above.
+    b.unmount();
+    expect(document.body.style.overflow).toBe('hidden');
+    a.unmount();
+    expect(document.body.style.overflow).toBe('auto');
+  });
+
+  it('supports three overlapping modals with an arbitrary close order', () => {
+    document.body.style.overflow = 'scroll';
+
+    const a = render(<LockOnly open />);
+    const b = render(<LockOnly open />);
+    const c = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    b.unmount();
+    expect(document.body.style.overflow).toBe('hidden');
+    a.unmount();
+    expect(document.body.style.overflow).toBe('hidden');
+    c.unmount();
+    expect(document.body.style.overflow).toBe('scroll');
+  });
+
+  it('re-opening after a full close re-arms the lock against the CURRENT baseline', () => {
+    document.body.style.overflow = 'auto';
+    const first = render(<LockOnly open />);
+    first.unmount();
+    expect(document.body.style.overflow).toBe('auto');
+
+    // Something else in the app changes the baseline while nothing is
+    // locked (e.g. a non-modal scroll-affecting feature).
+    document.body.style.overflow = 'scroll';
+    const second = render(<LockOnly open />);
+    expect(document.body.style.overflow).toBe('hidden');
+    second.unmount();
+    expect(document.body.style.overflow).toBe('scroll');
+  });
 });
