@@ -1658,6 +1658,14 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 
 ---
 
+## 🔎 Wave 2 follow-up — surfaced by the cleanup fix-pass
+
+#### F-186 · Migrate WordPopover.tsx to the shared tone-aware Sheet
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor · post-beta
+- **Where / State:** `components/WordPopover.tsx` (the app's most-used popup — Reading/Grammar/Hanja/Listen/Images all consume it) still renders bespoke `role="dialog"` chrome instead of the now-tone-aware shared `Sheet`. It already has full a11y parity (focus trap, Esc/backdrop, restore-focus). Migrating it is the last "promote to shared primitive" of the redesign — a cross-page refactor, so deferred post-beta.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
