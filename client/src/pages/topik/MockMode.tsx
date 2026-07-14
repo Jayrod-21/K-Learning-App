@@ -79,10 +79,14 @@
  * #7) ahead of the shared `TopikResults` screen (now itself a `CityCard`
  * hero, mirroring the "milestone panel" treatment); the honest-empty past-
  * papers list and "no previous attempts" panel carry `.km-giwa`/
- * `.km-hangul-watermark` (devices #3/#6); the root carries the ambient
- * `.km-rain-sheen` (device #8, Night-only per its own CSS gate). Every
- * exam-flow behavior (timer, palette jump, Prev/Next, pick, submit, resume,
- * scoring) is unchanged — this pass only reskins the surfaces around it.
+ * `.km-hangul-watermark` (devices #3/#6); the ambient `.km-rain-sheen`
+ * (device #8, Night-only per its own CSS gate) is NOT re-applied here —
+ * `Topik.tsx`'s outer `.screen.km-topik` wrapper already carries it for the
+ * whole Study/Mock tab panel, and doubling it on this inner root would only
+ * double the overlay opacity over the same shared subtree (fix-pass batch5).
+ * Every exam-flow behavior (timer, palette jump, Prev/Next, pick, submit,
+ * resume, scoring) is unchanged — this pass only reskins the surfaces
+ * around it.
  */
 import {
   useCallback,
@@ -641,10 +645,14 @@ export function MockMode(): JSX.Element {
   }, [goToView]);
 
   return (
-    // F-183 device #8 — the ambient rain-neon sheen (Night-only per its own
-    // CSS gate); harmless alongside the pre-existing `position: relative`
-    // inline style MockBadge's absolute positioning relies on.
-    <div className="km-mock km-rain-sheen" style={{ position: 'relative' }}>
+    // F-183 fix-pass (batch5): NOT `km-rain-sheen` here — `Topik.tsx`'s outer
+    // `.screen.km-topik` wrapper (this component's parent, Topik.tsx:264/526)
+    // already applies device #8 to the whole Study/Mock tab panel, so
+    // MockMode adding its own copy on this inner root doubled the effective
+    // overlay opacity over the shared subtree for no visual gain. The
+    // `position: relative` stays — MockBadge's absolute positioning still
+    // relies on it.
+    <div className="km-mock" style={{ position: 'relative' }}>
       {isMock && (phase === 'exam' || phase === 'results') ? (
         <MockBadge />
       ) : null}
@@ -1329,7 +1337,12 @@ function ResumeBanner({
         marginBottom: 16,
         padding: '12px 16px',
         borderRadius: 12,
-        border: '1px solid rgba(127, 127, 127, 0.25)',
+        // F-183 fix-pass (batch5): was a literal `rgba(127,127,127,0.25)` —
+        // DESIGN_SEOUL_DAY_NIGHT.md §8 bars hardcoded colors app-wide.
+        // `--line` is the shared hairline-divider token (index.css), already
+        // used for this exact "thin neutral border" role elsewhere in the
+        // app, and resolves correctly in both Day/Night themes.
+        border: '1px solid var(--line)',
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1849,10 +1862,20 @@ function ExamRunner({
       </CityCard>
 
       {confirming ? (
-        // Card doesn't forward refs, so the focus-trap container is this div,
-        // which also carries the alertdialog role + label (useModalA11y above).
+        // Card/CityCard don't forward refs, so the focus-trap container is
+        // this div, which also carries the alertdialog role + label
+        // (useModalA11y above). F-183 fix-pass (batch5): reskinned onto the
+        // Seoul kit's CityCard (tone matches the exam's own sectionTone, same
+        // as the exam card/SubwayProgress above) — this dialog is the one
+        // surface in the flow the earlier pass left on the flat `Card`. The
+        // alertdialog role/focus-trap/Esc/backdrop-free contract is
+        // unchanged; only the surface styling changes.
         <div ref={confirmRef} role="alertdialog" aria-label="Confirm submit">
-          <Card variant="flat" className="km-mock__confirm">
+          <CityCard
+            tone={sectionTone(test.section)}
+            rail
+            className="km-mock__confirm"
+          >
             <Eyebrow>
               <Bilingual en="Submit test?" kr="시험을 제출할까요?" />
             </Eyebrow>
@@ -1879,7 +1902,7 @@ function ExamRunner({
                 <Bilingual en="Submit" kr="제출" />
               </Button>
             </div>
-          </Card>
+          </CityCard>
         </div>
       ) : null}
     </div>

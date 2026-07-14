@@ -156,4 +156,36 @@ describe('SubwayProgress', () => {
     );
     expect(container.firstElementChild?.className).toContain('my-extra');
   });
+
+  // F-129 / DESIGN_SEOUL_DAY_NIGHT.md §8 "nothing clips off-screen-right":
+  // a 50-item TOPIK mock exam (or a maxed-out Hanja study session) used to
+  // render 50 fixed-width 10px dots with no wrap/scroll/cap — ~500px of
+  // intrinsic width against a ~330px phone content box. Above the render
+  // cap the component must condense to a plain fill bar instead.
+  it('condenses to a plain fill bar above the render cap, rendering zero station dots', () => {
+    const { container } = render(
+      <SubwayProgress steps={50} current={24} label="Mock exam progress" />,
+    );
+    expect(stations(container)).toHaveLength(0);
+    const bar = screen.getByRole('progressbar');
+    expect(bar).toHaveAttribute('aria-valuemax', '50');
+    expect(bar).toHaveAttribute('aria-valuenow', '25');
+    // The fill bar itself must still exist and reflect real progress —
+    // condensing to a plain bar must not also drop the visible fill.
+    expect(fill(container).style.width).toBe(`${String((24 / 49) * 100)}%`);
+  });
+
+  it('still renders one dot per station at the render cap boundary (24)', () => {
+    const { container } = render(
+      <SubwayProgress steps={24} current={5} label="Daily progress" />,
+    );
+    expect(stations(container)).toHaveLength(24);
+  });
+
+  it('condenses at 25 stations, one past the render cap', () => {
+    const { container } = render(
+      <SubwayProgress steps={25} current={5} label="Daily progress" />,
+    );
+    expect(stations(container)).toHaveLength(0);
+  });
 });

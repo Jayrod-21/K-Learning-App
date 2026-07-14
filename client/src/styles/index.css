@@ -2592,32 +2592,6 @@ h1, h2 { font-family: var(--font-display); }
   border-top: 1.5px solid var(--line-strong);
 }
 
-/* Topbar ───────────────────────────────────────────────────────────── */
-.km-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: linear-gradient(180deg, var(--ink) 0%, var(--ink) 70%, transparent 100%);
-  padding: 18px 20px 12px;
-}
-.km-topbar__row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 12px;
-}
-.km-topbar__meta { min-width: 0; }
-.km-topbar__eyebrow { margin-bottom: 4px; }
-.km-topbar__title {
-  margin: 0;
-  font-size: 26px;
-  font-weight: 600;
-  line-height: 1.1;
-  color: var(--paper);
-  letter-spacing: -0.02em;
-}
-.km-topbar__right { flex-shrink: 0; }
-
 /* Toggle ───────────────────────────────────────────────────────────── */
 .km-toggle {
   position: relative;
@@ -2873,26 +2847,6 @@ h1, h2 { font-family: var(--font-display); }
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 12px;
 }
-.km-mock__section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 20px 22px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--ink-1);
-  text-align: left;
-  font-family: inherit;
-  color: var(--paper);
-  cursor: pointer;
-  transition: border-color 140ms, background 140ms;
-}
-.km-mock__section:hover:not(:disabled) { border-color: var(--gold); }
-.km-mock__section--disabled,
-.km-mock__section:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
 .km-mock__section-en {
   font-size: 20px;
   font-weight: 600;
@@ -3058,13 +3012,6 @@ h1, h2 { font-family: var(--font-display); }
   border-color: var(--danger);
   color: var(--danger-ink);
 }
-.km-diagnostic__display {
-  margin: 8px 0 22px;
-  font-size: clamp(34px, 5vw, 50px);
-  font-weight: 600;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
-}
 .km-diagnostic__sections { padding: 22px 24px; }
 .km-diagnostic__section-list {
   margin: 14px 0 0;
@@ -3117,17 +3064,6 @@ h1, h2 { font-family: var(--font-display); }
   margin-bottom: 14px;
 }
 .km-diagnostic__progress-label { font-variant-numeric: tabular-nums; }
-.km-diagnostic__progress {
-  height: 2px;
-  background: var(--ink-2);
-  margin-bottom: 18px;
-  overflow: hidden;
-}
-.km-diagnostic__progress-fill {
-  height: 100%;
-  background: var(--vermilion);
-  transition: width 280ms ease-out;
-}
 .km-diagnostic__pills {
   display: flex;
   align-items: center;
@@ -3255,14 +3191,6 @@ h1, h2 { font-family: var(--font-display); }
   margin: 0 0 28px;
 }
 
-.km-diagnostic__results-title {
-  margin: 0;
-  font-size: clamp(34px, 5vw, 52px);
-  font-weight: 600;
-  line-height: 1.05;
-  letter-spacing: -0.03em;
-  color: var(--paper);
-}
 .km-diagnostic__results-sub {
   margin: 12px 0 22px;
   font-size: 16px;
@@ -3271,38 +3199,12 @@ h1, h2 { font-family: var(--font-display); }
   line-height: 1.55;
 }
 .km-diagnostic__skills-card { padding: 24px 26px; margin-bottom: 16px; }
-.km-diagnostic__goals-card { padding: 22px 24px; }
 .km-diagnostic__skills-title {
   font-size: 22px;
   font-weight: 600;
   margin-top: 4px;
   margin-bottom: 14px;
   letter-spacing: -0.015em;
-}
-.km-diagnostic__goals {
-  margin: 14px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.km-diagnostic__goal-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  font-size: 14px;
-  color: var(--paper-dim);
-  line-height: 1.5;
-}
-.km-diagnostic__goal-num {
-  color: var(--vermilion-ink);
-  font-family: 'Inter', system-ui, sans-serif;
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  font-weight: 600;
-  padding-top: 2px;
-  min-width: 18px;
 }
 
 /* Grammar screen ─────────────────────────────────────────────────────── */
@@ -3993,14 +3895,6 @@ h1, h2 { font-family: var(--font-display); }
 
 /* Shared screen wrapper used by all four pages — sits between the
    Topbar and the BottomNav. */
-.km-topbar__title-en {
-  font-family: 'Inter', sans-serif;
-  font-weight: 500;
-  font-size: 0.78em;
-  color: var(--paper-mute);
-  letter-spacing: -0.02em;
-}
-
 /* ─── Hanja ─────────────────────────────────────────────────── */
 .km-hanja { padding-bottom: 96px; }
 .km-hanja > * + * { margin-top: 16px; }

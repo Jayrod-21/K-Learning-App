@@ -1604,9 +1604,9 @@ describe('MockMode (Mock test)', () => {
       expect(listening.closest('.km-citycard')).toHaveClass('km-tone--blue');
     });
 
-    it('the root carries the ambient rain-sheen (device #8, Night-only per its own CSS gate)', () => {
+    it('does NOT re-apply the ambient rain-sheen on its own root (fix-pass batch5) — Topik.tsx\'s outer wrapper already carries device #8 for the whole tab panel, so a second copy here would double the overlay opacity over the same shared subtree', () => {
       const { container } = render(<MockMode />, { wrapper: MemoryRouter });
-      expect(container.querySelector('.km-mock')).toHaveClass('km-rain-sheen');
+      expect(container.querySelector('.km-mock')).not.toHaveClass('km-rain-sheen');
     });
 
     it('renders the running exam with a SubwayProgress alongside the jump-grid palette (device #5) — real navigation, not decoration', async () => {
