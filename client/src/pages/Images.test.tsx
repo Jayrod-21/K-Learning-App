@@ -370,3 +370,61 @@ describe('Images page — upload', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
+
+// F-184 "Seoul Day & Night" reskin — Images was the last screen still on the
+// bare Topbar; it now adopts the shared PageHubHeader (SkylineHeader +
+// DancheongRail) and every image tile is a CityCard.
+describe('Images page — F-184 reskin', () => {
+  it('renders the skyline hub-header + rail divider, drops Topbar, and carries km-rain-sheen on the root', () => {
+    const { container } = renderImages();
+
+    expect(document.querySelector('.km-hubheader__skyline')).toBeInTheDocument();
+    expect(document.querySelector('.km-hubheader__rail-divider')).toBeInTheDocument();
+    expect(document.querySelector('.km-topbar')).not.toBeInTheDocument();
+    expect(container.querySelector('.screen.km-rain-sheen')).toBeInTheDocument();
+
+    // The real <h1> still carries the page title and the section's
+    // aria-labelledby target — the reskin didn't drop the heading contract.
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveAttribute('id', 'km-images-title');
+  });
+
+  it('wraps each sample row in a CityCard (device #1/#2)', () => {
+    renderImages();
+    // One fixture capture → one sample row → one CityCard.
+    expect(
+      document.querySelectorAll('.km-images__sample-card.km-citycard'),
+    ).toHaveLength(1);
+  });
+
+  it('wraps the capture photo and the detected-word list in CityCards', async () => {
+    const user = userEvent.setup();
+    renderImages();
+
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+
+    expect(
+      document.querySelector('.km-images__capture-card.km-citycard'),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('.km-images__detected.km-citycard'),
+    ).toBeInTheDocument();
+  });
+
+  it('textures the "no words detected" state with the giwa/hangul-watermark devices', async () => {
+    // A capture with no words whose hydration attempt fails — the words
+    // list stays empty and the CaptureView's empty state renders.
+    hookState.data = [{ ...FIXTURE[0], words: [] }];
+    hookState.isMock = false;
+    fetchImageMock.mockRejectedValueOnce(new Error('network blip'));
+
+    const user = userEvent.setup();
+    renderImages();
+    await user.click(screen.getAllByRole('button', { name: /카페 메뉴판/ })[0]);
+
+    const empty = await screen.findByText(/No words detected/);
+    const wrap = empty.closest('.km-images__detected-empty');
+    expect(wrap).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(wrap).toHaveAttribute('data-glyph', '글');
+  });
+});

@@ -37,6 +37,25 @@
  * accessibility name. They are NOT a tablist — the user does not jump between
  * them at will; the mode advances through a workflow.
  *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2) replaces the old bare `<h1>`/eyebrow pair on Intro and Results; the
+ * Intro section list and the Results skills card are `CityCard` signboard/
+ * hanji-paper surfaces (device #1) with a leading `DancheongRail` (device
+ * #2); the live taking item is likewise a `CityCard` hero surface, mirroring
+ * Topik's live-drill treatment; a `SubwayProgress` (device #5) rides
+ * alongside the existing "Item N / M" readout for stepping through the run;
+ * the Done screen's completion glyph is now the hand-stamped `SealStamp`
+ * `milestone` look (device #7); the page root carries the ambient
+ * `.km-rain-sheen` (device #8, Night-only per its own CSS gate). Diagnostic
+ * has no genuine "zero data" empty state of its own (unlike Topik/Hanja's
+ * "no items" case) — devices #3/#6 (giwa texture + hangul watermark) are
+ * therefore not applied here, matching the established precedent that they
+ * mark genuine emptiness, never a loading/error state (see Reading.tsx).
+ *
+ * F-143 — the Results screen's "Derived from your gaps / Next steps" goals
+ * card and the "Begin today's plan" CTA are removed at the user's explicit
+ * request. Results now ends at the skills snapshot + the retake action.
+ *
  * Threat model:
  *   - **Answer-tampering / read-ahead.** The correct answer is never on the
  *     live item; it arrives only in the `/answer` reveal AFTER the user
@@ -56,19 +75,21 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { Button } from '../components/Button';
 import { Pill } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { DoubleRule } from '../components/DoubleRule';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { SealStamp } from '../components/SealStamp';
 import { AudioBlock } from '../components/AudioBlock';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillRow, SkillReference } from '../components/SkillsCompare';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { useToast } from '../components/useToast';
@@ -91,6 +112,7 @@ import type {
 } from '../types/domain';
 import { cn } from '../lib/cn';
 import { errorMessageFor } from '../lib/errorCopy';
+import './Diagnostic.css';
 
 type Mode = 'intro' | 'taking' | 'done' | 'results';
 
@@ -175,7 +197,7 @@ function Diagnostic(): JSX.Element {
 
   return (
     <section
-      className="screen km-diagnostic"
+      className="screen km-diagnostic km-rain-sheen"
       aria-labelledby="diagnostic-title"
       style={{ position: 'relative' }}
     >
@@ -289,20 +311,24 @@ interface IntroProps {
 function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
   return (
     <section aria-labelledby="dg-intro-h" className="km-diagnostic__intro">
-      {/* P3b trim — the old "진단평가 · …" eyebrow prefix repeated the title
-          right below it; the eyebrow keeps only the test-shape meta. */}
-      <Eyebrow>
-        <Bilingual
-          en={`${String(INTRO_TOTAL_MINS)} min · ${String(INTRO_TOTAL_ITEMS)} items`}
-          kr={`${String(INTRO_TOTAL_MINS)}분 · ${String(INTRO_TOTAL_ITEMS)}문항`}
-        />
-      </Eyebrow>
-      <h1 id="dg-intro-h" className="kr-display km-diagnostic__display">
-        {/* P3a: page-title chrome follows the language-display setting. */}
-        <Bilingual kr="진단평가" en="Diagnostic" />
-      </h1>
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (skyline +
+          dancheong rail) replaces the old bare `<h1>` + eyebrow pair. P3b
+          trim carries over: the eyebrow keeps only the test-shape meta, not
+          a repeated "진단평가 · …" prefix. */}
+      <PageHubHeader
+        titleId="dg-intro-h"
+        eyebrow={
+          <Bilingual
+            en={`${String(INTRO_TOTAL_MINS)} min · ${String(INTRO_TOTAL_ITEMS)} items`}
+            kr={`${String(INTRO_TOTAL_MINS)}분 · ${String(INTRO_TOTAL_ITEMS)}문항`}
+          />
+        }
+        heading={<Bilingual kr="진단평가" en="Diagnostic" />}
+      />
 
-      <Card className="km-diagnostic__sections">
+      {/* F-128 device #1/#2 — a CityCard signboard/hanji-paper surface with a
+          leading DancheongRail, replacing the plain flat Card. */}
+      <CityCard tone="accent" rail className="km-diagnostic__sections">
         <Eyebrow>
           <Bilingual en="Sections" kr="영역" />
         </Eyebrow>
@@ -327,7 +353,7 @@ function IntroBlock({ onBegin, onCancel }: IntroProps): JSX.Element {
             </li>
           ))}
         </ol>
-      </Card>
+      </CityCard>
 
       <DoubleRule accent className="km-diagnostic__rule" />
 
@@ -713,14 +739,7 @@ function TakingBlock({
   const isLast = revealed && lastReveal;
   const revealBlockId = `dg-reveal-${String(item.responseId)}`;
   const section = sectionLabel(item.section);
-  // Progress is derived from the CURRENT item's 1-based ordinal (served
-  // ordinals may skip empty-pool slots, so the item is the truth). The total
-  // comes from the server. Before the reveal, `ordinal-1` items are done;
-  // once the current item is graded (revealed), it counts too.
   const total = progress.total;
-  const completed = item.ordinal - (revealed ? 0 : 1);
-  const progressNow = Math.max(0, Math.min(total, completed));
-  const progressPct = total > 0 ? (progressNow / total) * 100 : 0;
 
   return (
     <section aria-labelledby="dg-taking-h" className="km-diagnostic__taking">
@@ -742,154 +761,161 @@ function TakingBlock({
         </Eyebrow>
       </div>
 
-      <div
-        className="km-diagnostic__progress"
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={total}
-        aria-valuenow={progressNow}
-        aria-label="Diagnostic progress"
-      >
-        <div
-          className="km-diagnostic__progress-fill"
-          style={{ width: `${String(progressPct)}%` }}
+      {/* F-128 device #5 — the signature subway-line progress metaphor,
+          alongside the numeric "N / M" readout above (kept for the exact
+          reading the dots don't spell out in text). The active station is
+          the CURRENT item's 0-based ordinal — matching Topik's study-mode
+          precedent — regardless of whether it's been revealed yet. */}
+      <div className="km-diagnostic__subwaywrap">
+        <SubwayProgress
+          steps={total}
+          current={item.ordinal - 1}
+          tone="accent"
+          label="Diagnostic progress"
+          valueText={`Item ${String(item.ordinal)} of ${String(total)}`}
         />
       </div>
 
-      <div className="km-diagnostic__pills">
-        <Pill tone="gold">
-          <Bilingual en={section.en} kr={section.kr} />
-        </Pill>
-        <Pill>{item.level}</Pill>
-      </div>
-
-      <p className="kr km-diagnostic__prompt">{item.prompt}</p>
-
-      {item.audio ? (
-        <AudioBlock
-          transcriptKr={item.audio.transcript}
-          durationS={item.audio.duration}
-        />
-      ) : null}
-
-      {item.passage ? <PassageCard item={item} /> : null}
-
-      {item.hint && !item.passage ? (
-        <div className="km-diagnostic__hint">{item.hint}</div>
-      ) : null}
-
-      <ChoiceList
-        item={item}
-        picked={picked}
-        revealed={revealed}
-        reveal={reveal}
-        revealBlockId={revealBlockId}
-        onPick={(id) => {
-          if (!revealed && !inFlight) setPicked(id);
-        }}
-      />
-
-      {reveal ? (
-        <Card
-          variant="flat"
-          className="km-diagnostic__reveal"
-          id={revealBlockId}
-        >
-          <Eyebrow>
-            {reveal.correct ? (
-              <Bilingual en="Correct" kr="정답" />
-            ) : (
-              <Bilingual en="Not quite" kr="아쉬워요" />
-            )}
-          </Eyebrow>
-          <p className="km-diagnostic__explain">{reveal.explain}</p>
-          {/* F-020: hand the graded item to the Chat tutor. The stem lives on
-              `item`, the key + explanation on the server's `reveal` — the
-              choice ids are resolved to their display text here so the seed
-              reads naturally. When the correct id can't be resolved (corrupt
-              data — the green highlight is equally broken then), the line is
-              OMITTED via '' rather than seeding a bare id like "b" that
-              corresponds to nothing the learner saw (choices are labelled
-              ①②③④ on screen). */}
-          <div style={{ marginTop: 10 }}>
-            <AskAboutThisButton
-              prompt={item.prompt}
-              correctText={
-                item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
-                ''
-              }
-              passage={buildSeedPassage(item)}
-              explanation={reveal.explain}
-              userPick={
-                !reveal.correct && picked !== null
-                  ? item.choices.find((c) => c.id === picked)?.kr
-                  : undefined
-              }
-            />
-          </div>
-        </Card>
-      ) : null}
-
-      {errorMsg && phase === 'error' ? (
-        <div role="alert" className="km-diagnostic__state km-diagnostic__state--error">
-          <span>{errorMsg}</span>
-          {/* Retry replays the failed step: a showing reveal → re-finish/advance,
-              otherwise → re-grade the picked choice. Wiring it here makes the
-              `retry` callback's mid-run branches reachable (they were dead when
-              the only Retry control lived on the failed-start ErrorCard). */}
-          <Button variant="ghost" size="sm" onClick={retry}>
-            <Bilingual en="Try again" kr="다시 시도" />
-          </Button>
+      {/* F-128 device #1/#2 — the live item is the taking screen's hero
+          surface, mirroring Topik's live-drill treatment: a CityCard
+          signboard/hanji-paper card with a leading DancheongRail, not a bare
+          fragment riding on the page's own padding. */}
+      <CityCard rail tone="accent" className="km-diagnostic__card">
+        <div className="km-diagnostic__pills">
+          <Pill tone="gold">
+            <Bilingual en={section.en} kr={section.kr} />
+          </Pill>
+          <Pill>{item.level}</Pill>
         </div>
-      ) : null}
 
-      <div className="km-diagnostic__footer">
-        {!revealed ? (
-          <Button variant="ghost" onClick={skip} disabled={inFlight}>
-            <Bilingual en="Skip" kr="건너뛰기" />
-          </Button>
-        ) : (
-          <span className="km-diagnostic__count">
-            {isLast ? (
-              <Bilingual en="Last item" kr="마지막 문항" />
-            ) : (
-              <Bilingual en="Reviewing your answer" kr="정답 확인 중" />
-            )}
-          </span>
-        )}
-        {!revealed ? (
-          <Button
-            variant="gold"
-            disabled={picked === null || inFlight}
-            aria-busy={phase === 'answering'}
-            onClick={submit}
+        <p className="kr km-diagnostic__prompt">{item.prompt}</p>
+
+        {item.audio ? (
+          <AudioBlock
+            transcriptKr={item.audio.transcript}
+            durationS={item.audio.duration}
+          />
+        ) : null}
+
+        {item.passage ? <PassageCard item={item} /> : null}
+
+        {item.hint && !item.passage ? (
+          <div className="km-diagnostic__hint">{item.hint}</div>
+        ) : null}
+
+        <ChoiceList
+          item={item}
+          picked={picked}
+          revealed={revealed}
+          reveal={reveal}
+          revealBlockId={revealBlockId}
+          onPick={(id) => {
+            if (!revealed && !inFlight) setPicked(id);
+          }}
+        />
+
+        {reveal ? (
+          <Card
+            variant="flat"
+            className="km-diagnostic__reveal"
+            id={revealBlockId}
           >
-            {phase === 'answering' ? (
-              <Bilingual en="Sending…" kr="보내는 중…" />
-            ) : (
-              <Bilingual en="Submit" kr="제출" />
-            )}
-          </Button>
-        ) : (
-          <Button
-            variant="gold"
-            onClick={advance}
-            disabled={inFlight}
-            aria-busy={phase === 'finishing' || phase === 'advancing'}
-            trailingIcon={<Icon name="arrow-right" size={14} />}
-          >
-            {phase === 'finishing' ? (
-              <Bilingual en="Scoring…" kr="채점 중…" />
-            ) : phase === 'advancing' ? (
-              <Bilingual en="Loading…" kr="불러오는 중…" />
-            ) : isLast ? (
-              <Bilingual en="See results" kr="결과 보기" />
-            ) : (
-              <Bilingual en="Next" kr="다음" />
-            )}
-          </Button>
-        )}
-      </div>
+            <Eyebrow>
+              {reveal.correct ? (
+                <Bilingual en="Correct" kr="정답" />
+              ) : (
+                <Bilingual en="Not quite" kr="아쉬워요" />
+              )}
+            </Eyebrow>
+            <p className="km-diagnostic__explain">{reveal.explain}</p>
+            {/* F-020: hand the graded item to the Chat tutor. The stem lives on
+                `item`, the key + explanation on the server's `reveal` — the
+                choice ids are resolved to their display text here so the seed
+                reads naturally. When the correct id can't be resolved (corrupt
+                data — the green highlight is equally broken then), the line is
+                OMITTED via '' rather than seeding a bare id like "b" that
+                corresponds to nothing the learner saw (choices are labelled
+                ①②③④ on screen). */}
+            <div style={{ marginTop: 10 }}>
+              <AskAboutThisButton
+                prompt={item.prompt}
+                correctText={
+                  item.choices.find((c) => c.id === reveal.correctAnswer)?.kr ??
+                  ''
+                }
+                passage={buildSeedPassage(item)}
+                explanation={reveal.explain}
+                userPick={
+                  !reveal.correct && picked !== null
+                    ? item.choices.find((c) => c.id === picked)?.kr
+                    : undefined
+                }
+              />
+            </div>
+          </Card>
+        ) : null}
+
+        {errorMsg && phase === 'error' ? (
+          <div role="alert" className="km-diagnostic__state km-diagnostic__state--error">
+            <span>{errorMsg}</span>
+            {/* Retry replays the failed step: a showing reveal → re-finish/advance,
+                otherwise → re-grade the picked choice. Wiring it here makes the
+                `retry` callback's mid-run branches reachable (they were dead when
+                the only Retry control lived on the failed-start ErrorCard). */}
+            <Button variant="ghost" size="sm" onClick={retry}>
+              <Bilingual en="Try again" kr="다시 시도" />
+            </Button>
+          </div>
+        ) : null}
+
+        <div className="km-diagnostic__footer">
+          {!revealed ? (
+            <Button variant="ghost" onClick={skip} disabled={inFlight}>
+              <Bilingual en="Skip" kr="건너뛰기" />
+            </Button>
+          ) : (
+            <span className="km-diagnostic__count">
+              {isLast ? (
+                <Bilingual en="Last item" kr="마지막 문항" />
+              ) : (
+                <Bilingual en="Reviewing your answer" kr="정답 확인 중" />
+              )}
+            </span>
+          )}
+          {!revealed ? (
+            <Button
+              variant="gold"
+              disabled={picked === null || inFlight}
+              aria-busy={phase === 'answering'}
+              onClick={submit}
+            >
+              {phase === 'answering' ? (
+                <Bilingual en="Sending…" kr="보내는 중…" />
+              ) : (
+                <Bilingual en="Submit" kr="제출" />
+              )}
+            </Button>
+          ) : (
+            <Button
+              variant="gold"
+              onClick={advance}
+              disabled={inFlight}
+              aria-busy={phase === 'finishing' || phase === 'advancing'}
+              trailingIcon={<Icon name="arrow-right" size={14} />}
+            >
+              {phase === 'finishing' ? (
+                <Bilingual en="Scoring…" kr="채점 중…" />
+              ) : phase === 'advancing' ? (
+                <Bilingual en="Loading…" kr="불러오는 중…" />
+              ) : isLast ? (
+                <Bilingual en="See results" kr="결과 보기" />
+              ) : (
+                <Bilingual en="Next" kr="다음" />
+              )}
+            </Button>
+          )}
+        </div>
+      </CityCard>
     </section>
   );
 }
@@ -1039,7 +1065,10 @@ interface DoneProps {
 function DoneBlock({ onContinue }: DoneProps): JSX.Element {
   return (
     <section aria-labelledby="dg-done-h" className="km-diagnostic__done">
-      <SealStamp char="完" size="lg" />
+      {/* F-128 device #7 — the hand-stamped 도장 rotation now marks this as
+          the completion milestone it is, rather than the plain upright
+          section-anchor badge look used elsewhere (Hanja/Login/Review). */}
+      <SealStamp char="完" size="lg" milestone tone="accent" />
       {/* P3b trim — the "진단평가 완료" eyebrow was the title's Korean twin;
           one bilingual title now carries both. */}
       <h2 id="dg-done-h" className="kr-display km-diagnostic__done-title">
@@ -1071,7 +1100,6 @@ interface ResultsProps {
 }
 
 function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
-  const navigate = useNavigate();
   const skills: ReadonlyArray<SkillRow> = snapshot.dimensions.map((d) => ({
     key: d.key,
     label: d.label,
@@ -1095,18 +1123,17 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
 
   return (
     <section aria-labelledby="dg-results-h" className="km-diagnostic__results">
-      {/* Honest labeling (B-007 + F-011): the snapshot carries no capture
-          timestamp, so the old hard-coded "completed 5 min ago" was always a
-          lie — dropped, and a neutral eyebrow stands in for a time claim. The
-          hard-coded "Against TOPIK II Level 4" implied an official placement
-          the quiz can't deliver; the sub-line now says what this actually is
-          (a rough estimate with per-skill confidence bands). */}
-      <Eyebrow>
-        <Bilingual en="Quick placement estimate" kr="간단 실력 추정" />
-      </Eyebrow>
-      <h1 id="dg-results-h" className="kr-display km-diagnostic__results-title">
-        <Bilingual kr="진단평가" en="Diagnostic" />
-      </h1>
+      {/* F-128 devices #4/#2 — the shared hub-header recipe replaces the old
+          bare eyebrow + `<h1>` pair. Honest labeling (B-007 + F-011) carries
+          over unchanged: the snapshot carries no capture timestamp, so a
+          neutral eyebrow stands in for a time claim, and the sub-line below
+          says what this actually is (a rough estimate with per-skill
+          confidence bands) rather than implying an official placement. */}
+      <PageHubHeader
+        titleId="dg-results-h"
+        eyebrow={<Bilingual en="Quick placement estimate" kr="간단 실력 추정" />}
+        heading={<Bilingual kr="진단평가" en="Diagnostic" />}
+      />
       <p className="km-diagnostic__results-sub">
         <Bilingual
           en="A short adaptive quiz — a rough placement estimate, not an official TOPIK score. Bands show how confident each result is."
@@ -1114,7 +1141,9 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
         />
       </p>
 
-      <Card className="km-diagnostic__skills-card">
+      {/* F-128 device #1/#2 — a CityCard signboard/hanji-paper surface with a
+          leading DancheongRail, replacing the plain flat Card. */}
+      <CityCard tone="accent" rail className="km-diagnostic__skills-card">
         <Eyebrow>
           <Bilingual en="Where you are" kr="현재 위치" />
         </Eyebrow>
@@ -1127,38 +1156,15 @@ function ResultsBlock({ snapshot, onRetest }: ResultsProps): JSX.Element {
           defaultRefId={snapshot.defaultRef}
           variant="full"
         />
-      </Card>
+      </CityCard>
 
-      <Card className="km-diagnostic__goals-card">
-        {/* P3b trim — "Goals" was the title's twin; the eyebrow keeps only
-            the provenance meta. */}
-        <Eyebrow>
-          <Bilingual en="Derived from your gaps" kr="약점 기반" />
-        </Eyebrow>
-        <div className="km-diagnostic__skills-title">
-          <Bilingual en="Next steps" kr="다음 단계" />
-        </div>
-        <ol className="km-diagnostic__goals">
-          {snapshot.goals.map((g, i) => (
-            <li key={`goal-${String(i)}`} className="km-diagnostic__goal-row">
-              <span className="km-diagnostic__goal-num">0{String(i + 1)}</span>
-              <span>{g}</span>
-            </li>
-          ))}
-        </ol>
-      </Card>
-
+      {/* F-143 — the "Derived from your gaps / Next steps" goals card and the
+          "Begin today's plan" CTA are removed at the user's explicit request.
+          The results screen now ends at the skills snapshot + the retake
+          action; `snapshot.goals` is still part of the shared API contract
+          (other consumers may read it) but this screen no longer renders it. */}
       <div className="km-diagnostic__cta-row">
-        <Button
-          variant="gold"
-          onClick={() => {
-            navigate('/');
-          }}
-          trailingIcon={<Icon name="arrow-right" size={16} />}
-        >
-          <Bilingual en="Begin today’s plan" kr="오늘의 계획 시작" />
-        </Button>
-        <Button variant="ghost" onClick={onRetest}>
+        <Button variant="gold" onClick={onRetest}>
           <Bilingual en="Re-test diagnostic" kr="진단 다시 하기" />
         </Button>
       </div>

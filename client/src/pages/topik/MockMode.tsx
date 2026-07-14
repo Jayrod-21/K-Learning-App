@@ -65,6 +65,28 @@
  * unmount, exit, and submit); `Date.now()`/`Math.random()` run only in
  * effects/handlers, never in render; per-item time is stamped into a ref. The
  * network flow manages its own AbortController and aborts on unmount.
+ *
+ * F-183 reskin ("Seoul Day & Night") — MockMode is nested UNDER Topik.tsx's
+ * own `PageHubHeader` (it renders inside the shared `Tabs` panel, not as its
+ * own top-level `screen`), so it does not carry a second header — it adopts
+ * the SAME character-device treatment Topik.tsx's Study flow already does,
+ * matching its sibling exactly: the section-select / exam-chooser / start-
+ * page cards and the live exam item are `CityCard` signboards/hanji-paper
+ * surfaces (device #1) with a leading `DancheongRail` (device #2); a
+ * `SubwayProgress` (device #5) rides alongside the existing question
+ * palette + "N / M" readout so the exam run reads consistently with Study's
+ * per-item stepping; a finished exam gets a milestone `SealStamp` (device
+ * #7) ahead of the shared `TopikResults` screen (now itself a `CityCard`
+ * hero, mirroring the "milestone panel" treatment); the honest-empty past-
+ * papers list and "no previous attempts" panel carry `.km-giwa`/
+ * `.km-hangul-watermark` (devices #3/#6); the ambient `.km-rain-sheen`
+ * (device #8, Night-only per its own CSS gate) is NOT re-applied here —
+ * `Topik.tsx`'s outer `.screen.km-topik` wrapper already carries it for the
+ * whole Study/Mock tab panel, and doubling it on this inner root would only
+ * double the overlay opacity over the same shared subtree (fix-pass batch5).
+ * Every exam-flow behavior (timer, palette jump, Prev/Next, pick, submit,
+ * resume, scoring) is unchanged — this pass only reskins the surfaces
+ * around it.
  */
 import {
   useCallback,
@@ -81,12 +103,15 @@ import { AskAboutThisButton } from '../../components/AskAboutThisButton';
 import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
+import { CityCard, type CityCardTone } from '../../components/CityCard';
 import { Button } from '../../components/Button';
 import { Pill } from '../../components/Pill';
 import { Eyebrow } from '../../components/Eyebrow';
 import { Icon } from '../../components/Icon';
 import { ErrorCard } from '../../components/ErrorCard';
 import { MockBadge } from '../../components/MockBadge';
+import { SealStamp } from '../../components/SealStamp';
+import { SubwayProgress } from '../../components/SubwayProgress';
 import { TopikImageNote } from '../../components/TopikImageNote';
 import { TopikPassage } from '../../components/TopikPassage';
 import { cn } from '../../lib/cn';
@@ -181,6 +206,20 @@ const SECTIONS: readonly SectionMeta[] = [
   { id: 'listening', kr: '듣기', en: 'Listening', items: 50, mins: 60 },
   { id: 'writing', kr: '쓰기', en: 'Writing', items: 4, mins: 50, disabled: true },
 ];
+
+/**
+ * F-183 — the `CityCard` tone each section reads as, mirroring Topik's own
+ * blue/accent split (Study tally = blue, the live study item = accent).
+ * Fixed per section identity (not the user's accent pick) for Listening, so
+ * Reading/Listening stay visually distinct from each other regardless of
+ * which accent is active; the deferred Writing card gets the quiet `plain`
+ * edge (no glow) to read as inert alongside its disabled state.
+ */
+function sectionTone(id: SectionMeta['id']): CityCardTone {
+  if (id === 'listening') return 'blue';
+  if (id === 'writing') return 'plain';
+  return 'accent';
+}
 
 /** Allotted minutes per section — the countdown's starting seconds = mins×60. */
 const SECTION_MINUTES: Record<MockSection, number> = {
@@ -606,6 +645,13 @@ export function MockMode(): JSX.Element {
   }, [goToView]);
 
   return (
+    // F-183 fix-pass (batch5): NOT `km-rain-sheen` here — `Topik.tsx`'s outer
+    // `.screen.km-topik` wrapper (this component's parent, Topik.tsx:264/526)
+    // already applies device #8 to the whole Study/Mock tab panel, so
+    // MockMode adding its own copy on this inner root doubled the effective
+    // overlay opacity over the shared subtree for no visual gain. The
+    // `position: relative` stays — MockBadge's absolute positioning still
+    // relies on it.
     <div className="km-mock" style={{ position: 'relative' }}>
       {isMock && (phase === 'exam' || phase === 'results') ? (
         <MockBadge />
@@ -718,11 +764,24 @@ export function MockMode(): JSX.Element {
           ) : null}
 
           {phase === 'results' && result !== null ? (
-            <TopikResults
-              summary={buildMockResultsSummary(result, test?.items ?? [])}
-              onRestart={newMock}
-              restartLabel={<Bilingual en="New mock" kr="새 모의고사" />}
-            />
+            <>
+              {/* F-183 device #7 — a milestone 도장 stamp marking the
+                  finished exam, ahead of the shared results/grade screen
+                  (F-008), mirroring Study mode's "set complete" treatment in
+                  Topik.tsx exactly. */}
+              <div className="km-mock__milestone">
+                <SealStamp
+                  milestone
+                  tone="accent"
+                  label={<Bilingual en="Test complete" kr="시험 완료" compact />}
+                />
+              </div>
+              <TopikResults
+                summary={buildMockResultsSummary(result, test?.items ?? [])}
+                onRestart={newMock}
+                restartLabel={<Bilingual en="New mock" kr="새 모의고사" />}
+              />
+            </>
           ) : null}
         </>
       ) : null}
@@ -752,55 +811,65 @@ function SectionSelect({ onChoose }: SectionSelectProps): JSX.Element {
         {SECTIONS.map((s) => {
           const disabled = s.disabled === true;
           return (
-            <button
+            // F-183 device #1/#2 — each section is a CityCard signboard/
+            // hanji-paper surface with a leading DancheongRail, replacing the
+            // old flat `.km-mock__section` card. The disabled Writing card
+            // gets no rail (nothing to glow) — it reads as inert chrome.
+            <CityCard
               key={s.id}
-              type="button"
-              disabled={disabled}
-              aria-label={
-                disabled
-                  ? `${s.en} mock test, coming soon`
-                  : // F-079: the card OPENS the section's exam chooser (it no
-                    // longer starts a timed exam under the tap) — the name
-                    // says so, and the meta still sets expectations.
-                    `${s.en} mock exams, ${String(s.items)} items, about ${String(s.mins)} minutes`
-              }
+              tone={sectionTone(s.id)}
+              rail={!disabled}
               className={cn(
-                'km-mock__section focusring',
-                disabled && 'km-mock__section--disabled',
+                'km-mock__section-card',
+                disabled && 'km-mock__section-card--disabled',
               )}
-              onClick={() => {
-                // Writing is deferred (FU-NF-47); the card is disabled so this
-                // never fires for it, but the union-narrowing guard keeps the
-                // call type-safe (`onChoose` accepts only MockSection).
-                if (!disabled && s.id !== 'writing') onChoose(s.id);
-              }}
             >
-              {/* P3b: title + meta are chrome — the section NAME pair renders
-                  through <Bilingual>, and the items/minutes meta gets its own
-                  pair (문항/분 counters per the glossary). */}
-              <span className="km-mock__section-en">
-                <Bilingual en={s.en} kr={s.kr} />
-              </span>
-              <span className="km-mock__section-kr">
-                <Bilingual
-                  en={`${String(s.items)} items · ${String(s.mins)} min`}
-                  kr={`${String(s.items)}문항 · ${String(s.mins)}분`}
-                  compact
-                />
-              </span>
-              {disabled ? (
-                <span className="km-mock__section-soon">
-                  <Pill tone="default">
-                    <Bilingual en="Coming soon" kr="준비 중" compact />
-                  </Pill>
+              <button
+                type="button"
+                disabled={disabled}
+                aria-label={
+                  disabled
+                    ? `${s.en} mock test, coming soon`
+                    : // F-079: the card OPENS the section's exam chooser (it no
+                      // longer starts a timed exam under the tap) — the name
+                      // says so, and the meta still sets expectations.
+                      `${s.en} mock exams, ${String(s.items)} items, about ${String(s.mins)} minutes`
+                }
+                className="km-mock__section-btn focusring"
+                onClick={() => {
+                  // Writing is deferred (FU-NF-47); the card is disabled so this
+                  // never fires for it, but the union-narrowing guard keeps the
+                  // call type-safe (`onChoose` accepts only MockSection).
+                  if (!disabled && s.id !== 'writing') onChoose(s.id);
+                }}
+              >
+                {/* P3b: title + meta are chrome — the section NAME pair renders
+                    through <Bilingual>, and the items/minutes meta gets its own
+                    pair (문항/분 counters per the glossary). */}
+                <span className="km-mock__section-en">
+                  <Bilingual en={s.en} kr={s.kr} />
                 </span>
-              ) : (
-                <span className="km-mock__section-go">
-                  <Bilingual en="Choose" kr="선택" compact />{' '}
-                  <Icon name="arrow-right" size={13} />
+                <span className="km-mock__section-kr">
+                  <Bilingual
+                    en={`${String(s.items)} items · ${String(s.mins)} min`}
+                    kr={`${String(s.items)}문항 · ${String(s.mins)}분`}
+                    compact
+                  />
                 </span>
-              )}
-            </button>
+                {disabled ? (
+                  <span className="km-mock__section-soon">
+                    <Pill tone="default">
+                      <Bilingual en="Coming soon" kr="준비 중" compact />
+                    </Pill>
+                  </span>
+                ) : (
+                  <span className="km-mock__section-go">
+                    <Bilingual en="Choose" kr="선택" compact />{' '}
+                    <Icon name="arrow-right" size={13} />
+                  </span>
+                )}
+              </button>
+            </CityCard>
           );
         })}
       </div>
@@ -895,27 +964,31 @@ function ExamChooser({
         <Bilingual en={`${names.en} · mock exams`} kr={`${names.kr} · 모의고사`} />
       </Eyebrow>
 
-      <button
-        type="button"
-        className="km-mock__section km-mock__chooser-card focusring"
-        aria-label={`Recommended ${names.en} exam, server-picked`}
-        onClick={onPickServerExam}
-      >
-        <span className="km-mock__section-en">
-          <Bilingual en="Recommended exam" kr="추천 시험" />
-        </span>
-        <span className="km-mock__section-kr">
-          <Bilingual
-            en="A full past paper, picked for you"
-            kr="기출 시험지 한 세트를 골라 드려요"
-            compact
-          />
-        </span>
-        <span className="km-mock__section-go">
-          <Bilingual en="Choose" kr="선택" compact />{' '}
-          <Icon name="arrow-right" size={13} />
-        </span>
-      </button>
+      {/* F-183 device #1/#2 — the recommended entry is the chooser's own
+          hero tile: a feat CityCard signboard/hanji-paper surface. */}
+      <CityCard tone="accent" rail feat className="km-mock__chooser-card">
+        <button
+          type="button"
+          className="km-mock__section-btn focusring"
+          aria-label={`Recommended ${names.en} exam, server-picked`}
+          onClick={onPickServerExam}
+        >
+          <span className="km-mock__section-en">
+            <Bilingual en="Recommended exam" kr="추천 시험" />
+          </span>
+          <span className="km-mock__section-kr">
+            <Bilingual
+              en="A full past paper, picked for you"
+              kr="기출 시험지 한 세트를 골라 드려요"
+              compact
+            />
+          </span>
+          <span className="km-mock__section-go">
+            <Bilingual en="Choose" kr="선택" compact />{' '}
+            <Icon name="arrow-right" size={13} />
+          </span>
+        </button>
+      </CityCard>
 
       <Eyebrow className="km-mock__chooser-head">
         <Bilingual en="Past papers" kr="기출 시험지" />
@@ -944,8 +1017,15 @@ function ExamChooser({
 
       {testsNet === 'ready' && tests.length === 0 ? (
         // Honest empty state — a real absence (no papers indexed for this
-        // section yet), never fabricated.
-        <Card variant="flat" className="km-mock__pending" role="status">
+        // section yet), never fabricated. Devices #3/#6 (giwa texture +
+        // hangul watermark) mark it as genuinely empty rather than pending,
+        // matching Topik.tsx's own honest-empty treatment.
+        <Card
+          variant="flat"
+          className="km-mock__pending km-giwa km-hangul-watermark"
+          data-glyph="기출"
+          role="status"
+        >
           <p className="km-mock__pending-copy">
             <Bilingual
               en="No past papers are available for this section yet."
@@ -961,33 +1041,38 @@ function ExamChooser({
             const done = doneTestNumbers.has(test.testNumber);
             return (
               <li key={`${test.topikLevel}-${String(test.testNumber)}`}>
-                <button
-                  type="button"
-                  className="km-mock__section km-mock__chooser-card focusring"
-                  aria-label={`${test.topikLevel} test ${String(test.testNumber)}, ${String(test.itemCount)} items${done ? ', completed' : ''}`}
-                  onClick={() => {
-                    onPickExam(test.testNumber, test.topikLevel);
-                  }}
-                >
-                  <span className="km-mock__section-en">
-                    {done ? <Icon name="check" size={14} /> : null}{' '}
-                    <Bilingual
-                      en={`Test ${String(test.testNumber)}`}
-                      kr={`${String(test.testNumber)}회`}
-                    />
-                  </span>
-                  <span className="km-mock__section-kr">
-                    <Bilingual
-                      en={`${test.topikLevel} · ${String(test.itemCount)} items`}
-                      kr={`${test.topikLevel} · ${String(test.itemCount)}문항`}
-                      compact
-                    />
-                  </span>
-                  <span className="km-mock__section-go">
-                    <Bilingual en="Choose" kr="선택" compact />{' '}
-                    <Icon name="arrow-right" size={13} />
-                  </span>
-                </button>
+                {/* F-183 device #1/#2 — each past paper is its own CityCard
+                    tile (blue tone: past papers are the secondary picker,
+                    distinct from the accent-toned recommended hero above). */}
+                <CityCard tone="blue" rail className="km-mock__chooser-card">
+                  <button
+                    type="button"
+                    className="km-mock__section-btn focusring"
+                    aria-label={`${test.topikLevel} test ${String(test.testNumber)}, ${String(test.itemCount)} items${done ? ', completed' : ''}`}
+                    onClick={() => {
+                      onPickExam(test.testNumber, test.topikLevel);
+                    }}
+                  >
+                    <span className="km-mock__section-en">
+                      {done ? <Icon name="check" size={14} /> : null}{' '}
+                      <Bilingual
+                        en={`Test ${String(test.testNumber)}`}
+                        kr={`${String(test.testNumber)}회`}
+                      />
+                    </span>
+                    <span className="km-mock__section-kr">
+                      <Bilingual
+                        en={`${test.topikLevel} · ${String(test.itemCount)} items`}
+                        kr={`${test.topikLevel} · ${String(test.itemCount)}문항`}
+                        compact
+                      />
+                    </span>
+                    <span className="km-mock__section-go">
+                      <Bilingual en="Choose" kr="선택" compact />{' '}
+                      <Icon name="arrow-right" size={13} />
+                    </span>
+                  </button>
+                </CityCard>
               </li>
             );
           })}
@@ -1067,6 +1152,14 @@ function StartPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceTest, section, attemptsTick]);
 
+  // F-183: genuinely nothing-to-show on the previous-attempts panel — either
+  // the recommended path can't look anything up yet, or a specific paper's
+  // history resolved empty. Drives the honest-empty devices (#3/#6) on that
+  // card; never applied while a real fetch is loading/erroring/populated.
+  const attemptsEmpty =
+    sourceTest === undefined ||
+    (attemptsNet === 'ready' && priorAttempts.length === 0);
+
   return (
     <div className="km-mock__start">
       {/* F-024: back to this section's exam chooser. */}
@@ -1075,7 +1168,9 @@ function StartPage({
         label={`${names.en} exams`}
       />
 
-      <Card variant="flat" className="km-mock__start-meta">
+      {/* F-183 device #1/#2 — the exam's identity card is a CityCard
+          signboard/hanji-paper hero, mirroring Topik's own meta treatment. */}
+      <CityCard tone="accent" rail className="km-mock__start-meta">
         <Eyebrow>
           <Bilingual
             en={
@@ -1113,11 +1208,23 @@ function StartPage({
             />
           </p>
         ) : null}
-      </Card>
+      </CityCard>
 
       {/* F-104: previous attempts on THIS exam — wired when a specific paper
-          is known; an honest note otherwise (see the doc above). */}
-      <Card variant="flat" className="km-mock__pending" role="status">
+          is known; an honest note otherwise (see the doc above). F-183
+          device #1/#2: a blue-tone CityCard (secondary info, distinct from
+          the accent hero above); devices #3/#6 (giwa + watermark) mark it as
+          genuinely empty rather than pending, only when it truly is. */}
+      <CityCard
+        tone="blue"
+        rail
+        className={cn(
+          'km-mock__pending',
+          attemptsEmpty && 'km-giwa km-hangul-watermark',
+        )}
+        data-glyph={attemptsEmpty ? '기록' : undefined}
+        role="status"
+      >
         <Eyebrow>
           <Bilingual en="Previous attempts" kr="지난 응시 기록" />
         </Eyebrow>
@@ -1182,7 +1289,7 @@ function StartPage({
             })}
           </ul>
         ) : null}
-      </Card>
+      </CityCard>
 
       <div className="km-mock__start-row">
         <Button
@@ -1230,7 +1337,12 @@ function ResumeBanner({
         marginBottom: 16,
         padding: '12px 16px',
         borderRadius: 12,
-        border: '1px solid rgba(127, 127, 127, 0.25)',
+        // F-183 fix-pass (batch5): was a literal `rgba(127,127,127,0.25)` —
+        // DESIGN_SEOUL_DAY_NIGHT.md §8 bars hardcoded colors app-wide.
+        // `--line` is the shared hairline-divider token (index.css), already
+        // used for this exact "thin neutral border" role elsewhere in the
+        // app, and resolves correctly in both Day/Night themes.
+        border: '1px solid var(--line)',
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -1650,6 +1762,22 @@ function ExamRunner({
         />
       </div>
 
+      {/* F-183 device #5 — the signature subway-line progress metaphor
+          alongside the existing "N / M" readout, mirroring Study mode's
+          per-item stepping. The jump-grid `QuestionPalette` below keeps its
+          richer per-item answered/current state and free-jump navigation —
+          the subway line is a supplementary at-a-glance progress read, not a
+          replacement for it. */}
+      <div className="km-mock__subwaywrap">
+        <SubwayProgress
+          steps={total}
+          current={idx}
+          tone={sectionTone(test.section)}
+          label={`${sectionLabel} progress`}
+          valueText={`Item ${String(idx + 1)} of ${String(total)}`}
+        />
+      </div>
+
       <QuestionPalette
         items={items}
         currentIdx={idx}
@@ -1657,81 +1785,97 @@ function ExamRunner({
         onJump={goTo}
       />
 
-      <div className="km-mock__meta">
-        <Pill tone="gold">
-          {current.section} · L{String(current.level)}
-        </Pill>
-        <span className="km-topik__num">No. {String(current.number)}</span>
-      </div>
+      {/* F-183 device #1/#2 — the live exam item is the runner's hero
+          surface, mirroring Study mode's `TopikBody` CityCard treatment
+          exactly: a signboard/hanji-paper card with a leading DancheongRail
+          around the meta/prompt/passage/choices/nav/submit. */}
+      <CityCard rail tone={sectionTone(test.section)} className="km-mock__examcard">
+        <div className="km-mock__meta">
+          <Pill tone="gold">
+            {current.section} · L{String(current.level)}
+          </Pill>
+          <span className="km-topik__num">No. {String(current.number)}</span>
+        </div>
 
-      {imageSplit === null ? (
-        <p className="kr km-topik__prompt">{current.prompt}</p>
-      ) : (
-        <>
-          {imageSplit.body !== '' ? (
-            <p className="kr km-topik__prompt">{imageSplit.body}</p>
-          ) : null}
-          <TopikImageNote description={imageSplit.description} />
-        </>
-      )}
+        {imageSplit === null ? (
+          <p className="kr km-topik__prompt">{current.prompt}</p>
+        ) : (
+          <>
+            {imageSplit.body !== '' ? (
+              <p className="kr km-topik__prompt">{imageSplit.body}</p>
+            ) : null}
+            <TopikImageNote description={imageSplit.description} />
+          </>
+        )}
 
-      {/* Shared reading passage (B-008): question content the server keeps on
-          the answer-stripped wire — without it the item is unanswerable. */}
-      {current.passage ? <TopikPassage text={current.passage} /> : null}
+        {/* Shared reading passage (B-008): question content the server keeps on
+            the answer-stripped wire — without it the item is unanswerable. */}
+        {current.passage ? <TopikPassage text={current.passage} /> : null}
 
-      <ChoiceGroup
-        item={current}
-        picked={pickedHere}
-        onPick={(choice) => {
-          pick(currentId, choice);
-        }}
-      />
-
-      <div className="km-mock__nav">
-        <Button
-          variant="ghost"
-          disabled={idx === 0}
-          onClick={() => {
-            goTo(idx - 1);
+        <ChoiceGroup
+          item={current}
+          picked={pickedHere}
+          onPick={(choice) => {
+            pick(currentId, choice);
           }}
-        >
-          <Bilingual en="Prev" kr="이전" />
-        </Button>
-        <span className="km-topik__count">
-          <Bilingual
-            en={`${String(answeredCount)} / ${String(total)} answered`}
-            kr={`답변 ${String(answeredCount)} / ${String(total)}`}
-            compact
-          />
-        </span>
-        <Button
-          variant="ghost"
-          disabled={idx >= total - 1}
-          onClick={() => {
-            goTo(idx + 1);
-          }}
-          trailingIcon={<Icon name="arrow-right" size={14} />}
-        >
-          <Bilingual en="Next" kr="다음" />
-        </Button>
-      </div>
+        />
 
-      <div className="km-mock__submit-row">
-        <Button
-          variant="gold"
-          onClick={() => {
-            setConfirming(true);
-          }}
-        >
-          <Bilingual en="Submit test" kr="시험 제출" />
-        </Button>
-      </div>
+        <div className="km-mock__nav">
+          <Button
+            variant="ghost"
+            disabled={idx === 0}
+            onClick={() => {
+              goTo(idx - 1);
+            }}
+          >
+            <Bilingual en="Prev" kr="이전" />
+          </Button>
+          <span className="km-topik__count">
+            <Bilingual
+              en={`${String(answeredCount)} / ${String(total)} answered`}
+              kr={`답변 ${String(answeredCount)} / ${String(total)}`}
+              compact
+            />
+          </span>
+          <Button
+            variant="ghost"
+            disabled={idx >= total - 1}
+            onClick={() => {
+              goTo(idx + 1);
+            }}
+            trailingIcon={<Icon name="arrow-right" size={14} />}
+          >
+            <Bilingual en="Next" kr="다음" />
+          </Button>
+        </div>
+
+        <div className="km-mock__submit-row">
+          <Button
+            variant="gold"
+            onClick={() => {
+              setConfirming(true);
+            }}
+          >
+            <Bilingual en="Submit test" kr="시험 제출" />
+          </Button>
+        </div>
+      </CityCard>
 
       {confirming ? (
-        // Card doesn't forward refs, so the focus-trap container is this div,
-        // which also carries the alertdialog role + label (useModalA11y above).
+        // Card/CityCard don't forward refs, so the focus-trap container is
+        // this div, which also carries the alertdialog role + label
+        // (useModalA11y above). F-183 fix-pass (batch5): reskinned onto the
+        // Seoul kit's CityCard (tone matches the exam's own sectionTone, same
+        // as the exam card/SubwayProgress above) — this dialog is the one
+        // surface in the flow the earlier pass left on the flat `Card`. The
+        // alertdialog role/focus-trap/Esc/backdrop-free contract is
+        // unchanged; only the surface styling changes.
         <div ref={confirmRef} role="alertdialog" aria-label="Confirm submit">
-          <Card variant="flat" className="km-mock__confirm">
+          <CityCard
+            tone={sectionTone(test.section)}
+            rail
+            className="km-mock__confirm"
+          >
             <Eyebrow>
               <Bilingual en="Submit test?" kr="시험을 제출할까요?" />
             </Eyebrow>
@@ -1758,7 +1902,7 @@ function ExamRunner({
                 <Bilingual en="Submit" kr="제출" />
               </Button>
             </div>
-          </Card>
+          </CityCard>
         </div>
       ) : null}
     </div>
@@ -2027,7 +2171,11 @@ export function TopikResults({
 
   return (
     <div className="km-mock__results">
-      <Card variant="flat" className="km-mock__score">
+      {/* F-183 device #1/#2 — the score panel is a feat CityCard hero
+          (the milestone/completion surface), replacing the plain flat
+          Card, shared by both Mock's server-graded and Study's
+          client-tallied results screens. */}
+      <CityCard tone="accent" rail feat className="km-mock__score">
         <Eyebrow>{summary.band}</Eyebrow>
         <div className="km-mock__score-pct">
           {String(summary.percentage)}
@@ -2045,7 +2193,7 @@ export function TopikResults({
             }`}
           />
         </p>
-      </Card>
+      </CityCard>
 
       <Eyebrow className="km-mock__review-head">
         <Bilingual en="Review" kr="복습" />

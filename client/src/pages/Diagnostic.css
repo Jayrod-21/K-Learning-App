@@ -1,0 +1,32 @@
+/**
+ * Diagnostic.css — Seoul Day & Night reskin additions (F-128) co-located
+ * with Diagnostic.tsx. Base `.km-diagnostic` layout/typography stays in
+ * styles/index.css (a shared file, untouched — out of this pass's scope);
+ * this file adds only the new chrome the reskin introduced: the
+ * SubwayProgress wrapper spacing, a small nudge under the taking flow's new
+ * hero CityCard, and the accent-aware hover the plain answer-choice buttons
+ * never had (F-131). Fully tokenized — `var(--vermilion)` is the resolved,
+ * accent-picker-aware alias every other reskinned page's hover already uses
+ * (see Topik.css's `.km-topik__choice:hover`), never a hard-coded hex.
+ */
+
+/* F-128 device #5 — the per-item SubwayProgress wrapper, mirroring
+   Topik.css's `.km-topik__subwaywrap`. */
+.km-diagnostic__subwaywrap {
+  margin-bottom: 14px;
+}
+
+/* F-128 device #1/#2 — the taking flow's hero CityCard surface. Its own
+   padding replaces the section's implicit spacing, so nudge the block
+   rhythm slightly rather than let the footer crowd the card edge. */
+.km-diagnostic__card {
+  margin-bottom: 4px;
+}
+
+/* F-131 — accent-aware hover for the answer-choice buttons. These were
+   plain unthemed `<button>`s before this pass (no `:hover` rule existed in
+   styles/index.css); this is a pure addition, not an override, so it is
+   safe to add from a co-located file without touching the shared one. */
+.km-diagnostic .km-diagnostic__choice:hover:not(:disabled) {
+  border-color: var(--vermilion);
+}

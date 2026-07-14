@@ -38,6 +38,20 @@
  *   - All caption/word text renders as React children — XSS-safe. The server
  *     response MUST keep that contract (text, not HTML). `blobUrl` is built
  *     from the server id, never from free-form text.
+ *
+ * F-184 "Seoul Day & Night" reskin: Images was the LAST screen still on the
+ * bare `Topbar` — it now adopts the shared `PageHubHeader` (devices #4/#2,
+ * `components/PageHubHeader.tsx`), the same hub-header recipe every other
+ * reskinned page uses. Every image tile — the sample-capture rows, the
+ * recent-captures grid, the capture photo card, and the detected-word list —
+ * is now a `CityCard` (device #1) instead of the old flat bordered
+ * boxes; `tone="plain"` throughout, since a capture/word carries no skill
+ * color of its own (mirrors Uploads' and UploadViewer's identical choice).
+ * The "no words detected" empty state gets the `.km-giwa`/
+ * `.km-hangul-watermark` texture pairing (devices #3/#6) other reskinned
+ * empty states use. `.km-rain-sheen` (device #8) ambient-textures the page
+ * root; it's a Night-only no-op by its own CSS gate. Purely visual — none of
+ * the OCR/upload/banking data flow above changes.
  */
 import {
   useEffect,
@@ -48,12 +62,13 @@ import {
 } from 'react';
 import { Bilingual } from '../components/Bilingual';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { SealStamp } from '../components/SealStamp';
-import { Topbar } from '../components/Topbar';
 import { WordPopover, type WordPopoverData } from '../components/WordPopover';
 import { loadImagesMock } from '../data/mocks/images';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -63,6 +78,7 @@ import { fetchImage, fetchImages, uploadImage } from '../services/images';
 import { mineWord } from '../services/vocab';
 import { useToast } from '../components/useToast';
 import type { ImageCapture, OcrWord } from '../types/domain';
+import './Images.css';
 
 const EMPTY_SET: ReadonlySet<string> = new Set<string>();
 
@@ -227,24 +243,25 @@ export default function Images(): JSX.Element {
 
   return (
     <section
-      className="screen km-images"
-      style={{ position: 'relative' }}
+      className="screen km-images km-rain-sheen"
       aria-labelledby="km-images-title"
     >
       {result.isMock ? <MockBadge /> : null}
-      <Topbar
-        krTitle="이미지"
-        title="Images"
+      {/* F-184 devices #4/#2 — the shared hub-header recipe
+          (components/PageHubHeader.tsx) replaces the bare `Topbar`; Images
+          was the last screen still on the flat header. */}
+      <PageHubHeader
         titleId="km-images-title"
         // P3b — adopts nav.ts's trimmed pair (was "OCR · mine real-world
         // Korean").
         eyebrow={
           <Bilingual en={IMAGES_NAV.eyebrow} kr={IMAGES_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Images" kr="이미지" />}
       />
 
       {result.loading ? (
-        <Card className="km-images__skeleton" aria-busy="true">
+        <Card className="km-images__skeleton km-giwa" aria-busy="true">
           <Eyebrow>
             <Bilingual en="Loading captures" kr="캡처를 불러오는 중" />
           </Eyebrow>
@@ -252,7 +269,7 @@ export default function Images(): JSX.Element {
           <div className="km-images__skeleton-line" />
         </Card>
       ) : result.error && captures.length === 0 ? (
-        <Card className="km-images__error" role="alert">
+        <Card className="km-images__error km-giwa" role="alert">
           <Eyebrow>
             <Bilingual
               en="Captures unavailable"
@@ -433,20 +450,33 @@ function ListView({
           <ul className="km-images__samples">
             {captures.map((c) => (
               <li key={c.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onPick(c);
-                  }}
-                  className="km-images__sample focusring"
+                {/* F-184 device #1/#2 — each sample row is its own CityCard
+                    (neon signboard / hanji paper) with the leading-edge
+                    DancheongRail, replacing the old flat bordered row.
+                    `tone="plain"` — a sample capture carries no skill
+                    color. */}
+                <CityCard
+                  tone="plain"
+                  rail
+                  className="km-images__sample-card"
                 >
-                  <ThumbCapture cap={c} small />
-                  <div className="km-images__sample-meta">
-                    <div className="kr km-images__sample-kr">{c.name}</div>
-                    <div className="km-images__sample-en">{c.caption_en}</div>
-                  </div>
-                  <Icon name="chevron-right" size={14} />
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(c);
+                    }}
+                    className="km-images__sample focusring"
+                  >
+                    <ThumbCapture cap={c} small />
+                    <div className="km-images__sample-meta">
+                      <div className="kr km-images__sample-kr">{c.name}</div>
+                      <div className="km-images__sample-en">
+                        {c.caption_en}
+                      </div>
+                    </div>
+                    <Icon name="chevron-right" size={14} />
+                  </button>
+                </CityCard>
               </li>
             ))}
           </ul>
@@ -464,21 +494,28 @@ function ListView({
               if (!cap) return null;
               return (
                 <li key={id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onPick(cap);
-                    }}
-                    className="km-images__recent-card focusring"
-                  >
-                    <ThumbCapture cap={cap} />
-                    <div className="km-images__recent-meta">
-                      <div className="kr km-images__recent-kr">{cap.name}</div>
-                      <div className="km-images__recent-en">
-                        {cap.caption_en}
+                  {/* F-184 device #1 — a CityCard grid tile (no rail — a
+                      2-across grid reads best flush, matching Ttmik's
+                      identical landing-grid tile convention). */}
+                  <CityCard tone="plain" className="km-images__recent-tile">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onPick(cap);
+                      }}
+                      className="km-images__recent-card focusring"
+                    >
+                      <ThumbCapture cap={cap} />
+                      <div className="km-images__recent-meta">
+                        <div className="kr km-images__recent-kr">
+                          {cap.name}
+                        </div>
+                        <div className="km-images__recent-en">
+                          {cap.caption_en}
+                        </div>
                       </div>
-                    </div>
-                  </button>
+                    </button>
+                  </CityCard>
                 </li>
               );
             })}
@@ -591,7 +628,11 @@ function CaptureView({
         </Pill>
       </div>
 
-      <Card className="km-images__capture-card">
+      {/* F-184 device #1/#2 — the real photo sits on a CityCard with the
+          leading-edge DancheongRail, mirroring UploadViewer's identical
+          page-image treatment. `tone="plain"` — a capture carries no skill
+          color. */}
+      <CityCard tone="plain" rail className="km-images__capture-card">
         <div className="km-images__capture-frame">
           {cap.blobUrl ? (
             <img
@@ -631,7 +672,7 @@ function CaptureView({
           )}
         </div>
         <div className="km-images__capture-caption">
-          <div>
+          <div className="km-images__capture-caption-text">
             <div className="kr km-images__capture-caption-kr">
               {cap.caption_kr}
             </div>
@@ -641,14 +682,23 @@ function CaptureView({
           </div>
           <SealStamp char="譯" size="sm" />
         </div>
-      </Card>
+      </CityCard>
 
       <Eyebrow className="km-images__list-eyebrow">
         <Bilingual en="Detected words" kr="인식된 단어" />
       </Eyebrow>
-      <Card className="km-images__detected">
+      {/* F-184 device #1 — the detected-word list sits on a CityCard
+          signboard/hanji-paper panel instead of the old flat `Card`.
+          `tone="plain"` — the list carries no skill color of its own. */}
+      <CityCard tone="plain" className="km-images__detected">
         {cap.words.length === 0 ? (
-          <p className="km-images__detected-empty">
+          // F-184 devices #3/#6 — the giwa roof-tile texture + a faint
+          // hangul watermark dress the empty state, matching every other
+          // reskinned page's empty state.
+          <p
+            className="km-images__detected-empty km-giwa km-hangul-watermark"
+            data-glyph="글"
+          >
             <Bilingual
               en="No words detected in this image."
               kr="이 이미지에서 인식된 단어가 없어요."
@@ -719,7 +769,7 @@ function CaptureView({
             })}
           </ul>
         )}
-      </Card>
+      </CityCard>
 
       <div className="km-images__capture-cta">
         <button

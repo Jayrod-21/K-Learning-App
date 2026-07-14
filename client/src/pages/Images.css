@@ -1,0 +1,72 @@
+/*
+ * Images — page-scoped styles for the OCR-mining screen. Wave-2 "Seoul Day &
+ * Night" reskin (F-184) — Images was the last screen still on the flat
+ * `Topbar`; the shared hub-header recipe's own spacing lives in
+ * `components/PageHubHeader.css`, so nothing about that swap needs a rule
+ * here. What DOES live here:
+ *
+ *   1. CityCard padding overrides — the sample row / recent grid tile /
+ *      capture-photo card all wrap content that already carries its own
+ *      padding (the row's inner button, the photo frame), so `CityCard`'s
+ *      default 20px inset is zeroed with a compound selector — same idiom
+ *      as Uploads.css's `.km-uploads__card.km-citycard` override — which
+ *      wins on specificity regardless of CSS import order between this
+ *      file and CityCard.css.
+ *   2. Stripping the sample/recent rows' OWN pre-existing border+background
+ *      (styles/index.css) now that the CityCard wrapper supplies the
+ *      surface — otherwise the two surfaces double up.
+ *   3. F-129 mobile-safety: the detected-word grid row and the capture
+ *      caption text block need `min-width: 0` + `overflow-wrap: break-word`
+ *      — a flex/grid item's default min-width is its content's un-wrapped
+ *      size, so a long English gloss or caption can push the row wider than
+ *      the viewport on a narrow phone without this.
+ *
+ * Token-driven only (no hard-coded hex anywhere in this file) — colors come
+ * from styles/index.css's Day/Night/accent-aware custom properties, so both
+ * themes and every accent preset (F-131) come free.
+ */
+
+/* ── device #1 padding overrides ─────────────────────────────────────── */
+
+.km-images__sample-card.km-citycard {
+  padding: 0;
+}
+.km-images__recent-tile.km-citycard {
+  padding: 0;
+  overflow: hidden;
+}
+.km-images__capture-card.km-citycard {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Strip the pre-existing row/tile surface (border + background) now that
+ * the CityCard wrapper owns it — the inner button keeps its own layout
+ * (flex/gap/padding) from styles/index.css, just not a second surface. */
+.km-images__sample-card .km-images__sample {
+  border: none;
+  background: transparent;
+}
+.km-images__recent-tile .km-images__recent-card {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+}
+
+/* ── F-129 mobile — no horizontal overflow ───────────────────────────── */
+
+.km-images__detected-row {
+  min-width: 0;
+}
+.km-images__detected-word,
+.km-images__detected-en {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+.km-images__capture-caption {
+  min-width: 0;
+}
+.km-images__capture-caption-text {
+  min-width: 0;
+  overflow-wrap: break-word;
+}

@@ -38,6 +38,18 @@ export interface SubwayProgressProps {
   className?: string;
 }
 
+// Above this station count, a row of fixed 10px dots (no wrap, no
+// overflow-x) overflows a narrow mobile content box — e.g. a 50-item TOPIK
+// mock exam (`MockMode.tsx`) or a maxed-out Hanja study/draw session
+// (`STUDY_SESSION_LIMIT`, `Hanja.tsx`), both of which can exceed this count.
+// 24 dots is comfortably under budget on a ~330px phone content box (well
+// under the design doc's §8 "nothing clips off-screen-right" bar); past it
+// we fall back to the design system's own documented plain-bar fallback
+// ("Progress bars ... plain bars fill with the accent",
+// DESIGN_SEOUL_DAY_NIGHT.md §6) — the same accent fill line, just without
+// per-station dots that would no longer be individually legible anyway.
+const DOT_RENDER_CAP = 24;
+
 export function SubwayProgress({
   steps,
   current,
@@ -55,6 +67,7 @@ export function SubwayProgress({
   const total = Math.max(1, Math.floor(safeSteps));
   const active = Math.min(Math.max(0, Math.floor(safeCurrent)), total - 1);
   const fillPct = total > 1 ? (active / (total - 1)) * 100 : 100;
+  const condensed = total > DOT_RENDER_CAP;
 
   return (
     <div
@@ -68,17 +81,19 @@ export function SubwayProgress({
     >
       <div className="km-subway__track" aria-hidden="true">
         <div className="km-subway__fill" style={{ width: `${String(fillPct)}%` }} />
-        <div className="km-subway__stations">
-          {Array.from({ length: total }, (_, i) => {
-            const state = i < active ? 'done' : i === active ? 'current' : 'ahead';
-            return (
-              <span
-                key={i}
-                className={cn('km-subway__station', `km-subway__station--${state}`)}
-              />
-            );
-          })}
-        </div>
+        {!condensed && (
+          <div className="km-subway__stations">
+            {Array.from({ length: total }, (_, i) => {
+              const state = i < active ? 'done' : i === active ? 'current' : 'ahead';
+              return (
+                <span
+                  key={i}
+                  className={cn('km-subway__station', `km-subway__station--${state}`)}
+                />
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
