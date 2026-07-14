@@ -56,8 +56,8 @@ import { Button } from '../components/Button';
 import { CityCard } from '../components/CityCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { FilterSelect } from '../components/FilterSelect';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Sheet } from '../components/Sheet';
-import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
@@ -235,8 +235,15 @@ function MistakeSheetBody({
   const when = whenLabel(mistake.answeredAt);
 
   return (
-    <div className="km-mistakes__sheetBody">
-      <div className="km-mistakes__sheetHead">
+    // Batch-2 fix-pass (S2, `REVIEW_batch2-fidelity.md`) — the shared
+    // `.km-review__sheet*` classes (ReviewGrammar/ReviewVocab's own popups)
+    // now drive padding/head layout here too, instead of this page's
+    // previously hand-rolled duplicate rules. `.km-mistakes__sheetBody`/
+    // `__sheetHead` ride as EXTRA classes for the one genuinely
+    // Mistakes-specific need (the flex-column body layout) — see
+    // Mistakes.css.
+    <div className="km-review__sheetBody km-mistakes__sheetBody">
+      <div className="km-review__sheetHead km-mistakes__sheetHead">
         <div>
           <Eyebrow>
             {item.section} · {item.number}번 · {modeLabel(mistake.mode)}
@@ -422,13 +429,16 @@ export default function Mistakes(): JSX.Element {
       <div className="km-mistakes__nav">
         <BackButton to="/review" label={LIBRARY_NAV.label} />
       </div>
-      <Topbar
-        krTitle="틀린 문제"
-        title="Mistakes"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. This page was one of two Library pages that missed the
+          recipe entirely (`REVIEW_batch2-fidelity.md` B1). */}
+      <PageHubHeader
         titleId="km-mistakes-title"
         eyebrow={
           <Bilingual en={MISTAKES_NAV.eyebrow} kr={MISTAKES_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Mistakes" kr="틀린 문제" />}
       />
 
       {loading ? (

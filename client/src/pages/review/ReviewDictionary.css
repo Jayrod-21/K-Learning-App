@@ -15,26 +15,26 @@
   overflow-x: hidden;
 }
 
-/* ── F-128 device #4/#2 — skyline header + dancheong divider ─────────────
- * Same recipe as pages/Today.css / pages/Progress.css / ReviewVocab.css. */
-.km-dictionary__skyline {
-  margin: 0 0 12px;
-}
-
-.km-dictionary__title {
-  margin: 4px 0 0;
-}
-
-.km-dictionary__rail-divider {
-  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
-   * nearest positioned ancestor — give it one with real height. */
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
-}
+/* F-128 device #4/#2 — skyline header + dancheong divider: extracted into
+ * the shared `PageHubHeader` component (batch-2 fix-pass BLOCKER-2). See
+ * components/PageHubHeader.css for the (now single) copy of these rules. */
 
 /* F-149 — the visible caption above the search field (SearchBox itself has
  * no label slot). Matches FilterSelect's own label sizing/tone below it. */
 .km-dictionary__searchLabel {
   margin: 18px 0 6px;
+}
+
+/* S-3 (`REVIEW_batch2-vocab.md`) — this page's own loading-state rule,
+ * replacing the borrowed `.km-grammar__state` (styles/index.css). Identical
+ * styling — only the name changed, matching ReviewVocab's F-144 fix so no
+ * Library page's loading state says "grammar" in its classname. */
+.km-dictionary__state {
+  margin: 24px 0;
+  padding: 18px 20px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--paper-mute);
+  line-height: 1.5;
 }

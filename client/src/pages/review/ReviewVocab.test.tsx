@@ -263,6 +263,54 @@ describe('ReviewVocab — no leftover grammar UI (F-144)', () => {
       expect(screen.queryByText('Loading vocabulary…')).not.toBeInTheDocument();
     });
   });
+
+  // BLOCKER B-1 (`REVIEW_batch2-vocab.md`) — MyVocabLists' own "New list"
+  // card unconditionally offered a "Grammar · 문법" kind option, live on this
+  // page, before this fix-pass. Real negative test: open the ENTIRE create
+  // flow (not just the loading-state div checked above) and confirm no
+  // "Grammar"/"문법" text or radio option is reachable anywhere.
+  it('never offers "Grammar" as a creatable list kind — MyVocabLists is mounted vocab-only (kinds=["vocab"])', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('병원 어휘');
+
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+
+    // No kind picker at all — a single-kind mount skips it entirely, so
+    // there's nothing labelled "Grammar" to tap. (The page's LibrarySubnav
+    // legitimately shows a "Grammar" NAVIGATION link elsewhere — that's a
+    // different, correct affordance; this assertion is scoped to the
+    // create-list Sheet, which is the surface the ticket was actually
+    // about.)
+    expect(
+      within(dialog).queryByRole('radiogroup', { name: 'List kind' }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('문법')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^Grammar$/)).not.toBeInTheDocument();
+    // And no radio control of any kind exists anywhere on the page (the
+    // ONLY radiogroup in this component was the retired kind picker).
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+  });
+
+  // F-147 — the create-list flow is a Sheet popup (behind a trigger button),
+  // not an always-visible inline card.
+  it('renders the create-list flow as a Sheet popup, not an always-inline card', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('병원 어휘');
+
+    // Not on the page until the trigger is tapped.
+    expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'New list name' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+    expect(
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+    ).toBeInTheDocument();
+  });
 });
 
 describe('ReviewVocab — search field is labelled (F-149)', () => {
@@ -640,22 +688,39 @@ describe('ReviewVocab — add a corpus word to a list (F-048)', () => {
 });
 
 describe('ReviewVocab — My lists (the top-of-page surface)', () => {
+  /** Opens MyVocabLists' "New list" Sheet popup (F-147) and returns its
+   *  dialog element. */
+  async function openCreateSheet(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    return screen.findByRole('dialog', { name: 'New list' });
+  }
+
   it('creates a list and opens it to show entries', async () => {
     const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
 
-    // Create flow — default kind stays 'vocab'.
+    // Create flow — default (and only, on this vocab-only page) kind is
+    // 'vocab'.
+    const dialog = await openCreateSheet(user);
     await user.type(
-      screen.getByRole('textbox', { name: 'New list name' }),
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
       '새 단어장',
     );
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
         name_kr: '새 단어장',
         kind: 'vocab',
       });
+    });
+    // Success closes the popup.
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
     });
 
     // Open detail → entries load via getListDetail.
@@ -663,31 +728,33 @@ describe('ReviewVocab — My lists (the top-of-page surface)', () => {
     await waitFor(() => {
       expect(vocabSvc.getListDetail).toHaveBeenCalledWith(7, expect.anything());
     });
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('영향')).toBeInTheDocument();
+    const detailDialog = await screen.findByRole('dialog');
+    expect(within(detailDialog).getByText('영향')).toBeInTheDocument();
   });
 
-  it('includes the optional English label and kind in the create body', async () => {
+  it('includes the optional English label in the create body (kind always "vocab" — no kind picker on this page)', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('병원 어휘');
 
+    const dialog = await openCreateSheet(user);
     await user.type(
-      screen.getByRole('textbox', { name: 'New list name' }),
-      '한자 목록',
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+      '휴가 단어',
     );
     await user.type(
-      screen.getByRole('textbox', { name: 'English label' }),
-      'Hanja list',
+      within(dialog).getByRole('textbox', { name: 'English label' }),
+      'Vacation words',
     );
-    await user.click(screen.getByRole('radio', { name: '한자 · hanja' }));
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
 
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
-        name_kr: '한자 목록',
-        kind: 'hanja',
-        name_en: 'Hanja list',
+        name_kr: '휴가 단어',
+        kind: 'vocab',
+        name_en: 'Vacation words',
       });
     });
   });

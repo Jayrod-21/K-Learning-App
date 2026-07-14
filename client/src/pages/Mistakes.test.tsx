@@ -245,6 +245,21 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  // BLOCKER-2 (`REVIEW_batch2-fidelity.md` B1 / `REVIEW_batch2-grammar-
+  // mistakes.md` finding #2) — this page used to render a flat `Topbar`
+  // while every other Library page used the SkylineHeader + DancheongRail
+  // hub-header recipe. Batch-2 fix-pass: it now adopts the shared
+  // `PageHubHeader`.
+  it('F-128 BLOCKER-2 fix: renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    const { container } = renderPage();
+
+    expect(container.querySelector('.km-hubheader__skyline')).toBeInTheDocument();
+    expect(container.querySelector('.km-hubheader__rail-divider')).toBeInTheDocument();
+    const heading = screen.getByRole('heading', { level: 1, name: '틀린 문제 · Mistakes' });
+    expect(heading).toHaveAttribute('id', 'km-mistakes-title');
+  });
+
   // ── F-044: session selector ───────────────────────────────────────────
 
   it('F-044: the session selector groups the log into (day, mode) sessions with an option each', () => {
@@ -290,6 +305,31 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
       screen.queryByRole('button', { name: /^Question 8, / }),
     ).not.toBeInTheDocument();
     expect(screen.getByText('2 missed in this session')).toBeInTheDocument();
+  });
+
+  // S3 (`REVIEW_batch2-grammar-mistakes.md` finding #3) — the merge test
+  // above only proved DOM order; it never opened the SECOND tile and
+  // checked the Sheet showed that tile's own content. A tile→mistake
+  // mapping regressed onto an array index (e.g. a `.map((m, i) => ...)`
+  // closure, or a `session.mistakes[i]` lookup) would slip past every
+  // existing test — this one guards it directly.
+  it('F-154: opening the SECOND tile in a multi-tile group shows THAT tile\'s own content, not the first tile\'s', async () => {
+    hoisted.state = {
+      kind: 'data',
+      data: [MISTAKE, MISTAKE_SAME_SESSION, MISTAKE_MOCK],
+    };
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(questionTile(20));
+    const dialog = await screen.findByRole('dialog');
+    // MISTAKE_SAME_SESSION's own distinguishing prompt — not MISTAKE's.
+    expect(
+      within(dialog).getByText('빈칸에 알맞은 말을 고르십시오.'),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByText('알맞은 것을 고르십시오.'),
+    ).not.toBeInTheDocument();
   });
 
   it('F-044: a data reshape that orphans the selected session falls back to "All sessions", not an empty list', async () => {

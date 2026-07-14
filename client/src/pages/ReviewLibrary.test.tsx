@@ -61,6 +61,16 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(screen.getByText('단어 · 문법 · 기출 · 업로드')).toBeInTheDocument();
   });
 
+  // S1 (`REVIEW_batch2-fidelity.md`) — this page's root was missing
+  // `.km-rain-sheen` (device #8, Night ambient) while every sibling Library
+  // page carries it. Fixed in the batch-2 fix-pass.
+  it('carries the km-rain-sheen ambient overlay on the page root (S1)', () => {
+    renderLibrary();
+    expect(
+      document.querySelector('.screen.km-library.km-rain-sheen'),
+    ).toBeInTheDocument();
+  });
+
   it('F-042: exactly four sections, in order Vocabulary → Grammar → TOPIK exams → Uploads', () => {
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });

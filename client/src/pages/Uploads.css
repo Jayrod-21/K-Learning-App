@@ -2,34 +2,16 @@
  * Uploads — page-scoped styles for the U1 uploads list. Wave-2 "Seoul Day &
  * Night" reskin (F-128).
  *
- * What lives here: the `SkylineHeader`/`DancheongRail` hub-header recipe
- * spacing (matches Today.css's `.km-today__skyline`/`.km-today__rail-divider`
- * treatment so both hub-style headers agree) and the per-row `CityCard`
- * padding override (the row's own `.km-resources__list-row` already carries
- * 12px/18px padding — see styles/index.css — so the card itself renders flush
- * to avoid doubling up).
+ * What lives here: the per-row `CityCard` padding override (the row's own
+ * `.km-resources__list-row` already carries 12px/18px padding — see
+ * styles/index.css — so the card itself renders flush to avoid doubling
+ * up). The hub-header recipe spacing lives in the shared
+ * `components/PageHubHeader.css` now (batch-2 fix-pass BLOCKER-2).
  *
  * Token-driven only (no hard-coded hex anywhere in this file) — colors come
  * from styles/index.css's Day/Night/accent-aware custom properties, so both
  * themes and every accent preset (F-131) come free.
  */
-
-.km-uploads__skyline {
-  margin: 0 0 12px;
-}
-
-.km-uploads__title {
-  margin: 4px 0 14px;
-}
-
-/* Matches `.km-today__rail-divider` / `.km-progress__rail-divider` — the
- * rail is `position: absolute; inset: <edge> 0` against its nearest
- * positioned ancestor, so it needs one with real height. */
-.km-uploads__rail-divider {
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
-}
 
 .km-uploads__list {
   list-style: none;

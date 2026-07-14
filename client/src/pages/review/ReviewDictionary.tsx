@@ -19,10 +19,12 @@
  *
  * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
- * F-128 reskin ("Seoul Day & Night") — the same `SkylineHeader` +
- * `DancheongRail` hub-header recipe as Today/Progress/Uploads/ReviewVocab (a
- * real <h1> rides in the skyline's `title` slot, replacing the bare
- * `Topbar`).
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2, `components/PageHubHeader.tsx`, batch-2 fix-pass BLOCKER-2) instead
+ * of a bare `Topbar`. Its own loading-state div now renders through
+ * `.km-dictionary__state` (ReviewDictionary.css) rather than the borrowed
+ * `.km-grammar__state` (S-3, `REVIEW_batch2-vocab.md`) — same fix ReviewVocab
+ * already applied for F-144.
  *
  * F-150 — "All Words" must exclude GRAMMAR entries (verb/adjective endings,
  * particles) from the KRDICT browse/search: KRDICT tags those with
@@ -45,7 +47,6 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
-import { DancheongRail } from '../../components/DancheongRail';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Eyebrow } from '../../components/Eyebrow';
 import {
@@ -54,7 +55,7 @@ import {
 } from '../../components/FilterSelect';
 import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
-import { SkylineHeader } from '../../components/SkylineHeader';
+import { PageHubHeader } from '../../components/PageHubHeader';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
 import { DOMAIN_FILTERS, PAGE_SIZE } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
@@ -295,29 +296,13 @@ export default function ReviewDictionary(): JSX.Element {
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
 
-      {/* F-128 device #4 — same hub-header recipe as Today/Progress/Uploads/
-          ReviewVocab: the skyline strip carries the real <h1> in its `title`
-          slot instead of a bare `Topbar`. */}
-      <SkylineHeader
-        className="km-dictionary__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />
-            </Eyebrow>
-            <h1
-              id="km-review-dictionary-title"
-              className="kr-display km-dictionary__title"
-            >
-              <Bilingual en="All Words" kr="전체 단어" />
-            </h1>
-          </>
-        }
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx). */}
+      <PageHubHeader
+        titleId="km-review-dictionary-title"
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
+        heading={<Bilingual en="All Words" kr="전체 단어" />}
       />
-      {/* F-128 device #2 — the dancheong-rail divider under the header. */}
-      <div className="km-dictionary__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       <LibrarySubnav />
 
@@ -358,7 +343,7 @@ export default function ReviewDictionary(): JSX.Element {
           />
         ) : null}
         {loading && rowCount === 0 ? (
-          <div className="km-grammar__state" role="status">
+          <div className="km-dictionary__state" role="status">
             {browsing ? (
               <Bilingual en="Loading words…" kr="단어를 불러오는 중…" />
             ) : (

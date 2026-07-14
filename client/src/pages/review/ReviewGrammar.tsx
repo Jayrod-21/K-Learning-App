@@ -21,24 +21,43 @@
  *     (USER-SAVED grammar provenance — the F-053 twin — is the separate
  *     ticket F-107.)
  *
- * Mastery semantics (F-152 — "Bank/banked" copy retired, action renamed
- * "Mastered"; the underlying model/endpoints are untouched, F-063 already
- * reworked those):
+ * Mastery semantics (F-152 — batch-2 fix-pass rewrite, see
+ * `docs/redesign/REVIEW_batch2-grammar-mistakes.md`'s "F-152 deep dive" for
+ * the finding this addresses): the FIRST attempt at this ticket renamed the
+ * add-to-bank action straight to "Mastered"/"Already mastered", which fired
+ * the instant a pattern was banked — before any drilling ever happened —
+ * while the app already has a REAL mastery signal on the wire
+ * (`graduated_at` on `BankedGrammarRow`, `types/domain.ts`) that was simply
+ * discarded. This version keeps them as two honest, distinct states:
+ *   - Add-to-bank action: "Add" → "Added". Calls the SAME
+ *     `bankPattern`/`listBanked` endpoints as before (server contract
+ *     untouched) — this only means "filed into my bank," nothing more.
+ *   - "Mastered" (+ the milestone `SealStamp`, device #7): shown ONLY for a
+ *     pattern whose bank row has `graduated_at !== null` — i.e. actually
+ *     graduated via the LEARN Grammar screen's real drill/graduate flow
+ *     (F-063, `server/src/routes/grammar.ts`'s `/grammar/bank/:id/graduate`).
+ *     This page has no graduate action of its own; it only ever DISPLAYS the
+ *     real state `GET /grammar/bank` already carries.
  *   - Body built by `kgiuBankBody` (lib/grammarBank) — the single choke
  *     point that coerces messy corpus rows into a schema-valid body, so a
  *     data quirk can never turn the tap into a 400.
- *   - Optimistic flip; a 409 means "already mastered" → the post-condition
- *     holds, keep the flip. A real failure rewinds and surfaces fixed copy.
- *   - The mastered set loads from `GET /grammar/bank` so already-mastered
- *     rows render as "Mastered" (reconciles with the LEARN screen's bank).
+ *   - Optimistic flip on Add; a 409 means "already added" → the
+ *     post-condition holds, keep the flip (never promoted to "Mastered" —
+ *     a 409 carries no `graduated_at`, so faking graduation from it would be
+ *     exactly the dishonesty this rewrite exists to remove). A real failure
+ *     rewinds and surfaces fixed copy.
  *
- * F-128 reskin — each pattern is its own `CityCard` signboard/hanji-paper
- * row (device #1) with a `DancheongRail` leading edge (device #2, via the
- * card's `rail` prop) instead of one flat list `Card`; a mastered row's
- * action carries a milestone `SealStamp` (device #7 — "a mastered item" is
- * one of the doc's own named seal-stamp use cases). The page root gets the
- * ambient `.km-rain-sheen` (device #8, Night-only per its own CSS gate) and
- * the Uploads empty state carries `.km-giwa`/`.km-hangul-watermark`
+ * F-128 reskin — the shared `PageHubHeader` (devices #4/#2,
+ * `components/PageHubHeader.tsx`, batch-2 fix-pass BLOCKER-2) instead of a
+ * bare `Topbar` — this page and Mistakes were the two Library pages that
+ * missed the hub-header recipe entirely (`REVIEW_batch2-fidelity.md` B1).
+ * Each pattern is its own `CityCard` signboard/hanji-paper row (device #1)
+ * with a `DancheongRail` leading edge (device #2, via the card's `rail`
+ * prop) instead of one flat list `Card`; a graduated row's action carries a
+ * milestone `SealStamp` (device #7 — "a mastered item" is one of the doc's
+ * own named seal-stamp use cases). The page root gets the ambient
+ * `.km-rain-sheen` (device #8, Night-only per its own CSS gate) and the
+ * Uploads empty state carries `.km-giwa`/`.km-hangul-watermark`
  * (devices #3/#6), matching Progress's precedent.
  *
  * F-153 — the browse list (and each Uploads group) windows 15 rows at a
@@ -71,12 +90,12 @@ import { Eyebrow } from '../../components/Eyebrow';
 import { FilterSelect } from '../../components/FilterSelect';
 import { Icon } from '../../components/Icon';
 import { KgiuDetailBody } from '../../components/KgiuDetailBody';
+import { PageHubHeader } from '../../components/PageHubHeader';
 import { SealStamp } from '../../components/SealStamp';
 import { Sheet } from '../../components/Sheet';
 import { ShowMore } from '../../components/ShowMore';
 import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
 import { Tabs } from '../../components/Tabs';
-import { Topbar } from '../../components/Topbar';
 import { usePagination } from '../../hooks/usePagination';
 import {
   GRAMMAR_LEVEL_FILTERS,
@@ -107,7 +126,7 @@ function hasPattern(p: KgiuEntrySummary): boolean {
 }
 
 /** Fixed copy — ErrorCard's contract forbids echoing server message text. */
-const MASTERY_ERROR_COPY = "Couldn't mark that pattern mastered. Try again.";
+const ADD_ERROR_COPY = "Couldn't add that pattern. Try again.";
 
 /**
  * F-055 dropdown options — the shared level vocabulary minus its `'all'`
@@ -150,15 +169,23 @@ export default function ReviewGrammar(): JSX.Element {
   // previously tapped row must not paint over the currently open one.
   const detailIdRef = useRef<number | null>(null);
 
-  // Mastered pattern keys (server view + optimistic adds merged into one
-  // set). Loads best-effort: a failed fetch leaves every row markable — the
-  // server's idempotent bank path (409 → already mastered) keeps a
-  // duplicate tap harmless.
-  const [mastered, setMastered] = useState<ReadonlySet<string>>(
+  // F-152 (batch-2 rewrite) — two DISTINCT pattern-key sets, not one:
+  //   - `added`: every pattern in the user's bank (server view + optimistic
+  //     adds merged) — the add-to-bank action's own post-condition.
+  //   - `graduated`: the subset of `added` whose bank row carries a non-null
+  //     `graduated_at` — the app's REAL mastery signal (F-063). ONLY this
+  //     set may ever render the word "Mastered" or the milestone SealStamp.
+  // Both load best-effort: a failed fetch leaves every row addable — the
+  // server's idempotent bank path (409 → already added) keeps a duplicate
+  // tap harmless.
+  const [added, setAdded] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const [graduated, setGraduated] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
   const [pendingKey, setPendingKey] = useState<string | null>(null);
-  const [masteryError, setMasteryError] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -166,9 +193,16 @@ export default function ReviewGrammar(): JSX.Element {
       .listBanked()
       .then((res) => {
         if (!alive) return;
-        setMastered((prev) => {
+        setAdded((prev) => {
           const merged = new Set(prev);
           for (const e of res.entries) merged.add(e.pattern_key);
+          return merged;
+        });
+        setGraduated((prev) => {
+          const merged = new Set(prev);
+          for (const e of res.entries) {
+            if (e.graduated_at !== null) merged.add(e.pattern_key);
+          }
           return merged;
         });
       })
@@ -210,18 +244,21 @@ export default function ReviewGrammar(): JSX.Element {
   }, []);
 
   /**
-   * Mark a pattern mastered (F-152 — the action the LEARN Grammar list tab
-   * used to own, and used to call "Bank"). Optimistic: the chip flips
-   * immediately; a 409 (already mastered) keeps the flip — the
-   * post-condition holds; any other failure rewinds + surfaces fixed copy.
+   * Add a pattern to the bank (F-152 batch-2 rewrite — the action the LEARN
+   * Grammar list tab used to own, and used to call "Bank", then briefly
+   * "Mastered"). Optimistic: the "Added" chip flips immediately; a 409
+   * (already in the bank) keeps the flip — the post-condition holds; any
+   * other failure rewinds + surfaces fixed copy. This NEVER touches
+   * `graduated` — adding is not graduating, and a bare 409/200 response
+   * carries no `graduated_at` to honestly promote from.
    */
-  const markMastered = useCallback(
+  const addPattern = useCallback(
     async (row: KgiuEntrySummary): Promise<void> => {
       const key = grammarKey(row);
-      if (mastered.has(key)) return;
+      if (added.has(key)) return;
       setPendingKey(key);
-      setMasteryError(null);
-      setMastered((prev) => {
+      setAddError(null);
+      setAdded((prev) => {
         const next = new Set(prev);
         next.add(key);
         return next;
@@ -230,20 +267,20 @@ export default function ReviewGrammar(): JSX.Element {
         await grammarService.bankPattern(kgiuBankBody(row));
       } catch (err) {
         if (err instanceof ApiError && err.status === 409) {
-          // Already mastered — keep the optimistic flip.
+          // Already in the bank — keep the optimistic flip.
         } else {
-          setMastered((prev) => {
+          setAdded((prev) => {
             const next = new Set(prev);
             next.delete(key);
             return next;
           });
-          setMasteryError(MASTERY_ERROR_COPY);
+          setAddError(ADD_ERROR_COPY);
         }
       } finally {
         setPendingKey(null);
       }
     },
-    [mastered],
+    [added],
   );
 
   const openKey = openRow ? grammarKey(openRow) : null;
@@ -253,26 +290,30 @@ export default function ReviewGrammar(): JSX.Element {
       className="screen km-reference km-resources km-rain-sheen"
       aria-labelledby="km-review-grammar-title"
     >
-      <Topbar
-        krTitle="문법"
-        title="Grammar"
-        titleId="km-review-grammar-title"
-        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
-      />
-
       {/* F-024 — the section strip (Vocabulary/Dictionary links) is gone
           (F-054), so this nested sub-page's way back up to the library
-          index is an explicit, deterministic BackButton. */}
+          index is an explicit, deterministic BackButton. Sits ABOVE the
+          header, matching every other Library page's ordering — this page
+          used to place it below `Topbar` (`REVIEW_batch2-fidelity.md` N2). */}
       <BackButton
         to="/review"
         label={LIBRARY_NAV.label}
         className="km-review-grammar__back"
       />
 
-      {/* Mastery failures surface page-level (the action exists in BOTH
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. */}
+      <PageHubHeader
+        titleId="km-review-grammar-title"
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
+        heading={<Bilingual en="Grammar" kr="문법" />}
+      />
+
+      {/* Add-to-bank failures surface page-level (the action exists in BOTH
           views and in the detail Sheet), above the tabbed area so the
           re-keyed tabpanel never unmounts the message mid-read. */}
-      {masteryError ? <ErrorCard message={masteryError} /> : null}
+      {addError ? <ErrorCard message={addError} /> : null}
 
       {/* Browse/Uploads switch — the shared Tabs primitive (F-032), which
           delivers the full W3C APG tabs contract (roving tabindex, Arrow/
@@ -294,17 +335,19 @@ export default function ReviewGrammar(): JSX.Element {
         {(activeId) =>
           activeId === 'uploads' ? (
             <GrammarUploads
-              mastered={mastered}
+              added={added}
+              graduated={graduated}
               pendingKey={pendingKey}
               onOpen={openDetail}
-              onMastered={markMastered}
+              onAdd={addPattern}
             />
           ) : (
             <GrammarBrowse
-              mastered={mastered}
+              added={added}
+              graduated={graduated}
               pendingKey={pendingKey}
               onOpen={openDetail}
-              onMastered={markMastered}
+              onAdd={addPattern}
             />
           )
         }
@@ -315,10 +358,11 @@ export default function ReviewGrammar(): JSX.Element {
         detail={detail}
         loading={detailLoading}
         error={detailError}
-        mastered={openKey !== null && mastered.has(openKey)}
+        added={openKey !== null && added.has(openKey)}
+        graduated={openKey !== null && graduated.has(openKey)}
         pending={openKey !== null && pendingKey === openKey}
-        onMastered={() => {
-          if (openRow) void markMastered(openRow);
+        onAdd={() => {
+          if (openRow) void addPattern(openRow);
         }}
         onRetry={() => {
           if (openRow) void openDetail(openRow);
@@ -330,15 +374,19 @@ export default function ReviewGrammar(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Shared row + mastery-action props (Browse and Uploads render the
-// same row anatomy against the page-level mastery/detail state)
+// Shared row + add/mastery-action props (Browse and Uploads render the
+// same row anatomy against the page-level added/graduated/detail state)
 // ─────────────────────────────────────────────────────────────
 
 interface RowActionProps {
-  mastered: ReadonlySet<string>;
+  /** Every pattern in the user's bank (add-to-bank post-condition). */
+  added: ReadonlySet<string>;
+  /** The subset of `added` that has ACTUALLY graduated (`graduated_at`) —
+   * the only set that may ever render "Mastered". */
+  graduated: ReadonlySet<string>;
   pendingKey: string | null;
   onOpen: (row: KgiuEntrySummary) => Promise<void>;
-  onMastered: (row: KgiuEntrySummary) => Promise<void>;
+  onAdd: (row: KgiuEntrySummary) => Promise<void>;
 }
 
 interface PatternRowProps extends RowActionProps {
@@ -348,25 +396,32 @@ interface PatternRowProps extends RowActionProps {
 /**
  * F-128 device #1/#2 — each pattern is its own `CityCard` signboard/paper
  * row with a leading-edge `DancheongRail` (the card's `rail` prop). Tone
- * reads the row's own mastery state (F-152): `mint` — the app's
- * success/correct semantic (jade Day / mint Night) — for a mastered
- * pattern, `plain` (quiet neutral edge) otherwise, so the row itself
- * telegraphs mastery at a glance, not just its action button.
+ * reads the row's REAL mastery state (F-152 rewrite): `mint` — the app's
+ * success/correct semantic (jade Day / mint Night) — ONLY for a genuinely
+ * graduated pattern, `plain` (quiet neutral edge) otherwise (including a
+ * merely-added, not-yet-graduated pattern) — so the row itself telegraphs
+ * REAL mastery at a glance, never a false one.
  */
 function PatternRow({
   row,
-  mastered,
+  added,
+  graduated,
   pendingKey,
   onOpen,
-  onMastered,
+  onAdd,
 }: PatternRowProps): JSX.Element {
   const key = grammarKey(row);
-  const isMastered = mastered.has(key);
+  const isAdded = added.has(key);
+  const isGraduated = graduated.has(key);
   const pending = pendingKey === key;
   return (
-    <li className="km-review-grammar__rowItem">
+    // No className here (batch-2 fix-pass NIT): the retired
+    // `.km-review-grammar__rowItem` had no matching CSS rule — the parent
+    // `<ul>` already resets list styling and `.km-review-grammar__row`'s own
+    // flex `gap` handles spacing, so the `<li>` needs no styling hook.
+    <li>
       <CityCard
-        tone={isMastered ? 'mint' : 'plain'}
+        tone={isGraduated ? 'mint' : 'plain'}
         rail
         className="km-review-grammar__row"
       >
@@ -387,33 +442,39 @@ function PatternRow({
           </span>
         </button>
         <Button
-          variant={isMastered ? 'ghost' : 'gold'}
+          variant={isAdded ? 'ghost' : 'gold'}
           size="sm"
           className="km-review-grammar__row-action"
           onClick={() => {
-            void onMastered(row);
+            void onAdd(row);
           }}
-          disabled={isMastered || pending}
-          aria-pressed={isMastered}
+          disabled={isAdded || pending}
+          aria-pressed={isAdded}
           aria-label={
-            isMastered ? 'Already mastered' : `Mark ${row.pattern} mastered`
+            isGraduated
+              ? 'Already mastered'
+              : isAdded
+                ? 'Added'
+                : `Add ${row.pattern}`
           }
         >
-          {isMastered ? (
+          {isGraduated ? (
             // F-128 device #7 — the doc names "a mastered item" as one of
             // the seal stamp's own milestone use cases; SealStamp's own
             // `label` slot carries the caption (real content, badge stays
-            // aria-hidden).
+            // aria-hidden). ONLY rendered for a REAL graduated pattern.
             <SealStamp
               milestone
               size="sm"
               tone="mint"
               label={<Bilingual en="Mastered" kr="숙달" compact />}
             />
+          ) : isAdded ? (
+            <Bilingual en="Added" kr="추가됨" compact />
           ) : pending ? (
-            <Bilingual en="Marking…" kr="표시하는 중…" compact />
+            <Bilingual en="Adding…" kr="추가하는 중…" compact />
           ) : (
-            <Bilingual en="Mark mastered" kr="숙달로 표시" compact />
+            <Bilingual en="Add" kr="추가" compact />
           )}
         </Button>
       </CityCard>
@@ -459,10 +520,11 @@ function PatternList({
 // ─────────────────────────────────────────────────────────────
 
 function GrammarBrowse({
-  mastered,
+  added,
+  graduated,
   pendingKey,
   onOpen,
-  onMastered,
+  onAdd,
 }: RowActionProps): JSX.Element {
   const [rows, setRows] = useState<KgiuEntrySummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -564,10 +626,11 @@ function GrammarBrowse({
         <PatternList
           key={`${level}:${source}`}
           rows={rows}
-          mastered={mastered}
+          added={added}
+          graduated={graduated}
           pendingKey={pendingKey}
           onOpen={onOpen}
-          onMastered={onMastered}
+          onAdd={onAdd}
         />
       )}
     </div>
@@ -587,10 +650,11 @@ interface UploadGrammarGroup {
 }
 
 function GrammarUploads({
-  mastered,
+  added,
+  graduated,
   pendingKey,
   onOpen,
-  onMastered,
+  onAdd,
 }: RowActionProps): JSX.Element {
   const [groups, setGroups] = useState<UploadGrammarGroup[]>([]);
   const [loading, setLoading] = useState(true);
@@ -692,10 +756,11 @@ function GrammarUploads({
             </h2>
             <PatternList
               rows={group.rows}
-              mastered={mastered}
+              added={added}
+              graduated={graduated}
               pendingKey={pendingKey}
               onOpen={onOpen}
-              onMastered={onMastered}
+              onAdd={onAdd}
             />
           </section>
         ))
@@ -710,9 +775,14 @@ interface GrammarDetailSheetProps {
   detail: KgiuEntryDetail | null;
   loading: boolean;
   error: string | null;
-  mastered: boolean;
+  /** In the user's bank (add-to-bank post-condition — not necessarily
+   * mastered). */
+  added: boolean;
+  /** ACTUALLY graduated (`graduated_at !== null`) — the only state that may
+   * render "Mastered"/the milestone SealStamp. */
+  graduated: boolean;
   pending: boolean;
-  onMastered: () => void;
+  onAdd: () => void;
   onRetry: () => void;
   onClose: () => void;
 }
@@ -720,18 +790,22 @@ interface GrammarDetailSheetProps {
 /**
  * Pattern-detail Sheet (F-004) — the shared `KgiuDetailBody` detail surface
  * (explanation, formation rules, examples, dialogues, unit from
- * `GET /grammar/kgiu/:id` — F-018), plus the F-152 Mastered action this page
- * owns now that it is the single browse (D3). All strings render through
- * React text children — a hostile corpus row cannot escape into the DOM.
+ * `GET /grammar/kgiu/:id` — F-018), plus the F-152 (batch-2 rewrite) Add
+ * action this page owns now that it is the single browse (D3). "Mastered" +
+ * the milestone SealStamp render ONLY when `graduated` is true — an added
+ * (banked) but not-yet-graduated pattern shows the honest "Added" state, not
+ * a false achievement. All strings render through React text children — a
+ * hostile corpus row cannot escape into the DOM.
  */
 function GrammarDetailSheet({
   row,
   detail,
   loading,
   error,
-  mastered,
+  added,
+  graduated,
   pending,
-  onMastered,
+  onAdd,
   onRetry,
   onClose,
 }: GrammarDetailSheetProps): JSX.Element {
@@ -763,17 +837,19 @@ function GrammarDetailSheet({
 
         <div className="km-review__sheetActions">
           <Button
-            variant={mastered ? 'ghost' : 'gold'}
+            variant={added ? 'ghost' : 'gold'}
             size="md"
-            onClick={onMastered}
-            disabled={mastered || pending || row === null}
-            aria-pressed={mastered}
-            leadingIcon={mastered ? undefined : <Icon name="plus" size={14} />}
+            onClick={onAdd}
+            disabled={added || pending || row === null}
+            aria-pressed={added}
+            leadingIcon={added ? undefined : <Icon name="plus" size={14} />}
           >
-            {mastered ? (
+            {graduated ? (
               // F-128 device #9 — the Sheet is modal (one open at a time), so
               // this is the "sparing jewel" spot for the mother-of-pearl
-              // sheen, not a per-row repeat.
+              // sheen, not a per-row repeat. ONLY rendered for a REAL
+              // graduated pattern (F-152 rewrite) — never for a merely-added
+              // one.
               <SealStamp
                 milestone
                 size="sm"
@@ -781,10 +857,12 @@ function GrammarDetailSheet({
                 label={<Bilingual en="Already mastered" kr="이미 숙달됨" />}
                 className="km-najeon"
               />
+            ) : added ? (
+              <Bilingual en="Added" kr="추가됨" />
             ) : pending ? (
-              <Bilingual en="Marking mastered…" kr="숙달로 표시하는 중…" />
+              <Bilingual en="Adding…" kr="추가하는 중…" />
             ) : (
-              <Bilingual en="Mark mastered" kr="숙달로 표시" />
+              <Bilingual en="Add" kr="추가" />
             )}
           </Button>
         </div>

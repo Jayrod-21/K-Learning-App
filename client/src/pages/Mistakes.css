@@ -101,17 +101,17 @@
   transform: scale(0.94);
 }
 
-/* ── F-154 Sheet popup body ──────────────────────────────────────────── */
+/* ── F-154 Sheet popup body ──────────────────────────────────────────────
+ * Batch-2 fix-pass (S2): the shared `.km-review__sheetBody`/`__sheetHead`
+ * (styles/index.css, also used by ReviewGrammar/ReviewVocab's own popups)
+ * now own padding + head layout — this page's classes ride ALONGSIDE them as
+ * an extra class for the one genuinely Mistakes-specific need: the body's
+ * flex-column stacking (the shared rule is padding-only, no direction/gap).
+ * `.km-mistakes__sheetHead` no longer needs its own rule — it was an exact
+ * duplicate of `.km-review__sheetHead`. */
 .km-mistakes__sheetBody {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-
-.km-mistakes__sheetHead {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 12px;
 }
 

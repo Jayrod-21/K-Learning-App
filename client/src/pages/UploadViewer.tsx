@@ -95,12 +95,14 @@
  * mirrors `pages/Uploads.tsx`'s pattern. The per-page `<img>` itself needs no
  * such guard (see above — nothing to leak once the DOM node is gone).
  *
- * F-128 "Seoul Day & Night" reskin: the header adopts the same
- * `SkylineHeader` + `DancheongRail` hub-header recipe as Today/Progress/
- * Uploads (devices #4/#2) instead of a bare `Topbar`, and the page-image box
- * is wrapped in a `CityCard` (device #1, `tone="plain"` + `rail`) — the
- * "PDF signboard/paper" surface from the design mock. Purely visual; none
- * of the load/zoom/rotate/reorder logic above changes.
+ * F-128 "Seoul Day & Night" reskin: the header adopts the shared
+ * `PageHubHeader` (devices #4/#2, `components/PageHubHeader.tsx`, batch-2
+ * fix-pass BLOCKER-2) instead of a bare `Topbar`, and the page-image box is
+ * wrapped in a `CityCard` (device #1, `tone="plain"` + `rail`) — the "PDF
+ * signboard/paper" surface from the design mock. The root also carries
+ * `.km-rain-sheen` (device #8, Night ambient) — the one thing this page was
+ * missing (`REVIEW_batch2-fidelity.md` S1). Purely visual; none of the
+ * load/zoom/rotate/reorder logic above changes.
  *
  * F-155 mobile swipe (paired with F-130): the toolbar's Prev/Next buttons
  * were the ONLY way to turn a page — touch swipe never worked because
@@ -147,11 +149,9 @@ import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { CityCard } from '../components/CityCard';
-import { DancheongRail } from '../components/DancheongRail';
 import { ErrorCard } from '../components/ErrorCard';
-import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
-import { SkylineHeader } from '../components/SkylineHeader';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
 import { ApiError } from '../services/api';
@@ -759,37 +759,20 @@ export default function UploadViewer(): JSX.Element {
 
   return (
     <section
-      className="screen km-upload-viewer"
+      className="screen km-upload-viewer km-rain-sheen"
       aria-labelledby="km-upload-viewer-title"
     >
       {/* F-024 — no single canonical parent (Uploads list OR the reader's
           scan deep-link), so history-back with a guarded /uploads fallback. */}
       <BackButton fallbackTo="/uploads" />
 
-      {/* F-128 device #4 — same hub-header recipe as Today/Progress/Uploads:
-          the skyline strip carries the real <h1> in its `title` slot instead
-          of a bare `Topbar`. */}
-      <SkylineHeader
-        className="km-upload-viewer__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en="View-only" kr="보기 전용" />
-            </Eyebrow>
-            <h1
-              id="km-upload-viewer-title"
-              className="kr-display km-upload-viewer__title"
-            >
-              {title}
-            </h1>
-          </>
-        }
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx). */}
+      <PageHubHeader
+        titleId="km-upload-viewer-title"
+        eyebrow={<Bilingual en="View-only" kr="보기 전용" />}
+        heading={title}
       />
-      {/* F-128 device #2 — the dancheong-rail divider under the header,
-          matching the Today/Progress/Uploads hub-header recipe. */}
-      <div className="km-upload-viewer__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       {metaState === 'loading' ? (
         <div className="km-grammar__state" role="status">

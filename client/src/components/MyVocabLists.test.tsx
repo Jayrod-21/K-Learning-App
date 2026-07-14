@@ -109,14 +109,44 @@ afterEach(() => {
 });
 
 describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
-  it('creates a list from the Korean name alone (kind defaults, name_en omitted)', async () => {
+  /** Opens the "New list" Sheet popup (F-147) and returns its dialog. */
+  async function openCreateSheet(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    return screen.findByRole('dialog', { name: 'New list' });
+  }
+
+  it('F-147: the create form is a Sheet popup, not an always-inline card', async () => {
     const user = userEvent.setup();
     renderLists();
     await screen.findByText('병원 어휘');
 
-    const nameInput = screen.getByRole('textbox', { name: 'New list name' });
-    await user.type(nameInput, '새 단어장');
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    // Not on the page until the trigger is tapped.
+    expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('textbox', { name: 'New list name' }),
+    ).not.toBeInTheDocument();
+
+    const dialog = await openCreateSheet(user);
+    expect(
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+    ).toBeInTheDocument();
+  });
+
+  it('creates a list from the Korean name alone (kind defaults, name_en omitted), then closes the popup and refreshes', async () => {
+    const user = userEvent.setup();
+    renderLists();
+    await screen.findByText('병원 어휘');
+
+    const dialog = await openCreateSheet(user);
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+      '새 단어장',
+    );
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
 
     // Exact body: name_en must be ABSENT (not null/empty), kind defaulted.
     await waitFor(() => {
@@ -125,34 +155,69 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
         kind: 'vocab',
       });
     });
-    // Success clears the form and refreshes the rows.
+    // Success closes the popup (not just clears the form — F-147's whole
+    // point is that the create flow is a transient popup) and refreshes the
+    // rows behind it.
     await waitFor(() => {
-      expect(nameInput).toHaveValue('');
+      expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
     });
     expect(vocabSvc.listLists).toHaveBeenCalledTimes(2);
   });
 
-  it('sends the optional English label and the chosen kind in the create body', async () => {
+  it('sends the optional English label and the chosen kind in the create body (default kinds — the full picker is available)', async () => {
     const user = userEvent.setup();
     renderLists();
     await screen.findByText('병원 어휘');
 
+    const dialog = await openCreateSheet(user);
     await user.type(
-      screen.getByRole('textbox', { name: 'New list name' }),
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
       '문법 목록',
     );
     await user.type(
-      screen.getByRole('textbox', { name: 'English label' }),
+      within(dialog).getByRole('textbox', { name: 'English label' }),
       'Grammar list',
     );
-    await user.click(screen.getByRole('radio', { name: '문법 · grammar' }));
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    await user.click(within(dialog).getByRole('radio', { name: '문법 · grammar' }));
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
 
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
         name_kr: '문법 목록',
         kind: 'grammar',
         name_en: 'Grammar list',
+      });
+    });
+  });
+
+  it('a mount narrowed to kinds=["vocab"] skips the kind picker entirely (F-144)', async () => {
+    const user = userEvent.setup();
+    render(
+      <ToastProvider>
+        <MyVocabLists kinds={['vocab']} />
+      </ToastProvider>,
+    );
+    await screen.findByText('병원 어휘');
+
+    const dialog = await openCreateSheet(user);
+    expect(
+      within(dialog).queryByRole('radiogroup', { name: 'List kind' }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
+
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+      '단어 목록',
+    );
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
+    await waitFor(() => {
+      expect(vocabSvc.createList).toHaveBeenCalledWith({
+        name_kr: '단어 목록',
+        kind: 'vocab',
       });
     });
   });

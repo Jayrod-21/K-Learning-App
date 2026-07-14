@@ -6,13 +6,13 @@
  * per render from zoom × rotation × measured container width, so they can't
  * live in a static sheet.
  *
- * F-128 "Seoul Day & Night" reskin (see the component's module header):
- * `.km-upload-viewer__skyline`/`.km-upload-viewer__rail-divider` match the
- * Today/Progress/Uploads hub-header recipe; `.km-upload-viewer__card` is
- * `CityCard`'s own surface (no padding override needed — unlike Uploads'
- * list rows, nothing inside already carries its own edge padding, so the
- * card's default 20px inset IS the page's margin, matching the design
- * mock's `.pdf` card). Token-driven only — no hard-coded hex.
+ * F-128 "Seoul Day & Night" reskin (see the component's module header): the
+ * hub-header recipe lives in the shared `components/PageHubHeader.css` now
+ * (batch-2 fix-pass BLOCKER-2); `.km-upload-viewer__card` is `CityCard`'s
+ * own surface (no padding override needed — unlike Uploads' list rows,
+ * nothing inside already carries its own edge padding, so the card's
+ * default 20px inset IS the page's margin, matching the design mock's
+ * `.pdf` card). Token-driven only — no hard-coded hex.
  *
  * F-155 mobile swipe: `.km-upload-viewer__pageDrag` is the live drag-offset
  * layer (component sets its `transform: translateX(...)` inline per-frame);
@@ -20,24 +20,6 @@
  * override, mirroring `components/SwipeCarousel.css`'s identical pattern
  * for its track.
  */
-
-.km-upload-viewer__skyline {
-  margin: 0 0 12px;
-}
-
-.km-upload-viewer__title {
-  margin: 4px 0 14px;
-}
-
-/* Matches `.km-today__rail-divider` / `.km-progress__rail-divider` /
- * `.km-uploads__rail-divider` — the rail is `position: absolute; inset:
- * <edge> 0` against its nearest positioned ancestor, so it needs one with
- * real height. */
-.km-upload-viewer__rail-divider {
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
-}
 
 .km-upload-viewer__toolbar {
   display: flex;

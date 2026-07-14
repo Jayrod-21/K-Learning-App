@@ -27,10 +27,10 @@
  * `user_id` (IDOR-safe — routes/uploads.ts). Server error prose is never
  * echoed — `errorMessageFor` maps to fixed copy.
  *
- * F-128 "Seoul Day & Night" reskin: the header adopts the same
- * `SkylineHeader` + `DancheongRail` recipe as the Today/Progress hubs
- * (device #4 skyline, device #2 rail divider) instead of a bare `Topbar`,
- * each row is a `CityCard` (device #1, `tone="plain"` + `rail`) rather than
+ * F-128 "Seoul Day & Night" reskin: the header adopts the shared
+ * `PageHubHeader` (devices #4/#2, `components/PageHubHeader.tsx`, batch-2
+ * fix-pass BLOCKER-2) instead of a bare `Topbar`, each row is a `CityCard`
+ * (device #1, `tone="plain"` + `rail`) rather than
  * a flat bordered list, and the empty state gets the `.km-giwa`/
  * `.km-hangul-watermark` texture pairing (devices #3/#6) other reskinned
  * screens use. `.km-rain-sheen` (device #8) ambient-textures the page root;
@@ -43,12 +43,10 @@ import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { CityCard } from '../components/CityCard';
-import { DancheongRail } from '../components/DancheongRail';
 import { ErrorCard } from '../components/ErrorCard';
-import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill, type PillTone } from '../components/Pill';
-import { SkylineHeader } from '../components/SkylineHeader';
 import { UploadTypeModal } from '../components/UploadTypeModal';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -186,27 +184,13 @@ export default function Uploads(): JSX.Element {
           no matter how the user arrived (reader flow, deep link, refresh). */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
 
-      {/* F-128 device #4 — same hub-header recipe as Today/Progress: the
-          skyline strip carries the real <h1> in its `title` slot instead of
-          a bare `Topbar`. */}
-      <SkylineHeader
-        className="km-uploads__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en={UPLOADS_NAV.eyebrow} kr={UPLOADS_NAV.krEyebrow} />
-            </Eyebrow>
-            <h1 id="km-uploads-title" className="kr-display km-uploads__title">
-              <Bilingual en="Uploads" kr="업로드" />
-            </h1>
-          </>
-        }
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx). */}
+      <PageHubHeader
+        titleId="km-uploads-title"
+        eyebrow={<Bilingual en={UPLOADS_NAV.eyebrow} kr={UPLOADS_NAV.krEyebrow} />}
+        heading={<Bilingual en="Uploads" kr="업로드" />}
       />
-      {/* F-128 device #2 — the dancheong-rail divider under the header,
-          matching the Today/Progress hub-header recipe. */}
-      <div className="km-uploads__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       <Button
         variant="gold"

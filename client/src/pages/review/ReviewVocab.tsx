@@ -22,32 +22,37 @@
  *
  * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
- * F-128 reskin ("Seoul Day & Night") — the same `SkylineHeader` +
- * `DancheongRail` hub-header recipe as Today/Progress/Uploads (a real <h1>
- * rides in the skyline's `title` slot, replacing the bare `Topbar`), and My
- * Lists is now a `CollapsibleTile` signboard (F-146, device #1/#2).
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2, `components/PageHubHeader.tsx`, batch-2 fix-pass BLOCKER-2) instead
+ * of a bare `Topbar`, and My Lists is now a `CollapsibleTile` signboard
+ * (F-146, device #1/#2).
  *
  * F-144 — this page's own loading-state divs used to borrow
  * `.km-grammar__state` (a rule literally named after `pages/Grammar.tsx`,
  * reused ad hoc by several unrelated screens); they now use this page's own
  * `.km-vocab__state` (ReviewVocab.css), identical styling, no "grammar" in
- * the classname of a page that must never surface grammar UI. NOTE: the
- * nested `MyVocabLists`/`WeeklySuggestions` components (both shared,
- * out-of-scope for this pass) still render their OWN loading states through
- * the shared `.km-grammar__state` rule — flagged for a follow-up there.
+ * the classname of a page that must never surface grammar UI. Batch-2
+ * fix-pass: F-144's REAL bug was that `MyVocabLists`' own inline "New list"
+ * card put a live "Grammar · 문법" radio option on this page by default
+ * (`REVIEW_batch2-vocab.md` BLOCKER B-1) — fixed at the source by giving
+ * `MyVocabLists` a `kinds` prop; this page passes `kinds={['vocab']}` so the
+ * kind picker never renders (a single-kind mount skips it entirely — see
+ * MyVocabLists.tsx). `WeeklySuggestions` (shared, out-of-scope for this
+ * pass) still renders its OWN loading state through the shared
+ * `.km-grammar__state` rule — flagged for a follow-up there.
  *
  * F-148 — "This Week" is now a `Sheet` popup (a small trigger button opens
  * it) instead of an always-inline card, so the page reads as My Lists →
  * Browse with the suggestion strip tucked behind a tap, matching the
  * Create-list / add-to-list popups already on this page.
  *
- * F-147 — the word-picker's create-a-list flow (`AddToListSheet` below) is
- * ALREADY a `Sheet` popup and ALREADY vocab-only (hardcoded `kind: 'vocab'`,
- * no kind picker) — this satisfies the ticket for that entry point. The
- * OTHER create-list surface — `MyVocabLists`' own always-inline create card
- * (English label + vocab/grammar/hanja/mixed kind picker) — is owned by that
- * shared component (out of scope here); converting it to a popup needs a
- * change there (see this build's fixpass report).
+ * F-147 — BOTH create-list entry points are now `Sheet` popups: the
+ * word-picker's create-a-list flow (`AddToListSheet` below) already was one
+ * and is already vocab-only (hardcoded `kind: 'vocab'`, no kind picker); and
+ * `MyVocabLists`' own create card (previously an always-visible inline form)
+ * is now ALSO a `Sheet` popup behind a "New list" trigger button, scoped to
+ * `kinds={['vocab']}` on this page (see MyVocabLists.tsx and this build's
+ * fixpass report).
  *
  * Threat model: the search box is user-controlled — the server Zod-validates
  * `q` and parameterises the SQL; strings render through React text children;
@@ -70,7 +75,6 @@ import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
 import { CollapsibleTile } from '../../components/CollapsibleTile';
-import { DancheongRail } from '../../components/DancheongRail';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Eyebrow } from '../../components/Eyebrow';
 import {
@@ -81,9 +85,9 @@ import { Icon } from '../../components/Icon';
 import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { MyVocabLists } from '../../components/MyVocabLists';
+import { PageHubHeader } from '../../components/PageHubHeader';
 import { Sheet } from '../../components/Sheet';
 import { ShowMore } from '../../components/ShowMore';
-import { SkylineHeader } from '../../components/SkylineHeader';
 import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
 import { WeeklySuggestions } from '../../components/WeeklySuggestions';
 import { useToast } from '../../components/useToast';
@@ -223,26 +227,14 @@ export default function ReviewVocab(): JSX.Element {
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
 
-      {/* F-128 device #4 — same hub-header recipe as Today/Progress/Uploads:
-          the skyline strip carries the real <h1> in its `title` slot instead
-          of a bare `Topbar`. */}
-      <SkylineHeader
-        className="km-vocab__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />
-            </Eyebrow>
-            <h1 id="km-review-vocab-title" className="kr-display km-vocab__title">
-              <Bilingual en="Vocabulary" kr="단어" />
-            </h1>
-          </>
-        }
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. */}
+      <PageHubHeader
+        titleId="km-review-vocab-title"
+        eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
+        heading={<Bilingual en="Vocabulary" kr="단어" />}
       />
-      {/* F-128 device #2 — the dancheong-rail divider under the header. */}
-      <div className="km-vocab__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       <LibrarySubnav />
 
@@ -283,7 +275,14 @@ export default function ReviewVocab(): JSX.Element {
         rail
         title={<Bilingual en="My lists" kr="내 단어장" />}
       >
-        <MyVocabLists />
+        {/* F-144/F-147 — this page's list-kind universe is vocab ONLY: the
+            Vocab page must never offer "Grammar · 문법" as a creatable list
+            kind (that was the ticket's actual complaint, and the F-147
+            "shared component, out of scope" excuse used to leave it live —
+            see MyVocabLists.tsx's own doc comment for the fix). `kinds`
+            defaults to the full vocab/grammar/hanja/mixed set for any future
+            second consumer; this page narrows it to the one kind it owns. */}
+        <MyVocabLists kinds={['vocab']} />
       </CollapsibleTile>
 
       {/* F-053 — saved-from-uploads vocab, grouped by upload (conditional). */}

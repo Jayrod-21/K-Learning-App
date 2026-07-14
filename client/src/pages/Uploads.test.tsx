@@ -331,15 +331,16 @@ describe('Uploads — the "+ Upload" entry', () => {
   });
 });
 
-// F-128 "Seoul Day & Night" reskin — the hub-header recipe (SkylineHeader +
-// DancheongRail) replaces the bare Topbar, and each row is a CityCard.
+// F-128 "Seoul Day & Night" reskin — the shared hub-header recipe
+// (PageHubHeader: SkylineHeader + DancheongRail) replaces the bare Topbar,
+// and each row is a CityCard.
 describe('Uploads — F-128 reskin', () => {
   it('renders the skyline hub-header, the rail divider, and a CityCard per row', async () => {
     renderPage();
     await screen.findByText('한국어 문법 사전');
 
-    expect(document.querySelector('.km-uploads__skyline')).toBeInTheDocument();
-    expect(document.querySelector('.km-uploads__rail-divider')).toBeInTheDocument();
+    expect(document.querySelector('.km-hubheader__skyline')).toBeInTheDocument();
+    expect(document.querySelector('.km-hubheader__rail-divider')).toBeInTheDocument();
     // Two rows (READY + PROCESSING) → two CityCards.
     expect(document.querySelectorAll('.km-uploads__card.km-citycard')).toHaveLength(2);
 

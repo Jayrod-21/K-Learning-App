@@ -4,16 +4,19 @@
  *
  * Ports the old Reference.tsx Grammar-tab tests (full fetch, F-004 detail
  * Sheet, the stale-rows fix) AND the LEARN Grammar screen's list-tab
- * mastery tests (F-152: the action moved here with the browse and is now
- * "Mastered", not "Bank"), then adds the 3B
- * surfaces: the F-054 removals are asserted as REGRESSIONS (search box,
- * genre filter, and the Vocabulary/Dictionary strip must stay gone), F-055's
- * difficulty dropdown drives the real query param, F-024's BackButton
- * navigates to the real /review route, and F-056's Uploads view exercises
- * the real listUploads → per-upload listPatterns fan-out (grouping, the
- * zero-row drop, the error+Retry path, and banking from a group row).
- * Services are module-mocked; the component's own state/effects run for
- * real so the filters, optimistic bank flip, and stale-guards participate.
+ * add-to-bank tests (F-152, batch-2 rewrite: the action moved here with the
+ * browse; the add action reads "Add" → "Added", and "Mastered" + the
+ * milestone SealStamp render ONLY for a bank row whose `graduated_at` is
+ * non-null — see `REVIEW_batch2-grammar-mistakes.md`'s "F-152 deep dive"),
+ * then adds the 3B surfaces: the F-054 removals are asserted as REGRESSIONS
+ * (search box, genre filter, and the Vocabulary/Dictionary strip must stay
+ * gone), F-055's difficulty dropdown drives the real query param, F-024's
+ * BackButton navigates to the real /review route, and F-056's Uploads view
+ * exercises the real listUploads → per-upload listPatterns fan-out
+ * (grouping, the zero-row drop, the error+Retry path, and adding to the
+ * bank from a group row). Services are module-mocked; the component's own
+ * state/effects run for real so the filters, optimistic bank flip, and
+ * stale-guards participate.
  */
 import {
   afterEach,
@@ -376,15 +379,21 @@ describe('ReviewGrammar — browse (the old Reference Grammar tab)', () => {
   });
 });
 
-describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list tab, D3)', () => {
-  it('calls bankPattern with the coerced body on tap and flips to Mastered', async () => {
+// F-152 batch-2 rewrite (`REVIEW_batch2-grammar-mistakes.md`'s "F-152 deep
+// dive"): the first pass at this ticket relabelled the add-to-bank action
+// straight to "Mastered"/"Already mastered", firing the instant a pattern
+// was banked — before any drilling ever happened. This suite now asserts
+// the honest split: adding = "Add" → "Added"; "Mastered" (+ the milestone
+// SealStamp) renders ONLY for a bank row whose `graduated_at` is non-null
+// (the app's real mastery signal, F-063). The server contract
+// (bankPattern/listBanked) is untouched — these are copy/gating tests only.
+describe('ReviewGrammar — Add-to-bank action + honest Mastered (F-152 rewrite)', () => {
+  it('calls bankPattern with the coerced body on tap and flips to Added (NOT Mastered — a fresh add has no graduated_at)', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/1 pattern/);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Add -는 반면에' }));
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
@@ -395,15 +404,18 @@ describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list ta
     expect(body.pattern_display).toBe('-는 반면에');
     expect(body.summary_en).toBe('whereas');
     expect('register' in body).toBe(false);
-    // Optimistic chip flip — F-152: "Mastered", not "Banked".
+    // Optimistic chip flip — F-152 rewrite: "Added", NOT "Mastered". A bare
+    // 200 from bankPattern carries no graduated_at, so this must never be
+    // promoted to the "Already mastered" state.
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: 'Already mastered' }),
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Added' })).toBeInTheDocument();
     });
+    expect(
+      screen.queryByRole('button', { name: 'Already mastered' }),
+    ).not.toBeInTheDocument();
   });
 
-  it('renders already-mastered rows as Mastered (reconciles with the LEARN bank)', async () => {
+  it('renders an added-but-NOT-graduated bank row as "Added", never "Mastered" (the core F-152 finding)', async () => {
     grammarSvc.listBanked.mockResolvedValue({
       entries: [
         {
@@ -422,14 +434,41 @@ describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list ta
     });
     renderPage();
     expect(
-      await screen.findByRole('button', { name: 'Already mastered' }),
+      await screen.findByRole('button', { name: 'Added' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Mark -는 반면에 mastered' }),
+      screen.queryByRole('button', { name: 'Already mastered' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Add -는 반면에' }),
     ).not.toBeInTheDocument();
   });
 
-  it('treats a 409 (already mastered) as success — the flip stays', async () => {
+  it('renders a GRADUATED bank row (graduated_at set) as "Mastered" with the milestone seal', async () => {
+    grammarSvc.listBanked.mockResolvedValue({
+      entries: [
+        {
+          id: 501,
+          pattern_key: 'GR-kgiu-int-009',
+          pattern_display: '-는 반면에',
+          summary_en: 'whereas',
+          proficiency: 'L4',
+          category: 'contrast',
+          register: null,
+          discovered_via: 'manual',
+          created_at: '2026-06-01T00:00:00Z',
+          graduated_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+    });
+    renderPage();
+    expect(
+      await screen.findByRole('button', { name: 'Already mastered' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Added' })).not.toBeInTheDocument();
+  });
+
+  it('treats a 409 (already added) as success — the flip stays "Added", never promoted to "Mastered"', async () => {
     grammarSvc.bankPattern.mockRejectedValueOnce(
       new ApiError('already banked', { status: 409, code: 'conflict' }),
     );
@@ -437,15 +476,14 @@ describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list ta
     renderPage();
     await screen.findByText(/1 pattern/);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Add -는 반면에' }));
     expect(
-      await screen.findByRole('button', { name: 'Already mastered' }),
+      await screen.findByRole('button', { name: 'Added' }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/Couldn't mark that pattern mastered/),
+      screen.queryByRole('button', { name: 'Already mastered' }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't add that pattern/)).not.toBeInTheDocument();
   });
 
   it('rewinds the flip and surfaces fixed copy on a real failure', async () => {
@@ -456,20 +494,18 @@ describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list ta
     renderPage();
     await screen.findByText(/1 pattern/);
 
-    await user.click(
-      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Add -는 반면에' }));
     expect(
-      await screen.findByText(/Couldn't mark that pattern mastered. Try again./),
+      await screen.findByText(/Couldn't add that pattern. Try again./),
     ).toBeInTheDocument();
     expect(screen.queryByText('boom')).not.toBeInTheDocument();
-    // The row reverted to markable.
+    // The row reverted to addable.
     expect(
-      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
+      screen.getByRole('button', { name: 'Add -는 반면에' }),
     ).toBeInTheDocument();
   });
 
-  it('the detail Sheet carries the Mastered action too', async () => {
+  it('the detail Sheet carries the Add action too, and flips to "Added" (not "Mastered") on a fresh add', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/1 pattern/);
@@ -479,16 +515,63 @@ describe('ReviewGrammar — Mastered action (F-152, moved from the LEARN list ta
     );
     const dialog = await screen.findByRole('dialog');
     await user.click(
-      within(dialog).getByRole('button', { name: '숙달로 표시 · Mark mastered' }),
+      within(dialog).getByRole('button', { name: '추가 · Add' }),
     );
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
     expect(
-      await within(dialog).findByRole('button', {
-        name: '이미 숙달됨 · Already mastered',
-      }),
+      await within(dialog).findByRole('button', { name: '추가됨 · Added' }),
     ).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: '이미 숙달됨 · Already mastered' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('the detail Sheet shows "Already mastered" + the seal for a GRADUATED pattern', async () => {
+    grammarSvc.listBanked.mockResolvedValue({
+      entries: [
+        {
+          id: 501,
+          pattern_key: 'GR-kgiu-int-009',
+          pattern_display: '-는 반면에',
+          summary_en: 'whereas',
+          proficiency: 'L4',
+          category: 'contrast',
+          register: null,
+          discovered_via: 'manual',
+          created_at: '2026-06-01T00:00:00Z',
+          graduated_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('button', { name: 'Already mastered' });
+
+    await user.click(
+      screen.getByRole('button', { name: '-는 반면에 whereas' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByRole('button', { name: '이미 숙달됨 · Already mastered' }),
+    ).toBeInTheDocument();
+  });
+});
+
+// BLOCKER-2 (`REVIEW_batch2-fidelity.md` B1 / `REVIEW_batch2-grammar-mistakes.md`
+// finding #2) — this page used to render a flat `Topbar` while every other
+// Library page used the SkylineHeader + DancheongRail hub-header recipe.
+// Batch-2 fix-pass: it now adopts the shared `PageHubHeader`.
+describe('ReviewGrammar — shared hub-header (F-128 BLOCKER-2 fix)', () => {
+  it('renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', async () => {
+    const { container } = renderPage();
+    await screen.findByText(/1 pattern/);
+
+    expect(container.querySelector('.km-hubheader__skyline')).toBeInTheDocument();
+    expect(container.querySelector('.km-hubheader__rail-divider')).toBeInTheDocument();
+    const heading = screen.getByRole('heading', { level: 1, name: '문법 · Grammar' });
+    expect(heading).toHaveAttribute('id', 'km-review-grammar-title');
   });
 });
 
@@ -669,7 +752,7 @@ describe('ReviewGrammar — Uploads view (F-056)', () => {
     ).toBeInTheDocument();
   });
 
-  it('marking mastered works from an upload group row (shared mastery state)', async () => {
+  it('adding to the bank works from an upload group row (shared added/graduated state)', async () => {
     uploadsSvc.listUploads.mockResolvedValue([READY_UPLOAD]);
     grammarSvc.listPatterns.mockImplementation(
       async (opts?: { source_upload_id?: string }) => {
@@ -682,14 +765,12 @@ describe('ReviewGrammar — Uploads view (F-056)', () => {
     await openUploadsView(user);
     await screen.findByRole('heading', { name: /한국어 문법 사전/ });
 
-    await user.click(
-      screen.getByRole('button', { name: 'Mark -는 반면에 mastered' }),
-    );
+    await user.click(screen.getByRole('button', { name: 'Add -는 반면에' }));
     await waitFor(() => {
       expect(grammarSvc.bankPattern).toHaveBeenCalledTimes(1);
     });
     expect(
-      await screen.findByRole('button', { name: 'Already mastered' }),
+      await screen.findByRole('button', { name: 'Added' }),
     ).toBeInTheDocument();
   });
 });

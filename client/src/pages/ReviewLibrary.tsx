@@ -27,12 +27,17 @@
  * No BackButton: `/review` is a primary bottom-nav tab (same as
  * Today/Progress), not a sub-page.
  *
- * F-128 reskin — "Seoul Day & Night": the page opens with a `SkylineHeader`
- * (device #4) carrying the real `<h1>` in its `title` slot + a
- * `DancheongRail` accent underneath (device #2), the SAME hub-header recipe
+ * F-128 reskin — "Seoul Day & Night": the page opens with the shared
+ * `PageHubHeader` (devices #4/#2 — `SkylineHeader` carrying the real `<h1>`
+ * + a `DancheongRail` accent underneath), the SAME hub-header recipe
  * Today/Progress use (see those pages' F-128 doc comments) — this is the
  * library's own hub landing, not a nested sub-page, so it gets the same
- * treatment. Each section row is now a `CityCard` (device #1: Night neon
+ * treatment. Batch-2 fix-pass (BLOCKER-2): this page's own copy of the
+ * recipe was extracted into `PageHubHeader` (`components/PageHubHeader.tsx`)
+ * so every Library page shares one implementation, and the root now also
+ * carries `.km-rain-sheen` (device #8, Night ambient) to match every
+ * sibling Library page — the one thing this page was missing
+ * (`REVIEW_batch2-fidelity.md` S1). Each section row is now a `CityCard` (device #1: Night neon
  * signboard / Day hanji paper) with its leading-edge `rail`, replacing the
  * pre-redesign flat `.km-library__row` look — the real `<button>` still owns
  * 100% of the interaction/a11y, CityCard is nested purely as the visual
@@ -45,10 +50,8 @@ import { useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import type { CityCardTone } from '../components/CityCard';
 import { CityCard } from '../components/CityCard';
-import { DancheongRail } from '../components/DancheongRail';
-import { Eyebrow } from '../components/Eyebrow';
 import { Icon, type IconName } from '../components/Icon';
-import { SkylineHeader } from '../components/SkylineHeader';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { navItem, type NavItemId } from '../lib/nav';
 import './ReviewLibrary.css';
 
@@ -110,29 +113,17 @@ function ReviewLibrary(): JSX.Element {
   const navigate = useNavigate();
 
   return (
-    <section className="screen km-library" aria-labelledby="library-title">
-      {/* F-128 device #4 — the hub-header recipe shared with Today/Progress:
-          the real <h1> rides in SkylineHeader's own `title` slot. */}
-      <SkylineHeader
-        className="km-library__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en={LIBRARY_NAV.eyebrow} kr={LIBRARY_NAV.krEyebrow} />
-            </Eyebrow>
-            <h1 id="library-title" className="kr-display km-library__title">
-              <Bilingual kr={LIBRARY_NAV.kr} en={LIBRARY_NAV.label} />
-            </h1>
-          </>
-        }
+    <section
+      className="screen km-library km-rain-sheen"
+      aria-labelledby="library-title"
+    >
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx). */}
+      <PageHubHeader
+        titleId="library-title"
+        eyebrow={<Bilingual en={LIBRARY_NAV.eyebrow} kr={LIBRARY_NAV.krEyebrow} />}
+        heading={<Bilingual kr={LIBRARY_NAV.kr} en={LIBRARY_NAV.label} />}
       />
-
-      {/* F-128 device #2 — the same dancheong-rail divider under the
-          skyline that Today/Progress render (purely decorative — the rail
-          is aria-hidden itself). */}
-      <div className="km-library__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       {/* role="list" on the div (not a <ul>) matches the app-wide pattern —
           the global CSS reset strips list semantics, so the role restores

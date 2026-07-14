@@ -21,25 +21,9 @@
   margin-top: 2px;
 }
 
-/* -- F-128 device #4/#2 -- skyline header + dancheong divider -----------
- * Same recipe as pages/Today.css / pages/Progress.css (see those files'
- * matching comments) -- the app's hub pages share one header treatment. */
-.km-library__skyline {
-  margin: 0 0 12px;
-}
-
-.km-library__title {
-  margin: 4px 0 0;
-}
-
-.km-library__rail-divider {
-  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
-   * nearest positioned ancestor -- give it one with real height (same note
-   * as Today.css/Progress.css's rail-divider). */
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
-}
+/* F-128 device #4/#2 — skyline header + dancheong divider: extracted into
+ * the shared `PageHubHeader` component (batch-2 fix-pass BLOCKER-2). See
+ * components/PageHubHeader.css for the (now single) copy of these rules. */
 
 /* -- F-128 device #1/#2 -- CityCard is now each row's visible surface ----
  * `.km-library__row` (styles/index.css) is the pre-redesign flat-card look
