@@ -93,3 +93,35 @@ Added a doc comment on `acquireScrollLock` (not a behavior change) stating the l
 - `npx vite build --outDir /tmp/km-fix-mh` — **exit 0**
 
 **Server:** no server files were changed. `GET /vocab/lists` already accepted and applied `?kind=` server-side before this pass (`server/src/routes/vocabLists.ts:117-124,163`) — confirmed by reading the route, not assumed. No server suite re-run needed for this change set.
+
+---
+
+## Addendum — 4th surface closed (`/learn/vocab` Flashcards landing)
+
+Follow-up to finding #10 above: rather than defer it, the coordinator directed closing the 4th surface to clear the whole grammar-in-vocab class (the user has reported grammar-in-vocab 3×).
+
+**Did `Review.tsx` have its own call or inherit the fix?** It has its **OWN** `listLists()` call — it does **not** render lists via `MyVocabLists`. `Review.tsx`'s `listsRealFn` (`Review.tsx:478-491`) fed the `'review:lists'` `useEndpointOrMock` feed, which `LandingView` (`Review.tsx:766-833`) renders as its "My lists" study-list rows. The `MyVocabLists.tsx` header comment claiming "`/learn/vocab` links here instead of rendering its own copy" was **stale** — this surface leaked independently, on a different route than the BLOCKER's `/review/vocab`.
+
+**Fix (same shape as the other three surfaces):**
+- `Review.tsx`'s `listsRealFn` now calls `vocabService.listLists({ kind: 'vocab' })` — server-side narrowing (also dodges the route's `limit:20` truncating real vocab lists behind mixed-kind rows).
+- Client-side belt-and-suspenders lives in `LandingView`'s render as `const visibleLists = (lists ?? []).filter((l) => l.kind === 'vocab')`, mirroring `MyVocabLists`'s `visibleLists` exactly — used by both the empty-state check and the row `.map`, so a non-vocab row can never reach a study-list row even if the server ignored the param.
+
+| Finding | Disposition | Files |
+|---|---|---|
+| 10 (now closed) — `/learn/vocab` `LandingView` rendered `listLists()` unfiltered — 4th grammar-in-vocab surface | **FIXED** | `client/src/pages/Review.tsx`, `.test.tsx` |
+
+**Tests** (`Review.test.tsx`, all pass):
+- `'narrows its own list fetch to kind:"vocab" (server-side)...'` — invokes the captured real fetch fn and asserts `vocabService.listLists` was called with `{ kind: 'vocab' }`.
+- `'never renders a grammar-kind list as a study-list row, even if the feed carries one'` — feeds the landing a mixed vocab+grammar response and asserts the grammar row (`중급 문법`/`Intermediate grammar`) never renders while the vocab row (`병원 어휘`) does.
+- `'shows the empty-lists card when the only lists are non-vocab kinds'` — a grammar-only feed reads as "No lists yet." (the empty check keys off the filtered list), never a grammar row.
+
+**Server:** still no server changes — `?kind=` was already server-side.
+
+## Gate results — addendum re-run (from `client/`)
+
+- `npm run lint` — **0 errors, 0 warnings**
+- `npx tsc -p tsconfig.app.json --noEmit --incremental false` — **0 errors**
+- `npx vitest run` — **115 test files passed (115), 1780 tests passed (1780)** (+3 new)
+- `npx vite build --outDir /tmp/km-fix-mh2` — **exit 0**
+
+**All four vocab-list surfaces are now vocab-only: `MyVocabLists` (My Lists tile), `ReviewVocab` `AddToListSheet` (add-to-list picker) on `/review/vocab`, and `Review.tsx` `LandingView` (My lists) on `/learn/vocab`. The grammar-in-vocab class is closed.**

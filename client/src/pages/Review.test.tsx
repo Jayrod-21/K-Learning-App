@@ -315,6 +315,79 @@ describe('Review — landing (F-060)', () => {
     expect(screen.queryByLabelText('Search banked vocab')).not.toBeInTheDocument();
   });
 
+  // The 4th grammar-in-vocab surface (`FIX_REPORT_mobile.md`): the Flashcards
+  // landing's "My lists" is fed by this page's OWN `listLists()` call (not
+  // `MyVocabLists`/`ReviewVocab`), and it used to be unfiltered. Two proofs:
+  // (1) the fetch is narrowed to `kind: 'vocab'` server-side, and (2) even if
+  // a grammar-kind row reached the render, the `visibleLists` filter keeps it
+  // off the study-list surface. Flashcards study vocab — this list surface
+  // must be vocab-only.
+  it('narrows its own list fetch to kind:"vocab" (server-side) — the 4th grammar-in-vocab surface', async () => {
+    settleLanding();
+    vi.mocked(vocabService.listLists).mockResolvedValue([]);
+    renderReview();
+
+    // The page handed the hook a real fetch fn; invoking it must ask the
+    // server for vocab-kind lists only (not every kind, then filter).
+    await act(async () => {
+      await hoisted.capturedRealFns.lists?.();
+    });
+    expect(vocabService.listLists).toHaveBeenCalledWith({ kind: 'vocab' });
+  });
+
+  it('never renders a grammar-kind list as a study-list row, even if the feed carries one (belt-and-suspenders)', () => {
+    // Feed the landing a MIXED-kind response directly (the render path), the
+    // exact leak the server-side filter is the first line of defense against.
+    settleLanding({
+      lists: [
+        LISTS[0]!,
+        {
+          id: 42,
+          name_kr: '중급 문법',
+          name_en: 'Intermediate grammar',
+          kind: 'grammar',
+          version: 1,
+          entry_count: 6,
+          created_at: '2026-07-01T00:00:00Z',
+          updated_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+    });
+    renderReview();
+
+    // The vocab list still renders…
+    expect(screen.getByRole('button', { name: /병원 어휘/ })).toBeInTheDocument();
+    // …but the grammar-kind list never becomes a study-list row.
+    expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
+    expect(screen.queryByText('Intermediate grammar')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /중급 문법/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the empty-lists card when the only lists are non-vocab kinds', () => {
+    settleLanding({
+      lists: [
+        {
+          id: 42,
+          name_kr: '중급 문법',
+          name_en: 'Intermediate grammar',
+          kind: 'grammar',
+          version: 1,
+          entry_count: 6,
+          created_at: '2026-07-01T00:00:00Z',
+          updated_at: '2026-07-01T00:00:00Z',
+        },
+      ],
+    });
+    renderReview();
+
+    // The empty state keys off the FILTERED list, not the raw feed — a
+    // grammar-only response reads as "no vocab lists yet" here, not a row.
+    expect(screen.getByText('No lists yet.')).toBeInTheDocument();
+    expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
+  });
+
   it('shows the due strip with a Study entry when cards are due', async () => {
     settleLanding({ due: DUE_STUDY });
     const user = userEvent.setup();

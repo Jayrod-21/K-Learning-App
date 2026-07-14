@@ -475,8 +475,20 @@ export function Review(): JSX.Element {
     return ui;
   }, []);
 
+  // The 4th grammar-in-vocab surface (`FIX_REPORT_mobile.md`): this is the
+  // Flashcards page's OWN "My lists" fetch (rendered by `LandingView` below),
+  // independent of `MyVocabLists`/`ReviewVocab` — and it used to call
+  // `listLists()` unfiltered, so a pre-existing grammar-kind list rendered
+  // as a study-list row here too. Flashcards study VOCAB, so this surface
+  // must be vocab-only like the other three. Same fix shape they got:
+  // `kind: 'vocab'` narrows it server-side (`vocabService.listLists`'s doc
+  // comment — also avoids the route's `limit:20` truncating a power user's
+  // real vocab lists behind mixed-kind rows). The client-side
+  // belt-and-suspenders lives in `LandingView`'s render (`visibleLists`),
+  // mirroring `MyVocabLists`'s `visibleLists` — so a server/proxy that ever
+  // dropped the query param still can't put a non-vocab list on screen.
   const listsRealFn = useCallback(
-    (): Promise<ServerVocabList[]> => vocabService.listLists(),
+    (): Promise<ServerVocabList[]> => vocabService.listLists({ kind: 'vocab' }),
     [],
   );
 
@@ -749,6 +761,15 @@ function LandingView(props: LandingViewProps): JSX.Element {
   const hasDueWork =
     dueErrored || (dueCount !== null && dueCount > 0) || grammarCards.length > 0;
 
+  // Belt-and-suspenders for the 4th grammar-in-vocab surface (see the
+  // `listsRealFn` doc comment on the `Review` component): the fetch is
+  // already narrowed to `kind: 'vocab'` server-side, but this render-level
+  // filter — mirroring `MyVocabLists`'s `visibleLists` — guarantees a
+  // non-vocab list can never reach a study-list row here even if the server
+  // ever ignored the param. Flashcards study vocab; this surface is
+  // vocab-only by construction.
+  const visibleLists = (lists ?? []).filter((l) => l.kind === 'vocab');
+
   // F-157 — create-list is a Sheet popup behind a "New list" trigger
   // (mirroring components/MyVocabLists.tsx's CreateListSheet), not an
   // always-visible inline form. `onClose` is stable across renders — see
@@ -792,7 +813,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
               message="Your lists couldn't be loaded."
               onRetry={onRetryLists}
             />
-          ) : (lists ?? []).length === 0 ? (
+          ) : visibleLists.length === 0 ? (
             <EmptyCard
               message="No lists yet."
               krMessage="아직 목록이 없어요."
@@ -800,7 +821,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
             />
           ) : (
             <div className="km-review__listsCol">
-              {(lists ?? []).map((l) => (
+              {visibleLists.map((l) => (
                 <button
                   key={l.id}
                   type="button"
