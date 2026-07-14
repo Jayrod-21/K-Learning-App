@@ -55,9 +55,13 @@
  *      "Review mistakes" shortcut folded in (not its own page) and NO
  *      highlight styling on its meta line (F-137 — plain text, never a
  *      glowing bar). A saved F-007 attempt surfaces as this carousel's
- *      corner resume banner (it resumes straight back into `/learn/topik`,
- *      so this is its natural home now that it's split from Reading/
- *      Listening/Writing). `SwipeCarousel` is now used ONLY here — a
+ *      corner resume banner (it resumes straight back into
+ *      `/learn/topik?mode=mock` — the `mode=mock` param skips `Topik.tsx`'s
+ *      Study/Mock chooser sheet, which otherwise gates every mode-less
+ *      visit, so one tap goes straight back into the in-progress exam
+ *      rather than stopping at the chooser first — so this is its natural
+ *      home now that it's split from Reading/Listening/Writing).
+ *      `SwipeCarousel` is now used ONLY here — a
  *      single hard-paged tile with a corner-slot banner is still the right
  *      tool for that shape; it is not a continuous-scroll rail like #1/#2.
  *
@@ -445,7 +449,12 @@ export function Today(): JSX.Element {
         className="km-today__resume focusring"
         aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${String(openAttempt.answered)} answered`}
         onClick={() => {
-          navigate('/learn/topik');
+          // `?mode=mock` skips Topik.tsx's Study/Mock chooser sheet
+          // (chooserOpen is seeded from `searchParams.get('mode') === null`)
+          // so this one tap lands directly back in MockMode, whose own
+          // mount-time fetchAttempt/resumeAttempt then restores the saved
+          // in-progress exam. A bare navigate would hit the chooser first.
+          navigate('/learn/topik?mode=mock');
         }}
       >
         <Icon name="play" size={12} />
@@ -597,9 +606,9 @@ export function Today(): JSX.Element {
           `aria-roledescription="carousel"` — same reasoning as Carousel 2:
           every tile is simultaneously real and focusable, the honest a11y
           shape for a continuous scroll rail. */}
-      <Eyebrow className="km-today__sectionEyebrow">
+      <h2 className="km-today__sectionTitle">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
-      </Eyebrow>
+      </h2>
       <section className="km-today__section" aria-label="Review and drills">
         <div className="km-today__peekOuter">
           <div className="km-today__peekTrack">
@@ -631,9 +640,12 @@ export function Today(): JSX.Element {
                     />
                   }
                   onClick={() => {
-                    // Vocab-flashcards intent — the FSRS review queue lives
-                    // at /learn/vocab (/review is the library index).
-                    navigate('/learn/vocab');
+                    // Vocab-flashcards intent — the FSRS due-review session
+                    // lives at /learn/vocab?study=due (Review.tsx's
+                    // `study === 'due'` branch), NOT bare /learn/vocab
+                    // (which is the lists-first landing and would cost the
+                    // learner an extra tap to reach the same session).
+                    navigate('/learn/vocab?study=due');
                   }}
                 />
               ) : (
@@ -704,9 +716,9 @@ export function Today(): JSX.Element {
           `aria-roledescription="carousel"` — every tile is simultaneously
           real and focusable (no aria-hidden/inert paging), which is the
           honest a11y shape for a continuous scroll rail. */}
-      <Eyebrow className="km-today__sectionEyebrow km-hangul-watermark" data-glyph="배">
+      <h2 className="km-today__sectionTitle km-hangul-watermark" data-glyph="배">
         <Bilingual en="Suggested learning" kr="추천 학습" />
-      </Eyebrow>
+      </h2>
       <section className="km-today__section" aria-label="Suggested learning">
         {today.loading ? (
           <SkeletonCard />
@@ -732,9 +744,9 @@ export function Today(): JSX.Element {
           banner — TOPIK is what a saved attempt resumes back into, so this
           is its natural home now that it's split from Reading/Listening/
           Writing. No highlight styling on the meta line (F-137). */}
-      <Eyebrow className="km-today__sectionEyebrow">
+      <h2 className="km-today__sectionTitle">
         <Bilingual en="TOPIK" kr="토픽" />
-      </Eyebrow>
+      </h2>
       <section className="km-today__section">
         {/* `SwipeCarousel.children` is typed `ReactNode[]` (multiple pages
             by contract) — this carousel genuinely has only one page, so the

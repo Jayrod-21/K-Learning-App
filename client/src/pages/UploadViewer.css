@@ -20,12 +20,30 @@
  * override, mirroring `components/SwipeCarousel.css`'s identical pattern
  * for its track.
  *
- * F-155 real-device follow-up: `.km-upload-viewer__img` (the component's
+ * F-155 real-device follow-up #1: `.km-upload-viewer__img` (the component's
  * module header explains why) turns off the `<img>`'s OWN native
  * drag-source/long-press-callout handling — a separate browser subsystem
  * from the `touch-action`/`overscroll-behavior-x` pan/scroll arbitration on
- * `.km-upload-viewer__page` below, and the actual reason swipe still failed
- * on a real phone after that pan/scroll trio was already in place.
+ * `.km-upload-viewer__page` below.
+ *
+ * F-155 real-device follow-up #2 (the actual root cause — component's
+ * module header §"F-155 second real-device fix" has the full writeup):
+ * `.km-upload-viewer__page` is a genuinely-scrollable `overflow: auto` box
+ * (a book scan at fit-width routinely exceeds the viewport height), unlike
+ * the non-scrolling `overflow: hidden` viewport the gesture model was
+ * ported from — so `touch-action: pan-y` here is a real grant, not a dead
+ * letter, and a real thumb swipe (never perfectly axis-pure) could lose the
+ * arbitration race to the browser's own native vertical pan before the
+ * component's JS ever saw a clean horizontal sample. Touch is now driven by
+ * a real non-passive `touchmove` listener (component, not this sheet) —
+ * the CSS here (`touch-action`, `overscroll-behavior-x`) is unchanged and
+ * still correct; it governs the AXIS that's still allowed to pan natively
+ * once the JS gesture surrenders to 'v'.
+ *
+ * "Arrows to the bottom": `.km-upload-viewer__pager` moved Prev/Next + the
+ * page-N-of-M readout out of the dense top `.km-upload-viewer__toolbar` and
+ * into their own centered, thumb-reachable bar directly under the page
+ * image — see the component's module header for the full rationale.
  */
 
 .km-upload-viewer__toolbar {
@@ -34,6 +52,19 @@
   flex-wrap: wrap;
   gap: 8px;
   padding: 8px 0;
+}
+
+/* Arrows-to-the-bottom (component header explains why): a thumb-reachable
+ * pager directly under the page image, replacing the old top-toolbar
+ * Prev/Next. Centered, generously spaced — this is the PRIMARY paging
+ * control now (the swipe is the fast path, this is the always-works one),
+ * not a dense utility row like `.km-upload-viewer__toolbar` above. */
+.km-upload-viewer__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 14px 0 4px;
 }
 
 .km-upload-viewer__jump {

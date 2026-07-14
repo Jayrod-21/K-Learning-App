@@ -21,6 +21,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { Shell } from './Shell';
 import { LEARN_MENU_EXIT_MS } from './LearnMenu';
 
@@ -325,5 +328,36 @@ describe('Shell — FeedbackFab (F-127 global "!" button)', () => {
       compose: true,
       sourcePage: { path: '/some/unmapped-route', name: '/some/unmapped-route' },
     });
+  });
+});
+
+describe('Shell — status-bar spacer (no decorative gap above the skyline)', () => {
+  // happy-dom does no layout, so the on-screen "is it flush" question can't
+  // be driven here — pin the stylesheet instead. Regression coverage for
+  // the blank-gap bug: `.km-shell__statusbar` used to be
+  // `max(54px, env(safe-area-inset-top))`, which forced a permanent ~54px
+  // bar above every page's header (SkylineHeader, via PageHubHeader) on any
+  // device/browser reporting `env(safe-area-inset-top)` as 0 — virtually
+  // all Android phones, notch-less iPhones, and every desktop browser,
+  // since `max()` always keeps the fixed floor once it's the larger value.
+  // The rule must size to ONLY the real safe-area inset (0 there, flush;
+  // the actual inset on notched devices, clearing the notch without a
+  // decorative gap) and must never reintroduce a fixed-px floor via `max(`.
+  it('sizes to the safe-area inset only — no fixed-px floor', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'styles', 'index.css'),
+      'utf8',
+    );
+    const rule = /\.km-shell__statusbar\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    // Strip block comments before asserting — the rule's own doc comment
+    // explains (and mentions) the old `max(54px, ...)` regression it fixed,
+    // which would otherwise false-positive the negative check below.
+    const declarations = rule.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(declarations).toMatch(/height:\s*env\(safe-area-inset-top(?:,\s*0px)?\)\s*;/);
+    // The regression this test exists to catch: a `max(` reintroducing a
+    // fixed-px minimum would defeat the flush-at-top fix even though the
+    // rule still mentions `env(safe-area-inset-top)`.
+    expect(declarations).not.toMatch(/\bmax\(/);
   });
 });

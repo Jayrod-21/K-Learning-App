@@ -49,10 +49,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cwd } from 'node:process';
+import type { JSX } from 'react';
 import type { TodayPlan } from '../types/domain';
 import type { AttemptState } from '../services/topik';
 
@@ -248,18 +249,39 @@ const TOPIK_ATTEMPTS_MIXED = {
   total: 2,
 };
 
+/** Renders the destination label plus the FULL path+query it was reached
+ *  at, so tests can assert the exact URL (including search params) Today
+ *  navigated to — a route match alone (react-router ignores `?search` when
+ *  matching `path`) can't catch a missing/wrong query param, which is
+ *  exactly the bug class both nav fixes below guard against. */
+function LocationProbe({ label }: { label: string }): JSX.Element {
+  const location = useLocation();
+  return (
+    <div>
+      {label} {location.pathname}
+      {location.search}
+    </div>
+  );
+}
+
 function renderTodayAt(path = '/'): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/" element={<Today />} />
-        <Route path="/learn/vocab" element={<div>VOCAB PAGE</div>} />
+        <Route
+          path="/learn/vocab"
+          element={<LocationProbe label="VOCAB PAGE" />}
+        />
         <Route path="/learn/grammar" element={<div>GRAMMAR PAGE</div>} />
         <Route path="/learn/hanja" element={<div>HANJA PAGE</div>} />
         <Route path="/learn/reading" element={<div>READING PAGE</div>} />
         <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
         <Route path="/learn/listen" element={<div>LISTENING PAGE</div>} />
-        <Route path="/learn/topik" element={<div>TOPIK PAGE</div>} />
+        <Route
+          path="/learn/topik"
+          element={<LocationProbe label="TOPIK PAGE" />}
+        />
         <Route path="/review/mistakes" element={<div>MISTAKES PAGE</div>} />
       </Routes>
     </MemoryRouter>,
@@ -360,7 +382,7 @@ describe('Today', () => {
 
   // ── Carousel 1 — Review & drills: Vocab (restored) / Grammar / Hanja ──
 
-  it('Vocab tile is RESTORED as a first-class activity — first tile of Review & drills, real due-count, routes to /learn/vocab', async () => {
+  it('Vocab tile is RESTORED as a first-class activity — first tile of Review & drills, real due-count, routes to the FSRS due-review session (not the bare landing)', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
@@ -373,7 +395,12 @@ describe('Today', () => {
     await user.click(
       screen.getByRole('button', { name: 'Open review — 24 cards due' }),
     );
-    expect(screen.getByText('VOCAB PAGE')).toBeInTheDocument();
+    // Must land on /learn/vocab?study=due — Review.tsx's `study === 'due'`
+    // branch, the actual FSRS flashcard session — NOT bare /learn/vocab
+    // (the lists-first landing), which would cost an extra "Study" tap.
+    expect(
+      screen.getByText('VOCAB PAGE /learn/vocab?study=due'),
+    ).toBeInTheDocument();
   });
 
   it('singularizes the Vocab due-count copy at exactly 1', () => {
@@ -614,7 +641,7 @@ describe('Today', () => {
 
   // ── Carousel 3 — TOPIK, last ──────────────────────────────────────
 
-  it('navigates to /learn/topik (study) from the recommended TOPIK tile — no tab switch needed', async () => {
+  it('navigates to bare /learn/topik (chooser) from the recommended TOPIK tile — no tab switch needed; only the resume banner skips the chooser', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
@@ -622,7 +649,7 @@ describe('Today', () => {
     await user.click(
       screen.getByRole('button', { name: 'Open TOPIK study practice' }),
     );
-    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
+    expect(screen.getByText('TOPIK PAGE /learn/topik')).toBeInTheDocument();
   });
 
   it('offers "Review mistakes" as a folded-in shortcut on the TOPIK carousel (not a separate carousel/page)', async () => {
@@ -635,7 +662,7 @@ describe('Today', () => {
     expect(screen.getByText('MISTAKES PAGE')).toBeInTheDocument();
   });
 
-  it('surfaces a saved mock attempt as the TOPIK carousel\'s corner resume banner → /learn/topik', async () => {
+  it('surfaces a saved mock attempt as the TOPIK carousel\'s corner resume banner → /learn/topik?mode=mock, skipping the Study/Mock chooser', async () => {
     loadDefaults();
     hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
     const user = userEvent.setup();
@@ -646,7 +673,12 @@ describe('Today', () => {
       name: 'Resume exam — Listening mock, 12 answered',
     });
     await user.click(banner);
-    expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
+    // Must carry `?mode=mock` — Topik.tsx seeds its Study/Mock chooser sheet
+    // open ONLY when `mode` is absent from the URL, so a bare navigate would
+    // strand "Resume exam" on the chooser instead of the in-progress exam.
+    expect(
+      screen.getByText('TOPIK PAGE /learn/topik?mode=mock'),
+    ).toBeInTheDocument();
   });
 
   it('renders NO resume banner when no attempt is saved (honest empty state)', () => {
@@ -696,7 +728,7 @@ describe('Today', () => {
 
   // ── P3b — bilingual page chrome ────────────────────────────
 
-  it('renders the section eyebrows and tile chrome bilingually in both-mode', () => {
+  it('renders the section titles and tile chrome bilingually in both-mode', () => {
     loadDefaults();
     renderTodayAt();
 
@@ -709,5 +741,128 @@ describe('Today', () => {
     expect(screen.getByText('문법 드릴')).toBeInTheDocument();
     expect(screen.getByText('한자 학습')).toBeInTheDocument();
     expect(screen.getByText('오답 복습')).toBeInTheDocument();
+  });
+
+  // ── Layout polish (mobile-hardening pass, direct user feedback) ──────
+
+  it('renders the three section titles as real, centered `<h2>` headers — not the old small-eyebrow subscript', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    // The old eyebrow-styled subscript class is gone entirely; the new
+    // header class is the ONLY thing carrying these three section titles.
+    expect(document.querySelector('.km-today__sectionEyebrow')).toBeNull();
+    const titles = document.querySelectorAll('.km-today__sectionTitle');
+    expect(titles).toHaveLength(3);
+
+    // Real headings (level 2, below the page's own `<h1>`), in carousel
+    // order — Review & drills, then Suggested learning, then TOPIK.
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings).toHaveLength(3);
+    expect(headings[0]).toHaveTextContent('Review & drills');
+    expect(headings[0]).toHaveClass('km-today__sectionTitle');
+    expect(headings[1]).toHaveTextContent('Suggested learning');
+    expect(headings[1]).toHaveClass('km-today__sectionTitle');
+    expect(headings[2]).toHaveTextContent('TOPIK');
+    expect(headings[2]).toHaveClass('km-today__sectionTitle');
+
+    // Suggested learning keeps its decorative Hangul-watermark glyph — only
+    // the wrapping element changed (Eyebrow div → h2), not the device.
+    expect(headings[1]).toHaveClass('km-hangul-watermark');
+    expect(headings[1]).toHaveAttribute('data-glyph', '배');
+  });
+
+  it('CSS: section titles read as centered real headers, not a tiny eyebrow subscript', () => {
+    // happy-dom does no layout, so visual centering/size can't be measured
+    // by rendering — pin the CSS from source, same pattern as the peek-
+    // slider mechanism test below.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+
+    expect(stylesheet).not.toMatch(/\.km-today__sectionEyebrow\s*\{/);
+
+    const titleRule =
+      /\.km-today__sectionTitle\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(titleRule).not.toBe('');
+    expect(titleRule).toContain('text-align: center;');
+    // Meaningfully larger than the old 10px eyebrow and bold enough to read
+    // as a header rather than a caption.
+    expect(titleRule).toMatch(/font-size:\s*16px;/);
+    expect(titleRule).toMatch(/font-weight:\s*700;/);
+  });
+
+  it('CSS: vertical spacing between the three stacked sections is tightened', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+
+    const sectionRule =
+      /\.km-today__section\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(sectionRule).not.toBe('');
+    // A section no longer piles its own bottom margin on top of the next
+    // header's top margin — the header's margin-top is now the whole gap.
+    expect(sectionRule).toContain('margin-bottom: 0;');
+
+    const titleRule =
+      /\.km-today__sectionTitle\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    // The combined inter-section gap (section margin-bottom + title
+    // margin-top) is well under the pre-tightening total of 24px (6px + the
+    // old eyebrow's 18px).
+    const marginMatch = /margin:\s*(\d+)px/.exec(titleRule);
+    expect(marginMatch).not.toBeNull();
+    expect(Number(marginMatch?.[1])).toBeLessThanOrEqual(12);
+  });
+
+  it('CSS: BOTH peek carousels scale the centered tile larger than its neighbors, scroll-driven, reduced-motion gated', () => {
+    // happy-dom does no layout, so the actual on-screen scroll-driven scale
+    // can't be measured by rendering — pin the CSS mechanism from source
+    // (same pattern as the scroll-snap mechanism test above). Both
+    // carousels render the same `.km-today__peekItem` class (asserted
+    // structurally in the "SAME peek-slider mechanism" test above), so this
+    // single source-level pin covers both.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+
+    const supportsBlock =
+      /@supports \(animation-timeline: view\(\)\) \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(supportsBlock).not.toBe('');
+
+    // Center (50%) reads at full size/opacity; the partial neighbors (0%
+    // /100%, at the track's edges) are visibly smaller AND dimmed — a real
+    // size difference, not the earlier subtle 0.94 pop.
+    const keyframes =
+      /@keyframes km-today-peek-pop\s*\{[\s\S]*?\n {2}\}/.exec(supportsBlock)?.[0] ?? '';
+    expect(keyframes).not.toBe('');
+    const edgeBlock =
+      /0%,\s*100%\s*\{([\s\S]*?)\}/.exec(keyframes)?.[1] ?? '';
+    const centerBlock = /50%\s*\{([\s\S]*?)\}/.exec(keyframes)?.[1] ?? '';
+    expect(edgeBlock).toMatch(/transform:\s*scale\(0\.88\);/);
+    expect(centerBlock).toMatch(/transform:\s*scale\(1\);/);
+    // Edge (neighbor) opacity is strictly lower than center opacity — a
+    // real dim, not a no-op.
+    const edgeOpacity = Number(/opacity:\s*([\d.]+);/.exec(edgeBlock)?.[1]);
+    const centerOpacity = Number(/opacity:\s*([\d.]+);/.exec(centerBlock)?.[1]);
+    expect(edgeOpacity).toBeGreaterThan(0);
+    expect(edgeOpacity).toBeLessThan(centerOpacity);
+    expect(centerOpacity).toBe(1);
+
+    expect(supportsBlock).toContain('animation-timeline: view(inline);');
+
+    // Reduced-motion: the scaling animation is explicitly disabled, never
+    // left running — equal size, no scaling, matched structurally so this
+    // can't false-match the base `.km-today__peekItem` rule.
+    const reducedMotionBlock =
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peekItem \{[^}]*\}\s*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(reducedMotionBlock).not.toBe('');
+    expect(reducedMotionBlock).toContain('animation: none;');
   });
 });

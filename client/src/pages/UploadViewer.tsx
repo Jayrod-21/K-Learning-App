@@ -109,8 +109,9 @@
  * nothing listened for it. `onPagePointerDown/Move/Up/Cancel/Leave` below
  * arm a horizontal-swipe-to-turn-page gesture on `.km-upload-viewer__page`,
  * reusing `components/SwipeCarousel.tsx`'s exact Pointer Events model
- * (unifying touch/mouse/pen in one handler set) and its documented gotchas:
- * an 8px axis lock decides swipe-vs-scroll on the first move, a vertical-
+ * (unifying mouse/pen in one handler set — touch is a SEPARATE path now,
+ * see "F-155 second real-device fix" below) and its documented gotchas: an
+ * 8px axis lock decides swipe-vs-scroll on the first move, a vertical-
  * dominant gesture is surrendered immediately (so the page still scrolls),
  * `setPointerCapture` is deferred until the axis locks 'h' (so it can't
  * break interactive content under an undecided gesture), and
@@ -134,7 +135,7 @@
  * page-turn — `touchAction` on the box switches to the browser's native
  * `'auto'` panning in that state instead of the swipe-reserving `'pan-y'`.
  *
- * F-155 real-device follow-up (the `preventDefault`/`touch-action`/
+ * F-155 real-device follow-up #1 (the `preventDefault`/`touch-action`/
  * `overscroll-behavior-x` trio above was ported from `SwipeCarousel` but
  * swipe STILL failed on a real phone): the missing piece was never the
  * scroll/tap-replay race those three defend against — it's that this
@@ -146,17 +147,55 @@
  * panning/scrolling and `preventDefault()` inside `pointermove` only vetoes
  * that same panning/scrolling — neither one has any say over whether the
  * engine decides this touch is "dragging an image" or "long-pressing an
- * image" instead of "a custom pointer gesture." Once the browser commits to
- * either, it can stop delivering clean `pointermove` samples for that touch
- * (or cancel the sequence outright), which reads exactly like "swipe
- * doesn't work" with no console error and nothing for `preventDefault` to
- * catch. Fixed at the `<img>` itself (`.km-upload-viewer__img` below):
- * `draggable={false}` + an `onDragStart` veto (belt-and-braces — some
- * engines have historically ignored a bare `draggable={false}` on nested
- * content) turn off the native drag source, and
- * `-webkit-touch-callout: none` turns off iOS's long-press menu, so every
- * touch sample on the page image reaches ONLY this component's own pointer
- * handlers.
+ * image" instead of "a custom pointer gesture." Fixed at the `<img>` itself
+ * (`.km-upload-viewer__img` below): `draggable={false}` + an `onDragStart`
+ * veto turn off the native drag source, and `-webkit-touch-callout: none`
+ * turns off iOS's long-press menu.
+ *
+ * F-155 real-device follow-up #2 (swipe STILL failed after #1 — the actual
+ * root cause): #1 was real, but it wasn't the whole story, because it never
+ * explained why `SwipeCarousel` (Today's carousel, ported gesture-for-
+ * gesture) works while this page's identical logic didn't. The structural
+ * difference is `.km-upload-viewer__page` — unlike `.km-carousel__viewport`
+ * (`overflow: hidden`, nothing ever scrolls inside it), this box is a REAL
+ * `overflow: auto` scroll container, because a book scan at fit-width is
+ * routinely taller than the viewport. `touch-action: pan-y` on a
+ * genuinely-scrollable element is a much bigger grant than it looks:
+ * browsers use it as a license to let the COMPOSITOR thread commit to a
+ * native vertical pan for a touch, using the engine's OWN (coarser, faster)
+ * direction heuristic, WITHOUT first round-tripping through the main
+ * thread — that round-trip guarantee only exists for a genuinely
+ * non-passive TOUCH event listener (it's the literal reason passive
+ * listeners were invented: so the compositor can skip asking JS). Pointer
+ * Events, though not passive here (confirmed against `react-dom`'s
+ * `addTrappedEventListener` — it only force-passives `touchstart`/
+ * `touchmove`/`wheel`, never pointer events), are a newer, thinner layer on
+ * top of that same native touch/scroll pipeline and don't reliably carry
+ * the same "JS gets first refusal on every sample" guarantee on every
+ * engine. On `SwipeCarousel`'s non-scrollable viewport `pan-y` is a dead
+ * letter (nothing to pan), so every sample reaches JS uncontested; on this
+ * page's genuinely-tall box it competes with a real native gesture, and a
+ * real thumb swipe is never perfectly axis-pure — the sliver of vertical
+ * drift is enough for the compositor to occasionally win the race before
+ * this component's 8px axis lock (or its `preventDefault()`) ever runs.
+ * That reads as "no console error, nothing happens" — exactly the reported
+ * symptom.
+ *
+ * Fix: touch is no longer driven through React's Pointer Events at all.
+ * `onPagePointerDown/Move/Up/Cancel/Leave` below now open with
+ * `if (e.pointerType === 'touch') return;` and exist ONLY for mouse/pen
+ * (still exercised by every existing mouse-drag test). A dedicated
+ * `useEffect` attaches real `touchstart`/`touchmove`/`touchend`/
+ * `touchcancel` listeners directly via `addEventListener`, with `touchmove`
+ * explicitly `{ passive: false }` — the one guarantee that actually forces
+ * the browser to ask this handler before the compositor commits to a
+ * native scroll. (JSX `onTouchMove` was deliberately NOT used instead: React
+ * registers its own delegated `touchmove` listener as passive by default —
+ * confirmed in the same `addTrappedEventListener` — so wiring this through
+ * JSX props would silently reintroduce the exact bug being fixed here.) The
+ * same axis-lock/threshold/damping constants and logic are reused verbatim
+ * (`runSwipeMove`/`runSwipeEnd` below), so touch and mouse/pen feel
+ * identical; only the event source differs.
  */
 import {
   useCallback,
@@ -206,6 +245,59 @@ const SWIPE_MIN_SNAP_PX = 48;
 const SWIPE_SNAP_FRACTION = 0.2;
 /** Overscroll damping divisor at the first/last page. */
 const SWIPE_EDGE_DAMPING = 3;
+
+/** One in-progress swipe gesture's bookkeeping (mouse/pen pointer OR touch —
+ * both paths below share this shape and this ref). */
+interface SwipeDrag {
+  /** `PointerEvent.pointerId` for mouse/pen; `Touch.identifier` for touch —
+   * either way, the stable id that ties a stream of move samples back to
+   * the gesture that armed them. */
+  pointerId: number;
+  startX: number;
+  startY: number;
+  /** 'none' until the 8px lock decides; 'v' means surrendered to scroll. */
+  axis: 'none' | 'h' | 'v';
+}
+
+/**
+ * Axis decision for one drag sample — pure, and the SINGLE source of truth
+ * for the 8px lock shared by the mouse/pen pointer path
+ * (`onPagePointerMove`) and the native touch path (the `useEffect` below,
+ * module header §"F-155 second real-device fix"). Returns the axis
+ * unchanged once already decided ('h' or 'v') — the lock never re-opens
+ * mid-gesture.
+ */
+function swipeAxisFor(
+  priorAxis: SwipeDrag['axis'],
+  startX: number,
+  startY: number,
+  clientX: number,
+  clientY: number,
+): SwipeDrag['axis'] {
+  if (priorAxis !== 'none') return priorAxis;
+  const dx = clientX - startX;
+  const dy = clientY - startY;
+  if (Math.abs(dx) < SWIPE_AXIS_LOCK_PX && Math.abs(dy) < SWIPE_AXIS_LOCK_PX) return 'none';
+  return Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+}
+
+/** Find a `Touch` by `identifier` in a `TouchList` (`touches`/
+ * `changedTouches`) — a multi-touch page can carry fingers this gesture
+ * doesn't own; every touch handler below must ignore those, not just take
+ * `[0]`. Null when no touch in the list matches (e.g. a DIFFERENT finger
+ * lifted while ours is still down). */
+function touchById(list: TouchList, id: number): Touch | null {
+  // Indexed access (`list[i]`), not `.item(i)`: both are valid per the
+  // `TouchList` spec on a real device, but happy-dom's `TouchEvent` (this
+  // component's test suite) stores whatever array-like value the test
+  // handed it verbatim rather than constructing a real `TouchList` — `[i]`
+  // reads correctly from a genuine `TouchList` AND a plain test array.
+  for (let i = 0; i < list.length; i += 1) {
+    const t = list[i];
+    if (t && t.identifier === id) return t;
+  }
+  return null;
+}
 
 /** Clockwise page rotation, degrees. Only quarter turns make sense for scans. */
 type Rotation = 0 | 90 | 180 | 270;
@@ -442,8 +534,21 @@ export default function UploadViewer(): JSX.Element {
   // calculation is invisible, and chasing it needs a ResizeObserver loop.
   const pageBoxRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  // A ref's `.current` is deliberately invisible to React's dependency
+  // diffing — that's the whole point of a ref — so the native-touch effect
+  // below (which needs to know the MOMENT the box actually mounts, to attach
+  // its listeners) cannot depend on `pageBoxRef.current` directly. Mirroring
+  // it into state is the standard "DOM node as an effect dependency" pattern
+  // — `pageBoxEl` changes from `null` to the real node exactly once (`canView`
+  // gates the box's existence), which IS an observable dependency change.
+  // (`containerWidth` alone doesn't reliably signal this: it's initialized to
+  // 0 and a 0-width measurement — real in a hidden/collapsed layout, and the
+  // norm under happy-dom, which does no real layout — would leave the
+  // dependency unchanged across the mount, silently skipping the attach.)
+  const [pageBoxEl, setPageBoxEl] = useState<HTMLDivElement | null>(null);
   const attachPageBox = useCallback((el: HTMLDivElement | null): void => {
     pageBoxRef.current = el;
+    setPageBoxEl(el);
     if (el !== null) {
       setContainerWidth(el.clientWidth);
     }
@@ -454,12 +559,7 @@ export default function UploadViewer(): JSX.Element {
   // handlers, never read during render) and state (`dragX`, the live px
   // offset that actually needs to repaint). See the module header for the
   // full interaction-model writeup.
-  const swipeRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    axis: 'none' | 'h' | 'v';
-  } | null>(null);
+  const swipeRef = useRef<SwipeDrag | null>(null);
   const [swipeDragX, setSwipeDragX] = useState<number | null>(null);
   useEffect(() => {
     const onResize = (): void => {
@@ -581,11 +681,17 @@ export default function UploadViewer(): JSX.Element {
     setSwipeDragX(null);
   };
 
+  // F-155 second real-device fix (module header) — touch is driven ENTIRELY
+  // by the native-`addEventListener` effect below now. Every handler here
+  // opens by bailing on `pointerType === 'touch'`, so this family only ever
+  // arms/tracks a mouse or pen drag; touch can never reach (or corrupt)
+  // `swipeRef` through this path, and vice versa.
   const onPagePointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
     if (!swipeEligible) return;
     // Only the primary pointer with the left/first button may arm a
     // gesture — same guard as SwipeCarousel, for the same reason (a
-    // right-click's pointerup a context menu can suppress; a second touch
+    // right-click's pointerup a context menu can suppress; a second pointer
     // must never restart/corrupt an in-progress drag).
     if (!e.isPrimary || e.button !== 0) return;
     if (swipeRef.current !== null) return;
@@ -598,55 +704,43 @@ export default function UploadViewer(): JSX.Element {
   };
 
   const onPagePointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
     const d = swipeRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
 
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+    const wasUndecided = d.axis === 'none';
+    d.axis = swipeAxisFor(d.axis, d.startX, d.startY, e.clientX, e.clientY);
+    if (d.axis === 'none') return;
+    if (d.axis === 'v') {
+      // Vertical-dominant: this is a page scroll, not a swipe. Surrender
+      // immediately (same "stuck-drag safety" reasoning as SwipeCarousel
+      // — an immortal ref here would swallow every future swipe if a
+      // mouse released off-box never delivered us a pointerup).
+      endSwipe();
+      return;
+    }
 
-    if (d.axis === 'none') {
-      if (Math.abs(dx) < SWIPE_AXIS_LOCK_PX && Math.abs(dy) < SWIPE_AXIS_LOCK_PX) return;
-      if (Math.abs(dx) > Math.abs(dy)) {
-        d.axis = 'h';
-        const el = pageBoxRef.current;
-        if (el && typeof el.setPointerCapture === 'function') {
-          try {
-            el.setPointerCapture(e.pointerId);
-          } catch {
-            // Capture is an enhancement; the drag works without it.
-          }
+    // Just locked 'h' this sample — claim the pointer so drag samples keep
+    // arriving even if the cursor leaves the box mid-drag (mouse has no
+    // implicit capture the way touch does).
+    if (wasUndecided) {
+      const el = pageBoxRef.current;
+      if (el && typeof el.setPointerCapture === 'function') {
+        try {
+          el.setPointerCapture(e.pointerId);
+        } catch {
+          // Capture is an enhancement; the drag works without it.
         }
-      } else {
-        // Vertical-dominant: this is a page scroll, not a swipe. Surrender
-        // immediately (same "stuck-drag safety" reasoning as SwipeCarousel
-        // — an immortal ref here would swallow every future swipe if a
-        // mouse released off-box never delivered us a pointerup).
-        endSwipe();
-        return;
       }
     }
-    if (d.axis !== 'h') return;
 
-    // SHOULD-FIX (`REVIEW_mobile-touch.md` — "same tap-through bug, unfixed
-    // sibling"): this handler claims parity with `SwipeCarousel.tsx`'s
-    // Pointer Events model (module header, F-155) but never got its
-    // `preventDefault` treatment. Once the axis has locked horizontal,
-    // `touch-action: pan-y` (the box's inline style above, only when
-    // `swipeEligible`) is what stops the browser from starting a native
-    // scroll for this gesture in the first place, but real touch devices'
-    // own gesture arbitration can still race the 8px JS axis lock during
-    // the first couple of samples — this is the explicit, same-tick veto,
-    // on every 'h' move, not just the first. It also suppresses the
-    // trailing synthetic click a spring-back drag would otherwise replay
-    // onto whatever's underneath (the page-turn zones sit over the same
-    // `<img>`/toolbar surface a tap would otherwise hit). Guarded by
-    // `cancelable` exactly like `SwipeCarousel`: once a real browser has
-    // already committed to a native vertical pan for this touch, subsequent
-    // events for it become non-cancelable, so this becomes a no-op rather
-    // than vetoing a scroll that already started — see `SwipeCarousel.tsx`'s
-    // `onPointerMove` for the full race reasoning.
+    // Once the axis has locked horizontal, veto whatever native handling
+    // this pointer type would otherwise do (a text-selection drag, mostly,
+    // for mouse/pen) on every 'h' move, not just the first. Guarded by
+    // `cancelable`: some replayed/synthetic events aren't.
     if (e.cancelable) e.preventDefault();
 
+    const dx = e.clientX - d.startX;
     // Damp overscroll at the first/last page so the edge feels solid.
     const overscroll =
       (pageNum <= 1 && dx > 0) || (!!pageCount && pageNum >= pageCount && dx < 0);
@@ -654,6 +748,7 @@ export default function UploadViewer(): JSX.Element {
   };
 
   const onPagePointerUp = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
     const d = swipeRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
 
@@ -669,12 +764,14 @@ export default function UploadViewer(): JSX.Element {
   };
 
   const onPagePointerCancel = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
     const d = swipeRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
     endSwipe();
   };
 
   const onPagePointerLeave = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
     const d = swipeRef.current;
     if (d === null || d.pointerId !== e.pointerId) return;
     // Once the axis locks 'h' the pointer is captured, so moves keep coming
@@ -684,6 +781,124 @@ export default function UploadViewer(): JSX.Element {
     // can't permanently block future gestures.
     if (d.axis !== 'h') endSwipe();
   };
+  const onPagePointerLost = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'touch') return;
+    endSwipe();
+  };
+
+  // F-155 second real-device fix (module header §"F-155 second real-device
+  // fix") — the actual touch path. Wired via real `addEventListener`
+  // (`touchmove` explicitly `{ passive: false }`) instead of JSX
+  // `onTouchStart`/`onTouchMove`, because React registers ITS OWN delegated
+  // `touchmove` listener as passive by default (confirmed against
+  // `react-dom`'s `addTrappedEventListener` — it force-passives exactly
+  // `touchstart`/`touchmove`/`wheel`), which would silently make
+  // `preventDefault()` a no-op if this were wired through JSX props instead.
+  // `latestRef` exists because this effect only re-attaches when
+  // `swipeEligible` flips — `pageNum`/`pageCount`/`goPrev`/`goNext` change on
+  // every page turn (and `goPrev`/`goNext` aren't memoized), so the handlers
+  // read them from a ref kept in sync every render rather than closing over
+  // stale values or forcing a listener churn on every page turn.
+  const swipeLatestRef = useRef({ pageNum, pageCount, goPrev, goNext });
+  // `react-hooks/refs` forbids writing `.current` during render (a ref
+  // isn't a rendering value) — sync it in an effect instead. This still
+  // lands the fresh value before any USER-triggered touch event can read
+  // it (an effect commits before the browser can dispatch a new event to
+  // this tab), so there is no real staleness window despite running one
+  // tick after render rather than synchronously inside it.
+  useEffect(() => {
+    swipeLatestRef.current = { pageNum, pageCount, goPrev, goNext };
+  });
+
+  useEffect(() => {
+    const el = pageBoxEl;
+    if (!swipeEligible || el === null) return;
+
+    const onTouchStart = (e: TouchEvent): void => {
+      // Second finger down while one is already tracked: ignored, not
+      // restarted (same "a second touch must never corrupt an in-progress
+      // drag" contract as the pointer path).
+      if (swipeRef.current !== null) return;
+      const t = e.touches[0];
+      if (!t) return;
+      swipeRef.current = {
+        pointerId: t.identifier,
+        startX: t.clientX,
+        startY: t.clientY,
+        axis: 'none',
+      };
+    };
+
+    const onTouchMove = (e: TouchEvent): void => {
+      const d = swipeRef.current;
+      if (d === null) return;
+      const t = touchById(e.touches, d.pointerId);
+      if (!t) return;
+
+      d.axis = swipeAxisFor(d.axis, d.startX, d.startY, t.clientX, t.clientY);
+      if (d.axis === 'none') return;
+      if (d.axis === 'v') {
+        // Vertical-dominant: surrender so the native vertical scroll (still
+        // allowed — `touch-action: pan-y`) keeps working uninterrupted.
+        endSwipe();
+        return;
+      }
+
+      // The one line that actually matters (module header): a non-passive
+      // listener means the browser MUST ask this handler before it can
+      // commit to a native scroll for this touch — unlike a JSX
+      // `onTouchMove` (passive) or even a Pointer Events `preventDefault()`
+      // on this same genuinely-scrollable box, which don't carry that
+      // same-thread guarantee on every engine.
+      if (e.cancelable) e.preventDefault();
+
+      const dx = t.clientX - d.startX;
+      const { pageNum: curPageNum, pageCount: curPageCount } = swipeLatestRef.current;
+      const overscroll =
+        (curPageNum <= 1 && dx > 0) || (!!curPageCount && curPageNum >= curPageCount && dx < 0);
+      setSwipeDragX(overscroll ? dx / SWIPE_EDGE_DAMPING : dx);
+    };
+
+    const onTouchEnd = (e: TouchEvent): void => {
+      const d = swipeRef.current;
+      if (d === null) return;
+      const t = touchById(e.changedTouches, d.pointerId);
+      if (!t) return; // a DIFFERENT finger lifted — our gesture is untouched.
+
+      if (d.axis === 'h') {
+        // Decide off the raw event delta, not the damped state.
+        const dx = t.clientX - d.startX;
+        const width = pageBoxRef.current?.offsetWidth ?? 0;
+        const threshold = Math.max(SWIPE_MIN_SNAP_PX, width * SWIPE_SNAP_FRACTION);
+        const { goNext: next, goPrev: prev } = swipeLatestRef.current;
+        if (dx <= -threshold) next();
+        else if (dx >= threshold) prev();
+      }
+      endSwipe();
+    };
+
+    const onTouchCancel = (e: TouchEvent): void => {
+      const d = swipeRef.current;
+      if (d === null) return;
+      const t = touchById(e.changedTouches, d.pointerId);
+      if (!t) return;
+      endSwipe();
+    };
+
+    // `touchstart`/`touchend`/`touchcancel` never call `preventDefault` here,
+    // so they stay passive (no reason to force the main-thread round-trip
+    // for those); `touchmove` is the one that must not be.
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchCancel, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchCancel);
+    };
+  }, [swipeEligible, pageBoxEl]);
 
   const submitJump = (): void => {
     const n = Number(jumpValue);
@@ -849,28 +1064,6 @@ export default function UploadViewer(): JSX.Element {
       ) : (
         <>
           <div className="km-upload-viewer__toolbar">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={goPrev}
-              disabled={pageNum <= 1}
-              aria-label="Previous page"
-            >
-              <Icon name="chevron-left" size={14} />
-            </Button>
-            <span className="km-resources__pager-count" aria-live="polite">
-              {pageNum} / {pageCount}
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={goNext}
-              disabled={!pageCount || pageNum >= pageCount}
-              aria-label="Next page"
-            >
-              <Icon name="chevron-right" size={14} />
-            </Button>
-
             <input
               id="km-upload-jump"
               type="number"
@@ -1050,7 +1243,7 @@ export default function UploadViewer(): JSX.Element {
               // Belt-and-braces, mirrors SwipeCarousel: if a captured 'h'
               // drag has its capture revoked externally, drop the gesture
               // rather than stranding `swipeDragX` mid-drag.
-              onLostPointerCapture={endSwipe}
+              onLostPointerCapture={onPagePointerLost}
             >
               <div
                 className={`km-upload-viewer__pageDrag${
@@ -1072,6 +1265,45 @@ export default function UploadViewer(): JSX.Element {
               </div>
             </div>
           </CityCard>
+
+          {/* Task "arrows to the bottom": Prev/Next + the page-N-of-M readout
+              used to live in the TOP toolbar above the page image — a real
+              reach-stretch on a one-handed phone grip, and the whole reason
+              the swipe gesture matters as a fallback. This bar is the
+              thumb-reachable primary control, directly under the page
+              (normal flow, not fixed-to-viewport: the app's own `BottomNav`
+              already owns the true screen bottom — see `components/
+              BottomNav.tsx` — so this sits just above it, not on top of it).
+              Larger tap targets (`size="lg"`) than the top toolbar's dense
+              utility buttons; still real `<button>`s, so Tab/Enter/Space
+              keep working exactly as before. */}
+          <div
+            className="km-upload-viewer__pager"
+            role="group"
+            aria-label="Page navigation"
+          >
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={goPrev}
+              disabled={pageNum <= 1}
+              aria-label="Previous page"
+            >
+              <Icon name="chevron-left" size={18} />
+            </Button>
+            <span className="km-resources__pager-count" aria-live="polite">
+              {pageNum} / {pageCount}
+            </span>
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={goNext}
+              disabled={!pageCount || pageNum >= pageCount}
+              aria-label="Next page"
+            >
+              <Icon name="chevron-right" size={18} />
+            </Button>
+          </div>
           <p className="km-upload-viewer__hint">
             <Bilingual
               en="Swipe or use the arrows to change page."

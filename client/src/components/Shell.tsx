@@ -2,7 +2,10 @@
  * Shell — the layout chrome shared by every authenticated screen.
  *
  * Structure (top to bottom):
- *   1. 54px status-bar spacer (respects iOS `safe-area-inset-top`).
+ *   1. Status-bar spacer sized to ONLY `env(safe-area-inset-top)` — 0 on
+ *      any device/browser with no notch (the header sits flush at the very
+ *      top there), and exactly the real inset on notched devices (clears
+ *      the notch without adding decorative blank space above it).
  *   2. Scroll area where the routed screen body renders.
  *   3. Sticky BottomNav (4 tabs + the center LEARN hexagon) with the
  *      upward-expanding LearnMenu overlaying it when open (P1.1).
