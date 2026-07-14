@@ -71,15 +71,19 @@ import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { ErrorCard } from '../components/ErrorCard';
+import { Eyebrow } from '../components/Eyebrow';
 import { Flashcard } from '../components/Flashcard';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { SealStamp } from '../components/SealStamp';
+import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
-import { Topbar } from '../components/Topbar';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
 import { loadVocabMock, loadVocabListsMock } from '../data/mocks/review';
@@ -90,6 +94,7 @@ import { ApiError } from '../services/api';
 import { buildReviewSubmission } from '../lib/reviewSubmission';
 import { errorMessageFor } from '../lib/errorCopy';
 import { isInteractiveElement } from '../lib/interactiveElement';
+import { navItem } from '../lib/nav';
 import type {
   DefineExample,
   DueCard,
@@ -101,6 +106,11 @@ import type {
   VocabListEntryRow,
 } from '../types/domain';
 import './Review.css';
+
+/** Nav-manifest entry for this screen — the eyebrow the F-128 `PageHubHeader`
+ *  renders comes from here (nav.ts owns the en/kr pair), so it can never go
+ *  stale against the bottom-nav/LearnMenu label. */
+const FLASHCARDS_NAV = navItem('flashcards');
 
 // ─────────────────────────────────────────────────────────────
 // Study-deck model
@@ -254,8 +264,13 @@ const SEED_CORPORA: readonly VocabCorpus[] = [
 ];
 
 /** Cards inserted per corpus per click — under the server's InitBodySchema
- *  max (500); bounds how much one click commits to `vocab_cards`. */
-const SEED_LIMIT = 100;
+ *  max (500); bounds how much one click commits to `vocab_cards`.
+ *  F-156: was 100 (× 2 corpora = 200 cards added per click, the "not 200"
+ *  the ticket names) — a single tap silently dumping 200 fresh cards into
+ *  the FSRS queue front-loaded the review backlog far past a sane daily
+ *  session. 15 (× 2 = 30 max) keeps one click to a batch a user can
+ *  actually clear. */
+const SEED_LIMIT = 15;
 
 /** Result of the last "Add to review" click — success tally or error text. */
 interface SeedStatus {
@@ -316,7 +331,15 @@ function EmptyCard({
   hint?: string;
 }): JSX.Element {
   return (
-    <Card variant="flat" role="status">
+    // F-128 devices #3/#6 — a faint 기와 roof texture + a giant, near-
+    // invisible 한 watermark behind the empty-state copy (never in the a11y
+    // tree: giwa is a background-image, the watermark is CSS `content`).
+    <Card
+      variant="flat"
+      role="status"
+      className="km-giwa km-hangul-watermark"
+      data-glyph="韓"
+    >
       <div className="km-eyebrow" style={{ marginBottom: 6 }}>
         <Bilingual en="Nothing here yet" kr="아직 없어요" />
       </div>
@@ -657,14 +680,23 @@ export function Review(): JSX.Element {
   }
 
   return (
+    // F-128 device #8 — rain-neon sheen (Night only; no-op in Day).
     <section
-      className="screen km-review"
+      className="screen km-review km-rain-sheen"
       aria-labelledby="review-title"
-      style={{ position: 'relative', padding: '0 18px 32px' }}
+      style={{ position: 'relative' }}
     >
       {isMock ? <MockBadge /> : null}
       {back}
-      <Topbar krTitle="단어 카드" title="Vocab" titleId="review-title" />
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (Namsan skyline
+          strip + DancheongRail divider) instead of a bare `Topbar`. */}
+      <PageHubHeader
+        titleId="review-title"
+        eyebrow={
+          <Bilingual en={FLASHCARDS_NAV.eyebrow} kr={FLASHCARDS_NAV.krEyebrow} />
+        }
+        heading={<Bilingual en="Vocab" kr="단어 카드" />}
+      />
       {body}
     </section>
   );
@@ -717,58 +749,87 @@ function LandingView(props: LandingViewProps): JSX.Element {
   const hasDueWork =
     dueErrored || (dueCount !== null && dueCount > 0) || grammarCards.length > 0;
 
+  // F-157 — create-list is a Sheet popup behind a "New list" trigger
+  // (mirroring components/MyVocabLists.tsx's CreateListSheet), not an
+  // always-visible inline form. `onClose` is stable across renders — see
+  // MyVocabLists' doc comment for why an inline arrow here would silently
+  // steal focus back out of the name input after the first keystroke
+  // (useModalA11y's open/close effect depends on `onClose`'s identity).
+  const [createOpen, setCreateOpen] = useState(false);
+  const openCreate = useCallback(() => {
+    setCreateOpen(true);
+  }, []);
+  const closeCreate = useCallback(() => {
+    setCreateOpen(false);
+  }, []);
+
   return (
     <div className="km-review__landing">
-      {/* My lists — the page's primary surface (F-060). */}
+      {/* My lists — the page's primary surface (F-060). F-128 device #1/#2:
+          a CityCard signboard with the leading-edge DancheongRail. */}
       <section aria-labelledby="review-mylists-head">
-        <div className="km-eyebrow km-review__sectionHead" id="review-mylists-head">
-          <Bilingual kr="내 단어장" en="My lists" />
-        </div>
-
-        <CreateListCard onCreated={onCreated} />
-
-        {listsLoading ? (
-          <SkeletonCard height={160} />
-        ) : listsError ? (
-          <ErrorCard
-            message="Your lists couldn't be loaded."
-            onRetry={onRetryLists}
-          />
-        ) : (lists ?? []).length === 0 ? (
-          <EmptyCard
-            message="No lists yet."
-            krMessage="아직 목록이 없어요."
-            hint="Create one above, then add words from the library."
-          />
-        ) : (
-          <div className="km-review__listsCol">
-            {(lists ?? []).map((l) => (
-              <button
-                key={l.id}
-                type="button"
-                className="km-review__listRow km-card km-card--default focusring"
-                onClick={() => {
-                  onOpenList(l.id);
-                }}
-              >
-                <span className="km-review__listRowBody">
-                  <span className="kr km-review__listRowName">{l.name_kr}</span>
-                  {l.name_en !== null && l.name_en !== '' ? (
-                    <span className="km-review__listRowEn">{l.name_en}</span>
-                  ) : null}
-                </span>
-                <Pill>
-                  <Bilingual
-                    en={`${String(l.entry_count)} word${l.entry_count === 1 ? '' : 's'}`}
-                    kr={`단어 ${String(l.entry_count)}개`}
-                    compact
-                  />
-                </Pill>
-                <Icon name="chevron-right" size={16} />
-              </button>
-            ))}
+        <CityCard tone="accent" rail className="km-review__listsCard">
+          <div className="km-eyebrow km-review__sectionHead" id="review-mylists-head">
+            <Bilingual kr="내 단어장" en="My lists" />
           </div>
-        )}
+
+          {/* F-157 — trigger opens the create-list Sheet popup. */}
+          <div className="km-review__createTrigger">
+            <Button
+              variant="gold"
+              size="sm"
+              leadingIcon={<Icon name="plus" size={14} />}
+              onClick={openCreate}
+            >
+              <Bilingual en="New list" kr="새 목록" compact />
+            </Button>
+          </div>
+
+          {listsLoading ? (
+            <SkeletonCard height={160} />
+          ) : listsError ? (
+            <ErrorCard
+              message="Your lists couldn't be loaded."
+              onRetry={onRetryLists}
+            />
+          ) : (lists ?? []).length === 0 ? (
+            <EmptyCard
+              message="No lists yet."
+              krMessage="아직 목록이 없어요."
+              hint="Tap New list above, then add words from the library."
+            />
+          ) : (
+            <div className="km-review__listsCol">
+              {(lists ?? []).map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  className="km-review__listRow km-card km-card--default focusring"
+                  onClick={() => {
+                    onOpenList(l.id);
+                  }}
+                >
+                  <span className="km-review__listRowBody">
+                    <span className="kr km-review__listRowName">{l.name_kr}</span>
+                    {l.name_en !== null && l.name_en !== '' ? (
+                      <span className="km-review__listRowEn">{l.name_en}</span>
+                    ) : null}
+                  </span>
+                  <Pill>
+                    <Bilingual
+                      en={`${String(l.entry_count)} word${l.entry_count === 1 ? '' : 's'}`}
+                      kr={`단어 ${String(l.entry_count)}개`}
+                      compact
+                    />
+                  </Pill>
+                  <Icon name="chevron-right" size={16} />
+                </button>
+              ))}
+            </div>
+          )}
+        </CityCard>
+
+        <CreateListSheet open={createOpen} onClose={closeCreate} onCreated={onCreated} />
       </section>
 
       {/* Review queue — the FSRS due loop (Today's CTA lands here). Rendered
@@ -813,10 +874,15 @@ function LandingView(props: LandingViewProps): JSX.Element {
         </section>
       ) : null}
 
-      {/* B-013 corpus seeding — secondary utility, folded away by default. */}
+      {/* B-013 corpus seeding — secondary utility, folded away by default.
+          F-128 device #1/#2: CityCard signboard surface, matching the same
+          treatment ReviewVocab gives its own CollapsibleTile sections. */}
       <CollapsibleTile
         title={<Bilingual en="Add to review" kr="복습에 추가" />}
         defaultCollapsed
+        surface="city"
+        tone="accent"
+        rail
       >
         <div className="km-review__seedBody">
           <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
@@ -853,13 +919,30 @@ function LandingView(props: LandingViewProps): JSX.Element {
   );
 }
 
-/** Create-a-list card (F-060; shares the POST /vocab/lists plumbing with the
- *  library's F-048 inline create). Korean name required, English optional. */
-function CreateListCard({
-  onCreated,
-}: {
+/**
+ * F-157 — create-a-list Sheet popup (was an always-visible inline
+ * `CreateListCard`). Shares the POST /vocab/lists plumbing with the
+ * library's F-048 inline create; Korean name required, English optional.
+ * Hardcodes `kind: 'vocab'` — the flashcards page only ever studies vocab
+ * decks, so (unlike `components/MyVocabLists.tsx`'s multi-kind mount) there
+ * is no kind picker to render here at all.
+ *
+ * Own component, own state (not inlined in `LandingView`): keeping the
+ * keystroke state OUT of the component that constructs the `<Sheet>`'s
+ * `onClose` matters — see MyVocabLists.tsx's `CreateListSheet` doc comment
+ * for the exact focus-stealing bug this split avoids.
+ */
+interface CreateListSheetProps {
+  open: boolean;
+  onClose: () => void;
   onCreated: (list: ServerVocabList) => void;
-}): JSX.Element {
+}
+
+function CreateListSheet({
+  open,
+  onClose,
+  onCreated,
+}: CreateListSheetProps): JSX.Element {
   const [nameKr, setNameKr] = useState('');
   const [nameEn, setNameEn] = useState('');
   const [creating, setCreating] = useState(false);
@@ -879,68 +962,94 @@ function CreateListCard({
       });
       setNameKr('');
       setNameEn('');
+      onClose();
       onCreated(res.list);
     } catch (err) {
       setError(errorMessageFor(err, 'Could not create the list.'));
     } finally {
       setCreating(false);
     }
-  }, [nameKr, nameEn, creating, onCreated]);
+  }, [nameKr, nameEn, creating, onClose, onCreated]);
 
   return (
-    <Card variant="flat" className="km-review__create">
-      <div className="km-review__createRow">
+    <Sheet open={open} onClose={onClose} ariaLabel="New list">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>
+              <Bilingual en="New list" kr="새 목록" />
+            </Eyebrow>
+            <div className="kr-display km-review__sheetTitle">
+              <Bilingual en="Create a list" kr="목록 만들기" />
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close new list"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+        <hr className="hr-double km-review__sheetRule" />
+
+        <div className="km-review__createRow">
+          <input
+            type="text"
+            value={nameKr}
+            onChange={(e) => {
+              setNameKr(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void create();
+              }
+            }}
+            placeholder="New list name (Korean)"
+            className="kr focusring km-review__input"
+            aria-label="New list name"
+            maxLength={120}
+            disabled={creating}
+          />
+        </div>
         <input
           type="text"
-          value={nameKr}
+          value={nameEn}
           onChange={(e) => {
-            setNameKr(e.target.value);
+            setNameEn(e.target.value);
           }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              void create();
-            }
-          }}
-          placeholder="New list name (Korean)"
-          className="kr focusring km-review__input"
-          aria-label="New list name"
+          placeholder="English label (optional)"
+          className="focusring km-review__input"
+          aria-label="English label for the new list"
           maxLength={120}
           disabled={creating}
         />
-        <Button
-          variant="gold"
-          size="sm"
-          onClick={() => {
-            void create();
-          }}
-          disabled={nameKr.trim().length === 0 || creating}
-        >
-          {creating ? (
-            <Bilingual en="Creating…" kr="만드는 중…" compact />
-          ) : (
-            <Bilingual en="Create list" kr="목록 만들기" compact />
-          )}
-        </Button>
-      </div>
-      <input
-        type="text"
-        value={nameEn}
-        onChange={(e) => {
-          setNameEn(e.target.value);
-        }}
-        placeholder="English label (optional)"
-        className="focusring km-review__input"
-        aria-label="English label for the new list"
-        maxLength={120}
-        disabled={creating}
-      />
-      {error ? (
-        <div role="alert" className="km-review__inlineError">
-          {error}
+        {error ? (
+          <div role="alert" className="km-review__inlineError">
+            {error}
+          </div>
+        ) : null}
+
+        <div className="km-review__sheetActions">
+          <Button
+            variant="gold"
+            size="md"
+            onClick={() => {
+              void create();
+            }}
+            disabled={nameKr.trim().length === 0 || creating}
+          >
+            {creating ? (
+              <Bilingual en="Creating…" kr="만드는 중…" />
+            ) : (
+              <Bilingual en="Create list" kr="목록 만들기" />
+            )}
+          </Button>
         </div>
-      ) : null}
-    </Card>
+      </div>
+    </Sheet>
   );
 }
 
@@ -1360,8 +1469,6 @@ function StudySession({
 
   const complete = idx >= deck.length;
   const card = complete ? null : (deck[idx] ?? null);
-  const progressPct =
-    deck.length > 0 ? Math.min(100, (idx / deck.length) * 100) : 0;
 
   // ── B-022: "More examples" tile state ────────────────────────
   // The tile expands UNDERNEATH the answer (the co-located CSS grid-stacks
@@ -1600,165 +1707,162 @@ function StudySession({
         </Pill>
       </Card>
 
-      {/* Progress */}
+      {/* Progress — F-128 device #5: the subway-line station-dot metaphor
+          replaces the plain fill bar. */}
       <div className="km-review__progress">
         <div className="km-review__progressMeta">
           <span>
             {idx + 1} / {deck.length}
           </span>
         </div>
-        {/* The accessible name lives ON the progressbar element — an
-            aria-label on the role-less wrapper computes to nothing. */}
-        <div
-          className="km-review__progressBar"
-          role="progressbar"
-          aria-label="Session progress"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(progressPct)}
-        >
-          <div
-            className="km-review__progressFill"
-            style={{ width: `${String(progressPct)}%` }}
-          />
-        </div>
+        <SubwayProgress
+          steps={deck.length}
+          current={idx}
+          tone="accent"
+          label="Session progress"
+          valueText={`Card ${String(idx + 1)} of ${String(deck.length)}`}
+        />
       </div>
 
-      {/* Flashcard */}
-      <Flashcard
-        flipped={flipped}
-        onFlip={flip}
-        front={
-          <div className="km-review__front">
-            {card.proficiency !== undefined ? (
-              <div className="km-eyebrow">{card.proficiency}</div>
-            ) : null}
-            <div className="kr-display km-review__word">{card.kr}</div>
-            <Button variant="ghost" size="sm">
-              <Bilingual
-                en="Reveal · spacebar"
-                kr="정답 보기 · 스페이스바"
-                compact
-              />
-            </Button>
-          </div>
-        }
-        back={
-          // B-014: mount the answer face only while flipped, so the next
-          // card's answer can't flash through the flip-back rotation and the
-          // answer stays out of the a11y tree until revealed.
-          flipped ? (
-            <div className="km-review__back">
-              <div className="km-review__backHead">
-                <div className="kr-display km-review__backWord">{card.kr}</div>
-                {card.proficiency !== undefined ? (
-                  <Pill>{card.proficiency}</Pill>
-                ) : null}
-              </div>
-              <div className="km-review__en">{card.en}</div>
-              {card.source !== undefined ? (
-                <>
-                  <hr className="hr" />
-                  <div>
-                    <div className="km-eyebrow">
-                      <Bilingual en="Seen in" kr="출처" />
-                    </div>
-                    <div className="km-review__sourceLabel">{card.source}</div>
-                  </div>
-                </>
+      {/* Flashcard — F-128 device #1: a CityCard-tone signboard/hanji-paper
+          surface (Review.css overrides `.km-flashcard__face` under this
+          scope), flip interaction unchanged. */}
+      <div className="km-review__flashcardWrap km-tone--accent">
+        <Flashcard
+          flipped={flipped}
+          onFlip={flip}
+          front={
+            <div className="km-review__front">
+              {card.proficiency !== undefined ? (
+                <div className="km-eyebrow">{card.proficiency}</div>
               ) : null}
-              {card.exKr !== '' ? (
-                <div>
-                  <div className="kr km-review__ex">{card.exKr}</div>
-                  <div className="km-review__exEn">{card.exEn}</div>
+              <div className="kr-display km-review__word">{card.kr}</div>
+              <Button variant="ghost" size="sm">
+                <Bilingual
+                  en="Reveal · spacebar"
+                  kr="정답 보기 · 스페이스바"
+                  compact
+                />
+              </Button>
+            </div>
+          }
+          back={
+            // B-014: mount the answer face only while flipped, so the next
+            // card's answer can't flash through the flip-back rotation and the
+            // answer stays out of the a11y tree until revealed.
+            flipped ? (
+              <div className="km-review__back">
+                <div className="km-review__backHead">
+                  <div className="kr-display km-review__backWord">{card.kr}</div>
+                  {card.proficiency !== undefined ? (
+                    <Pill>{card.proficiency}</Pill>
+                  ) : null}
                 </div>
-              ) : null}
-              <button
-                type="button"
-                onClick={(e) => {
-                  // Stop bubbling so neither the flashcard's flip nor the
-                  // page-level dismiss swallows the toggle gesture.
-                  e.stopPropagation();
-                  if (drawer) closeDrawer();
-                  else openDrawer();
-                }}
-                className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawerBtn"
-                aria-expanded={drawer}
-              >
-                <Icon name="info" size={14} />{' '}
-                {drawer ? (
-                  <Bilingual en="Hide examples" kr="예문 접기" compact />
-                ) : (
-                  <Bilingual en="More examples" kr="예문 더 보기" compact />
-                )}
-              </button>
-              {drawer ? (
-                <div className="km-review__drawer">
-                  <div className="km-review__drawerHead">
-                    <span className="km-eyebrow">
-                      <Bilingual en="Examples" kr="예문" compact />
-                    </span>
-                    <button
-                      type="button"
-                      className="km-btn km-btn--ghost km-btn--sm focusring"
-                      aria-label="Close examples"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeDrawer();
-                      }}
-                    >
-                      <Icon name="close" size={12} />
-                    </button>
-                  </div>
-                  {examplesLoading ? (
-                    <div className="km-review__drawerEn">
-                      <Bilingual en="Loading examples…" kr="예문을 불러오는 중…" />
+                <div className="km-review__en">{card.en}</div>
+                {card.source !== undefined ? (
+                  <>
+                    <hr className="hr" />
+                    <div>
+                      <div className="km-eyebrow">
+                        <Bilingual en="Seen in" kr="출처" />
+                      </div>
+                      <div className="km-review__sourceLabel">{card.source}</div>
                     </div>
-                  ) : examplesFailed ? (
-                    <div role="alert" className="km-review__drawerEn">
-                      <Bilingual
-                        en="Couldn't load examples."
-                        kr="예문을 불러오지 못했어요."
-                      />{' '}
+                  </>
+                ) : null}
+                {card.exKr !== '' ? (
+                  <div>
+                    <div className="kr km-review__ex">{card.exKr}</div>
+                    <div className="km-review__exEn">{card.exEn}</div>
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    // Stop bubbling so neither the flashcard's flip nor the
+                    // page-level dismiss swallows the toggle gesture.
+                    e.stopPropagation();
+                    if (drawer) closeDrawer();
+                    else openDrawer();
+                  }}
+                  className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawerBtn"
+                  aria-expanded={drawer}
+                >
+                  <Icon name="info" size={14} />{' '}
+                  {drawer ? (
+                    <Bilingual en="Hide examples" kr="예문 접기" compact />
+                  ) : (
+                    <Bilingual en="More examples" kr="예문 더 보기" compact />
+                  )}
+                </button>
+                {drawer ? (
+                  <div className="km-review__drawer">
+                    <div className="km-review__drawerHead">
+                      <span className="km-eyebrow">
+                        <Bilingual en="Examples" kr="예문" compact />
+                      </span>
                       <button
                         type="button"
                         className="km-btn km-btn--ghost km-btn--sm focusring"
+                        aria-label="Close examples"
                         onClick={(e) => {
-                          // Same bubbling hazard as the toggle: the card-wide
-                          // flip and the page-level dismiss both sit above us.
                           e.stopPropagation();
-                          openDrawer();
+                          closeDrawer();
                         }}
                       >
-                        <Bilingual en="Try again" kr="다시 시도" compact />
+                        <Icon name="close" size={12} />
                       </button>
                     </div>
-                  ) : (krdictExamples ?? []).length > 0 ? (
-                    (krdictExamples ?? []).map((ex, i) => (
-                      <div key={i} className="km-review__drawerRow">
-                        <div className="kr">{ex.korean}</div>
-                        {ex.english ? (
-                          <div className="km-review__drawerEn">{ex.english}</div>
-                        ) : null}
+                    {examplesLoading ? (
+                      <div className="km-review__drawerEn">
+                        <Bilingual en="Loading examples…" kr="예문을 불러오는 중…" />
                       </div>
-                    ))
-                  ) : (
-                    <div className="km-review__drawerEn">
-                      <Bilingual
-                        en="No additional examples."
-                        kr="추가 예문이 없어요."
-                      />
-                    </div>
-                  )}
-                  {card.notes !== undefined ? (
-                    <div className="km-review__notes">{card.notes}</div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null
-        }
-      />
+                    ) : examplesFailed ? (
+                      <div role="alert" className="km-review__drawerEn">
+                        <Bilingual
+                          en="Couldn't load examples."
+                          kr="예문을 불러오지 못했어요."
+                        />{' '}
+                        <button
+                          type="button"
+                          className="km-btn km-btn--ghost km-btn--sm focusring"
+                          onClick={(e) => {
+                            // Same bubbling hazard as the toggle: the card-wide
+                            // flip and the page-level dismiss both sit above us.
+                            e.stopPropagation();
+                            openDrawer();
+                          }}
+                        >
+                          <Bilingual en="Try again" kr="다시 시도" compact />
+                        </button>
+                      </div>
+                    ) : (krdictExamples ?? []).length > 0 ? (
+                      (krdictExamples ?? []).map((ex, i) => (
+                        <div key={i} className="km-review__drawerRow">
+                          <div className="kr">{ex.korean}</div>
+                          {ex.english ? (
+                            <div className="km-review__drawerEn">{ex.english}</div>
+                          ) : null}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="km-review__drawerEn">
+                        <Bilingual
+                          en="No additional examples."
+                          kr="추가 예문이 없어요."
+                        />
+                      </div>
+                    )}
+                    {card.notes !== undefined ? (
+                      <div className="km-review__notes">{card.notes}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null
+          }
+        />
+      </div>
 
       {/* FSRS rating buttons */}
       {flipped ? (
@@ -1835,7 +1939,9 @@ function SessionComplete({
   return (
     <section className="km-review__complete" aria-labelledby="review-complete-head">
       <Card variant="default" className="km-review__completeCard">
-        <SealStamp char="完" size="sm" />
+        {/* F-128 device #7 — the milestone (hand-stamped) 印 treatment,
+            not the plain section-anchor badge: this IS a completion mark. */}
+        <SealStamp milestone char="完" size="lg" tone="accent" />
         <h2 id="review-complete-head" className="km-review__completeTitle">
           <Bilingual en="Session complete" kr="세션 완료" />
         </h2>
@@ -1846,6 +1952,15 @@ function SessionComplete({
           ) : null}
         </div>
 
+        {/* F-128 device #9 — a mother-of-pearl shimmer accent under the
+            session's one hero number (the real achievement here), used
+            sparingly as the jewel, not the wallpaper: a purely decorative
+            bar, never behind the readable count itself (no contrast risk
+            against a moving multi-hue gradient). */}
+        <span
+          className="km-review__completeShimmer km-najeon km-najeon--shimmer"
+          aria-hidden="true"
+        />
         <div className="km-review__completeCount">
           <Bilingual
             en={`${String(reviewed)} card${reviewed === 1 ? '' : 's'} reviewed`}

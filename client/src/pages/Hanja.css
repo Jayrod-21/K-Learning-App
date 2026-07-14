@@ -1,9 +1,142 @@
 /**
  * Hanja page — Phase 3C-1 additions (flashcard drill, lists, drawing drill,
- * quick-nav, back button spacing). Co-located per the redesign convention;
- * the pre-3C rules (band/feature/index/detail sheet) stay in styles/index.css.
+ * quick-nav, back button spacing), plus the Wave-2 "Seoul Day & Night"
+ * reskin + ticket set (F-128/F-164..F-170). Co-located per the redesign
+ * convention; the pre-3C rules (band/feature/index/detail sheet) stay in
+ * the SHARED `styles/index.css` — out of this pass's edit scope. Wherever
+ * this file needs to change one of those shared rules (F-164 spacing,
+ * F-129 mobile, F-167 mastery color), it does so via a `.screen.km-hanja …`
+ * prefixed override: that compound selector's specificity (0,2,1 or more)
+ * beats the shared file's bare `.km-hanja__foo` rules (0,1,0/1) regardless
+ * of stylesheet load order, so the override is deterministic rather than
+ * relying on import order between two separate files.
  * Everything is tokenized so both themes + every accent preset come free.
  */
+
+/* ── F-129 mobile safety net — this page never scrolls sideways ──── */
+.screen.km-hanja {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+/* ── F-164 spacing — tightened gutters + vertical rhythm ─────────── */
+.screen.km-hanja > * + * {
+  margin-top: 12px;
+}
+.screen.km-hanja .km-hanja__band,
+.screen.km-hanja .km-hanja__feature-card,
+.screen.km-hanja .km-hanja__filters,
+.screen.km-hanja .km-hanja__grid,
+.screen.km-hanja .km-hanja__viewtoggle,
+.screen.km-hanja .km-hanja__index-empty,
+.screen.km-hanja .km-hanja__skeleton,
+.screen.km-hanja .km-hanja__error,
+.screen.km-hanja .km-hanja__empty {
+  margin-left: 16px;
+  margin-right: 16px;
+}
+.screen.km-hanja .km-hanja__band {
+  padding: 14px 16px;
+}
+.screen.km-hanja .km-hanja__grid {
+  gap: 6px;
+}
+
+/* Narrow-viewport clamp on the two fixed-size glyph squares (F-129) — the
+ * rest of the page already uses relative units/auto-fit grids, so these are
+ * the only two literal-px risks on the page. */
+@media (max-width: 380px) {
+  .screen.km-hanja .km-hanja__feature-square {
+    width: 104px;
+    height: 104px;
+  }
+  .screen.km-hanja .km-hanja__feature-char {
+    font-size: 64px;
+  }
+  .screen.km-hanja .km-hanja__detail-char {
+    font-size: 56px;
+  }
+}
+
+/* ── F-128 — CityCard-hosted featured card ────────────────────────
+ * `.km-hanja__feature` (the shared rule, built for a raw <button>) sets its
+ * own background/border/box-shadow/cursor — exactly what CityCard's own
+ * chrome supplies for `.km-hanja__feature-card`. Rather than fight that
+ * cascade, the outer wrapper uses a NEW classname (never touched by the
+ * shared rule) and the inner button owns the full-bleed click target,
+ * padding, and text alignment instead — the same "zero outer padding, the
+ * button owns it" idiom `CollapsibleTile` already uses. */
+.km-hanja__feature-card {
+  padding: 0;
+}
+.km-hanja__feature-btn {
+  display: block;
+  width: 100%;
+  padding: 22px 20px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ── F-167 — index-tile mastery color, remapped onto the real green/
+ * yellow/red semantic families ───────────────────────────────────
+ * `HanjaCell` (shared component, out of this page's edit scope) colors its
+ * `practicing` state off `--vermilion` — which TRACKS the user's accent
+ * picker (coral/blue/mint), not a fixed semantic. That means a "practicing"
+ * tile could read blue or mint depending on the user's accent choice —
+ * exactly the F-131-adjacent bug the design doc's mastery-color contract
+ * exists to avoid. This override pins the three states to the FIXED
+ * moss/ochre/danger families (green/yellow/red) the ticket calls for,
+ * regardless of accent — scoped to the index grid only via the
+ * `.km-hanja__grid` ancestor so it never touches any other consumer of
+ * `.km-hanjacell--*` (there are none today, but the override stays scoped
+ * on principle). Both `--moss-ink`/`--ochre-ink`/`--danger-ink` (used for
+ * the caption text elsewhere on this page) and the raw hues here are
+ * WCAG-AA-checked token pairs already in production on Today/Progress. */
+.screen.km-hanja .km-hanja__grid .km-hanjacell--banked {
+  border-top-color: var(--moss);
+}
+.screen.km-hanja .km-hanja__grid .km-hanjacell--practicing {
+  border-top-color: var(--ochre);
+}
+.screen.km-hanja .km-hanja__grid .km-hanjacell--new {
+  border-top-color: var(--danger);
+}
+
+/* ── F-168 — index-tile "+" quick-add ─────────────────────────────── */
+.km-hanja__cell-wrap {
+  position: relative;
+}
+.km-hanja__cell-add {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  /* 24px visual glyph box, 44px effective hit area via padding — WCAG
+   * touch-target guidance without a visually oversized button. */
+  width: 24px;
+  height: 24px;
+  padding: 10px;
+  margin: -10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: var(--ink-2);
+  color: var(--paper-mute);
+  cursor: pointer;
+  transition:
+    color 140ms,
+    background 140ms;
+}
+.km-hanja__cell-add:hover {
+  /* Accent-tracking (F-131) — never a fixed hue. */
+  color: var(--on-vermilion);
+  background: var(--vermilion);
+}
 
 /* ── Back button spacing (nested views) ─────────────────────── */
 .km-hanja__back {
@@ -93,7 +226,138 @@
   color: var(--vermilion-ink);
 }
 
+/* ── F-166/F-168 popups (quick-add sheet, create-list sheet) ── */
+.km-hanja__quickadd {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.km-hanja__quickadd-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.km-hanja__quickadd-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-1);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms;
+}
+.km-hanja__quickadd-row:hover {
+  border-color: var(--vermilion);
+}
+.km-hanja__quickadd-row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.km-hanja__quickadd-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.km-hanja__quickadd-empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--paper-mute);
+}
+
+/* ── F-166 bulk add-hanja picker ──────────────────────────────── */
+.km-hanja__picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+.km-hanja__picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--paper-mute);
+}
+.km-hanja__picker-search .km-hanja__input {
+  margin: 0;
+}
+.km-hanja__picker-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.km-hanja__picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--ink-1);
+  color: var(--paper);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms,
+    background 140ms;
+}
+.km-hanja__picker-row:hover {
+  border-color: var(--vermilion);
+}
+.km-hanja__picker-row--on {
+  border-color: var(--vermilion);
+  background: var(--vermilion-soft);
+}
+.km-hanja__picker-char {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.km-hanja__picker-sound {
+  color: var(--vermilion-ink);
+  flex-shrink: 0;
+}
+.km-hanja__picker-gloss {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+.km-hanja__picker-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--paper-mute);
+}
+
 /* ── Study view (flashcard drill) ───────────────────────────── */
+.km-hanja__study-subway {
+  margin-bottom: 4px;
+}
 .km-hanja__study-progress {
   display: flex;
   justify-content: space-between;
@@ -211,6 +475,10 @@
 }
 
 /* ── Lists index + list detail rows ─────────────────────────── */
+.km-hanja__lists-head {
+  display: flex;
+  justify-content: flex-end;
+}
 .km-hanja__lists-col {
   display: flex;
   flex-direction: column;
@@ -333,6 +601,60 @@
   margin-top: 10px;
   font-size: 13px;
   color: var(--paper-dim);
+}
+.km-hanja__draw-subway {
+  margin: 4px 0;
+}
+/* F-165 — the Anki right/wrong judgment row. Right reads moss (success);
+ * Wrong reads danger (vermilion/coral) — FIXED semantics, deliberately not
+ * accent-tracking (mirrors the existing FSRS rating buttons' precedent:
+ * `.km-hanja__rating--easy`/`--again` already pin moss/vermilion the same
+ * way). Min 44px tall — a real touch target, not just a visual button. */
+.km-hanja__draw-judge {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+.km-hanja__draw-right,
+.km-hanja__draw-wrong {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 12px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 140ms;
+}
+.km-hanja__draw-right {
+  color: var(--moss-ink);
+}
+.km-hanja__draw-right:hover:not(:disabled) {
+  border-color: var(--moss);
+}
+.km-hanja__draw-right:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.km-hanja__draw-wrong {
+  color: var(--danger-ink);
+}
+.km-hanja__draw-wrong:hover {
+  border-color: var(--danger);
+}
+.km-hanja__draw-mastery-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--paper-mute);
+  text-align: center;
+  line-height: 1.5;
 }
 .km-hanja__draw-stage {
   position: relative;

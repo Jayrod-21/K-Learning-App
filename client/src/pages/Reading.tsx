@@ -73,6 +73,28 @@
  *     `retryAfter`) renders via `errorMessageFor`; the Generate button stays
  *     enabled as the retry, and the translate sheet's error state carries its
  *     own Retry button.
+ *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4 skyline + #2 rail, `components/PageHubHeader.tsx`) replaces the bare
+ * `Topbar`, matching every other reskinned page's hub-header recipe. The
+ * chapter/story reader body is a `CityCard` signboard/hanji-paper surface
+ * (device #1) with a leading `DancheongRail` (device #2, via the card's
+ * `rail` prop) instead of a plain `Card` — this is the page's primary
+ * text-heavy surface, so the passage copy itself additionally gets the
+ * doc's Day editorial-serif treatment (`.km-reading__passage-text`,
+ * Reading.css) capped at a legible ~65ch measure; Night stays on the app's
+ * rounded body face — glow is reserved for the card edge and headings, never
+ * the paragraph copy, so the reading surface itself stays calm in both
+ * worlds. The F-069 Resume callout is a `blue`-tone CityCard (mirrors the
+ * design mock's "Resume" signboard) and the F-068 story generator is a
+ * `mint`-tone, `feat` CityCard — the page's one hero CTA, so it is also the
+ * "sparing jewel" spot for the mother-of-pearl `.km-najeon` shimmer (device
+ * #9) on its spark glyph. The page root carries the ambient `.km-rain-sheen`
+ * (device #8, Night-only per its own CSS gate); every genuine empty state
+ * (no ready uploads, no chapters, no passages, no stories) carries
+ * `.km-giwa`/`.km-hangul-watermark` (devices #3/#6), matching the
+ * Progress/Uploads/Mistakes/ReviewGrammar precedent. No shared file needed
+ * changing — every device consumed here already exists post-foundation.
  */
 import {
   useCallback,
@@ -89,15 +111,16 @@ import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
 import { Tabs } from '../components/Tabs';
 import { Tapword } from '../components/Tapword';
-import { Topbar } from '../components/Topbar';
 import { WordPopover } from '../components/WordPopover';
 import type { WordPopoverData } from '../components/WordPopover';
 import { useToast } from '../components/useToast';
@@ -235,18 +258,16 @@ export default function Reading(): JSX.Element {
 
   return (
     <section
-      className="screen km-reading"
+      className="screen km-reading km-rain-sheen"
       aria-labelledby="reading-title"
-      style={{ padding: '0 18px 32px' }}
     >
       {back !== null ? <BackButton to={back.to} label={back.label} /> : null}
-      <Topbar
-        krTitle="읽기"
-        title="Reading"
+      <PageHubHeader
         titleId="reading-title"
         eyebrow={
           <Bilingual en={READING_NAV.eyebrow} kr={READING_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Reading" kr="읽기" />}
       />
       {view}
     </section>
@@ -338,15 +359,15 @@ function BookShelf({
   }
   if (books.length === 0) {
     return (
-      <Card variant="flat" style={{ padding: '20px 22px' }}>
-        <p
-          style={{
-            margin: '0 0 14px',
-            fontSize: 14,
-            lineHeight: 1.6,
-            color: 'var(--paper-dim)',
-          }}
-        >
+      // Devices #3/#6 (giwa texture + hangul watermark) on the genuine
+      // empty state — matches the Progress/Uploads/Mistakes/ReviewGrammar
+      // precedent (never applied to a loading/error state).
+      <Card
+        variant="flat"
+        className="km-reading__empty km-giwa km-hangul-watermark"
+        data-glyph="책"
+      >
+        <p className="km-reading__empty-copy">
           <Bilingual
             en="Upload a book to start reading."
             kr="읽기를 시작하려면 책을 업로드하세요."
@@ -555,7 +576,10 @@ function ChapterPicker({
       </div>
 
       {resumeChapter !== null ? (
-        <div className="km-reading__resume">
+        // F-069 resume callout as a `blue`-tone CityCard signboard/hanji-paper
+        // card (device #1/#2) — mirrors the design mock's dedicated "Resume"
+        // sign, distinct from the plain chapter-list rows below it.
+        <CityCard tone="blue" rail className="km-reading__resume">
           <Button
             variant="gold"
             size="md"
@@ -569,11 +593,14 @@ function ChapterPicker({
               kr="이어서 읽기"
             />
           </Button>
-        </div>
+        </CityCard>
       ) : null}
 
       {ordered.length === 0 ? (
-        <p className="km-reference__empty">
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="목차"
+        >
           <Bilingual
             en="No chapters yet for this book."
             kr="아직 이 책의 목차가 없어요."
@@ -792,10 +819,12 @@ function PassageBody({
     [body],
   );
   return (
-    <p
-      className="kr km-reference__row-kr"
-      style={{ margin: '0 0 4px', lineHeight: 1.9 }}
-    >
+    // `km-reading__passage-text` (Reading.css) carries the doc's Day
+    // editorial-serif intent + a ~65ch legibility cap for this page's
+    // primary text-heavy surface — layered on TOP of the shared
+    // `.km-reference__row-kr` sizing/color so no other consumer of that
+    // shared class is affected.
+    <p className="kr km-reference__row-kr km-reading__passage-text">
       {lines.map((line, i) => (
         <span key={i}>
           {i > 0 ? <br /> : null}
@@ -907,10 +936,22 @@ function TranslateSheet({
 
   return (
     <Sheet open onClose={onClose} ariaLabel="Passage translation">
-      <div className="km-reading__translate-sheet">
-        <Eyebrow>
-          <Bilingual en="Translation" kr="번역" compact />
-        </Eyebrow>
+      {/* Batch-2 fix-pass precedent (Mistakes/ReviewGrammar) — the shared
+          `.km-review__sheet*` classes (index.css) drive the head layout +
+          body padding here too, instead of a hand-rolled duplicate. The
+          Close action moves to this top-right head row (every other Sheet
+          on the app puts dismissal there); `.km-reading__translate-sheet`
+          rides as an EXTRA class for the one Reading-specific need (the
+          flex-column stack of src/result blocks below it). */}
+      <div className="km-review__sheetBody km-reading__translate-sheet">
+        <div className="km-review__sheetHead">
+          <Eyebrow>
+            <Bilingual en="Translation" kr="번역" compact />
+          </Eyebrow>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
         <p className="kr km-reading__translate-src">{text}</p>
         {state.phase === 'loading' ? (
           <div className="km-reading__translate-stub" role="status">
@@ -921,9 +962,6 @@ function TranslateSheet({
         ) : (
           <p className="km-reading__translate-result">{state.translation}</p>
         )}
-        <Button variant="ghost" size="sm" onClick={onClose}>
-          Close
-        </Button>
       </div>
     </Sheet>
   );
@@ -1065,14 +1103,23 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
       </div>
 
       {orderedPassages.length === 0 ? (
-        <p className="km-reference__empty">
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="본문"
+        >
           <Bilingual
             en="No passages yet for this chapter."
             kr="아직 이 장의 본문이 없어요."
           />
         </p>
       ) : (
-        <Card variant="default" style={{ padding: '20px 22px' }}>
+        // The chapter's reading surface: a CityCard signboard (Night) /
+        // hanji-paper (Day) card (device #1) with a leading DancheongRail
+        // (device #2). `tone="accent"` matches the design mock's default
+        // (unmodified) passage sign — the accent glow lives on the CARD
+        // EDGE only; the body copy itself stays calm via
+        // `.km-reading__passage-text` (PassageBody, above).
+        <CityCard tone="accent" rail className="km-reading__reader-card">
           {orderedPassages.map((passage) => (
             <TranslatablePassage
               key={passage.id}
@@ -1083,7 +1130,7 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
               onTranslate={setTranslateText}
             />
           ))}
-        </Card>
+        </CityCard>
       )}
 
       {popover}
@@ -1190,9 +1237,22 @@ function StoryGenerator({
   const busy = state.phase === 'busy';
 
   return (
-    <div className="km-reading__gen" aria-busy={busy || undefined}>
+    // The page's one hero CTA (F-068 Claude generation) — a `mint`-tone,
+    // `feat` CityCard signboard/hanji-paper card (devices #1/#2), mirroring
+    // the design mock's dedicated "Generate a short story" sign.
+    <CityCard
+      tone="mint"
+      rail
+      feat
+      className="km-reading__gen"
+      aria-busy={busy || undefined}
+    >
       <div className="km-reading__gen-head" id={`${uid}-label`}>
-        <Icon name="spark" size={14} />
+        {/* Device #9 — mother-of-pearl shimmer on the hero CTA's spark
+            glyph. Sparing by design: this is the page's ONLY najeon use. */}
+        <span className="km-reading__gen-spark km-najeon km-najeon--shimmer">
+          <Icon name="spark" size={14} />
+        </span>
         <Bilingual en="New story from Claude" kr="새 이야기 만들기" />
       </div>
 
@@ -1272,7 +1332,7 @@ function StoryGenerator({
           {state.message}
         </div>
       ) : null}
-    </div>
+    </CityCard>
   );
 }
 
@@ -1347,7 +1407,10 @@ function StoriesSection({
       ) : error !== null ? (
         <ErrorCard message={error} onRetry={refetch} />
       ) : stories.length === 0 ? (
-        <p className="km-reference__empty">
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="이야기"
+        >
           <Bilingual
             en="No stories yet — generate your first one above."
             kr="아직 이야기가 없어요. 위에서 첫 이야기를 만들어 보세요."
@@ -1474,7 +1537,14 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
         </p>
       ) : null}
 
-      <Card variant="default" style={{ padding: '20px 22px', marginTop: 14 }}>
+      {/* Same reading-surface treatment as the chapter reader's CityCard
+          (device #1/#2) — one consistent "reading surface" identity across
+          both the uploaded-book and AI-story readers. */}
+      <CityCard
+        tone="accent"
+        rail
+        className="km-reading__reader-card km-reading__reader-card--story"
+      >
         {paragraphs.map((block, i) => (
           <TranslatablePassage
             // Index keys are safe here: the list is derived, static per
@@ -1487,7 +1557,7 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
             onTranslate={setTranslateText}
           />
         ))}
-      </Card>
+      </CityCard>
 
       {popover}
       {translateText !== null ? (

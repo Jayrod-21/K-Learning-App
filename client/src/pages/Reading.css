@@ -5,7 +5,20 @@
  * Tokenized throughout so both themes and every accent preset come free;
  * shared list-row paint (`.km-reference__*` / `.km-resources__*`) stays in
  * styles/index.css — only Reading-specific layout lives here.
+ *
+ * F-128 reskin ("Seoul Day & Night") + F-129 (mobile) + F-131 (accent-driven
+ * hover, not hardcoded) — see Reading.tsx's file-top doc comment for the full
+ * device rundown (CityCard/DancheongRail/PageHubHeader/giwa/hangul-watermark/
+ * rain-sheen/najeon). Every rule below is token-driven only — no hard-coded
+ * hex — and every width uses relative units/flex so nothing clips at the
+ * ~360px mobile floor.
  */
+
+/* ── Page shell ──────────────────────────────────────────────────────── */
+
+.km-reading {
+  padding: 0 18px 32px;
+}
 
 /* ── Typed sections (F-067) ─────────────────────────────────── */
 
@@ -21,8 +34,23 @@
   color: var(--paper-dim);
 }
 
+/* Empty state (no READY uploads at all) — devices #3/#6 (giwa texture +
+ * hangul watermark) ride as extra classes straight from Reading.tsx. */
+.km-reading__empty-copy {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--paper-dim);
+  /* Relative measure, not a fixed px width — F-129: never a fixed-width
+   * cause of horizontal overflow on a narrow phone. */
+  max-width: 52ch;
+}
+
 /* ── Resume (F-069) ─────────────────────────────────────────── */
 
+/* F-128 device #1/#2 — a `blue`-tone CityCard signboard/hanji-paper card
+ * (mirrors the design mock's dedicated "Resume" sign) instead of a bare
+ * margin wrapper around the button. */
 .km-reading__resume {
   margin: 0 0 16px;
 }
@@ -33,16 +61,46 @@
   margin: 0 0 18px;
 }
 
+/* This page's primary text-heavy surface. Day = editorial-serif intent
+ * (doc §3: "Day is serif-forward... calm, editorial, ink-on-paper") capped
+ * at a legible measure; Night stays on the app's rounded Noto Sans KR body
+ * face — no glow on the paragraph copy itself (the accent glow lives on the
+ * CityCard edge only, via the card's `rail`/tone), so the reading surface
+ * reads calm in both worlds, per F-128's own brief for this page. */
+.km-reading__passage-text {
+  max-width: 65ch;
+  overflow-wrap: break-word;
+}
+:root[data-theme='light'] .km-reading__passage-text {
+  font-family: 'Noto Serif KR', 'Nanum Myeongjo', serif;
+}
+
+/* The chapter/story reading surface itself — a CityCard (device #1), so
+ * this rule only adds the layout this page needs on top of CityCard's own
+ * token-driven paint (padding/border/shadow/background all come from
+ * CityCard.css). `width: 100%` + no fixed widths anywhere below is the
+ * F-129 mobile contract — the card can only ever be as wide as its
+ * (already-clamped) parent. */
+.km-reading__reader-card {
+  width: 100%;
+}
+.km-reading__reader-card--story {
+  margin-top: 14px;
+}
+
 .km-reading__passage-tools {
   display: flex;
   justify-content: flex-end;
 }
 
+/* Sheet body — `.km-review__sheetBody`/`__sheetHead` (index.css, the
+ * Mistakes/ReviewGrammar batch-2 precedent) drive padding + the title/Close
+ * head row; this class only adds the flex-column stack this sheet's src/
+ * loading/result blocks need. */
 .km-reading__translate-sheet {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 4px 2px 8px;
 }
 
 .km-reading__translate-src {
@@ -53,6 +111,10 @@
   /* A long passage must scroll inside the sheet, not blow it out. */
   max-height: 32vh;
   overflow-y: auto;
+  overflow-wrap: break-word;
+}
+:root[data-theme='light'] .km-reading__translate-src {
+  font-family: 'Noto Serif KR', 'Nanum Myeongjo', serif;
 }
 
 .km-reading__translate-stub {
@@ -82,19 +144,18 @@
   padding-top: 10px;
   max-height: 32vh;
   overflow-y: auto;
+  overflow-wrap: break-word;
 }
 
 /* ── Story generator (F-068) ────────────────────────────────── */
 
+/* F-128 device #1/#2 — a `mint`-tone, `feat` CityCard (this page's one hero
+ * CTA); CityCard.css supplies the surface/border/shadow/glow, this rule only
+ * adds the flex-column layout the generator's own rows need. */
 .km-reading__gen {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--ink-1);
-  box-shadow: var(--shadow-sm);
 }
 
 .km-reading__gen-head {
@@ -106,14 +167,32 @@
   color: var(--paper-dim);
 }
 
+/* Device #9 — the mother-of-pearl shimmer, sparingly, on the hero CTA's
+ * spark glyph only (never a section ground — "the jewel, not the
+ * wallpaper", per the doc). */
+.km-reading__gen-spark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--paper);
+}
+
 .km-reading__gen-levels {
   display: inline-flex;
+  flex-wrap: wrap;
   align-self: flex-start;
   gap: 4px;
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
   background: var(--ink-2);
+  /* F-129: never wider than the (already-clamped) CityCard body it lives
+   * in — a 5-option radiogroup wraps rather than pushing the card wide. */
+  max-width: 100%;
 }
 
 .km-reading__gen-level {
@@ -134,6 +213,14 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* F-131: hover/active states track the active accent via the shared
+ * `--vermilion` token (never a hard-coded color) — the same accent-soft
+ * treatment `.km-btn--ghost:hover` already uses app-wide. */
+.km-reading__gen-level:hover:not(.km-reading__gen-level--active) {
+  background: color-mix(in srgb, var(--vermilion) 12%, transparent);
+  color: var(--paper);
+}
+
 .km-reading__gen-topic {
   display: flex;
   flex-direction: column;
@@ -143,6 +230,8 @@
 }
 
 .km-reading__gen-topic input {
+  width: 100%;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);

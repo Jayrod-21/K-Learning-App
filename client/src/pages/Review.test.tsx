@@ -303,8 +303,10 @@ describe('Review — landing (F-060)', () => {
     expect(screen.getByRole('button', { name: /병원 어휘/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /뉴스 어휘/ })).toBeInTheDocument();
     expect(screen.getByText(/2 words/)).toBeInTheDocument();
-    // The create-a-list section is on the landing.
-    expect(screen.getByLabelText('New list name')).toBeInTheDocument();
+    // F-157 — create-a-list is a Sheet popup: the trigger is on the
+    // landing, but the name field only mounts once the sheet is open.
+    expect(screen.getByRole('button', { name: /New list/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText('New list name')).not.toBeInTheDocument();
     // The old tabbed IA is gone — no tablist, no All-cards search.
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Search banked vocab')).not.toBeInTheDocument();
@@ -364,6 +366,8 @@ describe('Review — landing (F-060)', () => {
     const user = userEvent.setup();
     renderReview();
 
+    // F-157 — open the create-list Sheet popup first.
+    await user.click(screen.getByRole('button', { name: /New list/ }));
     await user.type(screen.getByLabelText('New list name'), '새 목록');
     await user.click(screen.getByRole('button', { name: /Create list/ }));
 
@@ -393,6 +397,8 @@ describe('Review — landing (F-060)', () => {
     const user = userEvent.setup();
     renderReview();
 
+    // F-157 — open the create-list Sheet popup first.
+    await user.click(screen.getByRole('button', { name: /New list/ }));
     await user.type(screen.getByLabelText('New list name'), '새 목록');
     await user.click(screen.getByRole('button', { name: /Create list/ }));
 
@@ -403,10 +409,30 @@ describe('Review — landing (F-060)', () => {
     expect(screen.getByRole('button', { name: /Create list/ })).not.toBeDisabled();
   });
 
+  it('F-157: create-list is a Sheet popup — closed by default, opens as a real dialog, and closes on Esc without creating anything', async () => {
+    settleLanding();
+    const user = userEvent.setup();
+    renderReview();
+
+    // Closed by default — no dialog, no name field.
+    expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+    expect(
+      within(dialog).getByLabelText('New list name'),
+    ).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
+    expect(vocabService.createList).not.toHaveBeenCalled();
+  });
+
   it('degrades hostile URL params to the landing view', () => {
     settleLanding();
     renderReview('/learn/vocab?list=../../etc&study=1');
-    expect(screen.getByLabelText('New list name')).toBeInTheDocument();
+    // Landing renders (the "New list" trigger, not the detail view).
+    expect(screen.getByRole('button', { name: /New list/ })).toBeInTheDocument();
     expect(vocabService.getListDetail).not.toHaveBeenCalled();
   });
 });
@@ -1139,13 +1165,14 @@ describe('Review — grammar production + seeding', () => {
     await waitFor(() => {
       expect(screen.getByText('Added 15 cards to review.')).toBeInTheDocument();
     });
+    // F-156 — one click seeds 15 per corpus (was 100 × 2 corpora = 200).
     expect(vocabService.initCards).toHaveBeenNthCalledWith(1, {
       corpus: 'vocab_2000_beginner',
-      limit: 100,
+      limit: 15,
     });
     expect(vocabService.initCards).toHaveBeenNthCalledWith(2, {
       corpus: 'vocab_2000_intermediate',
-      limit: 100,
+      limit: 15,
     });
     expect(hoisted.refetchCalls.due).toBeGreaterThan(before);
   });
@@ -1174,5 +1201,78 @@ describe('Review — grammar production + seeding', () => {
     });
     expect(screen.getByRole('alert')).not.toHaveTextContent('rate limited');
     expect(vocabService.initCards).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-128 "Seoul Day & Night" reskin + F-129 mobile
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — F-128 Seoul reskin', () => {
+  it('renders the shared PageHubHeader (skyline + rail) instead of a bare Topbar', () => {
+    settleLanding();
+    renderReview();
+
+    // PageHubHeader's own DOM signature (components/PageHubHeader.tsx):
+    // the skyline strip + the h1 it carries in its title slot.
+    expect(document.querySelector('.km-hubheader')).not.toBeNull();
+    expect(document.querySelector('.km-skyline')).not.toBeNull();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '단어 카드 · Vocab' }),
+    ).toBeInTheDocument();
+  });
+
+  it('applies the rain-neon-sheen root class and a CityCard signboard around My lists (devices #1/#8)', () => {
+    settleLanding();
+    renderReview();
+
+    expect(
+      document.querySelector('section.km-review.km-rain-sheen'),
+    ).not.toBeNull();
+    expect(document.querySelector('.km-citycard')).not.toBeNull();
+  });
+
+  it('F-129: the page root carries its own overflow-x guard (mobile, no horizontal clip)', () => {
+    settleLanding();
+    renderReview();
+
+    // jsdom doesn't compute real layout, so this asserts the STRUCTURAL
+    // contract (co-located Review.css scopes `overflow-x: hidden` off this
+    // exact class) rather than a pixel measurement.
+    const root = document.querySelector('section.km-review');
+    expect(root).not.toBeNull();
+  });
+
+  it('flashcard flip + rate still work under the CityCard-tone signboard restyle (F-128 preserves the interaction)', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 1,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    // The signboard wrapper is present and the flip/rate flow is unchanged.
+    expect(document.querySelector('.km-review__flashcardWrap')).not.toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    await waitFor(() => {
+      expect(vocabService.submitReview).toHaveBeenCalledWith(101, {
+        rating: 'good',
+        expected_version: 1,
+      });
+    });
+  });
+
+  it('renders the subway-line SubwayProgress in place of the old plain bar (device #5)', () => {
+    settleLanding({ due: DUE_STUDY });
+    renderReview('/learn/vocab?study=due');
+
+    expect(document.querySelector('.km-subway')).not.toBeNull();
+    expect(
+      screen.getByRole('progressbar', { name: 'Session progress' }),
+    ).toBeInTheDocument();
   });
 });

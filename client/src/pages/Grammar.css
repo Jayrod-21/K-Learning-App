@@ -1,9 +1,16 @@
 /*
- * Grammar page — Phase 3C-1 co-located styles.
+ * Grammar page — Phase 3C-1 + Wave-2 (F-128/F-129/F-131/F-158) co-located
+ * styles.
  *
- * Only the NEW rules from the 3C-1 rework live here (B-024 card rows +
- * grouping chrome, the due note, the panel footer links). The pre-existing
- * drill-card / reveal / sheet styles remain in styles/index.css untouched.
+ * Only the NEW rules from those passes live here (B-024 card rows + grouping
+ * chrome, the due note, the panel footer links, the F-158 row-actions
+ * cluster + continuous-drill banner, the F-128 empty-state texture
+ * wrapper). The pre-existing drill-card / reveal / sheet styles remain in
+ * styles/index.css untouched — the F-128 reskin swaps which SHARED
+ * component (`Card` → `CityCard`/`CollapsibleTile surface="city"`) those
+ * classes are layered onto, not the rules themselves. Every color here is a
+ * token (`var(--...)`), never a hard-coded hex — F-131's accent-driven-hover
+ * requirement, satisfied by construction.
  */
 
 /* ── B-024: proficiency groups ─────────────────────────────────────────── */
@@ -111,6 +118,20 @@
   flex-shrink: 0;
 }
 
+/* ── F-158: per-row action cluster (Drill + Mark known/Relearn) ─────────
+   `flex-wrap` is the F-129 safety net: on the narrowest phones two small
+   buttons alongside a truncating title can still be tighter than both
+   buttons' natural width, so they wrap onto their own line instead of
+   forcing the row wider than the viewport. */
+.km-grammar__row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 /* ── F-111: per-pattern FSRS schedule line on a mastery card row ────────── */
 
 .km-grammar__row-schedule {
@@ -146,4 +167,29 @@
   align-items: center;
   gap: 10px;
   margin-top: 4px;
+}
+
+/* ── F-158: continuous single-form drill banner ─────────────────────────
+   `overflow-wrap` is the F-129 safety net for a long composite pattern
+   string on a narrow viewport — it must wrap, never force the page wider. */
+.km-grammar__continuous-note {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--paper-dim);
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+/* ── F-128 devices #3/#6: honest-empty-state texture wrapper ─────────────
+   `.km-giwa`/`.km-hangul-watermark` (styles/seoul-devices.css) paint the
+   texture on whichever element they're applied to; this wrapper exists so
+   Card-based empty states (which don't accept arbitrary `data-*` props)
+   can carry them without touching the shared `Card` component itself. */
+.km-grammar__empty-wrap {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }

@@ -1050,3 +1050,187 @@ describe('Reading — AI stories (F-068)', () => {
     ).toBeInTheDocument();
   });
 });
+
+// F-128 ("Seoul Day & Night") reskin — structural assertions that the real
+// character-device components (PageHubHeader/CityCard/DancheongRail/
+// giwa+hangul-watermark) are actually rendered, mirroring the precedent set
+// by `ReviewGrammar.test.tsx`'s and `Mistakes.test.tsx`'s own hub-header
+// tests. F-070's translate-popup behavior itself is already covered by the
+// "chapter reader" describe block above (unchanged by the reskin); these
+// tests cover the NEW visual surface only.
+describe('Reading — Seoul Day & Night reskin (F-128/F-129/F-131)', () => {
+  it('renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', async () => {
+    const { container } = renderReading();
+    await screen.findByRole('button', {
+      name: new RegExp(`Open ${LITERATURE_READY.title}`),
+    });
+
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).toBeInTheDocument();
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveAttribute('id', 'reading-title');
+    expect(heading).toHaveTextContent(/Reading/);
+  });
+
+  it('carries the ambient rain-sheen device on the page root (device #8)', async () => {
+    const { container } = renderReading();
+    await screen.findByRole('button', {
+      name: new RegExp(`Open ${LITERATURE_READY.title}`),
+    });
+
+    expect(container.querySelector('section.km-reading')).toHaveClass(
+      'km-rain-sheen',
+    );
+  });
+
+  it('shows the empty-uploads state with the giwa/hangul-watermark texture (devices #3/#6)', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([]);
+    renderReading();
+
+    const empty = await screen.findByText(/upload a book to start reading/i);
+    const wrap = empty.closest('.km-reading__empty');
+    expect(wrap).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(wrap).toHaveAttribute('data-glyph', '책');
+  });
+
+  it('renders the chapter passage reader as an accent CityCard with the editorial-serif passage-text class (device #1/#2)', async () => {
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+
+    const user = userEvent.setup();
+    const { container } = renderReading();
+    await openChapterOne(user);
+
+    const readerCard = container.querySelector('.km-reading__reader-card');
+    expect(readerCard).toHaveClass('km-citycard', 'km-tone--accent');
+    expect(
+      readerCard?.querySelector('.km-dancheong-rail'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-reading__passage-text'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the no-passages empty state with the giwa/hangul-watermark texture', async () => {
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [],
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    const text = await screen.findByText(/no passages yet for this chapter/i);
+    const empty = text.closest('.km-reference__empty');
+    expect(empty).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(empty).toHaveAttribute('data-glyph', '본문');
+  });
+
+  it('renders the F-069 resume callout as a blue-tone CityCard', async () => {
+    readingSvc.listChapters.mockResolvedValue([
+      CHAPTER_ONE,
+      { id: 6, chapterNumber: 2, title: null, startPage: 3, endPage: 4 },
+    ]);
+    readingSvc.getReadingPosition.mockResolvedValue({
+      ...SAVED_POSITION,
+      chapterId: 6,
+      pageNumber: 3,
+    });
+
+    const user = userEvent.setup();
+    const { container } = renderReading();
+    await openBook(user);
+    await screen.findByRole('button', { name: /Resume — Chapter 2/ });
+
+    const resumeCard = container.querySelector('.km-reading__resume');
+    expect(resumeCard).toHaveClass('km-citycard', 'km-tone--blue');
+  });
+
+  it('shows the no-chapters empty state with the giwa/hangul-watermark texture', async () => {
+    readingSvc.listChapters.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderReading();
+    await openBook(user);
+
+    const text = await screen.findByText(/no chapters yet for this book/i);
+    const empty = text.closest('.km-reference__empty');
+    expect(empty).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(empty).toHaveAttribute('data-glyph', '목차');
+  });
+
+  it('renders the F-068 story generator as a mint-tone, featured CityCard with a sparing najeon shimmer on its spark glyph', async () => {
+    const user = userEvent.setup();
+    const { container } = renderReading();
+    await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
+
+    const genCard = container.querySelector('.km-reading__gen');
+    expect(genCard).toHaveClass('km-citycard', 'km-tone--mint', 'km-citycard--feat');
+    expect(
+      genCard?.querySelector('.km-reading__gen-spark'),
+    ).toHaveClass('km-najeon', 'km-najeon--shimmer');
+  });
+
+  it('shows the no-stories empty state with the giwa/hangul-watermark texture', async () => {
+    const user = userEvent.setup();
+    renderReading();
+    await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
+
+    const text = await screen.findByText(/no stories yet/i);
+    const empty = text.closest('.km-reference__empty');
+    expect(empty).toHaveClass('km-giwa', 'km-hangul-watermark');
+    expect(empty).toHaveAttribute('data-glyph', '이야기');
+  });
+
+  it('renders the story reader passage card with the same accent CityCard treatment as the chapter reader', async () => {
+    readingSvc.listGeneratedStories.mockResolvedValue([STORY_SUMMARY]);
+    readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
+
+    const user = userEvent.setup();
+    const { container } = renderReading();
+    await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
+    await user.click(
+      await screen.findByRole('button', { name: /Open 바닷가 마을/ }),
+    );
+
+    const readerCard = container.querySelector('.km-reading__reader-card');
+    expect(readerCard).toHaveClass('km-citycard', 'km-tone--accent');
+  });
+
+  it('reskins the translate sheet onto the shared sheetHead/sheetBody classes, Close button in the head row', async () => {
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    readingSvc.translatePassage.mockResolvedValue('The boy walked.');
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+    await user.click(
+      await screen.findByRole('button', { name: 'Translate passage 1' }),
+    );
+
+    const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
+    const head = sheet.querySelector('.km-review__sheetHead');
+    expect(head).toBeInTheDocument();
+    expect(
+      within(head as HTMLElement).getByRole('button', { name: 'Close' }),
+    ).toBeInTheDocument();
+    expect(sheet.querySelector('.km-review__sheetBody')).toBeInTheDocument();
+  });
+});
