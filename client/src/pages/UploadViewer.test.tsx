@@ -168,6 +168,40 @@ function touchSwipeLeft(el: HTMLElement, identifier = 40): void {
   fireEvent.touchEnd(el, { changedTouches: [touch(identifier, 80, 55)] });
 }
 
+/**
+ * happy-dom quirk (verified directly): the `EventTarget` global visible to
+ * test code is Node's own built-in class, NOT the internal base class
+ * happy-dom's DOM nodes actually inherit `addEventListener`/
+ * `removeEventListener` from — `el.addEventListener !==
+ * EventTarget.prototype.addEventListener` even before any spy is involved,
+ * so `vi.spyOn(EventTarget.prototype, ...)` silently spies on a class no
+ * real DOM node uses. This walks a throwaway node's OWN prototype chain to
+ * find whichever level actually owns `addEventListener` (happy-dom's real
+ * internal EventTarget-equivalent, shared by every element), which is the
+ * one `vi.spyOn` must target for the calls to actually show up.
+ */
+interface DomEventTargetProto {
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+}
+
+function domEventTargetProto(): DomEventTargetProto {
+  let proto = Object.getPrototypeOf(document.createElement('div')) as object | null;
+  while (proto && !Object.prototype.hasOwnProperty.call(proto, 'addEventListener')) {
+    proto = Object.getPrototypeOf(proto);
+  }
+  if (!proto) throw new Error('could not locate the DOM EventTarget prototype');
+  return proto as DomEventTargetProto;
+}
+
 beforeEach(() => {
   uploadsSvc.getUpload.mockReset();
   uploadsSvc.listPages.mockReset();
@@ -943,6 +977,84 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     expect(screen.getByText('1 / 5')).toBeInTheDocument();
   });
 
+  // SHOULD-FIX (`REVIEW_mobile3-logic.md`) — the mouse/pointer twin above
+  // proved `swipeEligible` gates the pointer path; this closes the touch-path
+  // gap by inspection only, since the touch effect (`useEffect` keyed on
+  // `[swipeEligible, pageBoxEl]`) is a structurally separate attach path
+  // that could, in principle, regress independently (e.g. an edit that only
+  // updated the pointer guard and missed the effect's early return).
+  it('the touch swipe is not armed once zoomed past fit-width — a horizontal touch drag never turns the page', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Zoom in' }));
+    expect(screen.getByText('125%')).toBeInTheDocument();
+
+    touchSwipeLeft(pageBox());
+
+    // Still page 1 — above fit-width the touch effect's own `swipeEligible`
+    // check (`UploadViewer.tsx`, same flag as the pointer guard) never
+    // attaches its listeners, so this dispatch has nothing to reach; the
+    // drag is left entirely to native pinch/pan, same contract as mouse/pen.
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+  });
+
+  // SHOULD-FIX (`REVIEW_mobile3-logic.md`) — the touch effect's cleanup
+  // function looked correct by inspection but had no regression coverage:
+  // nothing in the suite would previously fail if a future edit dropped the
+  // `return () => { ... }` or removed a listener under a different function
+  // reference than the one that was added (which would silently leak on
+  // every remount/zoom-toggle rather than throw). Spies on the real DOM
+  // EventTarget prototype (`domEventTargetProto()` above — NOT the global
+  // `EventTarget`, which happy-dom's elements don't actually inherit from)
+  // so the add/remove pairing — and the exact handler identity — is
+  // verified structurally, not just "no crash."
+  it('attaches the four touch listeners on mount and removes the exact same handlers on unmount (no leak)', async () => {
+    const targetProto = domEventTargetProto();
+    const addSpy = vi.spyOn(targetProto, 'addEventListener');
+    const removeSpy = vi.spyOn(targetProto, 'removeEventListener');
+    const touchTypes = ['touchstart', 'touchmove', 'touchend', 'touchcancel'];
+
+    const { unmount } = renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    const added = addSpy.mock.calls
+      .map((call, i) => ({ type: call[0], handler: call[1], target: addSpy.mock.instances[i] }))
+      .filter((c) => c.target === box && touchTypes.includes(c.type as string));
+    // Exactly one add per touch event type on the real page-box element —
+    // not the JSX pointer-event props, which never call addEventListener.
+    expect(added.map((c) => c.type).sort()).toEqual([...touchTypes].sort());
+
+    unmount();
+
+    const removed = removeSpy.mock.calls
+      .map((call, i) => ({ type: call[0], handler: call[1], target: removeSpy.mock.instances[i] }))
+      .filter((c) => c.target === box && touchTypes.includes(c.type as string));
+    expect(removed.map((c) => c.type).sort()).toEqual([...touchTypes].sort());
+
+    // Same function reference add→remove per event type: a cleanup bug that
+    // removed a DIFFERENT closure (e.g. a re-created handler) than the one
+    // actually attached would pass a naive "removeEventListener was called"
+    // check but still leak — this catches that specifically.
+    for (const type of touchTypes) {
+      const addedHandler = added.find((c) => c.type === type)?.handler;
+      const removedHandler = removed.find((c) => c.type === type)?.handler;
+      expect(removedHandler).toBe(addedHandler);
+    }
+
+    // Belt-and-braces: dispatching a touchmove at the (now-detached) element
+    // after unmount must not throw — proves the handler is really gone, not
+    // merely that removeEventListener was called with matching-looking args.
+    expect(() => {
+      fireEvent.touchMove(box, { touches: [touch(99, 80, 55)] });
+    }).not.toThrow();
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
   it('arrow-button paging still works after the swipe handlers are wired up', async () => {
     const user = userEvent.setup();
     renderViewer();
@@ -1089,6 +1201,15 @@ describe('UploadViewer — arrows moved to the bottom', () => {
     await user.keyboard('{Enter}');
     expect(await screen.findByText('2 / 5')).toBeInTheDocument();
     expect(pager).toHaveTextContent('2 / 5');
+
+    // NIT (`REVIEW_mobile3-logic.md`) — the test name says "keyboard-
+    // operable" but only drove Enter; a real <button> also activates on
+    // Space, so exercise that too rather than leaving the claim half-proven.
+    const prev = screen.getByLabelText('Previous page');
+    prev.focus();
+    expect(prev).toHaveFocus();
+    await user.keyboard('[Space]');
+    expect(await screen.findByText('1 / 5')).toBeInTheDocument();
   });
 });
 

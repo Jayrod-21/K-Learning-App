@@ -835,6 +835,19 @@ export default function UploadViewer(): JSX.Element {
       const t = touchById(e.touches, d.pointerId);
       if (!t) return;
 
+      // Known design-limit (capstone review, "Fix 1" S1 — not a bug):
+      // while `d.axis` is still 'none' (the first <8px sample) this handler
+      // never calls `preventDefault`, so the compositor is still free to
+      // decide the gesture under `touch-action: pan-y`. If that very first
+      // cancelable touchmove happens to be vertical-dominant enough for the
+      // compositor to commit to a native vertical pan, later samples in the
+      // SAME gesture get marked non-cancelable — so a near-diagonal onset
+      // that only locks 'h' a few samples later can still lose this one
+      // page-turn to native scroll (it self-corrects on the next swipe; see
+      // the `if (e.cancelable)` guard below). The only way to fully close
+      // this is `touch-action: none` while eligible, which would forfeit
+      // native vertical scroll of a tall scan — unacceptable, so `pan-y` +
+      // this 8px axis-lock window is the correct tradeoff, not an oversight.
       d.axis = swipeAxisFor(d.axis, d.startX, d.startY, t.clientX, t.clientY);
       if (d.axis === 'none') return;
       if (d.axis === 'v') {
