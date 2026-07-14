@@ -20,6 +20,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import type { BookUpload, Page } from '../types/domain';
@@ -972,6 +975,36 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     if (!(img instanceof HTMLImageElement)) throw new Error('no <img> rendered');
     const notPrevented = fireEvent.dragStart(img);
     expect(notPrevented).toBe(false);
+  });
+
+  // FIX-PASS S2 (`REVIEW_mobile2-logic.md`) — the JS half of the fix
+  // (draggable=false + the dragstart veto) is covered above, but the CSS
+  // half — the iOS long-press-callout/drag-lift shutoff, which has no
+  // JS-side event to assert against — had no regression coverage at all.
+  // happy-dom does no layout, so the actual on-screen callout/select
+  // behavior can't be measured by rendering — pin the CSS mechanism from
+  // source instead (same pattern as SkillsCompare.test.tsx's mobile-overflow
+  // fix / Today.test.tsx's peek-slider contract tests).
+  it('CSS: the page image carries the iOS drag/callout shutoff rules, and the DOM node stays draggable=false', async () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'UploadViewer.css'),
+      'utf8',
+    );
+
+    const imgRule =
+      /\.km-upload-viewer__img\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(imgRule).not.toBe('');
+    expect(imgRule).toContain('-webkit-touch-callout: none;');
+    expect(imgRule).toContain('-webkit-user-drag: none;');
+    expect(imgRule).toContain('user-select: none;');
+
+    // Belt-and-braces: the CSS-only half above and the JS attribute
+    // (asserted independently by the dedicated `draggable=false` test
+    // earlier in this file) must both hold at once — re-confirmed here so
+    // this one test is a complete pin of the full fix, CSS + DOM.
+    renderViewer();
+    await screen.findByText('1 / 5');
+    expect(document.querySelector('img')).toHaveAttribute('draggable', 'false');
   });
 });
 

@@ -278,11 +278,12 @@ describe('ReviewVocab — no leftover grammar UI (F-144)', () => {
     const dialog = await screen.findByRole('dialog', { name: 'New list' });
 
     // No kind picker at all — a single-kind mount skips it entirely, so
-    // there's nothing labelled "Grammar" to tap. (The page's LibrarySubnav
-    // legitimately shows a "Grammar" NAVIGATION link elsewhere — that's a
-    // different, correct affordance; this assertion is scoped to the
-    // create-list Sheet, which is the surface the ticket was actually
-    // about.)
+    // there's nothing labelled "Grammar" to tap. (Grammar itself is a real,
+    // legitimate affordance elsewhere — reachable via the Library index
+    // [`ReviewLibrary`] → Grammar row, NOT via this page's `LibrarySubnav`,
+    // which is vocab/dictionary-only — see `LibrarySubnav.tsx`'s own doc
+    // comment. This assertion is scoped to the create-list Sheet, which is
+    // the surface the ticket was actually about.)
     expect(
       within(dialog).queryByRole('radiogroup', { name: 'List kind' }),
     ).not.toBeInTheDocument();
@@ -328,11 +329,13 @@ describe('ReviewVocab — no leftover grammar UI (F-144)', () => {
       screen.queryByRole('button', { name: /중급 문법/ }),
     ).not.toBeInTheDocument();
 
-    // Generic sweep: nothing labelled Grammar/문법 anywhere in the tree,
-    // EXCEPT the LibrarySubnav's "Grammar" navigation link to the sibling
-    // `/review/grammar` route — that is a legitimate, different affordance
-    // (a route link, not grammar CONTENT on this page), so its text is
-    // excluded from the sweep rather than the sweep being skipped.
+    // Generic sweep: nothing labelled Grammar/문법 anywhere in the tree.
+    // `LibrarySubnav` is vocab/dictionary-only now (its own Grammar tab was
+    // removed — see `LibrarySubnav.tsx`'s doc comment; Grammar stays
+    // reachable only via the Library index → Grammar row), so there is no
+    // longer any legitimate "Grammar" text inside it to carve out — this
+    // still excludes the nav's text defensively (belt-and-braces against a
+    // future nav-label change) rather than assuming it stays empty forever.
     const nav = screen.getByRole('navigation', { name: 'Library sections' });
     const navText = nav.textContent ?? '';
     const restOfPage = (container.textContent ?? '').replace(navText, '');

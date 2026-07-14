@@ -190,7 +190,13 @@ export function SkillsCompare({
                 {/* `aria-hidden` — the button's `aria-label` above is already
                     the full accessible name; this visible short code is a
                     presentation-only stand-in, not additional information for
-                    assistive tech to announce. */}
+                    assistive tech to announce.
+                    FIX-PASS lock (REVIEW_mobile2-logic.md S1): deliberately
+                    stays a hardcoded "Tn"/"Native" universal-level code in
+                    EVERY language-display mode — NOT routed through
+                    <Bilingual/>, even for mode:'ko'. The full localized name
+                    ("kr · en") is preserved via aria-label/title above; see
+                    `SkillsCompare.test.tsx`'s Korean-mode test for the pin. */}
                 <span aria-hidden="true">{shortRefLabel(r.label)}</span>
               </button>
             );

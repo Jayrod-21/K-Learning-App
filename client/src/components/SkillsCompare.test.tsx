@@ -8,7 +8,7 @@
  * tabpanels. The previous tablist role lied; this test pins the new
  * contract.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readFileSync } from 'node:fs';
@@ -16,6 +16,9 @@ import { join } from 'node:path';
 import { cwd } from 'node:process';
 import { SkillsCompare } from './SkillsCompare';
 import type { SkillRow, SkillReference } from './SkillsCompare';
+import { SettingsProvider } from '../hooks/SettingsProvider';
+import { SETTINGS_STORAGE_KEY } from '../lib/settings';
+import type { LanguageDisplayPrefs } from '../types/domain';
 
 const SKILLS: ReadonlyArray<SkillRow> = [
   { key: 'reading', label: 'Reading', kr: '읽기', score: 60, note: 'On track' },
@@ -411,5 +414,72 @@ describe('SkillsCompare — abbreviated pick labels (mobile hardening pass 2: T1
     expect(
       screen.getByRole('radio', { name: '원어민 · Native' }).textContent,
     ).toBe('Native');
+  });
+});
+
+describe('SkillsCompare — T-codes are a universal-level exception to Bilingual chrome (FIX-PASS S1 lock)', () => {
+  // REVIEW_mobile2-logic.md S1: before this pin, no test varied the
+  // language-display setting, so a future "helpfully" restore the pick's
+  // visible span to <Bilingual/> (routing it through mode/primary again)
+  // could silently reintroduce that regression. This test renders under a
+  // REAL SettingsProvider seeded with mode:'ko'/primary:'ko' (the same
+  // seed-through-localStorage pattern `Bilingual.test.tsx` uses for its own
+  // mode assertions) and asserts the pick pills still read "T1"…"T6"/"Native"
+  // — NOT "1급"/"4급" — locking in that this is an intentional universal
+  // code, not an untested oversight.
+  function seedKorean(): void {
+    const languageDisplay: LanguageDisplayPrefs = {
+      mode: 'ko',
+      primary: 'ko',
+      subScale: 0.7,
+    };
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ languageDisplay }),
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('still shows "T1"…"T6"/"Native" as the VISIBLE pick text under mode:\'ko\' — the Bilingual language setting does not reach these pills', () => {
+    seedKorean();
+    const { container } = render(
+      <SettingsProvider>
+        <SkillsCompare skills={SKILLS} references={FULL_LADDER_REFS} />
+      </SettingsProvider>,
+    );
+    const group = screen.getByRole('radiogroup', { name: 'Reference level' });
+    const radios = within(group).getAllByRole('radio');
+    const visible = radios.map((r) => r.textContent);
+    // If a regression routed the visible span back through <Bilingual/>,
+    // mode:'ko' would render "1급".."6급"/"원어민" here instead.
+    expect(visible).toEqual(['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'Native']);
+    // The eyebrow above the picker DOES flex with the setting (it's real
+    // Bilingual chrome, unlike the pills) — confirming the seed actually
+    // took effect and this isn't a false-pass from an unwired provider.
+    // `.km-sr-only` always carries BOTH languages regardless of visual mode
+    // (Bilingual's own a11y contract), so it must be stripped before
+    // asserting on what's visually shown — same technique as
+    // `Bilingual.test.tsx`'s `visibleText` helper.
+    const eyebrow = container.querySelector('.km-skillscompare__pickerrow');
+    if (!(eyebrow instanceof HTMLElement)) throw new Error('no pickerrow found');
+    const clone = eyebrow.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('.km-sr-only').forEach((el) => el.remove());
+    const eyebrowVisibleText = (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+    expect(eyebrowVisibleText).toContain('비교 기준');
+    expect(eyebrowVisibleText).not.toContain('Compare to');
+  });
+
+  it('keeps the full "kr · en" name as the accessible name under mode:\'ko\' — only the visible short code is exempt', () => {
+    seedKorean();
+    render(
+      <SettingsProvider>
+        <SkillsCompare skills={SKILLS} references={FULL_LADDER_REFS} />
+      </SettingsProvider>,
+    );
+    const t4 = screen.getByRole('radio', { name: '4급 · TOPIK 4' });
+    expect(t4.textContent).toBe('T4');
   });
 });
