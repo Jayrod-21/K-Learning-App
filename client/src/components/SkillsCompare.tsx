@@ -20,11 +20,19 @@
  * bar renders them as a subtle translucent range, and the full-mode legend
  * gains a "Confidence band" entry only when at least one bar draws one.
  *
- * Mobile hardening: the picker holds up to 7 pills (TOPIK 1–6 + Native) and
- * never wraps or shrinks its text, so on a narrow phone it can be wider than
- * the screen. `SkillsCompare.css` gives the picker its own `overflow-x: auto`
- * scroll rail (see that file's header) so the full 1 → Native range stays
- * reachable by scroll instead of being clipped off-screen.
+ * Mobile hardening: the picker holds up to 7 pills (TOPIK 1–6 + Native). The
+ * pills' VISIBLE text is the short code ("T1"…"T6", "Native" spelled out —
+ * see `shortRefLabel` below), so all 7 fit on a 360px phone row without
+ * sliding. The FULL descriptive label ("TOPIK 4", plus the Korean shorthand
+ * when present, e.g. "4급 · TOPIK 4") never disappears — it moves to the
+ * pick button's `aria-label`/`title` instead of the visible text, so
+ * screen-reader users and sighted hover-tooltip users both still get the
+ * unabbreviated name. `SkillsCompare.css` still gives the picker its own
+ * `overflow-x: auto` scroll rail (see that file's header) as a fallback —
+ * short labels make it dormant at normal sizes, but it keeps the full
+ * 1 → Native range reachable by scroll if a larger text-size setting, a
+ * future 8th level, or a narrower-than-360px device ever reintroduces
+ * overflow.
  */
 import type { JSX } from 'react';
 import { useState } from 'react';
@@ -67,6 +75,30 @@ export interface SkillReference {
   value: number;
   /** When true, this ref is the "Native ceiling" — tick paints indigo. */
   isCeiling?: boolean;
+}
+
+/**
+ * Mobile hardening: abbreviate a reference's full label to the short pick-pill
+ * code — "TOPIK 4" → "T4". `Native` carries no numeral to shorten and stays
+ * spelled out per product spec (the regex simply doesn't match it, so it
+ * falls through unchanged — no special-case needed). Pure string transform,
+ * no I/O, so no threat model.
+ */
+function shortRefLabel(label: string): string {
+  const match = /^TOPIK\s+(\d+)$/i.exec(label.trim());
+  return match ? `T${match[1]}` : label;
+}
+
+/**
+ * Full descriptive name for a reference — used as the pick button's
+ * accessible name (`aria-label`) and hover `title` so the abbreviated visible
+ * text never costs screen-reader or sighted-tooltip users the real label.
+ * Mirrors the "kr · en" shape the component already used for its computed
+ * accessible name before this pass, so existing consumers/tests that assert
+ * on that exact string see no behavior change.
+ */
+function fullRefName(r: SkillReference): string {
+  return r.kr ? `${r.kr} · ${r.label}` : r.label;
 }
 
 export type SkillsCompareVariant = 'compact' | 'full';
@@ -115,11 +147,16 @@ export function SkillsCompare({
        * existing bars, which is a "pick one of N" gesture. Radiogroup
        * with `aria-checked` is the honest role.
        *
-       * P3b top-up (review S-2): the segmented picks render through
-       * `<Bilingual compact>` so ko-mode shows the Korean shorthand
-       * (`r.kr` — e.g. 원어민 for "Native", 4급 for "TOPIK 4") instead of
-       * EN-only chrome. `compact` keeps the tight strip one-script in
-       * 'both' mode; a ref without `kr` falls back to its label alone.
+       * Mobile hardening (short pills): the VISIBLE text on each pick is the
+       * abbreviated `shortRefLabel(r.label)` ("T4", "Native") so all 7 pills
+       * fit a 360px phone row without sliding — see the file-header doc
+       * comment. This intentionally steps outside the usual `<Bilingual/>`
+       * chrome convention: "T4" is a compact universal level code (same idea
+       * as the `id` values like 'L4' already are), not a translation choice,
+       * so it doesn't flex with the user's language-display setting. Nothing
+       * is lost — `aria-label`/`title` below carry the full "kr · en"
+       * descriptive name (same shape the computed accessible name used
+       * before this pass) for screen readers and hover tooltips alike.
        */}
       <div className="km-skillscompare__pickerrow">
         <Eyebrow>
@@ -132,12 +169,15 @@ export function SkillsCompare({
         >
           {references.map((r) => {
             const selected = r.id === activeRef.id;
+            const fullName = fullRefName(r);
             return (
               <button
                 key={r.id}
                 type="button"
                 role="radio"
                 aria-checked={selected}
+                aria-label={fullName}
+                title={fullName}
                 className={cn(
                   'km-skillscompare__pick focusring',
                   selected && 'km-skillscompare__pick--active',
@@ -147,7 +187,11 @@ export function SkillsCompare({
                   setRefId(r.id);
                 }}
               >
-                <Bilingual en={r.label} kr={r.kr} compact />
+                {/* `aria-hidden` — the button's `aria-label` above is already
+                    the full accessible name; this visible short code is a
+                    presentation-only stand-in, not additional information for
+                    assistive tech to announce. */}
+                <span aria-hidden="true">{shortRefLabel(r.label)}</span>
               </button>
             );
           })}

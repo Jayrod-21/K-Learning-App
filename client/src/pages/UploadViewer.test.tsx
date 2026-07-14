@@ -902,6 +902,77 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     await user.click(screen.getByLabelText('Previous page'));
     expect(await screen.findByText('1 / 5')).toBeInTheDocument();
   });
+
+  // Real-device regression: a leftward swipe survived every jsdom
+  // pointer-event assertion above yet still failed on a real phone, because
+  // the earlier `preventDefault`/`touch-action` port only defends against
+  // scroll/tap-replay arbitration — it says nothing about the `<img>`'s OWN
+  // native drag-source/long-press-callout handling, which is a separate
+  // subsystem that can swallow a touch sequence before the axis lock even
+  // matters. This test exercises the actual touch flow end-to-end
+  // (`pointerType: 'touch'`, full down→move→move→up) so a regression that
+  // re-introduces the native-drag interference at the JSX/CSS layer (see
+  // the two tests below) would be the only thing NOT caught here — this one
+  // just confirms the gesture itself still resolves to a page turn.
+  it('a real touch-typed horizontal drag past the snap threshold turns the page', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    fireEvent.pointerDown(box, {
+      pointerId: 30, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(box, {
+      pointerId: 30, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 52,
+    });
+    fireEvent.pointerMove(box, {
+      pointerId: 30, isPrimary: true, pointerType: 'touch',
+      clientX: 60, clientY: 55,
+    });
+    fireEvent.pointerUp(box, {
+      pointerId: 30, isPrimary: true, pointerType: 'touch',
+      clientX: 60, clientY: 55,
+    });
+
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/2');
+  });
+
+  // Root-cause regression for the real-phone failure: an <img> is an
+  // implicit native drag source (`draggable` defaults to `true` for
+  // `img`/`a`), and on a real touch device that competes with (and can
+  // outright hijack) the custom pointer-swipe — no `preventDefault` inside
+  // `onPointerMove` can stop it, since native drag arbitration is a
+  // different browser subsystem than the scroll/pan one `touch-action`
+  // governs. `draggable={false}` is the fix; this asserts it directly on
+  // the rendered node rather than trusting the JSX literal never regresses.
+  it('the page image is not a native drag source (draggable=false)', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const img = document.querySelector('img');
+    expect(img).toBeInTheDocument();
+    expect(img).toHaveAttribute('draggable', 'false');
+  });
+
+  // Belt-and-braces half of the same fix: some engines have historically
+  // honored a dragstart veto even where a bare `draggable={false}` attribute
+  // was insufficient (e.g. dragging by a descendant), so the component also
+  // wires `onDragStart` to call `preventDefault()`. A cancelable event's
+  // `dispatchEvent` return value is `false` iff `preventDefault()` was
+  // called — the same proxy pattern used for the pointermove assertions
+  // above.
+  it('vetoes a native dragstart on the page image', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const img = document.querySelector('img');
+    if (!(img instanceof HTMLImageElement)) throw new Error('no <img> rendered');
+    const notPrevented = fireEvent.dragStart(img);
+    expect(notPrevented).toBe(false);
+  });
 });
 
 // F-128 "Seoul Day & Night" reskin — the header adopts the shared

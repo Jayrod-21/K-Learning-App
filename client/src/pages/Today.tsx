@@ -11,20 +11,31 @@
  *      entry point users actually wanted here. RESTORED, exactly at its
  *      pre-F-139 fidelity (live "N cards due" from the plan's real
  *      `reviewCount`, → `/learn/vocab`), alongside Grammar (→
- *      `/learn/grammar`) and Hanja (→ `/learn/hanja`, F-140). A standard
- *      swipe carousel (`SwipeCarousel`, F-017/F-029, looped).
+ *      `/learn/grammar`) and Hanja (→ `/learn/hanja`, F-140). Originally a
+ *      `SwipeCarousel` (hard one-page-at-a-time snap, F-017/F-029); per a
+ *      direct user request on the mobile-hardening pass ("make carousel 1
+ *      match carousel 2's feel"), converted to the SAME native-scroll-snap
+ *      PEEK SLIDER as #2 below — the identical `.km-today__peek{Outer,
+ *      Track,Item}` classes, same 78%/center-snap/peek geometry, same
+ *      center-pop + reduced-motion gating, same native-touch scroll (no
+ *      loop concept anymore — a continuous scroll rail has no "wrap").
+ *      Only the Vocab tile's content swaps between skeleton/real/error (it
+ *      alone depends on `today`); Grammar and Hanja are always the same
+ *      static tile regardless of the plan's fate.
  *   2. **Suggested learning carousel** — Reading · Listening · Writing, as
  *      a horizontal PEEK SLIDER (the user's own description: "3 tiles
  *      side by side, slide carousel, doesn't switch to a new tile but can
- *      see the previous tile, like a spin table"). This is a genuinely
+ *      see the previous tile, like a spin table"). This was a genuinely
  *      different interaction model from `SwipeCarousel`'s hard
- *      one-page-at-a-time snap, so it is NOT built on that component —
- *      it's native CSS scroll-snap (`overflow-x: auto` +
- *      `scroll-snap-type: x mandatory`, tiles at `flex: 0 0 78%` with
- *      `scroll-snap-align: center` and peek padding on the track) so the
- *      browser owns the drag/fling/momentum entirely on touch — no JS
- *      gesture code to get wrong. See Today.css for the full rationale
- *      and the progressive-enhancement center-emphasis animation.
+ *      one-page-at-a-time snap, so it was built as native CSS scroll-snap
+ *      (`overflow-x: auto` + `scroll-snap-type: x mandatory`, tiles at
+ *      `flex: 0 0 78%` with `scroll-snap-align: center` and peek padding on
+ *      the track) so the browser owns the drag/fling/momentum entirely on
+ *      touch — no JS gesture code to get wrong. Carousel 1 above now
+ *      shares this exact mechanism (same classes) rather than duplicating
+ *      it, so the two carousels feel identical to the user. See Today.css
+ *      for the full rationale and the progressive-enhancement
+ *      center-emphasis animation.
  *      F-134's Writing inline-expand (`CollapsibleTile` + embedded
  *      `WritingTopicGenerator`) does NOT fit this model: a tile that grows
  *      on tap would blow out its neighbors' fixed scroll-snap widths and
@@ -46,7 +57,9 @@
  *      glowing bar). A saved F-007 attempt surfaces as this carousel's
  *      corner resume banner (it resumes straight back into `/learn/topik`,
  *      so this is its natural home now that it's split from Reading/
- *      Listening/Writing).
+ *      Listening/Writing). `SwipeCarousel` is now used ONLY here — a
+ *      single hard-paged tile with a corner-slot banner is still the right
+ *      tool for that shape; it is not a continuous-scroll rail like #1/#2.
  *
  * Everything real stays real: per-tile "done today" counts come from
  * actual attempt-history endpoints, never a fabricated target or a
@@ -571,112 +584,123 @@ export function Today(): JSX.Element {
         <DancheongRail tone="accent" />
       </div>
 
-      {/* Carousel 1 — Core drills: Vocab / Grammar / Hanja. Vocab (restored,
-          reversing F-139) reads a real live due-count off the plan, so it
-          alone among this carousel's pages depends on `today`; Grammar and
-          Hanja never did and must keep working regardless of the plan's
-          fate. */}
+      {/* Carousel 1 — Review & drills: Vocab / Grammar / Hanja, as the SAME
+          native-scroll-snap peek slider as Carousel 2 below (direct user
+          request — see the module header comment and Today.css's
+          `.km-today__peekTrack` block for the shared mechanism). Vocab
+          (restored, reversing F-139) reads a real live due-count off the
+          plan, so it alone among these three tiles depends on `today` —
+          only its `km-today__peekItem` swaps between skeleton/tile/error;
+          Grammar and Hanja never depended on the plan and are always the
+          same static tile regardless of its fate. Deliberately a plain
+          labeled `<section>` (implicit `region`), not
+          `aria-roledescription="carousel"` — same reasoning as Carousel 2:
+          every tile is simultaneously real and focusable, the honest a11y
+          shape for a continuous scroll rail. */}
       <Eyebrow className="km-today__sectionEyebrow">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </Eyebrow>
-      <section className="km-today__section">
-        <SwipeCarousel ariaLabel="Review and drills" loop>
-          <div className="km-today__tilePage">
-            {today.loading ? (
-              <SkeletonCard />
-            ) : today.data ? (
+      <section className="km-today__section" aria-label="Review and drills">
+        <div className="km-today__peekOuter">
+          <div className="km-today__peekTrack">
+            <div className="km-today__peekItem">
+              {today.loading ? (
+                <SkeletonCard />
+              ) : today.data ? (
+                <ActivityTile
+                  tone="blue"
+                  icon="cards"
+                  ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
+                  pill={
+                    <Pill tone="gold">
+                      <Bilingual en="Due now" kr="지금 복습" />
+                    </Pill>
+                  }
+                  headline={
+                    <Bilingual
+                      en={`${String(today.data.reviewCount)} ${
+                        today.data.reviewCount === 1 ? 'card' : 'cards'
+                      } due`}
+                      kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
+                    />
+                  }
+                  meta={
+                    <Bilingual
+                      en="FSRS scheduling · due for review"
+                      kr="FSRS 스케줄링 · 복습 예정"
+                    />
+                  }
+                  onClick={() => {
+                    // Vocab-flashcards intent — the FSRS review queue lives
+                    // at /learn/vocab (/review is the library index).
+                    navigate('/learn/vocab');
+                  }}
+                />
+              ) : (
+                <PlanErrorCard onRetry={retryToday} />
+              )}
+            </div>
+            <div className="km-today__peekItem">
               <ActivityTile
                 tone="blue"
-                icon="cards"
-                ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
+                icon="grammar"
+                ariaLabel="Open grammar drills"
                 pill={
-                  <Pill tone="gold">
-                    <Bilingual en="Due now" kr="지금 복습" />
+                  <Pill tone="red">
+                    <Bilingual en="Drill" kr="드릴" />
                   </Pill>
                 }
-                headline={
-                  <Bilingual
-                    en={`${String(today.data.reviewCount)} ${
-                      today.data.reviewCount === 1 ? 'card' : 'cards'
-                    } due`}
-                    kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
-                  />
-                }
+                headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
                 meta={
                   <Bilingual
-                    en="FSRS scheduling · due for review"
-                    kr="FSRS 스케줄링 · 복습 예정"
+                    en="Production practice on banked patterns"
+                    kr="저장한 문형으로 생산 연습"
+                  />
+                }
+                extra={
+                  <DoneTodayRow
+                    count={grammarDoneToday}
+                    tone="blue"
+                    labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
+                    labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
                   />
                 }
                 onClick={() => {
-                  // Vocab-flashcards intent — the FSRS review queue lives at
-                  // /learn/vocab (/review is the library index).
-                  navigate('/learn/vocab');
+                  navigate('/learn/grammar');
                 }}
               />
-            ) : (
-              <PlanErrorCard onRetry={retryToday} />
-            )}
+            </div>
+            <div className="km-today__peekItem">
+              <ActivityTile
+                tone="ochre"
+                icon="hanja"
+                ariaLabel="Open Hanja study"
+                pill={
+                  <Pill tone="ochre">
+                    <Bilingual en="Practice" kr="연습" />
+                  </Pill>
+                }
+                headline={<Bilingual en="Hanja study" kr="한자 학습" />}
+                meta={
+                  <Bilingual
+                    en="Character drills & compounds"
+                    kr="한자 드릴과 단어"
+                  />
+                }
+                onClick={() => {
+                  navigate('/learn/hanja');
+                }}
+              />
+            </div>
           </div>
-          <div className="km-today__tilePage">
-            <ActivityTile
-              tone="blue"
-              icon="grammar"
-              ariaLabel="Open grammar drills"
-              pill={
-                <Pill tone="red">
-                  <Bilingual en="Drill" kr="드릴" />
-                </Pill>
-              }
-              headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
-              meta={
-                <Bilingual
-                  en="Production practice on banked patterns"
-                  kr="저장한 문형으로 생산 연습"
-                />
-              }
-              extra={
-                <DoneTodayRow
-                  count={grammarDoneToday}
-                  tone="blue"
-                  labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
-                  labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
-                />
-              }
-              onClick={() => {
-                navigate('/learn/grammar');
-              }}
-            />
-          </div>
-          <div className="km-today__tilePage">
-            <ActivityTile
-              tone="ochre"
-              icon="hanja"
-              ariaLabel="Open Hanja study"
-              pill={
-                <Pill tone="ochre">
-                  <Bilingual en="Practice" kr="연습" />
-                </Pill>
-              }
-              headline={<Bilingual en="Hanja study" kr="한자 학습" />}
-              meta={
-                <Bilingual
-                  en="Character drills & compounds"
-                  kr="한자 드릴과 단어"
-                />
-              }
-              onClick={() => {
-                navigate('/learn/hanja');
-              }}
-            />
-          </div>
-        </SwipeCarousel>
+        </div>
       </section>
 
       {/* Carousel 2 — Suggested learning: Reading / Listening / Writing as
           a native-scroll-snap PEEK SLIDER (see the module header comment
-          for why this is not a SwipeCarousel). Deliberately a plain
-          labeled <section> (implicit `region`), not
+          for why this is not a SwipeCarousel — Carousel 1 above now shares
+          this exact mechanism/classes too). Deliberately a plain labeled
+          <section> (implicit `region`), not
           `aria-roledescription="carousel"` — every tile is simultaneously
           real and focusable (no aria-hidden/inert paging), which is the
           honest a11y shape for a continuous scroll rail. */}

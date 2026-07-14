@@ -19,6 +19,13 @@
  * this sheet only owns the snap-back transition and its reduced-motion
  * override, mirroring `components/SwipeCarousel.css`'s identical pattern
  * for its track.
+ *
+ * F-155 real-device follow-up: `.km-upload-viewer__img` (the component's
+ * module header explains why) turns off the `<img>`'s OWN native
+ * drag-source/long-press-callout handling — a separate browser subsystem
+ * from the `touch-action`/`overscroll-behavior-x` pan/scroll arbitration on
+ * `.km-upload-viewer__page` below, and the actual reason swipe still failed
+ * on a real phone after that pan/scroll trio was already in place.
  */
 
 .km-upload-viewer__toolbar {
@@ -73,6 +80,22 @@
    * either way since it only affects overscroll behavior, not the pan/scroll
    * itself. */
   overscroll-behavior-x: contain;
+}
+
+/* F-155 real-device follow-up — see the file header. `draggable={false}` +
+ * the `onDragStart` veto (component) handle the native HTML5 drag source;
+ * `-webkit-touch-callout: none` is the CSS-only half (iOS's long-press
+ * Save/Copy/Open sheet has no JS-side event to veto) and `-webkit-user-drag`
+ * belt-and-braces the same drag-source shutoff at the CSS layer for engines
+ * that honor it. `user-select: none` here mirrors the parent's (an image
+ * has no text to select, but keeps a drag from ever starting a selection
+ * marquee instead). */
+.km-upload-viewer__img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* F-155 — the live drag-offset layer. Follows the finger 1:1 while

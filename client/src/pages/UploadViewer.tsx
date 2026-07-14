@@ -133,6 +133,30 @@
  * horizontal drag there is a legitimate pan over the zoomed-in page, not a
  * page-turn — `touchAction` on the box switches to the browser's native
  * `'auto'` panning in that state instead of the swipe-reserving `'pan-y'`.
+ *
+ * F-155 real-device follow-up (the `preventDefault`/`touch-action`/
+ * `overscroll-behavior-x` trio above was ported from `SwipeCarousel` but
+ * swipe STILL failed on a real phone): the missing piece was never the
+ * scroll/tap-replay race those three defend against — it's that this
+ * gesture's content is a literal `<img>`, and `SwipeCarousel` never drags
+ * across one. An `<img>` is an implicit native DRAG SOURCE
+ * (`draggable` defaults to `true` for `img`/`a`) and, on iOS, a native
+ * long-press "Save/Copy/Open" callout target. Both are a SEPARATE browser
+ * subsystem from scroll/pan arbitration — `touch-action` only governs
+ * panning/scrolling and `preventDefault()` inside `pointermove` only vetoes
+ * that same panning/scrolling — neither one has any say over whether the
+ * engine decides this touch is "dragging an image" or "long-pressing an
+ * image" instead of "a custom pointer gesture." Once the browser commits to
+ * either, it can stop delivering clean `pointermove` samples for that touch
+ * (or cancel the sequence outright), which reads exactly like "swipe
+ * doesn't work" with no console error and nothing for `preventDefault` to
+ * catch. Fixed at the `<img>` itself (`.km-upload-viewer__img` below):
+ * `draggable={false}` + an `onDragStart` veto (belt-and-braces — some
+ * engines have historically ignored a bare `draggable={false}` on nested
+ * content) turn off the native drag source, and
+ * `-webkit-touch-callout: none` turns off iOS's long-press menu, so every
+ * touch sample on the page image reaches ONLY this component's own pointer
+ * handlers.
  */
 import {
   useCallback,
@@ -332,6 +356,19 @@ function PageImage({
     <img
       src={src}
       alt={alt}
+      className="km-upload-viewer__img"
+      // F-155 real-device fix (module header §"real-device follow-up"): an
+      // <img> is an implicit native drag source and iOS long-press-callout
+      // target — both race the custom pointer-swipe gesture independently
+      // of `touch-action`/`preventDefault`, which only govern scroll/pan.
+      // `draggable={false}` + the `onDragStart` veto turn off drag; the
+      // matching `-webkit-touch-callout: none` (UploadViewer.css) turns off
+      // the iOS callout. Together every touch sample reaches only this
+      // component's own handlers.
+      draggable={false}
+      onDragStart={(e) => {
+        e.preventDefault();
+      }}
       style={{
         ...imgStyle,
         ...(status === 'loaded' ? {} : { display: 'none' }),

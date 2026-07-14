@@ -5,12 +5,21 @@
  * "Compare to" eyebrow and `.km-skillscompare__picker`, a segmented control
  * of up to 7 pills (TOPIK 1–6 + Native, each `white-space: nowrap`). As a
  * flex ITEM the picker's default `min-width: auto` sizes to its full
- * intrinsic content width — roughly 480–560px of EN labels alone, more with
- * Korean shorthand — and never shrinks below that. At a 360px phone width
- * the picker simply overflows its card to the right, clipping TOPIK 5 /
- * Native off the edge of the screen (the live bug). Abbreviating the
- * labels doesn't fix this generally — a future 7th level, a longer
- * translation, or a wider font all reintroduce the same overflow.
+ * intrinsic content width, and never shrinks below that. At a 360px phone
+ * width a picker wide enough could overflow its card to the right, clipping
+ * pills off the edge of the screen (the original live bug, hit with the full
+ * "TOPIK 5" / "Native" labels visible).
+ *
+ * Mobile-hardening pass 2 (short labels): `SkillsCompare.tsx` now renders
+ * each pill's visible text as the abbreviated code ("T1"…"T6", "Native" —
+ * see `shortRefLabel`) instead of the full label, which is by far the
+ * bigger lever — all 7 short pills fit comfortably inside 360px, so this
+ * scroll rail is dormant in the common case. It stays in place as a
+ * defense-in-depth fallback, not dead code: a larger text-size / accessibility
+ * zoom setting, a device narrower than 360px, or a future 8th ladder level
+ * (an 8th "T7"-shaped pill) can still reintroduce more content than the row
+ * has room for, and this is what keeps that case reachable-by-scroll instead
+ * of silently clipped off-screen.
  *
  * Fix: let the picker own its horizontal overflow. `min-width: 0` lets the
  * flex item shrink to the space actually available; `overflow-x: auto`

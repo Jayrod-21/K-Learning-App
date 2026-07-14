@@ -3,13 +3,17 @@
  * user feedback (mobile-hardening pass; see Today.tsx's module header for
  * the full rationale):
  *
- *   1. "Review & drills" (`SwipeCarousel`, looped) — Vocab (restored,
- *      reversing F-139) / Grammar / Hanja, in that order.
+ *   1. "Review & drills" (native scroll-snap peek slider — SAME mechanism
+ *      as #2, converted from `SwipeCarousel` per a later direct user
+ *      request that the two carousels feel identical) — Vocab (restored,
+ *      reversing F-139) / Grammar / Hanja, in that order, all
+ *      simultaneously real+focusable (no page-hiding).
  *   2. "Suggested learning" (native scroll-snap peek slider, NOT a
  *      `SwipeCarousel`) — Reading / Listening / Writing, all
  *      simultaneously real+focusable (no page-hiding).
  *   3. "TOPIK" (`SwipeCarousel`, single page) — last, carrying the
  *      "Review mistakes" shortcut and the F-007 resume banner.
+ *      `SwipeCarousel` is exercised ONLY here now.
  *
  * We mock `useEndpointOrMock` to control the data the screen reads. Five
  * fetches share the hook, dispatched on the `key` arg: the plan
@@ -28,6 +32,9 @@
  *     peek slider — Grammar/Hanja/TOPIK have no plan dependency and keep
  *     working regardless.
  *   - F-140: Hanja lives in the Review & drills carousel → /learn/hanja.
+ *   - Review & drills and Suggested learning are BOTH peek sliders — no
+ *     tabs/dots, every tile on-screen and focusable simultaneously, no
+ *     tab-switch needed to reach any tile.
  *   - The peek slider covers Reading/Writing/Listening; Writing NOW
  *     navigates to /learn/writing (F-134's inline CollapsibleTile expand
  *     doesn't fit the peek slider's fixed-width layout — see Today.tsx).
@@ -40,7 +47,7 @@
  *   - NO "coming soon" placeholder survives anywhere.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { readFileSync } from 'node:fs';
@@ -316,11 +323,12 @@ describe('Today', () => {
     ).toBeInTheDocument();
 
     const drills = screen.getByRole('region', { name: 'Review and drills' });
-    expect(drills).toHaveAttribute('aria-roledescription', 'carousel');
+    // Review & drills is now the SAME peek-slider widget as Suggested
+    // learning (converted from SwipeCarousel per direct user request) — a
+    // plain labeled region, not a paged carousel.
+    expect(drills).not.toHaveAttribute('aria-roledescription');
 
     const suggested = screen.getByRole('region', { name: 'Suggested learning' });
-    // The peek slider is deliberately NOT the SwipeCarousel widget (see
-    // Today.tsx) — a plain labeled region, not a paged carousel.
     expect(suggested).not.toHaveAttribute('aria-roledescription');
 
     const topik = screen.getByRole('region', { name: 'TOPIK' });
@@ -328,22 +336,37 @@ describe('Today', () => {
 
     // Order in the DOM: drills, then suggested, then TOPIK last.
     const order = Array.from(
-      document.querySelectorAll('[aria-roledescription="carousel"], [aria-label="Suggested learning"]'),
+      document.querySelectorAll(
+        '[aria-label="Review and drills"], [aria-label="Suggested learning"], [aria-roledescription="carousel"]',
+      ),
     );
     expect(order).toEqual([drills, suggested, topik]);
   });
 
+  it('Review & drills and Suggested learning are the SAME peek-slider mechanism — same track/item classes, no tabs on either', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    const suggested = screen.getByRole('region', { name: 'Suggested learning' });
+
+    expect(within(drills).queryAllByRole('tab')).toHaveLength(0);
+    expect(within(suggested).queryAllByRole('tab')).toHaveLength(0);
+
+    expect(drills.querySelector('.km-today__peekTrack')).not.toBeNull();
+    expect(suggested.querySelector('.km-today__peekTrack')).not.toBeNull();
+    expect(drills.querySelectorAll('.km-today__peekItem')).toHaveLength(3);
+  });
+
   // ── Carousel 1 — Review & drills: Vocab (restored) / Grammar / Hanja ──
 
-  it('Vocab tile is RESTORED as a first-class activity — first page of Review & drills, real due-count, routes to /learn/vocab', async () => {
+  it('Vocab tile is RESTORED as a first-class activity — first tile of Review & drills, real due-count, routes to /learn/vocab', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const lead = screen.getByRole('region', { name: 'Review and drills' });
-    expect(within(lead).getAllByRole('tab')).toHaveLength(3);
-
-    // Vocab is page 1 — visible by default, no tab switch needed.
+    // Vocab, Grammar, and Hanja are all on-screen at once — no tab switch
+    // needed to reach any of them (same peek-slider mechanism as Carousel 2).
     expect(screen.getByText('24 cards due')).toBeInTheDocument();
     expect(screen.getByText('지금 복습')).toBeInTheDocument();
 
@@ -380,61 +403,35 @@ describe('Today', () => {
     await user.click(within(lead).getByRole('button', { name: 'Retry' }));
     expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
 
-    // Grammar (page 2) has no plan dependency — switch to it and confirm it
-    // still navigates correctly even though the plan failed.
-    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 3' }));
+    // Grammar has no plan dependency — it's on-screen the whole time (same
+    // peek-slider mechanism as Carousel 2, no tab switch needed) and still
+    // navigates correctly even though the plan failed.
     await user.click(
       screen.getByRole('button', { name: 'Open grammar drills' }),
     );
     expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
   });
 
-  it('F-140: navigates to /learn/hanja from the Hanja tile (page 3 of 3)', async () => {
+  it('F-140: navigates to /learn/hanja from the Hanja tile', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const lead = screen.getByRole('region', { name: 'Review and drills' });
-    await user.click(within(lead).getByRole('tab', { name: 'Page 3 of 3' }));
     await user.click(screen.getByRole('button', { name: 'Open Hanja study' }));
 
     expect(screen.getByText('HANJA PAGE')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/grammar from the grammar drills tile (page 2 of 3, real page not "coming soon")', async () => {
+  it('navigates to /learn/grammar from the grammar drills tile (real page not "coming soon")', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const lead = screen.getByRole('region', { name: 'Review and drills' });
-    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 3' }));
     await user.click(
       screen.getByRole('button', { name: 'Open grammar drills' }),
     );
 
     expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
-  });
-
-  it('loops the Review & drills carousel: a real forward swipe on the last page wraps to page 1 (F-029)', () => {
-    loadDefaults();
-    renderTodayAt();
-
-    const lead = screen.getByRole('region', { name: 'Review and drills' });
-    const viewport = lead.querySelector('.km-carousel__viewport');
-    expect(viewport).not.toBeNull();
-
-    fireEvent.click(within(lead).getByRole('tab', { name: 'Page 3 of 3' }));
-    const pointer = { pointerId: 7, isPrimary: true };
-    fireEvent.pointerDown(viewport!, {
-      ...pointer, button: 0, clientX: 200, clientY: 50,
-    });
-    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 140, clientY: 52 });
-    fireEvent.pointerMove(viewport!, { ...pointer, clientX: 80, clientY: 55 });
-    fireEvent.pointerUp(viewport!, { ...pointer, clientX: 80, clientY: 55 });
-
-    expect(
-      within(lead).getByRole('tab', { name: 'Page 1 of 3' }),
-    ).toHaveAttribute('aria-selected', 'true');
   });
 
   it('renders NO coming-soon placeholder anywhere', () => {
@@ -576,11 +573,14 @@ describe('Today', () => {
     ).toBeInTheDocument();
   });
 
-  it('CSS: the Suggested learning peek slider uses native scroll-snap, not a JS carousel', () => {
+  it('CSS: the peek slider (shared by Review & drills and Suggested learning) uses native scroll-snap, not a JS carousel', () => {
     // happy-dom does no layout, so the actual on-screen scroll/snap
     // behavior can't be measured by rendering — pin the CSS mechanism from
     // source instead (same pattern as SkillsCompare.test.tsx's mobile-
-    // overflow-fix contract test).
+    // overflow-fix contract test). Both carousels render the SAME
+    // `.km-today__peek{Track,Item}` classes, so this single source-level
+    // pin covers both — see the runtime structural check above
+    // ("same peek-slider mechanism") that both regions actually use them.
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'Today.css'),
       'utf8',
