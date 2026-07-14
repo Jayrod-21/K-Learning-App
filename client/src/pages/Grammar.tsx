@@ -20,7 +20,7 @@
  *                `GET /vocab/cards/due` queue (the same queue the vocab
  *                session drains).
  *   - `practice` — the Pass-9 LIVE production drill, opened from the
- *                top-right "Practice" button in the Topbar (F-064). The pool
+ *                top-right "Practice" button in the header (F-064). The pool
  *                is due-first (Anki ordering): patterns whose production card
  *                is due are drilled before the rest of the rotation. Per
  *                drill: `POST /grammar-drill` generates, the learner answers,
@@ -80,6 +80,34 @@
  *     builds; in prod a generate failure surfaces a retryable error.
  *   - `?view=` is user-controlled input read off the URL; it is parsed
  *     against a closed set (`parseView`) and never interpolated anywhere.
+ *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2) replaces the bare `Topbar`; each proficiency group in the cards view
+ * is a `CollapsibleTile surface="city"` signboard/hanji-paper tile (device
+ * #1) with a `DancheongRail` leading edge (device #2, cycled across the four
+ * fixed tones so the groups read as distinct sections); the live drill card
+ * itself — the page's actual hero surface — is a `CityCard` with its own
+ * rail; a Known row's standing carries a milestone `SealStamp` (device #7,
+ * mirroring `ReviewGrammar`'s graduated-row treatment); every honest-empty
+ * state carries `.km-giwa`/`.km-hangul-watermark` (devices #3/#6); the page
+ * root gets the ambient `.km-rain-sheen` (device #8, Night-only per its own
+ * CSS gate).
+ *
+ * F-158 ("pick a form to drill continuously") — a NEW entry point alongside
+ * the existing rotation: each saved-pattern row in the cards view (in EITHER
+ * the Learning or Known view — a deliberate list-as-form-picker, matching the
+ * design mock) carries a "Drill" action. Tapping it sets `formTarget` (below)
+ * and jumps to the practice view generating for THAT pattern only; unlike the
+ * one-shot FU-NF-42 `drillTarget` deep-link (which the Review screen still
+ * uses to focus a SINGLE drill before falling back to the rotation),
+ * `formTarget` is CONTINUOUS — advancing never clears it or rotates to a
+ * different pattern; it re-fires the generate effect for the same
+ * `patternKey` every time (reusing the same retry-tick mechanism a PROD
+ * generate-failure Retry already uses), so the learner gets an endless
+ * stream of fresh sentences for the one form they picked. Leaving the
+ * practice view (BackButton, or navigating to History) drops `formTarget` so
+ * a later "Practice" tap resumes the normal pool instead of re-opening a
+ * stale pick.
  */
 import {
   useCallback,
@@ -89,18 +117,22 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Topbar } from '../components/Topbar';
+import { Bilingual } from '../components/Bilingual';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { Button } from '../components/Button';
 import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { GoldRule } from '../components/GoldRule';
 import { MockBadge } from '../components/MockBadge';
+import { SealStamp } from '../components/SealStamp';
 import { Sheet } from '../components/Sheet';
 import { ErrorCard } from '../components/ErrorCard';
 import { BackButton } from '../components/BackButton';
 import { CollapsibleTile } from '../components/CollapsibleTile';
+import type { DancheongRailTone } from '../components/DancheongRail';
 import { KgiuDetailBody } from '../components/KgiuDetailBody';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -144,6 +176,13 @@ type View = 'cards' | 'practice' | 'history';
 function parseView(raw: string | null): View {
   return raw === 'practice' || raw === 'history' ? raw : 'cards';
 }
+
+/** F-128: bilingual eyebrow copy per view, for the shared `PageHubHeader`. */
+const EYEBROW_BY_VIEW: Record<View, { en: string; kr: string }> = {
+  cards: { en: 'Your grammar cards', kr: '내 문법 카드' },
+  practice: { en: 'Practice', kr: '연습' },
+  history: { en: 'Practice history', kr: '연습 기록' },
+};
 
 /**
  * Deep-link payload the Review screen hands to the practice view (FU-NF-42
@@ -432,6 +471,47 @@ function Grammar(): JSX.Element {
     setDrillTarget(null);
   }, []);
 
+  /**
+   * F-158: the continuously-drilled single form, chosen explicitly via a
+   * cards-row "Drill" action — the mock's form-picker. Distinct from
+   * `drillTarget` above: that one is a ONE-SHOT deep link (consumed on the
+   * first advance), this one is CONTINUOUS (advancing regenerates the SAME
+   * pattern forever — see `PracticePanel`'s `continuous` prop).
+   */
+  const [formTarget, setFormTarget] = useState<DrillTarget | null>(null);
+
+  /** F-158: row action — pick a form and jump straight into drilling it. */
+  const drillForm = useCallback(
+    (row: PatternListItem): void => {
+      setFormTarget({
+        patternKey: row.patternKey,
+        display: row.pattern,
+        meaning: row.title,
+      });
+      setSearchParams({ view: 'practice' });
+    },
+    [setSearchParams],
+  );
+
+  const clearFormTarget = useCallback((): void => {
+    setFormTarget(null);
+  }, []);
+
+  // Leaving the practice view drops the continuous pick — a later "Practice"
+  // tap must resume the normal pool rotation, not silently reopen whichever
+  // form was last hand-picked.
+  useEffect(() => {
+    if (view !== 'practice') setFormTarget(null);
+  }, [view]);
+
+  // `formTarget` wins over a stale Review deep-link: the two entry points
+  // are mutually exclusive in practice (a deep link lands on mount; a form
+  // pick only happens from a click while already on this page), but a fixed
+  // precedence keeps behavior deterministic if they ever did coincide.
+  const activeTarget = formTarget ?? drillTarget;
+  const continuousDrill = formTarget !== null;
+  const clearActiveTarget = formTarget !== null ? clearFormTarget : clearDrillTarget;
+
   /** F-064: the top-right Practice button — push the practice view. */
   const openPractice = useCallback((): void => {
     setSearchParams({ view: 'practice' });
@@ -714,16 +794,11 @@ function Grammar(): JSX.Element {
   const showMockBadge =
     view === 'cards' && listState.isMock && bankedState.isMock;
 
-  const eyebrow =
-    view === 'practice'
-      ? 'Practice'
-      : view === 'history'
-        ? 'Practice history'
-        : 'Your grammar cards';
+  const eyebrow = EYEBROW_BY_VIEW[view];
 
   return (
     <section
-      className="screen km-grammar"
+      className="screen km-grammar km-rain-sheen"
       aria-labelledby="grammar-title"
       style={{ position: 'relative' }}
     >
@@ -736,12 +811,13 @@ function Grammar(): JSX.Element {
         <BackButton to="/learn/grammar" label="Grammar" />
       ) : null}
 
-      <Topbar
-        krTitle="문법"
-        title="Grammar"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe instead of a
+          bare `Topbar`. */}
+      <PageHubHeader
         titleId="grammar-title"
-        eyebrow={eyebrow}
-        right={
+        eyebrow={<Bilingual en={eyebrow.en} kr={eyebrow.kr} />}
+        heading={<Bilingual en="Grammar" kr="문법" />}
+        actions={
           view === 'cards' ? (
             // F-064: the drill entry point is a top-right "Practice" button.
             <Button
@@ -779,6 +855,7 @@ function Grammar(): JSX.Element {
           onRelearn={(row) => {
             void setKnown(row, false);
           }}
+          onDrillForm={drillForm}
           onBrowse={() => {
             // D3: the single grammar browse (+ Bank) lives in the library.
             navigate('/review/grammar');
@@ -804,8 +881,9 @@ function Grammar(): JSX.Element {
           items={drillableItems}
           learningItems={learningItems}
           dueKeys={dueKeys}
-          target={drillTarget}
-          onClearTarget={clearDrillTarget}
+          target={activeTarget}
+          continuous={continuousDrill}
+          onClearTarget={clearActiveTarget}
         />
       ) : null}
 
@@ -856,6 +934,22 @@ const PROFICIENCY_GROUPS: ReadonlyArray<{
   { id: 'L5+', label: 'Advanced · L5+' },
 ];
 
+/**
+ * F-128 device #1/#2: each proficiency group renders as its own
+ * `CollapsibleTile surface="city"` signboard/hanji-paper tile with a
+ * `DancheongRail` leading edge. There are exactly four groups and four fixed
+ * `DancheongRailTone` values, so each group gets a distinct tone by index —
+ * not a semantic difficulty→color claim (the doc reserves that kind of
+ * mapping for genuinely graded signals like due/mastery), just a stable,
+ * visually distinct identity per section.
+ */
+const GROUP_TONE_BY_INDEX: readonly DancheongRailTone[] = [
+  'mint',
+  'blue',
+  'accent',
+  'plain',
+];
+
 interface CardsPanelProps {
   loading: boolean;
   fetchErrored: boolean;
@@ -879,6 +973,8 @@ interface CardsPanelProps {
   onOpen: (row: PatternListItem) => void;
   onMarkKnown: (row: PatternListItem) => void;
   onRelearn: (row: PatternListItem) => void;
+  /** F-158: pick this pattern for the continuous single-form drill. */
+  onDrillForm: (row: PatternListItem) => void;
   /** Navigate to the library's grammar browse (the single browse, D3). */
   onBrowse: () => void;
   /** Open the practice-history view (F-065). */
@@ -899,6 +995,7 @@ function CardsPanel({
   onOpen,
   onMarkKnown,
   onRelearn,
+  onDrillForm,
   onBrowse,
   onHistory,
   onRetry,
@@ -972,41 +1069,54 @@ function CardsPanel({
       {actionError ? <ErrorCard message={actionError} /> : null}
 
       {items.length === 0 ? (
-        <Card variant="flat" role="status">
-          {view === 'learning' ? (
-            <>
-              <Eyebrow>Nothing in learning</Eyebrow>
-              <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-                {knownItems.length > 0
-                  ? 'Every card is marked as known. Tap Relearn on a card in the Known view to study it again.'
-                  : 'Save patterns from the grammar library to start learning them here.'}
-              </p>
-              {knownItems.length === 0 ? (
-                <Button
-                  variant="gold"
-                  size="md"
-                  onClick={onBrowse}
-                  trailingIcon={<Icon name="arrow-right" size={14} />}
-                >
-                  Browse all patterns
-                </Button>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <Eyebrow>Nothing marked known yet</Eyebrow>
-              <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-                When you&apos;ve mastered a card, tap Mark known to retire it
-                from practice and reviews. It moves here, and Relearn brings
-                it back any time.
-              </p>
-            </>
-          )}
-        </Card>
+        // F-128 devices #3/#6 — honest-empty-state texture (roof-tile
+        // ground + a faint hangul watermark), matching every other
+        // reskinned page's empty state.
+        <div
+          className="km-grammar__empty-wrap km-giwa km-hangul-watermark"
+          data-glyph="문법"
+        >
+          <Card variant="flat" role="status">
+            {view === 'learning' ? (
+              <>
+                <Eyebrow>Nothing in learning</Eyebrow>
+                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                  {knownItems.length > 0
+                    ? 'Every card is marked as known. Tap Relearn on a card in the Known view to study it again.'
+                    : 'Save patterns from the grammar library to start learning them here.'}
+                </p>
+                {knownItems.length === 0 ? (
+                  <Button
+                    variant="gold"
+                    size="md"
+                    onClick={onBrowse}
+                    trailingIcon={<Icon name="arrow-right" size={14} />}
+                  >
+                    Browse all patterns
+                  </Button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Eyebrow>Nothing marked known yet</Eyebrow>
+                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                  When you&apos;ve mastered a card, tap Mark known to retire it
+                  from practice and reviews. It moves here, and Relearn brings
+                  it back any time.
+                </p>
+              </>
+            )}
+          </Card>
+        </div>
       ) : (
-        groups.map((g) => (
+        groups.map((g, i) => (
+          // F-128 device #1/#2: a themed city-signboard tile per proficiency
+          // group instead of a plain Card, with a DancheongRail leading edge.
           <CollapsibleTile
             key={g.id}
+            surface="city"
+            tone={GROUP_TONE_BY_INDEX[i % GROUP_TONE_BY_INDEX.length]}
+            rail
             className="km-grammar__group"
             title={
               <span className="km-grammar__group-title">
@@ -1035,6 +1145,7 @@ function CardsPanel({
                   onOpen={onOpen}
                   onMarkKnown={onMarkKnown}
                   onRelearn={onRelearn}
+                  onDrillForm={onDrillForm}
                 />
               ))}
             </ul>
@@ -1115,6 +1226,7 @@ function CardRow({
   onOpen,
   onMarkKnown,
   onRelearn,
+  onDrillForm,
 }: {
   row: PatternListItem;
   view: CardsView;
@@ -1125,6 +1237,7 @@ function CardRow({
   onOpen: (row: PatternListItem) => void;
   onMarkKnown: (row: PatternListItem) => void;
   onRelearn: (row: PatternListItem) => void;
+  onDrillForm: (row: PatternListItem) => void;
 }): JSX.Element {
   return (
     <li className="km-grammar__row">
@@ -1139,37 +1252,61 @@ function CardRow({
         <span className="km-grammar__row-head">
           <span className="kr km-grammar__row-kr">{row.pattern}</span>
           {due ? <Pill tone="gold">Due</Pill> : null}
+          {/* F-128 device #7: a Known row's standing carries a milestone
+              seal (mirrors ReviewGrammar's graduated-row treatment) —
+              purely decorative next to the real "Known"/"Relearn" action. */}
+          {view === 'known' ? (
+            <SealStamp milestone size="sm" tone="mint" />
+          ) : null}
         </span>
         <span className="km-grammar__row-title">{row.title}</span>
         <span className="km-grammar__row-schedule">{scheduleStatusLine(schedule)}</span>
       </button>
-      {view === 'learning' ? (
+      <div className="km-grammar__row-actions">
+        {/* F-158: the cards list doubles as the "pick a form" picker — any
+            saved pattern, Learning or Known, can be sent into a continuous
+            single-form drill (matches the design mock, where every row is
+            drillable regardless of its mastery pill). */}
         <Button
           variant="ghost"
           size="sm"
           className="km-grammar__row-action"
           onClick={() => {
-            onMarkKnown(row);
+            onDrillForm(row);
           }}
-          disabled={pending || !actionable}
-          aria-label={`Mark ${row.pattern} as known`}
+          leadingIcon={<Icon name="play" size={12} />}
+          aria-label={`Drill ${row.pattern} continuously`}
         >
-          {pending ? 'Saving…' : 'Mark known'}
+          Drill
         </Button>
-      ) : (
-        <Button
-          variant="gold"
-          size="sm"
-          className="km-grammar__row-action"
-          onClick={() => {
-            onRelearn(row);
-          }}
-          disabled={pending || !actionable}
-          aria-label={`Relearn ${row.pattern}`}
-        >
-          {pending ? 'Saving…' : 'Relearn'}
-        </Button>
-      )}
+        {view === 'learning' ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="km-grammar__row-action"
+            onClick={() => {
+              onMarkKnown(row);
+            }}
+            disabled={pending || !actionable}
+            aria-label={`Mark ${row.pattern} as known`}
+          >
+            {pending ? 'Saving…' : 'Mark known'}
+          </Button>
+        ) : (
+          <Button
+            variant="gold"
+            size="sm"
+            className="km-grammar__row-action"
+            onClick={() => {
+              onRelearn(row);
+            }}
+            disabled={pending || !actionable}
+            aria-label={`Relearn ${row.pattern}`}
+          >
+            {pending ? 'Saving…' : 'Relearn'}
+          </Button>
+        )}
+      </div>
     </li>
   );
 }
@@ -1280,13 +1417,18 @@ function HistoryPanel(): JSX.Element {
 
   if (rows.length === 0) {
     return (
-      <Card variant="flat">
-        <Eyebrow>Practice history</Eyebrow>
-        <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
-          No scored practice attempts yet. Answers you submit in Practice will
-          appear here, newest first.
-        </p>
-      </Card>
+      <div
+        className="km-grammar__empty-wrap km-giwa km-hangul-watermark"
+        data-glyph="문법"
+      >
+        <Card variant="flat">
+          <Eyebrow>Practice history</Eyebrow>
+          <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+            No scored practice attempts yet. Answers you submit in Practice
+            will appear here, newest first.
+          </p>
+        </Card>
+      </div>
     );
   }
 
@@ -1371,15 +1513,27 @@ interface PracticePanelProps {
    */
   dueKeys: ReadonlySet<string>;
   /**
-   * FU-NF-42 B3: an externally-supplied pattern to drill (a Review deep-link).
-   * When set, the panel generates a drill for THIS pattern instead of its
-   * default pool rotation. `null` → the existing rotation behaviour.
+   * FU-NF-42 B3 / F-158: an externally-supplied pattern to drill (a Review
+   * deep-link, or an F-158 continuous form pick). When set, the panel
+   * generates a drill for THIS pattern instead of its default pool rotation.
+   * `null` → the existing rotation behaviour.
    */
   target?: DrillTarget | null;
   /**
+   * F-158: `target` is a CONTINUOUS pick (the cards-row "Drill" action) —
+   * advancing NEVER clears it or moves to a different pattern; it instead
+   * regenerates a fresh drill for the same `target` forever. `false` (the
+   * FU-NF-42 deep-link default) keeps the existing one-shot behaviour:
+   * advancing clears `target` via `onClearTarget` and falls back to the
+   * rotation.
+   */
+  continuous?: boolean;
+  /**
    * Invoked when the learner moves past the targeted pattern (Skip / Next), so
    * the parent can drop the deep-link target and the panel falls back to its
-   * normal rotation. No-op when no target was supplied.
+   * normal rotation. No-op when no target was supplied, and never invoked
+   * while `continuous` is true (there is nothing to fall back to — the panel
+   * regenerates in place instead).
    */
   onClearTarget?: () => void;
 }
@@ -1588,6 +1742,7 @@ function PracticePanel({
   learningItems,
   dueKeys,
   target = null,
+  continuous = false,
   onClearTarget,
 }: PracticePanelProps): JSX.Element {
   // Which pattern (by index into the NON-DUE rotation) we're drilling.
@@ -1733,17 +1888,26 @@ function PracticePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, duePos, patternKey, genTick]);
 
-  // Move past the current pattern. With a deep-link target active there is no
-  // rotation to advance into, so we drop the target (→ parent clears it) and
-  // the panel falls back to its pool. While the due queue is being drained we
-  // advance the session-local `duePos` — the persisted rotation cursor must
-  // NOT move past rest-patterns it never served. Otherwise we bump `idx` AND
-  // persist the new cursor, so the step survives a remount — Skip / Next
-  // pattern deterministically moves to a different pattern instead of
-  // regenerating the same one after any view switch.
+  // Move past the current pattern. With a CONTINUOUS target (F-158) there is
+  // deliberately no "past" — Skip/Next just bumps `genTick` to re-fire the
+  // generate effect for the SAME patternKey (the identical mechanism a PROD
+  // generate-failure Retry already uses), so the learner gets an endless
+  // stream of fresh sentences for the one form they picked. With a ONE-SHOT
+  // deep-link target (FU-NF-42) there is no rotation to advance into either,
+  // so we drop the target (→ parent clears it) and the panel falls back to
+  // its pool. Otherwise, while the due queue is being drained we advance the
+  // session-local `duePos` — the persisted rotation cursor must NOT move past
+  // rest-patterns it never served. Otherwise we bump `idx` AND persist the
+  // new cursor, so the step survives a remount — Skip / Next pattern
+  // deterministically moves to a different pattern instead of regenerating
+  // the same one after any view switch.
   const advance = useCallback((): void => {
     submitCtrlRef.current?.abort();
     if (target) {
+      if (continuous) {
+        setGenTick((t) => t + 1);
+        return;
+      }
       onClearTarget?.();
       return;
     }
@@ -1752,7 +1916,7 @@ function PracticePanel({
       return;
     }
     setIdx((i) => i + 1);
-  }, [target, onClearTarget, servingDue]);
+  }, [target, continuous, onClearTarget, servingDue]);
 
   // Persist the cursor on every step (and on mount, an idempotent re-write of
   // the value just read). An effect rather than a write inside the setIdx
@@ -1819,9 +1983,15 @@ function PracticePanel({
   }
   if (pool.due.length + pool.rest.length === 0 && !target) {
     return (
-      <div className="km-grammar__state" role="status">
-        No grammar cards to practice yet. Save patterns from the grammar
-        library (Review → Grammar) first.
+      // F-128 devices #3/#6 — same honest-empty texture as the cards view.
+      <div
+        className="km-grammar__empty-wrap km-giwa km-hangul-watermark"
+        data-glyph="문법"
+      >
+        <div className="km-grammar__state" role="status">
+          No grammar cards to practice yet. Save patterns from the grammar
+          library (Review → Grammar) first.
+        </div>
       </div>
     );
   }
@@ -1829,17 +1999,25 @@ function PracticePanel({
   return (
     <>
       {isMock ? <MockBadge /> : null}
+      {/* F-158: make the continuous single-form mode legible — the footer
+          button copy alone (below) isn't enough context on first entry. */}
+      {continuous && target ? (
+        <p className="km-grammar__continuous-note" role="status">
+          Drilling <span className="kr">{target.display}</span> only —{' '}
+          <strong>Another</strong> gets a fresh sentence for this same form.
+        </p>
+      ) : null}
       {genError !== null ? (
         // PROD generate failure — there is no item (and hence no DrillCard),
         // so the error renders at panel level with its OWN Retry that
         // re-generates. Fixed copy, never server prose.
         <ErrorCard message={genError} onRetry={retryGenerate} />
       ) : phase === 'generating' || !item ? (
-        <Card className="km-grammar__card" aria-busy="true">
+        <CityCard rail tone="accent" className="km-grammar__card" aria-busy="true">
           <div className="km-grammar__state" role="status">
             Generating drill…
           </div>
-        </Card>
+        </CityCard>
       ) : (
         <DrillCard
           item={item}
@@ -1847,6 +2025,7 @@ function PracticePanel({
           score={score}
           userInput={userInput}
           error={error}
+          continuous={continuous}
           onInput={setUserInput}
           onSubmit={() => {
             void submit();
@@ -1879,6 +2058,9 @@ interface DrillCardProps {
   score: DrillScore | null;
   userInput: string;
   error: string | null;
+  /** F-158: continuous single-form mode — relabels Skip/Next as "Another"
+   *  since there is no different pattern to move to or skip past. */
+  continuous?: boolean;
   onInput: (value: string) => void;
   onSubmit: () => void;
   onRetry: () => void;
@@ -1905,6 +2087,7 @@ function DrillCard({
   score,
   userInput,
   error,
+  continuous = false,
   onInput,
   onSubmit,
   onRetry,
@@ -1918,7 +2101,9 @@ function DrillCard({
   const canSubmit = userInput.trim().length > 0 && !revealed && !scoring;
 
   return (
-    <Card className="km-grammar__card">
+    // F-128 device #1/#2: the live drill is the page's actual hero
+    // surface — a CityCard signboard with a rail, not a plain Card.
+    <CityCard rail tone="accent" className="km-grammar__card">
       <div className="km-grammar__header">
         <div>
           <Eyebrow>Pattern</Eyebrow>
@@ -1981,7 +2166,7 @@ function DrillCard({
         {!revealed ? (
           <>
             <Button variant="ghost" onClick={onSkip} disabled={scoring}>
-              Skip
+              {continuous ? 'Another' : 'Skip'}
             </Button>
             <Button variant="gold" onClick={onSubmit} disabled={!canSubmit}>
               {scoring ? 'Scoring…' : 'Submit'}
@@ -1990,19 +2175,21 @@ function DrillCard({
         ) : (
           <>
             <Button variant="ghost" onClick={onSkip}>
-              Skip
+              {continuous ? 'Another' : 'Skip'}
             </Button>
             <Button
               variant="gold"
               onClick={onNext}
               trailingIcon={<Icon name="arrow-right" size={14} />}
             >
-              Next pattern
+              {/* Continuous mode never moves to a DIFFERENT pattern —
+                  "Next pattern" would misstate what this button does. */}
+              {continuous ? 'Another' : 'Next pattern'}
             </Button>
           </>
         )}
       </div>
-    </Card>
+    </CityCard>
   );
 }
 

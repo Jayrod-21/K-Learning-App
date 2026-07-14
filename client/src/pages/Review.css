@@ -1,10 +1,26 @@
 /**
- * Review.css — co-located styles for the Phase 3C-1 flashcards rework.
+ * Review.css — co-located styles for the Phase 3C-1 flashcards rework, plus
+ * the Wave-2 F-128 "Seoul Day & Night" reskin (+ F-156/F-157/F-129).
  * Legacy km-review rules still live in styles/index.css; every NEW rule
- * lands here, and the two flashcard-geometry fixes below override the
- * legacy declarations via the `.km-review` scope (higher specificity, no
+ * lands here, and the flashcard-geometry fixes below override the legacy
+ * declarations via the `.km-review` scope (higher specificity, no
  * shared-file edit).
+ *
+ * F-129 — mobile-first: the page's own horizontal gutter (previously an
+ * inline `style={{ padding: '0 18px 32px' }}` on the root `<section>`,
+ * `.screen` itself carries none) now lives here so it can tighten under a
+ * real phone width, plus a defensive `overflow-x: hidden` backstop (same
+ * convention as `.km-vocab`/`.km-progress`).
  */
+.km-review {
+  overflow-x: hidden;
+  padding: 0 18px 32px;
+}
+@media (max-width: 380px) {
+  .km-review {
+    padding: 0 14px 28px;
+  }
+}
 
 /* ── B-023: consistent rounded geometry ────────────────────────────────
    The legacy rules gave the flashcard OUTER a 4px radius (a near-pointed
@@ -45,6 +61,100 @@
   border-radius: var(--radius-sm);
 }
 
+/* ── F-128 device #1 — flashcard as a CityCard-tone signboard ──────────
+ * The `Flashcard` component (components/Flashcard.tsx, shared — out of this
+ * ticket's edit scope) renders plain `.km-flashcard__face` divs with no
+ * surface opinion of its own by design (its own doc comment: face content
+ * differs too much across consumers for a default to help). Rather than
+ * hand-rolling a one-off surface, this mirrors CityCard.css's OWN Day
+ * hanji-paper / Night neon-signboard recipe verbatim, keyed off the same
+ * `--km-tone` variable — the wrapping `.km-tone--accent` utility class
+ * (styles/seoul-devices.css, applied in Review.tsx's JSX) resolves it
+ * exactly the way a `<CityCard tone="accent">` would, so the flip card
+ * reads as the SAME signboard object as every other CityCard on the app,
+ * not a bespoke lookalike. The flip mechanics themselves (3D rotateY,
+ * preserve-3d) are untouched — only the face surface is restyled. */
+.km-review .km-flashcard__face {
+  background: var(--ink-1);
+  border: var(--card-hairline);
+  box-shadow: var(--shadow-sm);
+}
+[data-theme="dark"] .km-review .km-flashcard__face {
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--ink-2) 85%, transparent),
+    color-mix(in srgb, var(--ink-1) 90%, transparent)
+  );
+  border: 1.5px solid color-mix(in srgb, var(--km-tone) 55%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--km-tone) 12%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--km-tone) 50%, transparent),
+    inset 0 0 18px -8px color-mix(in srgb, var(--km-tone) 35%, transparent);
+}
+/* Night glowing title, mirroring CityCard's `__title` glow — the front
+ * word and the revealed back word both read as the signboard's "neon
+ * tube" text. */
+[data-theme="dark"] .km-review__word,
+[data-theme="dark"] .km-review__backWord {
+  text-shadow: 0 0 10px var(--km-tone);
+}
+
+/* ── F-128 device #5 — subway-line session progress ─────────────────────
+ * `.km-review__progress`/`__progressMeta` already carry layout rules in the
+ * shared sheet (styles/index.css) that still apply unchanged (the meta
+ * markup didn't change) — this only ADDS the gap above the new
+ * `SubwayProgress` line, via the higher-specificity `.km-review` ancestor
+ * scope (same override convention as the `.km-flashcard` rules above), so
+ * it wins regardless of stylesheet import order without touching the
+ * shared file. The plain-bar rules the old markup used
+ * (`.km-review__progressBar`/`__progressFill`) were confirmed dead
+ * (fix-pass batch-3: no JSX referenced them anywhere in the app) and have
+ * been removed from styles/index.css. */
+.km-review .km-review__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Fix-pass batch-3 (SHOULD-FIX, REVIEW_batch3-flashcards.md) ──────────
+ * `.km-review__front`/`__back` (styles/index.css) are LEGACY rules exclusive
+ * to this page (no other consumer) that still paint an opaque
+ * `background: var(--ink-2)`. Flashcard.tsx renders them as the sole direct
+ * child of `.km-flashcard__face`, which — as of the F-128 block above — now
+ * carries the Night neon-signboard gradient/glow (and Day's hanji-paper
+ * fill). An edge-to-edge opaque child paints straight over that parent
+ * surface, so the card was reading as a flat `--ink-2` panel with only the
+ * face's own border/shadow visible, not the intended signboard body. This
+ * neutralizes the shared file's opaque fill FOR THIS PAGE ONLY (higher-
+ * specificity `.km-review` ancestor scope, same convention as every other
+ * override in this file) so the parent's gradient/glow shows through —
+ * `.km-flashcard__face`'s own `overflow: hidden` still clips both faces to
+ * the shared radius, so nothing bleeds past the rounded corners. */
+.km-review .km-review__front,
+.km-review .km-review__back {
+  background: transparent;
+}
+
+/* ── F-157 — "New list" Sheet trigger (My lists, landing) ───────────────── */
+.km-review__listsCard {
+  margin-bottom: 4px;
+}
+.km-review__createTrigger {
+  display: flex;
+  margin-bottom: 14px;
+}
+
+/* ── F-128 device #9 — completion-page mother-of-pearl accent bar ───────
+ * Purely decorative (`aria-hidden`); sits ABOVE the reviewed-count text so
+ * the shimmer gradient never sits behind readable copy (no contrast risk). */
+.km-review__completeShimmer {
+  display: block;
+  width: 64px;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  margin-top: 12px;
+}
+
 /* ── Shared inline error line ─────────────────────────────────────────── */
 .km-review__inlineError {
   margin-top: 8px;
@@ -62,12 +172,8 @@
   margin-bottom: 10px;
 }
 
-.km-review__create {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
-}
+/* F-157: `.km-review__createRow`/`__input` are still used — inside the new
+ * create-list Sheet now, instead of the old always-visible inline card. */
 .km-review__createRow {
   display: flex;
   gap: 8px;

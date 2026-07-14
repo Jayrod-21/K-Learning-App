@@ -316,7 +316,7 @@ describe('Grammar — 3C-1 shape (cards default, Practice top-right, no tabs)', 
     ).not.toBeInTheDocument();
   });
 
-  it('renders the F-064 "Practice" button in the Topbar and it opens the practice view', async () => {
+  it('renders the F-064 "Practice" button in the hub header and it opens the practice view', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue(EMPTY_BANK);
     drillServices.generateDrill.mockResolvedValue({
@@ -334,9 +334,10 @@ describe('Grammar — 3C-1 shape (cards default, Practice top-right, no tabs)', 
     const user = userEvent.setup();
     renderGrammar();
 
-    // The button renders in the Topbar's right slot (top-right of the page).
+    // F-128: the button renders inside the shared PageHubHeader's actions
+    // slot (top-right of the page), not a bare Topbar.
     const practice = screen.getByRole('button', { name: 'Practice' });
-    expect(practice.closest('.km-topbar')).not.toBeNull();
+    expect(practice.closest('.km-hubheader')).not.toBeNull();
     await user.click(practice);
 
     await waitFor(() => {
@@ -1924,5 +1925,364 @@ describe('Grammar — Mark known / Relearn (cards view)', () => {
     expect(
       screen.getByRole('button', { name: 'Mark -더라도 as known' }),
     ).toBeInTheDocument();
+  });
+});
+
+// ── F-128: "Seoul Day & Night" reskin — shared hub-header recipe ──────────
+
+describe('Grammar — F-128 reskin (shared PageHubHeader, not a flat Topbar)', () => {
+  it('renders the shared PageHubHeader recipe (skyline + rail + a real h1)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue(EMPTY_BANK);
+
+    const { container } = renderGrammar();
+
+    expect(
+      await screen.findByRole('button', { name: /^Learning \(0\)/ }),
+    );
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).toBeInTheDocument();
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: '문법 · Grammar',
+    });
+    expect(heading).toHaveAttribute('id', 'grammar-title');
+  });
+
+  it('a Known row carries the milestone seal stamp (device #7)', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [{ ...BANKED_ROW, graduated_at: '2026-07-01T00:00:00Z' }],
+    } satisfies BankedGrammarList);
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('button', { name: /^Known/ }));
+    // SealStamp's glyph badge is `aria-hidden` decoration — its `label` slot
+    // (real content) isn't set on this call site, so the glyph text itself
+    // (from CardRow's `<SealStamp milestone .../>`) is the observable proof
+    // the row rendered the milestone treatment at all.
+    expect(await screen.findByText('印')).toBeInTheDocument();
+  });
+});
+
+// ── F-158: pick a form to drill continuously ───────────────────────────────
+//
+// The cards list doubles as the form-picker (matching the design mock, where
+// every saved-pattern row — Learning or Known — is tappable to drill it).
+// Unlike the FU-NF-42 deep-link target (one-shot, consumed on advance), this
+// pick is CONTINUOUS: advancing regenerates the SAME pattern forever instead
+// of falling back to the rotation.
+
+describe('Grammar — F-158 pick a form to drill continuously', () => {
+  it('a cards-row "Drill" action jumps straight to practice, generating for THAT pattern', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 1,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: `Rewrite using ${body.patternDisplay}.`,
+          sourceKr: '비가 와요.',
+          sourceEn: "It's raining.",
+        },
+      }),
+    );
+
+    const user = userEvent.setup();
+    const { container } = renderGrammar();
+
+    // Pick the SECOND pattern's Drill action — proves the generate body came
+    // from the picked row, not the rotation's default items[0].
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -느라고 continuously' }),
+    );
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-008',
+      patternDisplay: '-느라고',
+    });
+    // Lands straight on the practice view — nested-view chrome present.
+    expect(
+      await screen.findByRole('button', { name: 'Back to Grammar' }),
+    ).toBeInTheDocument();
+    // The continuous-mode banner names the picked form (queried by class —
+    // `role="status"` isn't unique here, DrillCard's own SR-only live region
+    // shares it).
+    await waitFor(() => {
+      expect(
+        container.querySelector('.km-grammar__continuous-note')?.textContent,
+      ).toContain('-느라고');
+    });
+  });
+
+  it('"Another" regenerates the SAME picked pattern — it never rotates to a different one', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    let call = 0;
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => {
+        call += 1;
+        return {
+          attemptId: call,
+          item: {
+            type: 'transformation' as const,
+            patternKey: body.patternKey,
+            patternDisplay: body.patternDisplay,
+            instruction: `Rewrite using ${body.patternDisplay}.`,
+            sourceKr: `Sentence ${String(call)}`,
+            sourceEn: `English ${String(call)}`,
+          },
+        };
+      },
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -더라도 continuously' }),
+    );
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    // Pre-reveal: continuous mode relabels Skip as "Another" — "Skip" itself
+    // must not appear (it would misleadingly imply a different pattern).
+    expect(screen.queryByRole('button', { name: /^Skip$/ })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: /^Another$/ }));
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // BOTH generate calls targeted the SAME pattern — never rotated.
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+    expect(drillServices.generateDrill.mock.calls[1][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+    // "Next pattern" never appears in continuous mode, even post-reveal.
+    expect(
+      screen.queryByRole('button', { name: /next pattern/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  // REVIEW_batch3-grammar-practice.md SHOULD-FIX #1: all four pre-existing
+  // F-158 tests above only exercise the PRE-REVEAL phase (Skip → Another).
+  // The "Next pattern" → "Another" swap that actually matters for the real
+  // submit → reveal flow lives in the REVEALED branch (Grammar.tsx's
+  // `continuous ? 'Another' : 'Next pattern'` ternary on the gold CTA) and
+  // was completely untested — a regression hardcoding "Next pattern" there
+  // would not have failed any existing test.
+  it('revealed phase: the gold CTA reads "Another" (never "Next pattern") for a continuous pick, and clicking it regenerates the SAME pattern', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    let call = 0;
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => {
+        call += 1;
+        return {
+          attemptId: call,
+          item: {
+            type: 'transformation' as const,
+            patternKey: body.patternKey,
+            patternDisplay: body.patternDisplay,
+            instruction: `Rewrite using ${body.patternDisplay}.`,
+            sourceKr: `Sentence ${String(call)}`,
+            sourceEn: `English ${String(call)}`,
+          },
+        };
+      },
+    );
+    drillServices.submitDrill.mockResolvedValue({
+      score: 90,
+      verdict: 'good' as const,
+      usesPattern: true,
+      summary: 'Reads natural.',
+      corrections: [],
+      referenceModelKr: '비가 오더라도 갈 거예요.',
+      referenceModelEn: "Even if it rains, we'll go.",
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -더라도 continuously' }),
+    );
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Revealed.
+    expect(await screen.findByText('Good')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /next pattern/i }),
+    ).not.toBeInTheDocument();
+
+    // Both revealed-phase buttons relabel to "Another" in continuous mode
+    // (the ghost Skip-replacement AND the gold Next-pattern-replacement),
+    // so disambiguate by variant — the gold one is the CTA this ticket's
+    // ternary (Grammar.tsx's `continuous ? 'Another' : 'Next pattern'')
+    // actually guards.
+    const footer = document.querySelector('.km-grammar__footer');
+    expect(footer).not.toBeNull();
+    const anotherButtons = within(footer as HTMLElement).getAllByRole('button', {
+      name: /^Another$/,
+    });
+    // Both the ghost Skip-replacement and the gold Next-pattern-replacement
+    // relabel to "Another" in continuous mode — a real (pre-existing, not
+    // introduced here) duplicate-accessible-name quirk. Disambiguate by
+    // variant to reach the specific button this ticket's ternary guards.
+    const goldAnother = anotherButtons.find((b) =>
+      b.classList.contains('km-btn--gold'),
+    );
+    expect(goldAnother).not.toBeUndefined();
+
+    await user.click(goldAnother as HTMLElement);
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // Both generate calls targeted the SAME pattern — a regression that
+    // fell through to rotation instead of bumping genTick would fail this.
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+    expect(drillServices.generateDrill.mock.calls[1][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+  });
+
+  it('the Drill action is offered on Known rows too — the picker covers every mastery tier', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [{ ...BANKED_ROW, graduated_at: '2026-07-01T00:00:00Z' }],
+    } satisfies BankedGrammarList);
+    drillServices.generateDrill.mockResolvedValue({
+      attemptId: 1,
+      item: {
+        type: 'transformation' as const,
+        patternKey: 'GR-kgiu-int-007',
+        patternDisplay: '-더라도',
+        instruction: 'Rewrite using -더라도.',
+        sourceKr: '비가 와요.',
+        sourceEn: "It's raining.",
+      },
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(await screen.findByRole('button', { name: /^Known/ }));
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -더라도 continuously' }),
+    );
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('leaving the practice view drops the picked form — a later Practice tap resumes the normal rotation', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => ({
+        attemptId: 1,
+        item: {
+          type: 'transformation' as const,
+          patternKey: body.patternKey,
+          patternDisplay: body.patternDisplay,
+          instruction: 'x',
+          sourceKr: 'x',
+          sourceEn: 'x',
+        },
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -더라도 continuously' }),
+    );
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Back to Grammar' }),
+    );
+    await screen.findByRole('button', { name: /^Learning \(2\)/ });
+
+    await openPractice(user);
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // Continuous mode's "Another" labeling is gone — the ordinary rotation's
+    // Skip/Next-pattern vocabulary is back, proving `formTarget` was cleared.
+    expect(
+      await screen.findByRole('button', { name: /^Skip$/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /^Another$/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+// ── F-129: mobile — no horizontal overflow ─────────────────────────────────
+
+describe('Grammar page — F-129 mobile: no horizontal overflow', () => {
+  it('truncates a long grammar pattern with ellipsis rather than overflowing the row', async () => {
+    const LONG_PATTERN =
+      '-았/었/였더라면 좋았을 텐데 하는 아주 길고 복잡한 문형이라서 한 줄에 다 들어가지 않는 예시';
+    services.listPatterns.mockResolvedValue([]);
+    services.listBanked.mockResolvedValue({
+      entries: [{ ...BANKED_ROW, pattern_display: LONG_PATTERN }],
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const krText = await screen.findByText(LONG_PATTERN);
+    expect(krText).toHaveClass('km-grammar__row-kr');
+  });
+
+  it('the per-row action cluster has its own wrapping flex container, so it never forces the row wider than the viewport', async () => {
+    services.listPatterns.mockResolvedValue([ROW]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW],
+    } satisfies BankedGrammarList);
+
+    renderGrammar();
+
+    const drillBtn = await screen.findByRole('button', {
+      name: 'Drill -더라도 continuously',
+    });
+    expect(drillBtn.closest('.km-grammar__row-actions')).not.toBeNull();
   });
 });

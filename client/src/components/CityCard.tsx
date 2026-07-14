@@ -9,12 +9,16 @@
  * that already renders one.
  *
  * `tone` picks the accent family:
- *   - `accent` (default) — tracks the user's global `[data-accent]` pick.
- *   - `blue` / `mint`     — fixed hue regardless of the picker (e.g. a
- *                           surface that always wants to read as "Vocab
- *                           blue" no matter the user's accent choice).
- *   - `plain`             — neutral edge, no glow (Night); a quiet
- *                           hairline card (Day).
+ *   - `accent` (default)    — tracks the user's global `[data-accent]` pick.
+ *   - `blue` / `mint`       — fixed hue regardless of the picker (e.g. a
+ *                             surface that always wants to read as "Vocab
+ *                             blue" no matter the user's accent choice).
+ *   - `ochre`               — fixed Hanja skill hue (batch-3 fix-pass
+ *                             addition), same "always this hue" contract as
+ *                             `blue`/`mint`. Hanja.tsx adopts this instead of
+ *                             falling back to `plain`.
+ *   - `plain`               — neutral edge, no glow (Night); a quiet
+ *                             hairline card (Day).
  *
  * `rail` composes `DancheongRail` on the leading edge (Day: fixed
  * four-band stripe; Night: a glowing edge in `tone`). `feat` raises the

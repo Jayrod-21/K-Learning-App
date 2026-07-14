@@ -2,10 +2,15 @@
  * HanjaCell — square card for a single hanja in the index grid.
  *
  * State-encoded 2px top border so the index reads as a learning map at a
- * glance:
- *   - `banked`     → moss (mastered)
- *   - `practicing` → vermilion (active SRS)
- *   - `new`        → paper-faint (not started)
+ * glance, reading the shared `--km-mastery-*` triad (styles/index.css,
+ * fix-pass batch-3 — fixed regardless of accent, AA-checked ≥3:1 non-text
+ * contrast in both themes; see FIX_REPORT_batch3.md for the measured
+ * numbers):
+ *   - `banked`     → --km-mastery-mastered (moss — green, "mastered")
+ *   - `practicing` → --km-mastery-practicing (ochre-ink — amber, "active SRS")
+ *   - `new`        → --km-mastery-new (paper-mute — neutral gray, "not
+ *                    started"; NOT red/danger, which would misread a
+ *                    never-studied character as a problem)
  *
  * 32px Noto-Serif character + sound caption beneath. Renders as a button so
  * the whole tile is the gesture; click fires `onClick`. Inherits `.focusring`

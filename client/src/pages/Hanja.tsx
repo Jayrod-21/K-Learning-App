@@ -15,20 +15,87 @@
  *                              (F-075/B-028). Mirrors the vocab Review
  *                              session: flip, 4 self-ratings, spacebar
  *                              reveal, server-authoritative scheduling.
- *   - `?view=lists`          — hanja list index + creation (F-075). Lists
- *                              ride the shared vocab-lists infra
- *                              (migration 049 multitype membership).
+ *   - `?view=lists`          — hanja list index + creation (F-075/F-166).
  *   - `?view=list&id=N`      — one list's characters: remove, seed the
- *                              whole list into the deck, paginated rows.
- *   - `?view=draw&char=X`    — freehand drawing drill on a canvas over the
- *                              田 grid (F-076). Practice-only (not graded);
- *                              stroke-order guidance is honestly absent —
- *                              the corpus carries no stroke data.
+ *                              whole list into the deck, bulk-add more
+ *                              characters (F-166), paginated rows.
+ *   - `?view=draw&char=X`    — the drawing drill (F-076), reworked for
+ *                              Wave-2 (F-165) into an Anki-style right/
+ *                              wrong loop over a small session queue that
+ *                              feeds the SAME real mastery pool the index
+ *                              (F-167) and the drill's own progress bar
+ *                              (F-170) read.
  *
  * Tapping any cell or the feature card opens a `<Sheet>` with the
  * etymology + compound network + drill / bank / draw / add-to-list CTAs.
  * Per design `screens-c.jsx` HanjaDetailSheet — only the studied character
  * is vermilion inside each compound; the other glyphs stay paper ink.
+ *
+ * Wave-2 ("Seoul Day & Night", `DESIGN_SEOUL_DAY_NIGHT.md`) — F-128 + the
+ * page's own ticket set:
+ *   - F-128 reskin: the shared `PageHubHeader` (skyline + dancheong rail)
+ *     replaces the bare `Topbar`; the featured card and the encountered
+ *     band are `CityCard` signboards/hanji-paper with a rail leading edge;
+ *     empty states carry the hangul-watermark + giwa texture; the root
+ *     carries the ambient rain-sheen (Night-only); a mastery moment (deck
+ *     clear / drill complete) gets a milestone `SealStamp` with a sparing
+ *     najeon shimmer. Every CityCard/CollapsibleTile-city surface on this
+ *     page uses `tone="ochre"` (batch-3 fix-pass: `DancheongRailTone` /
+ *     `CityCardTone` gained a dedicated `ochre` value — the Hanja skill
+ *     hue — so this page no longer has to fall back to `plain`, the same
+ *     workaround `Today.tsx`'s own Hanja tile still uses; see that page's
+ *     own follow-up ticket to adopt `ochre` too, tracked separately since
+ *     Today is out of this batch's edit scope). The two `SubwayProgress`
+ *     instances deliberately keep `tone="accent"` instead — a session
+ *     progress fill tracking the user's chosen accent reads as reward, not
+ *     as "this is Hanja," so it's a different, still-correct choice.
+ *   - F-164 spacing / F-129 mobile: tightened gutters + vertical rhythm and
+ *     a narrow-viewport clamp on the two fixed-size glyph squares, applied
+ *     as page-scoped overrides in `Hanja.css` (see that file's header note
+ *     — most of this page's classnames are defined in the SHARED
+ *     `styles/index.css`, out of this pass's edit scope, so overrides use
+ *     a `.screen.km-hanja …` prefix to win the cascade on specificity
+ *     rather than load order).
+ *   - F-165: the draw drill now runs a real right/wrong loop
+ *     (`buildDrawQueue`/`promoteState`) over `Hanja.state` — the SAME
+ *     three-band signal (`new` → `practicing` → `banked`) the index colors
+ *     (F-167) and the encountered band already track. A right answer
+ *     promotes the character one band via the existing `onSetState` (no
+ *     parallel/fabricated mastery signal); a wrong answer just re-queues
+ *     it, no write. `F-171` (Wave-2 follow-ups) already names the gap this
+ *     inherits: there is no per-attempt Hanja history endpoint, so a daily
+ *     "drilled today" count (unlike Grammar/Writing/TOPIK) still isn't
+ *     available — this page can only read the lifetime band, which is what
+ *     it does.
+ *   - F-166: a `Sheet`-based create-list popup (mirroring
+ *     `MyVocabLists.tsx`'s pattern) replaces the always-visible inline
+ *     create form, plus a new bulk `AddHanjaPicker` sheet on the list
+ *     detail view for adding characters INTO a list (the existing
+ *     `AddToListTile` in the character detail sheet already covers the
+ *     other direction — one character into a list).
+ *   - F-167: index tiles color by the real `Hanja.state` band via
+ *     `HanjaCell`'s own shared classes. Batch-3 fix-pass (2 BLOCKERs,
+ *     `REVIEW_batch3-hanja.md`): the shared classes used to read
+ *     accent-tracking `--vermilion` for `practicing` (silently recolored
+ *     with the user's accent choice) and `--danger`/red for `new` (a
+ *     never-studied character misread as "trouble") — both fixed at the
+ *     SHARED layer (`styles/index.css`'s new `--km-mastery-*` triad, fixed
+ *     + AA-checked in both themes), which retired this page's own
+ *     `.km-hanja__grid` CSS override entirely rather than deepening it.
+ *   - F-168: each index tile gets a "+" quick-add affordance opening a
+ *     lightweight `QuickAddSheet` (existing lists, tap-to-add, inline
+ *     create) with an "added to list" toast confirmation.
+ *   - F-169: the index tiles pass `HanjaCell` only `sound` (the hangul
+ *     reading), never `gloss` (the Korean gloss WORD) — `HanjaCell`
+ *     already renders the gloss caption only when it receives one, so
+ *     simply omitting the prop is the fix.
+ *   - F-170: a live `SubwayProgress` bar drives both drill loops (the FSRS
+ *     study session and the new Anki draw-drill queue), tracking real
+ *     session position/mastered-count — not a fabricated animation. The
+ *     pre-existing Encountered-band bar (`EncounteredBand`, unchanged
+ *     logic) already recomputes live off the same optimistic overlay, so
+ *     the aggregate mastery reading was already real; these two are the
+ *     new PER-SESSION "drill progress" readings the ticket asks for.
  *
  * Data:
  *   - `GET /hanja`, `GET /hanja/today`, `GET /hanja/progress` via
@@ -38,13 +105,16 @@
  *   - Flashcards (F-075/B-028): `POST /hanja/:char/card` (idempotent seed),
  *     `GET /hanja/cards/due`, `POST /hanja/cards/:cardId/reviews`
  *     (`expected_version` optimistic concurrency; 409 = stale → refresh).
- *   - Lists (F-075): `GET /vocab/lists?kind=hanja`, `POST /vocab/lists`
+ *   - Lists (F-075/F-166): `GET /vocab/lists?kind=hanja`, `POST /vocab/lists`
  *     (kind 'hanja'), `GET /vocab/lists/:id` (049 multitype rows),
  *     `POST /vocab/lists/:id/entries` (typed hanja items; 409 = duplicate),
  *     `DELETE …/entries/:id?type=hanja`, `DELETE /vocab/lists/:id`.
  *   The sub-views fetch directly (abortable AbortController effects with
  *   real error + retry paths) — they have no mock fixtures, so routing them
- *   through `useEndpointOrMock` would only fabricate an empty fallback.
+ *   through `useEndpointOrMock` would only fabricate an empty fallback. The
+ *   new `AddHanjaPicker` follows the same convention: it fetches the whole
+ *   `GET /hanja` pool itself when it opens, rather than threading the
+ *   root's pool through props into an unrelated sub-view.
  *
  * Accessibility:
  *   - The view toggle is a `role="tablist"` of `role="tab"` buttons whose
@@ -56,9 +126,16 @@
  *   - The drawing canvas is pointer-only by nature; the drill's "About"
  *     tile states that plainly and links keyboard/AT users to the
  *     flashcard drill, which exercises the same recall. Reveal/undo/clear
- *     are real buttons; the reveal toggle carries `aria-pressed`.
+ *     are real buttons; the reveal toggle carries `aria-pressed`. The new
+ *     Right/Wrong judgment is a `role="group"` of real buttons too — no
+ *     drag/swipe gesture required to advance the drill.
  *   - Nested views carry a `BackButton` with an explicit `to` (F-024) so
  *     deep links can never strand the user.
+ *   - Mastery color (F-167) is never the ONLY carrier of state: every
+ *     index tile's accessible name still includes the hangul reading
+ *     (F-169), and the color mapping only supplements the detail sheet's
+ *     own named state pill, which a screen-reader user reaches by opening
+ *     the tile.
  *
  * Threat model: reads are GETs (no CSRF surface); every write is a POST /
  * DELETE defended by the `SameSite=Strict` session cookie and user-scoped
@@ -67,7 +144,12 @@
  * prose). A failed `setHanjaState` applies NO optimistic overlay entry (the
  * overlay is written only after the await resolves). Review scheduling is
  * server-authoritative — the client sends only its rating + the card's
- * `expected_version`, so a tampered client cannot park or rush a card.
+ * `expected_version`, so a tampered client cannot park or rush a card. The
+ * new picker/quick-add sheets reuse the exact same seed-then-membership
+ * write pair `AddToListTile` already used — no new write surface, just a
+ * second, faster entry point onto it. Toast messages are fixed, author-
+ * controlled copy (never server prose), matching `errorMessageFor`'s
+ * existing contract.
  */
 import {
   useCallback,
@@ -81,8 +163,10 @@ import {
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
+import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { Bilingual } from '../components/Bilingual';
+import { CityCard } from '../components/CityCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
@@ -92,12 +176,14 @@ import { GoldRule } from '../components/GoldRule';
 import { HanjaCell } from '../components/HanjaCell';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { SealStamp } from '../components/SealStamp';
 import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { TianGrid } from '../components/TianGrid';
-import { Topbar } from '../components/Topbar';
+import { useToast } from '../components/useToast';
 import {
   loadHanjaMock,
   loadHanjaProgressMock,
@@ -158,6 +244,17 @@ const GRID_WINDOW = { initial: 48, step: 48, max: 960 } as const;
 
 /** List-detail row window. */
 const LIST_WINDOW = { initial: 30, step: 30, max: 300 } as const;
+
+/** F-165 — the draw-drill Anki session cap. A finite, honest session size
+ *  (mirrors `STUDY_SESSION_LIMIT`'s precedent) so tapping "Drawing drill" on
+ *  one character doesn't silently balloon into a queue over the entire
+ *  corpus. */
+const DRAW_SESSION_LIMIT = 20;
+
+/** Characters shown to the F-166 bulk add-hanja picker before "type to
+ *  narrow" — a render-cost cap, not a data cap (the fetch itself still
+ *  pulls the whole pool so search always has the full corpus to filter). */
+const PICKER_RENDER_CAP = 100;
 
 const FILTER_OPTIONS: ReadonlyArray<{
   id: FilterMode;
@@ -234,6 +331,40 @@ function isCanceled(err: unknown): boolean {
   return err instanceof ApiError && err.code === 'canceled';
 }
 
+/**
+ * F-165 — one step toward mastery: `new` → `practicing` → `banked`; an
+ * already-banked character stays banked (a right answer there just
+ * confirms it — a no-op write, deliberately skipped by the caller). This is
+ * the SAME three-band pool `STATE_PILL_TONE`, the index colors (F-167), and
+ * the encountered band already read — the draw drill's "right" judgment is
+ * one more writer onto that one real signal, never a parallel one.
+ */
+function promoteState(state: HanjaState): HanjaState {
+  if (state === 'new') return 'practicing';
+  return 'banked';
+}
+
+/**
+ * F-165 — builds the draw-drill's session queue: the requested character
+ * first, then other not-yet-banked characters from the SAME fetched pool
+ * (practicing before new — closer to mastery first), capped at
+ * `DRAW_SESSION_LIMIT`. Deterministic over the pool's own order (no
+ * shuffling) so the drill — and its tests — stay reproducible.
+ */
+function buildDrawQueue(chars: readonly Hanja[], start: string): string[] {
+  const seen = new Set<string>([start]);
+  const queue = [start];
+  const practicing = chars.filter((h) => h.state === 'practicing' && h.ch !== start);
+  const fresh = chars.filter((h) => h.state === 'new' && h.ch !== start);
+  for (const h of [...practicing, ...fresh]) {
+    if (queue.length >= DRAW_SESSION_LIMIT) break;
+    if (seen.has(h.ch)) continue;
+    seen.add(h.ch);
+    queue.push(h.ch);
+  }
+  return queue;
+}
+
 export default function Hanja(): JSX.Element {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -260,6 +391,10 @@ export default function Hanja(): JSX.Element {
   const [view, setView] = useState<ViewMode>('today');
   const [filter, setFilter] = useState<FilterMode>('all');
   const [openId, setOpenId] = useState<string | null>(null);
+  // F-168 — the index tile "+" quick-add popup's target character, or null
+  // when closed. A separate slot from `openId` (the full detail sheet) so
+  // the two popups never fight over the same piece of state.
+  const [quickAddChar, setQuickAddChar] = useState<Hanja | null>(null);
   // Tracks an in-flight `setHanjaState` so the detail control can disable
   // itself and surface a failure without ever mutating the rendered pool.
   const [stateError, setStateError] = useState<string | null>(null);
@@ -324,7 +459,8 @@ export default function Hanja(): JSX.Element {
   // resolves, so a rejected call surfaces an inline error and leaves the
   // rendered data untouched (no optimistic mutation to roll back). No refetch
   // fires, so the open detail sheet stays mounted and the screen never flashes
-  // its skeleton.
+  // its skeleton. Shared verbatim by the draw drill (F-165) — one write path,
+  // one overlay, for both surfaces.
   const onSetState = useCallback(
     async (ch: string, next: HanjaState): Promise<void> => {
       setPendingChar(ch);
@@ -413,13 +549,16 @@ export default function Hanja(): JSX.Element {
         onStudy={() => {
           void navigate(`${HANJA_PATH}?view=study`);
         }}
+        onSetState={onSetState}
+        pendingChar={pendingChar}
+        stateError={stateError}
       />
     );
   }
 
   return (
     <section
-      className="screen km-hanja"
+      className="screen km-hanja km-rain-sheen"
       style={{ position: 'relative' }}
       aria-labelledby="km-hanja-title"
     >
@@ -427,13 +566,13 @@ export default function Hanja(): JSX.Element {
       {sub !== null ? (
         <BackButton to={backTo} label={backLabel} className="km-hanja__back" />
       ) : null}
-      <Topbar
-        krTitle="한자"
-        title="Hanja"
+      <PageHubHeader
         titleId="km-hanja-title"
         // P3b trim — adopts nav.ts's terse pair (was the flowery
         // "the bones inside the words").
         eyebrow={<Bilingual en={HANJA_NAV.eyebrow} kr={HANJA_NAV.krEyebrow} />}
+        heading={<Bilingual en="Hanja" kr="한자" />}
+        railTone="ochre"
       />
 
       {subContent ??
@@ -483,7 +622,7 @@ export default function Hanja(): JSX.Element {
                   onRetry={todayResult.refetch}
                 />
               ) : (
-                <Card className="km-hanja__empty">
+                <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
                   <Eyebrow>
                     <Bilingual
                       en="No featured 한자 yet"
@@ -502,11 +641,12 @@ export default function Hanja(): JSX.Element {
                 filter={filter}
                 onFilter={setFilter}
                 onOpen={setOpenId}
+                onQuickAdd={setQuickAddChar}
               />
             )}
           </>
         ) : (
-          <Card className="km-hanja__empty">
+          <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
             <Eyebrow>
               <Bilingual en="No hanja yet" kr="아직 한자가 없어요" />
             </Eyebrow>
@@ -515,23 +655,35 @@ export default function Hanja(): JSX.Element {
         ))}
 
       {sub === null ? (
-        <Sheet
-          open={Boolean(opened)}
-          onClose={() => {
-            setOpenId(null);
-          }}
-          ariaLabel="Hanja detail"
-        >
-          {opened ? (
-            <HanjaDetail
-              h={opened}
-              pending={pendingChar === opened.ch}
-              error={stateError}
-              onSetState={onSetState}
-              onNavigate={onSheetNavigate}
-            />
-          ) : null}
-        </Sheet>
+        <>
+          <Sheet
+            open={Boolean(opened)}
+            onClose={() => {
+              setOpenId(null);
+            }}
+            ariaLabel="Hanja detail"
+          >
+            {opened ? (
+              <HanjaDetail
+                h={opened}
+                pending={pendingChar === opened.ch}
+                error={stateError}
+                onSetState={onSetState}
+                onNavigate={onSheetNavigate}
+              />
+            ) : null}
+          </Sheet>
+          {/* F-168 — the index tile "+" quick-add popup. Always mounted
+              (closed by default) so opening it is a state flip, not a
+              remount; `QuickAddSheet` itself no-ops its data effect while
+              `h` is null. */}
+          <QuickAddSheet
+            h={quickAddChar}
+            onClose={() => {
+              setQuickAddChar(null);
+            }}
+          />
+        </>
       ) : null}
     </section>
   );
@@ -551,7 +703,12 @@ function EncounteredBand({
       ? Math.min(100, (progress.encountered / progress.targetL4) * 100)
       : 0;
   return (
-    <Card className="km-hanja__band">
+    // F-128 device #1/#2 — a CityCard signboard/hanji-paper surface with a
+    // leading-edge DancheongRail, replacing the plain `Card`. `km-hanja__band`
+    // only ever set padding/margin/position (never background/border/shadow),
+    // so combining it with CityCard's own chrome classes is additive, not
+    // conflicting — verified before this change, not assumed.
+    <CityCard tone="ochre" rail className="km-hanja__band">
       <Eyebrow>
         <Bilingual
           en={`Encountered · ${String(progress.encountered)} of ~${String(progress.targetL4)} at L4`}
@@ -569,7 +726,9 @@ function EncounteredBand({
         <StateChip label="New" kr="신규" count={progress.new} tone="mute" />
       </div>
       {/* Clamped/degenerate-safe ARIA — shared with the Progress page's
-          Hanja mastery tab via lib/encounteredBar. */}
+          Hanja mastery tab via lib/encounteredBar. This bar is already
+          "live" (F-170): it recomputes off the optimistic overlay above, so
+          a bank/practice write anywhere on the page moves it immediately. */}
       <div
         className="km-hanja__bar"
         {...encounteredBarAria(progress.encountered, progress.targetL4)}
@@ -580,7 +739,7 @@ function EncounteredBand({
         />
       </div>
       <p className="km-hanja__note">{progress.note}</p>
-    </Card>
+    </CityCard>
   );
 }
 
@@ -702,77 +861,86 @@ function HanjaFeature({
   onOpen: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="km-hanja__feature focusring"
-      aria-label={`Today's hanja ${h.ch} — ${h.gloss} ${h.sound}`}
-    >
-      <span className="km-hanja__feature-seal">
-        <SealStamp char="韓" size="md" />
-      </span>
-
-      <div className="km-hanja__feature-row">
-        <div className="km-hanja__feature-square">
-          <TianGrid />
-          <span className="hanja km-hanja__feature-char">{h.ch}</span>
-        </div>
-
-        <div className="km-hanja__feature-meta">
-          <Eyebrow>
-            <Bilingual en="Today's 한자" kr="오늘의 한자" />
-          </Eyebrow>
-          <div className="kr kr-display km-hanja__feature-gloss">
-            <span className="km-hanja__feature-gloss-kr">{h.gloss}</span>{' '}
-            <span className="km-hanja__feature-gloss-sound">{h.sound}</span>
-          </div>
-          <div className="km-hanja__feature-en">{h.en}</div>
-          <div className="km-hanja__feature-pills">
-            <Pill>
-              <Bilingual
-                en={`${String(h.strokes)} strokes`}
-                kr={`${String(h.strokes)}획`}
-                compact
-              />
-            </Pill>
-            <Pill>{h.level}</Pill>
-            <Pill tone={STATE_PILL_TONE[h.state]}>
-              <Bilingual
-                en={STATE_PILL_LABEL[h.state]}
-                kr={STATE_PILL_KR[h.state]}
-                compact
-              />
-            </Pill>
-          </div>
-        </div>
-      </div>
-
-      <GoldRule />
-
-      <div className="km-hanja__feature-compounds">
-        <Eyebrow>
-          <Bilingual
-            en={`Words you unlock · ${String(h.compounds.length)}`}
-            kr={`열리는 단어 · ${String(h.compounds.length)}개`}
-          />
-        </Eyebrow>
-        <div className="km-hanja__compound-row">
-          {h.compounds.map((c, i) => (
-            <span key={`${c.kr}-${String(i)}`} className="km-hanja__compound-chip kr">
-              <span className="hanja km-hanja__compound-han">{c.kr}</span>
-              <span className="km-hanja__compound-en">{c.en}</span>
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="km-hanja__feature-foot">
-        <span>
-          <Bilingual en="Tap for etymology + drill" kr="눌러서 어원과 연습 보기" />
+    // F-128 — the CityCard signboard/hanji-paper hero, feat-emphasised
+    // (this is the page's one "featured surface") with a rail leading edge.
+    // A NEW outer classname (`feature-card`, not the old bare `feature`) so
+    // the shared `.km-hanja__feature` button rule (background/border/
+    // cursor, built for a raw `<button>`) never collides with CityCard's own
+    // chrome — the inner button below owns the full-bleed click target
+    // instead, the same idiom `CollapsibleTile` already uses.
+    <CityCard tone="ochre" rail feat className="km-hanja__feature-card">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="km-hanja__feature-btn focusring"
+        aria-label={`Today's hanja ${h.ch} — ${h.gloss} ${h.sound}`}
+      >
+        <span className="km-hanja__feature-seal">
+          <SealStamp char="韓" size="md" />
         </span>
-        <Icon name="arrow-right" size={16} />
-      </div>
-    </button>
+
+        <div className="km-hanja__feature-row">
+          <div className="km-hanja__feature-square">
+            <TianGrid />
+            <span className="hanja km-hanja__feature-char">{h.ch}</span>
+          </div>
+
+          <div className="km-hanja__feature-meta">
+            <Eyebrow>
+              <Bilingual en="Today's 한자" kr="오늘의 한자" />
+            </Eyebrow>
+            <div className="kr kr-display km-hanja__feature-gloss">
+              <span className="km-hanja__feature-gloss-kr">{h.gloss}</span>{' '}
+              <span className="km-hanja__feature-gloss-sound">{h.sound}</span>
+            </div>
+            <div className="km-hanja__feature-en">{h.en}</div>
+            <div className="km-hanja__feature-pills">
+              <Pill>
+                <Bilingual
+                  en={`${String(h.strokes)} strokes`}
+                  kr={`${String(h.strokes)}획`}
+                  compact
+                />
+              </Pill>
+              <Pill>{h.level}</Pill>
+              <Pill tone={STATE_PILL_TONE[h.state]}>
+                <Bilingual
+                  en={STATE_PILL_LABEL[h.state]}
+                  kr={STATE_PILL_KR[h.state]}
+                  compact
+                />
+              </Pill>
+            </div>
+          </div>
+        </div>
+
+        <GoldRule />
+
+        <div className="km-hanja__feature-compounds">
+          <Eyebrow>
+            <Bilingual
+              en={`Words you unlock · ${String(h.compounds.length)}`}
+              kr={`열리는 단어 · ${String(h.compounds.length)}개`}
+            />
+          </Eyebrow>
+          <div className="km-hanja__compound-row">
+            {h.compounds.map((c, i) => (
+              <span key={`${c.kr}-${String(i)}`} className="km-hanja__compound-chip kr">
+                <span className="hanja km-hanja__compound-han">{c.kr}</span>
+                <span className="km-hanja__compound-en">{c.en}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="km-hanja__feature-foot">
+          <span>
+            <Bilingual en="Tap for etymology + drill" kr="눌러서 어원과 연습 보기" />
+          </span>
+          <Icon name="arrow-right" size={16} />
+        </div>
+      </button>
+    </CityCard>
   );
 }
 
@@ -781,11 +949,14 @@ function IndexView({
   filter,
   onFilter,
   onOpen,
+  onQuickAdd,
 }: {
   chars: Hanja[];
   filter: FilterMode;
   onFilter: (next: FilterMode) => void;
   onOpen: (id: string) => void;
+  /** F-168 — opens the quick "+"-to-list popup for one character. */
+  onQuickAdd: (h: Hanja) => void;
 }): JSX.Element {
   // Window the grid so a large corpus doesn't render hundreds of cells in
   // one commit; a filter change collapses back to the initial window.
@@ -828,16 +999,37 @@ function IndexView({
         <>
           <div className="km-hanja__grid">
             {pager.visible.map((h) => (
-              <HanjaCell
-                key={h.id}
-                char={h.ch}
-                sound={h.sound}
-                gloss={h.gloss}
-                state={h.state}
-                onClick={() => {
-                  onOpen(h.id);
-                }}
-              />
+              // F-169 — `HanjaCell` gets `sound` (the hangul reading) only,
+              // never `gloss` (the Korean gloss WORD): the shared component
+              // renders its gloss caption ONLY when a caller passes one, so
+              // simply omitting the prop is the whole fix. F-167's mastery
+              // color rides `HanjaCell`'s existing `data-state`/state class —
+              // remapped onto the real green/yellow/red tokens in Hanja.css.
+              <div key={h.id} className="km-hanja__cell-wrap">
+                <HanjaCell
+                  char={h.ch}
+                  sound={h.sound}
+                  state={h.state}
+                  onClick={() => {
+                    onOpen(h.id);
+                  }}
+                />
+                {/* F-168 — quick "+"-to-list, a sibling of (not nested
+                    inside) the cell's own button: HanjaCell IS a button, and
+                    a button-in-a-button is both invalid HTML and untappable
+                    on most browsers. Absolutely positioned in the corner of
+                    the (position:relative) wrapper instead. */}
+                <button
+                  type="button"
+                  className="km-hanja__cell-add focusring"
+                  aria-label={`Add ${h.ch} to a list`}
+                  onClick={() => {
+                    onQuickAdd(h);
+                  }}
+                >
+                  <Icon name="plus" size={12} />
+                </button>
+              </div>
             ))}
           </div>
           <ShowMore
@@ -852,7 +1044,216 @@ function IndexView({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Study sub-view (F-075 / B-028) — FSRS drill over due hanja cards.
+// F-168 — index-tile quick add-to-list popup + toast.
+// ─────────────────────────────────────────────────────────────
+
+function QuickAddSheet({
+  h,
+  onClose,
+}: {
+  /** The character the popup targets, or null when closed. */
+  h: Hanja | null;
+  onClose: () => void;
+}): JSX.Element {
+  const { toast } = useToast();
+  const [lists, setLists] = useState<ServerVocabList[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<number | 'new' | null>(null);
+  const [newName, setNewName] = useState('');
+  const [tick, setTick] = useState(0);
+  const inputId = useId();
+
+  useEffect(() => {
+    if (h === null) {
+      // Closed — drop everything so the next open starts clean.
+      setLists(null);
+      setError(null);
+      setNewName('');
+      return;
+    }
+    const ctrl = new AbortController();
+    fetchHanjaLists(ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setLists(rows);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted || isCanceled(err)) return;
+        setError(errorMessageFor(err, "Couldn't load your lists."));
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [h, tick]);
+
+  const addTo = useCallback(
+    (list: ServerVocabList): void => {
+      if (h === null || busyId !== null) return;
+      setBusyId(list.id);
+      setError(null);
+      void (async (): Promise<void> => {
+        try {
+          const seeded = await seedHanjaCard(h.ch);
+          await addHanjaToList(list.id, [seeded.character_id]);
+          toast({ message: `Added ${h.ch} to “${list.name_kr}”.`, tone: 'success' });
+          onClose();
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 409) {
+            toast({ message: `${h.ch} is already in “${list.name_kr}”.`, tone: 'info' });
+            onClose();
+          } else {
+            setError(errorMessageFor(err, "Couldn't add to that list. Try again."));
+          }
+        } finally {
+          setBusyId(null);
+        }
+      })();
+    },
+    [h, busyId, toast, onClose],
+  );
+
+  const createAndAdd = useCallback((): void => {
+    const name = newName.trim();
+    if (h === null || name === '' || busyId !== null) return;
+    setBusyId('new');
+    setError(null);
+    void (async (): Promise<void> => {
+      try {
+        const res = await createList({ name_kr: name, kind: 'hanja' });
+        const listId = Number(res.list.id);
+        const seeded = await seedHanjaCard(h.ch);
+        await addHanjaToList(listId, [seeded.character_id]);
+        toast({ message: `Created “${name}” and added ${h.ch}.`, tone: 'success' });
+        setNewName('');
+        onClose();
+      } catch (err) {
+        setError(errorMessageFor(err, "Couldn't create that list. Try again."));
+      } finally {
+        setBusyId(null);
+      }
+    })();
+  }, [h, newName, busyId, toast, onClose]);
+
+  return (
+    <Sheet open={h !== null} onClose={onClose} ariaLabel="Add to a list">
+      {h !== null ? (
+        // Fix-pass batch-3 (SF-1, REVIEW_batch3-fidelity.md): this Sheet
+        // used to roll its own chrome (`.km-hanja__quickadd` as the OUTER
+        // wrapper, no head/close row, raw `.km-btn` buttons) instead of the
+        // shared `.km-review__sheetBody`/`__sheetHead` recipe + `<Button>`
+        // every other page's Sheet uses (Review/Grammar/Reading) — the SAME
+        // "create a list" job read as a different object on this page.
+        // `.km-hanja__quickadd` now wraps only the list-specific content
+        // BELOW the shared head, unchanged, so none of its own descendant
+        // rules (`.km-hanja__quickadd-list`/`-row`/`-name`/`-empty`) needed
+        // to move.
+        <div className="km-review__sheetBody">
+          <div className="km-review__sheetHead">
+            <Eyebrow>
+              <Bilingual en={`Add ${h.ch} to a list`} kr={`${h.ch} 목록에 추가`} />
+            </Eyebrow>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              aria-label="Close add-to-list"
+            >
+              <Icon name="close" size={14} />
+            </Button>
+          </div>
+          <div className="km-hanja__quickadd">
+            {error !== null ? (
+              <div className="km-hanja__addlist-error">
+                <p role="alert" className="km-hanja__inline-error">
+                  {error}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setError(null);
+                    setTick((t) => t + 1);
+                  }}
+                >
+                  <Bilingual en="Retry" kr="다시 시도" compact />
+                </Button>
+              </div>
+            ) : null}
+            {lists === null && error === null ? (
+              <p className="km-hanja__addlist-loading" aria-busy="true">
+                <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
+              </p>
+            ) : null}
+            {lists !== null && lists.length > 0 ? (
+              <ul className="km-hanja__quickadd-list">
+                {lists.map((l) => (
+                  <li key={l.id}>
+                    <button
+                      type="button"
+                      className="km-hanja__quickadd-row focusring"
+                      disabled={busyId !== null}
+                      aria-busy={busyId === l.id}
+                      onClick={() => {
+                        addTo(l);
+                      }}
+                    >
+                      <span className="kr km-hanja__quickadd-name">{l.name_kr}</span>
+                      <Icon name={busyId === l.id ? 'check' : 'plus'} size={16} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {lists !== null && lists.length === 0 ? (
+              <p className="km-hanja__quickadd-empty">
+                <Bilingual
+                  en="No lists yet — create one below."
+                  kr="아직 목록이 없어요 — 아래에서 만드세요."
+                />
+              </p>
+            ) : null}
+            <label htmlFor={inputId} className="km-hanja__label">
+              <Bilingual en="New list name" kr="새 목록 이름" compact />
+            </label>
+            <div className="km-hanja__row">
+              <input
+                id={inputId}
+                className="km-hanja__input focusring"
+                value={newName}
+                maxLength={120}
+                placeholder="e.g. 자주 보는 한자"
+                disabled={busyId !== null}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') createAndAdd();
+                }}
+              />
+              <Button
+                variant="gold"
+                size="sm"
+                disabled={busyId !== null || newName.trim() === ''}
+                onClick={createAndAdd}
+              >
+                {busyId === 'new' ? (
+                  <Bilingual en="Creating…" kr="만드는 중…" compact />
+                ) : (
+                  <Bilingual en="Create & add" kr="만들고 추가" compact />
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </Sheet>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Study sub-view (F-075 / B-028) — FSRS flashcard drill over due hanja
+// cards. F-170: a live SubwayProgress bar now rides alongside the existing
+// numeric readout.
 // ─────────────────────────────────────────────────────────────
 
 interface SubmitError {
@@ -997,7 +1398,7 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
   }
   if (deck.length === 0) {
     return (
-      <Card className="km-hanja__empty">
+      <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
         <Eyebrow>
           <Bilingual en="No hanja cards due" kr="복습할 한자 카드가 없어요" />
         </Eyebrow>
@@ -1020,7 +1421,7 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
     return (
       <Card className="km-hanja__empty">
         <span className="km-hanja__complete-seal">
-          <SealStamp char="完" size="md" />
+          <SealStamp char="完" size="md" tone="accent" className="km-najeon" />
         </span>
         <Eyebrow>
           <Bilingual en="Deck clear" kr="오늘 복습 끝" />
@@ -1042,6 +1443,18 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
 
   return (
     <>
+      {/* F-170 — a live SubwayProgress bar over the study session, alongside
+          the existing numeric readout (kept for the exact "N / M" reading
+          the bar's dots don't spell out in text). */}
+      <div className="km-hanja__study-subway">
+        <SubwayProgress
+          steps={deck.length}
+          current={idx}
+          tone="accent"
+          label="Study progress"
+          valueText={`Card ${String(idx + 1)} of ${String(deck.length)}`}
+        />
+      </div>
       <div className="km-hanja__study-progress">
         <span>
           {String(idx + 1)} / {String(deck.length)}
@@ -1159,7 +1572,8 @@ function StudyView({ onDraw }: { onDraw: (ch: string) => void }): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Lists sub-view (F-075) — hanja list index + creation.
+// Lists sub-view (F-075 / F-166) — hanja list index + a Sheet-based create
+// popup (mirroring `components/MyVocabLists.tsx`'s pattern).
 // ─────────────────────────────────────────────────────────────
 
 function ListsView({
@@ -1171,14 +1585,11 @@ function ListsView({
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
-  const [name, setName] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   // Two-step inline delete confirm (no window.confirm — poor AT support).
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
-  const inputId = useId();
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -1205,28 +1616,6 @@ function ListsView({
     setTick((t) => t + 1);
   }, []);
 
-  const create = useCallback((): void => {
-    const trimmed = name.trim();
-    if (trimmed === '' || creating) return;
-    setCreating(true);
-    setCreateError(null);
-    void (async (): Promise<void> => {
-      try {
-        const res = await createList({ name_kr: trimmed, kind: 'hanja' });
-        // BIGINT id may arrive as a JSON string — coerce before local use.
-        const created: ServerVocabList = { ...res.list, id: Number(res.list.id) };
-        setLists((prev) => (prev ? [created, ...prev] : [created]));
-        setName('');
-      } catch (err) {
-        setCreateError(
-          errorMessageFor(err, "Couldn't create that list. Try again."),
-        );
-      } finally {
-        setCreating(false);
-      }
-    })();
-  }, [name, creating]);
-
   const remove = useCallback((id: number): void => {
     setDeletingId(id);
     setRowError(null);
@@ -1247,50 +1636,22 @@ function ListsView({
 
   return (
     <>
-      <Card className="km-hanja__lists-create">
-        <Eyebrow>
-          <Bilingual en="New list" kr="새 목록" />
-        </Eyebrow>
-        <label htmlFor={inputId} className="km-hanja__label">
-          <Bilingual en="List name" kr="목록 이름" compact />
-        </label>
-        <div className="km-hanja__row">
-          <input
-            id={inputId}
-            className="km-hanja__input focusring"
-            value={name}
-            maxLength={120}
-            placeholder="e.g. TOPIK II 한자"
-            disabled={creating}
-            onChange={(e) => {
-              setName(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') create();
-            }}
-          />
-          <button
-            type="button"
-            className="km-btn km-btn--gold km-btn--md focusring"
-            disabled={creating || name.trim() === ''}
-            onClick={create}
-          >
-            <Icon name="plus" size={14} />
-            <span>
-              {creating ? (
-                <Bilingual en="Creating…" kr="만드는 중…" compact />
-              ) : (
-                <Bilingual en="Create" kr="만들기" compact />
-              )}
-            </span>
-          </button>
-        </div>
-        {createError !== null ? (
-          <p role="alert" className="km-hanja__inline-error">
-            {createError}
-          </p>
-        ) : null}
-      </Card>
+      {/* F-166 — "New list" is now a Sheet-triggered popup (the shared
+          MyVocabLists create pattern), not an always-visible inline card. */}
+      <div className="km-hanja__lists-head">
+        <button
+          type="button"
+          className="km-btn km-btn--gold km-btn--md focusring"
+          onClick={() => {
+            setCreateOpen(true);
+          }}
+        >
+          <Icon name="plus" size={14} />
+          <span>
+            <Bilingual en="New list" kr="새 목록" compact />
+          </span>
+        </button>
+      </div>
 
       {loading ? (
         <Card className="km-hanja__skeleton" aria-busy="true">
@@ -1302,7 +1663,7 @@ function ListsView({
       ) : fetchError !== null ? (
         <ErrorCard message={fetchError} onRetry={retry} />
       ) : (lists ?? []).length === 0 ? (
-        <Card className="km-hanja__empty">
+        <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
           <Eyebrow>
             <Bilingual en="No hanja lists yet" kr="아직 한자 목록이 없어요" />
           </Eyebrow>
@@ -1380,12 +1741,129 @@ function ListsView({
           ) : null}
         </div>
       )}
+
+      <CreateListSheet
+        open={createOpen}
+        onClose={() => {
+          setCreateOpen(false);
+        }}
+        onCreated={(created) => {
+          setLists((prev) => (prev ? [created, ...prev] : [created]));
+        }}
+      />
     </>
   );
 }
 
+interface CreateListSheetProps {
+  open: boolean;
+  onClose: () => void;
+  /** Fires with the newly-created list on success. */
+  onCreated: (list: ServerVocabList) => void;
+}
+
+/**
+ * F-166 — the "New list" create popup, mirroring
+ * `components/MyVocabLists.tsx`'s `CreateListSheet` (that one isn't
+ * exported, and this page is single-kind — hanja only — so there's no kind
+ * radiogroup to reproduce, just the name field + Sheet chrome).
+ */
+function CreateListSheet({
+  open,
+  onClose,
+  onCreated,
+}: CreateListSheetProps): JSX.Element {
+  const [name, setName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputId = useId();
+
+  const create = useCallback((): void => {
+    const trimmed = name.trim();
+    if (trimmed === '' || creating) return;
+    setCreating(true);
+    setError(null);
+    void (async (): Promise<void> => {
+      try {
+        const res = await createList({ name_kr: trimmed, kind: 'hanja' });
+        const created: ServerVocabList = { ...res.list, id: Number(res.list.id) };
+        onCreated(created);
+        setName('');
+        onClose();
+      } catch (err) {
+        setError(errorMessageFor(err, "Couldn't create that list. Try again."));
+      } finally {
+        setCreating(false);
+      }
+    })();
+  }, [name, creating, onCreated, onClose]);
+
+  return (
+    <Sheet open={open} onClose={onClose} ariaLabel="New hanja list">
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
+          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+          Sheet recipe instead of this page's own bespoke chrome. */}
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <Eyebrow>
+            <Bilingual en="New list" kr="새 목록" />
+          </Eyebrow>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close new list"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+        <div className="km-hanja__quickadd">
+          <label htmlFor={inputId} className="km-hanja__label">
+            <Bilingual en="List name" kr="목록 이름" compact />
+          </label>
+          <div className="km-hanja__row">
+            <input
+              id={inputId}
+              className="km-hanja__input focusring"
+              value={name}
+              maxLength={120}
+              placeholder="e.g. TOPIK II 한자"
+              disabled={creating}
+              onChange={(e) => {
+                setName(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') create();
+              }}
+            />
+            <Button
+              variant="gold"
+              size="md"
+              leadingIcon={<Icon name="plus" size={14} />}
+              disabled={creating || name.trim() === ''}
+              onClick={create}
+            >
+              {creating ? (
+                <Bilingual en="Creating…" kr="만드는 중…" compact />
+              ) : (
+                <Bilingual en="Create" kr="만들기" compact />
+              )}
+            </Button>
+          </div>
+          {error !== null ? (
+            <p role="alert" className="km-hanja__inline-error">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
-// List-detail sub-view (F-075) — one list's characters.
+// List-detail sub-view (F-075 / F-166) — one list's characters + bulk
+// add-hanja picker.
 // ─────────────────────────────────────────────────────────────
 
 interface SeedStatus {
@@ -1411,6 +1889,7 @@ function ListDetailView({
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     if (listId === null) return;
@@ -1451,6 +1930,18 @@ function ListDetailView({
   );
   const otherCount = (entries?.length ?? 0) - hanjaEntries.length;
   const pager = usePagination(hanjaEntries, LIST_WINDOW);
+
+  // F-166 — the characters already in this list, so the bulk picker never
+  // offers (and never duplicate-adds) one that's already a member.
+  const existingChars = useMemo<ReadonlySet<string>>(
+    () =>
+      new Set(
+        hanjaEntries
+          .map((e) => e.hanja_char)
+          .filter((c): c is string => c !== null && c !== ''),
+      ),
+    [hanjaEntries],
+  );
 
   // Seed a recognition card for every character in the list (sequential —
   // each call is its own idempotent transaction and the created-count math
@@ -1547,7 +2038,7 @@ function ListDetailView({
 
   return (
     <>
-      <Card className="km-hanja__ld-head">
+      <CityCard tone="ochre" rail className="km-hanja__ld-head">
         <Eyebrow>
           <Bilingual en="Hanja list" kr="한자 목록" />
         </Eyebrow>
@@ -1588,6 +2079,21 @@ function ListDetailView({
               <Bilingual en="Study flashcards" kr="플래시카드 연습" compact />
             </span>
           </button>
+          {/* F-166 — bulk add-hanja picker: choose WHICH characters join
+              this list (the detail sheet's own AddToListTile covers the
+              other direction — one character into a chosen list). */}
+          <button
+            type="button"
+            className="km-btn km-btn--ghost km-btn--md focusring"
+            onClick={() => {
+              setPickerOpen(true);
+            }}
+          >
+            <Icon name="hanja" size={14} />
+            <span>
+              <Bilingual en="Add hanja" kr="한자 추가" compact />
+            </span>
+          </button>
         </div>
         {seedStatus !== null ? (
           <p
@@ -1601,16 +2107,17 @@ function ListDetailView({
             {seedStatus.text}
           </p>
         ) : null}
-      </Card>
+      </CityCard>
 
       {hanjaEntries.length === 0 ? (
-        <Card className="km-hanja__empty">
+        <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
           <Eyebrow>
             <Bilingual en="Empty list" kr="빈 목록" />
           </Eyebrow>
           <p>
             Open any character&apos;s detail sheet and use &ldquo;Add to a
-            list&rdquo; to fill this one.
+            list&rdquo; — or use &ldquo;Add hanja&rdquo; above — to fill this
+            one.
           </p>
         </Card>
       ) : (
@@ -1689,12 +2196,278 @@ function ListDetailView({
           />
         </p>
       ) : null}
+
+      <AddHanjaPicker
+        open={pickerOpen}
+        listId={list.id}
+        listName={list.name_kr}
+        existing={existingChars}
+        onClose={() => {
+          setPickerOpen(false);
+        }}
+        onAdded={retry}
+      />
     </>
   );
 }
 
+/**
+ * F-166 — bulk add-hanja picker: fetches the whole `GET /hanja` pool itself
+ * when it opens (the sub-view convention documented at the file top — this
+ * page's fixtures are all real, not mocked), lets the user search + toggle
+ * a selection, then seeds a card per chosen character and appends them all
+ * to the list in one `POST /vocab/lists/:id/entries` call.
+ */
+function AddHanjaPicker({
+  open,
+  listId,
+  listName,
+  existing,
+  onClose,
+  onAdded,
+}: {
+  open: boolean;
+  listId: number;
+  listName: string;
+  existing: ReadonlySet<string>;
+  onClose: () => void;
+  /** Fires once after a successful add so the parent can refetch the list. */
+  onAdded: () => void;
+}): JSX.Element {
+  const { toast } = useToast();
+  const [pool, setPool] = useState<Hanja[] | null>(null);
+  const [poolError, setPoolError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const inputId = useId();
+
+  useEffect(() => {
+    if (!open) {
+      setPool(null);
+      setPoolError(null);
+      setQuery('');
+      setSelected(new Set());
+      setSubmitError(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    fetchHanjaList(undefined, ctrl.signal)
+      .then((rows) => {
+        if (ctrl.signal.aborted) return;
+        setPool(rows);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted || isCanceled(err)) return;
+        setPoolError(errorMessageFor(err, "Couldn't load hanja to add."));
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [open, tick]);
+
+  const candidates = useMemo<Hanja[]>(() => {
+    if (pool === null) return [];
+    const q = query.trim().toLowerCase();
+    return pool.filter((h) => {
+      if (existing.has(h.ch)) return false;
+      if (q === '') return true;
+      return (
+        h.ch.includes(query.trim()) ||
+        h.sound.toLowerCase().includes(q) ||
+        h.gloss.toLowerCase().includes(q) ||
+        h.en.toLowerCase().includes(q)
+      );
+    });
+  }, [pool, query, existing]);
+
+  const visible = candidates.slice(0, PICKER_RENDER_CAP);
+
+  const toggle = useCallback((ch: string): void => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ch)) next.delete(ch);
+      else next.add(ch);
+      return next;
+    });
+  }, []);
+
+  const submit = useCallback((): void => {
+    if (selected.size === 0 || submitting) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    const targets = Array.from(selected);
+    void (async (): Promise<void> => {
+      const ids: number[] = [];
+      let failed = 0;
+      for (const ch of targets) {
+        try {
+          const seeded = await seedHanjaCard(ch);
+          ids.push(seeded.character_id);
+        } catch {
+          failed += 1;
+        }
+      }
+      try {
+        if (ids.length > 0) {
+          await addHanjaToList(listId, ids);
+        }
+        if (ids.length > 0) {
+          toast({
+            message:
+              failed > 0
+                ? `Added ${String(ids.length)} of ${String(targets.length)} to “${listName}”.`
+                : `Added ${String(ids.length)} hanja to “${listName}”.`,
+            tone: failed > 0 ? 'info' : 'success',
+          });
+          onAdded();
+          onClose();
+        } else {
+          setSubmitError("Couldn't add those characters. Try again.");
+        }
+      } catch (err) {
+        setSubmitError(errorMessageFor(err, "Couldn't add those characters. Try again."));
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  }, [selected, submitting, listId, listName, toast, onAdded, onClose]);
+
+  return (
+    <Sheet open={open} onClose={onClose} ariaLabel="Add hanja to list">
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
+          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+          Sheet recipe instead of this page's own bespoke chrome. */}
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <Eyebrow>
+            <Bilingual
+              en={`Add hanja to “${listName}”`}
+              kr={`“${listName}”에 한자 추가`}
+            />
+          </Eyebrow>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close add-hanja picker"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+        <div className="km-hanja__picker">
+          <label htmlFor={inputId} className="km-hanja__label">
+            <Bilingual en="Search characters" kr="한자 검색" compact />
+          </label>
+          <div className="km-hanja__picker-search">
+            <Icon name="search" size={14} />
+            <input
+              id={inputId}
+              className="km-hanja__input focusring"
+              value={query}
+              placeholder="음, 뜻, or 한자"
+              onChange={(e) => {
+                setQuery(e.target.value);
+              }}
+            />
+          </div>
+          {poolError !== null ? (
+            <ErrorCard
+              message={poolError}
+              onRetry={() => {
+                setPoolError(null);
+                setTick((t) => t + 1);
+              }}
+            />
+          ) : pool === null ? (
+            <p className="km-hanja__addlist-loading" aria-busy="true">
+              <Bilingual en="Loading hanja…" kr="한자를 불러오는 중…" />
+            </p>
+          ) : candidates.length === 0 ? (
+            <p className="km-hanja__index-empty">
+              <Bilingual en="No matching hanja." kr="일치하는 한자가 없어요." />
+            </p>
+          ) : (
+            <>
+              <ul className="km-hanja__picker-list">
+                {visible.map((h) => {
+                  const on = selected.has(h.ch);
+                  return (
+                    <li key={h.id}>
+                      <button
+                        type="button"
+                        aria-pressed={on}
+                        // Explicit aria-label (mirrors HanjaCell's own
+                        // convention) rather than relying on the button's
+                        // implicit child-text concatenation: adjacent JSX
+                        // sibling <span>s with only whitespace between them
+                        // render with NO space in the DOM, which would glue
+                        // the char/sound/gloss together into one unreadable
+                        // accessible-name word.
+                        aria-label={`${h.ch} ${h.sound} ${h.en}${on ? ' — selected' : ''}`}
+                        className={
+                          'km-hanja__picker-row focusring' +
+                          (on ? ' km-hanja__picker-row--on' : '')
+                        }
+                        onClick={() => {
+                          toggle(h.ch);
+                        }}
+                      >
+                        <span className="hanja km-hanja__picker-char">{h.ch}</span>
+                        <span className="kr km-hanja__picker-sound">{h.sound}</span>
+                        <span className="km-hanja__picker-gloss">{h.en}</span>
+                        <Icon name={on ? 'check' : 'plus'} size={14} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {candidates.length > PICKER_RENDER_CAP ? (
+                <p className="km-hanja__picker-note">
+                  <Bilingual
+                    en={`Showing ${String(PICKER_RENDER_CAP)} of ${String(candidates.length)} — type to narrow.`}
+                    kr={`${String(candidates.length)}개 중 ${String(PICKER_RENDER_CAP)}개 표시 — 검색으로 좁히세요.`}
+                    compact
+                  />
+                </p>
+              ) : null}
+            </>
+          )}
+          {submitError !== null ? (
+            <p role="alert" className="km-hanja__inline-error">
+              {submitError}
+            </p>
+          ) : null}
+          <div className="km-hanja__row">
+            <Button
+              variant="gold"
+              size="md"
+              disabled={selected.size === 0 || submitting}
+              onClick={submit}
+            >
+              {submitting ? (
+                <Bilingual en="Adding…" kr="추가 중…" compact />
+              ) : (
+                <Bilingual
+                  en={`Add ${String(selected.size)} selected`}
+                  kr={`선택한 ${String(selected.size)}개 추가`}
+                  compact
+                />
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
-// Drawing drill sub-view (F-076).
+// Drawing drill sub-view (F-076), reworked for F-165 into a real Anki-style
+// right/wrong loop over a session queue that feeds the hanja mastery pool
+// (`Hanja.state`, the same signal F-167/F-170 read).
 // ─────────────────────────────────────────────────────────────
 
 function DrawView({
@@ -1703,13 +2476,91 @@ function DrawView({
   onRetry,
   char,
   onStudy,
+  onSetState,
+  pendingChar,
+  stateError,
 }: {
   chars: Hanja[] | null;
   loading: boolean;
   onRetry: () => void;
   char: string | null;
   onStudy: () => void;
+  /** F-165 — promotes a character one mastery band (shared with the detail
+   *  sheet's bank control; see `promoteState`). */
+  onSetState: (ch: string, next: HanjaState) => void;
+  /** F-165 — the shared in-flight/error slot from the root (see its own
+   *  doc comment); reused here exactly as `HanjaDetail` reuses it, since
+   *  the two surfaces never render at the same time. */
+  pendingChar: string | null;
+  stateError: string | null;
 }): JSX.Element {
+  const requested =
+    char !== null && char !== '' && chars !== null
+      ? (chars.find((c) => c.ch === char) ?? null)
+      : null;
+
+  // F-165 session queue. `null` = "not yet seeded" (distinct from `[]`,
+  // which means the session is genuinely complete). Seeded via the effect
+  // below rather than a lazy `useState` initializer, because `chars` can
+  // legitimately still be null on first mount (a real, in-flight fetch) —
+  // a lazy initializer only ever runs once, so it would freeze the queue at
+  // "not seeded" forever if the pool wasn't ready yet at that first tick.
+  const [queue, setQueue] = useState<string[] | null>(null);
+  const [totalInSession, setTotalInSession] = useState(0);
+  const [masteredCount, setMasteredCount] = useState(0);
+  // Which character the CURRENT queue was seeded for — not just "seeded at
+  // all". No UI today re-navigates to a DIFFERENT `?char=` while staying on
+  // `?view=draw` (every entry point changes `sub` too, which remounts this
+  // component and resets everything for free) — but keying the guard on the
+  // real identity, not just non-null, means a future same-sub "next
+  // character" entry point can't inherit a stale queue by accident.
+  const seededForRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (chars === null || requested === null) return; // not ready yet
+    if (seededForRef.current === requested.ch) return; // already seeded
+    seededForRef.current = requested.ch;
+    const built = buildDrawQueue(chars, requested.ch);
+    // Sync-to-external-system exception (mirrors `MyVocabLists.tsx`'s own
+    // mount-fetch effects): this derives the session queue from data that
+    // legitimately arrives asynchronously (a real, in-flight `GET /hanja`
+    // on first mount) — a lazy `useState` initializer only runs once and
+    // would freeze the queue at "not seeded" forever if the pool wasn't
+    // ready yet at that first tick, so the derivation has to live here.
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
+    setQueue(built);
+    setTotalInSession(built.length);
+    setMasteredCount(0);
+  }, [chars, requested]);
+
+  const currentCh = queue?.[0] ?? null;
+  const current = useMemo<Hanja | null>(() => {
+    if (currentCh === null || chars === null) return null;
+    return chars.find((c) => c.ch === currentCh) ?? null;
+  }, [chars, currentCh]);
+
+  const judgeRight = useCallback((): void => {
+    if (current === null) return;
+    const next = promoteState(current.state);
+    // Already banked — a right answer just confirms it; skip the no-op
+    // write (the character is already at the top of the pool).
+    if (next !== current.state) {
+      onSetState(current.ch, next);
+    }
+    setQueue((q) => (q ? q.slice(1) : q));
+    setMasteredCount((n) => n + 1);
+  }, [current, onSetState]);
+
+  const judgeWrong = useCallback((): void => {
+    // F-165: wrong just re-queues — no state write. The character comes
+    // back around later in THIS session, same as an Anki lapse.
+    setQueue((q) => {
+      if (q === null || q.length === 0) return q;
+      const [head, ...rest] = q;
+      return head === undefined ? q : [...rest, head];
+    });
+  }, []);
+
   if (char === null || char === '') {
     return (
       <Card className="km-hanja__empty">
@@ -1735,8 +2586,7 @@ function DrawView({
       <ErrorCard message="The hanja pool couldn't be loaded." onRetry={onRetry} />
     );
   }
-  const h = chars.find((c) => c.ch === char) ?? null;
-  if (h === null) {
+  if (requested === null) {
     return (
       <Card className="km-hanja__empty">
         <Eyebrow>
@@ -1746,27 +2596,89 @@ function DrawView({
       </Card>
     );
   }
+  if (queue === null) {
+    return (
+      <Card className="km-hanja__skeleton" aria-busy="true">
+        <Eyebrow>
+          <Bilingual en="Preparing your drill" kr="연습을 준비하는 중" />
+        </Eyebrow>
+        <div className="km-hanja__skeleton-line" />
+      </Card>
+    );
+  }
+  if (queue.length === 0) {
+    // F-165/F-170 — session complete: every character in the queue was
+    // marked right at least once (mastery band advanced or reconfirmed).
+    return (
+      <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
+        <span className="km-hanja__complete-seal">
+          <SealStamp
+            milestone
+            size="md"
+            tone="accent"
+            label={<Bilingual en="Mastered" kr="마스터" compact />}
+            className="km-najeon"
+          />
+        </span>
+        <Eyebrow>
+          <Bilingual en="Drill complete" kr="연습 완료" />
+        </Eyebrow>
+        <p>
+          <Bilingual
+            en={`You drew ${String(totalInSession)} character${totalInSession === 1 ? '' : 's'} correctly.`}
+            kr={`${String(totalInSession)}자를 맞혔어요.`}
+          />
+        </p>
+        <div className="km-hanja__row">
+          <button
+            type="button"
+            className="km-btn km-btn--gold km-btn--md focusring"
+            onClick={onStudy}
+          >
+            <Icon name="cards" size={14} />
+            <span>
+              <Bilingual en="Study flashcards" kr="플래시카드 연습" compact />
+            </span>
+          </button>
+        </div>
+      </Card>
+    );
+  }
+  if (current === null) {
+    // Defensive — the head character vanished from the pool between seed
+    // and now. State writes only ever change `state`, never remove a pool
+    // entry, so this shouldn't happen; render an honest error rather than
+    // crash if it somehow does.
+    return (
+      <ErrorCard
+        message="That character is no longer available."
+        onRetry={onRetry}
+      />
+    );
+  }
+
+  const judging = pendingChar === current.ch;
 
   return (
     <>
-      <Card className="km-hanja__draw-prompt">
+      <CityCard tone="ochre" rail className="km-hanja__draw-prompt">
         <Eyebrow>
           <Bilingual en="Drawing drill" kr="쓰기 연습" />
         </Eyebrow>
         <div className="kr kr-display km-hanja__study-gloss">
-          <span>{h.gloss}</span>{' '}
-          <span className="km-hanja__study-sound">{h.sound}</span>
+          <span>{current.gloss}</span>{' '}
+          <span className="km-hanja__study-sound">{current.sound}</span>
         </div>
-        <div className="km-hanja__study-en">{h.en}</div>
+        <div className="km-hanja__study-en">{current.en}</div>
         <div className="km-hanja__study-pills">
           <Pill>
             <Bilingual
-              en={`${String(h.strokes)} strokes`}
-              kr={`${String(h.strokes)}획`}
+              en={`${String(current.strokes)} strokes`}
+              kr={`${String(current.strokes)}획`}
               compact
             />
           </Pill>
-          <Pill>{h.level}</Pill>
+          <Pill>{current.level}</Pill>
         </div>
         <p className="km-hanja__draw-note">
           <Bilingual
@@ -1774,22 +2686,38 @@ function DrawView({
             kr="기억을 떠올려 한자를 쓴 다음, 글자를 확인해 보세요."
           />
         </p>
-      </Card>
+      </CityCard>
+
+      {/* F-170 — live progress across the Anki session: stations "done" are
+          characters already mastered/re-confirmed this session. */}
+      <div className="km-hanja__draw-subway">
+        <SubwayProgress
+          steps={totalInSession}
+          current={masteredCount}
+          tone="accent"
+          label="Draw drill progress"
+          valueText={`${String(masteredCount)} of ${String(totalInSession)} mastered`}
+        />
+      </div>
 
       <CollapsibleTile
         title={<Bilingual en="About this drill" kr="안내" />}
         defaultCollapsed
+        surface="city"
+        tone="ochre"
         className="km-hanja__draw-about"
       >
         <p>
-          Freehand practice only — nothing is graded or saved. Stroke-order
-          guidance isn&apos;t available yet: the corpus doesn&apos;t carry
-          per-character stroke data.
+          Freehand practice only — nothing is graded or saved about HOW you
+          draw. Stroke-order guidance isn&apos;t available yet: the corpus
+          doesn&apos;t carry per-character stroke data.
         </p>
         <p>
-          Drawing needs a pointer (finger, pen, or mouse). If you use a
-          keyboard or screen reader, the flashcard drill covers the same
-          recall practice:
+          Marking Right/Wrong below IS real, though — it writes to your
+          hanja mastery pool the same way banking a character does. Drawing
+          needs a pointer (finger, pen, or mouse). If you use a keyboard or
+          screen reader, the flashcard drill covers the same recall
+          practice:
         </p>
         <button
           type="button"
@@ -1803,7 +2731,47 @@ function DrawView({
         </button>
       </CollapsibleTile>
 
-      <DrawingPad ch={h.ch} />
+      <DrawingPad key={current.ch} ch={current.ch} />
+
+      <div className="km-hanja__draw-judge" role="group" aria-label="Rate your drawing">
+        <button
+          type="button"
+          className="km-hanja__draw-right focusring"
+          disabled={judging}
+          aria-busy={judging}
+          onClick={judgeRight}
+        >
+          <Icon name="check" size={16} />
+          <span>
+            {judging ? (
+              <Bilingual en="Saving…" kr="저장 중…" compact />
+            ) : (
+              <Bilingual en="Right" kr="맞음" compact />
+            )}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="km-hanja__draw-wrong focusring"
+          onClick={judgeWrong}
+        >
+          <Icon name="close" size={16} />
+          <span>
+            <Bilingual en="Wrong" kr="틀림" compact />
+          </span>
+        </button>
+      </div>
+      <p className="km-hanja__draw-mastery-note">
+        <Bilingual
+          en="Right or wrong feeds your hanja mastery pool — wrong re-queues the character, right advances it toward mastery."
+          kr="맞고 틀림이 한자 숙련도 풀에 반영돼요 — 틀리면 다시 나오고, 맞으면 숙련도가 올라가요."
+        />
+      </p>
+      {stateError !== null ? (
+        <p role="alert" className="km-hanja__study-error">
+          {stateError}
+        </p>
+      ) : null}
     </>
   );
 }
@@ -1824,6 +2792,11 @@ const PAD_FALLBACK_PX = 300;
  * used — a stroke simply ends when the pointer leaves the pad (simpler, and
  * capture support is spotty in test/embedded environments); pointerdown/
  * move/up/leave/cancel covers mouse, touch, and pen alike.
+ *
+ * Rendered with `key={ch}` by its caller (F-165) — a fresh key per queued
+ * character remounts the whole component, which is exactly the reset
+ * strokes/reveal state need between drill rounds; no imperative reset API
+ * needed.
  */
 function DrawingPad({ ch }: { ch: string }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -2309,6 +3282,8 @@ function AddToListTile({ ch }: { ch: string }): JSX.Element {
     <CollapsibleTile
       title={<Bilingual en="Add to a list" kr="목록에 추가" />}
       defaultCollapsed
+      surface="city"
+      tone="ochre"
       className="km-hanja__addlist"
     >
       <p className="km-hanja__addlist-note">

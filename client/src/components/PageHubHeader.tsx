@@ -44,10 +44,13 @@ export interface PageHubHeaderProps {
   heading: ReactNode;
   /** `DancheongRail` tone for the divider under the header. */
   railTone?: DancheongRailTone;
-  /** Optional row of actions (buttons, etc.) rendered below the rail
-   * divider, above the page's own content. No current consumer needs this —
-   * it exists so a future page doesn't reach for a bespoke header variant
-   * the first time one does. */
+  /** Optional row of actions (buttons, etc.) rendered INLINE with the `<h1>`
+   * — same row, right-aligned — matching the design mock (`km-learn.html`'s
+   * title row carries its "Practice" button alongside the heading, not
+   * below the rail divider). Fix-pass batch-3 (Grammar being the first real
+   * consumer surfaced the gap): the original placement rendered `actions`
+   * as its own block AFTER the rail, which read as a stray row under the
+   * divider rather than a header action. */
   actions?: ReactNode;
   /** Optional single-hangul-glyph watermark texture (device #6) on the
    * header block — for hub pages with no empty state of their own to
@@ -80,18 +83,20 @@ export function PageHubHeader({
         title={
           <>
             <Eyebrow>{eyebrow}</Eyebrow>
-            <h1 id={titleId} className="kr-display km-hubheader__title">
-              {heading}
-            </h1>
+            <div className="km-hubheader__titlerow">
+              <h1 id={titleId} className="kr-display km-hubheader__title">
+                {heading}
+              </h1>
+              {actions !== undefined ? (
+                <div className="km-hubheader__actions">{actions}</div>
+              ) : null}
+            </div>
           </>
         }
       />
       <div className="km-hubheader__rail-divider">
         <DancheongRail tone={railTone} />
       </div>
-      {actions !== undefined ? (
-        <div className="km-hubheader__actions">{actions}</div>
-      ) : null}
     </div>
   );
 }
