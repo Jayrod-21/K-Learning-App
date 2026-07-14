@@ -2083,6 +2083,99 @@ describe('Grammar — F-158 pick a form to drill continuously', () => {
     ).not.toBeInTheDocument();
   });
 
+  // REVIEW_batch3-grammar-practice.md SHOULD-FIX #1: all four pre-existing
+  // F-158 tests above only exercise the PRE-REVEAL phase (Skip → Another).
+  // The "Next pattern" → "Another" swap that actually matters for the real
+  // submit → reveal flow lives in the REVEALED branch (Grammar.tsx's
+  // `continuous ? 'Another' : 'Next pattern'` ternary on the gold CTA) and
+  // was completely untested — a regression hardcoding "Next pattern" there
+  // would not have failed any existing test.
+  it('revealed phase: the gold CTA reads "Another" (never "Next pattern") for a continuous pick, and clicking it regenerates the SAME pattern', async () => {
+    services.listPatterns.mockResolvedValue([ROW, ROW_2]);
+    services.listBanked.mockResolvedValue({
+      entries: [BANKED_ROW, BANKED_ROW_2],
+    } satisfies BankedGrammarList);
+    let call = 0;
+    drillServices.generateDrill.mockImplementation(
+      async (body: { patternKey: string; patternDisplay: string }) => {
+        call += 1;
+        return {
+          attemptId: call,
+          item: {
+            type: 'transformation' as const,
+            patternKey: body.patternKey,
+            patternDisplay: body.patternDisplay,
+            instruction: `Rewrite using ${body.patternDisplay}.`,
+            sourceKr: `Sentence ${String(call)}`,
+            sourceEn: `English ${String(call)}`,
+          },
+        };
+      },
+    );
+    drillServices.submitDrill.mockResolvedValue({
+      score: 90,
+      verdict: 'good' as const,
+      usesPattern: true,
+      summary: 'Reads natural.',
+      corrections: [],
+      referenceModelKr: '비가 오더라도 갈 거예요.',
+      referenceModelEn: "Even if it rains, we'll go.",
+    });
+
+    const user = userEvent.setup();
+    renderGrammar();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Drill -더라도 continuously' }),
+    );
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(1);
+    });
+
+    const textarea = await screen.findByPlaceholderText(/Write your answer using/i);
+    await user.type(textarea, '비가 오더라도 갈 거예요.');
+    await user.click(screen.getByRole('button', { name: /^submit$/i }));
+
+    // Revealed.
+    expect(await screen.findByText('Good')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /next pattern/i }),
+    ).not.toBeInTheDocument();
+
+    // Both revealed-phase buttons relabel to "Another" in continuous mode
+    // (the ghost Skip-replacement AND the gold Next-pattern-replacement),
+    // so disambiguate by variant — the gold one is the CTA this ticket's
+    // ternary (Grammar.tsx's `continuous ? 'Another' : 'Next pattern'')
+    // actually guards.
+    const footer = document.querySelector('.km-grammar__footer');
+    expect(footer).not.toBeNull();
+    const anotherButtons = within(footer as HTMLElement).getAllByRole('button', {
+      name: /^Another$/,
+    });
+    // Both the ghost Skip-replacement and the gold Next-pattern-replacement
+    // relabel to "Another" in continuous mode — a real (pre-existing, not
+    // introduced here) duplicate-accessible-name quirk. Disambiguate by
+    // variant to reach the specific button this ticket's ternary guards.
+    const goldAnother = anotherButtons.find((b) =>
+      b.classList.contains('km-btn--gold'),
+    );
+    expect(goldAnother).not.toBeUndefined();
+
+    await user.click(goldAnother as HTMLElement);
+
+    await waitFor(() => {
+      expect(drillServices.generateDrill).toHaveBeenCalledTimes(2);
+    });
+    // Both generate calls targeted the SAME pattern — a regression that
+    // fell through to rotation instead of bumping genTick would fail this.
+    expect(drillServices.generateDrill.mock.calls[0][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+    expect(drillServices.generateDrill.mock.calls[1][0]).toMatchObject({
+      patternKey: 'GR-kgiu-int-007',
+    });
+  });
+
   it('the Drill action is offered on Known rows too — the picker covers every mastery tier', async () => {
     services.listPatterns.mockResolvedValue([ROW]);
     services.listBanked.mockResolvedValue({

@@ -17,6 +17,21 @@
   margin: 4px 0 0;
 }
 
+/* Fix-pass batch-3: the title + actions row. Flexbox (not the old block
+ * stacking) so a supplied `actions` slot sits INLINE with the `<h1>`,
+ * right-aligned — matching the design mock's title row (`km-learn.html`'s
+ * "Practice" button rides alongside the heading, not below the rail
+ * divider). A single child (the common case — no `actions`) lays out
+ * exactly as the old bare `<h1>` did; `space-between` only matters once a
+ * second child exists. */
+.km-hubheader__titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .km-hubheader__rail-divider {
   /* DancheongRail is `position: absolute; inset: <edge> 0` against its
    * nearest positioned ancestor — give it one with real height. */
@@ -27,8 +42,6 @@
 
 .km-hubheader__actions {
   display: flex;
-  justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 8px;
 }

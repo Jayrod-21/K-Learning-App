@@ -43,8 +43,10 @@
 }
 
 /* Narrow-viewport clamp on the two fixed-size glyph squares (F-129) — the
- * rest of the page already uses relative units/auto-fit grids, so these are
- * the only two literal-px risks on the page. */
+ * rest of the page already uses relative units/auto-fit grids. (A third
+ * fixed box, `.km-hanja__study-square` below, is 132px — well under any
+ * supported viewport's 320px floor, so it carries no real overflow risk
+ * and needs no clamp; this comment previously overclaimed "only two.") */
 @media (max-width: 380px) {
   .screen.km-hanja .km-hanja__feature-square {
     width: 104px;
@@ -81,30 +83,22 @@
   cursor: pointer;
 }
 
-/* ── F-167 — index-tile mastery color, remapped onto the real green/
- * yellow/red semantic families ───────────────────────────────────
- * `HanjaCell` (shared component, out of this page's edit scope) colors its
- * `practicing` state off `--vermilion` — which TRACKS the user's accent
- * picker (coral/blue/mint), not a fixed semantic. That means a "practicing"
- * tile could read blue or mint depending on the user's accent choice —
- * exactly the F-131-adjacent bug the design doc's mastery-color contract
- * exists to avoid. This override pins the three states to the FIXED
- * moss/ochre/danger families (green/yellow/red) the ticket calls for,
- * regardless of accent — scoped to the index grid only via the
- * `.km-hanja__grid` ancestor so it never touches any other consumer of
- * `.km-hanjacell--*` (there are none today, but the override stays scoped
- * on principle). Both `--moss-ink`/`--ochre-ink`/`--danger-ink` (used for
- * the caption text elsewhere on this page) and the raw hues here are
- * WCAG-AA-checked token pairs already in production on Today/Progress. */
-.screen.km-hanja .km-hanja__grid .km-hanjacell--banked {
-  border-top-color: var(--moss);
-}
-.screen.km-hanja .km-hanja__grid .km-hanjacell--practicing {
-  border-top-color: var(--ochre);
-}
-.screen.km-hanja .km-hanja__grid .km-hanjacell--new {
-  border-top-color: var(--danger);
-}
+/* ── F-167 — index-tile mastery color ───────────────────────────────────
+ * RETIRED (fix-pass batch-3, `REVIEW_batch3-hanja.md` — 2 BLOCKERs): this
+ * page used to carry a `.km-hanja__grid .km-hanjacell--*` override here
+ * pinning the three mastery bands to fixed colors, because `HanjaCell`'s
+ * SHARED default read `--vermilion` for `practicing` (accent-tracking — a
+ * "practicing" tile silently recolored with the user's accent choice) and
+ * `--danger`/red for `new` (misrepresenting a never-studied character as
+ * "trouble"). Both were bugs in the SHARED component, not something a
+ * page-scoped override should have had to paper over — and the override's
+ * own `--ochre` choice for `practicing` additionally failed WCAG 2.1
+ * SC 1.4.11 (~2.73:1 vs. the Day paper card, below the 3:1 non-text floor).
+ * The real fix landed in `HanjaCell`'s own shared CSS (`styles/index.css`,
+ * new `--km-mastery-*` triad — fixed regardless of accent, AA-checked in
+ * both themes) instead of deepening this override, so this block is gone
+ * rather than patched. See `docs/redesign/FIX_REPORT_batch3.md` for the
+ * measured contrast numbers. */
 
 /* ── F-168 — index-tile "+" quick-add ─────────────────────────────── */
 .km-hanja__cell-wrap {
@@ -226,7 +220,12 @@
   color: var(--vermilion-ink);
 }
 
-/* ── F-166/F-168 popups (quick-add sheet, create-list sheet) ── */
+/* ── F-166/F-168 popups (quick-add sheet, create-list sheet) ──
+ * Fix-pass batch-3 (SF-1): `.km-hanja__quickadd` used to be the Sheet's
+ * OUTER wrapper (bespoke chrome, no head/close row). It's now nested
+ * INSIDE the shared `.km-review__sheetBody`/`__sheetHead` (Hanja.tsx) —
+ * just the list-specific content block below the shared head — so this
+ * stays a flat, unscoped selector and needed no changes itself. */
 .km-hanja__quickadd {
   display: flex;
   flex-direction: column;
@@ -277,7 +276,10 @@
   color: var(--paper-mute);
 }
 
-/* ── F-166 bulk add-hanja picker ──────────────────────────────── */
+/* ── F-166 bulk add-hanja picker ──────────────────────────────────
+ * Fix-pass batch-3 (SF-1): same change as `.km-hanja__quickadd` above —
+ * now nested inside the shared `.km-review__sheetBody`/`__sheetHead`
+ * instead of being the Sheet's own outer wrapper. */
 .km-hanja__picker {
   display: flex;
   flex-direction: column;

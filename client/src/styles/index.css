@@ -129,6 +129,28 @@
   --cyan-ink:      var(--cyan);
   --danger-ink:    var(--dan-verm-ink);
 
+  /* Mastery triad — HanjaCell's index-grid state color (F-167 fix-pass).
+   * FIXED regardless of accent/theme — distinct from --moss/--ochre/
+   * --danger, which double as SKILL/section identity elsewhere (a future
+   * accent change or skill-color retune must not silently recolor mastery
+   * state, and vice versa). Values chosen so all three clear the WCAG
+   * 2.1 SC 1.4.11 3:1 non-text-contrast floor against the card surface
+   * they sit on (--ink-1) — measured, not assumed (see
+   * docs/redesign/FIX_REPORT_batch3.md for the numbers):
+   *   - practicing reads --ochre-ink (5.20:1 Day), NOT the raw --ochre hue
+   *     (only 2.73:1 Day — fails). --ochre itself is reserved for the
+   *     Hanja SKILL tone (`.km-tone--ochre`, seoul-devices.css) now that
+   *     that tone exists — a second, deliberately separate concept.
+   *   - new/never-studied reads --paper-mute (5.65:1 Day), a genuinely
+   *     neutral gray already used for this cell's own caption/gloss text
+   *     — NOT --danger (red), which would misrepresent "not started" as
+   *     an alarm. The literal pre-existing default (--paper-faint) only
+   *     clears 2.02:1 Day — an inherited gap this fix does not reproduce.
+   *   - mastered keeps --moss (4.57:1 Day) — already correct, unchanged. */
+  --km-mastery-mastered:   var(--moss);
+  --km-mastery-practicing: var(--ochre-ink);
+  --km-mastery-new:        var(--paper-mute);
+
   /* Legacy accent aliases — a few dev-panel styles still read --gold*.
    * Var-chained so they track whatever accent is active. */
   --gold:       var(--vermilion);
@@ -240,6 +262,14 @@
   --danger-soft:   var(--neon-coral-soft);
   --danger-ink:    var(--neon-coral-bright);
 
+  /* Mastery triad, Night — see the Day block's doc comment above for the
+   * full rationale. Night clears AA by a wide margin on every band
+   * (measured: mastered 7.56:1, practicing 10.03:1, new 6.17:1 vs
+   * --ink-1), so no Night-specific escape hatch is needed here. */
+  --km-mastery-mastered:   var(--moss);
+  --km-mastery-practicing: var(--ochre-ink);
+  --km-mastery-new:        var(--paper-mute);
+
   --line:        rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
 
@@ -302,6 +332,7 @@
     --moss-ink: var(--moss); --ochre-ink: var(--ochre);
     --violet-ink: #AE96FF; --cyan-ink: var(--cyan);
     --danger: var(--neon-coral); --danger-soft: var(--neon-coral-soft); --danger-ink: var(--neon-coral-bright);
+    --km-mastery-mastered: var(--moss); --km-mastery-practicing: var(--ochre-ink); --km-mastery-new: var(--paper-mute);
     --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
     --radius-lg: var(--radius-card-night);
     --shadow-sm:   0 0 0 1px rgba(150,180,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.7);
@@ -833,7 +864,16 @@ h1, h2 { font-family: var(--font-display); }
 .km-btn:active:not(:disabled) { transform: scale(.96); }
 .km-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .km-btn--full { width: 100%; }
-.km-btn--sm { padding: 6px 10px; font-size: 12px; }
+/* min-height/min-width 44px — WCAG 2.5.8 / DESIGN_SEOUL_DAY_NIGHT.md §8
+ * touch-target floor. `sm` is the app's densest button (per-row actions,
+ * now often TWO adjacent `sm` buttons — Grammar's Drill + Mark-known/
+ * Relearn cluster) and previously had no height floor at all (a bare
+ * 6px-vertical-padding pill on a 12px label is well under 44px). Padding/
+ * font-size stay the same — `.km-btn`'s own `align-items: center` (+
+ * `justify-content: center`) already centers the smaller label inside the
+ * taller hit box, so this only grows the tappable area, not the visual
+ * density of the label itself. */
+.km-btn--sm { padding: 6px 10px; font-size: 12px; min-height: 44px; min-width: 44px; }
 .km-btn--md { padding: 12px 18px; font-size: 14px; }
 .km-btn--lg { padding: 15px 22px; font-size: 15px; }
 .km-btn--gold {
@@ -2141,10 +2181,17 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-hanjacell:hover { background: var(--ink-2); }
 /* 2px state-coded top border — overrides the hairline above; the rest of
- * the box keeps its hairline border so the cell reads as a card, not a tab. */
-.km-hanjacell--banked     { border-top: 2px solid var(--moss); }
-.km-hanjacell--practicing { border-top: 2px solid var(--vermilion); }
-.km-hanjacell--new        { border-top: 2px solid var(--paper-faint); }
+ * the box keeps its hairline border so the cell reads as a card, not a tab.
+ * F-167 fix-pass: reads the dedicated `--km-mastery-*` triad (fixed,
+ * AA-checked — see the token definitions in the Day/Night root blocks
+ * above) instead of the OLD `--vermilion` (accent-tracking — a
+ * "practicing" tile used to silently recolor with the user's accent
+ * choice) and `--paper-faint` (only 2.02:1 on Day paper — failed the
+ * WCAG 3:1 non-text floor). This retires Hanja.css's page-scoped
+ * `.km-hanja__grid` override — the shared default now IS the fix. */
+.km-hanjacell--banked     { border-top: 2px solid var(--km-mastery-mastered); }
+.km-hanjacell--practicing { border-top: 2px solid var(--km-mastery-practicing); }
+.km-hanjacell--new        { border-top: 2px solid var(--km-mastery-new); }
 .km-hanjacell__char {
   font-size: 32px;
   font-weight: 500;
@@ -3453,13 +3500,6 @@ h1, h2 { font-family: var(--font-display); }
   margin-bottom: 6px;
   font-variant-numeric: tabular-nums;
 }
-.km-review__progressBar { height: 2px; background: var(--ink-2); }
-.km-review__progressFill {
-  height: 100%;
-  background: var(--vermilion);
-  transition: width 240ms;
-}
-
 .km-review__front {
   display: flex;
   flex-direction: column;

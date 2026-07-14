@@ -144,16 +144,27 @@
 
 /* ── shared tone variable ─────────────────────────────────────────────────
  * `CityCard`, `DancheongRail`, and `SealStamp`'s milestone variant all take
- * the same four-value tone prop (accent/blue/mint/plain) and need the SAME
+ * the same tone prop (accent/blue/mint/ochre/plain) and need the SAME
  * per-theme color resolution — Day reads the dancheong set, Night the neon
  * set, `accent` tracks whichever `[data-accent]` the user picked. Centralised
  * here as `--km-tone` so the three components (and any future one) stay in
- * lockstep instead of re-deriving the mapping three times. */
+ * lockstep instead of re-deriving the mapping three times.
+ *
+ * `ochre` (fix-pass batch-3, REVIEW_batch3-fidelity.md's tone-enum
+ * promotion): the Hanja SKILL color — Day dan-ochre / Night neon-amber, per
+ * DESIGN_SEOUL_DAY_NIGHT.md §2's hanja↔ochre mapping. Fixed regardless of
+ * accent, exactly like `blue`/`mint`. Distinct from `HanjaCell`'s mastery
+ * triad (`--km-mastery-*`, styles/index.css) — that's a per-character
+ * state signal, this is section identity; they coincidentally share a hue
+ * family but must stay two separate mechanisms (see index.css's mastery-
+ * triad doc comment). */
 .km-tone--accent { --km-tone: var(--vermilion); }
 .km-tone--blue   { --km-tone: var(--dan-cobalt); }
 [data-theme="dark"] .km-tone--blue { --km-tone: var(--neon-blue); }
 .km-tone--mint   { --km-tone: var(--dan-jade); }
 [data-theme="dark"] .km-tone--mint { --km-tone: var(--neon-mint); }
+.km-tone--ochre  { --km-tone: var(--dan-ochre); }
+[data-theme="dark"] .km-tone--ochre { --km-tone: var(--neon-amber); }
 .km-tone--plain  { --km-tone: var(--line-strong); }
 
 /* One-time neon flicker-on (doc §7 "a one-time subtle neon flicker-on as a

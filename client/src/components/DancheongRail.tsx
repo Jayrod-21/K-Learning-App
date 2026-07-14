@@ -6,9 +6,11 @@
  * vermilion / cobalt / ochre) — the doc's "dancheong rail" is a FIXED motif,
  * not a tone swap. Night instead renders a single glowing edge in whichever
  * `tone` is active (`accent` tracks the user's global accent picker; `blue`
- * / `mint` are fixed regardless of the picker; `plain` is a quiet neutral
- * edge with no glow) — `--km-tone` (styles/seoul-devices.css) resolves that
- * mapping once for every character-device component.
+ * / `mint` / `ochre` are fixed regardless of the picker — `ochre` is the
+ * Hanja skill color, added in the batch-3 fix-pass so Hanja no longer has
+ * to fall back to `plain`; `plain` is a quiet neutral edge with no glow) —
+ * `--km-tone` (styles/seoul-devices.css) resolves that mapping once for
+ * every character-device component.
  *
  * Usually consumed internally by `CityCard`'s `rail` prop, but exported
  * standalone for any surface that wants the leading-edge motif without the
@@ -21,7 +23,7 @@ import type { JSX } from 'react';
 import { cn } from '../lib/cn';
 import './DancheongRail.css';
 
-export type DancheongRailTone = 'accent' | 'blue' | 'mint' | 'plain';
+export type DancheongRailTone = 'accent' | 'blue' | 'mint' | 'ochre' | 'plain';
 
 export interface DancheongRailProps {
   tone?: DancheongRailTone;

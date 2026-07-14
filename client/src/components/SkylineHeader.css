@@ -80,6 +80,13 @@
 .km-skyline__title {
   position: absolute;
   left: 20px;
+  /* Fix-pass batch-3: `right` added (symmetric with `left`) so the title
+   * box spans the banner's full width instead of shrinking to fit its own
+   * content. Without it, `PageHubHeader`'s `.km-hubheader__titlerow` flex
+   * row has no extra space to distribute, so a supplied `actions` button
+   * would sit crammed against the heading instead of at the banner's right
+   * edge (per the design mock's title row). */
+  right: 20px;
   bottom: 14px;
   margin: 0;
   color: var(--paper);

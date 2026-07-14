@@ -28,6 +28,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import type { JSX } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type {
@@ -1236,11 +1239,23 @@ describe('Review — F-128 Seoul reskin', () => {
     settleLanding();
     renderReview();
 
-    // jsdom doesn't compute real layout, so this asserts the STRUCTURAL
-    // contract (co-located Review.css scopes `overflow-x: hidden` off this
-    // exact class) rather than a pixel measurement.
     const root = document.querySelector('section.km-review');
     expect(root).not.toBeNull();
+
+    // jsdom never computes real layout, so a DOM-only assertion (the old
+    // version of this test) can't tell "the guard exists" from "the guard
+    // was deleted" — `document.querySelector` finds the same element
+    // either way. Reading the actual stylesheet source (same convention as
+    // FeedbackFab.test.tsx's anchor-position test) makes this a REAL
+    // regression check: deleting Review.css's `overflow-x: hidden` from
+    // `.km-review` fails this assertion, which the prior version could not.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Review.css'),
+      'utf8',
+    );
+    const rule = /\.km-review\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    expect(rule).toContain('overflow-x: hidden;');
   });
 
   it('flashcard flip + rate still work under the CityCard-tone signboard restyle (F-128 preserves the interaction)', async () => {

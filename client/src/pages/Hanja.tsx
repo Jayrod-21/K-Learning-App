@@ -39,10 +39,16 @@
  *     empty states carry the hangul-watermark + giwa texture; the root
  *     carries the ambient rain-sheen (Night-only); a mastery moment (deck
  *     clear / drill complete) gets a milestone `SealStamp` with a sparing
- *     najeon shimmer. `CityCard`'s `tone` enum has no hanja/ochre entry, so
- *     every CityCard/CollapsibleTile-city surface on this page uses
- *     `tone="plain"` — the same fallback `Today.tsx`'s own Hanja tile
- *     already established.
+ *     najeon shimmer. Every CityCard/CollapsibleTile-city surface on this
+ *     page uses `tone="ochre"` (batch-3 fix-pass: `DancheongRailTone` /
+ *     `CityCardTone` gained a dedicated `ochre` value — the Hanja skill
+ *     hue — so this page no longer has to fall back to `plain`, the same
+ *     workaround `Today.tsx`'s own Hanja tile still uses; see that page's
+ *     own follow-up ticket to adopt `ochre` too, tracked separately since
+ *     Today is out of this batch's edit scope). The two `SubwayProgress`
+ *     instances deliberately keep `tone="accent"` instead — a session
+ *     progress fill tracking the user's chosen accent reads as reward, not
+ *     as "this is Hanja," so it's a different, still-correct choice.
  *   - F-164 spacing / F-129 mobile: tightened gutters + vertical rhythm and
  *     a narrow-viewport clamp on the two fixed-size glyph squares, applied
  *     as page-scoped overrides in `Hanja.css` (see that file's header note
@@ -67,12 +73,15 @@
  *     detail view for adding characters INTO a list (the existing
  *     `AddToListTile` in the character detail sheet already covers the
  *     other direction — one character into a list).
- *   - F-167: index tiles color by the real `Hanja.state` band, remapped in
- *     `Hanja.css` from `HanjaCell`'s shared (accent-tracking `--vermilion`)
- *     classes onto the fixed green/yellow/red semantic families
- *     (`--moss`/`--ochre`/`--danger`) the design doc calls for — done as a
- *     page-scoped override since `HanjaCell` itself is a shared component
- *     out of this pass's edit scope.
+ *   - F-167: index tiles color by the real `Hanja.state` band via
+ *     `HanjaCell`'s own shared classes. Batch-3 fix-pass (2 BLOCKERs,
+ *     `REVIEW_batch3-hanja.md`): the shared classes used to read
+ *     accent-tracking `--vermilion` for `practicing` (silently recolored
+ *     with the user's accent choice) and `--danger`/red for `new` (a
+ *     never-studied character misread as "trouble") — both fixed at the
+ *     SHARED layer (`styles/index.css`'s new `--km-mastery-*` triad, fixed
+ *     + AA-checked in both themes), which retired this page's own
+ *     `.km-hanja__grid` CSS override entirely rather than deepening it.
  *   - F-168: each index tile gets a "+" quick-add affordance opening a
  *     lightweight `QuickAddSheet` (existing lists, tap-to-add, inline
  *     create) with an "added to list" toast confirmation.
@@ -154,6 +163,7 @@ import {
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
+import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { Bilingual } from '../components/Bilingual';
 import { CityCard } from '../components/CityCard';
@@ -562,7 +572,7 @@ export default function Hanja(): JSX.Element {
         // "the bones inside the words").
         eyebrow={<Bilingual en={HANJA_NAV.eyebrow} kr={HANJA_NAV.krEyebrow} />}
         heading={<Bilingual en="Hanja" kr="한자" />}
-        railTone="plain"
+        railTone="ochre"
       />
 
       {subContent ??
@@ -698,7 +708,7 @@ function EncounteredBand({
     // only ever set padding/margin/position (never background/border/shadow),
     // so combining it with CityCard's own chrome classes is additive, not
     // conflicting — verified before this change, not assumed.
-    <CityCard tone="plain" rail className="km-hanja__band">
+    <CityCard tone="ochre" rail className="km-hanja__band">
       <Eyebrow>
         <Bilingual
           en={`Encountered · ${String(progress.encountered)} of ~${String(progress.targetL4)} at L4`}
@@ -858,7 +868,7 @@ function HanjaFeature({
     // cursor, built for a raw `<button>`) never collides with CityCard's own
     // chrome — the inner button below owns the full-bleed click target
     // instead, the same idiom `CollapsibleTile` already uses.
-    <CityCard tone="plain" rail feat className="km-hanja__feature-card">
+    <CityCard tone="ochre" rail feat className="km-hanja__feature-card">
       <button
         type="button"
         onClick={onOpen}
@@ -1127,90 +1137,112 @@ function QuickAddSheet({
   return (
     <Sheet open={h !== null} onClose={onClose} ariaLabel="Add to a list">
       {h !== null ? (
-        <div className="km-hanja__quickadd">
-          <Eyebrow>
-            <Bilingual en={`Add ${h.ch} to a list`} kr={`${h.ch} 목록에 추가`} />
-          </Eyebrow>
-          {error !== null ? (
-            <div className="km-hanja__addlist-error">
-              <p role="alert" className="km-hanja__inline-error">
-                {error}
-              </p>
-              <button
-                type="button"
-                className="km-btn km-btn--ghost km-btn--sm focusring"
-                onClick={() => {
-                  setError(null);
-                  setTick((t) => t + 1);
-                }}
-              >
-                <Bilingual en="Retry" kr="다시 시도" compact />
-              </button>
-            </div>
-          ) : null}
-          {lists === null && error === null ? (
-            <p className="km-hanja__addlist-loading" aria-busy="true">
-              <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
-            </p>
-          ) : null}
-          {lists !== null && lists.length > 0 ? (
-            <ul className="km-hanja__quickadd-list">
-              {lists.map((l) => (
-                <li key={l.id}>
-                  <button
-                    type="button"
-                    className="km-hanja__quickadd-row focusring"
-                    disabled={busyId !== null}
-                    aria-busy={busyId === l.id}
-                    onClick={() => {
-                      addTo(l);
-                    }}
-                  >
-                    <span className="kr km-hanja__quickadd-name">{l.name_kr}</span>
-                    <Icon name={busyId === l.id ? 'check' : 'plus'} size={16} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {lists !== null && lists.length === 0 ? (
-            <p className="km-hanja__quickadd-empty">
-              <Bilingual
-                en="No lists yet — create one below."
-                kr="아직 목록이 없어요 — 아래에서 만드세요."
-              />
-            </p>
-          ) : null}
-          <label htmlFor={inputId} className="km-hanja__label">
-            <Bilingual en="New list name" kr="새 목록 이름" compact />
-          </label>
-          <div className="km-hanja__row">
-            <input
-              id={inputId}
-              className="km-hanja__input focusring"
-              value={newName}
-              maxLength={120}
-              placeholder="e.g. 자주 보는 한자"
-              disabled={busyId !== null}
-              onChange={(e) => {
-                setNewName(e.target.value);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') createAndAdd();
-              }}
-            />
-            <button
-              type="button"
-              className="km-btn km-btn--gold km-btn--sm focusring"
-              disabled={busyId !== null || newName.trim() === ''}
-              onClick={createAndAdd}
+        // Fix-pass batch-3 (SF-1, REVIEW_batch3-fidelity.md): this Sheet
+        // used to roll its own chrome (`.km-hanja__quickadd` as the OUTER
+        // wrapper, no head/close row, raw `.km-btn` buttons) instead of the
+        // shared `.km-review__sheetBody`/`__sheetHead` recipe + `<Button>`
+        // every other page's Sheet uses (Review/Grammar/Reading) — the SAME
+        // "create a list" job read as a different object on this page.
+        // `.km-hanja__quickadd` now wraps only the list-specific content
+        // BELOW the shared head, unchanged, so none of its own descendant
+        // rules (`.km-hanja__quickadd-list`/`-row`/`-name`/`-empty`) needed
+        // to move.
+        <div className="km-review__sheetBody">
+          <div className="km-review__sheetHead">
+            <Eyebrow>
+              <Bilingual en={`Add ${h.ch} to a list`} kr={`${h.ch} 목록에 추가`} />
+            </Eyebrow>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              aria-label="Close add-to-list"
             >
-              {busyId === 'new' ? (
-                <Bilingual en="Creating…" kr="만드는 중…" compact />
-              ) : (
-                <Bilingual en="Create & add" kr="만들고 추가" compact />
-              )}
-            </button>
+              <Icon name="close" size={14} />
+            </Button>
+          </div>
+          <div className="km-hanja__quickadd">
+            {error !== null ? (
+              <div className="km-hanja__addlist-error">
+                <p role="alert" className="km-hanja__inline-error">
+                  {error}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setError(null);
+                    setTick((t) => t + 1);
+                  }}
+                >
+                  <Bilingual en="Retry" kr="다시 시도" compact />
+                </Button>
+              </div>
+            ) : null}
+            {lists === null && error === null ? (
+              <p className="km-hanja__addlist-loading" aria-busy="true">
+                <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
+              </p>
+            ) : null}
+            {lists !== null && lists.length > 0 ? (
+              <ul className="km-hanja__quickadd-list">
+                {lists.map((l) => (
+                  <li key={l.id}>
+                    <button
+                      type="button"
+                      className="km-hanja__quickadd-row focusring"
+                      disabled={busyId !== null}
+                      aria-busy={busyId === l.id}
+                      onClick={() => {
+                        addTo(l);
+                      }}
+                    >
+                      <span className="kr km-hanja__quickadd-name">{l.name_kr}</span>
+                      <Icon name={busyId === l.id ? 'check' : 'plus'} size={16} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {lists !== null && lists.length === 0 ? (
+              <p className="km-hanja__quickadd-empty">
+                <Bilingual
+                  en="No lists yet — create one below."
+                  kr="아직 목록이 없어요 — 아래에서 만드세요."
+                />
+              </p>
+            ) : null}
+            <label htmlFor={inputId} className="km-hanja__label">
+              <Bilingual en="New list name" kr="새 목록 이름" compact />
+            </label>
+            <div className="km-hanja__row">
+              <input
+                id={inputId}
+                className="km-hanja__input focusring"
+                value={newName}
+                maxLength={120}
+                placeholder="e.g. 자주 보는 한자"
+                disabled={busyId !== null}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') createAndAdd();
+                }}
+              />
+              <Button
+                variant="gold"
+                size="sm"
+                disabled={busyId !== null || newName.trim() === ''}
+                onClick={createAndAdd}
+              >
+                {busyId === 'new' ? (
+                  <Bilingual en="Creating…" kr="만드는 중…" compact />
+                ) : (
+                  <Bilingual en="Create & add" kr="만들고 추가" compact />
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -1768,49 +1800,62 @@ function CreateListSheet({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="New hanja list">
-      <div className="km-hanja__quickadd">
-        <Eyebrow>
-          <Bilingual en="New list" kr="새 목록" />
-        </Eyebrow>
-        <label htmlFor={inputId} className="km-hanja__label">
-          <Bilingual en="List name" kr="목록 이름" compact />
-        </label>
-        <div className="km-hanja__row">
-          <input
-            id={inputId}
-            className="km-hanja__input focusring"
-            value={name}
-            maxLength={120}
-            placeholder="e.g. TOPIK II 한자"
-            disabled={creating}
-            onChange={(e) => {
-              setName(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') create();
-            }}
-          />
-          <button
-            type="button"
-            className="km-btn km-btn--gold km-btn--md focusring"
-            disabled={creating || name.trim() === ''}
-            onClick={create}
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
+          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+          Sheet recipe instead of this page's own bespoke chrome. */}
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <Eyebrow>
+            <Bilingual en="New list" kr="새 목록" />
+          </Eyebrow>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close new list"
           >
-            <Icon name="plus" size={14} />
-            <span>
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+        <div className="km-hanja__quickadd">
+          <label htmlFor={inputId} className="km-hanja__label">
+            <Bilingual en="List name" kr="목록 이름" compact />
+          </label>
+          <div className="km-hanja__row">
+            <input
+              id={inputId}
+              className="km-hanja__input focusring"
+              value={name}
+              maxLength={120}
+              placeholder="e.g. TOPIK II 한자"
+              disabled={creating}
+              onChange={(e) => {
+                setName(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') create();
+              }}
+            />
+            <Button
+              variant="gold"
+              size="md"
+              leadingIcon={<Icon name="plus" size={14} />}
+              disabled={creating || name.trim() === ''}
+              onClick={create}
+            >
               {creating ? (
                 <Bilingual en="Creating…" kr="만드는 중…" compact />
               ) : (
                 <Bilingual en="Create" kr="만들기" compact />
               )}
-            </span>
-          </button>
+            </Button>
+          </div>
+          {error !== null ? (
+            <p role="alert" className="km-hanja__inline-error">
+              {error}
+            </p>
+          ) : null}
         </div>
-        {error !== null ? (
-          <p role="alert" className="km-hanja__inline-error">
-            {error}
-          </p>
-        ) : null}
       </div>
     </Sheet>
   );
@@ -1993,7 +2038,7 @@ function ListDetailView({
 
   return (
     <>
-      <CityCard tone="plain" rail className="km-hanja__ld-head">
+      <CityCard tone="ochre" rail className="km-hanja__ld-head">
         <Eyebrow>
           <Bilingual en="Hanja list" kr="한자 목록" />
         </Eyebrow>
@@ -2292,112 +2337,127 @@ function AddHanjaPicker({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="Add hanja to list">
-      <div className="km-hanja__picker">
-        <Eyebrow>
-          <Bilingual
-            en={`Add hanja to “${listName}”`}
-            kr={`“${listName}”에 한자 추가`}
-          />
-        </Eyebrow>
-        <label htmlFor={inputId} className="km-hanja__label">
-          <Bilingual en="Search characters" kr="한자 검색" compact />
-        </label>
-        <div className="km-hanja__picker-search">
-          <Icon name="search" size={14} />
-          <input
-            id={inputId}
-            className="km-hanja__input focusring"
-            value={query}
-            placeholder="음, 뜻, or 한자"
-            onChange={(e) => {
-              setQuery(e.target.value);
-            }}
-          />
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
+          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+          Sheet recipe instead of this page's own bespoke chrome. */}
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <Eyebrow>
+            <Bilingual
+              en={`Add hanja to “${listName}”`}
+              kr={`“${listName}”에 한자 추가`}
+            />
+          </Eyebrow>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close add-hanja picker"
+          >
+            <Icon name="close" size={14} />
+          </Button>
         </div>
-        {poolError !== null ? (
-          <ErrorCard
-            message={poolError}
-            onRetry={() => {
-              setPoolError(null);
-              setTick((t) => t + 1);
-            }}
-          />
-        ) : pool === null ? (
-          <p className="km-hanja__addlist-loading" aria-busy="true">
-            <Bilingual en="Loading hanja…" kr="한자를 불러오는 중…" />
-          </p>
-        ) : candidates.length === 0 ? (
-          <p className="km-hanja__index-empty">
-            <Bilingual en="No matching hanja." kr="일치하는 한자가 없어요." />
-          </p>
-        ) : (
-          <>
-            <ul className="km-hanja__picker-list">
-              {visible.map((h) => {
-                const on = selected.has(h.ch);
-                return (
-                  <li key={h.id}>
-                    <button
-                      type="button"
-                      aria-pressed={on}
-                      // Explicit aria-label (mirrors HanjaCell's own
-                      // convention) rather than relying on the button's
-                      // implicit child-text concatenation: adjacent JSX
-                      // sibling <span>s with only whitespace between them
-                      // render with NO space in the DOM, which would glue
-                      // the char/sound/gloss together into one unreadable
-                      // accessible-name word.
-                      aria-label={`${h.ch} ${h.sound} ${h.en}${on ? ' — selected' : ''}`}
-                      className={
-                        'km-hanja__picker-row focusring' +
-                        (on ? ' km-hanja__picker-row--on' : '')
-                      }
-                      onClick={() => {
-                        toggle(h.ch);
-                      }}
-                    >
-                      <span className="hanja km-hanja__picker-char">{h.ch}</span>
-                      <span className="kr km-hanja__picker-sound">{h.sound}</span>
-                      <span className="km-hanja__picker-gloss">{h.en}</span>
-                      <Icon name={on ? 'check' : 'plus'} size={14} />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            {candidates.length > PICKER_RENDER_CAP ? (
-              <p className="km-hanja__picker-note">
+        <div className="km-hanja__picker">
+          <label htmlFor={inputId} className="km-hanja__label">
+            <Bilingual en="Search characters" kr="한자 검색" compact />
+          </label>
+          <div className="km-hanja__picker-search">
+            <Icon name="search" size={14} />
+            <input
+              id={inputId}
+              className="km-hanja__input focusring"
+              value={query}
+              placeholder="음, 뜻, or 한자"
+              onChange={(e) => {
+                setQuery(e.target.value);
+              }}
+            />
+          </div>
+          {poolError !== null ? (
+            <ErrorCard
+              message={poolError}
+              onRetry={() => {
+                setPoolError(null);
+                setTick((t) => t + 1);
+              }}
+            />
+          ) : pool === null ? (
+            <p className="km-hanja__addlist-loading" aria-busy="true">
+              <Bilingual en="Loading hanja…" kr="한자를 불러오는 중…" />
+            </p>
+          ) : candidates.length === 0 ? (
+            <p className="km-hanja__index-empty">
+              <Bilingual en="No matching hanja." kr="일치하는 한자가 없어요." />
+            </p>
+          ) : (
+            <>
+              <ul className="km-hanja__picker-list">
+                {visible.map((h) => {
+                  const on = selected.has(h.ch);
+                  return (
+                    <li key={h.id}>
+                      <button
+                        type="button"
+                        aria-pressed={on}
+                        // Explicit aria-label (mirrors HanjaCell's own
+                        // convention) rather than relying on the button's
+                        // implicit child-text concatenation: adjacent JSX
+                        // sibling <span>s with only whitespace between them
+                        // render with NO space in the DOM, which would glue
+                        // the char/sound/gloss together into one unreadable
+                        // accessible-name word.
+                        aria-label={`${h.ch} ${h.sound} ${h.en}${on ? ' — selected' : ''}`}
+                        className={
+                          'km-hanja__picker-row focusring' +
+                          (on ? ' km-hanja__picker-row--on' : '')
+                        }
+                        onClick={() => {
+                          toggle(h.ch);
+                        }}
+                      >
+                        <span className="hanja km-hanja__picker-char">{h.ch}</span>
+                        <span className="kr km-hanja__picker-sound">{h.sound}</span>
+                        <span className="km-hanja__picker-gloss">{h.en}</span>
+                        <Icon name={on ? 'check' : 'plus'} size={14} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {candidates.length > PICKER_RENDER_CAP ? (
+                <p className="km-hanja__picker-note">
+                  <Bilingual
+                    en={`Showing ${String(PICKER_RENDER_CAP)} of ${String(candidates.length)} — type to narrow.`}
+                    kr={`${String(candidates.length)}개 중 ${String(PICKER_RENDER_CAP)}개 표시 — 검색으로 좁히세요.`}
+                    compact
+                  />
+                </p>
+              ) : null}
+            </>
+          )}
+          {submitError !== null ? (
+            <p role="alert" className="km-hanja__inline-error">
+              {submitError}
+            </p>
+          ) : null}
+          <div className="km-hanja__row">
+            <Button
+              variant="gold"
+              size="md"
+              disabled={selected.size === 0 || submitting}
+              onClick={submit}
+            >
+              {submitting ? (
+                <Bilingual en="Adding…" kr="추가 중…" compact />
+              ) : (
                 <Bilingual
-                  en={`Showing ${String(PICKER_RENDER_CAP)} of ${String(candidates.length)} — type to narrow.`}
-                  kr={`${String(candidates.length)}개 중 ${String(PICKER_RENDER_CAP)}개 표시 — 검색으로 좁히세요.`}
+                  en={`Add ${String(selected.size)} selected`}
+                  kr={`선택한 ${String(selected.size)}개 추가`}
                   compact
                 />
-              </p>
-            ) : null}
-          </>
-        )}
-        {submitError !== null ? (
-          <p role="alert" className="km-hanja__inline-error">
-            {submitError}
-          </p>
-        ) : null}
-        <div className="km-hanja__row">
-          <button
-            type="button"
-            className="km-btn km-btn--gold km-btn--md focusring"
-            disabled={selected.size === 0 || submitting}
-            onClick={submit}
-          >
-            {submitting ? (
-              <Bilingual en="Adding…" kr="추가 중…" compact />
-            ) : (
-              <Bilingual
-                en={`Add ${String(selected.size)} selected`}
-                kr={`선택한 ${String(selected.size)}개 추가`}
-                compact
-              />
-            )}
-          </button>
+              )}
+            </Button>
+          </div>
         </div>
       </div>
     </Sheet>
@@ -2601,7 +2661,7 @@ function DrawView({
 
   return (
     <>
-      <CityCard tone="plain" rail className="km-hanja__draw-prompt">
+      <CityCard tone="ochre" rail className="km-hanja__draw-prompt">
         <Eyebrow>
           <Bilingual en="Drawing drill" kr="쓰기 연습" />
         </Eyebrow>
@@ -2644,7 +2704,7 @@ function DrawView({
         title={<Bilingual en="About this drill" kr="안내" />}
         defaultCollapsed
         surface="city"
-        tone="plain"
+        tone="ochre"
         className="km-hanja__draw-about"
       >
         <p>
@@ -3223,7 +3283,7 @@ function AddToListTile({ ch }: { ch: string }): JSX.Element {
       title={<Bilingual en="Add to a list" kr="목록에 추가" />}
       defaultCollapsed
       surface="city"
-      tone="plain"
+      tone="ochre"
       className="km-hanja__addlist"
     >
       <p className="km-hanja__addlist-note">

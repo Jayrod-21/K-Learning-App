@@ -107,12 +107,32 @@
  * scope (same override convention as the `.km-flashcard` rules above), so
  * it wins regardless of stylesheet import order without touching the
  * shared file. The plain-bar rules the old markup used
- * (`.km-review__progressBar`/`__progressFill`, styles/index.css) are now
- * dead CSS there — left in place; not this ticket's file to edit. */
+ * (`.km-review__progressBar`/`__progressFill`) were confirmed dead
+ * (fix-pass batch-3: no JSX referenced them anywhere in the app) and have
+ * been removed from styles/index.css. */
 .km-review .km-review__progress {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* ── Fix-pass batch-3 (SHOULD-FIX, REVIEW_batch3-flashcards.md) ──────────
+ * `.km-review__front`/`__back` (styles/index.css) are LEGACY rules exclusive
+ * to this page (no other consumer) that still paint an opaque
+ * `background: var(--ink-2)`. Flashcard.tsx renders them as the sole direct
+ * child of `.km-flashcard__face`, which — as of the F-128 block above — now
+ * carries the Night neon-signboard gradient/glow (and Day's hanji-paper
+ * fill). An edge-to-edge opaque child paints straight over that parent
+ * surface, so the card was reading as a flat `--ink-2` panel with only the
+ * face's own border/shadow visible, not the intended signboard body. This
+ * neutralizes the shared file's opaque fill FOR THIS PAGE ONLY (higher-
+ * specificity `.km-review` ancestor scope, same convention as every other
+ * override in this file) so the parent's gradient/glow shows through —
+ * `.km-flashcard__face`'s own `overflow: hidden` still clips both faces to
+ * the shared radius, so nothing bleeds past the rounded corners. */
+.km-review .km-review__front,
+.km-review .km-review__back {
+  background: transparent;
 }
 
 /* ── F-157 — "New list" Sheet trigger (My lists, landing) ───────────────── */
