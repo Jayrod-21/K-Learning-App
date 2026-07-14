@@ -10,9 +10,10 @@
  * — `path` is the raw `location.pathname` (the thing actually persisted as
  * `tickets.source_page`, migration 058); `name` is a friendly label
  * (`pageNameForPath`, lib/nav.ts) for immediate display while composing.
- * `Tickets.tsx` reads `state.compose` to autofocus the (always-rendered)
- * file-a-ticket form, and `state.sourcePage.path` to stamp the ticket it
- * creates. The Settings "Beta feedback" tile (F-023's original, still
+ * `Tickets.tsx` reads `state.compose` to open the file-a-ticket form (F-128:
+ * it now lives in a `Sheet`, opened on arrival rather than always rendered
+ * inline) and autofocus its Title field, and `state.sourcePage.path` to
+ * stamp the ticket it creates. The Settings "Beta feedback" tile (F-023's original, still
  * canonical, entry point) stays untouched — this is a second, more
  * discoverable entry, per F-127.
  *

@@ -583,6 +583,13 @@ describe('Writing', () => {
     expect(
       screen.queryByRole('textbox', { name: /Your writing in Korean/ }),
     ).not.toBeInTheDocument();
+
+    // Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-b): the generator sits
+    // inside this page's own CityCard hero (`km-writing__card`), so it must
+    // pass `embedded` to strip its own background/border/shadow — otherwise
+    // it renders as a flat card nested inside the signboard.
+    const generatorRoot = document.querySelector('.km-topicgen');
+    expect(generatorRoot).toHaveClass('km-topicgen--embedded');
   });
 
   it('F-073: generates a topic on-page, adopts it via "Write this topic", and grades WITHOUT a promptId', async () => {

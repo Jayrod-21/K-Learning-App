@@ -18,13 +18,24 @@
  *   - the labeled English-toggle row (B-020, `.km-chat__engToggle*`);
  *   - the file-attachment chip (F-035, `.km-chat__fileChip*`).
  *
- * Tokens only — no hard-coded hex anywhere in this file (F-131). `--ink*` =
+ * No hard-coded hex anywhere in this file (F-131, grep-verified). `--ink*` =
  * surfaces, `--paper*` = text ink, `--vermilion*`/`--on-vermilion` = the
  * active accent + its contrast-safe "on accent" text color, per
  * styles/index.css's palette. `--km-tone` (styles/seoul-devices.css) is the
  * shared per-tone CSS var CityCard/DancheongRail resolve; this file reads
  * the SAME var via the `km-tone--accent` utility class rather than
  * re-deriving the mapping.
+ *
+ * Fix-pass batch-4 (S-2, REVIEW_batch4-cst.md): the line above previously
+ * said "tokens only," which overclaimed — two conventional un-tokenized
+ * literal-black `rgba()` values predate this pass and remain by design, not
+ * oversight: the attach-menu's drop shadow (`.km-chat__attachMenu`,
+ * `box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32)`) and the ask-popup's fixed
+ * backdrop scrim (`.km-chat__askpopBackdrop`,
+ * `background: rgba(6, 8, 12, 0.32)`). Both are theme-neutral shadow/scrim
+ * conventions (same idiom as other pages' modal scrims), not a skill/accent
+ * color, so tokenizing them would add indirection without a real day/night
+ * behavior difference. "No hex" is accurate; "tokens only" was not.
  */
 
 /* ── Hub header (F-128 devices #4/#2) ───────────────────────────────────
@@ -241,16 +252,29 @@
 
 /* "+" attach trigger — a round icon button (matches the mockup's filled
  * circular `.plus`); the shared ghost `Button`'s soft-accent fill already
- * reads as "presence" here, just reshaped from pill to circle. */
+ * reads as "presence" here, just reshaped from pill to circle.
+ *
+ * Fix-pass (batch-4 BLOCKER-1, REVIEW_batch4-cst.md): `size="md"` carries no
+ * height/width floor of its own (only `.km-btn--sm` does, index.css) — this
+ * page-scoped override's 10px padding around a 16px icon landed at exactly
+ * 36×36px, under the WCAG 2.5.8 44px floor. `min-height`/`min-width: 44px`
+ * restores the same floor `.km-btn--sm` already guarantees elsewhere,
+ * without touching the 10px padding/circular shape (the icon stays visually
+ * centered inside the now-taller hit box, same technique as `.km-btn--sm`'s
+ * own comment describes). */
 .km-chat .km-chat__attachTrigger {
   padding: 10px;
   border-radius: 50%;
+  min-height: 44px;
+  min-width: 44px;
 }
 /* Send — the same round-icon treatment, so the two flanking controls read
- * as a matched pair either side of the textarea. */
+ * as a matched pair either side of the textarea. Same BLOCKER-1 fix. */
 .km-chat .km-chat__sendBtn {
   padding: 10px;
   border-radius: 50%;
+  min-height: 44px;
+  min-width: 44px;
 }
 
 /* "+" attach trigger + popup menu (F-035). Positioned relative so the menu

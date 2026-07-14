@@ -96,6 +96,11 @@
   font-family: inherit;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  /* Fix-pass batch-4 (S-1, REVIEW_batch4-cst.md): 8px vertical padding +
+   * 13px text computed to ~33-34px tall — under the WCAG 2.5.8 44px floor.
+   * `box-sizing: border-box` is global (index.css), so this grows the WHOLE
+   * box (padding included) to the floor rather than adding on top of it. */
+  min-height: 44px;
 }
 
 .km-settings__sched-field:disabled {
@@ -125,8 +130,17 @@
  * the whole page to scroll horizontally — the one thing F-129 forbids. Below
  * 380px (Hanja.css/Review.css's established narrow-phone breakpoint) the
  * meta label moves ABOVE the controls and the controls span full width, so
- * nothing needs to shrink below its usable touch-target size (the day
- * `<select>`, the time field, and the `Toggle` all stay ≥ 44px tall). */
+ * nothing needs to shrink to fit.
+ *
+ * Touch-target floor (fix-pass batch-4, S-1, REVIEW_batch4-cst.md — this
+ * comment previously overclaimed that the layout change alone made the day
+ * select/time field/Toggle "all stay >= 44px tall"; it didn't):
+ * `.km-settings__sched-field` (the day select and the time input) now
+ * carries its own `min-height: 44px` above. `Toggle` keeps its compact
+ * 38x22 visual pill (shrinking it would be a real design regression, not a
+ * fix) but gets an invisible 44x44 `::before` hit-region in
+ * `styles/index.css` so its CLICKABLE area clears the floor without
+ * changing what's painted. */
 @media (max-width: 380px) {
   .km-settings__sched-row {
     flex-direction: column;

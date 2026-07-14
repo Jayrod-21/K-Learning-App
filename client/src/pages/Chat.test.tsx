@@ -32,6 +32,9 @@
  * history fetch at will and inspect the screen's reaction. No real SSE.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import {
   act,
   fireEvent,
@@ -2589,5 +2592,33 @@ describe('Chat — F-129 mobile: no horizontal overflow', () => {
     expect(
       screen.getByRole('button', { name: 'Send' }).closest('.km-chat__composerRow'),
     ).toBe(composerRow);
+  });
+});
+
+// ── BLOCKER-1 fix-pass (batch-4): composer touch targets ────────────────
+
+describe('Chat — composer touch-target floor (BLOCKER-1 fix-pass, REVIEW_batch4-cst.md)', () => {
+  // jsdom/happy-dom does no layout, so the rendered box size of the round
+  // attach/send buttons can't be measured here — pin the CSS source instead,
+  // same technique as ChatFab.test.tsx's "stylesheet contract" test. Reading
+  // from disk works around vitest's `css: false` (CSS imports stub to '').
+  it('the attach trigger and send button both declare the 44px WCAG 2.5.8 floor', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Chat.css'),
+      'utf8',
+    );
+
+    const attachRule =
+      /\.km-chat\s+\.km-chat__attachTrigger\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
+      '';
+    const sendRule =
+      /\.km-chat\s+\.km-chat__sendBtn\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+
+    expect(attachRule).not.toBe('');
+    expect(sendRule).not.toBe('');
+    for (const rule of [attachRule, sendRule]) {
+      expect(rule).toMatch(/min-height:\s*44px/);
+      expect(rule).toMatch(/min-width:\s*44px/);
+    }
   });
 });

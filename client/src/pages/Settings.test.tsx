@@ -25,6 +25,9 @@
  * `useAuth` and `AuthProvider` has its own test in AuthProvider.test.tsx.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import {
   act,
   fireEvent,
@@ -2101,6 +2104,21 @@ describe('Settings — F-128 reskin (shared PageHubHeader + CityCard groups)', (
     expandGroup(/Profile/);
     expect(profileHeader).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByLabelText('Name')).toBeInTheDocument();
+  });
+});
+
+describe('Settings — schedule field touch-target floor (S-1 fix-pass, REVIEW_batch4-cst.md)', () => {
+  // jsdom does no layout, so the ~33-34px computed height this fix corrects
+  // can't be measured by rendering — pin the CSS source instead (same
+  // technique as ChatFab.test.tsx's stylesheet-contract test).
+  it('the day/time schedule field declares a 44px min-height', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Settings.css'),
+      'utf8',
+    );
+    const rule = /\.km-settings__sched-field\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(rule).not.toBe('');
+    expect(rule).toMatch(/min-height:\s*44px/);
   });
 });
 

@@ -291,20 +291,43 @@ function TicketRow({
  * built-in behaviour land exactly where F-127's "arrive via the FAB, ready
  * to type" contract wants — whether the sheet was opened by the FAB or by
  * the header's "New ticket" button, with no extra prop needed here.
+ *
+ * Fix-pass batch-4 (T-1, REVIEW_batch4-cst.md): `title`/`body`/`type` are
+ * now CONTROLLED props owned by the parent `Tickets` component, not local
+ * state here. `Sheet` unmounts its children whenever `open=false`
+ * (`Sheet.tsx`) — with local state, dismissing the sheet WITHOUT submitting
+ * (Esc, backdrop click) silently destroyed whatever the learner had typed, a
+ * real behavior change from the pre-reskin always-inline form (which never
+ * lost a draft under any circumstance). Lifting the draft to `Tickets`
+ * means it survives the sheet's own unmount/remount, so closing without
+ * filing preserves the draft exactly the way a failed submit already did —
+ * one consistent contract instead of two different ones depending on HOW
+ * the sheet closed.
  */
 function FileTicketForm({
   onFiled,
   sourcePage,
+  type,
+  onTypeChange,
+  title,
+  onTitleChange,
+  body,
+  onBodyChange,
 }: {
   onFiled: (ticket: OwnTicket) => void;
   /** F-127: the page the global "!" FAB was tapped from, if that's how the
    *  caller arrived here. Rides into `createTicket`'s `sourcePage` field
    *  (path only — see module header on why the label isn't persisted). */
   sourcePage?: { path: string; name: string };
+  /** Draft fields — lifted to `Tickets` (T-1) so a Sheet dismiss-without-
+   *  submit doesn't lose them. */
+  type: TicketType;
+  onTypeChange: (next: TicketType) => void;
+  title: string;
+  onTitleChange: (next: string) => void;
+  body: string;
+  onBodyChange: (next: string) => void;
 }): JSX.Element {
-  const [type, setType] = useState<TicketType>('bug');
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<{
@@ -342,16 +365,18 @@ function FileTicketForm({
         ...(sourcePage !== undefined ? { sourcePage: sourcePage.path } : {}),
       });
       onFiled(created);
-      setTitle('');
-      setBody('');
-      setType('bug');
+      // Draft lives in the parent now — clear it there too, so the NEXT
+      // open (a fresh ticket) starts blank rather than replaying this one.
+      onTitleChange('');
+      onBodyChange('');
+      onTypeChange('bug');
       setFieldErrors({});
     } catch (err) {
       setError(errorMessageFor(err, 'Could not file that ticket.'));
     } finally {
       setSubmitting(false);
     }
-  }, [type, title, body, sourcePage, onFiled]);
+  }, [type, title, body, sourcePage, onFiled, onTitleChange, onBodyChange, onTypeChange]);
 
   return (
     <div className="km-tickets__file">
@@ -382,7 +407,7 @@ function FileTicketForm({
             className="km-tickets__input focusring"
             value={title}
             onChange={(e) => {
-              setTitle(e.target.value);
+              onTitleChange(e.target.value);
             }}
             maxLength={TITLE_MAX}
             disabled={submitting}
@@ -405,7 +430,7 @@ function FileTicketForm({
             className="km-tickets__select focusring"
             value={type}
             onChange={(e) => {
-              setType(e.target.value as TicketType);
+              onTypeChange(e.target.value as TicketType);
             }}
             disabled={submitting}
           >
@@ -426,7 +451,7 @@ function FileTicketForm({
             className="kr km-tickets__textarea focusring"
             value={body}
             onChange={(e) => {
-              setBody(e.target.value);
+              onBodyChange(e.target.value);
             }}
             maxLength={BODY_MAX}
             disabled={submitting}
@@ -884,13 +909,18 @@ export default function Tickets(): JSX.Element {
   // F-127: FeedbackFab.tsx's router state, if that's how we got here.
   // Narrowed defensively (router state is caller-controlled, not a typed
   // API response) rather than trusted with a bare `as` cast — anything
-  // malformed just falls back to "no page context", the same as a plain
-  // direct navigation to /tickets.
+  // malformed (including an explicit `sourcePage: null`, not just a missing
+  // key — `null !== undefined` in JS, so a bare `!== undefined` check alone
+  // would pass through and crash reading `.path` off `null`) just falls back
+  // to "no page context", the same as a plain direct navigation to
+  // /tickets. Optional chaining on every step of `navState?.sourcePage?.path`
+  // means a `null`/`undefined` `sourcePage` short-circuits to `undefined`
+  // (never throws), so `typeof` sees "not a string" and takes the fallback
+  // branch — fix-pass batch-4 BLOCKER-2 (REVIEW_batch4-cst.md).
   const navState = location.state as TicketsLocationState | null | undefined;
   const sourcePage =
-    navState?.sourcePage !== undefined &&
-    typeof navState.sourcePage.path === 'string' &&
-    typeof navState.sourcePage.name === 'string'
+    typeof navState?.sourcePage?.path === 'string' &&
+    typeof navState?.sourcePage?.name === 'string'
       ? navState.sourcePage
       : undefined;
   const arriveComposing = navState?.compose === true;
@@ -903,6 +933,17 @@ export default function Tickets(): JSX.Element {
   // navigated to for — a later re-render (e.g. the tab changing) must not
   // re-open a sheet the user already closed.
   const [fileOpen, setFileOpen] = useState<boolean>(() => arriveComposing);
+
+  // T-1 fix-pass (REVIEW_batch4-cst.md): the file-a-ticket draft lives HERE,
+  // not inside `FileTicketForm` — `Sheet` unmounts its children on close, so
+  // local state there was silently destroyed by dismissing without
+  // submitting (Esc/backdrop), unlike a failed submit (which already
+  // preserved it). Lifting it up means it survives the sheet's own
+  // unmount/remount; `FileTicketForm` clears it via these setters only on a
+  // genuinely successful file.
+  const [draftType, setDraftType] = useState<TicketType>('bug');
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftBody, setDraftBody] = useState('');
 
   // Filters — local, shared by both tabs. Not part of the deep-link
   // contract (unlike tab/ticket), so a shared link never surprises the
@@ -1272,8 +1313,27 @@ export default function Tickets(): JSX.Element {
         }
       </Tabs>
 
-      <Sheet open={fileOpen} onClose={closeFileSheet} ariaLabel="File a ticket">
-        <FileTicketForm onFiled={onFiled} sourcePage={sourcePage} />
+      {/* Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-d): `tone="plain"`
+          opts this sheet into the Seoul top-edge treatment while keeping the
+          same "no skill color" restraint as this page's own `tone="plain"`
+          CityCards above (a ticket carries no skill identity — Pills carry
+          type/status instead). */}
+      <Sheet
+        open={fileOpen}
+        onClose={closeFileSheet}
+        ariaLabel="File a ticket"
+        tone="plain"
+      >
+        <FileTicketForm
+          onFiled={onFiled}
+          sourcePage={sourcePage}
+          type={draftType}
+          onTypeChange={setDraftType}
+          title={draftTitle}
+          onTitleChange={setDraftTitle}
+          body={draftBody}
+          onBodyChange={setDraftBody}
+        />
       </Sheet>
     </section>
   );

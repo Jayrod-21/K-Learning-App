@@ -286,13 +286,21 @@ function Topik(): JSX.Element {
           no shared CSS change was needed. Both flows stay fully reachable
           underneath: the Tabs switch below is untouched, so dismissing the
           sheet (Esc/backdrop, or an explicit pick) always lands on a live,
-          already-populated landing rather than a blank gate. */}
+          already-populated landing rather than a blank gate.
+
+          Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-d): `tone="accent"`
+          opts this sheet into the Seoul signboard/hanji edge — TOPIK's own
+          skill identity is the vermilion/accent family everywhere else on
+          this page (the tally/study CityCards below all pass `tone="accent"`
+          too), so the chooser's top-edge now matches instead of rendering
+          the old flat panel. */}
       <Sheet
         open={chooserOpen}
         onClose={() => {
           setChooserOpen(false);
         }}
         ariaLabel="Choose Study or Mock"
+        tone="accent"
       >
         <div className="km-topik__chooser">
           <Eyebrow>

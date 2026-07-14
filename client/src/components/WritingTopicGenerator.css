@@ -18,6 +18,20 @@
   box-shadow: var(--shadow-sm);
 }
 
+/* Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-b) — `embedded` prop
+ * (WritingTopicGenerator.tsx): strips this panel's own surface so it reads
+ * as inset content inside a parent CityCard/CollapsibleTile "city" hero
+ * instead of a flat card nested inside a signboard. Horizontal padding
+ * drops to 0 (the parent surface already provides its own inset); vertical
+ * padding stays so the head/controls/result rows keep their rhythm. */
+.km-topicgen--embedded {
+  padding: 14px 0 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .km-topicgen__head {
   display: flex;
   align-items: center;

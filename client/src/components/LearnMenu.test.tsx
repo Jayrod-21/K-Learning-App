@@ -159,9 +159,8 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     expect(dialog.querySelectorAll('button')).toHaveLength(7);
 
     // Title glow tracks the accent (km-neon-text), not a skill hue.
-    expect(screen.getByText('Learn').closest('.km-learnmenu__title')).toHaveClass(
-      'km-neon-text',
-    );
+    const title = screen.getByText('Learn').closest('.km-learnmenu__title');
+    expect(title).toHaveClass('km-neon-text');
 
     // Every hex tile carries the same per-tile grain as the backdrop.
     const tiles = Array.from(
@@ -172,8 +171,14 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
       expect(tile).toHaveClass('km-giwa');
     }
 
-    // One-time Night mount flicker lives on the dialog panel itself.
-    expect(dialog).toHaveClass('km-neon-flicker');
+    // Fix-pass batch-4 (REVIEW_batch4-launcher.md S1): the one-time Night
+    // mount flicker now lives on the STATIC title, not the panel — the panel
+    // is the parent of every tile's own opacity entrance stagger, and
+    // stacking the flicker there compounded multiplicatively with it. The
+    // title has no competing opacity animation, so this is the single
+    // intentional power-on effect.
+    expect(title).toHaveClass('km-neon-flicker');
+    expect(dialog).not.toHaveClass('km-neon-flicker');
   });
 
   it('keeps the reskin backdrop mounted through the close-out cascade', () => {

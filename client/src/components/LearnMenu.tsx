@@ -25,16 +25,23 @@
  * unmounts. While closing, the CSS turns pointer-events off (display-only
  * exit; the hexagon in BottomNav stays tappable to re-open).
  *
- * Honeycomb geometry / color coding:
- *   - Row 1: Reading (cyan) · Hanja (ochre)
- *   - Row 2: Vocab flashcards (indigo) · Grammar (violet) · Listen (moss)
- *   - Row 3: Writing (accent) · TOPIK (accent)
+ * Honeycomb geometry / color coding (fix-pass batch-4, S4/N2,
+ * REVIEW_batch4-fidelity.md — this comment previously described a
+ * Row1=Reading·Hanja / Row2=Vocab·Grammar·Listen / Row3=Writing·TOPIK
+ * layout that does not match `COMB_ROWS` below and never has; corrected to
+ * the actual rendered arrangement):
+ *   - Row 1: Vocab flashcards (indigo) · Grammar (violet)
+ *   - Row 2: Reading (cyan) · TOPIK (accent) · Listen/TTMIK (moss)
+ *   - Row 3: Writing (accent) · Hanja (ochre)
  *   Each tile's background is the category `*-soft` chip and its TEXT uses
  *   the AA-safe `*-ink` twin; only the (non-text) icon uses the raw bright
  *   hue. Writing + TOPIK share the accent family — only 6 category hues
- *   exist and those are the two "extra" skills; grouping them as the
- *   accent-colored bottom row (nearest the accent-gradient hexagon) makes
- *   the sharing read as intentional.
+ *   exist and those are the two "extra" skills — but in this true 2-3-2
+ *   tessellation they land non-adjacent (TOPIK row-2-center, Writing
+ *   row-3-left), so the shared hue reads as "these two are special" rather
+ *   than a deliberately paired block. That's an accepted tradeoff of this
+ *   layout, not a bug: the 2-3-2 honeycomb (vs. a mockup 2-2-2-1 with TOPIK
+ *   alone nearest the hex) is the truer tessellation for 7 tiles.
  *
  * Each hex is a real `<button>` that navigates + closes; there is no dead
  * center hub. Because the tiles are clip-path hexagons, a rectangular
@@ -74,12 +81,16 @@
  *     LearnMenu.css) — the existing `--hx-hue`/`--hx-ink`/`--hx-bg` per-hue
  *     tokens and AA-checked label contrast (index.css) are untouched.
  *   - `.km-learnmenu__title` gets `km-neon-text` for an accent-tracking
- *     glow in Night (again F-131-orthogonal to skill hues).
- *   - `.km-learnmenu__panel` gets `km-neon-flicker` — a one-time Night
- *     "powering on" flicker as the menu mounts, layered on top of the
- *     existing per-row rise stagger. Already `prefers-reduced-motion`
- *     gated at its source (seoul-devices.css), so no separate handling is
- *     needed here.
+ *     glow in Night (again F-131-orthogonal to skill hues), AND (fix-pass
+ *     batch-4, REVIEW_batch4-launcher.md S1) `km-neon-flicker` — a one-time
+ *     Night "powering on" flicker as the menu mounts. This used to sit on
+ *     `.km-learnmenu__panel` itself, which composited multiplicatively with
+ *     every tile's own `km-hexrise` opacity entrance stagger for ~460ms of
+ *     every Night open (two independent, uncoordinated opacity animations
+ *     stacking on parent+children) — moved to the title, a static element
+ *     with no competing opacity animation, so there is exactly ONE power-on
+ *     effect. Already `prefers-reduced-motion` gated at its source
+ *     (seoul-devices.css), so no separate handling is needed here.
  *   - Mobile fit (F-129): purely additive/decorative — no new element adds
  *     width or touches the existing `--km-hex-w` clamp() that already fits
  *     the 3-across row on narrow viewports.
@@ -110,8 +121,14 @@ type LearnSubpageId = (typeof LEARN_SUBPAGE_IDS)[number];
 
 /**
  * The honeycomb arrangement — 2-3-2 fits the 7 sub-pages exactly.
- * Row 2's three tiles are the daily-drill core (vocab/grammar/listening);
- * the accent pair (writing + TOPIK) sits nearest the hexagon.
+ * Fix-pass batch-4 (S4, REVIEW_batch4-fidelity.md): this docstring
+ * previously described row 2 as "vocab/grammar/listening" and framed the
+ * writing+TOPIK accent pair as adjacent "nearest the hexagon" — neither
+ * matches the array below. Row 1 is vocab+grammar; row 2 is
+ * reading+topik+ttmik (listen); row 3 is writing+hanja — so the two accent
+ * (vermilion) tiles, TOPIK and writing, are NOT adjacent. See the module
+ * header comment for the corrected color-coding + the honest tradeoff this
+ * implies for the "shared hue reads as intentional" framing.
  */
 const COMB_ROWS = [
   ['flashcards', 'grammar'],
@@ -222,10 +239,7 @@ export function LearnMenu({
       <div
         ref={panelRef}
         id={id}
-        // km-neon-flicker: one-time Night "powering on" flash as the menu
-        // mounts (device §7) — already prefers-reduced-motion gated at its
-        // source (seoul-devices.css), no extra handling needed here.
-        className="km-learnmenu__panel km-neon-flicker"
+        className="km-learnmenu__panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
@@ -241,7 +255,22 @@ export function LearnMenu({
           className="km-learnmenu__backdrop km-giwa km-rain-sheen km-neon-box"
           aria-hidden="true"
         />
-        <div id={labelId} className="km-eyebrow km-learnmenu__title km-neon-text">
+        <div
+          id={labelId}
+          // km-neon-flicker (fix-pass batch-4, REVIEW_batch4-launcher.md
+          // S1): moved here from `.km-learnmenu__panel`. The panel is the
+          // parent of every hex tile, and each tile already runs its own
+          // `km-hexrise` opacity entrance stagger (index.css) — nesting the
+          // flicker's opacity keyframes on the PARENT composited
+          // multiplicatively with the tiles' own opacity for ~460ms of every
+          // Night open, reading as double-animated/janky rather than one
+          // intentional power-on beat. The title has no competing opacity
+          // animation (a static-sized element, same precedent as
+          // `CityCard`'s own `km-neon-flicker` usage), so this is the ONE
+          // power-on effect now — still `prefers-reduced-motion` gated at
+          // its source (seoul-devices.css), no extra handling needed here.
+          className="km-eyebrow km-learnmenu__title km-neon-text km-neon-flicker"
+        >
           {/* P3a: menu-title chrome follows the language-display setting; in
               single-language modes the dialog's accessible name (via this
               labelledby target) still carries both languages. */}

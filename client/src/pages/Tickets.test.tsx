@@ -284,6 +284,40 @@ describe('Tickets — F-127 (global "!" FAB hand-off)', () => {
     });
   });
 
+  it('BLOCKER-2 fix-pass: an explicit `sourcePage: null` router-state (not merely absent) does not crash and falls back to "no page context"', async () => {
+    // `null !== undefined` in JS — a router-state guard that only checks
+    // `!== undefined` lets this shape slip through and then crashes reading
+    // `.path` off `null`. Reproduces REVIEW_batch4-cst.md BLOCKER-2 exactly:
+    // `compose: true` (so the Sheet opens, exercising the same render path a
+    // real FAB tap would) with `sourcePage: null` instead of a real object or
+    // a missing key.
+    ticketsSvc.createTicket.mockResolvedValue({ ...MINE_1, id: 9 });
+    const user = userEvent.setup();
+    renderPage({
+      pathname: '/tickets',
+      state: { compose: true, sourcePage: null },
+    });
+
+    // No crash: the page renders normally and the Sheet is already open
+    // (compose: true), same as any other malformed-state arrival.
+    await screen.findByText(/No tickets yet/);
+    expect(screen.getByRole('dialog', { name: 'File a ticket' })).toBeInTheDocument();
+    // Graceful fallback — treated exactly like "no page context", not a
+    // half-populated hint.
+    expect(screen.queryByText(/Filing from:/)).not.toBeInTheDocument();
+
+    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'x');
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'y');
+    await user.click(screen.getByRole('button', { name: /File ticket/ }));
+
+    // No `sourcePage` key sent — the null falls back the same as "absent".
+    expect(ticketsSvc.createTicket).toHaveBeenCalledWith({
+      type: 'bug',
+      title: 'x',
+      body: 'y',
+    });
+  });
+
   it('shows "Reported from: <name>" on a My-tickets row, and again on its detail view', async () => {
     const withSource: OwnTicket = { ...MINE_1, sourcePage: '/learn/writing' };
     ticketsSvc.listMyTickets.mockResolvedValue([withSource]);
@@ -665,5 +699,84 @@ describe('Tickets — F-128 reskin (PageHubHeader, CityCard rows, Sheet filing)'
 
     expect(screen.getByRole('dialog', { name: 'File a ticket' })).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Title' })).toBeInTheDocument();
+  });
+});
+
+describe('Tickets — fix-pass batch-4 (T-1/T-3, REVIEW_batch4-cst.md)', () => {
+  it('T-1: dismissing the file Sheet WITHOUT submitting (Esc) preserves the typed draft on reopen', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Type' }), 'suggestion');
+    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Add export to CSV');
+    await user.type(
+      screen.getByRole('textbox', { name: 'Description' }),
+      'Would help with tracking progress externally.',
+    );
+
+    // Dismiss WITHOUT filing — Esc, not the "File ticket" button. `Sheet`
+    // unmounts its children on close (Sheet.tsx: `if (!open) return null`),
+    // so before this fix the draft lived in `FileTicketForm`'s own local
+    // state and was silently destroyed here.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await openFileSheet(user);
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveValue('suggestion');
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(
+      'Add export to CSV',
+    );
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue(
+      'Would help with tracking progress externally.',
+    );
+  });
+
+  it('T-1: a SUCCESSFUL file clears the draft, so the next "New ticket" open starts blank', async () => {
+    ticketsSvc.createTicket.mockResolvedValue({
+      ...MINE_1,
+      id: 11,
+      title: 'First ticket',
+      body: 'First body',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
+
+    await user.type(screen.getByRole('textbox', { name: 'Title' }), 'First ticket');
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'First body');
+    await user.click(screen.getByRole('button', { name: /File ticket/ }));
+    await screen.findByText('Ticket filed.');
+
+    await openFileSheet(user);
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveValue('');
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveValue('bug');
+  });
+
+  it('T-3: retyping the (now parent-owned, T-1) draft repeatedly while the sheet stays open never steals focus off the Title field (useCallback focus-race regression)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
+
+    const titleInput = screen.getByRole('textbox', { name: 'Title' });
+    expect(titleInput).toHaveFocus();
+
+    // Each keystroke now sets state that lives on `Tickets` itself (T-1
+    // lifted the draft up), so this re-renders THE PAGE — exactly the
+    // "Tickets re-renders while the sheet is open" scenario the closeFileSheet
+    // useCallback (Tickets.tsx) guards against. An inline
+    // `onClose={() => setFileOpen(false)}` would re-arm useModalA11y's
+    // focus-capture/restore effect on every one of these renders, and the
+    // queued microtask restore would eventually steal focus back to
+    // whatever was active BEFORE the sheet opened (the "New ticket" button)
+    // instead of leaving it on the field the user is actively typing into.
+    await user.type(titleInput, 'Crash on launch');
+
+    expect(titleInput).toHaveValue('Crash on launch');
+    expect(titleInput).toHaveFocus();
   });
 });

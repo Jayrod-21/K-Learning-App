@@ -742,7 +742,7 @@ function Writing(): JSX.Element {
                     <Eyebrow>
                       <Bilingual en="AI Prompt" kr="AI 주제" />
                     </Eyebrow>
-                    <WritingTopicGenerator onUseTopic={adoptTopic} />
+                    <WritingTopicGenerator embedded onUseTopic={adoptTopic} />
                     {source === 'generated' && taskState.phase === 'ready' ? (
                       <div className="km-writing__aiprompt-compose">
                         <GoldRule className="km-writing__aiprompt-rule" />
