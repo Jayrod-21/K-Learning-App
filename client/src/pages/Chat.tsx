@@ -5,11 +5,18 @@
  * headers below).
  *
  * Layout:
- *   1. Topbar: "Tutor conversation" eyebrow + 대화 · Chat serif title, with
- *      a visibly-LABELED English-translations switch on the right (B-020 —
- *      the switch used to carry only an `aria-label`, so its purpose was
- *      invisible to sighted users; the label now reads "English · 영어").
- *   2. A two-pane layout below the Topbar:
+ *   1. `PageHubHeader` (F-128 "Seoul Day & Night" reskin — devices #4/#2,
+ *      same hub-header recipe as Grammar/Uploads/ReviewLibrary): "Tutor
+ *      conversation" eyebrow + 대화 · Chat serif title, with a
+ *      visibly-LABELED English-translations switch riding in the header's
+ *      inline `actions` slot on the right (B-020 — the switch used to carry
+ *      only an `aria-label`, so its purpose was invisible to sighted users;
+ *      the label now reads "English · 영어"). The shared `SkylineHeader`
+ *      banner it composes is height-capped for this page only (Chat.css
+ *      `.km-chat__hub`) — a chat thread's vertical budget is precious
+ *      (F-129 mobile pass), so the skyline motif stays present but short
+ *      rather than claiming ~120px above the fold on every screen size.
+ *   2. A two-pane layout below the header:
  *      - LEFT: a collapsible conversation sidebar (mockup: thin-rail
  *        collapse ‹, "New chat", the conversation list newest-first, a
  *        30-day retention note).
@@ -205,6 +212,44 @@
  *     scroll or traps Tab, so it can never strand keyboard focus if a
  *     click lands elsewhere without going through the documented close
  *     paths (Escape / outside click / picking an item).
+ *
+ * F-128 reskin ("Seoul Day & Night") — a pure visual pass; every behavior
+ * documented above is unchanged. Devices adopted:
+ *   - `PageHubHeader` (#4 skyline + #2 rail) replaces the bare `Topbar`,
+ *     height-capped for this page (see "Layout" above).
+ *   - The "Discuss the page you were on?" popup (Slice 3) is now a real
+ *     `CityCard` — one distinct, non-repeating surface, so the full
+ *     hero-card treatment (outer glow in Night, hanji paper in Day) fits
+ *     exactly the mockup's `.sign` card recipe. The outer `role="dialog"`
+ *     wrapper (ref/aria/focus-trap target) is untouched; `CityCard` is
+ *     purely its visual child.
+ *   - Message bubbles deliberately do NOT nest a `CityCard` each — the
+ *     mockup's own bubble CSS (`.bub.ai`/`.bub.me`) specifies an INSET
+ *     hairline/tone ring, not `CityCard`'s outer hero glow, because a
+ *     thread can hold dozens of bubbles and stacking dozens of glowing
+ *     hero cards would read as visual noise rather than "one signboard".
+ *     Bubbles instead consume the SAME shared primitive `CityCard` reads —
+ *     the `km-tone--accent` utility class (`styles/seoul-devices.css`)
+ *     that resolves `--km-tone` — and apply CityCard.css's day/night
+ *     gradient formula at bubble scale (Chat.css). Tutor = hanji paper
+ *     (Day) / dark gradient + inset tone ring (Night); user = solid
+ *     accent fill, per the mockup's `.bub.me`.
+ *   - The sidebar's CURRENT conversation row gets a `DancheongRail` leading
+ *     edge (#2) instead of a bare colored dot only.
+ *   - The thread panel carries `.km-giwa` (#3, ambient section-ground
+ *     texture) always, and `.km-hangul-watermark` (#6, data-glyph "대화")
+ *     only while the thread is genuinely empty (no real turns yet) — a
+ *     long real conversation doesn't need a giant watermark competing
+ *     with dozens of bubbles.
+ *   - The page root carries `.km-rain-sheen` (#8, Night-only ambient sheen
+ *     — the utility's own CSS gates it to `[data-theme="dark"]`).
+ *   - Contrast fix surfaced BY the reskin: the failed-row "retry" chip used
+ *     to render in `--vermilion` against a neutral bubble background; now
+ *     that failed rows (always role=user) sit on a solid accent-filled
+ *     bubble, reusing the same `--vermilion` text would be invisible
+ *     against its own background. The failed-row retry chip therefore
+ *     uses `--on-vermilion` (underline for the interactive affordance,
+ *     never a color swap that could dip under AA) instead.
  */
 import {
   useCallback,
@@ -217,7 +262,9 @@ import {
 } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
-import { Topbar } from '../components/Topbar';
+import { PageHubHeader } from '../components/PageHubHeader';
+import { CityCard } from '../components/CityCard';
+import { DancheongRail } from '../components/DancheongRail';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Toggle } from '../components/Toggle';
@@ -1701,18 +1748,22 @@ export function Chat(): JSX.Element {
 
   return (
     <section
-      className="screen km-chat"
+      className="screen km-chat km-rain-sheen"
       aria-labelledby="chat-title"
       style={{ position: 'relative', padding: '0 18px 32px' }}
     >
       {isMock ? <MockBadge /> : null}
 
-      <Topbar
-        krTitle="대화"
-        title="Chat"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (same one
+          Grammar/Uploads/ReviewLibrary use) instead of a bare `Topbar`;
+          `km-chat__hub` height-caps the skyline banner (Chat.css) so it
+          doesn't eat the thread's vertical budget. */}
+      <PageHubHeader
+        className="km-chat__hub"
         titleId="chat-title"
         eyebrow={<Bilingual en={CHAT_NAV.eyebrow} kr={CHAT_NAV.krEyebrow} />}
-        right={
+        heading={<Bilingual kr="대화" en="Chat" />}
+        actions={
           // B-020: the switch used to render with only an `aria-label` — its
           // purpose was invisible to sighted users. A visible bilingual
           // caption now sits beside it (same convention as Settings' named
@@ -1785,17 +1836,23 @@ export function Chat(): JSX.Element {
                 </span>
               ) : null}
             </div>
-            <button
-              type="button"
-              className="km-chat__newChat focusring"
+            {/* F-128: the shared ghost `Button` (soft accent fill, Seoul
+                pill/glow treatment) instead of a hand-rolled button — one
+                less bespoke control to keep in sync with the design
+                system. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              fullWidth
+              className="km-chat__newChat"
               onClick={startNewChat}
               disabled={creating}
               aria-busy={creating ? 'true' : 'false'}
               aria-label="New chat"
+              leadingIcon={<Icon name="plus" size={14} />}
             >
-              <Icon name="plus" size={14} />
-              {!collapsed ? <Bilingual en="New chat" kr="새 대화" /> : null}
-            </button>
+              {!collapsed ? <Bilingual en="New chat" kr="새 대화" /> : undefined}
+            </Button>
             <ul
               id="chat-conversations"
               className="km-chat__convList"
@@ -1829,6 +1886,20 @@ export function Chat(): JSX.Element {
                       aria-label={when ? `${title}, ${when}` : title}
                       title={title}
                     >
+                      {/* F-128 device #2 — the current conversation gets a
+                          DancheongRail leading edge instead of only the
+                          colored dot below (Chat.css gives the row
+                          `position: relative` + `overflow: hidden` so the
+                          rail's absolute edge clips to the row's own
+                          rounded corners). Decorative like every other
+                          DancheongRail use — `aria-current` above already
+                          carries the "this is the active row" fact for AT. */}
+                      {isActive ? (
+                        <DancheongRail
+                          tone="accent"
+                          className="km-chat__convRail"
+                        />
+                      ) : null}
                       <span className="km-chat__convDot" aria-hidden="true" />
                       {!collapsed ? (
                         <span className="km-chat__convText">
@@ -1886,48 +1957,69 @@ export function Chat(): JSX.Element {
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="chat-askpop-title"
-                  className="km-chat__askpop"
+                  className="km-chat__askpopWrap"
                 >
-                  <div id="chat-askpop-title" className="km-chat__askpopTitle">
-                    <Bilingual
-                      en="Discuss the page you were on?"
-                      kr="보던 페이지에 대해 이야기할까요?"
-                    />
-                  </div>
-                  <div className="km-chat__askpopCtx">
-                    <span className="km-eyebrow">
-                      <Bilingual en="From" kr="이전 화면" />
-                    </span>
-                    <span className="km-chat__askpopFrom">
-                      {popupContext.pageLabel} — {popupContext.summary}
-                    </span>
-                  </div>
-                  <div className="km-chat__askpopRow">
-                    <Button
-                      variant="gold"
-                      size="sm"
-                      onClick={() => {
-                        answerContextPopup(true);
-                      }}
-                    >
-                      <Bilingual en="Yes, use it" kr="네, 좋아요" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        answerContextPopup(false);
-                      }}
-                    >
-                      <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
-                    </Button>
-                  </div>
+                  {/* F-128 device #1 — a real `CityCard` (hanji paper Day /
+                      neon signboard Night, `feat` for hero emphasis). One
+                      distinct, non-repeating surface — unlike the message
+                      bubbles below, there's exactly one of these on screen
+                      at a time, so the full hero-card treatment fits. The
+                      outer div above stays the a11y/focus-trap target
+                      (`popupRef`); this is purely its visual child. */}
+                  <CityCard tone="accent" feat className="km-chat__askpop">
+                    <div id="chat-askpop-title" className="km-chat__askpopTitle">
+                      <Bilingual
+                        en="Discuss the page you were on?"
+                        kr="보던 페이지에 대해 이야기할까요?"
+                      />
+                    </div>
+                    <div className="km-chat__askpopCtx">
+                      <span className="km-eyebrow">
+                        <Bilingual en="From" kr="이전 화면" />
+                      </span>
+                      <span className="km-chat__askpopFrom">
+                        {popupContext.pageLabel} — {popupContext.summary}
+                      </span>
+                    </div>
+                    <div className="km-chat__askpopRow">
+                      <Button
+                        variant="gold"
+                        size="sm"
+                        onClick={() => {
+                          answerContextPopup(true);
+                        }}
+                      >
+                        <Bilingual en="Yes, use it" kr="네, 좋아요" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          answerContextPopup(false);
+                        }}
+                      >
+                        <Bilingual en="No, start fresh" kr="아니요, 새로 시작" />
+                      </Button>
+                    </div>
+                  </CityCard>
                 </div>
               </>
             ) : null}
             <div
               ref={scrollRef}
-              className="km-chat__thread"
+              className={cn(
+                'km-chat__thread',
+                // F-128 device #3 — a faint roof-tile/city-grid ground
+                // texture, always present (very low contrast per
+                // seoul-devices.css, never competes with bubbles).
+                'km-giwa',
+                // F-128 device #6 — the giant faint 대화 watermark only
+                // while the thread is genuinely empty (no real turns yet
+                // — a long real conversation has no room, and no need,
+                // for it).
+                msgs.length === 0 && 'km-hangul-watermark',
+              )}
+              {...(msgs.length === 0 ? { 'data-glyph': '대화' } : {})}
               role="log"
               aria-live="polite"
               aria-label="Conversation"
@@ -2032,6 +2124,7 @@ export function Chat(): JSX.Element {
                     ref={attachTriggerRef}
                     variant="ghost"
                     size="md"
+                    className="km-chat__attachTrigger"
                     onClick={toggleAttachMenu}
                     disabled={uploading || streaming || !threadReady}
                     aria-label="Attach"
@@ -2048,7 +2141,11 @@ export function Chat(): JSX.Element {
                       id="chat-attach-menu"
                       role="menu"
                       aria-label="Attach"
-                      className="km-chat__attachMenu"
+                      // F-128: the same shared `--km-tone` mechanism
+                      // CityCard/DancheongRail read (seoul-devices.css) —
+                      // a Night tone-glow border / Day hairline for this
+                      // popover, without duplicating CityCard's own rules.
+                      className={cn('km-chat__attachMenu', 'km-tone--accent')}
                     >
                       <button
                         ref={setAttachItemRef(0)}
@@ -2123,6 +2220,7 @@ export function Chat(): JSX.Element {
                 <Button
                   variant="gold"
                   size="md"
+                  className="km-chat__sendBtn"
                   onClick={send}
                   disabled={
                     !input.trim() || streaming || uploading || !threadReady
@@ -2151,7 +2249,18 @@ export function Chat(): JSX.Element {
   );
 }
 
-/** Single chat bubble. Tutor left, user right; user has stronger border. */
+/**
+ * Single chat bubble. Tutor left, user right.
+ *
+ * F-128 reskin — tutor = hanji-paper (Day) / dark-gradient-with-inset-tone-
+ * ring (Night) per the mockup's `.bub.ai`; user = solid accent fill per
+ * `.bub.me`. Both read `--km-tone` via the shared `km-tone--accent` utility
+ * (styles/seoul-devices.css) — the SAME variable CityCard/DancheongRail
+ * resolve — rather than nesting a full `CityCard` per bubble (see the
+ * page-level doc comment's "F-128 reskin" section for why: a thread can
+ * hold dozens of these, and CityCard's outer hero glow was never meant to
+ * repeat dozens of times in one scroll region).
+ */
 function Bubble({
   msg,
   showEn,
@@ -2168,11 +2277,13 @@ function Bubble({
       className={`km-chat__row${isUser ? ' km-chat__row--user' : ''}`}
     >
       <div
-        className={`km-chat__bubble${isUser ? ' km-chat__bubble--user' : ' km-chat__bubble--tutor'}${
+        className={`km-chat__bubble km-tone--accent${isUser ? ' km-chat__bubble--user' : ' km-chat__bubble--tutor'}${
           isFailed ? ' km-chat__bubble--failed' : ''
         }`}
       >
-        <div className="km-eyebrow km-chat__role">
+        <div
+          className={`km-eyebrow km-chat__role${!isUser ? ' km-neon-text' : ''}`}
+        >
           {isUser ? (
             <Bilingual en="You" kr="나" />
           ) : (

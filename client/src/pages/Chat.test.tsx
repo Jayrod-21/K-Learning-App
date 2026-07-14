@@ -32,6 +32,9 @@
  * history fetch at will and inspect the screen's reaction. No real SSE.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import {
   act,
   fireEvent,
@@ -2454,5 +2457,168 @@ describe('Chat English toggle label (B-020)', () => {
     expect(
       screen.queryByText(/Today we'll discuss/),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ── F-128: "Seoul Day & Night" reskin — shared devices, not a flat token
+// reskin. Behavior is unchanged (asserted by every describe block above
+// this one still passing); these tests target the reskin's own classes. ──
+
+describe('Chat — F-128 reskin (shared PageHubHeader, CityCard, DancheongRail)', () => {
+  it('renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const { container } = renderChat();
+    await screen.findByText(OPENER_RE);
+
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).toBeInTheDocument();
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: '대화 · Chat',
+    });
+    expect(heading).toHaveAttribute('id', 'chat-title');
+  });
+
+  it('tutor and user bubbles both read the shared --km-tone accent (km-tone--accent), not a bespoke color', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    const { container } = renderChat();
+    await screen.findByText(OPENER_RE);
+
+    const tutorBubble = container.querySelector('.km-chat__bubble--tutor');
+    expect(tutorBubble).not.toBeNull();
+    expect(tutorBubble).toHaveClass('km-tone--accent');
+
+    await user.type(screen.getByLabelText('Reply input'), '안녕하세요');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    const userBubble = container.querySelector('.km-chat__bubble--user');
+    expect(userBubble).not.toBeNull();
+    expect(userBubble).toHaveClass('km-tone--accent');
+  });
+
+  it('the current conversation row carries a DancheongRail leading edge (device #2)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    const nav = screen.getByRole('navigation', { name: 'Conversations' });
+    // Row 42 (updated_at 2026-05-29) is auto-active — the newest row.
+    const currentRow = within(nav).getByRole('button', {
+      name: /일상 대화 · 5\/29/,
+    });
+    expect(currentRow).toHaveAttribute('aria-current', 'true');
+    expect(currentRow.querySelector('.km-dancheong-rail')).not.toBeNull();
+
+    // The non-active row gets no rail.
+    const otherRow = within(nav).getByRole('button', {
+      name: /일상 대화 · 5\/20/,
+    });
+    expect(otherRow.querySelector('.km-dancheong-rail')).toBeNull();
+  });
+
+  it('the "discuss the page you were on?" popup renders as a real CityCard (device #1)', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat(
+      buildChatOpenState({
+        pageLabel: 'Today · 오늘',
+        summary: '3 review cards due',
+      }),
+    );
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.querySelector('.km-citycard')).not.toBeNull();
+  });
+
+  it('the empty (opener-only) thread carries the giwa texture + hangul watermark; a real turn drops the watermark', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    const log = thread();
+    expect(log).toHaveClass('km-giwa');
+    expect(log).toHaveClass('km-hangul-watermark');
+    expect(log).toHaveAttribute('data-glyph', '대화');
+
+    await user.type(screen.getByLabelText('Reply input'), '질문 있어요');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // A real turn now exists (the optimistic user bubble) — the giant
+    // watermark would only compete with real content, so it's gone; the
+    // ambient giwa ground texture stays.
+    expect(thread()).toHaveClass('km-giwa');
+    expect(thread()).not.toHaveClass('km-hangul-watermark');
+  });
+});
+
+// ── F-129: mobile — no horizontal overflow ─────────────────────────────────
+
+describe('Chat — F-129 mobile: no horizontal overflow', () => {
+  it('the attach popup is scoped inside its own trigger anchor, not a page-level overlay that could clip off-screen', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    await user.click(screen.getByRole('button', { name: 'Attach' }));
+    const menu = screen.getByRole('menu', { name: 'Attach' });
+    expect(menu.closest('.km-chat__attach')).not.toBeNull();
+  });
+
+  it('attach trigger, textarea, and send all sit in the ONE composer row container, so they shrink/wrap together rather than any one escaping it', async () => {
+    resetState();
+    hoisted.ref.endpoint = { kind: 'data', data: LIST };
+    renderChat();
+    await screen.findByText(OPENER_RE);
+
+    const composerRow = screen
+      .getByRole('button', { name: 'Attach' })
+      .closest('.km-chat__composerRow');
+    expect(composerRow).not.toBeNull();
+    expect(
+      screen.getByLabelText('Reply input').closest('.km-chat__composerRow'),
+    ).toBe(composerRow);
+    expect(
+      screen.getByRole('button', { name: 'Send' }).closest('.km-chat__composerRow'),
+    ).toBe(composerRow);
+  });
+});
+
+// ── BLOCKER-1 fix-pass (batch-4): composer touch targets ────────────────
+
+describe('Chat — composer touch-target floor (BLOCKER-1 fix-pass, REVIEW_batch4-cst.md)', () => {
+  // jsdom/happy-dom does no layout, so the rendered box size of the round
+  // attach/send buttons can't be measured here — pin the CSS source instead,
+  // same technique as ChatFab.test.tsx's "stylesheet contract" test. Reading
+  // from disk works around vitest's `css: false` (CSS imports stub to '').
+  it('the attach trigger and send button both declare the 44px WCAG 2.5.8 floor', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Chat.css'),
+      'utf8',
+    );
+
+    const attachRule =
+      /\.km-chat\s+\.km-chat__attachTrigger\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
+      '';
+    const sendRule =
+      /\.km-chat\s+\.km-chat__sendBtn\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+
+    expect(attachRule).not.toBe('');
+    expect(sendRule).not.toBe('');
+    for (const rule of [attachRule, sendRule]) {
+      expect(rule).toMatch(/min-height:\s*44px/);
+      expect(rule).toMatch(/min-width:\s*44px/);
+    }
   });
 });

@@ -85,10 +85,24 @@ export interface WritingTopicGeneratorProps {
    * topic stays display-only inspiration there.
    */
   onUseTopic?: (topic: GeneratedWritingPrompt) => void;
+  /**
+   * Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-b, "WritingTopicGenerator
+   * double-surface"): both call sites now nest this panel inside a Seoul
+   * `tone="city"`/`CityCard` hero (Writing's AI-Prompt slot, Today's writing
+   * tile) — this component's own `.km-topicgen` background/border/shadow
+   * then reads as a flat card-within-a-card. `embedded` strips its own
+   * surface (background/border/box-shadow/padding-x) so it sits BORDERLESS
+   * inside the parent's signboard instead, same "inset content, not a
+   * second surface" idiom the app already uses elsewhere. Defaults to
+   * `false` — any future/unlisted consumer that doesn't nest this in a
+   * CityCard keeps the original standalone-panel look byte-for-byte.
+   */
+  embedded?: boolean;
 }
 
 export function WritingTopicGenerator({
   onUseTopic,
+  embedded = false,
 }: WritingTopicGeneratorProps = {}): JSX.Element {
   const [mode, setMode] = useState<WritingGenerateMode>('topik');
   const [state, setState] = useState<GenState>({ phase: 'idle' });
@@ -147,7 +161,10 @@ export function WritingTopicGenerator({
   const busy = state.phase === 'busy';
 
   return (
-    <div className="km-topicgen" aria-busy={busy || undefined}>
+    <div
+      className={cn('km-topicgen', embedded && 'km-topicgen--embedded')}
+      aria-busy={busy || undefined}
+    >
       <div className="km-topicgen__head" id={`${groupId}-label`}>
         <Icon name="spark" size={14} />
         <Bilingual en="New topic from Claude" kr="새 주제 만들기" />

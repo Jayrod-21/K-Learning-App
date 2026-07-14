@@ -561,6 +561,37 @@ describe('Writing', () => {
     ).toHaveValue('안녕하세요');
   });
 
+  it('F-163: "AI Prompt" is a top-level choice alongside Q53/Q54 — unselected by default, showing the generator only once picked', async () => {
+    await renderLoaded();
+
+    const aiPromptRadio = screen.getByRole('radio', { name: /AI Prompt/ });
+    expect(aiPromptRadio).toHaveAttribute('aria-checked', 'false');
+    // Default Q53 view is up — the generator is NOT rendered until the
+    // learner picks the "AI Prompt" chip (it is no longer an
+    // always-visible panel below the card).
+    expect(
+      screen.queryByRole('radio', { name: /TOPIK-style/ }),
+    ).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(aiPromptRadio);
+
+    expect(aiPromptRadio).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /TOPIK-style/ })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Free write/ })).toBeInTheDocument();
+    // The bank compose sheet is gone while the generator-only view is up.
+    expect(
+      screen.queryByRole('textbox', { name: /Your writing in Korean/ }),
+    ).not.toBeInTheDocument();
+
+    // Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-b): the generator sits
+    // inside this page's own CityCard hero (`km-writing__card`), so it must
+    // pass `embedded` to strip its own background/border/shadow — otherwise
+    // it renders as a flat card nested inside the signboard.
+    const generatorRoot = document.querySelector('.km-topicgen');
+    expect(generatorRoot).toHaveClass('km-topicgen--embedded');
+  });
+
   it('F-073: generates a topic on-page, adopts it via "Write this topic", and grades WITHOUT a promptId', async () => {
     generateMock.mockResolvedValue(GENERATED_TOPIK);
     gradeWritingMock.mockResolvedValueOnce({
@@ -569,6 +600,10 @@ describe('Writing', () => {
     });
     const user = userEvent.setup();
     await renderLoaded();
+
+    // F-163: "AI Prompt" is a top-level chip — select it to reach the
+    // generator (no longer an always-visible panel below the card).
+    await user.click(screen.getByRole('radio', { name: /AI Prompt/ }));
 
     // The shared generator is on the page with its TOPIK/general radiogroup.
     expect(screen.getByRole('radio', { name: /TOPIK-style/ })).toBeInTheDocument();
@@ -622,6 +657,13 @@ describe('Writing', () => {
     // The carried topic IS the task — no random bank draw happened.
     expect(await screen.findByText(/기억에 남는 여행/)).toBeInTheDocument();
     expect(fetchRandomMock).not.toHaveBeenCalled();
+    // F-163: the segmented control reflects reality on first paint — "AI
+    // Prompt" is the checked chip, since a generated topic is already the
+    // active task (never a stray unchecked-Q53-with-a-generated-body state).
+    expect(screen.getByRole('radio', { name: /AI Prompt/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
     // Honest free-write header. '자유 주제' also appears on the generator's
     // mode radio and in Bilingual's sr-only halves — AllBy. No grading-note
     // caveat anymore (056/F-117: free_write is a real rubric now).

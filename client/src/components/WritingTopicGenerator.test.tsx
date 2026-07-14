@@ -266,3 +266,18 @@ describe('WritingTopicGenerator', () => {
     expect(captured.signal?.aborted).toBe(true);
   });
 });
+
+describe('WritingTopicGenerator — embedded surface (fix-pass batch-4, REVIEW_batch4-fidelity.md gap-b)', () => {
+  it('defaults to the standalone surface (own background/border/shadow) when `embedded` is omitted', () => {
+    const { container } = render(<WritingTopicGenerator />);
+    const root = container.querySelector('.km-topicgen');
+    expect(root).not.toBeNull();
+    expect(root).not.toHaveClass('km-topicgen--embedded');
+  });
+
+  it('strips its own surface via `km-topicgen--embedded` when nested in a parent CityCard/CollapsibleTile hero', () => {
+    const { container } = render(<WritingTopicGenerator embedded />);
+    const root = container.querySelector('.km-topicgen');
+    expect(root).toHaveClass('km-topicgen', 'km-topicgen--embedded');
+  });
+});

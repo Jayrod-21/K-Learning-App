@@ -1,0 +1,81 @@
+/*
+ * LearnMenu.css — Seoul Day & Night reskin for the honeycomb launcher
+ * (F-128). Co-located per the DancheongRail.css / ShowMore.css convention.
+ *
+ * DELIBERATELY ADDITIVE ONLY: `LearnMenu`'s base geometry, honeycomb
+ * layout, entrance/exit stagger and category-hue tokens live in
+ * styles/index.css, which this batch does NOT own (four other agents are
+ * reskinning other pages against the same shared file in parallel). Every
+ * rule below either:
+ *   (a) targets a selector index.css never declares (`.km-learnmenu__hex`
+ *       has no `box-shadow` there — see below), so there is nothing to
+ *       fight in the cascade, or
+ *   (b) reasserts a property on a brand-new element/class this file owns
+ *       outright (`.km-learnmenu__backdrop`) using a two-class compound
+ *       selector so it deterministically outranks the reused
+ *       seoul-devices.css utilities it's combined with (both single-class,
+ *       otherwise an import-order-fragile tie).
+ * Nothing here touches `.km-learnmenu__hexwrap`'s `filter` (elevation +
+ * focus/current glow) or `.km-learnmenu__panel`'s layout box — those stay
+ * exactly as index.css defines them.
+ *
+ * Character devices reused from styles/seoul-devices.css (NOT redefined
+ * here): `km-giwa` (device #3, hanji-paper / signboard-grid grain — dual-
+ * themes itself), `km-rain-sheen` (device #8, Night-only wet-street sheen),
+ * `km-neon-box` / `km-neon-text` (accent-tracking glow helpers — `--glow-
+ * color` defaults to `--vermilion`, which the accent picker repoints, so
+ * this backdrop/title glow is orthogonal to the per-tile SKILL hues per
+ * F-131), `km-neon-flicker` (§7's one-time Night mount flicker, already
+ * `prefers-reduced-motion` gated at its source).
+ */
+
+/* Ambient backdrop behind the title + comb — hanji/signboard-grid grain
+ * (km-giwa) plus a Night rain-neon sheen (km-rain-sheen) and a soft accent-
+ * tracking bloom (km-neon-box). Absolutely positioned + pointer-events:none
+ * so it never intercepts taps and is NOT a flex item of
+ * `.km-learnmenu__panel` (out-of-flow children don't participate in a flex
+ * container's layout/gap), so title/comb sizing is untouched.
+ *
+ * The compound selector matters: `km-rain-sheen` sets `position: relative`
+ * on itself at (0,1,0) specificity; a plain `.km-learnmenu__backdrop { position:
+ * absolute }` would tie with it and the winner would depend on stylesheet
+ * import order. Prefixing with the `.km-learnmenu` ancestor class bumps
+ * this rule to (0,2,0), which deterministically wins regardless of order. */
+.km-learnmenu .km-learnmenu__backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Hero title glow (F-131 — accent-orthogonal): `km-neon-text`'s glow color
+ * defaults to `--vermilion`, which already re-points with the active accent
+ * everywhere else in the app, so the title glows in whichever accent is
+ * active — never a skill hue. Night only (km-neon-text no-ops in Day by
+ * design; Day's craft is the paper/ink treatment, not literal light-bloom). */
+.km-learnmenu__title.km-neon-text {
+  --glow-color: var(--vermilion-bright);
+}
+
+/* Tile surface — neon-signboard inner glow (Night) / hanji-dancheong wash
+ * (Day), keyed to each tile's own SKILL hue (`--hx-hue`, set per
+ * `.km-learnmenu__hexwrap--<hue>` in index.css — reading a custom property
+ * here has no cascade-ownership implications; it's simply inherited from
+ * whichever rule already set it on this element).
+ *
+ * `box-shadow` is a property index.css never sets on `.km-learnmenu__hex`
+ * (only `background`/`color`/`transform`/transitions), so this layers on
+ * cleanly with no override to fight. Blurred glows only — no hard-edged
+ * inset ring: a crisp ring on a clip-path hexagon only survives where the
+ * hex boundary touches the underlying rectangle (its 6 vertices) and reads
+ * as a broken/partial line everywhere else. A soft blur reads as an even
+ * inner bloom regardless of that seam. */
+.km-learnmenu .km-learnmenu__hex {
+  box-shadow:
+    inset 0 0 8px 0 color-mix(in srgb, var(--hx-hue) 22%, transparent),
+    inset 0 0 22px -6px color-mix(in srgb, var(--hx-hue) 16%, transparent);
+}
+[data-theme="dark"] .km-learnmenu .km-learnmenu__hex {
+  box-shadow:
+    inset 0 0 10px 0 color-mix(in srgb, var(--hx-hue) 55%, transparent),
+    inset 0 0 26px -4px color-mix(in srgb, var(--hx-hue) 50%, transparent);
+}

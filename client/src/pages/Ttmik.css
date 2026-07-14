@@ -1,20 +1,23 @@
 /**
  * Listen page — Phase 3C-2 additions (F-071 landing tile grid, F-072 paged
- * listings, F-024 back-control spacing). Co-located per the redesign
- * convention; the pre-3C rules the page reuses (km-review__tabs,
- * km-reference__*, km-pill) stay in styles/index.css. Everything is
- * tokenized so both themes + every accent preset come free.
+ * listings, F-024 back-control spacing) + Wave-2 F-128 reskin ("Seoul Day &
+ * Night") + F-129 (mobile) + F-131 (accent/tone-driven hover, never
+ * hard-coded). Co-located per the redesign convention; the pre-3C rules the
+ * page reuses (km-review__tabs, km-reference__*, km-pill) stay in
+ * styles/index.css. Everything below is tokenized so both themes and every
+ * accent preset come free, and every width is relative/flex — no fixed px
+ * that could clip at the ~360px mobile floor (F-129).
  */
 
-/* ── F-024 back-control row — sits above the Topbar, scrolls away ── */
-.km-ttmik__nav {
-  margin-bottom: 4px;
+/* ── Page shell (F-128: PageHubHeader owns the top chrome now) ────────── */
+.km-ttmik {
+  padding: 0 18px 32px;
 }
 
 /* ── F-071 landing: square collection tiles, 2 across, flowing down ──
  * `repeat(2, minmax(0, 1fr))` — always two equal columns that shrink with
  * the viewport (minmax(0, …) lets long tile text ellipsize instead of
- * blowing the track wide); `aspect-ratio` keeps every tile square at any
+ * blowing the track wide); each tile keeps a square aspect ratio at any
  * width. New collections simply wrap onto the next row. */
 .km-ttmik__tiles {
   display: grid;
@@ -25,7 +28,16 @@
   padding: 0;
 }
 
-.km-ttmik__tile {
+/* F-128 device #1 — CityCard supplies the signboard/hanji-paper chrome
+ * (border/shadow/glow, tokenized both themes); zero its own padding
+ * (the `CollapsibleTile` "surface=city" idiom) so the full-bleed button
+ * inside is the tile's entire hit target AND owns the square aspect
+ * ratio — CityCard itself has no fixed height, so it sizes to match. */
+.km-citycard.km-ttmik__tile {
+  padding: 0;
+}
+
+.km-ttmik__tile-btn {
   width: 100%;
   aspect-ratio: 1 / 1;
   display: flex;
@@ -34,17 +46,23 @@
   align-items: flex-start;
   gap: 10px;
   padding: 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--ink-1);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: transparent;
   color: var(--paper);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  transition: border-color 140ms;
+  transition: background-color 140ms ease;
 }
-.km-ttmik__tile:hover {
-  border-color: var(--gold);
+
+/* F-131 — hover reads off `--km-tone`, the SAME per-tile variable
+ * CityCard/DancheongRail resolve their own glow from (set by the
+ * `km-tone--blue`/`km-tone--mint` class CityCard applies) — never a
+ * hard-coded color, and always matches whichever tone this specific tile
+ * rendered in. */
+.km-ttmik__tile-btn:hover {
+  background-color: color-mix(in srgb, var(--km-tone) 10%, transparent);
 }
 
 .km-ttmik__tile-meta {
@@ -82,4 +100,39 @@
   display: flex;
   justify-content: center;
   margin-top: 12px;
+}
+
+/* ── Detail view (F-128) ─────────────────────────────────────────────── */
+
+/* The persistent player's `blue`-tone CityCard (mirrors Reading's blue
+ * Resume-callout convention) — CityCard.css supplies the surface/border/
+ * shadow/glow; this only adds the layout the player's own children need.
+ * `width: 100%` + no fixed widths anywhere below is the F-129 mobile
+ * contract — the card can only ever be as wide as its (already-clamped)
+ * parent. */
+.km-ttmik__player {
+  width: 100%;
+  margin: 12px 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* F-160 — a genuine RUNTIME playback failure (distinct from the "no audio
+ * mapped" `role="note"` empty-state, which reuses the shared
+ * `.km-reference__empty` paint unchanged). `--danger-ink` matches the app's
+ * existing error-copy color (Reading.css's `.km-reading__gen-error`). */
+.km-ttmik__audio-error {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--danger-ink);
+}
+
+/* The Highlights/Transcript/Iyagi-transcript reading surface — a CityCard
+ * (device #1) with a leading DancheongRail (device #2), mirroring Reading's
+ * `.km-reading__reader-card` treatment of its own primary text-heavy
+ * surface. Width-only layout on top of CityCard's own token-driven paint. */
+.km-ttmik__reader-card {
+  width: 100%;
 }

@@ -1,27 +1,74 @@
 /**
- * Chat — co-located styles (Phase 3D / F-033 formatting pass).
+ * Chat — co-located styles.
  *
- * Previously these rules lived inline in `styles/index.css`; they now live
- * here with the page they style. This pass also:
+ * F-128 "Seoul Day & Night" reskin (this pass) — every rule below either
+ * upgrades a literal px radius to the theme's day/squarer-vs-night/rounder
+ * radius token (`--radius-lg`, per DESIGN_SEOUL_DAY_NIGHT.md §2) so the
+ * page's silhouette actually shifts between themes, or gives a reused
+ * shared component (`Button`, `CityCard`, `PageHubHeader`, `DancheongRail`)
+ * a page-scoped visual tweak via a descendant selector — never edits the
+ * shared component's own CSS file. See the matching doc comments in
+ * Chat.tsx ("F-128 reskin" section, and the `Bubble` function) for the
+ * reasoning behind each device choice.
+ *
+ * Earlier pass (Phase 3D / F-033 formatting) history, still true below:
  *   - caps bubble width and tightens thread rhythm so long replies don't
- *     stretch full-width (the single biggest "reads like a real chat app"
- *     change);
- *   - gives the "+" attach trigger a popup menu (`.km-chat__attach*`);
- *   - adds the labeled English-toggle row (B-020, `.km-chat__engToggle*`);
- *   - adds the file-attachment chip (F-035, `.km-chat__fileChip*`);
- *   - replaces the removed dictionary row / hint chips with nothing (F-034
- *     — those rules are deleted, not migrated).
+ *     stretch full-width;
+ *   - the "+" attach trigger opens a popup menu (`.km-chat__attach*`);
+ *   - the labeled English-toggle row (B-020, `.km-chat__engToggle*`);
+ *   - the file-attachment chip (F-035, `.km-chat__fileChip*`).
  *
- * Tokens are the existing hanji/vermilion set (--paper*, --ink-*, --line*,
- * --vermilion*, --danger-ink) — no new palette introduced.
+ * No hard-coded hex anywhere in this file (F-131, grep-verified). `--ink*` =
+ * surfaces, `--paper*` = text ink, `--vermilion*`/`--on-vermilion` = the
+ * active accent + its contrast-safe "on accent" text color, per
+ * styles/index.css's palette. `--km-tone` (styles/seoul-devices.css) is the
+ * shared per-tone CSS var CityCard/DancheongRail resolve; this file reads
+ * the SAME var via the `km-tone--accent` utility class rather than
+ * re-deriving the mapping.
+ *
+ * Fix-pass batch-4 (S-2, REVIEW_batch4-cst.md): the line above previously
+ * said "tokens only," which overclaimed — two conventional un-tokenized
+ * literal-black `rgba()` values predate this pass and remain by design, not
+ * oversight: the attach-menu's drop shadow (`.km-chat__attachMenu`,
+ * `box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32)`) and the ask-popup's fixed
+ * backdrop scrim (`.km-chat__askpopBackdrop`,
+ * `background: rgba(6, 8, 12, 0.32)`). Both are theme-neutral shadow/scrim
+ * conventions (same idiom as other pages' modal scrims), not a skill/accent
+ * color, so tokenizing them would add indirection without a real day/night
+ * behavior difference. "No hex" is accurate; "tokens only" was not.
  */
 
-/* ── English-toggle row (B-020) ─────────────────────────────────────── */
+/* ── Hub header (F-128 devices #4/#2) ───────────────────────────────────
+ * `PageHubHeader` composes a fixed-height `SkylineHeader` banner — right
+ * for a landing/hub page, too tall for a chat screen where the thread's
+ * vertical budget is the whole point (F-129 mobile pass). Shrink (never
+ * remove) the banner for this page only. */
+.km-chat .km-chat__hub .km-hubheader__skyline {
+  margin-bottom: 8px;
+}
+.km-chat .km-chat__hub .km-skyline__svg {
+  height: 64px;
+}
+@media (max-width: 640px) {
+  .km-chat .km-chat__hub .km-skyline__svg {
+    height: 48px;
+  }
+}
+
+/* ── English-toggle row (B-020) — now a pill chip, matching the doc's
+   §6 "pills/badges" treatment instead of bare floating text. ──────────── */
 .km-chat__engToggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 12px 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--ink-2);
   cursor: pointer;
+}
+[data-theme="dark"] .km-chat__engToggle {
+  border-color: var(--line-strong);
 }
 .km-chat__engToggleLabel {
   color: var(--paper-mute);
@@ -35,7 +82,7 @@
   gap: 16px;
   padding: 20px 18px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--ink-1);
   min-height: 280px;
   max-height: 56vh;
@@ -43,35 +90,77 @@
 }
 .km-chat__row { display: flex; justify-content: flex-start; }
 .km-chat__row--user { justify-content: flex-end; }
+
+/* Bubble base — shape only; Day/Night fill + border/glow are per-role
+ * below, each reading `--km-tone` off the `km-tone--accent` utility class
+ * (styles/seoul-devices.css) the way CityCard/DancheongRail do. See
+ * Chat.tsx's `Bubble` doc comment for why this is the SAME formula
+ * CityCard uses rather than nesting the component per message. */
 .km-chat__bubble {
+  position: relative;
   max-width: min(78%, 560px);
   padding: 12px 16px;
-  border-radius: 12px;
-  background: var(--ink-2);
-  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
 }
+
+/* Tutor — hanji paper (Day) / dark gradient body with an INSET tone ring
+ * (Night), per the mockup's `.bub.ai`. Deliberately no outer glow (that's
+ * CityCard's hero-card language, too heavy repeated per message). */
+.km-chat__bubble--tutor {
+  background: var(--ink-1);
+  color: var(--paper);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+[data-theme="dark"] .km-chat__bubble--tutor {
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--ink-2) 88%, transparent),
+    color-mix(in srgb, var(--ink-1) 92%, transparent)
+  );
+  border: 1px solid transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--km-tone) 45%, transparent);
+}
+
+/* User — solid accent fill, per the mockup's `.bub.me`. */
 .km-chat__bubble--user {
-  background: var(--ink-3);
-  border-color: var(--line-strong);
+  background: var(--vermilion);
+  color: var(--on-vermilion);
+  border: none;
   border-bottom-right-radius: 4px;
 }
-.km-chat__bubble--tutor { border-bottom-left-radius: 4px; }
-.km-chat__bubble--failed { border-color: var(--danger-ink); }
+[data-theme="dark"] .km-chat__bubble--user {
+  background: linear-gradient(135deg, var(--vermilion), var(--vermilion-bright));
+}
+
+/* Failed send — a ring, not a border-color swap (the user bubble has no
+ * border to swap in Day, and a solid box-shadow ring reads clearly on top
+ * of either fill). */
+.km-chat__bubble--failed {
+  box-shadow: 0 0 0 2px var(--danger-ink);
+}
+
 .km-chat__role {
   margin-bottom: 4px;
-  color: var(--vermilion-ink);
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.km-chat__bubble--user .km-chat__role { color: var(--paper-mute); }
-.km-chat__text { font-size: 16px; color: var(--paper); line-height: 1.55; }
+.km-chat__bubble--tutor .km-chat__role { color: var(--vermilion-ink); }
+.km-chat__bubble--user .km-chat__role { color: var(--on-vermilion); }
+
+.km-chat__text { font-size: 16px; line-height: 1.55; }
+.km-chat__bubble--tutor .km-chat__text { color: var(--paper); }
+.km-chat__bubble--user .km-chat__text { color: var(--on-vermilion); }
+
 .km-chat__en {
   font-size: 12px;
-  color: var(--paper-mute);
   margin-top: 6px;
   font-style: italic;
 }
+.km-chat__bubble--tutor .km-chat__en { color: var(--paper-mute); }
+.km-chat__bubble--user .km-chat__en { color: var(--on-vermilion); }
+
 .km-chat__retry {
   margin-top: 6px;
   padding: 0;
@@ -82,6 +171,19 @@
   cursor: pointer;
 }
 .km-chat__retry:hover { color: var(--vermilion-ink); }
+/* F-128 contrast fix: failed rows are always role=user (a solid
+ * accent-filled bubble) — reusing `--vermilion` text there would be
+ * invisible against its own background. `--on-vermilion` + an underline
+ * carries the interactive affordance instead of a color swap that could
+ * dip under AA on hover. */
+.km-chat__bubble--user .km-chat__retry {
+  color: var(--on-vermilion);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.km-chat__bubble--user .km-chat__retry:hover {
+  text-decoration-thickness: 2px;
+}
 
 /* Image (Slice 3) + document (F-035) attachment chrome inside a bubble. */
 .km-chat__bubbleImg {
@@ -127,7 +229,7 @@
   align-items: flex-end;
   padding: 6px;
   border: 1px solid var(--line-strong);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--ink-1);
 }
 .km-chat__composerRow:focus-within { border-color: var(--vermilion); }
@@ -146,6 +248,34 @@
   outline: none;
 }
 .km-chat__textarea:focus-visible { background: var(--ink-3); }
+.km-chat__textarea::placeholder { color: var(--paper-mute); }
+
+/* "+" attach trigger — a round icon button (matches the mockup's filled
+ * circular `.plus`); the shared ghost `Button`'s soft-accent fill already
+ * reads as "presence" here, just reshaped from pill to circle.
+ *
+ * Fix-pass (batch-4 BLOCKER-1, REVIEW_batch4-cst.md): `size="md"` carries no
+ * height/width floor of its own (only `.km-btn--sm` does, index.css) — this
+ * page-scoped override's 10px padding around a 16px icon landed at exactly
+ * 36×36px, under the WCAG 2.5.8 44px floor. `min-height`/`min-width: 44px`
+ * restores the same floor `.km-btn--sm` already guarantees elsewhere,
+ * without touching the 10px padding/circular shape (the icon stays visually
+ * centered inside the now-taller hit box, same technique as `.km-btn--sm`'s
+ * own comment describes). */
+.km-chat .km-chat__attachTrigger {
+  padding: 10px;
+  border-radius: 50%;
+  min-height: 44px;
+  min-width: 44px;
+}
+/* Send — the same round-icon treatment, so the two flanking controls read
+ * as a matched pair either side of the textarea. Same BLOCKER-1 fix. */
+.km-chat .km-chat__sendBtn {
+  padding: 10px;
+  border-radius: 50%;
+  min-height: 44px;
+  min-width: 44px;
+}
 
 /* "+" attach trigger + popup menu (F-035). Positioned relative so the menu
    anchors to it; the menu opens UPWARD (the composer sits at the bottom of
@@ -161,9 +291,24 @@
   min-width: 190px;
   padding: 6px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--ink-2);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+}
+/* F-128: the same `--km-tone` mechanism CityCard/DancheongRail read
+ * (styles/seoul-devices.css's `km-tone--accent` utility, applied at the
+ * call site in Chat.tsx) — a Night tone-glow border for this popover,
+ * without duplicating CityCard's own rules into a shared file. */
+[data-theme="dark"] .km-chat__attachMenu {
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--ink-2) 85%, transparent),
+    color-mix(in srgb, var(--ink-1) 90%, transparent)
+  );
+  border: 1.5px solid color-mix(in srgb, var(--km-tone) 55%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--km-tone) 12%, transparent),
+    0 0 22px -6px color-mix(in srgb, var(--km-tone) 50%, transparent);
 }
 .km-chat__attachItem {
   display: flex;
@@ -204,7 +349,7 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--ink-1);
   overflow: hidden;
   transition: width 200ms ease;
@@ -232,30 +377,11 @@
   transition: color 140ms;
 }
 .km-chat__collapse:hover { color: var(--vermilion-ink); }
+/* F-128: the "New chat" action is now the shared ghost `Button` (Chat.tsx)
+ * — only spacing lives here, color/radius/glow come from `.km-btn--ghost`. */
 .km-chat__newChat {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   margin: 10px 8px 6px;
-  padding: 8px 6px;
-  border: 1px solid var(--vermilion);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--vermilion-ink);
-  font-family: 'Noto Sans KR', sans-serif;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  transition: background 140ms, color 140ms;
 }
-.km-chat__newChat:hover:not(:disabled) {
-  background: var(--vermilion);
-  color: var(--paper);
-}
-.km-chat__newChat:disabled { opacity: 0.55; cursor: default; }
 .km-chat__convList {
   flex: 1;
   margin: 0;
@@ -267,6 +393,8 @@
   gap: 2px;
 }
 .km-chat__convRow {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -283,10 +411,16 @@
   transition: background 140ms, color 140ms;
 }
 .km-chat__convRow:hover { background: var(--ink-2); color: var(--paper); }
+/* F-128 device #2: the current row carries a `DancheongRail` leading edge
+ * (Chat.tsx) instead of only the dot below; a tone-tinted background reads
+ * as "selected chip" rather than a flat color swap. Extra left padding
+ * keeps the dot/title clear of the rail's edge. */
 .km-chat__convRow--current {
-  background: var(--ink-3);
+  background: color-mix(in srgb, var(--vermilion) 14%, var(--ink-3));
   color: var(--paper);
+  padding-left: 12px;
 }
+.km-chat__convRail { z-index: 1; }
 .km-chat__convDot {
   flex: 0 0 auto;
   width: 6px;
@@ -335,13 +469,13 @@
 }
 .km-chat__historyError { color: var(--danger-ink); }
 
-/* "Discuss the page you were on?" popup (chat rework Slice 3) — matches
-   the ink-themed thread chrome. The backdrop makes the dialog's
-   aria-modal="true" honest for pointer users: the sidebar/thread behind
-   the offer is not clickable while it is up (clicking the scrim answers
-   No). Same fixed-inset button pattern as .km-popover__backdrop, and the
-   same 60/61 layer pair; the card itself stays in-flow (mockup placement)
-   but is lifted above the scrim. */
+/* "Discuss the page you were on?" popup (chat rework Slice 3). F-128: the
+   visible surface is now a real `CityCard` (Chat.tsx) — this wrapper only
+   positions it; `.km-chat__askpop` (the CityCard's own class combo) gets a
+   small padding tweak for the tighter popup context. Same fixed-inset
+   backdrop-button pattern as `.km-popover__backdrop`, and the same 60/61
+   layer pair; the card stays in-flow (mockup placement) but is lifted
+   above the scrim. */
 .km-chat__askpopBackdrop {
   position: fixed;
   inset: 0;
@@ -351,16 +485,13 @@
   cursor: pointer;
   animation: fade 160ms ease-out;
 }
-.km-chat__askpop {
+.km-chat__askpopWrap {
   position: relative;
   z-index: 61;
   margin: 0 0 10px;
-  padding: 14px 16px;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  background: var(--ink-2);
-  color: var(--paper);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+.km-chat__askpop.km-citycard {
+  padding: 16px 18px;
 }
 .km-chat__askpopTitle {
   font-size: 14px;

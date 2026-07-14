@@ -24,10 +24,36 @@
  *     and React 19's transition handling is fine without a portal for
  *     our single-column shell layout.
  *
+ * `tone` (fix-pass batch-4, REVIEW_batch4-fidelity.md gap-d — "the
+ * highest-value single follow-up before beta"): OPTIONAL, defaults to
+ * `undefined`, which renders the exact pre-existing flat panel byte-for-byte.
+ * Chat's attach popover uses its own `.km-popover`, not this component. Of
+ * the actual `Sheet` consumers, nine pass no `tone` at all and are therefore
+ * completely unaffected — byte-identical to pre-promotion — `ReviewGrammar`,
+ * `UploadTypeModal`, `Mistakes`, `Grammar`, `ReviewVocab`, `Review`,
+ * `MyVocabLists` (both its list-detail and create-list sheets), `Hanja`
+ * (all four of its sheets), `Reading`. Two consumers opt in this pass:
+ * `Topik`'s Study/Mock chooser (`tone="accent"`) and `Tickets`'s file-a-
+ * ticket form (`tone="plain"`) — this is an opt-in promotion per call site,
+ * not a redesign of the shared chrome. Passing a tone applies the same Night
+ * neon-signboard-edge /
+ * Day dancheong-stripe treatment `CityCard`/`DancheongRail` already use,
+ * keyed off the SAME `--km-tone` CSS var (`km-tone--<tone>` utility class,
+ * styles/seoul-devices.css) — a top-edge treatment rather than a left rail,
+ * since a bottom sheet's "leading edge" is its top (see `.km-sheet__panel
+ * .km-tone--*` rules in styles/index.css for the Day/Night specifics).
+ * `plain` (or omitting `tone` altogether) both resolve to the same quiet
+ * hairline top border in both themes — no visual difference from the
+ * pre-promotion panel — matching `CityCard`'s own "plain = no glow" contract.
+ *
  * No I/O — no threat model. `children` is caller-controlled.
  */
 import { useRef, type JSX, type ReactNode } from 'react';
 import { useModalA11y } from '../hooks/useModalA11y';
+import { cn } from '../lib/cn';
+import type { DancheongRailTone } from './DancheongRail';
+
+export type SheetTone = DancheongRailTone;
 
 export interface SheetProps {
   /** Whether the sheet is open. */
@@ -36,6 +62,13 @@ export interface SheetProps {
   onClose: () => void;
   /** Accessible name for the dialog. */
   ariaLabel: string;
+  /**
+   * Seoul Day & Night tone promotion (fix-pass batch-4) — see the module
+   * doc comment. Omit for the original flat panel (every pre-existing
+   * consumer's exact behavior); pass `'accent' | 'blue' | 'mint' | 'ochre' |
+   * 'plain'` to opt a NEW consumer into the tone-aware signboard/hanji edge.
+   */
+  tone?: SheetTone;
   /** Sheet body. */
   children: ReactNode;
 }
@@ -44,6 +77,7 @@ export function Sheet({
   open,
   onClose,
   ariaLabel,
+  tone,
   children,
 }: SheetProps): JSX.Element | null {
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -64,7 +98,10 @@ export function Sheet({
       />
       <div
         ref={panelRef}
-        className="km-sheet__panel"
+        className={cn(
+          'km-sheet__panel',
+          tone !== undefined && `km-tone--${tone}`,
+        )}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}

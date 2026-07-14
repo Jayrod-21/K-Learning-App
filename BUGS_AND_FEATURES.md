@@ -1640,6 +1640,24 @@ Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All
 
 ---
 
+## 🔎 Wave 2 follow-ups — surfaced by the LEARN batch B fix-pass (capstone)
+
+The final page-rework batch's fixpass found the app is "one batch + two files from truly one app," plus the real fix for the Listen audio.
+
+#### F-183 · Reskin MockMode.tsx (TOPIK timed-exam body) to Seoul
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design
+- **Where / State:** `MockMode.tsx` (the TOPIK timed-exam flow) is still on the legacy flat look but is reached straight from batch B's new Study/Mock chooser Sheet — the app's most jarring flat→Seoul seam mid-flow. Reskin it to the shared kit (PageHubHeader/CityCard/tokens) to match Topik.tsx.
+
+#### F-184 · Reskin Images.tsx — last legacy flat Topbar page
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** design
+- **Where / State:** `Images.tsx` is the last page in the app still using the legacy flat `Topbar` instead of the shared `PageHubHeader` + Seoul kit. Bring it onto the shared header + character devices so every page is uniform.
+
+#### F-185 · Backend/ingest: Listen (TTMIK/Iyagi) audio coverage + loader regex bug [F-160 real fix]
+- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/backend
+- **Where / State:** F-160's "missing audio" is a data/ingest gap, not a client bug (client verified correct + now has a runtime onError state). Real fixes, all in `tools/ingest/loaders/load_ttmik_audio.py`: (1) filename regex misses a `-N` suffix → 3 known real files stored as `hasAudio:false` (TTMIK lesson (3,17), (5,20), Iyagi ep 67); (2) TTMIK level 9 only 4/14 lessons mapped (10 missing); (3) Iyagi only 91/139 episodes mapped (48 missing). Likely explains most beta "missing audio" reports. Belongs in the backend batch.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>

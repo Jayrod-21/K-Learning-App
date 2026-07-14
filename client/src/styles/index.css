@@ -2547,6 +2547,51 @@ h1, h2 { font-family: var(--font-display); }
   margin: 0 auto 14px;
 }
 
+/* Sheet tone promotion (fix-pass batch-4, REVIEW_batch4-fidelity.md gap-d) —
+ * opt-in via `Sheet`'s `tone` prop (Sheet.tsx). A bottom sheet's "leading
+ * edge" is its TOP (it slides up FROM the bottom), so this is a top-border
+ * treatment rather than CityCard/DancheongRail's left rail — Day gets the
+ * fixed four-band dancheong stripe as a `border-image` (matching both
+ * mockups' `.sheet` top border exactly); Night gets a glowing `--km-tone`
+ * edge + upward bloom layered onto the existing navy shadow, never
+ * replacing it. `km-tone--plain` (and simply omitting `tone`) both resolve
+ * to the ORIGINAL flat hairline in both themes — no visual change — so
+ * every pre-existing consumer that doesn't pass `tone` is unaffected, and a
+ * consumer that explicitly opts into `plain` gets the same quiet look on
+ * purpose (CityCard's own "plain = no glow" contract). */
+.km-sheet__panel.km-tone--accent,
+.km-sheet__panel.km-tone--blue,
+.km-sheet__panel.km-tone--mint,
+.km-sheet__panel.km-tone--ochre {
+  border-top: 3px solid;
+  border-image: repeating-linear-gradient(
+      90deg,
+      var(--dan-jade) 0 12px,
+      var(--dan-verm) 12px 24px,
+      var(--dan-cobalt) 24px 36px,
+      var(--dan-ochre) 36px 48px
+    )
+    1;
+}
+.km-sheet__panel.km-tone--plain {
+  border-top: 1px solid var(--line-strong);
+}
+[data-theme="dark"] .km-sheet__panel.km-tone--accent,
+[data-theme="dark"] .km-sheet__panel.km-tone--blue,
+[data-theme="dark"] .km-sheet__panel.km-tone--mint,
+[data-theme="dark"] .km-sheet__panel.km-tone--ochre {
+  border-top: 1.5px solid color-mix(in srgb, var(--km-tone) 55%, transparent);
+  /* Layers onto (does not replace) the base panel's downward-offset navy
+   * shadow above — an upward glow in `--km-tone`, same formula CityCard's
+   * Night border-glow uses. */
+  box-shadow:
+    0 -20px 50px rgba(40, 55, 110, 0.18),
+    0 -10px 34px -8px color-mix(in srgb, var(--km-tone) 45%, transparent);
+}
+[data-theme="dark"] .km-sheet__panel.km-tone--plain {
+  border-top: 1.5px solid var(--line-strong);
+}
+
 /* Topbar ───────────────────────────────────────────────────────────── */
 .km-topbar {
   position: sticky;
@@ -2586,6 +2631,25 @@ h1, h2 { font-family: var(--font-display); }
   transition: background 160ms, border-color 160ms;
   display: inline-block;
   flex-shrink: 0;
+}
+/* Fix-pass batch-4 (Settings S-1, REVIEW_batch4-cst.md): the visible track
+ * is a deliberate compact 38×22 pill — growing `width`/`height` themselves
+ * to the WCAG 2.5.8 44px floor (as `min-width`/`min-height` would, since
+ * those win over a smaller explicit `width`/`height`) would blow up the
+ * pill's visual size, which isn't the fix anyone wants. Instead, an
+ * invisible `::before` hit-region, centered on the track and sized 44×44,
+ * expands the CLICKABLE area only — clicks anywhere in that box still
+ * target this `<button>` (pseudo-element content is part of the
+ * originating element's hit-testing, not a separate node), while the
+ * painted pill stays exactly 38×22 in both themes. */
+.km-toggle::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
 }
 .km-toggle--on {
   background: var(--moss);

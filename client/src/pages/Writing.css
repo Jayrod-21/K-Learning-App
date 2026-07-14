@@ -41,11 +41,6 @@
   margin-bottom: 12px;
 }
 
-/* The shared topic-generator panel sits under the compose card (F-073). */
-.km-writing__topicgen {
-  margin-top: 16px;
-}
-
 /* The Grade button goes aria-disabled (not `disabled`) while grading so
    keyboard focus survives the round trip; mirror the shared .km-btn:disabled
    paint so busy still LOOKS inert (same rule the topic generator carries). */
@@ -60,4 +55,41 @@
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+/* F-128 device #1 — the compose surface's hero CityCard. */
+.km-writing__card {
+  margin-bottom: 16px;
+}
+
+/* F-163 — once a generator-authored topic is adopted, the compose sheet
+   appends BELOW the still-mounted generator (so "New topic" stays reachable
+   without leaving the "AI Prompt" slot), separated by a rule. */
+.km-writing__aiprompt-compose {
+  margin-top: 14px;
+}
+
+.km-writing__aiprompt-rule {
+  margin-bottom: 14px;
+}
+
+/* F-131 — accent hover on the segmented task-type chooser. `.km-review__tab`
+   is a shared class (styles/index.css) with no hover of its own; scoped here
+   under `.km-writing` so the treatment lands on THIS page's chooser only,
+   never leaking onto every other consumer of the shared class. `--vermilion`
+   already tracks the active `[data-accent]` pick (index.css), so this is
+   accent-aware for free. */
+.km-writing .km-review__tab:hover:not(.km-review__tab--active) {
+  background: color-mix(in srgb, var(--vermilion) 14%, transparent);
+  color: var(--paper);
+}
+
+/* F-129 — mobile: F-163 grew the segmented chooser from two chips to three
+   (Q53 / Q54 / AI Prompt). The shared `.km-review__tabs` (index.css) is a
+   non-wrapping `inline-flex` — fine at two chips, but three can overflow a
+   narrow phone's width. Scoped to this page (other `.km-review__tabs`
+   consumers keep two chips and don't need it) rather than touching the
+   shared rule. */
+.km-writing .km-review__tabs {
+  flex-wrap: wrap;
 }

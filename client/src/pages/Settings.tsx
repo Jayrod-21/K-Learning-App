@@ -72,6 +72,18 @@
  *     before touching state.
  *
  * Requires `<AuthProvider/>` AND `<SettingsProvider/>` in the tree.
+ *
+ * F-128 "Seoul Day & Night" reskin: the header adopts the shared
+ * `PageHubHeader` (devices #4/#2) instead of a bare `Topbar`, and every
+ * group's `CollapsibleTile` now rides `surface="city"` (device #1 — Night
+ * neon-signboard glow / Day hanji-paper) with a per-group `DancheongRail`
+ * tone (device #2) instead of the plain `Card` shell, via `SettingsGroup`'s
+ * new `tone` prop. `.km-rain-sheen` (device #8) ambient-textures the page
+ * root; it's a Night-only no-op by its own CSS gate. Purely visual — this IS
+ * the page that owns the theme/accent/text-size CONTROLS themselves, so
+ * none of that wiring (ThemeProvider/AccentProvider/TextSizeProvider, the
+ * profile PATCH, the notification-schedule PUT, or the MFA flows above)
+ * changes here; only the JSX shell and co-located CSS do.
  */
 import {
   useCallback,
@@ -87,14 +99,15 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../components/Button';
 import { CollapsibleTile } from '../components/CollapsibleTile';
+import type { DancheongRailTone } from '../components/DancheongRail';
 import { ErrorCard } from '../components/ErrorCard';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
 import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
-import { Topbar } from '../components/Topbar';
 import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -1030,24 +1043,26 @@ export default function Settings(): JSX.Element {
 
   return (
     <section
-      className="screen km-settings"
+      className="screen km-settings km-rain-sheen"
       style={{ position: 'relative' }}
       aria-labelledby="km-settings-title"
     >
       {meQuery.isMock || prefsQuery.isMock || schedulesQuery.isMock ? (
         <MockBadge />
       ) : null}
-      <Topbar
-        krTitle="설정"
-        title="Settings"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. */}
+      <PageHubHeader
         titleId="km-settings-title"
         eyebrow={
           <Bilingual en={SETTINGS_NAV.eyebrow} kr={SETTINGS_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Settings" kr="설정" />}
       />
 
       {/* ───── Profile (server-backed) ───── */}
-      <SettingsGroup icon="user" eyebrow="프로필" title="Profile">
+      <SettingsGroup icon="user" eyebrow="프로필" title="Profile" tone="accent">
         <SettingsRow
           label="Name"
           hint="Used when the tutor addresses you in chat."
@@ -1122,6 +1137,7 @@ export default function Settings(): JSX.Element {
         eyebrow="알림"
         title="Notifications"
         mock={schedulesQuery.isMock}
+        tone="mint"
       >
         {schedulesQuery.error && schedulesQuery.data === null ? (
           // Blocking load failure → ErrorCard with a real retry (contract).
@@ -1192,6 +1208,7 @@ export default function Settings(): JSX.Element {
         eyebrow="화면 표시"
         title="Appearance"
         mock={prefsQuery.isMock}
+        tone="ochre"
       >
         <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
         {/* Text size (F-025) — drives TextSizeProvider, which stamps
@@ -1242,7 +1259,12 @@ export default function Settings(): JSX.Element {
           A more prominent global entry (e.g. a ChatFab-style FAB) is a
           follow-up — ticket F-127; this Settings tile is the F-023 entry
           point per spec. */}
-      <SettingsGroup icon="chat" eyebrow="베타 피드백" title="Beta feedback">
+      <SettingsGroup
+        icon="chat"
+        eyebrow="베타 피드백"
+        title="Beta feedback"
+        tone="plain"
+      >
         <p className="km-settings__ticket-hint">
           <Bilingual
             en="Report a bug, a concern, a suggestion, or a request — and see what other beta testers have filed."
@@ -1275,12 +1297,23 @@ export default function Settings(): JSX.Element {
  * The tile's header button carries the group's bilingual title (through the
  * `<Bilingual/>` primitive so the language-display setting applies) and the
  * disclosure a11y contract (aria-expanded/controls) comes from the primitive.
+ *
+ * F-128 reskin: `surface="city"` + `rail` (devices #1/#2) swap the old flat
+ * `Card` shell for a signboard/hanji-paper surface with a leading-edge
+ * DancheongRail — `tone` is a fixed per-group identity color (Profile=accent,
+ * 2FA=blue, Notifications=mint, Appearance=ochre, Beta feedback=plain) so the
+ * stack of groups reads as distinct sections rather than one long list, in
+ * BOTH themes. Purely decorative: `CollapsibleTile`'s header/body markup and
+ * disclosure a11y contract are unchanged by the surface swap (see its own
+ * doc comment), so this never touches the open/close wiring any group's
+ * controls sit inside.
  */
 function SettingsGroup({
   icon,
   eyebrow,
   title,
   mock = false,
+  tone = 'accent',
   children,
 }: {
   icon: IconName;
@@ -1292,11 +1325,17 @@ function SettingsGroup({
    *  server is unreachable). Renders a small 🅂 marker so the dev signal is
    *  honest at the group level, mirroring the corner MockBadge semantics. */
   mock?: boolean;
+  /** F-128 — the group's CityCard/DancheongRail identity color. Defaults to
+   *  `'accent'` (tracks the user's accent picker) for the Profile group. */
+  tone?: DancheongRailTone;
   children: ReactNode;
 }): JSX.Element {
   return (
     <CollapsibleTile
       className="km-settings__group"
+      surface="city"
+      tone={tone}
+      rail
       defaultCollapsed
       title={
         <span className="km-settings__group-head">
@@ -1406,6 +1445,7 @@ function TwoFactorSection(): JSX.Element {
       eyebrow="2단계 인증"
       title="Two-Factor Authentication"
       mock={statusQuery.isMock}
+      tone="blue"
     >
       {statusQuery.error && !statusQuery.data ? (
         <ErrorCard

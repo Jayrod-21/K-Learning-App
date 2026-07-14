@@ -667,6 +667,82 @@ describe('Topik (Study mode)', () => {
     ).not.toBeInTheDocument();
   });
 
+  // ── F-159: Study/Mock chooser popup ─────────────────────────────────────
+
+  it('F-159: a fresh visit shows the Study/Mock chooser dialog, with both flows still reachable underneath', () => {
+    setDraw([ITEM_A, ITEM_B]);
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    expect(
+      screen.getByRole('dialog', { name: 'Choose Study or Mock' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Study/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Mock/ })).toBeInTheDocument();
+    // The Study landing is ALREADY populated underneath the popup — the
+    // chooser is a gate, not a replacement for the page's own content.
+    expect(screen.getByText('이 글의 내용과 같은 것은?')).toBeInTheDocument();
+  });
+
+  it('F-159: picking Study in the chooser dismisses it and leaves the Study tab selected', async () => {
+    setDraw([ITEM_A, ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Study/ }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /study/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('F-159: picking Mock in the chooser dismisses it and switches the page to Mock mode', async () => {
+    setDraw([ITEM_A, ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.click(screen.getByRole('button', { name: /Mock/ }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /mock/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(
+      screen.getByRole('button', { name: /Reading mock exams/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('F-159: Esc dismisses the chooser without forcing a mode — Study stays the default underneath', async () => {
+    setDraw([ITEM_A, ITEM_B]);
+    const user = userEvent.setup();
+    render(<Topik />, { wrapper: MemoryRouter });
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /study/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('F-159: a deep link that already names an explicit mode skips the chooser', () => {
+    setDraw([ITEM_A, ITEM_B]);
+    render(
+      <MemoryRouter initialEntries={['/learn/topik?mode=mock']}>
+        <Topik />
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /mock/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
   it('renders an error state with a retry when the draw fails and is empty', () => {
     hookState.current = {
       data: [],

@@ -482,6 +482,7 @@ export function Today(): JSX.Element {
           }
         >
           <WritingTopicGenerator
+            embedded
             onUseTopic={(topic) => {
               navigate('/learn/writing', { state: { generatedTopic: topic } });
             }}
