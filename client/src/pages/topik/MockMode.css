@@ -1,8 +1,21 @@
 /**
  * MockMode.css — Phase 3C-2 additions co-located with MockMode.tsx.
  * Base .km-mock layout lives in styles/index.css (untouched); this file
- * styles only the new F-079 chooser / start-page screens and the F-080
- * audio-gap note. Tokenized for both themes.
+ * styles only the new F-079 chooser / start-page screens, the F-080
+ * audio-gap note, and the F-183 "Seoul Day & Night" character-device
+ * treatment (CityCard-hosted section/chooser/start/exam surfaces). Fully
+ * tokenized for both themes and every accent preset — never a hard-coded
+ * hex, matching Topik.css's own reskin.
+ *
+ * F-183: the old flat `.km-mock__section` card look (styles/index.css,
+ * `~L2876`) is no longer rendered by this file's markup — every section/
+ * chooser tile is now a `CityCard` (device #1/#2) hosting a full-bleed,
+ * borderless inner button (`.km-mock__section-btn`, below). That leaves
+ * `.km-mock__section`/`.km-mock__section:hover`/`.km-mock__section--disabled`
+ * in styles/index.css unreferenced by this page — index.css is a shared
+ * file out of this pass's edit scope (Diagnostic/Images are being reskinned
+ * in parallel against the same file), so the dead rules are left in place
+ * rather than risk a cross-page edit; flagged as a follow-up cleanup.
  */
 
 /* ── F-079 exam chooser ──────────────────────────────────────── */
@@ -11,12 +24,23 @@
   margin: 14px 0 10px;
 }
 
+/* F-183: the chooser tiles (recommended entry + each past paper) are now
+   CityCard-hosted (device #1/#2) — zero the card's own padding so the
+   full-bleed inner button owns the hit target, the same two-class-
+   specificity override Topik.css uses for its own chooser cards. */
 .km-mock__chooser-card {
   width: 100%;
   margin-bottom: 14px;
 }
+.km-citycard.km-mock__chooser-card {
+  padding: 0;
+  overflow: hidden;
+}
 
-/* Honest pending blocks (chooser list, start-page previous attempts). */
+/* Honest pending blocks (chooser list, start-page previous attempts). Now
+   CityCard-hosted too (F-183) — the citycard rule zeroes the outer
+   shadow/border double-up the plain-Card version didn't have to worry
+   about; kept minimal since CityCard already supplies padding/surface. */
 .km-mock__pending {
   margin-bottom: 14px;
 }
@@ -54,4 +78,102 @@
   color: var(--paper-mute);
   font-size: 0.85rem;
   line-height: 1.5;
+}
+
+/* ── F-183 device #1/#2 — section-select cards ───────────────── */
+/* The CityCard host: zero its own padding/overflow so the borderless inner
+   button (`.km-mock__section-btn`) is the full-bleed hit target, exactly
+   like the exam-chooser tiles above. */
+.km-citycard.km-mock__section-card {
+  padding: 0;
+  overflow: hidden;
+}
+/* The deferred Writing card gets no rail (`rail={false}` in MockMode.tsx)
+   and reads visibly inert — a touch of extra fade on top of the inner
+   button's own disabled-opacity rule below. */
+.km-mock__section-card--disabled {
+  opacity: 0.82;
+}
+
+/* The borderless, full-bleed inner button every section/chooser CityCard
+   hosts — the CARD supplies the surface (signboard/hanji paper + rail),
+   this button supplies only the layout + the click target. Mirrors
+   Topik.css's `.km-topik__chooser-opt` treatment exactly. */
+.km-mock__section-btn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 20px 22px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+  border-radius: var(--radius-lg);
+  transition: background 140ms;
+}
+.km-mock__section-btn:disabled {
+  cursor: not-allowed;
+}
+/* F-131 accent-aware hover — `--km-tone` is set by the hosting CityCard's
+   `km-tone--*` class (styles/seoul-devices.css), so a Reading tile hovers
+   in the accent family while a Listening tile hovers in its fixed blue,
+   never a one-size-fits-all vermilion tint. */
+.km-mock__section-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--km-tone) 10%, transparent);
+}
+
+/* ── F-183 device #1/#2 — start-page CityCards ───────────────── */
+.km-mock__start-level {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--paper-mute);
+}
+
+/* ── F-183 device #5 — ExamRunner's SubwayProgress row ───────── */
+.km-mock__subwaywrap {
+  margin-bottom: 10px;
+}
+
+/* ── F-183 device #1/#2 — the live exam item's hero CityCard ─── */
+.km-mock__examcard {
+  margin-bottom: 4px;
+}
+
+/* ── F-183 device #7 — the "test complete" milestone stamp ───── */
+.km-mock__milestone {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+/* F-131 accent hover on the question-navigator palette cells — mirrors the
+   Topik.css treatment for its own interactive grids/choices. `--vermilion`
+   tracks the active `[data-accent]` pick (index.css), so this is
+   accent-aware for free; the cell's own answered/current state colors
+   (styles/index.css) still win when set. */
+.km-mock .km-mock__palette-cell:hover {
+  border-color: var(--vermilion);
+}
+
+/* F-129 mobile — a timed exam must never force horizontal overflow on a
+   narrow phone: let the Timed pill / clock wrap onto their own line instead
+   of squeezing, and let the exam nav row wrap its three cells rather than
+   clipping the Prev/Next labels. */
+@media (max-width: 380px) {
+  .km-mock__exam-head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .km-mock__nav {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .km-mock__section-btn {
+    padding: 16px 18px;
+  }
 }

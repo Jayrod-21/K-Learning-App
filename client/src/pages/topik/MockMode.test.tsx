@@ -1591,6 +1591,116 @@ describe('MockMode (Mock test)', () => {
       expect(screen.getByText('셋').closest('.km-bilingual')).toBeNull();
     });
   });
+
+  describe('F-183 "Seoul Day & Night" reskin', () => {
+    it('renders each section pick as a CityCard signboard/hanji-paper tile, toned per section (devices #1/#2)', () => {
+      render(<MockMode />, { wrapper: MemoryRouter });
+      const reading = screen.getByRole('button', { name: /Reading mock exams/i });
+      const listening = screen.getByRole('button', { name: /Listening mock exams/i });
+      // Reading tracks the global accent picker; Listening pins to a fixed
+      // blue regardless of it (sectionTone) — distinct tiles, not one flat
+      // reused card.
+      expect(reading.closest('.km-citycard')).toHaveClass('km-tone--accent');
+      expect(listening.closest('.km-citycard')).toHaveClass('km-tone--blue');
+    });
+
+    it('the root carries the ambient rain-sheen (device #8, Night-only per its own CSS gate)', () => {
+      const { container } = render(<MockMode />, { wrapper: MemoryRouter });
+      expect(container.querySelector('.km-mock')).toHaveClass('km-rain-sheen');
+    });
+
+    it('renders the running exam with a SubwayProgress alongside the jump-grid palette (device #5) — real navigation, not decoration', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Reading');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      const progress = screen.getByRole('progressbar', {
+        name: /Reading progress/i,
+      });
+      expect(progress).toHaveAttribute('aria-valuenow', '1');
+      expect(progress).toHaveAttribute('aria-valuemax', '2');
+      // The jump-grid palette still renders alongside it — the subway line
+      // is a supplementary at-a-glance readout, never a replacement for the
+      // richer per-item answered/current jump grid (regression guard).
+      expect(
+        screen.getByRole('group', { name: 'Question navigator' }),
+      ).toBeInTheDocument();
+
+      // Jumping via the palette moves the subway line too — real state, not
+      // a static decoration painted once at mount.
+      await user.click(screen.getByRole('button', { name: /Question 2/i }));
+      expect(progress).toHaveAttribute('aria-valuenow', '2');
+    });
+
+    it('wraps the live exam item (meta/prompt/choices/nav/submit) in one CityCard hero surface (devices #1/#2)', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Reading');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      const prompt = screen.getByText('첫 번째 문제입니다.');
+      const heroCard = prompt.closest('.km-citycard');
+      expect(heroCard).not.toBeNull();
+      // The Submit button lives inside the SAME hero card as the prompt —
+      // structural parity with Study mode's TopikBody treatment in
+      // Topik.tsx, where meta/prompt/choices/footer share one CityCard.
+      const submit = screen.getByRole('button', { name: /Submit test/i });
+      expect(submit.closest('.km-citycard')).toBe(heroCard);
+    });
+
+    it('marks a finished exam with the milestone SealStamp before the shared results screen (device #7)', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await driveToResults(user);
+      // Compact Bilingual pairs render both a visible label and an sr-only
+      // echo, hence getAllByText (matches this file's existing convention
+      // for compact-pair assertions).
+      expect(screen.getAllByText('시험 완료').length).toBeGreaterThan(0);
+    });
+
+    it('the score panel is a feat CityCard hero, not the old flat card (devices #1/#2)', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await driveToResults(user);
+      const scoreCard = screen.getByText('L3 range').closest('.km-citycard');
+      expect(scoreCard).not.toBeNull();
+      expect(scoreCard).toHaveClass('km-citycard--feat');
+    });
+
+    it('the honest-empty past-papers list carries the giwa/watermark texture (devices #3/#6), never fabricated data', async () => {
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+      const empty = await screen.findByText(
+        /No past papers are available for this section yet/i,
+      );
+      const card = empty.closest('.km-giwa');
+      expect(card).not.toBeNull();
+      expect(card).toHaveClass('km-hangul-watermark');
+      expect(card).toHaveAttribute('data-glyph', '기출');
+    });
+
+    it('a mobile-width exam head/nav row is allowed to wrap instead of clipping (F-129, no forced single-line overflow)', async () => {
+      // jsdom/happy-dom don't lay out CSS, so this asserts the structural
+      // hook the F-129 media query (MockMode.css, max-width: 380px) keys
+      // off of — the SAME `.km-mock__exam-head`/`.km-mock__nav` elements the
+      // rest of this suite already exercises — rather than a flaky pixel
+      // measurement.
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await startExam(user, 'Reading');
+      await waitFor(() => {
+        expect(screen.getByRole('timer')).toBeInTheDocument();
+      });
+      expect(document.querySelector('.km-mock__exam-head')).toBeInTheDocument();
+      expect(document.querySelector('.km-mock__nav')).toBeInTheDocument();
+    });
+  });
 });
 
 afterEach(() => {

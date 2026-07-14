@@ -332,6 +332,29 @@ describe('Diagnostic', () => {
     expect(screen.queryByText('Skills snapshot')).not.toBeInTheDocument();
   });
 
+  it('F-128: the root carries the Seoul rain-sheen and Intro adopts the CityCard/hub-header kit', () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    const { container } = renderWithRouter();
+    // Device #8 ambient overlay on the page root.
+    expect(container.querySelector('.km-rain-sheen')).not.toBeNull();
+    // Devices #1/#2 — the section list is a CityCard signboard/hanji-paper
+    // surface with a leading DancheongRail, not the old plain Card.
+    expect(container.querySelector('.km-diagnostic__sections.km-citycard')).not.toBeNull();
+    expect(
+      container.querySelector('.km-diagnostic__sections .km-dancheong-rail'),
+    ).not.toBeNull();
+    // Devices #4/#2 — the shared PageHubHeader recipe (skyline + rail
+    // divider) replaced the old bare `<h1>` + eyebrow pair.
+    expect(container.querySelector('.km-hubheader')).not.toBeNull();
+    // The old custom header class is gone.
+    expect(container.querySelector('.km-diagnostic__display')).toBeNull();
+  });
+
   it('F-011: the intro advertises the real 16-item / 4-per-section test shape', () => {
     // The server serves ITEMS_PER_DIMENSION = 4 → a 16-item schedule
     // (server/src/routes/diagnostic.ts), and the taking-screen progress bar
@@ -394,16 +417,67 @@ describe('Diagnostic', () => {
     expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
     // P3b: the results chrome is bilingual (Korean segments present).
     expect(screen.getByText('실력 요약')).toBeInTheDocument();
-    expect(screen.getByText('다음 단계')).toBeInTheDocument();
     // P3b consistency: the sub-line names the band 신뢰 구간 — the same term
     // as the SkillsCompare legend on this screen (bare 띠 is retired).
     expect(
       screen.getByText(/신뢰 구간은 각 결과의 신뢰도를 보여 줘요/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/띠는/)).not.toBeInTheDocument();
+    // F-143: retake is the only surviving CTA (see the dedicated test below
+    // for the full "Begin today's plan" / goals-card removal assertions).
     expect(
-      screen.getByRole('button', { name: /begin today/i }),
+      screen.getByRole('button', { name: /re-test diagnostic/i }),
     ).toBeInTheDocument();
+  });
+
+  it('F-143: removes the "Begin today\'s plan" CTA and the "gaps / next steps" card from Results', () => {
+    hookState.snapshot = {
+      data: POPULATED_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    renderWithRouter();
+    // The results screen still renders (scores, section breakdown intact)…
+    expect(screen.getByText('Skills snapshot')).toBeInTheDocument();
+    expect(screen.getByText('실력 요약')).toBeInTheDocument();
+    // …but neither removed block renders anywhere on the screen.
+    expect(
+      screen.queryByRole('button', { name: /begin today/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/begin today.s plan/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('오늘의 계획 시작')).not.toBeInTheDocument();
+    expect(screen.queryByText('다음 단계')).not.toBeInTheDocument();
+    expect(screen.queryByText('Next steps')).not.toBeInTheDocument();
+    expect(screen.queryByText('Derived from your gaps')).not.toBeInTheDocument();
+    expect(screen.queryByText('약점 기반')).not.toBeInTheDocument();
+    // The POPULATED_SNAPSHOT fixture's actual goal text must not leak through.
+    expect(screen.queryByText('Drill -더라도 daily.')).not.toBeInTheDocument();
+    // The retake action is the only remaining CTA.
+    expect(
+      screen.getByRole('button', { name: /re-test diagnostic/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('F-128: Results adopts the hub-header + CityCard kit', () => {
+    hookState.snapshot = {
+      data: POPULATED_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: false,
+    };
+    const { container } = renderWithRouter();
+    // Devices #4/#2 — the shared PageHubHeader recipe.
+    expect(container.querySelector('.km-hubheader')).not.toBeNull();
+    // Devices #1/#2 — the skills card is a CityCard signboard/hanji-paper
+    // surface with a leading DancheongRail, not the old plain Card.
+    expect(
+      container.querySelector('.km-diagnostic__skills-card.km-citycard'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('.km-diagnostic__skills-card .km-dancheong-rail'),
+    ).not.toBeNull();
+    expect(container.querySelector('.km-diagnostic__results-title')).toBeNull();
   });
 
   it('F-002: results render TOPIK 1 / TOPIK 2 reference options for a beginner placement', () => {
@@ -487,6 +561,40 @@ describe('Diagnostic', () => {
     expect(screen.getByText('L2')).toBeInTheDocument();
   });
 
+  it('F-128: the taking screen adopts the CityCard hero surface + SubwayProgress', async () => {
+    hookState.snapshot = {
+      data: EMPTY_SNAPSHOT,
+      loading: false,
+      error: null,
+      isMock: true,
+    };
+    startDiagnostic.mockResolvedValue({
+      runId: 41,
+      item: ITEM_1,
+      progress: { ordinal: 1, total: 2 },
+    });
+
+    const user = userEvent.setup();
+    const { container } = renderWithRouter();
+    await user.click(screen.getByRole('button', { name: /begin test/i }));
+    await screen.findByText(ITEM_1.prompt);
+
+    // Device #5 — the subway-line progress metaphor alongside the numeric
+    // "N / M" readout (the readout stays, per the design doc precedent).
+    expect(
+      screen.getByRole('progressbar', { name: /diagnostic progress/i }),
+    ).toBeInTheDocument();
+    expect(container.querySelector('.km-subway')).not.toBeNull();
+    // Devices #1/#2 — the live item card is a CityCard signboard/hanji-paper
+    // surface with a leading DancheongRail, not a bare fragment.
+    expect(container.querySelector('.km-diagnostic__card.km-citycard')).not.toBeNull();
+    expect(
+      container.querySelector('.km-diagnostic__card .km-dancheong-rail'),
+    ).not.toBeNull();
+    // The old manual progress-bar div is gone.
+    expect(container.querySelector('.km-diagnostic__progress-fill')).toBeNull();
+  });
+
   it('F-011: results show the honest placement disclaimer — no "Level 4" or fake timestamp', () => {
     hookState.snapshot = {
       data: POPULATED_SNAPSHOT,
@@ -563,7 +671,7 @@ describe('Diagnostic', () => {
     finishDiagnostic.mockResolvedValue({ snapshot: POPULATED_SNAPSHOT });
 
     const user = userEvent.setup();
-    renderWithRouter();
+    const { container } = renderWithRouter();
 
     // ── intro ──
     await user.click(screen.getByRole('button', { name: /begin test/i }));
@@ -619,6 +727,9 @@ describe('Diagnostic', () => {
     await user.click(screen.getByRole('button', { name: /see results/i }));
     expect(finishDiagnostic).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Diagnostic complete')).toBeInTheDocument();
+    // F-128 device #7 — the Done screen's completion glyph is the
+    // hand-stamped milestone look, not the plain upright badge.
+    expect(container.querySelector('.km-seal--milestone')).not.toBeNull();
     // P3b trim: the done view's Korean lives on the bilingual title itself —
     // exactly once (the redundant eyebrow twin is gone).
     expect(screen.getAllByText('진단평가 완료')).toHaveLength(1);
