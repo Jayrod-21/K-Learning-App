@@ -673,6 +673,50 @@ describe('ReviewVocab — add a corpus word to a list (F-048)', () => {
     });
   });
 
+  // BLOCKER fix-pass (`REVIEW_mobile-today-vocab.md`) — the "My Lists" tile
+  // on this same page already had a proof test for a mixed-kind server
+  // response (see the F-144 describe block above); this sheet is the
+  // SECOND, independently-fetching surface the reviewer found still leaked
+  // grammar, and no existing test ever opened it with a mixed-kind
+  // response. This is that missing test.
+  it('never offers a grammar-kind list as an add-to-list pick target, even when the server returns a mixed-kind response (root cause: AddToListSheet fetched listLists() with no kind filter at all)', async () => {
+    vocabSvc.listLists.mockResolvedValue([
+      SERVER_LIST,
+      {
+        id: 42,
+        name_kr: '중급 문법',
+        name_en: 'Intermediate grammar',
+        kind: 'grammar',
+        version: 1,
+        entry_count: 6,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+
+    await user.click(screen.getByRole('button', { name: /Add 영향 to a list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add to a list' });
+
+    // The vocab list is a legitimate pick target...
+    expect(
+      within(dialog).getByRole('button', { name: /병원 어휘/ }),
+    ).toBeInTheDocument();
+    // ...but the grammar-kind list must never render as one, by name or by
+    // any button role.
+    expect(within(dialog).queryByText('중급 문법')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Intermediate grammar')).not.toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: /중급 문법/ }),
+    ).not.toBeInTheDocument();
+
+    // Confirms the server was actually ASKED to narrow the fetch, not just
+    // filtered client-side after an unscoped call (S-1's preferred fix).
+    expect(vocabSvc.listLists).toHaveBeenCalledWith({ kind: 'vocab' });
+  });
+
   it('creates a NEW list from the picker, seeded with the tapped word', async () => {
     const user = userEvent.setup();
     renderPage();

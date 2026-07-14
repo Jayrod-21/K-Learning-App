@@ -113,11 +113,27 @@ export function MyVocabLists({
   const [createOpen, setCreateOpen] = useState(false);
   const [openList, setOpenList] = useState<ServerVocabList | null>(null);
 
+  // Server-side narrowing (S-1 follow-up, `REVIEW_mobile-today-vocab.md`):
+  // a single-kind mount (the only shape any real consumer uses today — the
+  // Vocab page's `kinds={['vocab']}`) can ask the server's own `?kind=`
+  // filter (`vocabService.listLists`'s doc comment) for just that kind,
+  // instead of always fetching every kind and relying solely on
+  // `visibleLists` below. This is a primitive string derived from `kinds`,
+  // NOT the `kinds` array itself, deliberately: `kinds` is typically a fresh
+  // array literal from the caller on every render (see `ReviewVocab.tsx`'s
+  // `kinds={['vocab']}`), so putting the ARRAY in `load`'s deps would churn
+  // `load`'s identity every render and — via the mount effect below — refire
+  // the network fetch every render. `serverKind` is a plain string (or
+  // `undefined`), which React's `Object.is` dep comparison treats as stable
+  // across renders as long as the actual requested kind hasn't changed, so
+  // `load` stays referentially stable exactly like before this change.
+  const serverKind = kinds.length === 1 ? kinds[0] : undefined;
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     vocabService
-      .listLists()
+      .listLists(serverKind !== undefined ? { kind: serverKind } : undefined)
       .then((rows) => {
         setLists(rows);
         setLoading(false);
@@ -126,7 +142,7 @@ export function MyVocabLists({
         setError(errorMessageFor(err, 'Could not load lists.'));
         setLoading(false);
       });
-  }, []);
+  }, [serverKind]);
 
   useEffect(() => {
     // Sync-to-external-system (a network fetch) — the same kickoff-fetch
@@ -175,12 +191,14 @@ export function MyVocabLists({
   // ROOT CAUSE FIX (see this file's header doc) — `kinds` must scope what
   // renders here, not just what a NEW list can be created as. Filtered at
   // render time off the current `kinds` prop (not inside `load`'s
-  // useCallback) so this never needs `kinds` in a hook dependency array:
-  // `load`'s identity must stay stable across renders (its own doc comment
-  // above explains why — a new identity re-runs the Sheet's focus-restoring
-  // effect on every keystroke), and `kinds` is typically a fresh array
-  // literal from the caller on every render, so putting it in `load`'s deps
-  // would make `load` churn identity too.
+  // useCallback) so this never needs the `kinds` ARRAY in a hook dependency
+  // array (see `serverKind` above for why that matters for `load`'s
+  // identity). Now that `load` also asks the server to narrow by
+  // `serverKind` when there's exactly one kind, this client-side filter is
+  // defense-in-depth rather than the only guard: it still does real work for
+  // a multi-kind mount (the `ALL_KINDS` default, where there's no single
+  // `serverKind` to send) and as a backstop if the server ever returned a
+  // kind outside what was asked for.
   const visibleLists = lists.filter((l) => kinds.includes(l.kind));
 
   return (

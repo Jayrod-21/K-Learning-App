@@ -704,11 +704,26 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
     ctrlRef.current = ctrl;
     setLoading(true);
     setError(null);
+    // BLOCKER fix (`REVIEW_mobile-today-vocab.md`) — this sheet is a
+    // vocab-only picker (it seeds a vocab entry into a list, `add`/
+    // `createAndAdd` below), but `listLists()` used to fetch every kind,
+    // unfiltered, so a pre-existing grammar-kind list rendered here as a
+    // legitimate pick target. `kind: 'vocab'` asks the server's own
+    // `?kind=` filter (`vocabService.listLists`'s doc comment) to narrow
+    // this the same way `MyVocabLists`'s "My Lists" tile on this same page
+    // already does — the create flow below already hardcoded `kind:
+    // 'vocab'` for what a NEW list becomes; this is the matching fix for
+    // the list this sheet DISPLAYS.
     vocabService
-      .listLists()
+      .listLists({ kind: 'vocab' })
       .then((rows) => {
         if (ctrl.signal.aborted) return;
-        setLists(rows);
+        // Belt-and-suspenders, mirroring `MyVocabLists.tsx`'s `visibleLists`:
+        // the server-side `kind` filter above is the real fix, but a second,
+        // cheap client-side filter means a server that ever ignored the
+        // param (a regression, a proxy that drops query strings, etc.)
+        // still can't put a non-vocab list in front of this picker.
+        setLists(rows.filter((l) => l.kind === 'vocab'));
         setLoading(false);
       })
       .catch((err: unknown) => {

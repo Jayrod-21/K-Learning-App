@@ -1446,11 +1446,23 @@ function ExamRunner({
   // useModalA11y so it meets the same modal a11y bar as Sheet / WordPopover
   // (initial focus in, Esc to dismiss, focus restored on close).
   const confirmRef = useRef<HTMLDivElement>(null);
+  // SHOULD-FIX (`REVIEW_mobile-touch.md`) — `onClose` MUST be a stable
+  // reference, not a fresh inline arrow. `useModalA11y`'s effect deps
+  // include `onClose` (`hooks/useModalA11y.ts`), and this component runs a
+  // 1-second exam countdown (`setRemaining` below) that re-renders
+  // `ExamRunner` every tick — including while this alertdialog is open,
+  // since nothing pauses the timer for the confirm step. An inline arrow
+  // here would retrigger the effect on every tick, each time re-capturing
+  // "the element focused right now" as the restore target and queuing a
+  // stale refocus — thrashing focus in/out of the open dialog once a
+  // second. Matches the pattern `Tickets.tsx`/`MyVocabLists.tsx` already
+  // document for the same hook.
+  const closeConfirm = useCallback(() => {
+    setConfirming(false);
+  }, []);
   useModalA11y({
     open: confirming,
-    onClose: () => {
-      setConfirming(false);
-    },
+    onClose: closeConfirm,
     containerRef: confirmRef,
   });
 

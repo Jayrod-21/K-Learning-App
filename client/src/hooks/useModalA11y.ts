@@ -75,7 +75,24 @@ import { useEffect, type RefObject } from 'react';
 let scrollLockCount = 0;
 let scrollLockBaselineOverflow = '';
 
-/** Acquire the shared body-scroll lock. Call once per modal open-edge. */
+/**
+ * Acquire the shared body-scroll lock. Call once per modal open-edge.
+ *
+ * SF-1 (`REVIEW_mobile-capstone.md`) — this lock's correctness rests on an
+ * UNSTATED invariant: `document.body` must actually be the page's document
+ * scroller, so that `document.body.style.overflow = 'hidden'` genuinely
+ * stops the page from scrolling. That holds today because the shell uses a
+ * `min-height` chain (`html, body, #root { min-height: 100vh }`,
+ * `.km-shell { min-height: 100dvh }`), not a fixed `height`, so
+ * `.km-shell__scroll`'s own `overflow-y: auto` never actually bounds a
+ * shorter box than the content — the min-height chain grows with content
+ * and body remains the real scroller. If a future layout change ever gives
+ * `.km-shell__scroll` (or any ancestor) a fixed/`100dvh` HEIGHT instead of a
+ * min-height, that element — not body — would become the document
+ * scroller, and this lock would silently stop doing anything (no error, no
+ * failing test — jsdom can't see real scroll geometry either). Revisit this
+ * function if that ever changes.
+ */
 function acquireScrollLock(): void {
   if (scrollLockCount === 0) {
     scrollLockBaselineOverflow = document.body.style.overflow;

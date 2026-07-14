@@ -245,12 +245,20 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     // The vocab-kind row renders as before…
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
     // …but the grammar-kind row the server returned is filtered out of the
-    // render entirely — not just unreachable via the create form.
+    // render entirely — not just unreachable via the create form. (In a
+    // real deployment the server-side `?kind=` filter below would have
+    // excluded it already; this mock proves the client-side `visibleLists`
+    // backstop also holds on its own, e.g. against a server/proxy that
+    // ignored the param.)
     expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
     expect(screen.queryByText('Intermediate grammar')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /중급 문법/ }),
     ).not.toBeInTheDocument();
+
+    // S-1 follow-up — a single-kind mount now asks the SERVER to narrow the
+    // fetch too, not just filtering client-side after an unscoped call.
+    expect(vocabSvc.listLists).toHaveBeenCalledWith({ kind: 'vocab' });
   });
 
   it('shows the honest empty invitation when the server has lists but none match this mount\'s kinds', async () => {
