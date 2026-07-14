@@ -188,7 +188,6 @@
   --font-display: 'Nunito', ui-rounded, 'Segoe UI', system-ui, sans-serif;
 
   /* Reusable layout constants — unchanged. */
-  --shell-statusbar-h: 54px;
   --shell-bottomnav-h: 64px;
   --shell-max-width:   480px;
 }
@@ -1013,8 +1012,20 @@ h1, h2 { font-family: var(--font-display); }
   .km-shell { border-left: none; border-right: none; }
 }
 .km-shell__statusbar {
+  /* Safe-area allowance ONLY — no decorative floor. A fixed minimum here
+   * (the old `max(54px, env(...))`) forced a permanent ~54px blank bar
+   * above every page's header on any device/browser that reports
+   * `env(safe-area-inset-top)` as 0 (virtually all Android phones, older
+   * notch-less iPhones, and every desktop browser), because `max()` always
+   * wins with the floor when the inset is smaller than it. Clearing the
+   * status bar / notch only needs the REAL inset — 0 where there is no
+   * notch, so the SkylineHeader sits flush at the very top there, and
+   * exactly the safe-area height on notched devices (never drawn under the
+   * notch). Unsupported `env()` resolves to its `0px` fallback, which is
+   * the correct flush behavior too.
+   */
   flex-shrink: 0;
-  height: max(var(--shell-statusbar-h), env(safe-area-inset-top));
+  height: env(safe-area-inset-top, 0px);
 }
 .km-shell__scroll {
   flex: 1;

@@ -13,13 +13,20 @@
  * control (honestly disabled — no U2 backend exists), the F-024 back
  * control (guarded deep-link fallback → /uploads), the reorder tool (load
  * current order, move-to-N, optimistic update, PATCH call,
- * rollback-on-failure), and abort-on-unmount for every network call this
- * component makes directly.
+ * rollback-on-failure), abort-on-unmount for every network call this
+ * component makes directly, the F-155 swipe-to-turn-page gesture (mouse/pen
+ * via Pointer Events, touch via real `touchstart`/`touchmove`/`touchend`/
+ * `touchcancel` listeners — module header §"F-155 second real-device fix"),
+ * and the bottom-pager relocation (Prev/Next + the page-N-of-M readout now
+ * live under the page image, not the top toolbar).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { ToastProvider } from '../components/ToastProvider';
 import { ApiError } from '../services/api';
 import type { BookUpload, Page } from '../types/domain';
@@ -135,6 +142,64 @@ function swipeRight(el: HTMLElement, pointerId = 7): void {
   fireEvent.pointerUp(el, {
     pointerId, isPrimary: true, clientX: 200, clientY: 55,
   });
+}
+
+/**
+ * A single mock `Touch` for `fireEvent.touchStart/Move/End`'s `touches`/
+ * `changedTouches` arrays — happy-dom's `TouchEvent` (module header
+ * §"F-155 second real-device fix") stores whatever plain object is handed
+ * to it verbatim, so a duck-typed `{ identifier, clientX, clientY }`
+ * matches `Touch` exactly as far as `touchById` (component) reads it.
+ */
+function touch(identifier: number, clientX: number, clientY: number): object {
+  return { identifier, clientX, clientY };
+}
+
+/**
+ * A full native-touch leftward swipe (120px, past the 48px threshold
+ * floor) — the REAL device event family (module header §"F-155 second
+ * real-device fix"): `touchstart`/`touchmove`/`touchend`, not Pointer
+ * Events. Mirrors `swipeLeft` above sample-for-sample.
+ */
+function touchSwipeLeft(el: HTMLElement, identifier = 40): void {
+  fireEvent.touchStart(el, { touches: [touch(identifier, 200, 50)] });
+  fireEvent.touchMove(el, { touches: [touch(identifier, 140, 52)] });
+  fireEvent.touchMove(el, { touches: [touch(identifier, 80, 55)] });
+  fireEvent.touchEnd(el, { changedTouches: [touch(identifier, 80, 55)] });
+}
+
+/**
+ * happy-dom quirk (verified directly): the `EventTarget` global visible to
+ * test code is Node's own built-in class, NOT the internal base class
+ * happy-dom's DOM nodes actually inherit `addEventListener`/
+ * `removeEventListener` from — `el.addEventListener !==
+ * EventTarget.prototype.addEventListener` even before any spy is involved,
+ * so `vi.spyOn(EventTarget.prototype, ...)` silently spies on a class no
+ * real DOM node uses. This walks a throwaway node's OWN prototype chain to
+ * find whichever level actually owns `addEventListener` (happy-dom's real
+ * internal EventTarget-equivalent, shared by every element), which is the
+ * one `vi.spyOn` must target for the calls to actually show up.
+ */
+interface DomEventTargetProto {
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+}
+
+function domEventTargetProto(): DomEventTargetProto {
+  let proto = Object.getPrototypeOf(document.createElement('div')) as object | null;
+  while (proto && !Object.prototype.hasOwnProperty.call(proto, 'addEventListener')) {
+    proto = Object.getPrototypeOf(proto);
+  }
+  if (!proto) throw new Error('could not locate the DOM EventTarget prototype');
+  return proto as DomEventTargetProto;
 }
 
 beforeEach(() => {
@@ -645,10 +710,16 @@ describe('UploadViewer — abort on unmount', () => {
   });
 });
 
-// F-155 (paired with F-130) — touch swipe on the page box must turn pages,
-// using the same Pointer Events model as `components/SwipeCarousel.tsx`
-// (real gestures, not a synthetic "swipe" event that doesn't exist on the
-// web platform).
+// F-155 (paired with F-130) — touch swipe on the page box must turn pages.
+// Mouse/pen dragging is still driven by Pointer Events (same model as
+// `components/SwipeCarousel.tsx`), covered by the `swipeLeft`/`swipeRight`
+// helpers below; TOUCH is driven by real `touchstart`/`touchmove`/
+// `touchend`/`touchcancel` listeners (module header §"F-155 second
+// real-device fix" — attached via `addEventListener` with `touchmove`
+// explicitly `{ passive: false }`, NOT the JSX `onPointerDown`-family props),
+// covered by the `touchSwipeLeft` helper and the dedicated touch tests
+// further down. Real gestures throughout — never a synthetic "swipe" event,
+// which doesn't exist on the web platform.
 describe('UploadViewer — F-155 mobile swipe', () => {
   it('a leftward swipe past the snap threshold advances to the next page', async () => {
     renderViewer();
@@ -715,74 +786,88 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     expect(screen.getByText('1 / 5')).toBeInTheDocument();
   });
 
-  // SHOULD-FIX (`REVIEW_mobile-touch.md` — "same tap-through bug, unfixed
-  // sibling"): this handler claimed parity with `SwipeCarousel.tsx`'s
-  // Pointer Events model but never called `preventDefault`, so a horizontal
-  // page-swipe on a real phone could register as a tap/fail to advance
-  // instead of turning the page. Mirrors
+  // F-155 second real-device fix regression: this is the touch-specific
+  // twin of the mouse/pen "calls preventDefault" test, but through the REAL
+  // event family a phone actually dispatches. Mirrors
   // `SwipeCarousel.test.tsx`'s "calls preventDefault on every move once the
   // axis locks horizontal, not before" — a cancelable event's `dispatchEvent`
-  // return value is `true` iff `preventDefault` was NOT called.
-  it('calls preventDefault on every move once the axis locks horizontal, not before', async () => {
+  // return value is `true` iff `preventDefault` was NOT called. This is also
+  // the one test that would catch a regression back to JSX `onTouchMove`
+  // (React registers that as PASSIVE by default — confirmed against
+  // `react-dom`'s `addTrappedEventListener` — so `preventDefault()` would
+  // silently stop working and `dispatchEvent` would keep returning `true`).
+  it('calls preventDefault on every touchmove once the axis locks horizontal, not before', async () => {
     renderViewer();
     await screen.findByText('1 / 5');
     const box = pageBox();
+    const id = 22;
 
-    fireEvent.pointerDown(box, {
-      pointerId: 20, isPrimary: true, button: 0, pointerType: 'touch',
-      clientX: 200, clientY: 50,
-    });
+    fireEvent.touchStart(box, { touches: [touch(id, 200, 50)] });
 
     // Still inside the 8px axis-lock window — undecided, so the browser
     // must remain free to claim the gesture (no preventDefault yet).
-    const undecided = fireEvent.pointerMove(box, {
-      pointerId: 20, isPrimary: true, pointerType: 'touch',
-      clientX: 204, clientY: 51,
-    });
+    const undecided = fireEvent.touchMove(box, { touches: [touch(id, 204, 51)] });
     expect(undecided).toBe(true);
 
     // This move crosses the threshold with a horizontal-dominant delta —
     // the axis locks 'h' and this SAME move must already be vetoed.
-    const locking = fireEvent.pointerMove(box, {
-      pointerId: 20, isPrimary: true, pointerType: 'touch',
-      clientX: 180, clientY: 52,
-    });
+    const locking = fireEvent.touchMove(box, { touches: [touch(id, 180, 52)] });
     expect(locking).toBe(false);
 
     // Every subsequent 'h'-axis move keeps vetoing, not just the first.
-    const continuing = fireEvent.pointerMove(box, {
-      pointerId: 20, isPrimary: true, pointerType: 'touch',
-      clientX: 140, clientY: 53,
-    });
+    const continuing = fireEvent.touchMove(box, { touches: [touch(id, 140, 53)] });
     expect(continuing).toBe(false);
 
-    fireEvent.pointerUp(box, {
-      pointerId: 20, isPrimary: true, pointerType: 'touch',
-      clientX: 140, clientY: 53,
-    });
+    fireEvent.touchEnd(box, { changedTouches: [touch(id, 140, 53)] });
   });
 
   it('leaves a vertical-dominant touch drag alone, preserving native scroll (no preventDefault)', async () => {
     renderViewer();
     await screen.findByText('1 / 5');
     const box = pageBox();
+    const id = 23;
 
-    fireEvent.pointerDown(box, {
-      pointerId: 21, isPrimary: true, button: 0, pointerType: 'touch',
-      clientX: 200, clientY: 50,
-    });
+    fireEvent.touchStart(box, { touches: [touch(id, 200, 50)] });
     // Vertical-dominant move — the axis locks 'v' and surrenders. This
     // component must never veto a gesture it surrendered.
-    const notPrevented = fireEvent.pointerMove(box, {
-      pointerId: 21, isPrimary: true, pointerType: 'touch',
-      clientX: 202, clientY: 120,
-    });
+    const notPrevented = fireEvent.touchMove(box, { touches: [touch(id, 202, 120)] });
     expect(notPrevented).toBe(true);
 
-    fireEvent.pointerUp(box, {
-      pointerId: 21, isPrimary: true, pointerType: 'touch',
-      clientX: 202, clientY: 120,
-    });
+    fireEvent.touchEnd(box, { changedTouches: [touch(id, 202, 120)] });
+  });
+
+  it('a touchcancel ends the gesture cleanly — no page change, no stuck drag on the next swipe', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+    const id = 24;
+
+    fireEvent.touchStart(box, { touches: [touch(id, 200, 50)] });
+    fireEvent.touchMove(box, { touches: [touch(id, 80, 55)] });
+    fireEvent.touchCancel(box, { changedTouches: [touch(id, 80, 55)] });
+    fireEvent.touchEnd(box, { changedTouches: [touch(id, 80, 55)] });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+
+    // A fresh touch swipe with a new identifier must still work — the
+    // canceled gesture didn't leave `swipeRef` stuck.
+    touchSwipeLeft(box, 25);
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+  });
+
+  it('a second finger touching down mid-gesture is ignored, not restarted', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    fireEvent.touchStart(box, { touches: [touch(50, 200, 50)] });
+    // Second finger down — since one gesture is already tracked, this must
+    // be ignored (not treated as a fresh arm that would corrupt `startX`).
+    fireEvent.touchStart(box, { touches: [touch(50, 200, 50), touch(51, 10, 10)] });
+    fireEvent.touchMove(box, { touches: [touch(50, 140, 52), touch(51, 10, 10)] });
+    fireEvent.touchMove(box, { touches: [touch(50, 60, 55), touch(51, 10, 10)] });
+    fireEvent.touchEnd(box, { changedTouches: [touch(50, 60, 55)] });
+
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
   });
 
   it('right-click and non-primary pointers never arm the swipe gesture', async () => {
@@ -892,6 +977,84 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     expect(screen.getByText('1 / 5')).toBeInTheDocument();
   });
 
+  // SHOULD-FIX (`REVIEW_mobile3-logic.md`) — the mouse/pointer twin above
+  // proved `swipeEligible` gates the pointer path; this closes the touch-path
+  // gap by inspection only, since the touch effect (`useEffect` keyed on
+  // `[swipeEligible, pageBoxEl]`) is a structurally separate attach path
+  // that could, in principle, regress independently (e.g. an edit that only
+  // updated the pointer guard and missed the effect's early return).
+  it('the touch swipe is not armed once zoomed past fit-width — a horizontal touch drag never turns the page', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Zoom in' }));
+    expect(screen.getByText('125%')).toBeInTheDocument();
+
+    touchSwipeLeft(pageBox());
+
+    // Still page 1 — above fit-width the touch effect's own `swipeEligible`
+    // check (`UploadViewer.tsx`, same flag as the pointer guard) never
+    // attaches its listeners, so this dispatch has nothing to reach; the
+    // drag is left entirely to native pinch/pan, same contract as mouse/pen.
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+  });
+
+  // SHOULD-FIX (`REVIEW_mobile3-logic.md`) — the touch effect's cleanup
+  // function looked correct by inspection but had no regression coverage:
+  // nothing in the suite would previously fail if a future edit dropped the
+  // `return () => { ... }` or removed a listener under a different function
+  // reference than the one that was added (which would silently leak on
+  // every remount/zoom-toggle rather than throw). Spies on the real DOM
+  // EventTarget prototype (`domEventTargetProto()` above — NOT the global
+  // `EventTarget`, which happy-dom's elements don't actually inherit from)
+  // so the add/remove pairing — and the exact handler identity — is
+  // verified structurally, not just "no crash."
+  it('attaches the four touch listeners on mount and removes the exact same handlers on unmount (no leak)', async () => {
+    const targetProto = domEventTargetProto();
+    const addSpy = vi.spyOn(targetProto, 'addEventListener');
+    const removeSpy = vi.spyOn(targetProto, 'removeEventListener');
+    const touchTypes = ['touchstart', 'touchmove', 'touchend', 'touchcancel'];
+
+    const { unmount } = renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    const added = addSpy.mock.calls
+      .map((call, i) => ({ type: call[0], handler: call[1], target: addSpy.mock.instances[i] }))
+      .filter((c) => c.target === box && touchTypes.includes(c.type as string));
+    // Exactly one add per touch event type on the real page-box element —
+    // not the JSX pointer-event props, which never call addEventListener.
+    expect(added.map((c) => c.type).sort()).toEqual([...touchTypes].sort());
+
+    unmount();
+
+    const removed = removeSpy.mock.calls
+      .map((call, i) => ({ type: call[0], handler: call[1], target: removeSpy.mock.instances[i] }))
+      .filter((c) => c.target === box && touchTypes.includes(c.type as string));
+    expect(removed.map((c) => c.type).sort()).toEqual([...touchTypes].sort());
+
+    // Same function reference add→remove per event type: a cleanup bug that
+    // removed a DIFFERENT closure (e.g. a re-created handler) than the one
+    // actually attached would pass a naive "removeEventListener was called"
+    // check but still leak — this catches that specifically.
+    for (const type of touchTypes) {
+      const addedHandler = added.find((c) => c.type === type)?.handler;
+      const removedHandler = removed.find((c) => c.type === type)?.handler;
+      expect(removedHandler).toBe(addedHandler);
+    }
+
+    // Belt-and-braces: dispatching a touchmove at the (now-detached) element
+    // after unmount must not throw — proves the handler is really gone, not
+    // merely that removeEventListener was called with matching-looking args.
+    expect(() => {
+      fireEvent.touchMove(box, { touches: [touch(99, 80, 55)] });
+    }).not.toThrow();
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
+  });
+
   it('arrow-button paging still works after the swipe handlers are wired up', async () => {
     const user = userEvent.setup();
     renderViewer();
@@ -900,6 +1063,152 @@ describe('UploadViewer — F-155 mobile swipe', () => {
     await user.click(screen.getByLabelText('Next page'));
     expect(await screen.findByText('2 / 5')).toBeInTheDocument();
     await user.click(screen.getByLabelText('Previous page'));
+    expect(await screen.findByText('1 / 5')).toBeInTheDocument();
+  });
+
+  // Real-device regression: a leftward swipe survived every jsdom
+  // pointer-event assertion above yet still failed on a real phone. Two
+  // independent causes were found and fixed (module header): #1 the `<img>`'s
+  // own native drag-source/long-press-callout handling (a separate subsystem
+  // that can swallow a touch sequence before the axis lock even matters —
+  // still asserted by the two tests below), and #2 — the actual root cause —
+  // `.km-upload-viewer__page` being a genuinely-scrollable box, which meant
+  // Pointer Events couldn't reliably win the native-scroll race on a real
+  // touch device. This test exercises the REAL event family a phone
+  // dispatches (`touchstart`/`touchmove`/`touchend`, not Pointer Events) so a
+  // regression back to the Pointer-Events-only implementation — or to a
+  // passive JSX `onTouchMove` — would be caught here, not just on-device.
+  it('a real touch-typed horizontal drag past the snap threshold turns the page', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+    const box = pageBox();
+
+    touchSwipeLeft(box, 30);
+
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/2');
+  });
+
+  // Root-cause regression for the real-phone failure: an <img> is an
+  // implicit native drag source (`draggable` defaults to `true` for
+  // `img`/`a`), and on a real touch device that competes with (and can
+  // outright hijack) the custom pointer-swipe — no `preventDefault` inside
+  // `onPointerMove` can stop it, since native drag arbitration is a
+  // different browser subsystem than the scroll/pan one `touch-action`
+  // governs. `draggable={false}` is the fix; this asserts it directly on
+  // the rendered node rather than trusting the JSX literal never regresses.
+  it('the page image is not a native drag source (draggable=false)', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const img = document.querySelector('img');
+    expect(img).toBeInTheDocument();
+    expect(img).toHaveAttribute('draggable', 'false');
+  });
+
+  // Belt-and-braces half of the same fix: some engines have historically
+  // honored a dragstart veto even where a bare `draggable={false}` attribute
+  // was insufficient (e.g. dragging by a descendant), so the component also
+  // wires `onDragStart` to call `preventDefault()`. A cancelable event's
+  // `dispatchEvent` return value is `false` iff `preventDefault()` was
+  // called — the same proxy pattern used for the pointermove assertions
+  // above.
+  it('vetoes a native dragstart on the page image', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const img = document.querySelector('img');
+    if (!(img instanceof HTMLImageElement)) throw new Error('no <img> rendered');
+    const notPrevented = fireEvent.dragStart(img);
+    expect(notPrevented).toBe(false);
+  });
+
+  // FIX-PASS S2 (`REVIEW_mobile2-logic.md`) — the JS half of the fix
+  // (draggable=false + the dragstart veto) is covered above, but the CSS
+  // half — the iOS long-press-callout/drag-lift shutoff, which has no
+  // JS-side event to assert against — had no regression coverage at all.
+  // happy-dom does no layout, so the actual on-screen callout/select
+  // behavior can't be measured by rendering — pin the CSS mechanism from
+  // source instead (same pattern as SkillsCompare.test.tsx's mobile-overflow
+  // fix / Today.test.tsx's peek-slider contract tests).
+  it('CSS: the page image carries the iOS drag/callout shutoff rules, and the DOM node stays draggable=false', async () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'UploadViewer.css'),
+      'utf8',
+    );
+
+    const imgRule =
+      /\.km-upload-viewer__img\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(imgRule).not.toBe('');
+    expect(imgRule).toContain('-webkit-touch-callout: none;');
+    expect(imgRule).toContain('-webkit-user-drag: none;');
+    expect(imgRule).toContain('user-select: none;');
+
+    // Belt-and-braces: the CSS-only half above and the JS attribute
+    // (asserted independently by the dedicated `draggable=false` test
+    // earlier in this file) must both hold at once — re-confirmed here so
+    // this one test is a complete pin of the full fix, CSS + DOM.
+    renderViewer();
+    await screen.findByText('1 / 5');
+    expect(document.querySelector('img')).toHaveAttribute('draggable', 'false');
+  });
+});
+
+// "Arrows to the bottom" — Prev/Next + the page-N-of-M readout moved out of
+// the dense top toolbar into their own thumb-reachable bar directly under
+// the page image (component's module header). The buttons are still real
+// accessible-name-bearing `<button>`s (already exercised by every swipe/nav
+// test above via `getByLabelText('Previous page' | 'Next page')`) — these
+// tests pin the RELOCATION specifically, so a regression that moved them
+// back to the top would fail here even though every other test still passes.
+describe('UploadViewer — arrows moved to the bottom', () => {
+  it('renders the Prev/Next pager AFTER the page-image card, not in the top toolbar', async () => {
+    const { container } = renderViewer();
+    await screen.findByText('1 / 5');
+
+    const card = container.querySelector('.km-upload-viewer__card');
+    const pager = container.querySelector('.km-upload-viewer__pager');
+    expect(card).toBeInTheDocument();
+    expect(pager).toBeInTheDocument();
+
+    // DOM order, not just both-present: the pager must follow the card
+    // (`Node.compareDocumentPosition` — DOCUMENT_POSITION_FOLLOWING = 4).
+    const position = card?.compareDocumentPosition(pager as Node);
+    expect((position ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The top toolbar (zoom/rotate/jump/reorder/OCR) no longer carries the
+    // Prev/Next buttons or the page-count readout — they live in the pager.
+    const toolbar = container.querySelector('.km-upload-viewer__toolbar');
+    expect(toolbar?.querySelector('[aria-label="Previous page"]')).not.toBeInTheDocument();
+    expect(toolbar?.querySelector('[aria-label="Next page"]')).not.toBeInTheDocument();
+    expect(pager?.querySelector('[aria-label="Previous page"]')).toBeInTheDocument();
+    expect(pager?.querySelector('[aria-label="Next page"]')).toBeInTheDocument();
+  });
+
+  it('the bottom pager shows the live page-N-of-M readout and stays keyboard-operable', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const pager = screen.getByRole('group', { name: 'Page navigation' });
+    expect(pager).toHaveTextContent('1 / 5');
+
+    // Keyboard-accessible: a real <button>, focusable and Enter-activatable
+    // — not a swipe-only affordance (the reason arrows exist at all).
+    const next = screen.getByLabelText('Next page');
+    next.focus();
+    expect(next).toHaveFocus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    expect(pager).toHaveTextContent('2 / 5');
+
+    // NIT (`REVIEW_mobile3-logic.md`) — the test name says "keyboard-
+    // operable" but only drove Enter; a real <button> also activates on
+    // Space, so exercise that too rather than leaving the claim half-proven.
+    const prev = screen.getByLabelText('Previous page');
+    prev.focus();
+    expect(prev).toHaveFocus();
+    await user.keyboard('[Space]');
     expect(await screen.findByText('1 / 5')).toBeInTheDocument();
   });
 });

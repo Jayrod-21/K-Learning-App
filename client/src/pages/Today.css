@@ -6,8 +6,10 @@
  *
  * What lives here: the hero/section spacing, the `ActivityTile` chrome
  * (button-wraps-CityCard, per DESIGN_SEOUL_DAY_NIGHT.md devices #1/#2), the
- * Suggested-learning peek slider (native CSS scroll-snap — see that section
- * below for the full mechanism), and the resume-exam corner banner.
+ * shared peek slider (native CSS scroll-snap — see that section below for
+ * the full mechanism, used by BOTH Carousel 1 "Review & drills" and
+ * Carousel 2 "Suggested learning" per direct user request that the two feel
+ * identical), and the resume-exam corner banner.
  *
  * Token-driven only (no hard-coded hex anywhere in this file) — every color
  * comes from styles/index.css's Day/Night/accent-aware custom properties, so
@@ -39,12 +41,37 @@
   margin: 0 0 4px;
 }
 
-.km-today__sectionEyebrow {
-  margin: 18px 0 8px;
+/* Section titles — Carousel headers (Review & drills / Suggested learning /
+ * TOPIK). Direct user feedback on the live app: these used to render through
+ * the shared `Eyebrow` component — a 10px all-caps subscript designed to sit
+ * ABOVE a real heading, never to stand alone as a section's only label —
+ * which read as too small/quiet to work as the section's actual title.
+ * Today.tsx now renders a genuine `<h2>` here instead (see the JSX), styled
+ * to read like a real, centered section header: bigger, bolder, centered,
+ * clearly below the page's own 20px `<h1>` (`.km-skyline__title`) so it
+ * never competes with it. Token reuse only — `--font-display`/`--paper` are
+ * the same AA-checked pair every other headline on this page already uses
+ * (`.km-today__tileHeadline`), so this introduces no new contrast surface
+ * to validate. Bilingual (`<Bilingual en kr />`) is unchanged underneath —
+ * only the wrapping element + its styling changed. */
+.km-today__sectionTitle {
+  margin: 12px 0 8px;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--paper);
 }
 
+/* Direct user feedback: the gap BETWEEN the three stacked carousel sections
+ * read as too much empty space. `margin-bottom` here used to double up with
+ * the next section's title `margin-top` (6px + 18px = 24px between a
+ * carousel's last tile and the next header) — tightened to let the title's
+ * own `margin-top` (12px) be the entire inter-section gap, roughly halving
+ * it while staying visibly separated (never touching/cramped). */
 .km-today__section {
-  margin-bottom: 6px;
+  margin-bottom: 0;
 }
 
 /* Carousel page wrapper — small inset keeps a tile's focus ring inside the
@@ -195,19 +222,24 @@
   border-radius: var(--radius-lg);
 }
 
-/* Suggested-learning peek slider (Carousel 2) ───────────────────────────
- * Direct user feedback restructure: Reading/Listening/Writing render as a
- * horizontal PEEK slider — the centered tile reads full weight, its
- * neighbors sit partially visible at each edge, and a swipe glides the row
- * one tile at a time (never a hard page-cut, "like a spin table" per the
- * user's own description).
+/* Shared peek slider (Carousel 1 "Review & drills" + Carousel 2 "Suggested
+ * learning") ─────────────────────────────────────────────────────────────
+ * Direct user feedback restructure: Reading/Listening/Writing (Carousel 2)
+ * render as a horizontal PEEK slider — the centered tile reads full weight,
+ * its neighbors sit partially visible at each edge, and a swipe glides the
+ * row one tile at a time (never a hard page-cut, "like a spin table" per
+ * the user's own description). Per a later, direct user request on the
+ * mobile-hardening pass ("make carousel 1 match carousel 2"), Carousel 1
+ * (Vocab/Grammar/Hanja) was converted from `SwipeCarousel` to this exact
+ * same mechanism/classes, so the two carousels feel identical.
  *
  * Built on native CSS scroll-snap instead of `SwipeCarousel`'s hand-rolled
  * pointer-drag engine — the browser owns the drag/fling/momentum entirely,
  * so it just works on touch with zero JS gesture code to get wrong.
- * `SwipeCarousel` stays a hard, one-page-at-a-time model on purpose for
- * Carousels 1/3 — this is deliberately a different, continuous-scroll
- * widget (see Today.tsx for why it is NOT given
+ * `SwipeCarousel` remains the right tool ONLY for Carousel 3 (TOPIK) now —
+ * a single hard-paged tile with a corner-slot banner, not a
+ * continuous-scroll rail. Both peek carousels are deliberately a different
+ * widget from `SwipeCarousel` (see Today.tsx for why they are NOT given
  * `aria-roledescription="carousel"`): a plain labeled `<section>`
  * containing real, independently-focusable buttons. Tab order + the
  * browser's native scroll-into-view on focus already make it keyboard
@@ -255,22 +287,34 @@
   scroll-snap-stop: always;
 }
 
-/* Progressive center emphasis — in browsers that support scroll-driven
- * animations, the in-view tile pops slightly larger/brighter as it nears
- * the center of the track, keyed to the tile's OWN position via a `view()`
- * timeline. Pure CSS — no JS scroll listener fighting the browser's native
- * momentum scroll (which would also be the wrong tool: recomputing a
- * "nearest to center" index on every scroll frame is unnecessary jank risk
- * for a purely cosmetic cue). Unsupported browsers simply render every
- * tile at equal, fully legible weight — a flat but fully functional peek
- * row, never a broken one.
+/* Active-tile scaling — direct user feedback: the earlier "pop" here
+ * (0.94→1 scale, 0.72→1 opacity) was too subtle to read as a real size
+ * difference. In browsers that support scroll-driven animations, the
+ * CENTERED (snapped) tile now renders at full 1.0 scale / full opacity and
+ * each partial neighbor shrinks to 0.88 scale + dims to 0.6 opacity, keyed
+ * to the tile's OWN position via a `view()` timeline — as the user swipes,
+ * whichever tile becomes centered grows to the large size while the
+ * previously-centered one shrinks back. Pure CSS, driven purely by scroll
+ * offset — no JS scroll listener fighting the browser's native momentum
+ * scroll (recomputing a "nearest to center" index on every scroll frame is
+ * unnecessary jank risk for a cosmetic cue the browser already tracks for
+ * free). `scale()` never exceeds 1 (the tile's own natural, unscaled flex-
+ * basis box) — the centered tile only ever returns to its normal footprint,
+ * it never grows past it, so this can't push the track wider than its
+ * `overflow-x` clip or reintroduce page-level horizontal scroll; only the
+ * neighbors shrink below their footprint, which is visually safe by
+ * construction. Unsupported browsers simply render every tile at equal,
+ * fully legible weight — a flat but fully functional peek row, never a
+ * broken one. Shared by BOTH Carousel 1 ("Review & drills") and Carousel 2
+ * ("Suggested learning") — same `.km-today__peekItem` class, so this one
+ * block covers both carousels identically.
  */
 @supports (animation-timeline: view()) {
   @keyframes km-today-peek-pop {
     0%,
     100% {
-      opacity: 0.72;
-      transform: scale(0.94);
+      opacity: 0.6;
+      transform: scale(0.88);
     }
     50% {
       opacity: 1;
