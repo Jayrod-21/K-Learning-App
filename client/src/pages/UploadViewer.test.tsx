@@ -93,6 +93,50 @@ function settleImage(kind: 'load' | 'error'): void {
   img.dispatchEvent(new Event(kind));
 }
 
+/** The F-155 swipe target — the scrollable page box the gesture listens on. */
+function pageBox(): HTMLElement {
+  const el = document.querySelector('.km-upload-viewer__page');
+  if (!(el instanceof HTMLElement)) throw new Error('no page box rendered');
+  return el;
+}
+
+/**
+ * A full valid leftward swipe (120px, past the 48px threshold floor) that
+ * must turn to the NEXT page — mirrors `components/SwipeCarousel.test.tsx`'s
+ * `swipeLeft` helper (same Pointer Events model, real left-button primary
+ * pointer, an intermediate move so the axis lock has somewhere to decide).
+ */
+function swipeLeft(el: HTMLElement, pointerId = 7): void {
+  fireEvent.pointerDown(el, {
+    pointerId, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+  });
+  fireEvent.pointerMove(el, {
+    pointerId, isPrimary: true, clientX: 140, clientY: 52,
+  });
+  fireEvent.pointerMove(el, {
+    pointerId, isPrimary: true, clientX: 80, clientY: 55,
+  });
+  fireEvent.pointerUp(el, {
+    pointerId, isPrimary: true, clientX: 80, clientY: 55,
+  });
+}
+
+/** The mirror gesture — a full valid rightward swipe (PREVIOUS page). */
+function swipeRight(el: HTMLElement, pointerId = 7): void {
+  fireEvent.pointerDown(el, {
+    pointerId, isPrimary: true, button: 0, clientX: 80, clientY: 50,
+  });
+  fireEvent.pointerMove(el, {
+    pointerId, isPrimary: true, clientX: 140, clientY: 52,
+  });
+  fireEvent.pointerMove(el, {
+    pointerId, isPrimary: true, clientX: 200, clientY: 55,
+  });
+  fireEvent.pointerUp(el, {
+    pointerId, isPrimary: true, clientX: 200, clientY: 55,
+  });
+}
+
 beforeEach(() => {
   uploadsSvc.getUpload.mockReset();
   uploadsSvc.listPages.mockReset();
@@ -598,5 +642,223 @@ describe('UploadViewer — abort on unmount', () => {
 
     unmount();
     expect(captured.signal?.aborted).toBe(true);
+  });
+});
+
+// F-155 (paired with F-130) — touch swipe on the page box must turn pages,
+// using the same Pointer Events model as `components/SwipeCarousel.tsx`
+// (real gestures, not a synthetic "swipe" event that doesn't exist on the
+// web platform).
+describe('UploadViewer — F-155 mobile swipe', () => {
+  it('a leftward swipe past the snap threshold advances to the next page', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    swipeLeft(pageBox());
+
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/2');
+  });
+
+  it('a rightward swipe past the snap threshold returns to the previous page', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+    await user.click(screen.getByLabelText('Next page'));
+    await screen.findByText('2 / 5');
+
+    swipeRight(pageBox());
+
+    expect(await screen.findByText('1 / 5')).toBeInTheDocument();
+  });
+
+  it('a swipe under the snap threshold snaps back — the page does not change', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    fireEvent.pointerDown(box, {
+      pointerId: 3, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(box, {
+      pointerId: 3, isPrimary: true, clientX: 175, clientY: 51,
+    });
+    // Only 25px left — under the 48px threshold floor.
+    fireEvent.pointerUp(box, {
+      pointerId: 3, isPrimary: true, clientX: 175, clientY: 51,
+    });
+
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('/uploads/9/page/1');
+  });
+
+  it('a vertical-dominant drag surrenders the gesture — the page never changes (native scroll wins)', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    fireEvent.pointerDown(box, {
+      pointerId: 4, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    // Vertical-dominant move (dy=140 >> dx=10) — surrenders on the axis lock.
+    fireEvent.pointerMove(box, {
+      pointerId: 4, isPrimary: true, clientX: 210, clientY: 190,
+    });
+    // Even a large horizontal delta after surrender must not resurrect it.
+    fireEvent.pointerMove(box, {
+      pointerId: 4, isPrimary: true, clientX: 340, clientY: 190,
+    });
+    fireEvent.pointerUp(box, {
+      pointerId: 4, isPrimary: true, clientX: 340, clientY: 190,
+    });
+
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+  });
+
+  it('right-click and non-primary pointers never arm the swipe gesture', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    // Right button.
+    fireEvent.pointerDown(box, {
+      pointerId: 5, isPrimary: true, button: 2, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(box, { pointerId: 5, isPrimary: true, clientX: 80, clientY: 55 });
+    fireEvent.pointerUp(box, { pointerId: 5, isPrimary: true, clientX: 80, clientY: 55 });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+
+    // Non-primary (a second touch point).
+    fireEvent.pointerDown(box, {
+      pointerId: 6, isPrimary: false, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(box, { pointerId: 6, isPrimary: false, clientX: 80, clientY: 55 });
+    fireEvent.pointerUp(box, { pointerId: 6, isPrimary: false, clientX: 80, clientY: 55 });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+  });
+
+  it('pointercancel ends the gesture cleanly — no page change, no stuck drag on the next swipe', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    fireEvent.pointerDown(box, {
+      pointerId: 8, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(box, { pointerId: 8, isPrimary: true, clientX: 80, clientY: 55 });
+    fireEvent.pointerCancel(box, { pointerId: 8, isPrimary: true, clientX: 80, clientY: 55 });
+    fireEvent.pointerUp(box, { pointerId: 8, isPrimary: true, clientX: 80, clientY: 55 });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+
+    // A fresh swipe with a new pointer id must still work — the canceled
+    // gesture didn't leave the ref stuck.
+    swipeLeft(box, 9);
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+  });
+
+  // S-1 (`REVIEW_batch2-uploads.md`) — of the three documented stuck-drag
+  // exits (pointercancel/pointerleave/lostpointercapture), only pointercancel
+  // had a dedicated test above. These two close the gap: a regression that
+  // inverted the `d.axis !== 'h'` guard on pointerleave, or dropped the
+  // `onLostPointerCapture` prop entirely, would pass every other test in
+  // this file but should fail here.
+  it('pointerleave while the axis is still undecided ends the gesture cleanly — no stuck drag on the next swipe', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    // Down, then leave BEFORE any move clears the 8px axis-lock threshold —
+    // the gesture is still in the capture-less 'none' phase (a real mouse
+    // leaving the element mid-drag can never deliver a pointerup here).
+    fireEvent.pointerDown(box, {
+      pointerId: 10, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerLeave(box, { pointerId: 10, isPrimary: true, clientX: 200, clientY: 50 });
+    // A pointerup after the leave (e.g. released off-element) must not
+    // resurrect or misfire the now-ended gesture.
+    fireEvent.pointerUp(box, { pointerId: 10, isPrimary: true, clientX: 80, clientY: 55 });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+
+    // A fresh swipe with a NEW pointer id must still work.
+    swipeLeft(box, 11);
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+  });
+
+  it('lostpointercapture ends an in-progress (axis-locked) gesture cleanly — no stuck drag on the next swipe', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    const box = pageBox();
+    fireEvent.pointerDown(box, {
+      pointerId: 12, isPrimary: true, button: 0, clientX: 200, clientY: 50,
+    });
+    // Clears the 8px horizontal axis lock — the gesture is now captured
+    // ('h' axis), the phase `onPagePointerLeave` explicitly does NOT end.
+    fireEvent.pointerMove(box, { pointerId: 12, isPrimary: true, clientX: 140, clientY: 52 });
+    // The OS/browser revokes pointer capture mid-gesture (e.g. an
+    // interrupting system gesture) — `onLostPointerCapture` must end the
+    // drag unconditionally so it can't block a future swipe.
+    fireEvent.lostPointerCapture(box, { pointerId: 12, isPrimary: true });
+    fireEvent.pointerUp(box, { pointerId: 12, isPrimary: true, clientX: 80, clientY: 55 });
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+
+    // A fresh swipe with a NEW pointer id must still work.
+    swipeLeft(box, 13);
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+  });
+
+  it('the swipe gesture is not armed once zoomed past fit-width — a horizontal drag never turns the page', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Zoom in' }));
+    expect(screen.getByText('125%')).toBeInTheDocument();
+
+    swipeLeft(pageBox());
+
+    // Still page 1 — above fit-width a horizontal drag is a legitimate pan
+    // over the zoomed page, not a page turn (module header §"F-155").
+    expect(screen.getByText('1 / 5')).toBeInTheDocument();
+  });
+
+  it('arrow-button paging still works after the swipe handlers are wired up', async () => {
+    const user = userEvent.setup();
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByLabelText('Next page'));
+    expect(await screen.findByText('2 / 5')).toBeInTheDocument();
+    await user.click(screen.getByLabelText('Previous page'));
+    expect(await screen.findByText('1 / 5')).toBeInTheDocument();
+  });
+});
+
+// F-128 "Seoul Day & Night" reskin — the header adopts the shared
+// PageHubHeader (SkylineHeader + DancheongRail) and the page sits on a
+// CityCard, per the component's module header.
+describe('UploadViewer — F-128 reskin', () => {
+  it('renders the skyline hub-header, the rail divider, and the CityCard page surface', async () => {
+    renderViewer();
+    await screen.findByText('1 / 5');
+
+    expect(document.querySelector('.km-hubheader__skyline')).toBeInTheDocument();
+    expect(document.querySelector('.km-hubheader__rail-divider')).toBeInTheDocument();
+    expect(document.querySelector('.km-upload-viewer__card.km-citycard')).toBeInTheDocument();
+
+    // The real <h1> still carries the book title and the section's
+    // aria-labelledby target — the reskin didn't drop the heading contract.
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(heading).toHaveAttribute('id', 'km-upload-viewer-title');
+    expect(heading).toHaveTextContent('한국어 문법 사전');
+  });
+
+  // S1 (`REVIEW_batch2-fidelity.md`) — this page's root was missing
+  // `.km-rain-sheen` (device #8, Night ambient) while every sibling Library
+  // page carries it. Fixed in the batch-2 fix-pass.
+  it('carries the km-rain-sheen ambient overlay on the page root (S1)', async () => {
+    const { container } = renderViewer();
+    await screen.findByText('1 / 5');
+    expect(container.querySelector('.screen.km-rain-sheen')).toBeInTheDocument();
   });
 });

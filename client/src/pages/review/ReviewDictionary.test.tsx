@@ -38,6 +38,26 @@ const KRDICT_HIT: KrdictSearchEntry = {
   definition_english: 'a school',
 };
 
+/** F-150 — a KRDICT row tagged as a grammar ENDING (어미); must never render
+ *  on this vocab-only lens. */
+const KRDICT_GRAMMAR_ENDING: KrdictSearchEntry = {
+  id: 6,
+  headword: '-는데',
+  part_of_speech: '어미',
+  definition_korean: '뒤 절과 대조되는 상황을 나타내는 연결 어미',
+  definition_english: 'a connective ending marking contrast',
+};
+
+/** F-150 — a KRDICT row tagged as a grammar PARTICLE (조사); must never
+ *  render either. */
+const KRDICT_GRAMMAR_PARTICLE: KrdictSearchEntry = {
+  id: 7,
+  headword: '조차',
+  part_of_speech: '조사',
+  definition_korean: '이미 어떤 것이 포함되고 그 위에 더함을 나타내는 조사',
+  definition_english: 'a particle meaning "even"',
+};
+
 const VOCAB_HIT: VocabEntry = {
   id: 42,
   corpus: 'vocab_2000_intermediate',
@@ -86,6 +106,22 @@ describe('ReviewDictionary — "All Words" chrome (F-050 rename + F-024)', () =>
     ).not.toBeInTheDocument();
   });
 
+  it('F-128: reskins with the hub-header recipe — skyline + dancheong rail', async () => {
+    const { container } = renderPage();
+    await screen.findByText('학교');
+    expect(container.querySelector('.km-skyline')).not.toBeNull();
+    expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
+  });
+
+  it('F-149: labels the search field "Search for a word" (visible caption + accessible name)', async () => {
+    renderPage();
+    await screen.findByText('학교');
+    expect(
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Search for a word')).toBeInTheDocument();
+  });
+
   it('has a BackButton to the library index (F-024)', async () => {
     const user = userEvent.setup();
     renderPage();
@@ -113,7 +149,7 @@ describe('ReviewDictionary (browse + search)', () => {
     // Typing a query switches to search results (now `q` is sent).
     krdictSvc.searchKrdict.mockClear();
     await user.type(
-      screen.getByRole('searchbox', { name: 'Search all words' }),
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
       '학교',
     );
     await waitFor(() => {
@@ -129,7 +165,7 @@ describe('ReviewDictionary (browse + search)', () => {
     renderPage();
     await screen.findByText('학교');
 
-    const box = screen.getByRole('searchbox', { name: 'Search all words' });
+    const box = screen.getByRole('searchbox', { name: 'Search for a word' });
     await user.type(box, '학교');
     await waitFor(() => {
       expect(krdictSvc.searchKrdict).toHaveBeenCalledWith(
@@ -188,7 +224,7 @@ describe('ReviewDictionary — 초성 × search interplay (F-050)', () => {
     // hide matches outside the ㅁ section).
     krdictSvc.searchKrdict.mockClear();
     await user.type(
-      screen.getByRole('searchbox', { name: 'Search all words' }),
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
       '문',
     );
     await waitFor(() => {
@@ -204,7 +240,7 @@ describe('ReviewDictionary — 초성 × search interplay (F-050)', () => {
     // Clearing the search returns to browse-ALL — the superseded 초성 was
     // reset, not parked: no fetch carries it and "전체" is the pressed chip.
     krdictSvc.searchKrdict.mockClear();
-    await user.clear(screen.getByRole('searchbox', { name: 'Search all words' }));
+    await user.clear(screen.getByRole('searchbox', { name: 'Search for a word' }));
     await waitFor(() => {
       expect(krdictSvc.searchKrdict).toHaveBeenCalled();
     });
@@ -337,6 +373,50 @@ describe('ReviewDictionary — pager', () => {
   });
 });
 
+describe('ReviewDictionary — excludes grammar entries (F-150)', () => {
+  it('never renders a KRDICT row tagged as an ending (어미) or a particle (조사)', async () => {
+    krdictSvc.searchKrdict.mockResolvedValue({
+      entries: [KRDICT_HIT, KRDICT_GRAMMAR_ENDING, KRDICT_GRAMMAR_PARTICLE],
+      total: 3,
+    });
+    renderPage();
+
+    // The real word renders…
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+    // …but neither grammar-tagged row ever does, even though the server
+    // returned them.
+    expect(screen.queryByText('-는데')).not.toBeInTheDocument();
+    expect(screen.queryByText('조차')).not.toBeInTheDocument();
+  });
+
+  it('shows the honest empty state when a page is ALL grammar entries', async () => {
+    krdictSvc.searchKrdict.mockResolvedValue({
+      entries: [KRDICT_GRAMMAR_ENDING, KRDICT_GRAMMAR_PARTICLE],
+      total: 2,
+    });
+    renderPage();
+
+    expect(await screen.findByText('No words found.')).toBeInTheDocument();
+    expect(screen.queryByText('-는데')).not.toBeInTheDocument();
+    expect(screen.queryByText('조차')).not.toBeInTheDocument();
+  });
+
+  it('does not exclude a genre-pivoted vocab-corpus row (already vocab-only server-side)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('학교');
+
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Genre' }),
+      'business',
+    );
+    // The curated vocab corpus is `entry_type = 'word'`-only server-side —
+    // F-150's client filter only applies to the raw KRDICT path, and must
+    // not accidentally hide a legitimate vocab-pivot row.
+    expect(await screen.findByText('회의')).toBeInTheDocument();
+  });
+});
+
 describe('ReviewDictionary — genre lens (F-050)', () => {
   it('pivots onto the curated-corpus search when a genre is chosen', async () => {
     const user = userEvent.setup();
@@ -379,7 +459,7 @@ describe('ReviewDictionary — genre lens (F-050)', () => {
 
     vocabSvc.searchEntriesPage.mockClear();
     await user.type(
-      screen.getByRole('searchbox', { name: 'Search all words' }),
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
       '실험',
     );
     await waitFor(() => {

@@ -4656,7 +4656,9 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0.08em;
 }
 
-.km-resources__create { margin: 0 18px; padding: 14px 18px; }
+/* Batch-2 fix-pass (F-147) — the "New list" Sheet trigger, replacing the old
+ * always-inline `.km-resources__create` card. */
+.km-resources__createTrigger { margin: 0 18px 12px; display: flex; }
 .km-resources__create-row {
   display: flex;
   gap: 10px;

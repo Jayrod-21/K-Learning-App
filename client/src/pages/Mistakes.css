@@ -1,6 +1,8 @@
-/* Mistakes-review screen (F-021, reworked P3b: F-044/F-045/F-046/F-024).
- * Reuses the global km-topik__choice option styling; these rules only lay
- * out the page chrome — the per-question tile itself is CollapsibleTile. */
+/* Mistakes-review screen (F-021, reworked P3b: F-044/F-045/F-046/F-024;
+ * F-128/F-154 Wave-2 reskin — square question-tile grid + Sheet popup).
+ * Reuses the global km-topik__choice option styling; these rules lay out
+ * the page chrome, the date-divided groups, the tile grid, and the popup
+ * body. */
 
 /* F-024 back control row — sits above the sticky Topbar, scrolls away. */
 .km-mistakes__nav {
@@ -22,49 +24,99 @@
   color: var(--paper-dim);
 }
 
-.km-mistakes__list {
+/* F-154 — one CityCard (device #1/#2) per session/date group. */
+.km-mistakes__groups {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
-/* ── F-044 collapsed-tile header ─────────────────────────────────────────
- * Lives INSIDE CollapsibleTile's toggle <button> — spans only (phrasing
- * content). The title is a flex item of the header row (blockified, with
- * min-width: 0 from .km-collapsible__title), so the snippet's ellipsis
- * resolves against the available header width. */
-.km-mistakes__tile-head {
+.km-mistakes__group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  gap: 10px;
 }
 
-.km-mistakes__tile-meta {
+/* Date/session divider — flanking hairlines around the label, matching the
+ * km-final.html Mistakes mock's own divider treatment. */
+.km-mistakes__divider {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--paper-mute);
+}
+.km-mistakes__divider::before,
+.km-mistakes__divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+/* F-154 — small square question-number tiles, wrapping responsively
+ * (mobile-first: auto-fill never forces horizontal scroll). */
+.km-mistakes__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
   gap: 8px;
 }
 
-/* One-line prompt preview so a collapsed tile is still identifiable. */
-.km-mistakes__tile-snippet {
-  display: block;
-  font-weight: 600;
-  line-height: 1.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.km-mistakes__tileWrap {
+  display: contents;
 }
 
-/* Expanded review body (inside the tile's disclosure region). */
-.km-mistakes__body {
+/* Every tile on this page is, by definition, a WRONG answer — the danger
+ * tint is a constant, not a variant. >= 44px touch target both ways. */
+.km-mistakes__qtile {
+  width: 100%;
+  aspect-ratio: 1;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--danger-ink);
+  background: var(--danger-soft);
+  border: none;
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1.5px var(--danger);
+  cursor: pointer;
+  transition: transform 0.12s, filter 0.12s;
+}
+.km-mistakes__qtile:hover {
+  filter: brightness(1.08);
+}
+.km-mistakes__qtile:active {
+  transform: scale(0.94);
+}
+
+/* ── F-154 Sheet popup body ──────────────────────────────────────────────
+ * Batch-2 fix-pass (S2): the shared `.km-review__sheetBody`/`__sheetHead`
+ * (styles/index.css, also used by ReviewGrammar/ReviewVocab's own popups)
+ * now own padding + head layout — this page's classes ride ALONGSIDE them as
+ * an extra class for the one genuinely Mistakes-specific need: the body's
+ * flex-column stacking (the shared rule is padding-only, no direction/gap).
+ * `.km-mistakes__sheetHead` no longer needs its own rule — it was an exact
+ * duplicate of `.km-review__sheetHead`. */
+.km-mistakes__sheetBody {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
 .km-mistakes__when {
+  margin: 4px 0 0;
   font-size: 0.8rem;
   color: var(--paper-mute);
   white-space: nowrap;
@@ -85,7 +137,7 @@
   margin-left: auto;
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--danger, #b3261e);
+  color: var(--danger-ink);
   white-space: nowrap;
 }
 
@@ -122,7 +174,7 @@
 .km-mistakes__skeleton-line {
   height: 14px;
   border-radius: 6px;
-  background: var(--paper-line, rgba(0, 0, 0, 0.08));
+  background: var(--ink-2);
 }
 
 .km-mistakes__skeleton-line + .km-mistakes__skeleton-line {

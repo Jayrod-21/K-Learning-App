@@ -16,6 +16,23 @@
  * The LEARN flashcards page (`/learn/vocab`) links here instead of rendering
  * its own copy.
  *
+ * Batch-2 fix-pass (F-144 BLOCKER + F-147, `REVIEW_batch2-vocab.md` B-1):
+ * the create form used to be an always-visible inline card whose "List
+ * kind" radiogroup unconditionally offered vocab/grammar/hanja/mixed — so
+ * navigating to `/review/vocab` (a page that must NEVER surface grammar UI)
+ * showed a live "Grammar · 문법" option before the user touched anything.
+ * Two independent fixes, both here:
+ *   - F-147: the create form is now a `Sheet` popup behind a "New list"
+ *     trigger button, matching every other create/add flow already on the
+ *     Vocab page (`AddToListSheet`, the "This Week" sheet) instead of an
+ *     always-inline card.
+ *   - F-144: the `kinds` prop lets a mount restrict which kinds it offers.
+ *     A single-kind mount (e.g. `kinds={['vocab']}` on the Vocab page) skips
+ *     the radiogroup ENTIRELY — there's nothing to choose, so there's
+ *     nothing labelled "Grammar" to see. `kinds` defaults to the full
+ *     vocab/grammar/hanja/mixed set for backward compatibility with any
+ *     future second consumer that genuinely needs the full picker.
+ *
  * Threat model:
  *   - List CRUD is POST/PATCH/DELETE → CSRF surface, defended by the session
  *     cookie's `SameSite=Strict` (services/api.ts). Names render as React
@@ -44,7 +61,9 @@ import type {
   VocabListKind,
 } from '../types/domain';
 
-const KIND_OPTIONS: ReadonlyArray<VocabListKind> = [
+/** Every list kind the server model supports — the default `kinds` set for
+ * backward compatibility with a mount that doesn't narrow it. */
+const ALL_KINDS: ReadonlyArray<VocabListKind> = [
   'vocab',
   'grammar',
   'hanja',
@@ -59,16 +78,26 @@ const KIND_KR: Record<VocabListKind, string> = {
   mixed: '혼합',
 };
 
-export function MyVocabLists(): JSX.Element {
+export interface MyVocabListsProps {
+  /**
+   * Which list kinds this mount offers when creating a new list. Defaults
+   * to the full vocab/grammar/hanja/mixed set (backward-compatible with any
+   * consumer that needs the full picker). Pass a narrower array — e.g.
+   * `['vocab']` — to scope a mount to one domain: with exactly one kind,
+   * the kind picker doesn't render at all (nothing to choose), and every
+   * list this mount creates uses that one kind.
+   */
+  kinds?: ReadonlyArray<VocabListKind>;
+}
+
+export function MyVocabLists({
+  kinds = ALL_KINDS,
+}: MyVocabListsProps): JSX.Element {
   const { toast } = useToast();
   const [lists, setLists] = useState<ServerVocabList[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [newName, setNewName] = useState('');
-  const [newEn, setNewEn] = useState('');
-  const [newKind, setNewKind] = useState<VocabListKind>('vocab');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [openList, setOpenList] = useState<ServerVocabList | null>(null);
 
   const load = useCallback(() => {
@@ -87,31 +116,23 @@ export function MyVocabLists(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    // Sync-to-external-system (a network fetch) — the same kickoff-fetch
+    // exception `useEndpointOrMock`/ReviewGrammar's mount effects document.
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
     load();
   }, [load]);
 
-  const create = useCallback(async (): Promise<void> => {
-    const name = newName.trim();
-    if (!name || creating) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      const en = newEn.trim();
-      await vocabService.createList({
-        name_kr: name,
-        kind: newKind,
-        ...(en ? { name_en: en } : {}),
-      });
-      setNewName('');
-      setNewEn('');
-      setNewKind('vocab');
-      load();
-    } catch (err) {
-      setCreateError(errorMessageFor(err, 'Could not create the list.'));
-    } finally {
-      setCreating(false);
-    }
-  }, [newName, newEn, newKind, creating, load]);
+  // Stable across renders (empty deps) — this is passed as `<Sheet>`'s
+  // `onClose` inside `CreateListSheet` below. A NEW function identity every
+  // render would re-run `useModalA11y`'s open/close effect on every
+  // keystroke inside the sheet (its dep array includes `onClose`), and that
+  // effect's cleanup re-focuses whatever was active before the sheet opened
+  // — silently stealing focus back out of the name input after the first
+  // character. `useCallback` (not an inline arrow) is load-bearing here, not
+  // stylistic.
+  const closeCreate = useCallback(() => {
+    setCreateOpen(false);
+  }, []);
 
   const remove = useCallback(
     async (list: ServerVocabList): Promise<void> => {
@@ -140,79 +161,21 @@ export function MyVocabLists(): JSX.Element {
 
   return (
     <div className="km-resources__panel">
-      <Card className="km-resources__create" variant="flat">
-        <Eyebrow>
-          <Bilingual en="New list" kr="새 목록" />
-        </Eyebrow>
-        <div className="km-resources__create-row">
-          <input
-            type="text"
-            value={newName}
-            onChange={(e) => {
-              setNewName(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                void create();
-              }
-            }}
-            placeholder="List name (Korean)"
-            className="kr focusring km-resources__create-input"
-            aria-label="New list name"
-            maxLength={120}
-          />
-          <Button
-            variant="gold"
-            size="sm"
-            onClick={() => {
-              void create();
-            }}
-            disabled={newName.trim().length === 0 || creating}
-          >
-            {creating ? (
-              <Bilingual en="Creating…" kr="만드는 중…" compact />
-            ) : (
-              <Bilingual en="Create" kr="만들기" compact />
-            )}
-          </Button>
-        </div>
-        <div className="km-resources__create-row">
-          <input
-            type="text"
-            value={newEn}
-            onChange={(e) => {
-              setNewEn(e.target.value);
-            }}
-            placeholder="English label (optional)"
-            className="focusring km-resources__create-input"
-            aria-label="English label"
-            maxLength={120}
-          />
-        </div>
-        <div
-          role="radiogroup"
-          aria-label="List kind"
-          className="km-review__kindOpts"
+      {/* F-147 — the create form is a Sheet popup behind this trigger,
+          matching every other create/add flow on the Vocab page instead of
+          an always-visible inline card. */}
+      <div className="km-resources__createTrigger">
+        <Button
+          variant="gold"
+          size="sm"
+          leadingIcon={<Icon name="plus" size={14} />}
+          onClick={() => {
+            setCreateOpen(true);
+          }}
         >
-          {KIND_OPTIONS.map((k) => (
-            <button
-              key={k}
-              type="button"
-              role="radio"
-              aria-checked={newKind === k}
-              onClick={() => {
-                setNewKind(k);
-              }}
-              className={`km-review__kindOpt focusring${newKind === k ? ' km-review__kindOpt--on' : ''}`}
-              disabled={creating}
-            >
-              <Bilingual en={k} kr={KIND_KR[k]} compact />
-            </button>
-          ))}
-        </div>
-        {createError ? <ErrorCard message={createError} /> : null}
-      </Card>
+          <Bilingual en="New list" kr="새 목록" compact />
+        </Button>
+      </div>
 
       {loading ? (
         <div className="km-grammar__state" role="status">
@@ -289,6 +252,13 @@ export function MyVocabLists(): JSX.Element {
         </>
       )}
 
+      <CreateListSheet
+        open={createOpen}
+        kinds={kinds}
+        onClose={closeCreate}
+        onCreated={load}
+      />
+
       <ListDetailSheet
         list={openList}
         onClose={() => {
@@ -297,6 +267,171 @@ export function MyVocabLists(): JSX.Element {
         onChanged={load}
       />
     </div>
+  );
+}
+
+interface CreateListSheetProps {
+  open: boolean;
+  kinds: ReadonlyArray<VocabListKind>;
+  onClose: () => void;
+  /** Fired after a successful create so the parent refreshes its rows. */
+  onCreated: () => void;
+}
+
+/**
+ * F-147 — the "New list" create form, as its OWN component (not inline in
+ * `MyVocabLists`), mirroring `ListDetailSheet`/`AddToListSheet`'s existing
+ * split. This isn't just tidiness: the form's own keystroke state (name/
+ * English label/kind) must NOT live in the same component that constructs
+ * the `<Sheet>`'s `onClose` — if it did, every keystroke would re-render
+ * that component, produce a brand-new inline `onClose` reference, and
+ * re-trigger `useModalA11y`'s open/close effect (whose cleanup restores
+ * focus to whatever was active before the sheet opened) on every
+ * keystroke — silently kicking focus back out of the input after the very
+ * first character. Keeping the form state HERE, in its own component,
+ * means typing only re-renders this component, not `MyVocabLists`, so
+ * `onClose`/`kinds` (received as already-stable props) never change
+ * identity mid-type.
+ */
+function CreateListSheet({
+  open,
+  kinds,
+  onClose,
+  onCreated,
+}: CreateListSheetProps): JSX.Element {
+  const [newName, setNewName] = useState('');
+  const [newEn, setNewEn] = useState('');
+  const [newKind, setNewKind] = useState<VocabListKind>(kinds[0] ?? 'vocab');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const create = useCallback(async (): Promise<void> => {
+    const name = newName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const en = newEn.trim();
+      await vocabService.createList({
+        name_kr: name,
+        kind: newKind,
+        ...(en ? { name_en: en } : {}),
+      });
+      setNewName('');
+      setNewEn('');
+      setNewKind(kinds[0] ?? 'vocab');
+      onClose();
+      onCreated();
+    } catch (err) {
+      setCreateError(errorMessageFor(err, 'Could not create the list.'));
+    } finally {
+      setCreating(false);
+    }
+  }, [newName, newEn, newKind, creating, kinds, onClose, onCreated]);
+
+  return (
+    <Sheet open={open} onClose={onClose} ariaLabel="New list">
+      <div className="km-review__sheetBody">
+        <div className="km-review__sheetHead">
+          <div>
+            <Eyebrow>
+              <Bilingual en="New list" kr="새 목록" />
+            </Eyebrow>
+            <div className="kr-display km-review__sheetTitle">
+              <Bilingual en="Create a list" kr="목록 만들기" />
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="Close new list"
+          >
+            <Icon name="close" size={14} />
+          </Button>
+        </div>
+        <hr className="hr-double km-review__sheetRule" />
+
+        <div className="km-resources__create-row">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => {
+              setNewName(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void create();
+              }
+            }}
+            placeholder="List name (Korean)"
+            className="kr focusring km-resources__create-input"
+            aria-label="New list name"
+            maxLength={120}
+          />
+        </div>
+        <div className="km-resources__create-row">
+          <input
+            type="text"
+            value={newEn}
+            onChange={(e) => {
+              setNewEn(e.target.value);
+            }}
+            placeholder="English label (optional)"
+            className="focusring km-resources__create-input"
+            aria-label="English label"
+            maxLength={120}
+          />
+        </div>
+        {/* F-144 — the kind picker only renders when this mount actually
+            offers a CHOICE between kinds. A single-kind mount (e.g. the
+            Vocab page's `kinds={['vocab']}`) never shows it — every list
+            this mount creates just uses `kinds[0]`, and no other kind
+            (grammar included) is ever a visible, tappable option. */}
+        {kinds.length > 1 ? (
+          <div
+            role="radiogroup"
+            aria-label="List kind"
+            className="km-review__kindOpts"
+          >
+            {kinds.map((k) => (
+              <button
+                key={k}
+                type="button"
+                role="radio"
+                aria-checked={newKind === k}
+                onClick={() => {
+                  setNewKind(k);
+                }}
+                className={`km-review__kindOpt focusring${newKind === k ? ' km-review__kindOpt--on' : ''}`}
+                disabled={creating}
+              >
+                <Bilingual en={k} kr={KIND_KR[k]} compact />
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {createError ? <ErrorCard message={createError} /> : null}
+
+        <div className="km-review__sheetActions">
+          <Button
+            variant="gold"
+            size="md"
+            onClick={() => {
+              void create();
+            }}
+            disabled={newName.trim().length === 0 || creating}
+          >
+            {creating ? (
+              <Bilingual en="Creating…" kr="만드는 중…" />
+            ) : (
+              <Bilingual en="Create" kr="만들기" />
+            )}
+          </Button>
+        </div>
+      </div>
+    </Sheet>
   );
 }
 

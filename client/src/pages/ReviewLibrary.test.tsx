@@ -61,6 +61,16 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(screen.getByText('단어 · 문법 · 기출 · 업로드')).toBeInTheDocument();
   });
 
+  // S1 (`REVIEW_batch2-fidelity.md`) — this page's root was missing
+  // `.km-rain-sheen` (device #8, Night ambient) while every sibling Library
+  // page carries it. Fixed in the batch-2 fix-pass.
+  it('carries the km-rain-sheen ambient overlay on the page root (S1)', () => {
+    renderLibrary();
+    expect(
+      document.querySelector('.screen.km-library.km-rain-sheen'),
+    ).toBeInTheDocument();
+  });
+
   it('F-042: exactly four sections, in order Vocabulary → Grammar → TOPIK exams → Uploads', () => {
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });
@@ -101,6 +111,29 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(row).toHaveTextContent('기출 시험');
     await user.click(row);
     expect(screen.getByTestId('location')).toHaveTextContent('/review/mistakes');
+  });
+
+  it('F-128: reskins with the hub-header recipe — skyline + dancheong rail + a CityCard per row', () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/review']}>
+        <Routes>
+          <Route path="*" element={<ReviewLibrary />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    // Device #4 — the Namsan skyline strip carries the real <h1> (same hub
+    // recipe as Today/Progress).
+    expect(container.querySelector('.km-skyline')).not.toBeNull();
+    // Device #2 — the dancheong-rail divider under the skyline.
+    expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
+    // Device #1 — every section row is now a CityCard-backed signboard, one
+    // per row, carrying the per-section tone (F-042's four sections).
+    const cards = container.querySelectorAll('.km-library__row .km-citycard');
+    expect(cards).toHaveLength(4);
+    expect(container.querySelector('.km-tone--accent')).not.toBeNull();
+    expect(container.querySelector('.km-tone--blue')).not.toBeNull();
+    expect(container.querySelector('.km-tone--mint')).not.toBeNull();
+    expect(container.querySelector('.km-tone--plain')).not.toBeNull();
   });
 
   it('renders each section bilingually with its contents description', () => {

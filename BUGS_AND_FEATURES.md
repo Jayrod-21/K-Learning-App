@@ -1596,6 +1596,24 @@ Filed from the batch-1 /fixpass (Today+Progress). Each is an honest data/infra g
 
 ---
 
+## 🔎 Wave 2 follow-ups — surfaced by the Library fix-pass
+
+Filed from the batch-2 /fixpass (Library). Two need server work (client display is already honest); one is a consistency migration.
+
+#### F-175 · Dictionary grammar-exclusion: server-side WHERE clause for exact pager
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** bug/backend
+- **Where / State:** F-150 excludes grammar POS rows (`어미`/`조사`) client-side, so no grammar ever renders — but the server's `total`/page range is computed BEFORE the exclusion, so a grammar-heavy page can render short and the "N–M of T" count can be slightly off. Add `WHERE part_of_speech NOT IN ('어미','조사')` to the dictionary query in `server/src/routes/krdict.ts` (sole consumer — safe surgical change) so pager counts are exact.
+
+#### F-176 · Vocab genre/theme filter — promote `theme` to a filterable facet (was F-151)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Where / State:** F-151 "more genres" can't be done client-side — `content_domain` is a real 3-value Postgres enum (`general`/`research`/`business`). The richer signal is `vocab_entries.theme` (~30 real per-book categories, ~3,000 tagged rows) but `GET /vocab/entries` has no `theme` filter param. Add `theme` as a filterable facet in `server/src/routes/vocab.ts` + `lib/libraryFilters.ts` (shared with the Grammar pages), then surface it in the Vocab genre filter.
+
+#### F-177 · Migrate Today + Progress headers to shared PageHubHeader
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor
+- **Where / State:** The batch-2 fixpass extracted the hub-header recipe (SkylineHeader title slot + DancheongRail divider) into shared `components/PageHubHeader.tsx`, adopted on all 7 Library pages. Today.tsx + Progress.tsx still use their own inline copy of the recipe — migrate them to `PageHubHeader` so the header lives in exactly one place and can't drift.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>

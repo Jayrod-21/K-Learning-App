@@ -19,6 +19,23 @@
  *
  * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2, `components/PageHubHeader.tsx`, batch-2 fix-pass BLOCKER-2) instead
+ * of a bare `Topbar`. Its own loading-state div now renders through
+ * `.km-dictionary__state` (ReviewDictionary.css) rather than the borrowed
+ * `.km-grammar__state` (S-3, `REVIEW_batch2-vocab.md`) — same fix ReviewVocab
+ * already applied for F-144.
+ *
+ * F-150 — "All Words" must exclude GRAMMAR entries (verb/adjective endings,
+ * particles) from the KRDICT browse/search: KRDICT tags those with
+ * `part_of_speech` '어미' (ending) or '조사' (particle) — grammar PATTERNS
+ * belong on the Grammar library tab (the KGIU corpus), not this vocabulary
+ * lookup. `isGrammarPos` filters them out client-side (see its doc comment
+ * for the exact data check + the known pagination-count caveat this leaves).
+ *
+ * F-149 — the search field carries a real visible label ("Search for a
+ * word"), not just a placeholder.
+ *
  * Threat model: the search box is user-controlled — the server Zod-validates
  * `q` and parameterises the SQL; all strings render through React text
  * children. The client's defence is RATE (debounce + per-fetch abort so a
@@ -31,13 +48,14 @@ import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Card } from '../../components/Card';
 import { ErrorCard } from '../../components/ErrorCard';
+import { Eyebrow } from '../../components/Eyebrow';
 import {
   FilterSelect,
   type FilterSelectOption,
 } from '../../components/FilterSelect';
 import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
-import { Topbar } from '../../components/Topbar';
+import { PageHubHeader } from '../../components/PageHubHeader';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
 import { DOMAIN_FILTERS, PAGE_SIZE } from '../../lib/libraryFilters';
 import { errorMessageFor } from '../../lib/errorCopy';
@@ -50,6 +68,34 @@ import type {
   KrdictSearchEntry,
   VocabEntry,
 } from '../../types/domain';
+import './ReviewDictionary.css';
+
+/**
+ * F-150 — KRDICT part-of-speech tags that mark a GRAMMAR morpheme (a
+ * verb/adjective ending or a particle) rather than a headword a learner
+ * would file under "vocabulary". Grammar patterns have their own library
+ * tab (`/review/grammar`, the KGIU corpus); this dictionary lens is
+ * vocab-only, so these rows are excluded from render.
+ *
+ * Data check (live KRDICT corpus, 2026-07-13): of 53,978 rows, 504 carry
+ * '어미' (ending) and 157 carry '조사' (particle) — ~1.2% of the corpus.
+ * '접사' (affix, e.g. 헛-, -질) is deliberately NOT excluded — word-forming
+ * affixes are morphology, not the grammar-PATTERN sense this ticket means.
+ *
+ * KNOWN GAP: this filters the RENDERED rows only. `GET /krdict/search`
+ * (server/src/routes/krdict.ts, out of this ticket's edit scope) has no
+ * part-of-speech exclusion, so the server's `total`/pager range still counts
+ * the ~1.2% of grammar rows this page hides — a page can render slightly
+ * fewer than its nominal page size, and the pager's "N–M of T" range can be
+ * off by a couple of rows near a grammar-heavy page. The correct full fix is
+ * a `WHERE part_of_speech NOT IN ('어미','조사')` clause server-side (that
+ * route has no other consumer, so it's a safe, surgical addition) — flagged
+ * for a follow-up rather than done here.
+ */
+const GRAMMAR_POS = new Set(['어미', '조사']);
+function isGrammarPos(pos: string | null): boolean {
+  return pos !== null && GRAMMAR_POS.has(pos);
+}
 
 /** Parent-tab name source — nav.ts owns the en/kr pair (F-043 renamed the
  *  tab to "Library"), so the eyebrow and back label can never go stale. */
@@ -230,32 +276,50 @@ export default function ReviewDictionary(): JSX.Element {
     setReloadTick((t) => t + 1);
   }, []);
 
-  const rowCount = page.rows.length;
+  // F-150 — the vocab-pivot path (`page.kind === 'vocab'`) already excludes
+  // grammar server-side (`entry_type = 'word'` in `GET /vocab/entries`); only
+  // the raw KRDICT browse/search can surface a grammar-tagged row, so the
+  // filter applies there only (re-applied at render time below — the
+  // discriminated union narrows on `page.kind`, not on a hoisted variable,
+  // so a single shared `visibleRows` would lose that narrowing). See
+  // `isGrammarPos`'s doc comment for the pagination-count caveat this leaves.
+  const rowCount =
+    page.kind === 'krdict'
+      ? page.rows.filter((entry) => !isGrammarPos(entry.part_of_speech)).length
+      : page.rows.length;
 
   return (
     <section
-      className="screen km-reference km-resources"
+      className="screen km-reference km-resources km-dictionary km-rain-sheen"
       aria-labelledby="km-review-dictionary-title"
     >
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
 
-      <Topbar
-        krTitle="전체 단어"
-        title="All Words"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx). */}
+      <PageHubHeader
         titleId="km-review-dictionary-title"
         eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
+        heading={<Bilingual en="All Words" kr="전체 단어" />}
       />
 
       <LibrarySubnav />
 
       <div className="km-resources__panel">
+        {/* F-149 — a real visible label above the field (SearchBox itself
+            has no <label>/id to associate one via htmlFor — a shared
+            component, out of scope here — so the accessible name AND a
+            visible caption both carry the same copy). */}
+        <Eyebrow className="km-dictionary__searchLabel">
+          <Bilingual en="Search for a word" kr="단어 검색" />
+        </Eyebrow>
         <SearchBox
           value={input}
           onChange={setInput}
           onClear={clear}
           placeholder="Search 54,000 dictionary entries"
-          ariaLabel="Search all words"
+          ariaLabel="Search for a word"
         />
         {/* F-050 — genre lens (same genres as the vocabulary page). */}
         <FilterSelect
@@ -279,7 +343,7 @@ export default function ReviewDictionary(): JSX.Element {
           />
         ) : null}
         {loading && rowCount === 0 ? (
-          <div className="km-grammar__state" role="status">
+          <div className="km-dictionary__state" role="status">
             {browsing ? (
               <Bilingual en="Loading words…" kr="단어를 불러오는 중…" />
             ) : (
@@ -299,28 +363,32 @@ export default function ReviewDictionary(): JSX.Element {
             <Card className="km-reference__list" variant="flat">
               <ul>
                 {page.kind === 'krdict'
-                  ? page.rows.map((entry) => (
-                      <li
-                        key={`krdict:${String(entry.id)}`}
-                        className="km-reference__row"
-                      >
-                        <div className="km-resources__dict-row">
-                          <span className="kr km-reference__row-kr">
-                            {entry.headword}
-                          </span>
-                          {entry.part_of_speech ? (
-                            <span className="km-pill km-pill--default km-resources__pos">
-                              {entry.part_of_speech}
+                  ? page.rows
+                      // F-150 — grammar rows (어미/조사) never render on this
+                      // vocab-only lens; see `isGrammarPos`'s doc comment.
+                      .filter((entry) => !isGrammarPos(entry.part_of_speech))
+                      .map((entry) => (
+                        <li
+                          key={`krdict:${String(entry.id)}`}
+                          className="km-reference__row"
+                        >
+                          <div className="km-resources__dict-row">
+                            <span className="kr km-reference__row-kr">
+                              {entry.headword}
                             </span>
-                          ) : null}
-                          <span className="km-reference__row-en">
-                            {entry.definition_english ??
-                              entry.definition_korean ??
-                              ''}
-                          </span>
-                        </div>
-                      </li>
-                    ))
+                            {entry.part_of_speech ? (
+                              <span className="km-pill km-pill--default km-resources__pos">
+                                {entry.part_of_speech}
+                              </span>
+                            ) : null}
+                            <span className="km-reference__row-en">
+                              {entry.definition_english ??
+                                entry.definition_korean ??
+                                ''}
+                            </span>
+                          </div>
+                        </li>
+                      ))
                   : page.rows.map((entry) => (
                       <li
                         key={`vocab:${String(entry.id)}`}

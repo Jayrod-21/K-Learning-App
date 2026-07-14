@@ -10,16 +10,25 @@
  * flow through `useEndpointOrMock`, so the dev-only 🅂 badge lights when the
  * fixture is serving.
  *
- * F-044 — session selector + collapsible questions. The old page rendered
- * every miss fully expanded in one flat list (very long, very cluttered).
- * Now each question is a `CollapsibleTile` (collapsed by default — the header
- * shows section · number · mode · date + a one-line prompt snippet) and a
- * `FilterSelect` scopes the list to one SESSION. Sessions are derived
+ * F-044 — session selector + date-divided groups. Sessions are derived
  * CLIENT-SIDE by grouping the wrong-answer log on (local calendar day, mode):
  * the /topik/mistakes DTO does not yet carry the `topik_responses.attempt_id`
  * that migration 046 added, so two mock sittings on the same day merge into
  * one group. Exact per-sitting grouping needs the DTO extension — ticket
  * F-105; the heuristic is honest and self-corrects once the field lands.
+ * A `FilterSelect` can additionally scope the page to one session.
+ *
+ * F-154 (Wave-2) — the old page rendered every miss as a fully-expandable
+ * `CollapsibleTile` in one flat list (very long, very cluttered). Now each
+ * session renders as its own date-divided group (a `CityCard`, F-128 device
+ * #1/#2) holding a GRID of small square question-number tiles — one per
+ * missed question, matching the km-final.html Mistakes mock exactly. Tapping
+ * a tile opens the shared `Sheet` popup (`MistakeSheetBody`) with the
+ * question, the passage, the full answer key (user's wrong pick + the
+ * correct option), and a "See explanation" reveal that expands the
+ * explanation + the F-020 Ask-about-this handoff in place — there is no
+ * separate explanation route to navigate to, so "jump to explanation" is an
+ * honest in-sheet reveal, not a fabricated deep link.
  *
  * F-045 — per-exam score. The score (correct / total) of a past mock exam is
  * NOT derivable from a wrong-answers-only log, and no attempt-history route
@@ -43,9 +52,12 @@ import { useState, type JSX } from 'react';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
+import { Button } from '../components/Button';
+import { CityCard } from '../components/CityCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { FilterSelect } from '../components/FilterSelect';
-import { Topbar } from '../components/Topbar';
+import { PageHubHeader } from '../components/PageHubHeader';
+import { Sheet } from '../components/Sheet';
 import { Card } from '../components/Card';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
@@ -138,84 +150,171 @@ function groupSessions(mistakes: Mistake[]): MistakeSession[] {
 }
 
 /**
- * One reviewed question as a collapsed-by-default tile (F-044). The header
- * (CollapsibleTile's toggle button) carries the compact identity — section ·
- * number · mode, the date, and a one-line prompt snippet — and the full
- * review (prompt, passage, answer key, explanation, Ask-about handoff) lives
- * in the disclosure body. Everything in the header is a <span>: the title
- * renders inside a <button>, whose content model is phrasing-only.
+ * F-154 — one small square question-number tile in the grid. Every row on
+ * this page is, by definition, a WRONG answer, so the tile always carries
+ * the danger/critical tone (co-located CSS) — there is no "correct" state to
+ * distinguish it from. `aria-label` carries the full identity (section ·
+ * number · mode) since the visible glyph is just the question number.
  */
-function MistakeTile({ mistake }: { mistake: Mistake }): JSX.Element {
+function MistakeQuestionTile({
+  mistake,
+  onOpen,
+}: {
+  mistake: Mistake;
+  onOpen: (mistake: Mistake) => void;
+}): JSX.Element {
+  const { item } = mistake;
+  return (
+    <li className="km-mistakes__tileWrap">
+      <button
+        type="button"
+        className="km-mistakes__qtile focusring"
+        onClick={() => {
+          onOpen(mistake);
+        }}
+        aria-label={`Question ${String(item.number)}, ${item.section}, ${modeLabel(mistake.mode)} — tap to review`}
+      >
+        {item.number}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * F-154 — one date/session-divided group: a divider line (reusing the F-044
+ * session label — day · mode · missed count) followed by the square-tile
+ * grid, the whole thing riding on a `CityCard` (F-128 device #1, `rail` for
+ * device #2) so the grouping itself reads as a signboard/paper section, not
+ * a flat token reskin.
+ */
+function MistakeSessionGroup({
+  session,
+  onOpen,
+}: {
+  session: MistakeSession;
+  onOpen: (mistake: Mistake) => void;
+}): JSX.Element {
+  return (
+    <CityCard
+      tone="plain"
+      rail
+      className="km-mistakes__group"
+      aria-labelledby={`km-mistakes-divider-${session.key}`}
+    >
+      <p id={`km-mistakes-divider-${session.key}`} className="km-mistakes__divider">
+        {session.label}
+      </p>
+      <ul className="km-mistakes__grid" aria-label={session.label}>
+        {session.mistakes.map((m) => (
+          <MistakeQuestionTile key={m.responseId} mistake={m} onOpen={onOpen} />
+        ))}
+      </ul>
+    </CityCard>
+  );
+}
+
+/**
+ * F-154 — the tap-a-tile popup: the shared `Sheet`. Shows the question (+
+ * passage), the full answer key (the user's wrong pick tagged, the correct
+ * option marked), and a "See explanation" reveal that expands the
+ * explanation + the F-020 Ask-about-this handoff in place. Keyed by
+ * `mistake.responseId` at the call site so the reveal state resets between
+ * two different tiles opened back to back.
+ */
+function MistakeSheetBody({
+  mistake,
+  onClose,
+}: {
+  mistake: Mistake;
+  onClose: () => void;
+}): JSX.Element {
+  const [showExplanation, setShowExplanation] = useState(false);
   const { item, picked } = mistake;
   const correct = item.options.find((o) => o.correct);
   const pickedOpt = item.options.find((o) => o.id === picked);
   const when = whenLabel(mistake.answeredAt);
+
   return (
-    <CollapsibleTile
-      className="km-mistakes__tile"
-      defaultCollapsed
-      title={
-        <span className="km-mistakes__tile-head">
-          <span className="km-mistakes__tile-meta">
-            <span className="km-eyebrow">
-              {item.section} · {item.number}번 · {modeLabel(mistake.mode)}
-            </span>
-            {when !== '' ? (
-              <span className="km-mistakes__when">{when}</span>
-            ) : null}
-          </span>
-          {item.prompt !== '' ? (
-            <span className="kr km-mistakes__tile-snippet">{item.prompt}</span>
+    // Batch-2 fix-pass (S2, `REVIEW_batch2-fidelity.md`) — the shared
+    // `.km-review__sheet*` classes (ReviewGrammar/ReviewVocab's own popups)
+    // now drive padding/head layout here too, instead of this page's
+    // previously hand-rolled duplicate rules. `.km-mistakes__sheetBody`/
+    // `__sheetHead` ride as EXTRA classes for the one genuinely
+    // Mistakes-specific need (the flex-column body layout) — see
+    // Mistakes.css.
+    <div className="km-review__sheetBody km-mistakes__sheetBody">
+      <div className="km-review__sheetHead km-mistakes__sheetHead">
+        <div>
+          <Eyebrow>
+            {item.section} · {item.number}번 · {modeLabel(mistake.mode)}
+          </Eyebrow>
+          {when !== '' ? (
+            <p className="km-mistakes__when">{when}</p>
           ) : null}
-        </span>
-      }
-    >
-      <div className="km-mistakes__body">
-        {item.prompt !== '' ? (
-          <p className="kr km-mistakes__prompt">{item.prompt}</p>
-        ) : null}
-        {item.passage ? (
-          <p className="kr km-mistakes__passage">{item.passage}</p>
-        ) : null}
-
-        <div
-          className="km-topik__choices"
-          role="list"
-          aria-label="Answer choices"
-        >
-          {item.options.map((o, i) => {
-            const isPicked = o.id === picked;
-            const isCorrect = o.correct;
-            return (
-              <div
-                key={o.id}
-                role="listitem"
-                className={cn(
-                  'km-topik__choice',
-                  isCorrect && 'km-topik__choice--correct',
-                  isPicked && !isCorrect && 'km-topik__choice--wrong',
-                )}
-              >
-                <span className="km-topik__marker">{CHOICE_MARKERS[i]}</span>
-                <span className="km-topik__choice-body">
-                  <span className="kr km-topik__choice-kr">{o.kr}</span>
-                </span>
-                {isCorrect ? <Icon name="check" size={16} /> : null}
-                {isPicked && !isCorrect ? (
-                  <span className="km-mistakes__tag">
-                    <Bilingual en="Your answer" kr="내 답" compact />
-                  </span>
-                ) : null}
-              </div>
-            );
-          })}
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          aria-label="Close question detail"
+        >
+          <Icon name="close" size={14} />
+        </Button>
+      </div>
 
-        {/* v2 flatten: the explanation is a plain inset panel, NOT a nested
-            <Card variant="flat"> — a card must never contain another card
-            (CollapsibleTile IS a Card, so this rule now guards the whole
-            tile body). Surface + padding come from .km-mistakes__explain. */}
-        {item.explanation !== '' ? (
+      {item.prompt !== '' ? (
+        <p className="kr km-mistakes__prompt">{item.prompt}</p>
+      ) : null}
+      {item.passage ? (
+        <p className="kr km-mistakes__passage">{item.passage}</p>
+      ) : null}
+
+      <div className="km-topik__choices" role="list" aria-label="Answer choices">
+        {item.options.map((o, i) => {
+          const isPicked = o.id === picked;
+          const isCorrect = o.correct;
+          return (
+            <div
+              key={o.id}
+              role="listitem"
+              className={cn(
+                'km-topik__choice',
+                isCorrect && 'km-topik__choice--correct',
+                isPicked && !isCorrect && 'km-topik__choice--wrong',
+              )}
+            >
+              <span className="km-topik__marker">{CHOICE_MARKERS[i]}</span>
+              <span className="km-topik__choice-body">
+                <span className="kr km-topik__choice-kr">{o.kr}</span>
+              </span>
+              {isCorrect ? <Icon name="check" size={16} /> : null}
+              {isPicked && !isCorrect ? (
+                <span className="km-mistakes__tag">
+                  <Bilingual en="Your answer" kr="내 답" compact />
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* F-154 "jump to explanation" — an honest in-sheet reveal: this app
+          has no separate explanation route to deep-link to, so the reveal
+          expands the explanation (+ the F-020 Ask handoff) in place rather
+          than fabricating a jump target. */}
+      {item.explanation !== '' ? (
+        !showExplanation ? (
+          <Button
+            variant="gold"
+            fullWidth
+            onClick={() => {
+              setShowExplanation(true);
+            }}
+            trailingIcon={<Icon name="arrow-right" size={14} />}
+          >
+            <Bilingual en="See explanation" kr="설명 보기" />
+          </Button>
+        ) : (
           <div className="km-mistakes__explain">
             {correct !== undefined ? (
               <p className="km-mistakes__answer">
@@ -224,21 +323,18 @@ function MistakeTile({ mistake }: { mistake: Mistake }): JSX.Element {
               </p>
             ) : null}
             <p className="km-mistakes__explain-text">{item.explanation}</p>
+            {/* F-020: hand this miss to the Chat tutor for an AI follow-up. */}
+            <AskAboutThisButton
+              prompt={item.prompt}
+              correctText={correct?.kr ?? ''}
+              passage={item.passage}
+              explanation={item.explanation}
+              userPick={pickedOpt?.kr}
+            />
           </div>
-        ) : null}
-
-        {/* F-020: hand this miss to the Chat tutor for an AI follow-up. */}
-        <div>
-          <AskAboutThisButton
-            prompt={item.prompt}
-            correctText={correct?.kr ?? ''}
-            passage={item.passage}
-            explanation={item.explanation}
-            userPick={pickedOpt?.kr}
-          />
-        </div>
-      </div>
-    </CollapsibleTile>
+        )
+      ) : null}
+    </div>
   );
 }
 
@@ -258,6 +354,9 @@ function WritingReviewSection(): JSX.Element {
         <Bilingual en="Writing review" kr="쓰기 복습" />
       </h2>
       <CollapsibleTile
+        surface="city"
+        tone="plain"
+        rail
         defaultCollapsed
         title={<Bilingual en="TOPIK writing responses" kr="TOPIK 쓰기 응답" />}
       >
@@ -269,6 +368,9 @@ function WritingReviewSection(): JSX.Element {
         </p>
       </CollapsibleTile>
       <CollapsibleTile
+        surface="city"
+        tone="plain"
+        rail
         defaultCollapsed
         title={<Bilingual en="Generated prompts" kr="생성된 주제" />}
       >
@@ -302,23 +404,41 @@ export default function Mistakes(): JSX.Element {
   const sessions = groupSessions(mistakes);
   const activeSession = sessions.find((s) => s.key === sessionKey);
   const active = activeSession !== undefined ? sessionKey : '';
-  const visible = activeSession?.mistakes ?? mistakes;
+  // F-154 — the visible SCOPE is one or more whole session groups (each its
+  // own date-divided tile grid), not a flattened list: "all sessions" shows
+  // every group stacked (newest first, matching groupSessions' own order);
+  // picking one session narrows to that single group.
+  const visibleSessions = activeSession !== undefined ? [activeSession] : sessions;
+  const visibleCount = visibleSessions.reduce(
+    (sum, s) => sum + s.mistakes.length,
+    0,
+  );
+
+  // F-154 tap-a-tile popup state. Page-level (not per-group) so a tile
+  // tapped in ANY visible group opens the same Sheet.
+  const [openMistake, setOpenMistake] = useState<Mistake | null>(null);
 
   return (
-    <section className="screen km-mistakes" aria-labelledby="km-mistakes-title">
+    <section
+      className="screen km-mistakes km-rain-sheen"
+      aria-labelledby="km-mistakes-title"
+    >
       {isMock ? <MockBadge /> : null}
       {/* F-024: nested Review-library sub-page → explicit back control with a
           deterministic parent route (deep links never exit the PWA). */}
       <div className="km-mistakes__nav">
         <BackButton to="/review" label={LIBRARY_NAV.label} />
       </div>
-      <Topbar
-        krTitle="틀린 문제"
-        title="Mistakes"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. This page was one of two Library pages that missed the
+          recipe entirely (`REVIEW_batch2-fidelity.md` B1). */}
+      <PageHubHeader
         titleId="km-mistakes-title"
         eyebrow={
           <Bilingual en={MISTAKES_NAV.eyebrow} kr={MISTAKES_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Mistakes" kr="틀린 문제" />}
       />
 
       {loading ? (
@@ -335,7 +455,12 @@ export default function Mistakes(): JSX.Element {
           onRetry={refetch}
         />
       ) : mistakes.length === 0 ? (
-        <Card className="km-mistakes__state km-mistakes__empty">
+        // F-128 devices #3/#6 — a faint giwa texture + a giant "복습" hangul
+        // watermark behind the empty state, matching Progress's precedent.
+        <Card
+          className="km-mistakes__state km-mistakes__empty km-giwa km-hangul-watermark"
+          data-glyph="복습"
+        >
           <Icon name="check" size={22} />
           {/* P3b trim: one line — the old second sub-line restated the page. */}
           <p>
@@ -364,30 +489,53 @@ export default function Mistakes(): JSX.Element {
                   // At the cap "N in the last 30 days" would present a
                   // truncated fetch as a period total — say what we KNOW.
                   <Bilingual
-                    en={`Your most recent ${String(visible.length)} missed`}
-                    kr={`최근에 틀린 ${String(visible.length)}문제`}
+                    en={`Your most recent ${String(visibleCount)} missed`}
+                    kr={`최근에 틀린 ${String(visibleCount)}문제`}
                   />
                 ) : (
                   <Bilingual
-                    en={`${String(visible.length)} missed in the last 30 days`}
-                    kr={`최근 30일간 ${String(visible.length)}문제 틀렸어요`}
+                    en={`${String(visibleCount)} missed in the last 30 days`}
+                    kr={`최근 30일간 ${String(visibleCount)}문제 틀렸어요`}
                   />
                 )
               ) : (
                 <Bilingual
-                  en={`${String(visible.length)} missed in this session`}
-                  kr={`이 세션에서 ${String(visible.length)}문제 틀렸어요`}
+                  en={`${String(visibleCount)} missed in this session`}
+                  kr={`이 세션에서 ${String(visibleCount)}문제 틀렸어요`}
                 />
               )}
             </p>
           </div>
-          <div className="km-mistakes__list">
-            {visible.map((m) => (
-              <MistakeTile key={m.responseId} mistake={m} />
+          {/* F-154 — square question-number tiles, divided by session/date. */}
+          <div className="km-mistakes__groups">
+            {visibleSessions.map((s) => (
+              <MistakeSessionGroup
+                key={s.key}
+                session={s}
+                onOpen={setOpenMistake}
+              />
             ))}
           </div>
         </>
       )}
+
+      <Sheet
+        open={openMistake !== null}
+        onClose={() => {
+          setOpenMistake(null);
+        }}
+        ariaLabel="Question detail"
+      >
+        {openMistake ? (
+          <MistakeSheetBody
+            key={openMistake.responseId}
+            mistake={openMistake}
+            onClose={() => {
+              setOpenMistake(null);
+            }}
+          />
+        ) : null}
+      </Sheet>
 
       <WritingReviewSection />
     </section>

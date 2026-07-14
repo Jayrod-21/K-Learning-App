@@ -22,6 +22,38 @@
  *
  * F-024: a BackButton to the library index tops the page (nested sub-page).
  *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2, `components/PageHubHeader.tsx`, batch-2 fix-pass BLOCKER-2) instead
+ * of a bare `Topbar`, and My Lists is now a `CollapsibleTile` signboard
+ * (F-146, device #1/#2).
+ *
+ * F-144 — this page's own loading-state divs used to borrow
+ * `.km-grammar__state` (a rule literally named after `pages/Grammar.tsx`,
+ * reused ad hoc by several unrelated screens); they now use this page's own
+ * `.km-vocab__state` (ReviewVocab.css), identical styling, no "grammar" in
+ * the classname of a page that must never surface grammar UI. Batch-2
+ * fix-pass: F-144's REAL bug was that `MyVocabLists`' own inline "New list"
+ * card put a live "Grammar · 문법" radio option on this page by default
+ * (`REVIEW_batch2-vocab.md` BLOCKER B-1) — fixed at the source by giving
+ * `MyVocabLists` a `kinds` prop; this page passes `kinds={['vocab']}` so the
+ * kind picker never renders (a single-kind mount skips it entirely — see
+ * MyVocabLists.tsx). `WeeklySuggestions` (shared, out-of-scope for this
+ * pass) still renders its OWN loading state through the shared
+ * `.km-grammar__state` rule — flagged for a follow-up there.
+ *
+ * F-148 — "This Week" is now a `Sheet` popup (a small trigger button opens
+ * it) instead of an always-inline card, so the page reads as My Lists →
+ * Browse with the suggestion strip tucked behind a tap, matching the
+ * Create-list / add-to-list popups already on this page.
+ *
+ * F-147 — BOTH create-list entry points are now `Sheet` popups: the
+ * word-picker's create-a-list flow (`AddToListSheet` below) already was one
+ * and is already vocab-only (hardcoded `kind: 'vocab'`, no kind picker); and
+ * `MyVocabLists`' own create card (previously an always-visible inline form)
+ * is now ALSO a `Sheet` popup behind a "New list" trigger button, scoped to
+ * `kinds={['vocab']}` on this page (see MyVocabLists.tsx and this build's
+ * fixpass report).
+ *
  * Threat model: the search box is user-controlled — the server Zod-validates
  * `q` and parameterises the SQL; strings render through React text children;
  * the client's defence is RATE (debounce + per-fetch abort). List mutations
@@ -42,6 +74,7 @@ import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
 import { Card } from '../../components/Card';
+import { CollapsibleTile } from '../../components/CollapsibleTile';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Eyebrow } from '../../components/Eyebrow';
 import {
@@ -52,10 +85,10 @@ import { Icon } from '../../components/Icon';
 import { Pager, SearchBox } from '../../components/LibraryControls';
 import { LibrarySubnav } from '../../components/LibrarySubnav';
 import { MyVocabLists } from '../../components/MyVocabLists';
+import { PageHubHeader } from '../../components/PageHubHeader';
 import { Sheet } from '../../components/Sheet';
 import { ShowMore } from '../../components/ShowMore';
 import { ALL_SOURCES, SourceFilterRow } from '../../components/SourceFilterRow';
-import { Topbar } from '../../components/Topbar';
 import { WeeklySuggestions } from '../../components/WeeklySuggestions';
 import { useToast } from '../../components/useToast';
 import { useDebouncedSearch } from '../../hooks/useDebouncedSearch';
@@ -86,8 +119,24 @@ const LIBRARY_NAV = navItem('review');
 // F-049 filter vocabularies — closed lists mirroring the server enums
 // ─────────────────────────────────────────────────────────────
 
-/** Genre dropdown options — every genre (`content_domain`), minus the 'all'
- *  sentinel (FilterSelect's placeholder `''` IS the "all" state). */
+/**
+ * Genre dropdown options — every genre (`content_domain`), minus the 'all'
+ * sentinel (FilterSelect's placeholder `''` IS the "all" state).
+ *
+ * F-151 ("more genres"): `content_domain` is a real 3-value Postgres enum
+ * (`general`/`research`/`business` — migration 002; confirmed live,
+ * 2026-07-13: 3071/108/12 rows) shared by `lib/libraryFilters.ts` — also
+ * consumed by the Grammar library pages, which another agent is reworking in
+ * parallel this pass, so it's out of this ticket's edit scope. Expanding the
+ * genre SET (not just this list) needs a schema/enum change + a server
+ * filter param, not a client tweak. There IS richer real data already sitting
+ * on `vocab_entries.theme` (per-book chapter categories — People, Education,
+ * Economy, Health, … ~30 real values on ~3,000 rows) but `GET /vocab/entries`
+ * has no `theme` query param today (`server/src/routes/vocab.ts`), so it
+ * can't be wired from the client alone either. Deferred — see this build's
+ * fixpass report for the concrete follow-up (either promote `theme` to a
+ * filterable facet, or extend `content_domain`).
+ */
 const GENRE_OPTIONS: ReadonlyArray<FilterSelectOption> = DOMAIN_FILTERS.filter(
   (f) => f.id !== 'all',
 ).map((f) => ({ value: f.id, label: f.label }));
@@ -165,20 +214,26 @@ export default function ReviewVocab(): JSX.Element {
   // Browse-row add goes straight into that list (no picker sheet), and the
   // banner offers the way back to the list that was originally open.
   const addToList = toAddToListTarget(location.state);
+  // F-148 — "This Week" opens as a Sheet popup; the picks fetch is now lazy
+  // (WeeklySuggestions only mounts once the sheet opens), which is a nice
+  // side benefit but also means the fetch no longer fires on page load.
+  const [weekOpen, setWeekOpen] = useState(false);
 
   return (
     <section
-      className="screen km-reference km-resources"
+      className="screen km-reference km-resources km-vocab km-rain-sheen"
       aria-labelledby="km-review-vocab-title"
     >
       {/* F-024 — nested library sub-page: deterministic back to the index. */}
       <BackButton to="/review" label={LIBRARY_NAV.label} />
 
-      <Topbar
-        krTitle="단어"
-        title="Vocabulary"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (batch-2
+          fix-pass BLOCKER-2, components/PageHubHeader.tsx) instead of a bare
+          `Topbar`. */}
+      <PageHubHeader
         titleId="km-review-vocab-title"
         eyebrow={<Bilingual en={LIBRARY_NAV.label} kr={LIBRARY_NAV.kr} />}
+        heading={<Bilingual en="Vocabulary" kr="단어" />}
       />
 
       <LibrarySubnav />
@@ -206,23 +261,85 @@ export default function ReviewVocab(): JSX.Element {
         </Card>
       ) : null}
 
-      {/* F-052 — My Lists leads the page. */}
-      <section
-        className="km-vocab__section"
-        aria-labelledby="km-vocab-lists-h"
+      {/* F-052 — My Lists leads the page. F-146: it's now a CollapsibleTile
+          signboard (surface="city", device #1/#2) instead of a bare
+          <section>+<h2> — default OPEN (the ticket asks it to fold, not to
+          start hidden; this is the page's most-used surface). The disclosure
+          button itself carries the accessible name that the old <h2> gave
+          this section — see the F-146 test for the query shape that
+          replaces the retired heading-role assertion. */}
+      <CollapsibleTile
+        className="km-vocab__section km-vocab__listsTile"
+        surface="city"
+        tone="accent"
+        rail
+        title={<Bilingual en="My lists" kr="내 단어장" />}
       >
-        <h2 id="km-vocab-lists-h" className="km-review__sectionTitle">
-          <Bilingual en="My lists" kr="내 단어장" />
-        </h2>
-        <MyVocabLists />
-      </section>
+        {/* F-144/F-147 — this page's list-kind universe is vocab ONLY: the
+            Vocab page must never offer "Grammar · 문법" as a creatable list
+            kind (that was the ticket's actual complaint, and the F-147
+            "shared component, out of scope" excuse used to leave it live —
+            see MyVocabLists.tsx's own doc comment for the fix). `kinds`
+            defaults to the full vocab/grammar/hanja/mixed set for any future
+            second consumer; this page narrows it to the one kind it owns. */}
+        <MyVocabLists kinds={['vocab']} />
+      </CollapsibleTile>
 
       {/* F-053 — saved-from-uploads vocab, grouped by upload (conditional). */}
       <SavedFromUploads />
 
-      {/* F-047 — vocab picks only; grammar suggestions live on the Grammar
-          tab's side of the library now. */}
-      <WeeklySuggestions showGrammar={false} />
+      {/* F-148 — "This Week" is a popup: a small trigger opens a Sheet
+          instead of an always-inline card. F-047: vocab picks only —
+          grammar suggestions live on the Grammar tab's side of the library
+          now (`showGrammar={false}` unchanged). */}
+      <div className="km-vocab__weekTrigger">
+        <Button
+          variant="ghost"
+          size="sm"
+          leadingIcon={<Icon name="spark" size={14} />}
+          onClick={() => {
+            setWeekOpen(true);
+          }}
+        >
+          <Bilingual en="This week" kr="이번 주" compact />
+        </Button>
+      </div>
+
+      <Sheet
+        open={weekOpen}
+        onClose={() => {
+          setWeekOpen(false);
+        }}
+        ariaLabel="This week's words"
+      >
+        <div className="km-review__sheetBody">
+          <div className="km-review__sheetHead">
+            <div>
+              <Eyebrow>
+                <Bilingual en="This week" kr="이번 주" />
+              </Eyebrow>
+              <div className="kr-display km-review__sheetTitle">
+                <Bilingual en="Suggested picks" kr="추천 단어" />
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setWeekOpen(false);
+              }}
+              aria-label="Close this week's picks"
+            >
+              <Icon name="close" size={14} />
+            </Button>
+          </div>
+          <hr className="hr-double km-review__sheetRule" />
+          {/* Mounted only while the sheet is open — the fetch inside
+              WeeklySuggestions is lazy (no wasted round-trip behind a popup
+              the user never opens). */}
+          <WeeklySuggestions showGrammar={false} />
+        </div>
+      </Sheet>
 
       <section
         className="km-vocab__section"
@@ -400,12 +517,19 @@ function VocabBrowse({
 
   return (
     <div className="km-resources__panel">
+      {/* F-149 — a real visible label above the field (SearchBox itself has
+          no <label>/id to associate one via htmlFor — a shared component,
+          out of scope here — so the accessible name AND a visible caption
+          both carry the same copy). */}
+      <Eyebrow className="km-vocab__searchLabel">
+        <Bilingual en="Search for a word" kr="단어 검색" />
+      </Eyebrow>
       <SearchBox
         value={input}
         onChange={setInput}
         onClear={clear}
         placeholder="Search the 2,000 corpus"
-        ariaLabel="Search vocabulary"
+        ariaLabel="Search for a word"
       />
       {/* F-049 — dropdown filters ABOVE the list. FilterSelect is a labelled
           native select; '' (the "All" placeholder) maps to the 'all'
@@ -434,7 +558,7 @@ function VocabBrowse({
         onChange={setSource}
       />
       {loading && rows.length === 0 ? (
-        <div className="km-grammar__state" role="status">
+        <div className="km-vocab__state" role="status">
           <Bilingual en="Loading vocabulary…" kr="어휘를 불러오는 중…" />
         </div>
       ) : error ? (
@@ -667,7 +791,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
         <hr className="hr-double km-review__sheetRule" />
 
         {loading ? (
-          <div className="km-grammar__state" role="status">
+          <div className="km-vocab__state" role="status">
             <Bilingual en="Loading your lists…" kr="목록을 불러오는 중…" />
           </div>
         ) : null}

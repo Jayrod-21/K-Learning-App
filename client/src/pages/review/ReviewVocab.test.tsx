@@ -170,10 +170,12 @@ describe('ReviewVocab — stacked layout (F-052) + chrome', () => {
     expect(await screen.findByText('영향')).toBeInTheDocument();
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
 
-    // And My Lists comes FIRST in document order (F-052).
-    const listsHeading = screen.getByRole('heading', { name: '내 단어장 · My lists' });
+    // And My Lists comes FIRST in document order (F-052). F-146: My Lists is
+    // now a CollapsibleTile disclosure button, not a <h2> — see the F-146
+    // describe block below for its collapse/expand behavior.
+    const listsToggle = screen.getByRole('button', { name: '내 단어장 · My lists' });
     const browseHeading = screen.getByRole('heading', { name: '말뭉치 둘러보기 · Browse the corpus' });
-    const position = listsHeading.compareDocumentPosition(browseHeading);
+    const position = listsToggle.compareDocumentPosition(browseHeading);
     expect(position & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
@@ -214,7 +216,134 @@ describe('ReviewVocab — stacked layout (F-052) + chrome', () => {
   });
 });
 
-describe('ReviewVocab — This Week is vocab-only (F-047)', () => {
+describe('ReviewVocab — My Lists is collapsible (F-146)', () => {
+  it('starts expanded (the page\'s most-used surface) and folds/unfolds on tap', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const toggle = await screen.findByRole('button', {
+      name: '내 단어장 · My lists',
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+
+describe('ReviewVocab — no leftover grammar UI (F-144)', () => {
+  it('never renders this page\'s own loading state through the retired "grammar" classname', async () => {
+    // Force the Browse loading branch to render by never resolving the
+    // fetch, then assert the visible state div carries the page's OWN
+    // class, not the borrowed `.km-grammar__state` this page used to reuse.
+    let release: (() => void) | undefined;
+    vocabSvc.searchEntriesPage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => {
+            resolve({ entries: VOCAB_ROWS, total: 3131, limit: 30, offset: 0 });
+          };
+        }),
+    );
+    const { container } = renderPage();
+    // Let My Lists' own (unrelated, out-of-scope) loading state settle first
+    // so this assertion is specifically about the Browse loading state below.
+    await screen.findByText('병원 어휘');
+    expect(
+      await screen.findByText('Loading vocabulary…'),
+    ).toBeInTheDocument();
+    const state = container.querySelector('.km-vocab__state');
+    expect(state).not.toBeNull();
+    expect(container.querySelector('.km-grammar__state')).toBeNull();
+    release?.();
+    await waitFor(() => {
+      expect(screen.queryByText('Loading vocabulary…')).not.toBeInTheDocument();
+    });
+  });
+
+  // BLOCKER B-1 (`REVIEW_batch2-vocab.md`) — MyVocabLists' own "New list"
+  // card unconditionally offered a "Grammar · 문법" kind option, live on this
+  // page, before this fix-pass. Real negative test: open the ENTIRE create
+  // flow (not just the loading-state div checked above) and confirm no
+  // "Grammar"/"문법" text or radio option is reachable anywhere.
+  it('never offers "Grammar" as a creatable list kind — MyVocabLists is mounted vocab-only (kinds=["vocab"])', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('병원 어휘');
+
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+
+    // No kind picker at all — a single-kind mount skips it entirely, so
+    // there's nothing labelled "Grammar" to tap. (The page's LibrarySubnav
+    // legitimately shows a "Grammar" NAVIGATION link elsewhere — that's a
+    // different, correct affordance; this assertion is scoped to the
+    // create-list Sheet, which is the surface the ticket was actually
+    // about.)
+    expect(
+      within(dialog).queryByRole('radiogroup', { name: 'List kind' }),
+    ).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('radio')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('문법')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^Grammar$/)).not.toBeInTheDocument();
+    // And no radio control of any kind exists anywhere on the page (the
+    // ONLY radiogroup in this component was the retired kind picker).
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+  });
+
+  // F-147 — the create-list flow is a Sheet popup (behind a trigger button),
+  // not an always-visible inline card.
+  it('renders the create-list flow as a Sheet popup, not an always-inline card', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('병원 어휘');
+
+    // Not on the page until the trigger is tapped.
+    expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'New list name' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'New list' });
+    expect(
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — search field is labelled (F-149)', () => {
+  it('labels the search field "Search for a word" (visible caption + accessible name)', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    expect(
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
+    ).toBeInTheDocument();
+    // A real visible caption, not just an aria-label — SearchBox has no
+    // <label> slot of its own.
+    expect(screen.getByText('Search for a word')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — This Week is a popup (F-148), vocab-only (F-047)', () => {
+  /** Opens the "This week" popup and returns its dialog element. */
+  async function openWeek(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: /This week/ }));
+    return screen.findByRole('dialog', { name: "This week's words" });
+  }
+
+  it('renders behind a popup — the picks are not on the page until opened', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    // Nothing fetched or rendered until the trigger is tapped.
+    expect(suggestSvc.fetchWeeklyVocabSuggestions).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('결과')).not.toBeInTheDocument();
+  });
+
   it('never fetches or renders grammar suggestions on the vocabulary page', async () => {
     // Even a server that WOULD return grammar picks never gets asked, and
     // no grammar suggestion ever renders.
@@ -231,10 +360,13 @@ describe('ReviewVocab — This Week is vocab-only (F-047)', () => {
         source_pages: null,
       },
     ]);
+    const user = userEvent.setup();
     renderPage();
+    await screen.findByText('영향');
+    const dialog = await openWeek(user);
     // The vocab pick renders…
     expect(
-      await screen.findByRole('button', { name: 'Add 결과' }),
+      within(dialog).getByRole('button', { name: 'Add 결과' }),
     ).toBeInTheDocument();
     // …but the grammar suggestion fetch is skipped entirely and no grammar
     // pick exists anywhere on the page.
@@ -245,11 +377,13 @@ describe('ReviewVocab — This Week is vocab-only (F-047)', () => {
   it('adds a vocab pick and flips the button to ✓ Added', async () => {
     const user = userEvent.setup();
     renderPage();
-    const addBtn = await screen.findByRole('button', { name: 'Add 결과' });
+    await screen.findByText('영향');
+    const dialog = await openWeek(user);
+    const addBtn = within(dialog).getByRole('button', { name: 'Add 결과' });
     await user.click(addBtn);
 
     expect(vocabSvc.bankEntry).toHaveBeenCalledWith(11);
-    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+    expect(await within(dialog).findByText('✓ Added')).toBeInTheDocument();
   });
 
   it('treats a 409 (already banked) as success — idempotent flip, no error', async () => {
@@ -258,9 +392,27 @@ describe('ReviewVocab — This Week is vocab-only (F-047)', () => {
     );
     const user = userEvent.setup();
     renderPage();
-    await user.click(await screen.findByRole('button', { name: 'Add 결과' }));
+    await screen.findByText('영향');
+    const dialog = await openWeek(user);
+    await user.click(within(dialog).getByRole('button', { name: 'Add 결과' }));
 
-    expect(await screen.findByText('✓ Added')).toBeInTheDocument();
+    expect(await within(dialog).findByText('✓ Added')).toBeInTheDocument();
+  });
+
+  it('closes via its own close button, returning focus to the trigger', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+    const trigger = screen.getByRole('button', { name: /This week/ });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog', {
+      name: "This week's words",
+    });
+    await user.click(
+      within(dialog).getByRole('button', { name: "Close this week's picks" }),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });
 
@@ -278,7 +430,7 @@ describe('ReviewVocab — Browse (search + F-049 dropdown filters)', () => {
     vocabSvc.searchEntriesPage.mockClear();
 
     await user.type(
-      screen.getByRole('searchbox', { name: 'Search vocabulary' }),
+      screen.getByRole('searchbox', { name: 'Search for a word' }),
       '환경',
     );
 
@@ -536,22 +688,39 @@ describe('ReviewVocab — add a corpus word to a list (F-048)', () => {
 });
 
 describe('ReviewVocab — My lists (the top-of-page surface)', () => {
+  /** Opens MyVocabLists' "New list" Sheet popup (F-147) and returns its
+   *  dialog element. */
+  async function openCreateSheet(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<HTMLElement> {
+    await user.click(screen.getByRole('button', { name: /New list/ }));
+    return screen.findByRole('dialog', { name: 'New list' });
+  }
+
   it('creates a list and opens it to show entries', async () => {
     const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
 
-    // Create flow — default kind stays 'vocab'.
+    // Create flow — default (and only, on this vocab-only page) kind is
+    // 'vocab'.
+    const dialog = await openCreateSheet(user);
     await user.type(
-      screen.getByRole('textbox', { name: 'New list name' }),
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
       '새 단어장',
     );
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
         name_kr: '새 단어장',
         kind: 'vocab',
       });
+    });
+    // Success closes the popup.
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'New list' })).not.toBeInTheDocument();
     });
 
     // Open detail → entries load via getListDetail.
@@ -559,31 +728,33 @@ describe('ReviewVocab — My lists (the top-of-page surface)', () => {
     await waitFor(() => {
       expect(vocabSvc.getListDetail).toHaveBeenCalledWith(7, expect.anything());
     });
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('영향')).toBeInTheDocument();
+    const detailDialog = await screen.findByRole('dialog');
+    expect(within(detailDialog).getByText('영향')).toBeInTheDocument();
   });
 
-  it('includes the optional English label and kind in the create body', async () => {
+  it('includes the optional English label in the create body (kind always "vocab" — no kind picker on this page)', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('병원 어휘');
 
+    const dialog = await openCreateSheet(user);
     await user.type(
-      screen.getByRole('textbox', { name: 'New list name' }),
-      '한자 목록',
+      within(dialog).getByRole('textbox', { name: 'New list name' }),
+      '휴가 단어',
     );
     await user.type(
-      screen.getByRole('textbox', { name: 'English label' }),
-      'Hanja list',
+      within(dialog).getByRole('textbox', { name: 'English label' }),
+      'Vacation words',
     );
-    await user.click(screen.getByRole('radio', { name: '한자 · hanja' }));
-    await user.click(screen.getByRole('button', { name: /^만들기 · Create$/ }));
+    await user.click(
+      within(dialog).getByRole('button', { name: /^만들기 · Create$/ }),
+    );
 
     await waitFor(() => {
       expect(vocabSvc.createList).toHaveBeenCalledWith({
-        name_kr: '한자 목록',
-        kind: 'hanja',
-        name_en: 'Hanja list',
+        name_kr: '휴가 단어',
+        kind: 'vocab',
+        name_en: 'Vacation words',
       });
     });
   });

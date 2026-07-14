@@ -50,3 +50,61 @@
   font-weight: 600;
   color: var(--paper-dim);
 }
+
+/* F-128/F-153 — the windowed pattern list: one CityCard signboard/paper row
+ * per pattern (device #1/#2, via CollapsibleTile's sibling primitive
+ * CityCard + its own `rail` prop), replacing the old flat `Card` + `<ul>`. */
+.km-review-grammar__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.km-review-grammar__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.km-review-grammar__row-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+}
+
+.km-review-grammar__row-kr {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--paper);
+  overflow-wrap: anywhere;
+}
+
+.km-review-grammar__row-en {
+  font-size: 0.8125rem;
+  color: var(--paper-dim);
+  overflow-wrap: anywhere;
+}
+
+.km-review-grammar__row-level {
+  margin-top: 2px;
+}
+
+.km-review-grammar__row-action {
+  flex: none;
+}

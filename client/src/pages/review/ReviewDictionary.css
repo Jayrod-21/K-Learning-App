@@ -1,0 +1,40 @@
+/*
+ * ReviewDictionary — component-scoped styles (F-128 Seoul reskin +
+ * F-149/F-150 Wave-2 polish).
+ *
+ * This page had no co-located stylesheet before this pass (it rode
+ * `.km-resources`/`.km-reference` from styles/index.css entirely); adding
+ * one here rather than touching that shared sheet, per the LineChart.css
+ * convention every other Wave-2 page uses.
+ */
+
+/* F-129/F-145 — mobile-first defensive backstop (same convention as
+ * `.km-progress`/`.km-vocab`): this page has no wide fixed-width content of
+ * its own, but the backstop costs nothing and keeps the family consistent. */
+.km-dictionary {
+  overflow-x: hidden;
+}
+
+/* F-128 device #4/#2 — skyline header + dancheong divider: extracted into
+ * the shared `PageHubHeader` component (batch-2 fix-pass BLOCKER-2). See
+ * components/PageHubHeader.css for the (now single) copy of these rules. */
+
+/* F-149 — the visible caption above the search field (SearchBox itself has
+ * no label slot). Matches FilterSelect's own label sizing/tone below it. */
+.km-dictionary__searchLabel {
+  margin: 18px 0 6px;
+}
+
+/* S-3 (`REVIEW_batch2-vocab.md`) — this page's own loading-state rule,
+ * replacing the borrowed `.km-grammar__state` (styles/index.css). Identical
+ * styling — only the name changed, matching ReviewVocab's F-144 fix so no
+ * Library page's loading state says "grammar" in its classname. */
+.km-dictionary__state {
+  margin: 24px 0;
+  padding: 18px 20px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--paper-mute);
+  line-height: 1.5;
+}

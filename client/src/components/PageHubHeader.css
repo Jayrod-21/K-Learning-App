@@ -1,0 +1,34 @@
+/*
+ * PageHubHeader — component-scoped styles (DESIGN_SEOUL_DAY_NIGHT.md
+ * devices #4/#2). Colocated per the SkylineHeader.css convention.
+ *
+ * These rules are the single copy of what used to be repeated, byte-for-
+ * byte, across ReviewLibrary.css / ReviewVocab.css / ReviewDictionary.css /
+ * Uploads.css / UploadViewer.css (batch-2 fix-pass, BLOCKER-2). Today.css and
+ * Progress.css keep their own copies for now (out of this batch's scope —
+ * see FIX_REPORT_batch2.md's follow-up ticket).
+ */
+
+.km-hubheader__skyline {
+  margin: 0 0 12px;
+}
+
+.km-hubheader__title {
+  margin: 4px 0 0;
+}
+
+.km-hubheader__rail-divider {
+  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
+   * nearest positioned ancestor — give it one with real height. */
+  position: relative;
+  height: 26px;
+  margin: 0 0 4px;
+}
+
+.km-hubheader__actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
