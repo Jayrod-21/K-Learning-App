@@ -1614,6 +1614,32 @@ Filed from the batch-2 /fixpass (Library). Two need server work (client display 
 
 ---
 
+## 🔎 Wave 2 follow-ups — surfaced by the LEARN batch A fix-pass
+
+Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All low-priority polish/test-coverage; none block anything.
+
+#### F-178 · Adopt shared `ochre` tone on Today's Hanja tile
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor
+- **Where / State:** Batch-3 added a shared `ochre` value to the CityCard/SubwayProgress/DancheongRail `tone` enum and adopted it on the Hanja page. Today.tsx's Hanja tile still uses the `plain` fallback (the pre-`ochre` workaround). Migrate it to `tone="ochre"` — fold into F-177 (Today/Progress header migration) if convenient.
+
+#### F-179 · SwipeCarousel `onChange`/settled-index prop (+ document F-130 on Flashcards)
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** feature
+- **Where / State:** Swipe-to-advance on the Flashcards study card can't be built because shared `SwipeCarousel` exposes no `onChange`/settled-index prop (a parent can't observe a swipe settling). Low priority — F-130's real targets (carousels + PDF) already work; flashcard-swipe was self-invented scope, the mock never asked for it. If ever wanted, add the prop. Also add a one-line doc comment near `StudySession` in `Review.tsx` noting why flashcards don't swipe-advance.
+
+#### F-180 · Hanja StateChip "Practicing" tone mismatch (vermilion vs ochre)
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** bug/design
+- **Where / State:** `Hanja.tsx:721-726` — the "Practicing" `StateChip` still reads `tone="vermilion"` (accent-tracking) while the index grid two paragraphs below now reads the fixed `--ochre-ink` (from the B2 AA fix). So the same "Practicing" concept shows two different colors on one page. Point the chip at the same mastery token as the grid.
+
+#### F-181 · Hanja `masteredCount` label imprecision on no-op reconfirmation
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** bug
+- **Where / State:** `Hanja.tsx:2482-2492,2639` — a right answer on an already-mastered character still increments the displayed "N of M mastered" copy on a no-op reconfirmation (the underlying state write is correctly a no-op; only the label is imprecise).
+
+#### F-182 · Hanja `promoteState` no-op branch test coverage
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** test
+- **Where / State:** the `promoteState` no-change guard (right answer on an already-banked/mastered char = no write) has no test in `Hanja.test.tsx`. Add one so a regression that double-writes or mis-promotes would be caught.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
