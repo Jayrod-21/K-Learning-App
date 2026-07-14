@@ -22,9 +22,25 @@
  *      passive listener — it does NOT call `stopPropagation` so a nested
  *      modal (a Sheet inside a Sheet, say) can still receive the same Esc
  *      and close in stack order.
- *   5. Locks body scroll while the dialog is mounted, capturing the
- *      previous `overflow` value so the restore is exact (no clobbering
- *      a parent that had set its own overflow).
+ *   5. Locks body scroll while the dialog is mounted via a REF-COUNTED,
+ *      module-level lock shared by every instance of this hook. The FIRST
+ *      modal to open captures the true pre-lock `overflow` value (once)
+ *      and sets `hidden`; every modal that opens while another is already
+ *      open just increments the counter (its own baseline is never
+ *      captured, since `document.body.style.overflow` is already the
+ *      lock's `'hidden'`, not the page's real value). Only the LAST modal
+ *      to close (counter back to 0) restores the true original value.
+ *      This matters because the app has overlapping/auto-opening Sheets
+ *      (the TOPIK Study/Mock chooser auto-opens on entry, LearnMenu,
+ *      create-list, …): with a naive per-instance capture-and-restore, a
+ *      SECOND modal opening while a FIRST is still mounted would capture
+ *      `'hidden'` as ITS baseline, and if the first modal closes before
+ *      the second (order-independent — nested modals don't reliably close
+ *      LIFO), the second modal's eventual close writes `'hidden'` back
+ *      PERMANENTLY — the whole app can't scroll until reload. Ref-counting
+ *      makes the lock's lifetime span "at least one modal is open" instead
+ *      of "this particular modal is open", so only the true first-open /
+ *      last-close pair ever touches the real baseline.
  *   6. On unmount, restores focus to the captured element via
  *      `queueMicrotask` so React's commit-phase teardown completes before
  *      we move focus. Without the microtask, the parent's re-render can
@@ -46,6 +62,41 @@
  *   return open ? <div ref={dialogRef} role="dialog" …>…</div> : null;
  */
 import { useEffect, type RefObject } from 'react';
+
+/**
+ * Module-level, ref-counted body-scroll lock shared by EVERY instance of
+ * this hook across the whole app. See the "Behaviour" §5 doc comment above
+ * for why a naive per-instance capture/restore leaks under overlapping
+ * modals. `count` is the number of currently-mounted+open modals holding
+ * the lock; `baselineOverflow` is the real pre-lock `overflow` value,
+ * captured exactly once (when `count` goes 0 → 1) and consumed exactly
+ * once (when `count` goes back to 0).
+ */
+let scrollLockCount = 0;
+let scrollLockBaselineOverflow = '';
+
+/** Acquire the shared body-scroll lock. Call once per modal open-edge. */
+function acquireScrollLock(): void {
+  if (scrollLockCount === 0) {
+    scrollLockBaselineOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+  scrollLockCount += 1;
+}
+
+/**
+ * Release the shared body-scroll lock. Call once per modal close-edge —
+ * exactly paired with the `acquireScrollLock` call from the same open-edge.
+ * `Math.max(0, …)` guards against an unpaired extra release ever driving
+ * the counter negative (which would require the NEXT modal's close to
+ * over-release before the lock could ever re-engage).
+ */
+function releaseScrollLock(): void {
+  scrollLockCount = Math.max(0, scrollLockCount - 1);
+  if (scrollLockCount === 0) {
+    document.body.style.overflow = scrollLockBaselineOverflow;
+  }
+}
 
 /** CSS selector for "focusable in the keyboard tab order" elements. */
 const FOCUSABLE_SELECTOR = [
@@ -100,8 +151,7 @@ export function useModalA11y({
     const previouslyActive = (document.activeElement instanceof HTMLElement)
       ? document.activeElement
       : null;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    acquireScrollLock();
 
     const onKey = (e: KeyboardEvent): void => {
       // Esc closes — passive listener (no stopPropagation) so nested
@@ -114,7 +164,7 @@ export function useModalA11y({
 
     return () => {
       window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
+      releaseScrollLock();
       // queueMicrotask — defer focus restoration until after React's
       // commit-phase teardown so the parent's re-render can't steal
       // focus mid-restore.

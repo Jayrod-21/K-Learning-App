@@ -1,6 +1,15 @@
 /**
- * Today — the action hub. Wave-2 "Seoul Day & Night" reskin + feature set
- * (F-128–F-140): loading + rendered + interaction.
+ * Today — the action hub, restructured into THREE carousels per direct
+ * user feedback (mobile-hardening pass; see Today.tsx's module header for
+ * the full rationale):
+ *
+ *   1. "Review & drills" (`SwipeCarousel`, looped) — Vocab (restored,
+ *      reversing F-139) / Grammar / Hanja, in that order.
+ *   2. "Suggested learning" (native scroll-snap peek slider, NOT a
+ *      `SwipeCarousel`) — Reading / Listening / Writing, all
+ *      simultaneously real+focusable (no page-hiding).
+ *   3. "TOPIK" (`SwipeCarousel`, single page) — last, carrying the
+ *      "Review mistakes" shortcut and the F-007 resume banner.
  *
  * We mock `useEndpointOrMock` to control the data the screen reads. Five
  * fetches share the hook, dispatched on the `key` arg: the plan
@@ -9,34 +18,36 @@
  * `today.writingAttempts`, `today.topikAttempts`). All are realFn-backed;
  * the hook mock here stands in for any source, so the screen assertions
  * hold regardless of which resolved. `services/topik`, `services/writing`,
- * and `services/grammarDrill` are also mocked so no realFn/generator
- * closure can touch the network.
+ * and `services/grammarDrill` are also mocked so no realFn closure can
+ * touch the network.
  *
- * P3a/Wave-2 contract pinned here:
- *   - F-139: the vocab/"words" due-count tile is GONE — no due-count CTA,
- *     no "/learn/vocab" navigation anywhere on this page.
- *   - F-140: a Hanja tile lives in the Review & drills carousel →
- *     /learn/hanja.
- *   - F-135/F-136: "Today's tasks" + "TOPIK" collapse into one "Suggested
- *     learning" carousel covering Reading/Writing/Listening/TOPIK, with
- *     "Review mistakes" folded in as a shortcut on the TOPIK page (not its
- *     own carousel tab).
- *   - F-134: the Writing page is a `CollapsibleTile` that expands INLINE
- *     (aria-expanded toggles) instead of navigating to /learn/writing on
- *     tap; the "Write this topic" handoff inside it still navigates with
- *     the generated topic in `location.state` (F-101).
+ * Contract pinned here:
+ *   - Vocab is a first-class tile again → `/learn/vocab`, reading its
+ *     count off the plan's real `reviewCount` (never fabricated); it
+ *     degrades to an honest ErrorCard when the plan fails, same as the
+ *     peek slider — Grammar/Hanja/TOPIK have no plan dependency and keep
+ *     working regardless.
+ *   - F-140: Hanja lives in the Review & drills carousel → /learn/hanja.
+ *   - The peek slider covers Reading/Writing/Listening; Writing NOW
+ *     navigates to /learn/writing (F-134's inline CollapsibleTile expand
+ *     doesn't fit the peek slider's fixed-width layout — see Today.tsx).
  *   - F-138: grammar/writing/TOPIK tiles show a real "done today" count
  *     derived from attempt-history fixtures, never a fabricated one.
+ *   - The CSS mechanism (scroll-snap on the peek slider) is pinned from
+ *     source, mirroring `SkillsCompare.test.tsx`'s established pattern for
+ *     this codebase — happy-dom does no layout, so the actual on-screen
+ *     scroll/snap behavior can't be measured by rendering.
  *   - NO "coming soon" placeholder survives anywhere.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import type { JSX } from 'react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import type { TodayPlan } from '../types/domain';
 import type { AttemptState } from '../services/topik';
-import { ApiError } from '../services/api';
 
 // Hook mock — control loading + data per key. `vi.hoisted` is necessary
 // because `vi.mock` is hoisted above imports; sharing mutable state requires
@@ -100,9 +111,6 @@ vi.mock('../services/topik', () => ({
   fetchAttemptHistory: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
 vi.mock('../services/writing', () => ({
-  generateWritingPrompt: vi.fn(() =>
-    Promise.reject(new Error('not wired in tests')),
-  ),
   fetchWritingAttempts: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
 vi.mock('../services/grammarDrill', () => ({
@@ -112,10 +120,6 @@ vi.mock('../services/grammarDrill', () => ({
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
 import { Today } from './Today';
 import { getChatContext } from '../lib/chatContext';
-import { generateWritingPrompt } from '../services/writing';
-import type { GeneratedWritingPrompt } from '../services/writing';
-
-const generateMock = vi.mocked(generateWritingPrompt);
 
 const PLAN: TodayPlan = {
   reviewCount: 24,
@@ -144,15 +148,6 @@ const ATTEMPT: AttemptState = {
   remainingMs: 1_260_000,
   answered: 12,
   updatedAt: '2026-07-01T09:00:00.000Z',
-};
-
-/** A Claude-authored topic, as POST /writing/generate returns it. */
-const GENERATED: GeneratedWritingPrompt = {
-  promptKr: '환경 보호를 위한 개인의 역할에 대해 쓰십시오.',
-  promptEn: 'Write about the individual’s role in protecting the environment.',
-  lengthHint: '600-700자',
-  mode: 'topik',
-  rubric: 'topik_ii_54',
 };
 
 /** ISO timestamps for the F-138 "done today" fixtures — genuinely "today"
@@ -251,6 +246,7 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/" element={<Today />} />
+        <Route path="/learn/vocab" element={<div>VOCAB PAGE</div>} />
         <Route path="/learn/grammar" element={<div>GRAMMAR PAGE</div>} />
         <Route path="/learn/hanja" element={<div>HANJA PAGE</div>} />
         <Route path="/learn/reading" element={<div>READING PAGE</div>} />
@@ -273,28 +269,6 @@ function loadDefaults(): void {
   hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
 }
 
-/** Bring the Suggested-learning carousel's Writing page on-screen (page 2
- *  of 4 with the full PLAN fixture — Reading, Writing, Listening, TOPIK)
- *  and expand its CollapsibleTile (F-134: collapsed by default). Returns
- *  the carousel region. */
-async function activateWritingPage(
-  user: ReturnType<typeof userEvent.setup>,
-): Promise<HTMLElement> {
-  const region = screen.getByRole('region', { name: 'Suggested learning' });
-  await user.click(within(region).getByRole('tab', { name: 'Page 2 of 4' }));
-  const header = within(region).getByRole('button', { name: /Paragraph in/ });
-  if (header.getAttribute('aria-expanded') === 'false') {
-    await user.click(header);
-  }
-  return region;
-}
-
-// BLOCKER B1 (REVIEW_batch1-today.md) — F-138's local-day math is now
-// covered by `client/src/lib/localDay.test.ts` (the function moved to
-// `lib/localDay.ts` to satisfy `react-refresh/only-export-components`,
-// which forbids a page component file from also exporting plain
-// functions/types).
-
 describe('Today', () => {
   beforeEach(() => {
     hoisted.today.state = { kind: 'loading' };
@@ -307,8 +281,6 @@ describe('Today', () => {
     hoisted.grammarAttempts.refetch.mockClear();
     hoisted.writingAttempts.refetch.mockClear();
     hoisted.topikAttempts.refetch.mockClear();
-    generateMock.mockReset();
-    generateMock.mockRejectedValue(new Error('not wired in tests'));
   });
 
   it('renders loading skeletons while the plan is pending', () => {
@@ -325,19 +297,17 @@ describe('Today', () => {
     const ctx = getChatContext();
     expect(ctx).not.toBeNull();
     expect(ctx?.pageLabel).toBe('Today · 오늘');
-    // Mirrors the visible tiles: reading/listening/writing titles — NOT the
-    // review-count (F-139 removed its tile, so it is no longer summarised).
+    // Mirrors the visible tiles: the live due-review count (Vocab restored)
+    // plus reading/listening/writing titles.
+    expect(ctx?.summary).toContain('24 review cards due');
     expect(ctx?.summary).toContain('Listening: KBS — 재택근무 확산');
     expect(ctx?.summary).toContain('Reading: 도시화와 환경');
-    expect(ctx?.summary).not.toContain('review');
 
     unmount();
     expect(getChatContext()).toBeNull();
   });
 
-  // ── Review & drills carousel: Grammar + Hanja (F-139 / F-140) ──
-
-  it('renders the title and the Review & drills carousel with grammar + Hanja pages (F-139/F-140)', () => {
+  it('renders exactly THREE carousels: Review & drills, Suggested learning, TOPIK — TOPIK last', () => {
     loadDefaults();
     renderTodayAt();
 
@@ -345,42 +315,99 @@ describe('Today', () => {
       screen.getByRole('heading', { level: 1, name: '오늘 · Today' }),
     ).toBeInTheDocument();
 
-    const lead = screen.getByRole('region', { name: 'Review and drills' });
-    expect(lead).toHaveAttribute('aria-roledescription', 'carousel');
-    expect(within(lead).getAllByRole('tab')).toHaveLength(2);
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    expect(drills).toHaveAttribute('aria-roledescription', 'carousel');
 
-    expect(within(lead).getByText('Grammar drills')).toBeInTheDocument();
-    expect(within(lead).getByText('Hanja study')).toBeInTheDocument();
+    const suggested = screen.getByRole('region', { name: 'Suggested learning' });
+    // The peek slider is deliberately NOT the SwipeCarousel widget (see
+    // Today.tsx) — a plain labeled region, not a paged carousel.
+    expect(suggested).not.toHaveAttribute('aria-roledescription');
+
+    const topik = screen.getByRole('region', { name: 'TOPIK' });
+    expect(topik).toHaveAttribute('aria-roledescription', 'carousel');
+
+    // Order in the DOM: drills, then suggested, then TOPIK last.
+    const order = Array.from(
+      document.querySelectorAll('[aria-roledescription="carousel"], [aria-label="Suggested learning"]'),
+    );
+    expect(order).toEqual([drills, suggested, topik]);
   });
 
-  it('F-139: never shows a vocab/"words" due-count tile or navigates to /learn/vocab', () => {
-    loadDefaults();
-    renderTodayAt();
+  // ── Carousel 1 — Review & drills: Vocab (restored) / Grammar / Hanja ──
 
-    expect(screen.queryByText(/cards due/)).not.toBeInTheDocument();
-    expect(screen.queryByText('지금 복습')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /Open review/ }),
-    ).not.toBeInTheDocument();
-  });
-
-  it('F-140: navigates to /learn/hanja from the Hanja tile', async () => {
+  it('Vocab tile is RESTORED as a first-class activity — first page of Review & drills, real due-count, routes to /learn/vocab', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
     const lead = screen.getByRole('region', { name: 'Review and drills' });
-    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    expect(within(lead).getAllByRole('tab')).toHaveLength(3);
+
+    // Vocab is page 1 — visible by default, no tab switch needed.
+    expect(screen.getByText('24 cards due')).toBeInTheDocument();
+    expect(screen.getByText('지금 복습')).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Open review — 24 cards due' }),
+    );
+    expect(screen.getByText('VOCAB PAGE')).toBeInTheDocument();
+  });
+
+  it('singularizes the Vocab due-count copy at exactly 1', () => {
+    loadDefaults();
+    hoisted.today.state = { kind: 'data', data: { ...PLAN, reviewCount: 1 } };
+    renderTodayAt();
+
+    expect(screen.getByText('1 card due')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Open review — 1 card due' }),
+    ).toBeInTheDocument();
+  });
+
+  it('degrades the Vocab tile to an honest ErrorCard when the plan fails, wired to retry — Grammar/Hanja keep working', async () => {
+    hoisted.today.state = { kind: 'error' };
+    hoisted.attempt.state = { kind: 'data', data: null };
+    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
+    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
+    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    expect(
+      within(lead).getByText("Today's plan is unavailable."),
+    ).toBeInTheDocument();
+    await user.click(within(lead).getByRole('button', { name: 'Retry' }));
+    expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
+
+    // Grammar (page 2) has no plan dependency — switch to it and confirm it
+    // still navigates correctly even though the plan failed.
+    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 3' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Open grammar drills' }),
+    );
+    expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
+  });
+
+  it('F-140: navigates to /learn/hanja from the Hanja tile (page 3 of 3)', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    await user.click(within(lead).getByRole('tab', { name: 'Page 3 of 3' }));
     await user.click(screen.getByRole('button', { name: 'Open Hanja study' }));
 
     expect(screen.getByText('HANJA PAGE')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/grammar from the grammar drills tile (real page, not "coming soon")', async () => {
+  it('navigates to /learn/grammar from the grammar drills tile (page 2 of 3, real page not "coming soon")', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
+    const lead = screen.getByRole('region', { name: 'Review and drills' });
+    await user.click(within(lead).getByRole('tab', { name: 'Page 2 of 3' }));
     await user.click(
       screen.getByRole('button', { name: 'Open grammar drills' }),
     );
@@ -388,7 +415,7 @@ describe('Today', () => {
     expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
   });
 
-  it('loops the lead carousel: a real forward swipe on the last page wraps to page 1 (F-029)', () => {
+  it('loops the Review & drills carousel: a real forward swipe on the last page wraps to page 1 (F-029)', () => {
     loadDefaults();
     renderTodayAt();
 
@@ -396,7 +423,7 @@ describe('Today', () => {
     const viewport = lead.querySelector('.km-carousel__viewport');
     expect(viewport).not.toBeNull();
 
-    fireEvent.click(within(lead).getByRole('tab', { name: 'Page 2 of 2' }));
+    fireEvent.click(within(lead).getByRole('tab', { name: 'Page 3 of 3' }));
     const pointer = { pointerId: 7, isPrimary: true };
     fireEvent.pointerDown(viewport!, {
       ...pointer, button: 0, clientX: 200, clientY: 50,
@@ -406,7 +433,7 @@ describe('Today', () => {
     fireEvent.pointerUp(viewport!, { ...pointer, clientX: 80, clientY: 55 });
 
     expect(
-      within(lead).getByRole('tab', { name: 'Page 1 of 2' }),
+      within(lead).getByRole('tab', { name: 'Page 1 of 3' }),
     ).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -417,47 +444,6 @@ describe('Today', () => {
     expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
     expect(screen.queryByText('준비 중')).not.toBeInTheDocument();
     expect(screen.queryByText('Daily grammar drills')).not.toBeInTheDocument();
-  });
-
-  it('the Review & drills carousel has no plan dependency — it keeps working when the plan fails', async () => {
-    hoisted.today.state = { kind: 'error' };
-    hoisted.attempt.state = { kind: 'data', data: null };
-    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
-    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
-    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    await user.click(
-      screen.getByRole('button', { name: 'Open grammar drills' }),
-    );
-    expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
-  });
-
-  it('degrades a real plan failure to an honest ErrorCard in Suggested learning, wired to retry', async () => {
-    hoisted.today.state = { kind: 'error' };
-    hoisted.attempt.state = { kind: 'data', data: null };
-    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
-    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
-    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    expect(
-      screen.getByText("Today's plan is unavailable."),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
-    expect(hoisted.attempt.refetch).not.toHaveBeenCalled();
-
-    // TOPIK has no plan dependency — still present alongside the error (its
-    // page is off-screen while the error page is active, hence `hidden`).
-    expect(
-      screen.getByRole('button', {
-        name: 'Open TOPIK study practice',
-        hidden: true,
-      }),
-    ).toBeInTheDocument();
   });
 
   it('no longer renders the stats carousel, the TOPIK-level snapshot, or any progress bar (moved to Progress / F-137)', () => {
@@ -477,49 +463,54 @@ describe('Today', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
-  // ── Suggested learning carousel (F-135/F-136) ───────────────
+  // ── Carousel 2 — Suggested learning peek slider ─────────────────────
 
-  it('renders the Suggested learning carousel with Reading/Writing/Listening/TOPIK pages in order', () => {
+  it('renders the Suggested learning peek slider with Reading/Listening/Writing all simultaneously real+focusable (no page-hiding)', () => {
     loadDefaults();
     renderTodayAt();
 
     const region = screen.getByRole('region', { name: 'Suggested learning' });
-    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
-    expect(within(region).getAllByRole('tab')).toHaveLength(4);
+    // No SwipeCarousel dots/tabs here — every tile is on-screen at once.
+    expect(within(region).queryAllByRole('tab')).toHaveLength(0);
 
-    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
-    expect(within(panels[0]).getByText('도시화와 환경')).toBeInTheDocument();
-    expect(within(panels[1]).getByText('Paragraph in 합쇼체', { exact: false })).toBeInTheDocument();
-    expect(within(panels[2]).getByText('KBS — 재택근무 확산')).toBeInTheDocument();
+    expect(within(region).getByText('도시화와 환경')).toBeInTheDocument();
+    expect(within(region).getByText('KBS — 재택근무 확산')).toBeInTheDocument();
     expect(
-      within(panels[3]).getByRole('button', { name: 'Open TOPIK study practice', hidden: true }),
+      within(region).getByText('Paragraph in 합쇼체', { exact: false }),
     ).toBeInTheDocument();
 
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
     expect(screen.getByText('Register drill')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/reading when the Reading tile is clicked', async () => {
+  it('navigates to /learn/reading when the Reading tile is clicked — no tab switch needed', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const tile = screen.getByRole('button', { name: /도시화와 환경/ });
-    await user.click(tile);
+    await user.click(screen.getByRole('button', { name: /도시화와 환경/ }));
 
     expect(screen.getByText('READING PAGE')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/listen when the Listening tile is clicked', async () => {
+  it('navigates to /learn/listen when the Listening tile is clicked — no tab switch needed', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const region = screen.getByRole('region', { name: 'Suggested learning' });
-    await user.click(within(region).getByRole('tab', { name: 'Page 3 of 4' }));
     await user.click(screen.getByRole('button', { name: /KBS/ }));
 
     expect(screen.getByText('LISTENING PAGE')).toBeInTheDocument();
+  });
+
+  it('navigates to /learn/writing when the Writing tile is clicked (F-134 inline-expand replaced by direct nav)', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /Paragraph in/ }));
+
+    expect(screen.getByText('WRITING PAGE')).toBeInTheDocument();
   });
 
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {
@@ -534,7 +525,7 @@ describe('Today', () => {
     expect(screen.queryByText('Register drill')).not.toBeInTheDocument();
   });
 
-  it('omits a task page whose server task is null (empty corpus) — TOPIK still appends', () => {
+  it('omits a peek tile whose server task is null (empty corpus)', () => {
     loadDefaults();
     hoisted.today.state = {
       kind: 'data',
@@ -545,184 +536,113 @@ describe('Today', () => {
     expect(screen.queryByText('도시화와 환경')).not.toBeInTheDocument();
     expect(screen.getByText('KBS — 재택근무 확산')).toBeInTheDocument();
     const region = screen.getByRole('region', { name: 'Suggested learning' });
-    // Writing + Listening + TOPIK = 3 pages.
-    expect(within(region).getAllByRole('tab')).toHaveLength(3);
+    expect(within(region).getAllByRole('button')).toHaveLength(2);
   });
 
-  // ── F-134 — Writing expands inline instead of navigating ────
-
-  it('F-134: the Writing tile starts collapsed and does NOT navigate to /learn/writing on tap', async () => {
+  it('shows an honest empty message when reading/listening/writing are all null (never a broken empty scroll rail)', () => {
     loadDefaults();
-    const user = userEvent.setup();
+    hoisted.today.state = {
+      kind: 'data',
+      data: { ...PLAN, reading: null, listening: null, writing: null },
+    };
     renderTodayAt();
 
     const region = screen.getByRole('region', { name: 'Suggested learning' });
-    await user.click(within(region).getByRole('tab', { name: 'Page 2 of 4' }));
-
-    const header = within(region).getByRole('button', { name: /Paragraph in/ });
-    expect(header).toHaveAttribute('aria-expanded', 'false');
-
-    await user.click(header);
-
-    expect(header).toHaveAttribute('aria-expanded', 'true');
-    // Still on Today — no navigation happened.
-    expect(screen.queryByText('WRITING PAGE')).not.toBeInTheDocument();
-    // The generator is now reachable (previously inert while collapsed).
+    expect(within(region).queryAllByRole('button')).toHaveLength(0);
     expect(
-      screen.getByRole('button', { name: /Generate topic/ }),
+      within(region).getByText('No suggested content right now'),
     ).toBeInTheDocument();
-
-    // Toggling again collapses it.
-    await user.click(header);
-    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 
-  // ── F-027 — Claude topic generator on the Writing task page ─
-
-  it('mounts the topic generator on the Writing page only, and renders a generated topic', async () => {
-    loadDefaults();
-    generateMock.mockResolvedValue(GENERATED);
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    expect(screen.getAllByRole('radiogroup', { hidden: true })).toHaveLength(1);
-
-    await activateWritingPage(user);
-    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
-
-    expect(await screen.findByText(GENERATED.promptKr)).toBeInTheDocument();
-    expect(screen.getByText(GENERATED.promptEn)).toBeInTheDocument();
-    expect(screen.getByText('600-700자')).toBeInTheDocument();
-    expect(generateMock).toHaveBeenCalledWith(
-      { mode: 'topik' },
-      expect.any(AbortSignal),
-    );
-  });
-
-  it('offers the TOPIK-style vs free-write choice and sends the chosen mode', async () => {
-    loadDefaults();
-    generateMock.mockResolvedValue({
-      ...GENERATED,
-      mode: 'general',
-      rubric: null,
-      lengthHint: null,
-    });
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    await activateWritingPage(user);
-    await user.click(screen.getByRole('radio', { name: /Free write/ }));
-    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
-
-    expect(await screen.findByText(GENERATED.promptKr)).toBeInTheDocument();
-    expect(generateMock).toHaveBeenCalledWith(
-      { mode: 'general' },
-      expect.any(AbortSignal),
-    );
-  });
-
-  it('surfaces the expensive-bucket 429 with real retry copy, not a dead end', async () => {
-    loadDefaults();
-    generateMock.mockRejectedValue(
-      new ApiError('too many requests', {
-        status: 429,
-        code: 'rate_limited',
-        retryAfter: 42,
-      }),
-    );
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    await activateWritingPage(user);
-    const button = screen.getByRole('button', { name: /Generate topic/ });
-    await user.click(button);
-
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(
-      'Rate-limited. Try again in about 42 seconds.',
-    );
-    expect(button).toBeEnabled();
-    expect(button).not.toHaveAttribute('aria-disabled');
-  });
-
-  it('F-101: "Write this topic" hands the exact generated topic to /learn/writing via location.state', async () => {
-    loadDefaults();
-    generateMock.mockResolvedValue(GENERATED);
-    const user = userEvent.setup();
-
-    function WritingRouteStub(): JSX.Element {
-      const location = useLocation();
-      return (
-        <div>
-          WRITING PAGE
-          <pre data-testid="handoff-state">
-            {JSON.stringify(location.state)}
-          </pre>
-        </div>
-      );
-    }
-
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <Routes>
-          <Route path="/" element={<Today />} />
-          <Route path="/learn/writing" element={<WritingRouteStub />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await activateWritingPage(user);
-    await user.click(screen.getByRole('button', { name: /Generate topic/ }));
-    await screen.findByText(GENERATED.promptKr);
-
-    await user.click(
-      screen.getByRole('button', { name: /Write this topic/ }),
-    );
-
-    expect(screen.getByText('WRITING PAGE')).toBeInTheDocument();
-    const raw = screen.getByTestId('handoff-state').textContent;
-    expect(raw).not.toBeNull();
-    expect(JSON.parse(raw ?? 'null')).toEqual({
-      generatedTopic: GENERATED,
-    });
-  });
-
-  // ── TOPIK folded in (F-135/F-136) ────────────────────────────
-
-  it('navigates to /learn/topik (study) from the recommended TOPIK tile', async () => {
-    loadDefaults();
+  it('degrades the Suggested learning peek slider to an honest ErrorCard when the plan fails, wired to retry', async () => {
+    hoisted.today.state = { kind: 'error' };
+    hoisted.attempt.state = { kind: 'data', data: null };
+    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
+    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
+    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
     const user = userEvent.setup();
     renderTodayAt();
 
     const region = screen.getByRole('region', { name: 'Suggested learning' });
-    const tabs = within(region).getAllByRole('tab');
-    await user.click(tabs[tabs.length - 1]);
+    expect(
+      within(region).getByText("Today's plan is unavailable."),
+    ).toBeInTheDocument();
+    await user.click(within(region).getByRole('button', { name: 'Retry' }));
+    expect(hoisted.today.refetch).toHaveBeenCalledTimes(1);
+
+    // TOPIK has no plan dependency — still present and fully interactive.
+    expect(
+      screen.getByRole('button', { name: 'Open TOPIK study practice' }),
+    ).toBeInTheDocument();
+  });
+
+  it('CSS: the Suggested learning peek slider uses native scroll-snap, not a JS carousel', () => {
+    // happy-dom does no layout, so the actual on-screen scroll/snap
+    // behavior can't be measured by rendering — pin the CSS mechanism from
+    // source instead (same pattern as SkillsCompare.test.tsx's mobile-
+    // overflow-fix contract test).
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+
+    const trackRule =
+      /\.km-today__peekTrack\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(trackRule).not.toBe('');
+    expect(trackRule).toContain('overflow-x: auto;');
+    expect(trackRule).toContain('scroll-snap-type: x mandatory;');
+
+    const itemRule =
+      /\.km-today__peekItem\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+    expect(itemRule).not.toBe('');
+    expect(itemRule).toContain('scroll-snap-align: center;');
+    // Peek geometry: a tile narrower than 100% so its neighbors are
+    // partially visible at the edges.
+    expect(itemRule).toMatch(/flex:\s*0 0 78%;/);
+
+    // Reduced-motion: the progressive center-emphasis animation is
+    // explicitly disabled, never left running. Matched structurally (not
+    // just a substring search) so this can't false-match the base
+    // `.km-today__peekItem` rule declared earlier in the file.
+    const reducedMotionBlock =
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peekItem \{[^}]*\}\s*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(reducedMotionBlock).not.toBe('');
+    expect(reducedMotionBlock).toContain('animation: none;');
+  });
+
+  // ── Carousel 3 — TOPIK, last ──────────────────────────────────────
+
+  it('navigates to /learn/topik (study) from the recommended TOPIK tile — no tab switch needed', async () => {
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
     await user.click(
       screen.getByRole('button', { name: 'Open TOPIK study practice' }),
     );
     expect(screen.getByText('TOPIK PAGE')).toBeInTheDocument();
   });
 
-  it('offers "Review mistakes" as a folded-in shortcut on the TOPIK page (not a separate carousel tab)', async () => {
+  it('offers "Review mistakes" as a folded-in shortcut on the TOPIK carousel (not a separate carousel/page)', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
-    const region = screen.getByRole('region', { name: 'Suggested learning' });
-    const tabs = within(region).getAllByRole('tab');
-    await user.click(tabs[tabs.length - 1]);
     await user.click(screen.getByRole('button', { name: /Review mistakes/ }));
 
     expect(screen.getByText('MISTAKES PAGE')).toBeInTheDocument();
   });
 
-  it('surfaces a saved mock attempt as the corner resume banner → /learn/topik', async () => {
+  it('surfaces a saved mock attempt as the TOPIK carousel\'s corner resume banner → /learn/topik', async () => {
     loadDefaults();
     hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
     const user = userEvent.setup();
     renderTodayAt();
 
-    const banner = screen.getByRole('button', {
+    const topik = screen.getByRole('region', { name: 'TOPIK' });
+    const banner = within(topik).getByRole('button', {
       name: 'Resume exam — Listening mock, 12 answered',
     });
     await user.click(banner);
@@ -751,44 +671,19 @@ describe('Today', () => {
     expect(screen.getByText('Done today')).toBeInTheDocument();
   });
 
-  it('F-138: shows a REAL "done today" count for writing and TOPIK, and omits the milestone at zero', async () => {
+  it('F-138: shows REAL "done today" counts for writing and TOPIK at a glance — no tap/expand needed, and omits the milestone at zero', () => {
     loadDefaults();
     hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_MIXED };
     hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_MIXED };
-    const user = userEvent.setup();
     renderTodayAt();
 
-    await activateWritingPage(user);
     expect(screen.getByText('1 essay graded today')).toBeInTheDocument();
-
-    const region = screen.getByRole('region', { name: 'Suggested learning' });
-    const tabs = within(region).getAllByRole('tab');
-    await user.click(tabs[tabs.length - 1]);
     expect(screen.getByText('1 mock attempt today')).toBeInTheDocument();
 
     // Grammar stayed at the all-empty default — zero done today, no
     // milestone stamp rendered (never a fabricated one at zero).
     expect(screen.getByText('0 drills today')).toBeInTheDocument();
     expect(screen.getAllByText('Done today')).toHaveLength(2);
-  });
-
-  it('S1: the Writing tile\'s "done today" count is visible on the always-visible header face, without expanding the tile', async () => {
-    loadDefaults();
-    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_MIXED };
-    const user = userEvent.setup();
-    renderTodayAt();
-
-    const region = screen.getByRole('region', { name: 'Suggested learning' });
-    await user.click(within(region).getByRole('tab', { name: 'Page 2 of 4' }));
-
-    // Still collapsed (F-134 default) — the count reads at a glance
-    // anyway, matching Grammar/TOPIK, because it now lives in `title`
-    // (the header row CollapsibleTile always renders), not `children`
-    // (the collapsed, aria-hidden+inert body).
-    const header = within(region).getByRole('button', { name: /Paragraph in/ });
-    expect(header).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText('1 essay graded today')).toBeInTheDocument();
-    expect(screen.getByText('Done today')).toBeInTheDocument();
   });
 
   it('F-138: shows no count at all while an attempt-history source is still loading (never a fabricated zero)', () => {
@@ -809,6 +704,8 @@ describe('Today', () => {
     expect(screen.getByText('Suggested learning')).toBeInTheDocument();
     expect(screen.getByText('복습 · 드릴')).toBeInTheDocument();
     expect(screen.getByText('Review & drills')).toBeInTheDocument();
+    expect(screen.getByText('토픽')).toBeInTheDocument();
+    expect(screen.getAllByText('TOPIK').length).toBeGreaterThan(0);
     expect(screen.getByText('문법 드릴')).toBeInTheDocument();
     expect(screen.getByText('한자 학습')).toBeInTheDocument();
     expect(screen.getByText('오답 복습')).toBeInTheDocument();

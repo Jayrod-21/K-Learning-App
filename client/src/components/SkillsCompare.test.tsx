@@ -9,8 +9,11 @@
  * contract.
  */
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { SkillsCompare } from './SkillsCompare';
 import type { SkillRow, SkillReference } from './SkillsCompare';
 
@@ -60,6 +63,21 @@ const BEGINNER_REFS: ReadonlyArray<SkillReference> = [
   { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
   { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
   { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
+];
+
+// The real production shape (Progress + Diagnostic both pass all 7 of
+// these — see data/mocks/diagnostic.ts) — the fixture the mobile-overflow
+// bug actually reproduces with. REFS above deliberately uses a shorter list
+// for the unrelated picker-behavior tests; this one exists so the
+// full-width-picker tests below exercise the real pill count.
+const FULL_LADDER_REFS: ReadonlyArray<SkillReference> = [
+  { id: 'L1', label: 'TOPIK 1', kr: '1급', value: 10 },
+  { id: 'L2', label: 'TOPIK 2', kr: '2급', value: 25 },
+  { id: 'L3', label: 'TOPIK 3', kr: '3급', value: 40 },
+  { id: 'L4', label: 'TOPIK 4', kr: '4급', value: 55 },
+  { id: 'L5', label: 'TOPIK 5', kr: '5급', value: 70 },
+  { id: 'L6', label: 'TOPIK 6', kr: '6급', value: 85 },
+  { id: 'native', label: 'Native', kr: '원어민', value: 100, isCeiling: true },
 ];
 
 describe('SkillsCompare', () => {
@@ -234,5 +252,66 @@ describe('SkillsCompare', () => {
     expect(fills.length).toBe(SKILLS.length);
     expect((fills[0] as HTMLElement).style.transitionDelay).toBe('0ms');
     expect((fills[1] as HTMLElement).style.transitionDelay).toBe('70ms');
+  });
+});
+
+describe('SkillsCompare — mobile overflow fix (live bug: TOPIK 5 / Native fell off-screen)', () => {
+  it('renders all 7 reference pills — nothing is dropped to fit narrow screens', () => {
+    render(<SkillsCompare skills={SKILLS} references={FULL_LADDER_REFS} />);
+    const group = screen.getByRole('radiogroup', { name: 'Reference level' });
+    expect(within(group).getAllByRole('radio')).toHaveLength(7);
+    // The two pills the live bug clipped off-screen must both be present
+    // and pickable, not just counted.
+    const topik5 = screen.getByRole('radio', { name: '5급 · TOPIK 5' });
+    const native = screen.getByRole('radio', { name: '원어민 · Native' });
+    expect(topik5).toBeInTheDocument();
+    expect(native).toBeInTheDocument();
+  });
+
+  it('lets the user reach TOPIK 5 / Native via the picker even with the full 7-item ladder', async () => {
+    const user = userEvent.setup();
+    render(<SkillsCompare skills={SKILLS} references={FULL_LADDER_REFS} />);
+    await user.click(screen.getByRole('radio', { name: '원어민 · Native' }));
+    expect(
+      screen.getByRole('radio', { name: '원어민 · Native' }),
+    ).toHaveAttribute('aria-checked', 'true');
+  });
+
+  // happy-dom does no layout, so the actual on-screen overflow/scroll can't
+  // be measured by rendering (same limitation as Toggle.test.tsx's /
+  // FeedbackFab.test.tsx's stylesheet-contract tests) — pin the CSS
+  // mechanism from source instead. SkillsCompare.css is colocated (not
+  // styles/index.css) specifically so this fix doesn't touch the shared
+  // global sheet other in-flight work depends on.
+  it('CSS: the picker gets its own horizontal scroll rail instead of overflowing the card', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'components', 'SkillsCompare.css'),
+      'utf8',
+    );
+
+    const pickerRule =
+      /\.km-skillscompare \.km-skillscompare__picker\s*\{[^}]*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(pickerRule).not.toBe('');
+    // The flex-item min-width:auto default is what caused the overflow —
+    // min-width: 0 is what lets the box actually shrink to available width.
+    expect(pickerRule).toContain('min-width: 0;');
+    expect(pickerRule).toContain('overflow-x: auto;');
+    // Pills must scroll, not wrap mid-row and not be squashed illegibly.
+    expect(pickerRule).toContain('flex-wrap: nowrap;');
+
+    const pickRule =
+      /\.km-skillscompare \.km-skillscompare__pick\s*\{[^}]*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(pickRule).not.toBe('');
+    expect(pickRule).toContain('flex: 0 0 auto;');
+
+    // Narrow-viewport layout: the eyebrow + picker stack instead of
+    // fighting for space under `justify-content: space-between`.
+    const mediaBlock =
+      /@media \(max-width: 480px\) \{[\s\S]*?\n\}/.exec(stylesheet)?.[0] ?? '';
+    expect(mediaBlock).toContain('flex-direction: column;');
   });
 });

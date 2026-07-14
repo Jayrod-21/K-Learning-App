@@ -1,49 +1,68 @@
 /**
  * Today screen — the daily ACTION hub. Wave-2 "Seoul Day & Night" reskin
- * (F-128) + per-page feature set (F-129–F-140; see BUGS_AND_FEATURES.md).
+ * (F-128) + per-page feature set (F-129–F-140; see BUGS_AND_FEATURES.md),
+ * restructured into THREE carousels per direct user feedback on the live
+ * site (mobile-hardening pass):
  *
- * Visual contract: DESIGN_SEOUL_DAY_NIGHT.md. This page is one of the first
- * to adopt the foundation components built for the redesign —
- * `SkylineHeader` (device #4, the page hero), `CityCard`/`DancheongRail`
- * (devices #1/#2, every tile's surface + leading edge), `SealStamp` (device
- * #7, an honest "practiced today" milestone — never shown unless a REAL
- * attempt happened today), `CollapsibleTile` (the Writing inline-expand,
- * F-134), plus the `km-rain-sheen` (device #8, Night ambient) and
- * `km-hangul-watermark` (device #6) utilities from `styles/seoul-devices.css`.
- * `SubwayProgress` (device #5) is deliberately NOT used here — every genuine
- * multi-step total this page could show (an in-progress mock exam's item
- * count) is not available client-side without fabricating a denominator or a
- * disproportionate extra fetch; see the F-138 section below. Tracked as a
- * durable follow-up in `BUGS_AND_FEATURES.md` — "Resumed-TOPIK item-count for
- * SubwayProgress" — rather than left as a dangling PR-description note.
- * Everything real stays real: per-tile "done today" counts come from actual
- * attempt-history endpoints, never a fabricated target or a landing-page-visit
- * counter.
+ *   1. **Core drills carousel** ("Review & drills") — Vocab · Grammar ·
+ *      Hanja, in that order. F-139 had removed the vocab/"words" due-count
+ *      tile entirely on the theory that the Review tab (bottom nav) was
+ *      its home — that was wrong: it deleted a first-class daily-action
+ *      entry point users actually wanted here. RESTORED, exactly at its
+ *      pre-F-139 fidelity (live "N cards due" from the plan's real
+ *      `reviewCount`, → `/learn/vocab`), alongside Grammar (→
+ *      `/learn/grammar`) and Hanja (→ `/learn/hanja`, F-140). A standard
+ *      swipe carousel (`SwipeCarousel`, F-017/F-029, looped).
+ *   2. **Suggested learning carousel** — Reading · Listening · Writing, as
+ *      a horizontal PEEK SLIDER (the user's own description: "3 tiles
+ *      side by side, slide carousel, doesn't switch to a new tile but can
+ *      see the previous tile, like a spin table"). This is a genuinely
+ *      different interaction model from `SwipeCarousel`'s hard
+ *      one-page-at-a-time snap, so it is NOT built on that component —
+ *      it's native CSS scroll-snap (`overflow-x: auto` +
+ *      `scroll-snap-type: x mandatory`, tiles at `flex: 0 0 78%` with
+ *      `scroll-snap-align: center` and peek padding on the track) so the
+ *      browser owns the drag/fling/momentum entirely on touch — no JS
+ *      gesture code to get wrong. See Today.css for the full rationale
+ *      and the progressive-enhancement center-emphasis animation.
+ *      F-134's Writing inline-expand (`CollapsibleTile` + embedded
+ *      `WritingTopicGenerator`) does NOT fit this model: a tile that grows
+ *      on tap would blow out its neighbors' fixed scroll-snap widths and
+ *      fight the centered-peek layout mid-scroll. Per this restructure's
+ *      brief, the user's new carousel shape wins — Writing is now a plain
+ *      peek tile that NAVIGATES to `/learn/writing` (same as
+ *      Reading/Listening), where the exact same F-027
+ *      `WritingTopicGenerator` already lives (`Writing.tsx` mounts its own
+ *      copy and accepts the identical `location.state.generatedTopic`
+ *      handoff) — the generator is preserved, one tap away instead of
+ *      inline on Today. Reading's daily rotation stays real and
+ *      server-side (`server/src/routes/plan.ts` orders the TTMIK pick by
+ *      `md5(user || date || lesson_id)` — this screen only renders
+ *      whatever `/plan/today` sends, which already changes day to day).
+ *   3. **TOPIK carousel** — last, its own `SwipeCarousel` (a single page —
+ *      dots/drag naturally no-op below 2 children). Carries the
+ *      "Review mistakes" shortcut folded in (not its own page) and NO
+ *      highlight styling on its meta line (F-137 — plain text, never a
+ *      glowing bar). A saved F-007 attempt surfaces as this carousel's
+ *      corner resume banner (it resumes straight back into `/learn/topik`,
+ *      so this is its natural home now that it's split from Reading/
+ *      Listening/Writing).
+ *
+ * Everything real stays real: per-tile "done today" counts come from
+ * actual attempt-history endpoints, never a fabricated target or a
+ * landing-page-visit counter. `SubwayProgress` (device #5) is deliberately
+ * NOT used here for the same reason as before the restructure — no genuine
+ * multi-step total this page could show is available client-side without
+ * fabricating a denominator; tracked in `BUGS_AND_FEATURES.md`.
  *
  * Layout, top to bottom:
  *   1. `SkylineHeader` carrying the real h1 in its `title` slot (date
  *      eyebrow + 오늘 · Today, overlaid on the skyline) + a `DancheongRail`
  *      divider underneath — the same header recipe Progress uses (C-2/C-3
- *      fix, `REVIEW_batch1-fidelity.md`), so the app's two hub pages no
- *      longer render two different header treatments.
- *   2. **Review & drills carousel** (lead action) — Grammar drills tile
- *      (→ /learn/grammar) and a Hanja study tile (→ /learn/hanja, F-140).
- *      F-139 removes the old vocab/"words" due-count tile entirely — the
- *      Review tab (bottom nav) is its home now; a duplicate CTA here was
- *      redundant.
- *   3. **Suggested learning carousel** (F-136) — Reading / Writing /
- *      Listening / TOPIK in one carousel (folds the old separate "Today's
- *      tasks" + "TOPIK" sections into one IA, F-135). Reading's daily
- *      rotation is real and already server-side (`server/src/routes/plan.ts`
- *      orders the TTMIK pick by `md5(user || date || lesson_id)` — this
- *      screen only has to render whatever `/plan/today` sends, which already
- *      changes day to day). Writing expands INLINE via `CollapsibleTile`
- *      (F-134) instead of navigating away; the Claude topic generator lives
- *      in its body. TOPIK's tile is followed by a compact "Review mistakes"
- *      shortcut (folded in, not its own carousel page) and carries NO
- *      highlight styling (F-137 — its meta line is plain text, never a
- *      glowing bar). A saved F-007 attempt surfaces as the corner resume
- *      banner across the whole carousel.
+ *      fix, `REVIEW_batch1-fidelity.md`).
+ *   2. Core drills carousel (Vocab / Grammar / Hanja).
+ *   3. Suggested learning peek slider (Reading / Listening / Writing).
+ *   4. TOPIK carousel.
  *
  * Data:
  *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })
@@ -55,24 +74,32 @@
  * The three attempt-history fetches back F-138's per-tile "done today"
  * counts (grammar/writing/TOPIK) — filtered client-side to the viewer's
  * local calendar day, since these are the caller's own scored/graded
- * history, newest first, and carry no "today only" server filter. Hanja and
- * Reading/Listening have NO attempt-history endpoint today (`services/hanja`
- * only exposes lifetime aggregate bands; `services/reading`/`services/ttmik`
- * expose no per-attempt log at all) — those tiles show their existing
- * server-supplied content with no daily-count claim, which is the honest
- * choice over fabricating one. Tracked as durable follow-ups in
- * `BUGS_AND_FEATURES.md` — "Hanja daily-attempt signal" and "Reading/Listening
- * daily-attempt signal" — rather than left as a dangling PR-description note.
+ * history, newest first, and carry no "today only" server filter. Hanja,
+ * Vocab, and Reading/Listening have NO attempt-history endpoint today
+ * (`services/hanja` only exposes lifetime aggregate bands; `services/vocab`
+ * exposes a live due-count, not a "reviewed today" tally;
+ * `services/reading`/`services/ttmik` expose no per-attempt log at all) —
+ * those tiles show their existing server-supplied content with no
+ * daily-count claim, which is the honest choice over fabricating one.
+ * Tracked as durable follow-ups in `BUGS_AND_FEATURES.md` — "Hanja
+ * daily-attempt signal" and "Reading/Listening daily-attempt signal" —
+ * rather than left as a dangling PR-description note.
+ *
+ * A plan failure (never loading, never mock-fallback data) degrades the
+ * Vocab tile (Carousel 1) and the whole Suggested-learning peek slider
+ * (Carousel 2) to an honest `ErrorCard` with retry — Grammar/Hanja (no
+ * plan dependency) and TOPIK (no plan dependency) keep working regardless.
  *
  * Threat model:
  *   Fixture/server text rendered as React children → escaped by React. Pass
  *   3+ wire must keep this contract (text fields, not HTML strings). The
- *   F-027 generator's Claude output is handled inside WritingTopicGenerator
- *   (same escaped-text contract). The three new attempt-history fetches are
- *   read-only GETs behind the same auth+session posture as every other
- *   service in this app (see services/grammarDrill.ts, services/writing.ts,
- *   services/topik.ts) — this screen adds no new endpoint, just three more
- *   consumers of ones that already exist for their own history screens.
+ *   three attempt-history fetches are read-only GETs behind the same
+ *   auth+session posture as every other service in this app (see
+ *   services/grammarDrill.ts, services/writing.ts, services/topik.ts) —
+ *   this screen adds no new endpoint, just three more consumers of ones
+ *   that already exist for their own history screens. The restored Vocab
+ *   tile adds no new endpoint either — it reads `reviewCount` off the
+ *   plan the screen already fetches.
  */
 import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
@@ -89,8 +116,6 @@ import { SkylineHeader } from '../components/SkylineHeader';
 import { CityCard, type CityCardTone } from '../components/CityCard';
 import { DancheongRail } from '../components/DancheongRail';
 import { SealStamp } from '../components/SealStamp';
-import { CollapsibleTile } from '../components/CollapsibleTile';
-import { WritingTopicGenerator } from '../components/WritingTopicGenerator';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
@@ -108,15 +133,17 @@ import './Today.css';
 /**
  * One-line "what Today is showing" for the chat-context store (Slice 3) —
  * the FAB's "Discuss the page you were on?" popup renders this. Mirrors the
- * visible cards only (the due-review count no longer has a visible tile
- * since F-139 removed the vocab tile, so it is no longer summarised here).
+ * visible tiles: the live due-review count (Vocab, restored) plus whichever
+ * task tiles resolved.
  */
 function chatSummaryForPlan(plan: TodayPlan): string {
-  const parts: string[] = [];
+  const parts: string[] = [
+    `${String(plan.reviewCount)} review ${plan.reviewCount === 1 ? 'card' : 'cards'} due`,
+  ];
   if (plan.reading) parts.push(`Reading: ${plan.reading.title}`);
-  if (plan.writing) parts.push(`Writing: ${plan.writing.title}`);
   if (plan.listening) parts.push(`Listening: ${plan.listening.title}`);
-  return parts.length > 0 ? parts.join(' · ') : 'No tasks resolved today';
+  if (plan.writing) parts.push(`Writing: ${plan.writing.title}`);
+  return parts.join(' · ');
 }
 
 /** Format the current date in the design's eyebrow style ("Monday, May 28" /
@@ -216,11 +243,12 @@ async function loadTopikAttemptsMock(): Promise<AttemptHistoryResult> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ActivityTile — the CityCard-based tile every carousel page (Grammar,
-// Hanja, Reading, Listening, TOPIK) renders (F-128 device #1/#2). A real
-// `<button>` owns all interaction/a11y; `CityCard` is purely the visual
-// surface nested inside it (a non-interactive decorative wrapper is valid
-// inside a button — it contributes no semantics of its own).
+// ActivityTile — the CityCard-based tile every carousel/tile on this page
+// (Vocab, Grammar, Hanja, Reading, Listening, Writing, TOPIK) renders
+// (F-128 device #1/#2). A real `<button>` owns all interaction/a11y;
+// `CityCard` is purely the visual surface nested inside it (a
+// non-interactive decorative wrapper is valid inside a button — it
+// contributes no semantics of its own).
 // ─────────────────────────────────────────────────────────────
 
 function ActivityTile({
@@ -317,6 +345,16 @@ function SkeletonCard(): JSX.Element {
   );
 }
 
+/** The honest "plan unavailable" ErrorCard, wrapped in the same
+ *  hanji-textured error surface every failure state on this page uses. */
+function PlanErrorCard({ onRetry }: { onRetry: () => void }): JSX.Element {
+  return (
+    <div className="km-today__errorWrap km-giwa">
+      <ErrorCard message="Today's plan is unavailable." onRetry={onRetry} />
+    </div>
+  );
+}
+
 export function Today(): JSX.Element {
   const navigate = useNavigate();
 
@@ -402,22 +440,15 @@ export function Today(): JSX.Element {
       </button>
     ) : undefined;
 
-  // ── Suggested-learning pages (F-136): Reading / Writing / Listening /
-  // TOPIK, in that order. A null server task is simply omitted — never a
-  // faked card (empty-corpus contract, unchanged from before the redesign).
-  const suggestedPages: ReactNode[] = [];
-
-  // Corner-slot banner (the resume-exam CTA) rides above every page of this
-  // carousel — clear space for it uniformly so it never overlaps a tile's
-  // icon chip while pages slide underneath it (mirrors the pre-redesign
-  // `--banner` padding convention).
-  const pagePadding = (): string | false =>
-    openAttempt !== null && 'km-today__tilePage--banner';
+  // ── Suggested-learning peek-slider items (Reading / Listening / Writing).
+  // A null server task is simply omitted — never a faked card (empty-corpus
+  // contract, unchanged from before the redesign).
+  const peekItems: ReactNode[] = [];
 
   if (today.data?.reading) {
     const t = today.data.reading;
-    suggestedPages.push(
-      <div key="reading" className={cn('km-today__tilePage', pagePadding())}>
+    peekItems.push(
+      <div key="reading" className="km-today__peekItem">
         <ActivityTile
           tone="blue"
           icon="book"
@@ -438,64 +469,10 @@ export function Today(): JSX.Element {
     );
   }
 
-  if (today.data?.writing) {
-    const t = today.data.writing;
-    suggestedPages.push(
-      <div key="writing" className={cn('km-today__tilePage', pagePadding())}>
-        {/* F-134: expands INLINE via CollapsibleTile instead of navigating
-            away. `surface="city"` (the shared CityCard-backed variant, see
-            REVIEW_batch1-fidelity.md C-1) gives it the same Night
-            neon-signboard / Day hanji-paper treatment as its ActivityTile
-            siblings, including the leading-edge DancheongRail via `rail` —
-            no more page-scoped CSS copy of CityCard's glow formula. S1: the
-            "done today" count rides in `title` (the always-visible header
-            face), not inside `children` (the collapsed body) — so it reads
-            at a glance like Grammar/TOPIK's, without expanding the tile. */}
-        <CollapsibleTile
-          className="km-today__writingTile"
-          surface="city"
-          tone="accent"
-          rail
-          defaultCollapsed
-          title={
-            <span className="km-today__tileTop">
-              <span className="km-today__tileIcon" aria-hidden="true">
-                <Icon name="pen" size={20} />
-              </span>
-              <span className="km-today__tileBody">
-                {renderTag(t.tag, gapTag)}
-                <span className="km-today__tileHeadline kr">{t.title}</span>
-                <span className="km-today__tileMeta">
-                  <Bilingual
-                    en={`Writing · ${t.level} · ${String(t.mins)} min`}
-                    kr={`쓰기 · ${t.level} · ${String(t.mins)}분`}
-                  />
-                </span>
-                <DoneTodayRow
-                  count={writingDoneToday}
-                  tone="accent"
-                  labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
-                  labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
-                />
-              </span>
-            </span>
-          }
-        >
-          <WritingTopicGenerator
-            embedded
-            onUseTopic={(topic) => {
-              navigate('/learn/writing', { state: { generatedTopic: topic } });
-            }}
-          />
-        </CollapsibleTile>
-      </div>,
-    );
-  }
-
   if (today.data?.listening) {
     const t = today.data.listening;
-    suggestedPages.push(
-      <div key="listening" className={cn('km-today__tilePage', pagePadding())}>
+    peekItems.push(
+      <div key="listening" className="km-today__peekItem">
         <ActivityTile
           tone="mint"
           icon="headphones"
@@ -516,70 +493,49 @@ export function Today(): JSX.Element {
     );
   }
 
-  // A real plan failure (never loading, never mock-fallback data) empties
-  // every task page above — surface the honest error there instead of a
-  // silently-shrunk carousel. `km-giwa` (device #3) textures the ground.
-  const planFailed = !today.loading && today.data === null;
-  if (planFailed) {
-    suggestedPages.unshift(
-      <div key="plan-error" className={cn('km-today__tilePage', pagePadding())}>
-        <div className="km-today__errorWrap km-giwa">
-          <ErrorCard
-            message="Today's plan is unavailable."
-            onRetry={retryToday}
-          />
-        </div>
+  if (today.data?.writing) {
+    const t = today.data.writing;
+    peekItems.push(
+      <div key="writing" className="km-today__peekItem">
+        {/* F-134's inline CollapsibleTile expand does not fit the peek
+            slider's fixed-width, center-snap layout (see the module header
+            comment) — Writing is a plain ActivityTile that navigates to
+            /learn/writing, same as Reading/Listening. The "done today"
+            count rides in `extra`, same convention as Grammar/TOPIK. */}
+        <ActivityTile
+          tone="accent"
+          icon="pen"
+          ariaLabel={`Open writing — ${t.title}`}
+          pill={renderTag(t.tag, gapTag)}
+          headline={<span className="kr">{t.title}</span>}
+          meta={
+            <Bilingual
+              en={`Writing · ${t.level} · ${String(t.mins)} min`}
+              kr={`쓰기 · ${t.level} · ${String(t.mins)}분`}
+            />
+          }
+          extra={
+            <DoneTodayRow
+              count={writingDoneToday}
+              tone="accent"
+              labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
+              labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
+            />
+          }
+          onClick={() => {
+            navigate('/learn/writing');
+          }}
+        />
       </div>,
     );
   }
 
-  // TOPIK — always present (F-136); a plain (never highlighted, F-137)
-  // "done today" line plus a folded-in "Review mistakes" shortcut.
-  suggestedPages.push(
-    <div key="topik" className={cn('km-today__tilePage', pagePadding())}>
-      <ActivityTile
-        tone="accent"
-        feat
-        icon="spark"
-        ariaLabel="Open TOPIK study practice"
-        pill={
-          <Pill tone="gold">
-            <Bilingual en="Recommended" kr="추천" />
-          </Pill>
-        }
-        headline={<Bilingual en="TOPIK study practice" kr="토픽 학습" />}
-        meta={
-          <Bilingual
-            en="Shuffled past questions, one at a time"
-            kr="기출 문제를 한 문항씩 랜덤으로"
-          />
-        }
-        extra={
-          <DoneTodayRow
-            count={topikDoneToday}
-            tone="accent"
-            labelEn={(n) => (n === 1 ? '1 mock attempt today' : `${String(n)} mock attempts today`)}
-            labelKr={(n) => `오늘 완료한 모의고사 ${String(n)}회`}
-          />
-        }
-        onClick={() => {
-          navigate('/learn/topik');
-        }}
-      />
-      <div className="km-today__topikExtra">
-        <button
-          type="button"
-          className="km-today__linkBtn focusring"
-          onClick={() => {
-            navigate('/review/mistakes');
-          }}
-        >
-          <Icon name="history" size={14} />
-          <Bilingual en="Review mistakes" kr="오답 복습" />
-        </button>
-      </div>
-    </div>,
-  );
+  // A real plan failure (never loading, never mock-fallback data) empties
+  // the peek slider (every task above is gated on `today.data`) and the
+  // Vocab tile below — both degrade to an honest ErrorCard rather than a
+  // silently-shrunk carousel. Grammar/Hanja/TOPIK have no plan dependency
+  // and keep working regardless (checked below).
+  const planFailed = !today.loading && today.data === null;
 
   return (
     <section
@@ -615,15 +571,53 @@ export function Today(): JSX.Element {
         <DancheongRail tone="accent" />
       </div>
 
-      {/* Review & drills carousel — Grammar (unchanged target) + Hanja
-          (F-140). F-139 removed the vocab/"words" due-count tile — the
-          Review tab is its home now, so this carousel no longer depends on
-          the plan fetch at all. */}
+      {/* Carousel 1 — Core drills: Vocab / Grammar / Hanja. Vocab (restored,
+          reversing F-139) reads a real live due-count off the plan, so it
+          alone among this carousel's pages depends on `today`; Grammar and
+          Hanja never did and must keep working regardless of the plan's
+          fate. */}
       <Eyebrow className="km-today__sectionEyebrow">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </Eyebrow>
       <section className="km-today__section">
         <SwipeCarousel ariaLabel="Review and drills" loop>
+          <div className="km-today__tilePage">
+            {today.loading ? (
+              <SkeletonCard />
+            ) : today.data ? (
+              <ActivityTile
+                tone="blue"
+                icon="cards"
+                ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
+                pill={
+                  <Pill tone="gold">
+                    <Bilingual en="Due now" kr="지금 복습" />
+                  </Pill>
+                }
+                headline={
+                  <Bilingual
+                    en={`${String(today.data.reviewCount)} ${
+                      today.data.reviewCount === 1 ? 'card' : 'cards'
+                    } due`}
+                    kr={`복습할 카드 ${String(today.data.reviewCount)}장`}
+                  />
+                }
+                meta={
+                  <Bilingual
+                    en="FSRS scheduling · due for review"
+                    kr="FSRS 스케줄링 · 복습 예정"
+                  />
+                }
+                onClick={() => {
+                  // Vocab-flashcards intent — the FSRS review queue lives at
+                  // /learn/vocab (/review is the library index).
+                  navigate('/learn/vocab');
+                }}
+              />
+            ) : (
+              <PlanErrorCard onRetry={retryToday} />
+            )}
+          </div>
           <div className="km-today__tilePage">
             <ActivityTile
               tone="blue"
@@ -656,7 +650,7 @@ export function Today(): JSX.Element {
           </div>
           <div className="km-today__tilePage">
             <ActivityTile
-              tone="plain"
+              tone="ochre"
               icon="hanja"
               ariaLabel="Open Hanja study"
               pill={
@@ -679,20 +673,103 @@ export function Today(): JSX.Element {
         </SwipeCarousel>
       </section>
 
-      {/* Suggested learning carousel — Reading / Writing / Listening /
-          TOPIK folded into one IA (F-135/F-136). */}
+      {/* Carousel 2 — Suggested learning: Reading / Listening / Writing as
+          a native-scroll-snap PEEK SLIDER (see the module header comment
+          for why this is not a SwipeCarousel). Deliberately a plain
+          labeled <section> (implicit `region`), not
+          `aria-roledescription="carousel"` — every tile is simultaneously
+          real and focusable (no aria-hidden/inert paging), which is the
+          honest a11y shape for a continuous scroll rail. */}
       <Eyebrow className="km-today__sectionEyebrow km-hangul-watermark" data-glyph="배">
         <Bilingual en="Suggested learning" kr="추천 학습" />
       </Eyebrow>
-      {today.loading ? (
-        <SkeletonCard />
-      ) : (
-        <section className="km-today__section">
-          <SwipeCarousel ariaLabel="Suggested learning" loop cornerSlot={resumeBanner}>
-            {suggestedPages}
-          </SwipeCarousel>
-        </section>
-      )}
+      <section className="km-today__section" aria-label="Suggested learning">
+        {today.loading ? (
+          <SkeletonCard />
+        ) : planFailed ? (
+          <PlanErrorCard onRetry={retryToday} />
+        ) : peekItems.length > 0 ? (
+          <div className="km-today__peekOuter">
+            <div className="km-today__peekTrack">{peekItems}</div>
+          </div>
+        ) : (
+          <p className="km-today__peekEmpty">
+            <Bilingual
+              en="No suggested content right now"
+              kr="지금은 추천 학습이 없습니다"
+            />
+          </p>
+        )}
+      </section>
+
+      {/* Carousel 3 — TOPIK, last. A single-page SwipeCarousel (dots/drag
+          naturally no-op below 2 children) carrying the folded-in
+          "Review mistakes" shortcut and the F-007 resume-exam corner
+          banner — TOPIK is what a saved attempt resumes back into, so this
+          is its natural home now that it's split from Reading/Listening/
+          Writing. No highlight styling on the meta line (F-137). */}
+      <Eyebrow className="km-today__sectionEyebrow">
+        <Bilingual en="TOPIK" kr="토픽" />
+      </Eyebrow>
+      <section className="km-today__section">
+        {/* `SwipeCarousel.children` is typed `ReactNode[]` (multiple pages
+            by contract) — this carousel genuinely has only one page, so the
+            single child is wrapped in an explicit array literal to satisfy
+            that type rather than loosening the shared component's prop. */}
+        <SwipeCarousel ariaLabel="TOPIK" cornerSlot={resumeBanner}>
+          {[
+          <div
+            key="topik"
+            className={cn(
+              'km-today__tilePage',
+              openAttempt !== null && 'km-today__tilePage--banner',
+            )}
+          >
+            <ActivityTile
+              tone="accent"
+              feat
+              icon="spark"
+              ariaLabel="Open TOPIK study practice"
+              pill={
+                <Pill tone="gold">
+                  <Bilingual en="Recommended" kr="추천" />
+                </Pill>
+              }
+              headline={<Bilingual en="TOPIK study practice" kr="토픽 학습" />}
+              meta={
+                <Bilingual
+                  en="Shuffled past questions, one at a time"
+                  kr="기출 문제를 한 문항씩 랜덤으로"
+                />
+              }
+              extra={
+                <DoneTodayRow
+                  count={topikDoneToday}
+                  tone="accent"
+                  labelEn={(n) => (n === 1 ? '1 mock attempt today' : `${String(n)} mock attempts today`)}
+                  labelKr={(n) => `오늘 완료한 모의고사 ${String(n)}회`}
+                />
+              }
+              onClick={() => {
+                navigate('/learn/topik');
+              }}
+            />
+            <div className="km-today__topikExtra">
+              <button
+                type="button"
+                className="km-today__linkBtn focusring"
+                onClick={() => {
+                  navigate('/review/mistakes');
+                }}
+              >
+                <Icon name="history" size={14} />
+                <Bilingual en="Review mistakes" kr="오답 복습" />
+              </button>
+            </div>
+          </div>,
+          ]}
+        </SwipeCarousel>
+      </section>
     </section>
   );
 }

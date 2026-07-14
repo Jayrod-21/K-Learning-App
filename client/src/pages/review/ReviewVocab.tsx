@@ -41,6 +41,19 @@
  * pass) still renders its OWN loading state through the shared
  * `.km-grammar__state` rule — flagged for a follow-up there.
  *
+ * Batch-3 fix-pass — the `kinds` prop above only ever scoped what a NEW
+ * list could be CREATED as; `MyVocabLists`' own "My lists" tile still
+ * rendered every one of the user's lists exactly as `GET /vocab/lists`
+ * returned them, unfiltered by kind. That's the actual, still-live root
+ * cause of "grammar keeps showing on the Vocab page" after the two prior
+ * fixes above: a pre-existing `kind: 'grammar'` list (or one made through
+ * any other kind-creating surface) rendered right here regardless of this
+ * page's `kinds={['vocab']}`. `MyVocabLists` now filters its fetched rows
+ * by `kinds` before rendering — see that file's header doc — and its two
+ * remaining `.km-grammar__state` loading-state divs (cosmetic classname
+ * only, not the bug above) are renamed to `.km-vocab__state` for the same
+ * reason F-144 renamed this page's own.
+ *
  * F-148 — "This Week" is now a `Sheet` popup (a small trigger button opens
  * it) instead of an always-inline card, so the page reads as My Lists →
  * Browse with the suggestion strip tucked behind a tap, matching the

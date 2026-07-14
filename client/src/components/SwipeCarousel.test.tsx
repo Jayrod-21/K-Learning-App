@@ -467,4 +467,99 @@ describe('SwipeCarousel', () => {
     const { container } = renderCarousel();
     expect(container.querySelector('.km-carousel__corner')).toBeNull();
   });
+
+  // ── Touch pointer flow (Bug 2 — real-mobile swipe) ──────────────────
+  //
+  // happy-dom's PointerEvent carries `pointerType`, so these exercise the
+  // exact same handlers a real touch would hit — nothing in the component
+  // branches on `pointerType`, so a touch-flagged gesture must behave
+  // identically to the untyped one the tests above use, and a regression
+  // that accidentally filtered by `pointerType` would fail here first.
+
+  it('advances the page on a touch pointer down/move/up horizontal drag', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 4, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 52,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 80, clientY: 55,
+    });
+    fireEvent.pointerUp(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 80, clientY: 55,
+    });
+
+    expectSelectedPage(2);
+  });
+
+  it('leaves the page alone on a vertical-dominant touch drag, preserving scroll (no preventDefault)', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 4, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+    // Vertical-dominant move — the axis locks 'v' and surrenders. A
+    // cancelable event's dispatch returns `true` when `preventDefault` was
+    // NOT called — asserting that here is exactly the "scroll preserved"
+    // contract: this component must never veto a gesture it surrendered.
+    const notPrevented = fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 202, clientY: 120,
+    });
+    expect(notPrevented).toBe(true);
+
+    fireEvent.pointerUp(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 202, clientY: 120,
+    });
+    expectSelectedPage(1);
+  });
+
+  it('calls preventDefault on every move once the axis locks horizontal, not before', () => {
+    const { container } = renderCarousel();
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 4, isPrimary: true, button: 0, pointerType: 'touch',
+      clientX: 200, clientY: 50,
+    });
+
+    // Still inside the 8px axis-lock window — undecided, so the browser
+    // must remain free to claim the gesture (no preventDefault yet).
+    const undecided = fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 204, clientY: 51,
+    });
+    expect(undecided).toBe(true);
+
+    // This move crosses the threshold with a horizontal-dominant delta —
+    // the axis locks 'h' and this SAME move must already be vetoed.
+    const locking = fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 180, clientY: 52,
+    });
+    expect(locking).toBe(false);
+
+    // Every subsequent 'h'-axis move keeps vetoing, not just the first.
+    const continuing = fireEvent.pointerMove(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 53,
+    });
+    expect(continuing).toBe(false);
+
+    fireEvent.pointerUp(viewport, {
+      pointerId: 4, isPrimary: true, pointerType: 'touch',
+      clientX: 140, clientY: 53,
+    });
+  });
 });

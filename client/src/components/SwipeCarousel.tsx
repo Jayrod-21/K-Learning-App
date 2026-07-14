@@ -11,10 +11,19 @@
  *     Horizontal-dominant → the carousel captures the pointer and drags the
  *     track; vertical-dominant → the gesture is surrendered IMMEDIATELY
  *     (tracking stops, the ref clears) so the page keeps scrolling
- *     (`touch-action: pan-y` on the viewport tells the browser the same thing
- *     for touch). Releasing past the snap threshold (20% of the viewport,
- *     min 48px) advances one page; short drags spring back. Overscroll at
- *     either end is damped 3:1.
+ *     (`touch-action: pan-y` on the viewport tells the browser the same
+ *     thing for touch — it's set on the SAME element (`viewportRef`) that
+ *     owns the pointer handlers, which is load-bearing: `touch-action`
+ *     only affects the element the touch actually contacts, so a value
+ *     declared on a sibling or non-ancestor would be silently ignored.
+ *     Once the axis locks 'h', every subsequent move also calls
+ *     `preventDefault()` (guarded by `cancelable`) as a same-tick veto
+ *     against the browser's own gesture arbitration racing the 8px JS
+ *     threshold, and to suppress the trailing synthetic click a short
+ *     drag-then-release could otherwise replay on interactive page content
+ *     (see `onPointerMove`). Releasing past the snap threshold (20% of the
+ *     viewport, min 48px) advances one page; short drags spring back.
+ *     Overscroll at either end is damped 3:1.
  *   - **Stuck-drag safety.** Mouse pointers have no implicit capture, and we
  *     deliberately defer `setPointerCapture` until the axis locks `'h'` (so
  *     `click` retargeting can't break interactive page content). That means
@@ -191,6 +200,25 @@ export function SwipeCarousel({
       }
     }
     if (d.axis !== 'h') return;
+
+    // Once the axis has locked horizontal, this pointer sequence is OURS.
+    // `touch-action: pan-y` (the viewport's CSS) is what stops the browser
+    // from ever starting a native scroll for this gesture in the first
+    // place, but on real touch devices the browser's own gesture
+    // arbitration (edge-swipe-back navigation, momentum-scroll capture) can
+    // still race our 8px JS axis lock during the first couple of samples —
+    // `preventDefault()` here is the explicit, same-tick veto that tells the
+    // engine "this pointer is spoken for," on every 'h' move, not just the
+    // first. It also suppresses the trailing synthetic click on whatever
+    // interactive content a carousel page renders (Today's tiles are full-
+    // page `<button>`s): per the Pointer Events spec, a browser that has
+    // seen `preventDefault()` called during an active touch's move sequence
+    // will not replay it as a tap — so a drag that locks 'h' but springs
+    // back under the snap threshold can never accidentally "activate" the
+    // tile underneath. Guarded by `cancelable` — some replayed/synthetic
+    // events (tests, capture-less browsers) aren't, and calling
+    // `preventDefault` on those just logs a console warning for nothing.
+    if (e.cancelable) e.preventDefault();
 
     // Damp overscroll beyond the first/last page so the edge feels solid.
     // A looping carousel has no edges — never damp there, or the wrap swipe

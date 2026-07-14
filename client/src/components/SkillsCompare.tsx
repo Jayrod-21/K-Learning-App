@@ -19,6 +19,12 @@
  * F-011: rows may carry `scoreLow`/`scoreHigh` confidence-band edges — each
  * bar renders them as a subtle translucent range, and the full-mode legend
  * gains a "Confidence band" entry only when at least one bar draws one.
+ *
+ * Mobile hardening: the picker holds up to 7 pills (TOPIK 1–6 + Native) and
+ * never wraps or shrinks its text, so on a narrow phone it can be wider than
+ * the screen. `SkillsCompare.css` gives the picker its own `overflow-x: auto`
+ * scroll rail (see that file's header) so the full 1 → Native range stays
+ * reachable by scroll instead of being clipped off-screen.
  */
 import type { JSX } from 'react';
 import { useState } from 'react';
@@ -27,6 +33,7 @@ import { Eyebrow } from './Eyebrow';
 import { SkillBar } from './SkillBar';
 import { cn } from '../lib/cn';
 import { hasVisibleBand } from '../lib/skillBand';
+import './SkillsCompare.css';
 
 export interface SkillRow {
   /** Stable key for React; e.g. 'reading'. */

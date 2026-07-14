@@ -1,0 +1,74 @@
+/*
+ * SkillsCompare — mobile overflow fix for the reference picker.
+ *
+ * Root cause: `.km-skillscompare__pickerrow` is a flex row holding the
+ * "Compare to" eyebrow and `.km-skillscompare__picker`, a segmented control
+ * of up to 7 pills (TOPIK 1–6 + Native, each `white-space: nowrap`). As a
+ * flex ITEM the picker's default `min-width: auto` sizes to its full
+ * intrinsic content width — roughly 480–560px of EN labels alone, more with
+ * Korean shorthand — and never shrinks below that. At a 360px phone width
+ * the picker simply overflows its card to the right, clipping TOPIK 5 /
+ * Native off the edge of the screen (the live bug). Abbreviating the
+ * labels doesn't fix this generally — a future 7th level, a longer
+ * translation, or a wider font all reintroduce the same overflow.
+ *
+ * Fix: let the picker own its horizontal overflow. `min-width: 0` lets the
+ * flex item shrink to the space actually available; `overflow-x: auto`
+ * turns any excess into an internal scroll rail instead of a page-level
+ * one. The full 1 → Native range stays reachable (tap/swipe/scroll) at any
+ * viewport width — nothing is ever permanently clipped off-screen — and
+ * the desktop look is unchanged (all 7 pills already fit with room to
+ * spare, so the scroll container never engages there).
+ *
+ * Placement note: these rules override `.km-skillscompare__pickerrow` /
+ * `__picker` / `__pick` declarations that still live in `styles/index.css`.
+ * That global sheet is out of scope for this pass (shared mutable state
+ * across parallel feature branches — see FeedbackFab.css / BackButton.css
+ * for the same house convention of colocating instead of touching it) so
+ * this file wins via a same-file cascade + an extra `.km-skillscompare`
+ * ancestor qualifier on each selector, not via source order. A follow-up
+ * migration can delete the now-superseded `.km-skillscompare__*` rules from
+ * index.css once that file is out of contention.
+ */
+.km-skillscompare .km-skillscompare__pickerrow {
+  min-width: 0;
+}
+
+.km-skillscompare .km-skillscompare__picker {
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+}
+
+.km-skillscompare .km-skillscompare__picker::-webkit-scrollbar {
+  height: 4px;
+}
+
+.km-skillscompare .km-skillscompare__picker::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 2px;
+}
+
+.km-skillscompare .km-skillscompare__pick {
+  /* Each pill keeps its natural width and the row scrolls instead of
+     squashing text — `flex: 0 0 auto` opts out of the (already-shrunk)
+     container's shrink behaviour per-child. */
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+/* Below ~480px the eyebrow and the picker no longer share a row — stacking
+ * gives the picker the full card width to work with before it ever needs
+ * to scroll, and keeps the "Compare to" label from being squeezed by
+ * `justify-content: space-between` in the base rule. */
+@media (max-width: 480px) {
+  .km-skillscompare .km-skillscompare__pickerrow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

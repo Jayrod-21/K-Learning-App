@@ -222,6 +222,62 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     });
   });
 
+  it('a mount narrowed to kinds=["vocab"] never DISPLAYS an existing list of another kind (root cause: `kinds` used to gate only the create picker, not the fetched rows — the actual bug behind "grammar still shows" after two prior fixes)', async () => {
+    vocabSvc.listLists.mockResolvedValue([
+      SERVER_LIST,
+      {
+        id: 42,
+        name_kr: '중급 문법',
+        name_en: 'Intermediate grammar',
+        kind: 'grammar',
+        version: 1,
+        entry_count: 5,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+    ]);
+    render(
+      <ToastProvider>
+        <MyVocabLists kinds={['vocab']} />
+      </ToastProvider>,
+    );
+
+    // The vocab-kind row renders as before…
+    expect(await screen.findByText('병원 어휘')).toBeInTheDocument();
+    // …but the grammar-kind row the server returned is filtered out of the
+    // render entirely — not just unreachable via the create form.
+    expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
+    expect(screen.queryByText('Intermediate grammar')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /중급 문법/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the honest empty invitation when the server has lists but none match this mount\'s kinds', async () => {
+    vocabSvc.listLists.mockResolvedValue([
+      {
+        id: 42,
+        name_kr: '중급 문법',
+        name_en: 'Intermediate grammar',
+        kind: 'grammar',
+        version: 1,
+        entry_count: 5,
+        created_at: 'x',
+        updated_at: 'y',
+      },
+    ]);
+    render(
+      <ToastProvider>
+        <MyVocabLists kinds={['vocab']} />
+      </ToastProvider>,
+    );
+
+    expect(
+      await screen.findByText(/No lists yet\. Create one above/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('중급 문법')).not.toBeInTheDocument();
+  });
+
   it('gates delete behind confirm — cancel aborts, accept deletes and reloads', async () => {
     // happy-dom ships no window.confirm — stub it (cancel first, then accept).
     const confirmFn = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
