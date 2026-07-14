@@ -68,6 +68,33 @@
  *     message strings are never echoed (the Login.messageFor contract).
  *   - The sample is soft-capped by `maxLength` (5,000 — the server's own Zod
  *     ceiling) so a runaway paste can't balloon the request.
+ *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2: skyline + dancheong rail) replaces the bare `Topbar`; the compose
+ * surface is a `CityCard` signboard/hanji-paper hero (device #1) with a
+ * leading `DancheongRail` instead of a plain default `Card`, matching every
+ * other reskinned LEARN page's hero-surface convention (Grammar's live
+ * drill, Reading's chapter reader); the Responses tab's history panel gets
+ * the same `CityCard` treatment; both honest-empty states (an empty rubric
+ * pool, no graded history yet) carry `.km-giwa`/`.km-hangul-watermark`
+ * (devices #3/#6); the page root carries the ambient `.km-rain-sheen`
+ * (device #8, Night-only per its own CSS gate). No shared file needed
+ * changing — every device consumed here already exists post-foundation.
+ *
+ * F-163 ("AI Prompt as a top-level option") — the segmented task-type
+ * chooser above the compose card now offers THREE equal choices (Q53 / Q54
+ * / ✦ AI Prompt), not two with the generator buried in an always-visible
+ * panel below. Selecting "AI Prompt" mounts the SAME `WritingTopicGenerator`
+ * (F-027/F-073) inside the compose card's top-level slot; it stays mounted
+ * even after a topic is adopted, so "New topic" keeps working without
+ * leaving the slot, and the adopted topic's compose sheet (textarea +
+ * Grade) appends directly below it — mirroring the design mock's stacked
+ * "topic sign + your-answer sheet" layout. `uiChoice` (a THIRD state,
+ * `TopikWritingRubric | 'ai_prompt'`, alongside the existing `rubric`/
+ * `source`) tracks which of the three chips is selected; `selectRubric`
+ * keeps it in sync on every bank pick (including a pick made while "AI
+ * Prompt" was selected, returning from an adopted generated topic) so the
+ * chooser never disagrees with what is actually on the surface.
  */
 import {
   useCallback,
@@ -81,13 +108,14 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
-import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { Button } from '../components/Button';
 import { Pill, type PillTone } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { GoldRule } from '../components/GoldRule';
 import { ErrorCard } from '../components/ErrorCard';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Tabs, type TabItem } from '../components/Tabs';
 import { WritingTopicGenerator } from '../components/WritingTopicGenerator';
 import { navItem } from '../lib/nav';
@@ -140,8 +168,24 @@ const RUBRIC_META: Record<
   },
 };
 
-/** Rubric radio order — Q53 first (the shorter, friendlier on-ramp). */
-const RUBRICS: readonly TopikWritingRubric[] = ['topik_ii_53', 'topik_ii_54'];
+/**
+ * F-163 — the top-level writing-task chooser now spans THREE choices, not
+ * two: the two curated bank rubrics, plus `'ai_prompt'` for the Claude topic
+ * generator. Previously the generator sat in its own always-visible panel
+ * BELOW the compose card (a "buried sub-flow"); the ticket's fix is
+ * structural — fold it into the SAME top-level segmented control the bank
+ * rubrics already use, matching the design mock's "AI Prompt" rubric chip.
+ * Superseded the old two-entry `RUBRICS` order constant (Q53, Q54 — kept
+ * here as the leading two entries, the shorter/friendlier on-ramp first).
+ */
+type WritingChoice = TopikWritingRubric | 'ai_prompt';
+
+/** Segmented-control order: Q53, Q54, then AI Prompt (mirrors the mock). */
+const CHOICES: ReadonlyArray<{ id: WritingChoice; label: string }> = [
+  { id: 'topik_ii_53', label: RUBRIC_META.topik_ii_53.label },
+  { id: 'topik_ii_54', label: RUBRIC_META.topik_ii_54.label },
+  { id: 'ai_prompt', label: '✦ AI Prompt' },
+];
 
 /**
  * Fallback TOPIK rubric for a generated `mode: 'topik'` task whose own
@@ -346,6 +390,17 @@ function Writing(): JSX.Element {
   // from. Independent of the ACTIVE task's rubric (a generated Q54 topic can
   // sit on the surface while the radios still show the learner's last pick).
   const [rubric, setRubric] = useState<TopikWritingRubric>('topik_ii_53');
+  // F-163 — which of the THREE top-level segmented choices is selected
+  // (Q53 / Q54 / AI Prompt). Distinct from `rubric` (which only ever names a
+  // BANK pool): `uiChoice` also spans `'ai_prompt'`, so it decides what the
+  // compose card SHOWS (the generator panel, vs the bank/generated compose
+  // sheet) independently of which bank pool is parked underneath. Seeded to
+  // 'ai_prompt' when a Today-carried topic (F-101) landed the page directly
+  // on a generated task, so the segmented control reflects reality on the
+  // very first paint.
+  const [uiChoice, setUiChoice] = useState<WritingChoice>(
+    seedTopic !== null ? 'ai_prompt' : 'topik_ii_53',
+  );
   const [taskState, setTaskState] = useState<TaskState>(
     seedTopic !== null
       ? { phase: 'ready', task: { source: 'generated', prompt: seedTopic } }
@@ -519,10 +574,15 @@ function Writing(): JSX.Element {
   /**
    * Select a bank rubric (also the way BACK to bank tasks from a generated
    * topic). Preserves the draft — switching pools is exploratory, and
-   * silently destroying text would repeat the F-UP-017 bug class.
+   * silently destroying text would repeat the F-UP-017 bug class. Also
+   * syncs `uiChoice` (F-163) so the segmented control always names whichever
+   * task is actually on the surface — a bank pick made while "AI Prompt" was
+   * selected (returning from a generated topic) must visibly move the
+   * selected chip back to the bank rubric it just switched to.
    */
   const selectRubric = useCallback(
     (next: TopikWritingRubric): void => {
+      setUiChoice(next);
       if (source === 'bank' && next === rubric) return;
       ctrlRef.current?.abort();
       clearOnArrivalRef.current = false;
@@ -534,6 +594,17 @@ function Writing(): JSX.Element {
     },
     [source, rubric],
   );
+
+  /**
+   * F-163 — select the "AI Prompt" chip. Deliberately does NOT touch
+   * `source`/`taskState`/`sample`: this only changes what the compose card
+   * SHOWS. If a generated topic is already adopted (`source === 'generated'`)
+   * the compose sheet keeps rendering it untouched; otherwise the card shows
+   * the on-page generator, inviting the learner to make one.
+   */
+  const selectAiPrompt = useCallback((): void => {
+    setUiChoice('ai_prompt');
+  }, []);
 
   /**
    * F-073 / F-101: a generated topic becomes the active gradable task. An
@@ -552,21 +623,23 @@ function Writing(): JSX.Element {
     pendingFocusRef.current = true;
   }, []);
 
-  // Roving-tabindex arrows on the rubric radios (WAI-ARIA radiogroup — the
-  // same segmented-control pattern as WritingTopicGenerator's style choice).
-  const onRubricKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
-    const current = RUBRICS.indexOf(rubric);
+  // Roving-tabindex arrows on the three segmented choices (WAI-ARIA
+  // radiogroup — the same pattern as WritingTopicGenerator's own style
+  // choice, extended from two entries to three by F-163).
+  const onChoiceKeyDown = (e: KeyboardEvent<HTMLButtonElement>): void => {
+    const current = CHOICES.findIndex((c) => c.id === uiChoice);
     let next: number | null = null;
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-      next = (current + 1) % RUBRICS.length;
+      next = (current + 1) % CHOICES.length;
     } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-      next = (current - 1 + RUBRICS.length) % RUBRICS.length;
+      next = (current - 1 + CHOICES.length) % CHOICES.length;
     }
     if (next === null) return;
     e.preventDefault();
-    const target = RUBRICS[next];
+    const target = CHOICES[next];
     if (target === undefined) return;
-    selectRubric(target);
+    if (target.id === 'ai_prompt') selectAiPrompt();
+    else selectRubric(target.id);
     rubricRefs.current[next]?.focus();
   };
 
@@ -587,9 +660,11 @@ function Writing(): JSX.Element {
           target: RUBRIC_META[rubric].target,
         };
 
+  // F-163: the compose card shows the on-page generator ONLY while "AI
+  // Prompt" is selected AND no generated topic has been adopted yet — once
   return (
     <section
-      className="screen km-writing"
+      className="screen km-writing km-rain-sheen"
       aria-labelledby="writing-title"
       style={{ position: 'relative' }}
     >
@@ -600,13 +675,14 @@ function Writing(): JSX.Element {
         <BackButton />
       </div>
 
-      <Topbar
-        krTitle="쓰기"
-        title="Writing"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (skyline +
+          dancheong rail) replaces the bare Topbar. */}
+      <PageHubHeader
         titleId="writing-title"
         eyebrow={
           <Bilingual en={WRITING_NAV.eyebrow} kr={WRITING_NAV.krEyebrow} />
         }
+        heading={<Bilingual en="Writing" kr="쓰기" />}
       />
 
       <Tabs tabs={WRITING_TABS} ariaLabel="Writing sections">
@@ -615,18 +691,20 @@ function Writing(): JSX.Element {
             <MyResponses />
           ) : (
             <>
-              {/* Rubric radiogroup ───────────────────────────────── */}
+              {/* F-163 — the top-level task-type chooser: the two curated
+                  bank rubrics AND "AI Prompt" as a THIRD, equal, top-level
+                  choice (not a buried sub-flow below the card). */}
               <div
                 className="km-review__tabs"
                 role="radiogroup"
                 aria-label="Writing task type"
                 id={rubricGroupId}
               >
-                {RUBRICS.map((r, i) => {
-                  const selected = rubric === r;
+                {CHOICES.map((c, i) => {
+                  const selected = uiChoice === c.id;
                   return (
                     <button
-                      key={r}
+                      key={c.id}
                       ref={(el) => {
                         rubricRefs.current[i] = el;
                       }}
@@ -636,75 +714,122 @@ function Writing(): JSX.Element {
                       tabIndex={selected ? 0 : -1}
                       className={`km-review__tab focusring${selected ? ' km-review__tab--active' : ''}`}
                       onClick={() => {
-                        selectRubric(r);
+                        if (c.id === 'ai_prompt') selectAiPrompt();
+                        else selectRubric(c.id);
                       }}
-                      onKeyDown={onRubricKeyDown}
+                      onKeyDown={onChoiceKeyDown}
                     >
-                      {RUBRIC_META[r].label}
+                      {c.label}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Task prompt + compose sheet ─────────────────────── */}
-              <Card variant="default" style={{ marginBottom: 16 }}>
-                <Eyebrow>
-                  <Bilingual
-                    en={headerMeta.eyebrow}
-                    kr={headerMeta.krEyebrow}
-                  />
-                </Eyebrow>
-                {taskState.phase === 'loading' ? (
-                  <div className="km-grammar__state" role="status">
-                    <Bilingual
-                      en="Loading a writing task…"
-                      kr="쓰기 과제를 불러오는 중…"
-                    />
-                  </div>
-                ) : taskState.phase === 'error' ? (
-                  <ErrorCard
-                    message={taskState.message}
-                    onRetry={retryPrompt}
-                  />
-                ) : taskState.phase === 'empty' ? (
-                  // The rubric's active pool is empty (404) — an honest
-                  // empty state, not a spinner or a doomed retry loop.
-                  <p className="km-reference__empty">
-                    <Bilingual
-                      en="No writing tasks are available for this section yet."
-                      kr="아직 이 영역의 쓰기 과제가 없어요."
-                    />
-                  </p>
+              {/* Task prompt + compose sheet — F-128 device #1/#2: a
+                  CityCard signboard/hanji-paper hero with a leading
+                  DancheongRail, replacing the plain default Card. */}
+              <CityCard rail tone="accent" className="km-writing__card">
+                {uiChoice === 'ai_prompt' ? (
+                  <>
+                    {/* F-163: the generator now lives INSIDE the top-level
+                        "AI Prompt" slot instead of an always-visible panel
+                        below the card, regardless of which bank rubric was
+                        selected. It stays mounted even after a topic is
+                        adopted (below) — a learner still on this slot can
+                        "New topic"/regenerate and adopt again, exactly the
+                        redraw affordance the bank rubrics already have via
+                        their own "New prompt" footer button. */}
+                    <Eyebrow>
+                      <Bilingual en="AI Prompt" kr="AI 주제" />
+                    </Eyebrow>
+                    <WritingTopicGenerator onUseTopic={adoptTopic} />
+                    {source === 'generated' && taskState.phase === 'ready' ? (
+                      <div className="km-writing__aiprompt-compose">
+                        <GoldRule className="km-writing__aiprompt-rule" />
+                        <Eyebrow>
+                          <Bilingual
+                            en={headerMeta.eyebrow}
+                            kr={headerMeta.krEyebrow}
+                          />
+                        </Eyebrow>
+                        <ComposeSheet
+                          task={taskState.task}
+                          headerMeta={headerMeta}
+                          textareaId={textareaId}
+                          textareaRef={textareaRef}
+                          gradeId={gradeId}
+                          sample={sample}
+                          onSampleChange={setSample}
+                          phase={phase}
+                          graded={graded}
+                          error={error}
+                          canSubmit={canSubmit}
+                          onSubmit={() => void submit()}
+                          onRevise={revise}
+                          onNextPrompt={nextPrompt}
+                        />
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
-                  <ComposeSheet
-                    task={taskState.task}
-                    headerMeta={headerMeta}
-                    textareaId={textareaId}
-                    textareaRef={textareaRef}
-                    gradeId={gradeId}
-                    sample={sample}
-                    onSampleChange={setSample}
-                    phase={phase}
-                    graded={graded}
-                    error={error}
-                    canSubmit={canSubmit}
-                    onSubmit={() => void submit()}
-                    onRevise={revise}
-                    onNextPrompt={nextPrompt}
-                  />
+                  <>
+                    <Eyebrow>
+                      <Bilingual
+                        en={headerMeta.eyebrow}
+                        kr={headerMeta.krEyebrow}
+                      />
+                    </Eyebrow>
+                    {taskState.phase === 'loading' ? (
+                      <div className="km-grammar__state" role="status">
+                        <Bilingual
+                          en="Loading a writing task…"
+                          kr="쓰기 과제를 불러오는 중…"
+                        />
+                      </div>
+                    ) : taskState.phase === 'error' ? (
+                      <ErrorCard
+                        message={taskState.message}
+                        onRetry={retryPrompt}
+                      />
+                    ) : taskState.phase === 'empty' ? (
+                      // The rubric's active pool is empty (404) — an honest
+                      // empty state (devices #3/#6: giwa texture + hangul
+                      // watermark), not a spinner or a doomed retry loop.
+                      <p
+                        className="km-reference__empty km-giwa km-hangul-watermark"
+                        data-glyph="쓰기"
+                      >
+                        <Bilingual
+                          en="No writing tasks are available for this section yet."
+                          kr="아직 이 영역의 쓰기 과제가 없어요."
+                        />
+                      </p>
+                    ) : (
+                      <ComposeSheet
+                        task={taskState.task}
+                        headerMeta={headerMeta}
+                        textareaId={textareaId}
+                        textareaRef={textareaRef}
+                        gradeId={gradeId}
+                        sample={sample}
+                        onSampleChange={setSample}
+                        phase={phase}
+                        graded={graded}
+                        error={error}
+                        canSubmit={canSubmit}
+                        onSubmit={() => void submit()}
+                        onRevise={revise}
+                        onNextPrompt={nextPrompt}
+                      />
+                    )}
+                  </>
                 )}
-              </Card>
+              </CityCard>
 
               {/* Grade reveal — persistent polite live region so screen
                   readers hear the result land without a focus jump. */}
               <div aria-live="polite">
                 {graded ? <GradePanel grade={grade} gradeId={gradeId} /> : null}
-              </div>
-
-              {/* F-073: the shared topic generator (same engine as the
-                  Today tile) — "Write this topic" adopts the result above. */}
-              <div className="km-writing__topicgen">
-                <WritingTopicGenerator onUseTopic={adoptTopic} />
               </div>
             </>
           )
@@ -926,7 +1051,9 @@ function MyResponses(): JSX.Element {
   }, [retryTick]);
 
   return (
-    <Card variant="default">
+    // F-128 device #1/#2 — a CityCard signboard/hanji-paper surface with a
+    // leading DancheongRail, replacing the plain default Card.
+    <CityCard rail tone="accent">
       <Eyebrow>
         <Bilingual en="My responses" kr="내 답안" />
       </Eyebrow>
@@ -942,7 +1069,12 @@ function MyResponses(): JSX.Element {
           }}
         />
       ) : state.phase === 'empty' ? (
-        <p className="km-reference__empty">
+        // Honest empty state — devices #3/#6 (giwa texture + hangul
+        // watermark) mark it as genuinely empty rather than pending.
+        <p
+          className="km-reference__empty km-giwa km-hangul-watermark"
+          data-glyph="답안"
+        >
           <Bilingual
             en="You haven't graded a writing sample yet. Submit one in Write to see it here."
             kr="아직 채점된 답안이 없어요. 쓰기 탭에서 글을 제출해 보세요."
@@ -955,7 +1087,7 @@ function MyResponses(): JSX.Element {
           ))}
         </ul>
       )}
-    </Card>
+    </CityCard>
   );
 }
 

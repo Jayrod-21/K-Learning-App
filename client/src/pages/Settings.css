@@ -3,16 +3,29 @@
  *
  * Colocated with Settings.tsx (never index.css — the global sheet is shared
  * mutable state across parallel feature branches). Legacy .km-settings__*
- * rules still live in index.css; ONLY the Phase-3a additions live here.
- * Tokens only, so both themes and every accent preset come free.
+ * rules still live in index.css; ONLY the Phase-3a additions (+ the F-128
+ * reskin's mobile-safety rules below) live here. Tokens only, so both themes
+ * and every accent preset come free.
  */
 
 /* F-038 — the group Card is now a CollapsibleTile. The tile owns its own
  * header/content padding; the legacy `.km-settings__group` padding would
- * double it. Two-class specificity so this wins regardless of sheet order. */
+ * double it. Two-class specificity so this wins regardless of sheet order.
+ * F-128: `surface="city"` composes `CityCard` instead of `Card` now, but
+ * `CollapsibleTile.css`'s own `.km-citycard.km-collapsible` rule already
+ * zeroes ITS padding — this rule stays so the plain-`Card` fallback (any
+ * future `SettingsGroup` caller that omits `tone`) keeps the same
+ * zero-padding contract. */
 .km-settings__group.km-collapsible {
   padding: 0;
 }
+
+/* F-128 — `CityCard`'s own margin-bottom on `__title` only applies when its
+ * `heading` prop is used; `SettingsGroup` instead renders the title INSIDE
+ * `CollapsibleTile`'s header button (`km-collapsible__header`), so no extra
+ * rule is needed there. The group-to-group gap the old flat `Card` stack had
+ * is preserved by `.km-settings__group`'s own margin (index.css) — untouched
+ * by the surface swap. */
 
 /* The group head renders INSIDE the tile's header button now — its legacy
  * below-header margin would push the chevron row apart. */
@@ -101,4 +114,32 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--paper-mute);
+}
+
+/* ── F-129 mobile pass ────────────────────────────────────────────
+ * Settings is the most control-heavy screen in the app — a schedule row
+ * alone packs a label, an optional weekday `<select>`, a `<input
+ * type="time">`, and a toggle switch onto one line. At the narrow-phone
+ * floor (this app supports down to a 320px viewport) that row's fixed-width
+ * controls (`flex: none`) can out-grow the space next to the label, forcing
+ * the whole page to scroll horizontally — the one thing F-129 forbids. Below
+ * 380px (Hanja.css/Review.css's established narrow-phone breakpoint) the
+ * meta label moves ABOVE the controls and the controls span full width, so
+ * nothing needs to shrink below its usable touch-target size (the day
+ * `<select>`, the time field, and the `Toggle` all stay ≥ 44px tall). */
+@media (max-width: 380px) {
+  .km-settings__sched-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .km-settings__sched-controls {
+    justify-content: space-between;
+  }
+
+  .km-settings__sched-field {
+    flex: 1;
+    min-width: 0;
+  }
 }

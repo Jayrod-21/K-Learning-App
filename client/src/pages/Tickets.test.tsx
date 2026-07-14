@@ -76,6 +76,18 @@ function renderPage(
   );
 }
 
+/**
+ * F-128: the file-a-ticket form now lives inside the shared `Sheet`
+ * (triggered by the header's "New ticket" action) instead of always
+ * rendering inline — tests open it the way a user does before touching any
+ * of its fields.
+ */
+async function openFileSheet(
+  user: ReturnType<typeof userEvent.setup>,
+): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /New ticket/ }));
+}
+
 beforeEach(() => {
   ticketsSvc.createTicket.mockReset();
   ticketsSvc.listMyTickets.mockReset();
@@ -98,6 +110,7 @@ describe('Tickets — filing a ticket', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
 
     await user.click(screen.getByRole('button', { name: /File ticket/ }));
 
@@ -110,6 +123,7 @@ describe('Tickets — filing a ticket', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
 
     await user.click(screen.getByRole('button', { name: /File ticket/ }));
 
@@ -147,6 +161,7 @@ describe('Tickets — filing a ticket', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Type' }), 'suggestion');
     await user.type(screen.getByRole('textbox', { name: 'Title' }), created.title);
@@ -159,8 +174,11 @@ describe('Tickets — filing a ticket', () => {
       body: created.body,
     });
     expect(await screen.findByText(created.title)).toBeInTheDocument();
-    // The form clears on success.
-    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('');
+    // F-128: a successful file closes the Sheet (matching the
+    // km-final.html "file → sheet closes → toast" beat) — the form (and
+    // its now-stale values) is gone, not merely cleared in place.
+    expect(await screen.findByText('Ticket filed.')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Title' })).not.toBeInTheDocument();
   });
 
   it('a failed submit keeps the typed values so Retry resends the same payload', async () => {
@@ -181,6 +199,7 @@ describe('Tickets — filing a ticket', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/No tickets yet/);
+    await openFileSheet(user);
 
     await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Crash on launch');
     await user.type(
@@ -244,6 +263,11 @@ describe('Tickets — F-127 (global "!" FAB hand-off)', () => {
     renderPage('/tickets');
     await screen.findByText(/No tickets yet/);
 
+    // No compose state → the Sheet starts closed; the "Filing from" hint
+    // check therefore happens BEFORE opening it too (a closed sheet renders
+    // nothing to search, so this also proves no stray hint leaks outside it).
+    expect(screen.queryByText(/Filing from:/)).not.toBeInTheDocument();
+    await openFileSheet(user);
     expect(screen.queryByText(/Filing from:/)).not.toBeInTheDocument();
 
     await user.type(screen.getByRole('textbox', { name: 'Title' }), 'x');
@@ -399,7 +423,9 @@ describe('Tickets — ticket detail + editing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Back to My tickets' }));
     expect(await screen.findByText(MINE_1.title)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /File ticket/ })).toBeInTheDocument();
+    // F-128: the list view's filing entry point is now the header's "New
+    // ticket" action (the form itself lives in a closed-by-default Sheet).
+    expect(screen.getByRole('button', { name: /New ticket/ })).toBeInTheDocument();
   });
 
   it('edits title/body/status and saves via PATCH with the expected_version', async () => {
@@ -573,5 +599,71 @@ describe('Tickets — Community windowing (usePagination/ShowMore)', () => {
 
     expect(await screen.findByText('Community ticket #15')).toBeInTheDocument();
     expect(screen.queryByText('Community ticket #16')).not.toBeInTheDocument();
+  });
+});
+
+// F-128 "Seoul Day & Night" reskin — both headers adopt the shared
+// PageHubHeader (mirrors every other reskinned page's own fidelity test,
+// e.g. Mistakes.test.tsx's "F-128 BLOCKER-2 fix"), rows/detail/thread ride
+// CityCard signboards, and the file-a-ticket form moved into a Sheet.
+describe('Tickets — F-128 reskin (PageHubHeader, CityCard rows, Sheet filing)', () => {
+  it('the list view renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', async () => {
+    const { container } = renderPage();
+    await screen.findByText(/No tickets yet/);
+
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).toBeInTheDocument();
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: '베타 피드백 · Beta Feedback',
+    });
+    expect(heading).toHaveAttribute('id', 'km-tickets-title');
+  });
+
+  it('the detail view also renders the shared PageHubHeader recipe', async () => {
+    ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]);
+    const user = userEvent.setup();
+    const { container } = renderPage();
+    await screen.findByText(MINE_1.title);
+
+    await user.click(
+      screen.getByRole('button', { name: `View ticket: ${MINE_1.title}` }),
+    );
+
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: '티켓 · Ticket' }),
+    ).toBeInTheDocument();
+  });
+
+  it('each ticket row rides a CityCard signboard instead of a flat bordered row', async () => {
+    ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]);
+    const { container } = renderPage();
+    await screen.findByText(MINE_1.title);
+
+    expect(
+      container.querySelector('.km-tickets__card.km-citycard'),
+    ).toBeInTheDocument();
+  });
+
+  it('the file-a-ticket form starts inside a CLOSED Sheet; "New ticket" opens it as a real dialog', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(/No tickets yet/);
+
+    // Closed by default — no dialog, no Title field, until opened.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Title' })).not.toBeInTheDocument();
+
+    await openFileSheet(user);
+
+    expect(screen.getByRole('dialog', { name: 'File a ticket' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toBeInTheDocument();
   });
 });

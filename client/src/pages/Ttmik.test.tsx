@@ -1,8 +1,9 @@
 /**
- * Listen page (F-012, reworked 3C-2: F-071 / F-072 / F-024) — landing tile
- * grid, URL-addressed listings windowed to 15 rows, BackButtons on nested
- * views, detail view with a PERSISTENT audio player + Highlights/Transcript
- * sub-tabs and clickable transcript words (the Read tab's tap chain).
+ * Listen page (F-012, reworked 3C-2: F-071 / F-072 / F-024; Wave-2 F-128 /
+ * F-160 / F-161 / F-162) — landing tile grid, URL-addressed listings
+ * windowed to 15 rows, BackButtons on nested views, detail view with a
+ * PERSISTENT audio player + Highlights/Transcript sub-tabs and clickable
+ * transcript words (the Read tab's tap chain).
  *
  * The four fetchers in `services/ttmik` are mocked per test; `buildAudioSrc`
  * stays REAL so the assertions cover the actual src the page hands to the
@@ -16,9 +17,15 @@
  * Ttmik.css (`.km-ttmik__tiles` → `repeat(2, minmax(0, 1fr))`); the tests
  * pin the structural contract that CSS keys on — the labelled tile list,
  * its class hook, and one keyboard-operable button per collection.
+ *
+ * F-162 note: the page's `useListScrollRestore` hook keys off the nearest
+ * `.km-shell__scroll` ancestor (Shell.tsx's real scroll container — window
+ * itself never scrolls). `renderPage` below wraps `<Ttmik/>` in a
+ * `.km-shell__scroll` div so that ancestor genuinely exists in these tests,
+ * matching the real DOM shape the hook's `closest()` call depends on.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
@@ -151,14 +158,29 @@ const EPISODE_DETAIL: IyagiEpisodeDetail = {
   ],
 };
 
+/**
+ * F-162: wraps the page in a `.km-shell__scroll` div — the real ancestor
+ * `useListScrollRestore` looks for via `closest()` — so the hook has
+ * something genuine to find in these tests, exactly as it would inside the
+ * real `Shell.tsx`.
+ */
 function renderPage(initialEntry = '/learn/listen'): void {
   render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <ToastProvider>
-        <Ttmik />
-      </ToastProvider>
-    </MemoryRouter>,
+    <div className="km-shell__scroll">
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <ToastProvider>
+          <Ttmik />
+        </ToastProvider>
+      </MemoryRouter>
+    </div>,
   );
+}
+
+/** The single scrollable region the F-162 tests scroll/assert against. */
+function getScroller(): HTMLElement {
+  const el = document.querySelector('.km-shell__scroll');
+  if (el === null) throw new Error('`.km-shell__scroll` not found in test DOM');
+  return el as HTMLElement;
 }
 
 /** Landing → TTMIK listing (tiles render synchronously — no fetch first). */
@@ -190,6 +212,9 @@ beforeEach(() => {
   vi.mocked(defineEntry).mockReset();
   vi.mocked(enrich).mockReset();
   vi.mocked(mineWord).mockReset();
+  // F-162: each test gets a clean scroll-restore slate — a saved position
+  // from one test must never leak into the next.
+  window.sessionStorage.clear();
 });
 
 describe('Ttmik page — landing (F-071)', () => {
@@ -258,6 +283,26 @@ describe('Ttmik page — landing (F-071)', () => {
     expect(await screen.findByText('레벨 1')).toBeInTheDocument();
     // The audio pills expose both languages in the accessible reading.
     expect(screen.getAllByText('오디오').length).toBeGreaterThan(0);
+  });
+
+  it('F-128: the landing tiles render as toned CityCard signboards — TTMIK blue, Iyagi mint', () => {
+    renderPage();
+
+    const grid = screen.getByRole('list', { name: 'Audio collections' });
+    const ttmikTile = screen
+      .getByRole('button', { name: /TTMIK Lessons/ })
+      .closest('.km-citycard');
+    const iyagiTile = screen
+      .getByRole('button', { name: /Iyagi Episodes/ })
+      .closest('.km-citycard');
+
+    expect(ttmikTile).not.toBeNull();
+    expect(iyagiTile).not.toBeNull();
+    expect(ttmikTile).toHaveClass('km-tone--blue');
+    expect(iyagiTile).toHaveClass('km-tone--mint');
+    // Both tiles still live inside the labelled grid — the CityCard wrapper
+    // didn't replace the accessible list/listitem structure.
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(2);
   });
 });
 
@@ -751,6 +796,34 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Level 1 · Lesson 1')).toBeInTheDocument();
   });
+
+  it('F-160: a runtime audio load failure shows a distinct alert without unmounting the player', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+    // No failure yet — the "no audio mapped" note and the runtime-failure
+    // alert are two different states; neither shows for a healthy player.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+    // Simulate a genuine stream failure (network blip, 404, decode error) —
+    // the element's own `error` event, not a mocked service rejection.
+    fireEvent.error(audio as HTMLAudioElement);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load/i);
+    // The player itself is NEVER torn down over a playback failure — same
+    // DOM node, same src, so the user can still retry/seek natively.
+    expect(document.querySelector('audio')).toBe(audio);
+    expect(audio).toHaveAttribute('src', '/ttmik/lessons/1/1/audio');
+
+    // Switching tabs doesn't clear (or duplicate) the alert — it isn't
+    // tab-scoped, it describes the persistent player above the tabs.
+    await user.click(screen.getByRole('tab', { name: '대본 · Transcript' }));
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+  });
 });
 
 describe('Ttmik page — Iyagi listing + episode detail', () => {
@@ -818,5 +891,82 @@ describe('Ttmik page — Iyagi listing + episode detail', () => {
         name: 'Open episode 143: 한국의 카페 문화 (no audio)',
       }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Ttmik page — F-162 scroll position preserved on back', () => {
+  it('restores the TTMIK listing scroll position after visiting a lesson and returning', async () => {
+    vi.mocked(getTtmikLessons).mockResolvedValue(MANY_LESSONS);
+    const user = userEvent.setup();
+    renderPage();
+    await openTtmikListing(user);
+    await screen.findByText('Showing 15 of 40');
+
+    const scroller = getScroller();
+    fireEvent.scroll(scroller, { target: { scrollTop: 240 } });
+
+    await user.click(
+      screen.getByRole('button', { name: 'Open lesson 1: Beginner topic 1 (audio)' }),
+    );
+    await screen.findByText('Level 1 · Lesson 1');
+    // The listing unmounted while the detail was open — nothing in this
+    // component's own state/refs could have carried the position forward;
+    // only the sessionStorage-backed hook can restore it below.
+    expect(screen.queryByText('Showing 15 of 40')).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Back to TTMIK Lessons' }),
+    );
+    await screen.findByText('Showing 15 of 40');
+
+    expect(scroller.scrollTop).toBe(240);
+  });
+
+  it('keeps the TTMIK and Iyagi scroll positions independent (separate storage keys)', async () => {
+    vi.mocked(getTtmikLessons).mockResolvedValue(MANY_LESSONS);
+    vi.mocked(getIyagiEpisodes).mockResolvedValue(MANY_EPISODES);
+    const user = userEvent.setup();
+    renderPage();
+    const scroller = getScroller();
+
+    await openTtmikListing(user);
+    await screen.findByText('Showing 15 of 40');
+    fireEvent.scroll(scroller, { target: { scrollTop: 111 } });
+    await user.click(screen.getByRole('button', { name: 'Back to Listen' }));
+
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
+    await screen.findByText('Showing 15 of 20');
+    // A never-before-scrolled Iyagi listing opens at the top — it does NOT
+    // inherit whatever the shared scroll container was left at by TTMIK.
+    expect(scroller.scrollTop).toBe(0);
+    fireEvent.scroll(scroller, { target: { scrollTop: 77 } });
+    await user.click(screen.getByRole('button', { name: 'Back to Listen' }));
+
+    await openTtmikListing(user);
+    await screen.findByText('Showing 15 of 40');
+    expect(scroller.scrollTop).toBe(111);
+  });
+
+  it('restores the Iyagi episode listing scroll position after visiting an episode and returning', async () => {
+    vi.mocked(getIyagiEpisodes).mockResolvedValue(MANY_EPISODES);
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
+    await screen.findByText('Showing 15 of 20');
+
+    const scroller = getScroller();
+    fireEvent.scroll(scroller, { target: { scrollTop: 88 } });
+
+    await user.click(
+      screen.getByRole('button', { name: /^Open episode 1:/ }),
+    );
+    await screen.findByText('Iyagi · Episode 143');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Back to Iyagi Episodes' }),
+    );
+    await screen.findByText('Showing 15 of 20');
+
+    expect(scroller.scrollTop).toBe(88);
   });
 });

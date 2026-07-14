@@ -53,6 +53,33 @@
  *     both fall back to a mock fixture (🅂 badge) via `useEndpointOrMock`, and
  *     the exam's submit failure surfaces an inline retry rather than dropping
  *     the user's work.
+ *
+ * F-128 reskin ("Seoul Day & Night") — the shared `PageHubHeader` (devices
+ * #4/#2) replaces the bare `Topbar` on both the landing and the "Previous
+ * attempts" nested view; the F-078 session tally and the live study item are
+ * `CityCard` signboards/hanji-paper surfaces (device #1) with a leading
+ * `DancheongRail` (device #2) — mirroring Grammar's live-drill treatment;
+ * the F-082 attempts tiles are `CollapsibleTile surface="city"`; a
+ * `SubwayProgress` (device #5) rides alongside the existing "Item N / M"
+ * readout for stepping through the study draw; a finished draw gets a
+ * milestone `SealStamp` (device #7) ahead of the shared results screen;
+ * honest-empty states carry `.km-giwa`/`.km-hangul-watermark` (devices
+ * #3/#6); the page root carries the ambient `.km-rain-sheen` (device #8,
+ * Night-only per its own CSS gate). MockMode.tsx (a sibling file, out of
+ * this pass's edit scope) is UNCHANGED — its own reskin is a separate
+ * follow-up.
+ *
+ * F-159 ("Study vs Mock chooser") — entering the page (a fresh mount with no
+ * explicit `?mode=` already in the URL) shows a Study/Mock chooser as a
+ * shared `Sheet` popup (`chooserOpen`, seeded once from the URL on mount).
+ * `Sheet`'s own backdrop already renders a semi-transparent scrim per the
+ * ticket, so no shared CSS changed. The chooser is a GATE, not a content
+ * replacement: the Tabs-driven Study/Mock landing renders fully underneath
+ * from the first paint, so dismissing the sheet (an explicit pick, Esc, or
+ * the backdrop) always lands on a live, already-populated screen — both
+ * flows stay fully reachable exactly as before this ticket. A deep link
+ * that already names an explicit mode (Today's "Mock" tile, a bookmarked
+ * URL) skips the chooser, since the choice was already made elsewhere.
  */
 import {
   useCallback,
@@ -66,8 +93,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
-import { Topbar } from '../components/Topbar';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { CollapsibleTile } from '../components/CollapsibleTile';
 import { Button } from '../components/Button';
 import { FilterSelect } from '../components/FilterSelect';
@@ -75,6 +102,10 @@ import { Pill } from '../components/Pill';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
+import { PageHubHeader } from '../components/PageHubHeader';
+import { SealStamp } from '../components/SealStamp';
+import { Sheet } from '../components/Sheet';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { Tabs } from '../components/Tabs';
 import { TopikImageNote } from '../components/TopikImageNote';
 import { TopikPassage } from '../components/TopikPassage';
@@ -182,6 +213,17 @@ function Topik(): JSX.Element {
   const view = searchParams.get('view') === 'attempts' ? 'attempts' : null;
   const mode: TopikMode = searchParams.get('mode') === 'mock' ? 'mock' : 'study';
 
+  // F-159 — the Study/Mock chooser gates a FRESH entry to the page. Lazy
+  // initializer: read the URL's `mode` param ONCE, on mount, so a deep link
+  // that already names an explicit mode (Today's "Mock" tile, a bookmarked
+  // URL) skips the chooser — the choice was already made outside this
+  // screen. Seeding once (not deriving every render) is what keeps this a
+  // ONE-TIME gate instead of a mode-tracking mirror that would reopen the
+  // instant the chooser's own pick rewrites the URL below.
+  const [chooserOpen, setChooserOpen] = useState<boolean>(
+    () => searchParams.get('mode') === null,
+  );
+
   // Switch modes by rewriting the URL: the mode itself plus any Mock
   // sub-view params (`section`/`exam`) are replaced atomically, so flipping
   // to Study can never leave a stale Mock deep-link in the address bar.
@@ -200,18 +242,33 @@ function Topik(): JSX.Element {
     [setSearchParams],
   );
 
+  // F-159: the chooser's pick both dismisses the sheet and drives the mode
+  // through the SAME URL-rewrite `selectMode` the header Tabs use below —
+  // one mode-selection path, not two, so a chooser pick and a manual tab
+  // click are indistinguishable to the rest of the page.
+  const chooseMode = useCallback(
+    (id: TopikMode): void => {
+      setChooserOpen(false);
+      selectMode(id);
+    },
+    [selectMode],
+  );
+
   // F-082: the "Previous attempts" review view is a landing-level nested
   // sub-view — it replaces the tabbed area entirely and carries its own
   // BackButton (F-024) to the canonical parent route.
   if (view === 'attempts') return <AttemptsReview />;
 
   return (
-    <section className="screen km-topik" aria-labelledby="topik-title">
-      {/* P3b: title aligned with nav.ts's headerTitle (모의 · TOPIK) — the
-          old 학습 was a pre-P1.1 leftover and collided with "study mode". */}
-      <Topbar
-        krTitle="모의"
-        title="TOPIK"
+    <section
+      className="screen km-topik km-rain-sheen"
+      aria-labelledby="topik-title"
+    >
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (skyline +
+          dancheong rail) replaces the bare Topbar. P3b: title aligned with
+          nav.ts's headerTitle (모의 · TOPIK) — the old 학습 was a pre-P1.1
+          leftover and collided with "study mode". */}
+      <PageHubHeader
         titleId="topik-title"
         eyebrow={
           mode === 'mock' ? (
@@ -220,7 +277,78 @@ function Topik(): JSX.Element {
             <Bilingual en="Study mode" kr="학습 모드" />
           )
         }
+        heading={<Bilingual en="TOPIK" kr="모의" />}
       />
+
+      {/* F-159 — Study/Mock chooser popup. `Sheet`'s own backdrop
+          (`km-sheet__backdrop`, styles/index.css) already renders a
+          semi-transparent scrim (`rgba(6,8,12,.55)` + blur) per the ticket —
+          no shared CSS change was needed. Both flows stay fully reachable
+          underneath: the Tabs switch below is untouched, so dismissing the
+          sheet (Esc/backdrop, or an explicit pick) always lands on a live,
+          already-populated landing rather than a blank gate. */}
+      <Sheet
+        open={chooserOpen}
+        onClose={() => {
+          setChooserOpen(false);
+        }}
+        ariaLabel="Choose Study or Mock"
+      >
+        <div className="km-topik__chooser">
+          <Eyebrow>
+            <Bilingual en="TOPIK · 기출" kr="기출 · TOPIK" compact />
+          </Eyebrow>
+          <p className="kr-display km-topik__chooser-title">
+            <Bilingual en="How do you want to work?" kr="어떻게 공부할까요?" />
+          </p>
+          <div className="km-topik__chooser-opts">
+            <CityCard tone="blue" rail className="km-topik__chooser-card">
+              <button
+                type="button"
+                className="km-topik__chooser-opt focusring"
+                onClick={() => {
+                  chooseMode('study');
+                }}
+              >
+                <span
+                  className="kr-display km-topik__chooser-glyph"
+                  aria-hidden="true"
+                >
+                  공부
+                </span>
+                <span className="km-topik__chooser-label">
+                  <Bilingual en="Study" kr="공부" />
+                </span>
+                <span className="km-topik__chooser-sub">
+                  <Bilingual en="Daily questions" kr="일일 문제" compact />
+                </span>
+              </button>
+            </CityCard>
+            <CityCard tone="accent" rail className="km-topik__chooser-card">
+              <button
+                type="button"
+                className="km-topik__chooser-opt focusring"
+                onClick={() => {
+                  chooseMode('mock');
+                }}
+              >
+                <span
+                  className="kr-display km-topik__chooser-glyph"
+                  aria-hidden="true"
+                >
+                  모의
+                </span>
+                <span className="km-topik__chooser-label">
+                  <Bilingual en="Mock" kr="모의" />
+                </span>
+                <span className="km-topik__chooser-sub">
+                  <Bilingual en="Timed exam" kr="시간 제한 시험" compact />
+                </span>
+              </button>
+            </CityCard>
+          </div>
+        </div>
+      </Sheet>
 
       {/* Study ⇄ Mock via the shared Tabs primitive (W3C tabs pattern; roving
           tabindex + automatic activation come from the component). Controlled:
@@ -269,8 +397,11 @@ function SessionTally({
   daily: DailyMockTotal;
 }): JSX.Element {
   return (
-    <Card
-      variant="flat"
+    // F-128 device #1/#2 — a blue-tone CityCard signboard/hanji-paper
+    // surface with a leading DancheongRail, replacing the plain flat Card.
+    <CityCard
+      tone="blue"
+      rail
       className="km-topik__tally"
       role="group"
       aria-label="Session tally"
@@ -328,7 +459,7 @@ function SessionTally({
       <p className="km-topik__tally-note">
         <Bilingual en="Daily recommended: 10 items." kr="하루 권장량은 10문항이에요." />
       </p>
-    </Card>
+    </CityCard>
   );
 }
 
@@ -383,17 +514,27 @@ function AttemptsReview(): JSX.Element {
   const attempts = data?.attempts ?? [];
 
   return (
-    <section className="screen km-topik" aria-labelledby="topik-attempts-title">
+    <section
+      className="screen km-topik km-rain-sheen"
+      aria-labelledby="topik-attempts-title"
+    >
       {/* F-024: nested sub-view → explicit back to the canonical parent. */}
       <BackButton to="/learn/topik" label="TOPIK" />
-      <Topbar
-        krTitle="지난 시험"
-        title="Previous attempts"
+      {/* F-128 devices #4/#2 — the shared hub-header recipe replaces the
+          bare Topbar, matching the parent Topik landing. */}
+      <PageHubHeader
         titleId="topik-attempts-title"
         eyebrow={<Bilingual en="Completed exams · grades" kr="완료한 시험 · 성적" />}
+        heading={<Bilingual en="Previous attempts" kr="지난 시험" />}
       />
 
+      {/* F-128 device #1/#2 — each group is a CityCard signboard/hanji-paper
+          tile with a leading DancheongRail, replacing the plain Card the
+          default-surface CollapsibleTile used before this pass. */}
       <CollapsibleTile
+        surface="city"
+        tone="accent"
+        rail
         title={
           <span className="km-topik__attempts-tile-title">
             <Bilingual en="Completed exams" kr="완료한 시험" />
@@ -422,8 +563,14 @@ function AttemptsReview(): JSX.Element {
         ) : null}
 
         {!loading && !error && attempts.length === 0 ? (
-          // Honest empty state — a real absence, never fabricated.
-          <p className="km-topik__pending" role="status">
+          // Honest empty state — a real absence, never fabricated. Devices
+          // #3/#6 (giwa texture + hangul watermark) mark it as genuinely
+          // empty rather than pending.
+          <p
+            className="km-topik__pending km-giwa km-hangul-watermark"
+            data-glyph="시험"
+            role="status"
+          >
             <Bilingual
               en="You haven't completed a mock exam yet. Finish one in Mock mode and it will show up here."
               kr="아직 완료한 모의고사가 없어요. 모의 모드에서 시험을 완료하면 여기에 표시돼요."
@@ -441,13 +588,19 @@ function AttemptsReview(): JSX.Element {
       </CollapsibleTile>
 
       <CollapsibleTile
+        surface="city"
+        tone="blue"
+        rail
         title={
           <span className="km-topik__attempts-tile-title">
             <Bilingual en="Wrong-question review" kr="오답 복습" />
           </span>
         }
       >
-        <p className="km-topik__pending">
+        <p
+          className="km-topik__pending km-giwa km-hangul-watermark"
+          data-glyph="복습"
+        >
           <Bilingual
             en="Per-exam wrong-question review (which question, in which exam) isn't broken out yet — but every recent miss across all TOPIK work is already reviewable:"
             kr="시험별 오답 복습(어느 시험의 몇 번 문제인지)은 아직 준비 중이에요 — 최근에 틀린 문제는 지금도 복습할 수 있어요:"
@@ -788,16 +941,31 @@ function StudyMode({
       </div>
 
       {!loading && current ? (
-        <div className="km-topik__substate" role="status">
-          <Eyebrow>
-            {current.section}
-            {' · '}
-            <Bilingual
-              en={`Item ${String(idx + 1)} / ${String(draw.length)}`}
-              kr={`문제 ${String(idx + 1)} / ${String(draw.length)}`}
+        <>
+          {/* F-128 device #5 — the signature subway-line progress metaphor
+              for stepping through the draw, alongside the existing numeric
+              readout (kept for the exact "N / M" reading the dots don't
+              spell out in text). */}
+          <div className="km-topik__subwaywrap">
+            <SubwayProgress
+              steps={draw.length}
+              current={idx}
+              tone="accent"
+              label="Study progress"
+              valueText={`Item ${String(idx + 1)} of ${String(draw.length)}`}
             />
-          </Eyebrow>
-        </div>
+          </div>
+          <div className="km-topik__substate" role="status">
+            <Eyebrow>
+              {current.section}
+              {' · '}
+              <Bilingual
+                en={`Item ${String(idx + 1)} / ${String(draw.length)}`}
+                kr={`문제 ${String(idx + 1)} / ${String(draw.length)}`}
+              />
+            </Eyebrow>
+          </div>
+        </>
       ) : null}
 
       {loading ? (
@@ -819,21 +987,38 @@ function StudyMode({
       ) : null}
 
       {!loading && isComplete ? (
-        // F-008: the same shared results/grade screen Mock mode uses,
-        // fed by the client-side tally of reveals shown along the way.
-        <TopikResults
-          summary={buildStudySummary(reviewLog, answered)}
-          onRestart={startNewSet}
-          restartLabel={<Bilingual en="New set" kr="새 세트" />}
-        />
+        <>
+          {/* F-128 device #7 — a milestone 도장 stamp marking the finished
+              draw, ahead of the shared results/grade screen Mock mode also
+              uses (F-008), fed by the client-side tally of reveals shown
+              along the way. */}
+          <div className="km-topik__milestone">
+            <SealStamp
+              milestone
+              tone="accent"
+              label={<Bilingual en="Set complete" kr="세트 완료" compact />}
+            />
+          </div>
+          <TopikResults
+            summary={buildStudySummary(reviewLog, answered)}
+            onRestart={startNewSet}
+            restartLabel={<Bilingual en="New set" kr="새 세트" />}
+          />
+        </>
       ) : null}
 
       {!loading && !error && draw.length === 0 ? (
         // A successful draw can legitimately be empty (an over-narrow filter or
         // an empty pool returns `{ items: [] }`). Without this branch the screen
         // is a dead-end header with no items and no way forward; offer a fresh
-        // pull instead.
-        <Card variant="flat" className="km-topik__state" role="status">
+        // pull instead. Devices #3/#6 (giwa texture + hangul watermark) mark
+        // it as genuinely empty rather than pending.
+        <Card
+          variant="flat"
+          className="km-topik__state km-giwa km-hangul-watermark"
+          data-glyph="문제"
+          role="status"
+        >
           <Eyebrow>
             <Bilingual en="No items" kr="문제 없음" />
           </Eyebrow>
@@ -939,7 +1124,11 @@ function TopikBody({
       : null;
 
   return (
-    <>
+    // F-128 device #1/#2 — the live study item is the page's actual hero
+    // surface, mirroring Grammar's live-drill treatment: a CityCard
+    // signboard/hanji-paper card with a leading DancheongRail, not a bare
+    // fragment riding on the page's own padding.
+    <CityCard rail tone="accent" className="km-topik__card">
       <div className="km-topik__meta">
         <Pill tone="gold">
           {item.section} · L{String(item.level)}
@@ -1083,7 +1272,7 @@ function TopikBody({
           </>
         )}
       </div>
-    </>
+    </CityCard>
   );
 }
 

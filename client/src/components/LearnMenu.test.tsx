@@ -144,6 +144,44 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     );
   });
 
+  it('carries the Seoul Day & Night reskin surfaces (F-128/F-131) without adding to the tab/button count', () => {
+    renderMenu();
+    const dialog = screen.getByRole('dialog', { name: '배움 · Learn' });
+
+    // Decorative backdrop: hanji/signboard grain + Night rain-sheen + an
+    // accent-tracking glow (F-131 — this glow is keyed to --vermilion, the
+    // accent picker's token, never a skill hue). Out of the a11y tree and
+    // not a `<button>`, so it must not perturb the "7 tiles" contract.
+    const backdrop = dialog.querySelector('.km-learnmenu__backdrop');
+    expect(backdrop).not.toBeNull();
+    expect(backdrop).toHaveAttribute('aria-hidden', 'true');
+    expect(backdrop).toHaveClass('km-giwa', 'km-rain-sheen', 'km-neon-box');
+    expect(dialog.querySelectorAll('button')).toHaveLength(7);
+
+    // Title glow tracks the accent (km-neon-text), not a skill hue.
+    expect(screen.getByText('Learn').closest('.km-learnmenu__title')).toHaveClass(
+      'km-neon-text',
+    );
+
+    // Every hex tile carries the same per-tile grain as the backdrop.
+    const tiles = Array.from(
+      dialog.querySelectorAll<HTMLElement>('.km-learnmenu__hex'),
+    );
+    expect(tiles).toHaveLength(7);
+    for (const tile of tiles) {
+      expect(tile).toHaveClass('km-giwa');
+    }
+
+    // One-time Night mount flicker lives on the dialog panel itself.
+    expect(dialog).toHaveClass('km-neon-flicker');
+  });
+
+  it('keeps the reskin backdrop mounted through the close-out cascade', () => {
+    renderMenu(vi.fn(), '/', { closing: true });
+    const dialog = screen.getByRole('dialog', { name: '배움 · Learn' });
+    expect(dialog.querySelector('.km-learnmenu__backdrop')).not.toBeNull();
+  });
+
   it('gives the initially-focused tile a zero entrance delay (visible on focus)', () => {
     renderMenu();
     const focused = document.activeElement as HTMLElement;

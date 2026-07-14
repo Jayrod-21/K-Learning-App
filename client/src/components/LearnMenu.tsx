@@ -58,6 +58,31 @@
  *     mirroring the retired MoreSheet's backdrop pattern.
  *   - Tab order is DOM order: row-by-row, left-to-right — matches the
  *     visual reading order of the comb.
+ *
+ * SEOUL DAY & NIGHT (F-128 reskin — see LearnMenu.css for the full
+ * rationale): the honeycomb is the app's hero launcher, so it carries the
+ * DESIGN_SEOUL_DAY_NIGHT.md character devices most heavily of any single
+ * component:
+ *   - `.km-learnmenu__backdrop` — a decorative, `aria-hidden`, pointer-
+ *     events-none layer behind the title + comb combining `km-giwa`
+ *     (hanji-paper grain / Night signboard-grid, device #3), `km-rain-sheen`
+ *     (Night wet-street sheen, device #8) and `km-neon-box` (a soft
+ *     accent-tracking bloom — F-131: this glow follows the ACCENT picker,
+ *     never a skill hue, so it stays orthogonal to the per-tile colors).
+ *   - Each hex tile additionally carries `km-giwa` (same grain, per-tile)
+ *     and an inner signboard/wash glow keyed to its own skill hue (see
+ *     LearnMenu.css) — the existing `--hx-hue`/`--hx-ink`/`--hx-bg` per-hue
+ *     tokens and AA-checked label contrast (index.css) are untouched.
+ *   - `.km-learnmenu__title` gets `km-neon-text` for an accent-tracking
+ *     glow in Night (again F-131-orthogonal to skill hues).
+ *   - `.km-learnmenu__panel` gets `km-neon-flicker` — a one-time Night
+ *     "powering on" flicker as the menu mounts, layered on top of the
+ *     existing per-row rise stagger. Already `prefers-reduced-motion`
+ *     gated at its source (seoul-devices.css), so no separate handling is
+ *     needed here.
+ *   - Mobile fit (F-129): purely additive/decorative — no new element adds
+ *     width or touches the existing `--km-hex-w` clamp() that already fits
+ *     the 3-across row on narrow viewports.
  */
 import { useCallback, useId, useRef, type JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -66,6 +91,7 @@ import { cn } from '../lib/cn';
 import { LEARN_SUBPAGE_IDS, navItem } from '../lib/nav';
 import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
+import './LearnMenu.css';
 
 /** Per-row ENTRANCE stagger (ms) — bottom row first, like the mockup.
  *  Paired with the 320ms `km-hexrise` duration in index.css: 70ms is wide
@@ -196,12 +222,26 @@ export function LearnMenu({
       <div
         ref={panelRef}
         id={id}
-        className="km-learnmenu__panel"
+        // km-neon-flicker: one-time Night "powering on" flash as the menu
+        // mounts (device §7) — already prefers-reduced-motion gated at its
+        // source (seoul-devices.css), no extra handling needed here.
+        className="km-learnmenu__panel km-neon-flicker"
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelId}
       >
-        <div id={labelId} className="km-eyebrow km-learnmenu__title">
+        {/* Seoul reskin (F-128) backdrop: decorative-only, out of the flex
+            flow (position:absolute — not a flex item, so it never affects
+            title/comb sizing) and out of the a11y tree. km-giwa = hanji-paper
+            grain / Night signboard-grid (device #3); km-rain-sheen = Night
+            wet-street sheen (device #8); km-neon-box = a soft glow that
+            tracks the ACCENT picker (F-131) — orthogonal to the per-tile
+            skill hues below. See LearnMenu.css for the full rationale. */}
+        <div
+          className="km-learnmenu__backdrop km-giwa km-rain-sheen km-neon-box"
+          aria-hidden="true"
+        />
+        <div id={labelId} className="km-eyebrow km-learnmenu__title km-neon-text">
           {/* P3a: menu-title chrome follows the language-display setting; in
               single-language modes the dialog's accessible name (via this
               labelledby target) still carries both languages. */}
@@ -255,7 +295,11 @@ export function LearnMenu({
                     <button
                       ref={isFirst ? firstItemRef : undefined}
                       type="button"
-                      className="km-learnmenu__hex"
+                      // km-giwa: per-tile hanji-paper grain / Night
+                      // signboard-grid (device #3, seoul-devices.css) —
+                      // layers under the existing --hx-bg chip color
+                      // without touching it (see LearnMenu.css).
+                      className="km-learnmenu__hex km-giwa"
                       aria-current={active ? 'page' : undefined}
                       onClick={() => {
                         goto(it.path);

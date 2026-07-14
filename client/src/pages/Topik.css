@@ -75,3 +75,108 @@
 .km-topik__attempts-tile-title {
   font-weight: 600;
 }
+
+/* ── F-159 Study/Mock chooser (Sheet popup) ──────────────────── */
+.km-topik__chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.km-topik__chooser-title {
+  margin: 2px 0 4px;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.km-topik__chooser-opts {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* Zero the CityCard's own padding so the inner button owns the full-bleed
+   hit target — the same two-class-specificity override CollapsibleTile
+   uses for its `surface="city"` variant (CollapsibleTile.css). */
+.km-citycard.km-topik__chooser-card {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+}
+
+.km-topik__chooser-opt {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 22px 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+  border-radius: var(--radius-lg);
+}
+
+.km-topik__chooser-glyph {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.km-topik__chooser-label {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.km-topik__chooser-sub {
+  font-size: 0.78rem;
+  color: var(--paper-mute);
+}
+
+/* F-131 — accent hover on the chooser tiles + the answer choices.
+   `--vermilion` tracks the active `[data-accent]` pick (index.css), so this
+   is accent-aware for free. `.km-topik__choice`/`.km-topik__chooser-opt` are
+   already page-scoped class names (not shared across other pages), so no
+   extra selector prefix is needed to keep the treatment local. */
+.km-topik__chooser-opt:hover {
+  background: color-mix(in srgb, var(--vermilion) 10%, transparent);
+}
+
+.km-topik .km-topik__choice:hover:not(:disabled) {
+  border-color: var(--vermilion);
+}
+
+.km-topik .km-collapsible__header:hover {
+  background: color-mix(in srgb, var(--vermilion) 8%, transparent);
+}
+
+/* ── F-128 device #5 — StudyMode's per-item SubwayProgress ───── */
+.km-topik__subwaywrap {
+  margin-bottom: 10px;
+}
+
+/* ── F-128 device #1 — the study item's hero CityCard ────────── */
+.km-topik__card {
+  margin-bottom: 4px;
+}
+
+/* ── F-128 device #7 — the "set complete" milestone stamp ────── */
+.km-topik__milestone {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+/* F-129 — mobile: the chooser's two tiles must never force horizontal
+   overflow on a narrow phone; stack them instead of shrinking to
+   unreadable widths. */
+@media (max-width: 380px) {
+  .km-topik__chooser-opts {
+    flex-direction: column;
+  }
+}

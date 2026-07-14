@@ -60,6 +60,21 @@
  *     name later from the persisted path via `pageNameForPath` (lib/nav.ts),
  *     so a later nav.ts rename can't leave old tickets showing a stale
  *     label frozen at filing time.
+ *
+ * F-128 "Seoul Day & Night" reskin: both headers adopt the shared
+ * `PageHubHeader` (devices #4/#2) instead of a bare `Topbar`; each ticket row
+ * (and the detail/comment-thread cards) rides a `CityCard` (device #1 —
+ * Night neon-signboard glow / Day hanji-paper, `tone="plain"` — a ticket
+ * carries no skill color of its own, its Bug/Concern/Suggestion/Request and
+ * Open/In-progress/Resolved/Closed identity already comes from the existing
+ * `Pill`s) instead of a flat bordered list/`Card`. The file-a-ticket form
+ * moves into the shared `Sheet` (a bottom-attached modal, matching the
+ * km-final.html "+ New" → sheet mock) instead of always rendering inline —
+ * triggered by a "New ticket" action in the header, or automatically when
+ * arriving via the F-127 FAB's `compose: true` state. `.km-rain-sheen`
+ * (device #8) ambient-textures both views; it's a Night-only no-op by its
+ * own CSS gate. Purely visual — none of the fetch/filter/tab/edit/comment/
+ * anonymity logic above changes.
  */
 import {
   useCallback,
@@ -75,13 +90,15 @@ import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
+import { CityCard } from '../components/CityCard';
 import { ErrorCard } from '../components/ErrorCard';
 import { FilterSelect } from '../components/FilterSelect';
 import { Icon } from '../components/Icon';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill, type PillTone } from '../components/Pill';
+import { Sheet } from '../components/Sheet';
 import { ShowMore } from '../components/ShowMore';
 import { Tabs } from '../components/Tabs';
-import { Topbar } from '../components/Topbar';
 import { useToast } from '../components/useToast';
 import { usePagination } from '../hooks/usePagination';
 import { errorMessageFor } from '../lib/errorCopy';
@@ -199,6 +216,16 @@ function parseTab(raw: string | null): TabId {
 // Pieces
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * F-128 device #1/#2 — each row rides its own `CityCard` (neon signboard /
+ * hanji paper) with the leading-edge `DancheongRail`, replacing the old flat
+ * bordered list row. `tone="plain"` — a ticket carries no skill color of its
+ * own; its type/status identity already comes from the two `Pill`s below
+ * (same disposition as Uploads.tsx's rows). The button keeps its exact
+ * pre-reskin markup/aria (`aria-label="View ticket: …"` is what every test
+ * and the anonymity-contract queries target) — only the outer shell and the
+ * button's own now-padding-less styling (Tickets.css) changed.
+ */
 function TicketRow({
   ticket,
   isMine,
@@ -212,60 +239,68 @@ function TicketRow({
   const statusMeta = STATUS_META[ticket.status];
   return (
     <li className="km-tickets__row-wrap">
-      <button
-        type="button"
-        className="km-tickets__row focusring"
-        onClick={onOpen}
-        aria-label={`View ticket: ${ticket.title}`}
-      >
-        <span className="km-tickets__row-main">
-          <span className="km-tickets__row-title">{ticket.title}</span>
-          <span className="km-tickets__row-meta">
-            {formatDate(ticket.createdAt)} ·{' '}
-            {ticket.commentCount === 1
-              ? '1 comment'
-              : `${String(ticket.commentCount)} comments`}
-          </span>
-          {ticket.sourcePage ? (
-            <span className="km-tickets__row-meta km-tickets__source-page">
-              Reported from: {pageNameForPath(ticket.sourcePage)}
+      <CityCard tone="plain" rail className="km-tickets__card">
+        <button
+          type="button"
+          className="km-tickets__row focusring"
+          onClick={onOpen}
+          aria-label={`View ticket: ${ticket.title}`}
+        >
+          <span className="km-tickets__row-main">
+            <span className="km-tickets__row-title">{ticket.title}</span>
+            <span className="km-tickets__row-meta">
+              {formatDate(ticket.createdAt)} ·{' '}
+              {ticket.commentCount === 1
+                ? '1 comment'
+                : `${String(ticket.commentCount)} comments`}
             </span>
-          ) : null}
-        </span>
-        <span className="km-tickets__row-badges">
-          {isMine ? (
-            <Pill tone="default">
-              <Bilingual en="Yours" kr="본인" compact />
+            {ticket.sourcePage ? (
+              <span className="km-tickets__row-meta km-tickets__source-page">
+                Reported from: {pageNameForPath(ticket.sourcePage)}
+              </span>
+            ) : null}
+          </span>
+          <span className="km-tickets__row-badges">
+            {isMine ? (
+              <Pill tone="default">
+                <Bilingual en="Yours" kr="본인" compact />
+              </Pill>
+            ) : null}
+            <Pill tone={typeMeta.tone}>
+              <Bilingual en={typeMeta.en} kr={typeMeta.kr} compact />
             </Pill>
-          ) : null}
-          <Pill tone={typeMeta.tone}>
-            <Bilingual en={typeMeta.en} kr={typeMeta.kr} compact />
-          </Pill>
-          <Pill tone={statusMeta.tone}>
-            <Bilingual en={statusMeta.en} kr={statusMeta.kr} compact />
-          </Pill>
-        </span>
-      </button>
+            <Pill tone={statusMeta.tone}>
+              <Bilingual en={statusMeta.en} kr={statusMeta.kr} compact />
+            </Pill>
+          </span>
+        </button>
+      </CityCard>
     </li>
   );
 }
 
-/** "File a ticket" — POST /tickets. Keeps typed values in place on a failed
- *  submit so the ErrorCard's Retry re-sends the exact same payload. */
+/**
+ * "File a ticket" — POST /tickets. Keeps typed values in place on a failed
+ * submit so the ErrorCard's Retry re-sends the exact same payload.
+ *
+ * F-128: this now lives INSIDE the shared `Sheet` (the caller wraps it), so
+ * it no longer needs its own `Card` shell (the Sheet panel already is the
+ * surface) or a bespoke autofocus effect: `Sheet`'s own `useModalA11y`
+ * already auto-focuses the first focusable descendant on open, and moving
+ * **Title** ahead of Type in the field order (visual + DOM) makes that
+ * built-in behaviour land exactly where F-127's "arrive via the FAB, ready
+ * to type" contract wants — whether the sheet was opened by the FAB or by
+ * the header's "New ticket" button, with no extra prop needed here.
+ */
 function FileTicketForm({
   onFiled,
   sourcePage,
-  autoFocusTitle = false,
 }: {
   onFiled: (ticket: OwnTicket) => void;
   /** F-127: the page the global "!" FAB was tapped from, if that's how the
    *  caller arrived here. Rides into `createTicket`'s `sourcePage` field
    *  (path only — see module header on why the label isn't persisted). */
   sourcePage?: { path: string; name: string };
-  /** True when the FAB's `state.compose` flag is set — moves focus into the
-   *  title field so a FAB tap lands the user ready to type, not just
-   *  scrolled to a form they still have to find. */
-  autoFocusTitle?: boolean;
 }): JSX.Element {
   const [type, setType] = useState<TicketType>('bug');
   const [title, setTitle] = useState('');
@@ -279,17 +314,6 @@ function FileTicketForm({
   const typeId = useId();
   const titleId = useId();
   const bodyId = useId();
-  const titleRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (autoFocusTitle) titleRef.current?.focus();
-    // Intentionally fires once per mount (the FAB navigation that set this
-    // flag is a one-time arrival, not a value that should re-steal focus on
-    // every re-render) — `autoFocusTitle` is constant for this component's
-    // lifetime in practice (derived once from the location state that
-    // triggered its mount).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const submit = useCallback(async (): Promise<void> => {
     const titleTrim = title.trim();
@@ -330,7 +354,7 @@ function FileTicketForm({
   }, [type, title, body, sourcePage, onFiled]);
 
   return (
-    <Card className="km-tickets__file">
+    <div className="km-tickets__file">
       <h2 className="km-eyebrow km-tickets__file-title">
         <Bilingual en="File a ticket" kr="티켓 제출" />
       </h2>
@@ -345,6 +369,33 @@ function FileTicketForm({
           void submit();
         }}
       >
+        {/* Title leads (see the function doc comment) — the first focusable
+            field in the Sheet, so its own initial-focus effect lands here
+            with no bespoke autofocus wiring needed. */}
+        <div className="km-tickets__field">
+          <label htmlFor={titleId} className="km-tickets__label">
+            Title
+          </label>
+          <input
+            id={titleId}
+            type="text"
+            className="km-tickets__input focusring"
+            value={title}
+            onChange={(e) => {
+              setTitle(e.target.value);
+            }}
+            maxLength={TITLE_MAX}
+            disabled={submitting}
+            aria-invalid={fieldErrors.title ? true : undefined}
+            aria-describedby={fieldErrors.title ? `${titleId}-error` : undefined}
+          />
+          {fieldErrors.title ? (
+            <p id={`${titleId}-error`} className="km-tickets__field-error" role="alert">
+              {fieldErrors.title}
+            </p>
+          ) : null}
+        </div>
+
         <div className="km-tickets__field">
           <label htmlFor={typeId} className="km-tickets__label">
             Type
@@ -364,31 +415,6 @@ function FileTicketForm({
               </option>
             ))}
           </select>
-        </div>
-
-        <div className="km-tickets__field">
-          <label htmlFor={titleId} className="km-tickets__label">
-            Title
-          </label>
-          <input
-            ref={titleRef}
-            id={titleId}
-            type="text"
-            className="km-tickets__input focusring"
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-            }}
-            maxLength={TITLE_MAX}
-            disabled={submitting}
-            aria-invalid={fieldErrors.title ? true : undefined}
-            aria-describedby={fieldErrors.title ? `${titleId}-error` : undefined}
-          />
-          {fieldErrors.title ? (
-            <p id={`${titleId}-error`} className="km-tickets__field-error" role="alert">
-              {fieldErrors.title}
-            </p>
-          ) : null}
         </div>
 
         <div className="km-tickets__field">
@@ -436,7 +462,7 @@ function FileTicketForm({
           />
         </Button>
       </form>
-    </Card>
+    </div>
   );
 }
 
@@ -510,7 +536,9 @@ function CommentThread({ ticketId }: { ticketId: number }): JSX.Element {
   }, [text, ticketId]);
 
   return (
-    <Card className="km-tickets__thread">
+    // F-128 device #1 — a CityCard signboard (tone="plain", no rail: the
+    // thread reads as a secondary panel under the detail card's own rail).
+    <CityCard tone="plain" className="km-tickets__thread">
       <h2 className="km-eyebrow km-tickets__thread-title">
         <Bilingual en="Comments" kr="댓글" />
       </h2>
@@ -587,7 +615,7 @@ function CommentThread({ ticketId }: { ticketId: number }): JSX.Element {
           />
         </Button>
       </form>
-    </Card>
+    </CityCard>
   );
 }
 
@@ -715,7 +743,10 @@ function TicketDetail({
 
   return (
     <div className="km-tickets__detail">
-      <Card className="km-tickets__detail-card">
+      {/* F-128 device #1/#2 — the detail's primary CityCard signboard
+          carries the leading-edge rail; the CommentThread below (tone
+          "plain", no rail) reads as the secondary panel underneath it. */}
+      <CityCard tone="plain" rail className="km-tickets__detail-card">
         <div className="km-tickets__detail-badges">
           <Pill tone={typeMeta.tone}>
             <Bilingual en={typeMeta.en} kr={typeMeta.kr} compact />
@@ -831,7 +862,7 @@ function TicketDetail({
             <p className="kr km-tickets__detail-body">{ticket.body}</p>
           </>
         )}
-      </Card>
+      </CityCard>
 
       <CommentThread ticketId={ticket.id} />
     </div>
@@ -862,7 +893,16 @@ export default function Tickets(): JSX.Element {
     typeof navState.sourcePage.name === 'string'
       ? navState.sourcePage
       : undefined;
-  const autoFocusTitle = navState?.compose === true;
+  const arriveComposing = navState?.compose === true;
+
+  // F-128: the file-a-ticket form now lives in the shared `Sheet` (device-
+  // agnostic bottom modal) instead of always rendering inline — opened by
+  // the header's "New ticket" action, or automatically when the F-127 FAB's
+  // `compose: true` state is what got us here. Lazy initializer: this only
+  // needs to read `arriveComposing` once, on the mount this component was
+  // navigated to for — a later re-render (e.g. the tab changing) must not
+  // re-open a sheet the user already closed.
+  const [fileOpen, setFileOpen] = useState<boolean>(() => arriveComposing);
 
   // Filters — local, shared by both tabs. Not part of the deep-link
   // contract (unlike tab/ticket), so a shared link never surprises the
@@ -1035,12 +1075,31 @@ export default function Tickets(): JSX.Element {
     setMine((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
   }, []);
 
+  // F-128 — stable identity is not optional here: `Sheet`'s `useModalA11y`
+  // re-arms its focus-capture/restore effect whenever `onClose`'s reference
+  // changes (it's in that effect's dependency array), and this page
+  // re-renders on every list/tab/filter state change while the sheet may be
+  // open. An inline arrow here would retrigger that effect on each such
+  // render, each time re-capturing "the element focused right now" as the
+  // restore target — one of those captures can land on `<body>` before the
+  // Sheet's own initial-focus effect has had a chance to move focus into
+  // the form, and the later restore-on-close would then steal focus back to
+  // `<body>` instead of the Title field. `useCallback` keeps the reference
+  // stable across renders so the effect only re-arms on a real open/close.
+  const closeFileSheet = useCallback((): void => {
+    setFileOpen(false);
+  }, []);
+
   const onFiled = useCallback(
     (created: OwnTicket): void => {
       setMine((prev) => [created, ...prev]);
       toast({ message: 'Ticket filed.', tone: 'success' });
+      // F-128: the form lives in a Sheet now — a successful file closes it
+      // (matching the km-final.html mock's "file → sheet closes → toast"
+      // beat) instead of leaving it sitting open with a just-cleared form.
+      closeFileSheet();
     },
-    [toast],
+    [closeFileSheet, toast],
   );
 
   // ── Detail (nested view) ──
@@ -1054,13 +1113,17 @@ export default function Tickets(): JSX.Element {
     const backLabel = tab === 'mine' ? 'My tickets' : 'Community';
 
     return (
-      <section className="screen km-tickets" aria-labelledby="km-tickets-title">
+      <section
+        className="screen km-tickets km-rain-sheen"
+        aria-labelledby="km-tickets-title"
+      >
         <BackButton to={backTo} label={backLabel} />
-        <Topbar
-          krTitle="티켓"
-          title="Ticket"
+        {/* F-128 devices #4/#2 — the shared hub-header recipe instead of a
+            bare `Topbar`. */}
+        <PageHubHeader
           titleId="km-tickets-title"
           eyebrow={<Bilingual en="Feedback" kr="피드백" />}
+          heading={<Bilingual en="Ticket" kr="티켓" />}
         />
         {ticket === null ? (
           mineLoading || communityLoading ? (
@@ -1086,18 +1149,30 @@ export default function Tickets(): JSX.Element {
 
   // ── List view ──
   return (
-    <section className="screen km-tickets" aria-labelledby="km-tickets-title">
-      <Topbar
-        krTitle="베타 피드백"
-        title="Beta Feedback"
+    <section
+      className="screen km-tickets km-rain-sheen"
+      aria-labelledby="km-tickets-title"
+    >
+      {/* F-128 devices #4/#2 — the shared hub-header recipe instead of a
+          bare `Topbar`; the "New ticket" action opens the file-a-ticket
+          Sheet (device: shared `Sheet`, matching the km-final.html
+          "+ New" → sheet mock) instead of an always-inline form. */}
+      <PageHubHeader
         titleId="km-tickets-title"
         eyebrow={<Bilingual en="Feedback" kr="피드백" />}
-      />
-
-      <FileTicketForm
-        onFiled={onFiled}
-        sourcePage={sourcePage}
-        autoFocusTitle={autoFocusTitle}
+        heading={<Bilingual en="Beta Feedback" kr="베타 피드백" />}
+        actions={
+          <Button
+            variant="gold"
+            size="sm"
+            onClick={() => {
+              setFileOpen(true);
+            }}
+            leadingIcon={<Icon name="plus" size={14} />}
+          >
+            <Bilingual en="New ticket" kr="새 티켓" />
+          </Button>
+        }
       />
 
       <div className="km-tickets__filters">
@@ -1196,6 +1271,10 @@ export default function Tickets(): JSX.Element {
           )
         }
       </Tabs>
+
+      <Sheet open={fileOpen} onClose={closeFileSheet} ariaLabel="File a ticket">
+        <FileTicketForm onFiled={onFiled} sourcePage={sourcePage} />
+      </Sheet>
     </section>
   );
 }

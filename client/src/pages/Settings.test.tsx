@@ -2057,3 +2057,58 @@ describe('Settings — notification schedules (F-040)', () => {
     expect(mocks.putSchedules).not.toHaveBeenCalled();
   });
 });
+
+// F-128 "Seoul Day & Night" reskin — the header adopts the shared
+// PageHubHeader (mirrors every other reskinned page's own fidelity test,
+// e.g. Mistakes.test.tsx's "F-128 BLOCKER-2 fix") and every group now rides
+// a CityCard signboard instead of a flat Card.
+describe('Settings — F-128 reskin (shared PageHubHeader + CityCard groups)', () => {
+  it('renders the shared PageHubHeader recipe (skyline + rail + a real h1) instead of a flat Topbar', () => {
+    meOk();
+    const { container } = renderSettings();
+
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).toBeInTheDocument();
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: '설정 · Settings',
+    });
+    expect(heading).toHaveAttribute('id', 'km-settings-title');
+  });
+
+  it('every group rides a CityCard signboard (surface="city") instead of a flat Card', () => {
+    meOk();
+    const { container } = renderSettings();
+
+    // Profile / 2FA / Notifications / Appearance / Beta feedback — five
+    // CollapsibleTile groups, every one now `surface="city"`.
+    const cityGroups = container.querySelectorAll(
+      '.km-settings__group.km-citycard.km-collapsible',
+    );
+    expect(cityGroups.length).toBe(5);
+  });
+
+  it('reskinning the groups does not disturb the collapsed-by-default disclosure contract (F-038)', () => {
+    meOk();
+    renderSettings();
+
+    const profileHeader = screen.getByRole('button', { name: /Profile/ });
+    expect(profileHeader).toHaveAttribute('aria-expanded', 'false');
+    expandGroup(/Profile/);
+    expect(profileHeader).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Name')).toBeInTheDocument();
+  });
+});
+
+function meOk(): void {
+  mocks.fetchMe.mockResolvedValue({
+    id: 1,
+    email: 'jay@example.com',
+    display_name: 'Jay',
+    phone: '+15555550100',
+  } satisfies User);
+}

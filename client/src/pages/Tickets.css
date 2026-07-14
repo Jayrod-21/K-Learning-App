@@ -1,8 +1,17 @@
-/* Tickets — F-023 in-app beta feedback/ticketing (`/tickets`). */
+/*
+ * Tickets — F-023 in-app beta feedback/ticketing (`/tickets`). Wave-2
+ * "Seoul Day & Night" reskin (F-128): rows and the detail/comment cards ride
+ * `CityCard` now (their per-card padding overrides live here, mirroring
+ * Uploads.css's `.km-uploads__card.km-citycard` idiom); the file-a-ticket
+ * form moved into the shared `Sheet`, whose own panel (styles/index.css
+ * `.km-sheet__panel`) is now the form's surface, so `.km-tickets__file` only
+ * carries spacing, no background/border of its own. Token-driven only — no
+ * hard-coded hex anywhere in this file.
+ */
 
-/* ── "File a ticket" ─────────────────────────────────────────── */
+/* ── "File a ticket" (now inside the shared Sheet) ──────────────── */
 .km-tickets__file {
-  margin-bottom: 16px;
+  margin-bottom: 4px;
 }
 
 .km-tickets__file-title {
@@ -90,6 +99,16 @@
 
 .km-tickets__row-wrap {
   list-style: none;
+  /* Mobile-first (F-129 spirit) — the row never forces width past its
+   * container; CityCard's own layout is flex, not fixed px. */
+  max-width: 100%;
+}
+
+/* F-128 device #1 — tighten CityCard's default 20px padding to 0;
+ * `.km-tickets__row` below carries its own 14px/16px padding, same idiom as
+ * Uploads.css's `.km-uploads__card.km-citycard`. */
+.km-tickets__card.km-citycard {
+  padding: 0;
 }
 
 .km-tickets__row {
@@ -99,12 +118,12 @@
   gap: 8px;
   align-items: flex-start;
   padding: 14px 16px;
-  border-radius: var(--radius);
-  background: var(--ink-1);
-  box-shadow: var(--shadow-sm);
+  background: transparent;
   border: none;
   text-align: left;
   cursor: pointer;
+  color: inherit;
+  font: inherit;
 }
 
 .km-tickets__row-main {
