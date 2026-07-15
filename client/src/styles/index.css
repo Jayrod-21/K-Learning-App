@@ -95,6 +95,32 @@
   --on-vermilion:     #FFFFFF;
   --danger:           var(--dan-verm);
   --danger-soft:      var(--dan-verm-soft);
+
+  /* Grammar's skill color — F-189 fix-pass round 4 (BLOCKER-2,
+   * REVIEW_r4-colors.md). Grammar used to read `--vermilion` directly, the
+   * SAME token TOPIK also read (both `HEX_HUE.grammar`/`.topik` = the
+   * literal string `'vermilion'` in the old LearnMenu.tsx) — not merely
+   * similar colors, the identical CSS custom property, so the two honeycomb
+   * tiles rendered as one fused shape (they are geometrically adjacent in
+   * the 2-3-2 comb — see lib/skill-colors.ts). Worse, because `--vermilion`
+   * is the RUNTIME ACCENT-PRESET token (re-pointed by `[data-accent="blue"
+   * /"mint"]` below), Grammar's tile color used to change when the user
+   * picked a different accent — and could land EXACTLY on Vocab's fixed
+   * `--indigo` (both resolve to `--dan-cobalt` under the blue preset) or
+   * Listening's fixed `--moss` (both `--dan-jade` under mint) — a 3-way
+   * collision (SHOULD-FIX-5). `--crimson` fixes both problems the same way
+   * `--ochre` (Hanja) is already "locked": it mirrors the DEFAULT
+   * (coral-accent) vermilion values but does NOT chain through
+   * `--vermilion` and is never touched by the `[data-accent]` blocks, so
+   * Grammar's tile looks identical to before under the default accent yet
+   * can never drift with the picker or collide with another skill's fixed
+   * hue. `--vermilion` itself is untouched and keeps tracking the accent
+   * preset for its own, unrelated job — CTAs, `--danger`, the focus ring,
+   * the legacy `--gold*` aliases. */
+  --crimson:          var(--dan-verm);
+  --crimson-soft:     var(--dan-verm-soft);
+  --crimson-ink:      var(--dan-verm-ink);
+
   /* Focus indicator color (`.focusring` outline). Var-chained so it tracks
    * the active accent + theme — every Day dancheong fill clears the WCAG
    * 1.4.11 3:1 non-text floor against --ink comfortably (verm 4.03:1,
@@ -105,28 +131,53 @@
   /* Category / skill hues — mapped to their nearest dancheong tone
    * (DESIGN_SEOUL_DAY_NIGHT.md §2): Hanja↔ochre (literal — hanja already
    * used ochre), Vocab↔cobalt (blue family), success/correct↔jade (the
-   * doc's "good" semantic IS jade in Day). Grammar and Reading have no
+   * doc's "good" semantic IS jade in Day). Writing and Reading have no
    * spare dancheong hue (jade/verm/cobalt/ochre are claimed by
    * success/accent/vocab/hanja) — they keep their own Seoul-tuned hues,
-   * pulled toward the same muted-jewel-tone saturation. */
+   * pulled toward the same muted-jewel-tone saturation.
+   *
+   * F-189 fix-pass round 4 (BLOCKER-1/SHOULD-FIX-4, REVIEW_r4-colors.md):
+   * `--cyan` (Reading) and `--moss` (Listening) were a near-collision in
+   * Day (ΔE76 ≈ 21.5 — the smallest gap of any pair, and they sit
+   * side-by-side in Today's carousel) — `--moss` is untouched (it is also
+   * the app-wide success/correct + `--km-mastery-mastered` semantic, reused
+   * in dozens of unrelated places; retinting it to fix a Reading/Listening
+   * tile clash would silently recolor "correct answer" everywhere), so
+   * `--cyan` alone was re-tinted bluer + darker to clear a ≥28 ΔE76 floor
+   * against every other skill hue in both themes (verified by script —
+   * see `styles/skillHueDistinctness.test.ts`). `--violet` (Writing) was
+   * separately re-tinted from a muted blue-purple (too close to `--indigo`,
+   * ΔE76 ≈ 22.6 Day / 19.5 Night) toward a true purple/magenta. Two new
+   * fixed (non-accent-tracking) skill hues were added: `--crimson`
+   * (Grammar) and `--stone` (TOPIK) — see the dedicated comment below the
+   * `--vermilion`/accent-preset block for why Grammar/TOPIK no longer share
+   * `--vermilion`. Canonical source of truth for the skill→hue assignment:
+   * `lib/skill-colors.ts` (consumed by both LearnMenu's honeycomb and
+   * Today's tile carousels — see that file's doc comment). */
   --indigo:      var(--dan-cobalt);  --indigo-soft: var(--dan-cobalt-soft);  /* Vocab */
-  --moss:        var(--dan-jade);    --moss-soft:   var(--dan-jade-soft);    /* success/correct */
-  --ochre:       var(--dan-ochre);   --ochre-soft:  var(--dan-ochre-soft);   /* Hanja */
-  --violet:      #6B4E8C;  --violet-soft: #ECE3F1;   /* Grammar (no dancheong counterpart) */
-  --cyan:        #256E7D;  --cyan-soft:   #DCEEF0;   /* Reading (no dancheong counterpart) */
+  --moss:        var(--dan-jade);    --moss-soft:   var(--dan-jade-soft);    /* success/correct + Listening */
+  --ochre:       var(--dan-ochre);   --ochre-soft:  var(--dan-ochre-soft);   /* Hanja (locked) */
+  --violet:      #8A3399;  --violet-soft: #F2E6F4;   /* Writing (no dancheong counterpart) */
+  --cyan:        #254856;  --cyan-soft:   #E3EEF2;   /* Reading (no dancheong counterpart) */
+  /* TOPIK's dedicated "assessment" tone — deliberately NOT a skill color
+   * and deliberately NOT accent-tracking (see the --crimson comment below):
+   * a neutral warm stone/taupe gray, distinct in kind (not just hue) from
+   * the six vivid skill hues, fitting the exam's own separate identity. */
+  --stone:       #69523A;  --stone-soft:  #F0E9E0;   /* TOPIK (assessment, fixed) */
 
   /* On-surface TEXT twins — whenever a category/accent hue is the
    * *foreground* (pill labels, eyebrows, stat counts, icons), read the
    * `-ink` twin instead of the raw hue. Indigo/moss/ochre chain straight
    * onto their dancheong `-ink` (already ≥4.5:1 on their own soft chip —
-   * see contrast note above); violet/cyan's own fill already clears 4.5:1
-   * on its own soft chip, so the twin is a passthrough. */
+   * see contrast note above); violet/cyan/stone's own fill already clears
+   * 4.5:1 on its own soft chip, so the twin is a passthrough. */
   --vermilion-ink: var(--dan-verm-ink);
   --indigo-ink:    var(--dan-cobalt-ink);
   --moss-ink:      var(--dan-jade-ink);
   --ochre-ink:     var(--dan-ochre-ink);
   --violet-ink:    var(--violet);
   --cyan-ink:      var(--cyan);
+  --stone-ink:     var(--stone);
   --danger-ink:    var(--dan-verm-ink);
 
   /* Mastery triad — HanjaCell's index-grid state color (F-167 fix-pass).
@@ -237,26 +288,67 @@
   --vermilion-soft:   var(--neon-coral-soft);
   --on-vermilion:     #0A0C12;
 
+  /* Grammar's skill color, Night — mirrors the Day block's `--crimson`
+   * rationale above: fixed to the default (coral) neon values, never
+   * touched by `[data-theme="dark"][data-accent]`. */
+  --crimson:          var(--neon-coral);
+  --crimson-soft:     var(--neon-coral-soft);
+  --crimson-ink:      var(--neon-coral-bright);
+
   /* Skill hues mapped to their neon counterpart where a direct one exists
    * (Vocab↔neon-blue, Hanja↔neon-amber, success/correct↔neon-mint — the
-   * doc's Night "good" semantic); Grammar/Reading keep their own neon-ish
+   * doc's Night "good" semantic); Writing/Reading keep their own neon-ish
    * hues (already bright enough to read as neon without a dancheong-style
-   * remap). */
+   * remap).
+   *
+   * F-189 fix-pass round 4 (SHOULD-FIX-4, REVIEW_r4-colors.md): `--violet`
+   * was re-tinted from a muted blue-purple (ΔE76 ≈ 19.5 against `--indigo`
+   * in Night — the closest pair system-wide) to a proper magenta-purple,
+   * clearing a ≥28 floor against every other skill hue (see
+   * `styles/skillHueDistinctness.test.ts`). `--cyan` is UNCHANGED here —
+   * Night's cyan/moss pair already cleared the floor (ΔE76 ≈ 46.2), only
+   * Day's needed the re-tint (see the Day block's comment).
+   *
+   * F-191 (design polish): `--stone` was re-tinted from a muted
+   * lavender-gray (`#A69FBC`) to a brighter, cooler near-white
+   * (`#DAD6ED`) — the old value read dim next to the other six
+   * fully-saturated Night neons, breaking the "Seoul neon signage"
+   * aesthetic (every other skill glows; TOPIK looked flat by comparison).
+   * The new value keeps the SAME hue angle (~250-254°, still cool/violet,
+   * still reads as "exam ≠ skill" — deliberately achromatic-leaning, not a
+   * 7th saturated color) but pushes lightness from 68% to 88% and
+   * saturation from 18% to 39%, landing it in the "white/silver neon tube"
+   * family the ticket asked for. Distinctness stays well clear of the
+   * floor: the old value cleared a 43.2 min ΔE76 against the other 6 skill
+   * hues, the new one clears 40.6 — a slight narrowing, still far above the
+   * 28 floor (see `styles/skillHueDistinctness.test.ts`). AA:
+   * `--stone-ink` is (and was) a passthrough of `--stone` itself onto
+   * `--stone-soft` (unchanged, `#1E182F`) — brightening the ink-twin only
+   * widens that gap (6.77:1 -> 12.08:1, both comfortably over the 4.5:1
+   * floor; see `tokensContrast.test.ts`). Day's `--stone` (`#69523A`,
+   * `index.css`'s `:root` block above) is UNCHANGED — it fits the
+   * hanji-daytime Day theme as-is and this ticket only retunes Night. */
   --indigo: var(--neon-blue);   --indigo-soft: var(--neon-blue-soft);
   --moss:   var(--neon-mint);   --moss-soft:   var(--neon-mint-soft);
   --ochre:  var(--neon-amber);  --ochre-soft:  var(--neon-amber-soft);
-  --violet: #9B7CFF;  --violet-soft: #1D1638;
+  --violet: #C05CEB;  --violet-soft: #180922;
   --cyan:   #33D6EF;  --cyan-soft:   #0C2530;
+  --stone:  #DAD6ED;  --stone-soft:  #1E182F;   /* TOPIK (assessment, fixed) */
 
   /* On-surface TEXT twins — dark counterparts. Brightened (or passed
    * through) so each clears ≥4.5:1 on its own soft chip.
-   * moss/ochre/cyan/violet already clear that bar as their raw hue. */
+   * moss/ochre/cyan/violet/stone already clear that bar as their raw hue —
+   * `--violet-ink` used to need a separately brightened twin (`#AE96FF`)
+   * because the OLD `--violet` (`#9B7CFF`) only cleared 4.5:1 with help;
+   * the re-tinted `--violet` clears 5.4:1 directly on its own new
+   * `--violet-soft`, so this simplifies to a passthrough like `--cyan-ink`. */
   --vermilion-ink: var(--neon-coral-bright);
   --indigo-ink:    var(--neon-blue-bright);
   --moss-ink:      var(--moss);
   --ochre-ink:     var(--ochre);
-  --violet-ink:    #AE96FF;
+  --violet-ink:    var(--violet);
   --cyan-ink:      var(--cyan);
+  --stone-ink:     var(--stone);
   --danger:        var(--neon-coral);
   --danger-soft:   var(--neon-coral-soft);
   --danger-ink:    var(--neon-coral-bright);
@@ -321,15 +413,18 @@
     --neon-amber:  #FFB43D;                                  --neon-amber-soft: #2B2110;
     --vermilion: var(--neon-coral); --vermilion-bright: var(--neon-coral-bright);
     --vermilion-soft: var(--neon-coral-soft); --on-vermilion: #0A0C12;
+    --crimson: var(--neon-coral); --crimson-soft: var(--neon-coral-soft); --crimson-ink: var(--neon-coral-bright);
     --indigo: var(--neon-blue); --indigo-soft: var(--neon-blue-soft);
     --moss:   var(--neon-mint); --moss-soft:   var(--neon-mint-soft);
     --ochre:  var(--neon-amber); --ochre-soft: var(--neon-amber-soft);
-    --violet: #9B7CFF; --violet-soft: #1D1638;
+    --violet: #C05CEB; --violet-soft: #180922;
     --cyan:   #33D6EF; --cyan-soft:   #0C2530;
+    --stone:  #DAD6ED; --stone-soft:  #1E182F;
     --vermilion-ink: var(--neon-coral-bright);
     --indigo-ink: var(--neon-blue-bright);
     --moss-ink: var(--moss); --ochre-ink: var(--ochre);
-    --violet-ink: #AE96FF; --cyan-ink: var(--cyan);
+    --violet-ink: var(--violet); --cyan-ink: var(--cyan);
+    --stone-ink: var(--stone);
     --danger: var(--neon-coral); --danger-soft: var(--neon-coral-soft); --danger-ink: var(--neon-coral-bright);
     --km-mastery-mastered: var(--moss); --km-mastery-practicing: var(--ochre-ink); --km-mastery-new: var(--paper-mute);
     --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
@@ -437,11 +532,12 @@
  * `TextSizeProvider` stamps `data-text-size="sm|md|lg"` on `<html>`
  * (persisted in localStorage["km.textSize"], same pattern as km.accent) and
  * these blocks re-point the ROOT font-size, so every rem-derived length in
- * the app scales together with no reload. KNOWN LIMITATION (F-086): most of
- * this sheet still pins font sizes in px, which do NOT follow the root
- * scale — today only the rem-sized text (the Phase-1 primitives and future
- * additions) responds. The app-wide px→rem migration that makes this
- * setting fully effective is ticketed as F-086; write NEW font sizes in rem.
+ * the app scales together with no reload. The app-wide px→rem migration
+ * (F-086 / B-036) is DONE — this sheet's font-size declarations are rem, so
+ * S/M/L now visibly scales body copy across the app, not just the Phase-1
+ * primitives. A few declarations remain intentional-fixed px by design
+ * (documented inline at each site) and don't participate — that's correct.
+ * Write NEW font sizes in rem so they participate in the scale.
  * md restates the browser default (16px) for explicitness: it IS the size
  * the app has always rendered at, so shipping this setting changes nothing
  * until the user opts into Small or Large.
@@ -548,7 +644,7 @@ h1, h2 { font-family: var(--font-display); }
  * page css). The intro section rows keep the old prominent-Korean look on
  * whichever language leads; the results card titles mute their sub. */
 .km-diagnostic__section-label .km-bilingual__main {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 600;
   color: var(--paper);
 }
@@ -705,7 +801,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-toast__message {
   flex: 1;
   margin: 0;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   line-height: 1.4;
   /* --paper (the TEXT token), not --ink: --ink is the page-background
    * token, which as a foreground computes ~1.1:1 — invisible. */
@@ -716,7 +812,7 @@ h1, h2 { font-family: var(--font-display); }
   flex-shrink: 0;
   align-self: center;
   padding: 4px 10px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   color: var(--vermilion-ink);
   background: transparent;
@@ -779,14 +875,14 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-install__title {
   margin: 0 0 2px;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 600;
   /* --paper, not --ink — see .km-toast__message note. */
   color: var(--paper);
 }
 .km-install__text {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.4;
   color: var(--paper-mute);
 }
@@ -804,7 +900,7 @@ h1, h2 { font-family: var(--font-display); }
 /* Eyebrow ──────────────────────────────────────────────────────────────── */
 .km-eyebrow {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.22em;
   text-transform: uppercase;
@@ -872,9 +968,9 @@ h1, h2 { font-family: var(--font-display); }
  * `justify-content: center`) already centers the smaller label inside the
  * taller hit box, so this only grows the tappable area, not the visual
  * density of the label itself. */
-.km-btn--sm { padding: 6px 10px; font-size: 12px; min-height: 44px; min-width: 44px; }
-.km-btn--md { padding: 12px 18px; font-size: 14px; }
-.km-btn--lg { padding: 15px 22px; font-size: 15px; }
+.km-btn--sm { padding: 6px 10px; font-size: 0.75rem; min-height: 44px; min-width: 44px; }
+.km-btn--md { padding: 12px 18px; font-size: 0.875rem; }
+.km-btn--lg { padding: 15px 22px; font-size: 0.9375rem; }
 .km-btn--gold {
   background: var(--vermilion);
   color: var(--on-vermilion);
@@ -897,7 +993,7 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   gap: 6px;
   font-family: 'Inter', sans-serif;
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -934,9 +1030,9 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0;
   user-select: none;
 }
-.km-seal--sm { width: 18px; height: 18px; font-size: 11px; line-height: 18px; border-radius: 6px; }
-.km-seal--md { width: 28px; height: 28px; font-size: 16px; line-height: 28px; border-radius: 9px; }
-.km-seal--lg { width: 44px; height: 44px; font-size: 24px; line-height: 44px; border-radius: 14px; }
+.km-seal--sm { width: 18px; height: 18px; font-size: 0.6875rem; line-height: 18px; border-radius: 6px; }
+.km-seal--md { width: 28px; height: 28px; font-size: 1rem; line-height: 28px; border-radius: 9px; }
+.km-seal--lg { width: 44px; height: 44px; font-size: 1.5rem; line-height: 44px; border-radius: 14px; }
 
 /* SealStamp — milestone variant (device #7, DESIGN_SEOUL_DAY_NIGHT.md).
  * Additive: only applies with `milestone` set. `--km-tone`
@@ -1080,7 +1176,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-bottomnav__label {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1177,7 +1273,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-bottomnav__hexlabel {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   /* Counter-rotation (see the --open rule below): duration + easing MUST
@@ -1309,9 +1405,20 @@ h1, h2 { font-family: var(--font-display); }
 }
 /* Category color coding — tile bg is the -soft chip, TEXT is the AA-safe
  * -ink twin (never the raw hue: it fails 4.5:1 on the chips), the ICON may
- * use the bright hue (non-text graphic). Writing + TOPIK share the accent
- * family (only 6 category hues exist) — and therefore re-tint with the
- * runtime accent choice, like every other --vermilion consumer. */
+ * use the bright hue (non-text graphic).
+ *
+ * F-189 fix-pass round 4 (BLOCKER-2, REVIEW_r4-colors.md): Grammar and
+ * TOPIK used to both key into `--hexwrap--vermilion` (the SAME class,
+ * chained to the runtime accent-preset token, `--vermilion`) — not just a
+ * similar color, the literal same CSS custom property, which is why they
+ * rendered as one fused shape in the honeycomb (they are geometrically
+ * adjacent — see `lib/skill-colors.ts`'s doc comment for the full
+ * tessellation math) and could 3-way-collide with another skill under the
+ * blue/mint accent presets. Grammar now reads `--crimson` (a NEW, fixed,
+ * non-accent-tracking token — see its doc comment in the `:root` block
+ * above) and TOPIK reads `--stone` (its own dedicated "assessment" hue,
+ * also fixed) — seven distinct classes for the seven tiles, none of which
+ * re-tint with the accent picker. */
 .km-learnmenu__hexwrap--indigo {
   --hx-hue: var(--indigo);
   --hx-ink: var(--indigo-ink);
@@ -1337,10 +1444,15 @@ h1, h2 { font-family: var(--font-display); }
   --hx-ink: var(--moss-ink);
   --hx-bg: var(--moss-soft);
 }
-.km-learnmenu__hexwrap--vermilion {
-  --hx-hue: var(--vermilion-bright);
-  --hx-ink: var(--vermilion-ink);
-  --hx-bg: var(--vermilion-soft);
+.km-learnmenu__hexwrap--crimson {
+  --hx-hue: var(--crimson);
+  --hx-ink: var(--crimson-ink);
+  --hx-bg: var(--crimson-soft);
+}
+.km-learnmenu__hexwrap--stone {
+  --hx-hue: var(--stone);
+  --hx-ink: var(--stone-ink);
+  --hx-bg: var(--stone-soft);
 }
 .km-learnmenu__hex {
   width: 100%;
@@ -1393,7 +1505,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-learnmenu__hexicon { color: var(--hx-hue); flex: none; }
 .km-learnmenu__hexlabel {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 750;
   line-height: 1.25;
   letter-spacing: 0.01em;
@@ -1406,7 +1518,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-learnmenu__hexlabel .km-bilingual__sub {
   display: block;
   margin-top: 2px;
-  font-size: 10.5px;
+  font-size: 0.65625rem;
   font-weight: 600;
   opacity: 0.75;
 }
@@ -1484,7 +1596,7 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   color: var(--paper);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
 }
 .km-library__list {
@@ -1517,12 +1629,12 @@ h1, h2 { font-family: var(--font-display); }
   flex-direction: column;
 }
 .km-library__rowlabel {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 500;
   letter-spacing: -0.005em;
 }
 .km-library__rowkr {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   margin-top: 1px;
 }
@@ -1539,14 +1651,14 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-login__title {
   margin: 6px 0 6px;
-  font-size: clamp(34px, 5vw, 48px);
+  font-size: clamp(2.125rem, 5vw, 3rem);
   line-height: 1.05;
   color: var(--paper);
   letter-spacing: -0.03em;
 }
 .km-login__lede {
   color: var(--paper-dim);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.5;
   margin: 0;
 }
@@ -1556,7 +1668,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 16px;
 }
 .km-login__error {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--danger-ink);
   background: var(--danger-soft);
   border: 1px solid var(--danger);
@@ -1574,7 +1686,7 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   color: var(--vermilion-ink);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   letter-spacing: -0.005em;
 }
 .km-link:hover { text-decoration: underline; }
@@ -1582,7 +1694,7 @@ h1, h2 { font-family: var(--font-display); }
 /* Login — 2FA code input ─────────────────────────────────────────────── */
 .km-login__code-input {
   letter-spacing: 0.32em;
-  font-size: 18px;
+  font-size: 1.125rem;
   text-align: center;
 }
 
@@ -1615,7 +1727,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-enroll__secret-value {
   font-family: 'Inter', monospace;
-  font-size: 14px;
+  font-size: 0.875rem;
   letter-spacing: 0.12em;
   word-break: break-all;
   user-select: all; /* one tap/triple-click selects the whole key */
@@ -1634,13 +1746,13 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-recovery__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 1.125rem;
   color: var(--paper);
   letter-spacing: -0.01em;
 }
 .km-recovery__warn {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
   color: var(--paper-dim);
 }
@@ -1657,7 +1769,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-recovery__code {
   font-family: 'Inter', monospace;
-  font-size: 15px;
+  font-size: 0.9375rem;
   letter-spacing: 0.08em;
   color: var(--paper);
   user-select: all;
@@ -1669,7 +1781,7 @@ h1, h2 { font-family: var(--font-display); }
   flex-wrap: wrap;
 }
 .km-recovery__copied {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-recovery__ack {
@@ -1682,7 +1794,7 @@ h1, h2 { font-family: var(--font-display); }
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.45;
   color: var(--paper-dim);
   cursor: pointer;
@@ -1704,7 +1816,7 @@ h1, h2 { font-family: var(--font-display); }
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   padding: 3px 9px;
@@ -1713,7 +1825,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--moss, var(--paper));
 }
 .km-mfa__remaining {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
 }
 .km-mfa__actions {
@@ -1723,7 +1835,7 @@ h1, h2 { font-family: var(--font-display); }
   margin-top: 12px;
 }
 .km-mfa__note {
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.5;
   color: var(--paper-mute);
   margin: 10px 0 0;
@@ -1743,7 +1855,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-field { display: flex; flex-direction: column; gap: 6px; }
 .km-field__label {
   font-family: 'Inter', sans-serif;
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--paper-mute);
@@ -1756,7 +1868,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 10px 12px;
   color: var(--paper);
   font-family: inherit;
-  font-size: 15px;
+  font-size: 0.9375rem;
   letter-spacing: -0.005em;
   transition: border-color 140ms, background 140ms;
 }
@@ -1766,7 +1878,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-3);
 }
 .km-field__hint {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   line-height: 1.4;
   margin-top: 2px;
@@ -1778,7 +1890,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-stub__title {
   margin: 6px 0 0;
-  font-size: clamp(28px, 4vw, 38px);
+  font-size: clamp(1.75rem, 4vw, 2.375rem);
   line-height: 1.05;
   color: var(--paper);
 }
@@ -1788,7 +1900,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.5;
 }
 
@@ -1819,16 +1931,16 @@ h1, h2 { font-family: var(--font-display); }
   gap: 2px;
 }
 .km-swatchpicker__label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--paper);
 }
 .km-swatchpicker__hint {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
 }
 .km-swatchpicker__kr {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
 }
 .km-swatchpicker__row {
@@ -1869,7 +1981,7 @@ h1, h2 { font-family: var(--font-display); }
   box-shadow: 0 0 0 2px var(--ink-1), 0 0 0 3px var(--paper);
 }
 .km-swatchpicker__name {
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 0.04em;
 }
 
@@ -1952,20 +2064,20 @@ h1, h2 { font-family: var(--font-display); }
   min-width: 0;
 }
 .km-skillbar__label {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 500;
   color: var(--paper);
   letter-spacing: -0.005em;
 }
-.km-skillbar--compact .km-skillbar__label { font-size: 14px; }
+.km-skillbar--compact .km-skillbar__label { font-size: 0.875rem; }
 .km-skillbar__kr {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-skillbar__score {
   font-family: 'Inter', sans-serif;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
   white-space: nowrap;
 }
@@ -2017,7 +2129,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-skillbar__tick--ceiling { background: var(--indigo); }
 .km-skillbar__note {
   margin-top: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -2046,7 +2158,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   color: var(--paper-mute);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -2069,7 +2181,7 @@ h1, h2 { font-family: var(--font-display); }
   display: flex;
   align-items: center;
   gap: 16px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   flex-wrap: wrap;
 }
@@ -2139,7 +2251,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-taskcard__heading { min-width: 0; }
 .km-taskcard__skill {
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--paper-dim);
@@ -2148,12 +2260,12 @@ h1, h2 { font-family: var(--font-display); }
 .km-taskcard--gold .km-taskcard__skill { color: var(--vermilion-ink); }
 .km-taskcard--red  .km-taskcard__skill { color: var(--indigo-ink); }
 .km-taskcard__krtag {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   margin-top: 6px;
 }
 .km-taskcard__title {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 500;
   color: var(--paper);
   line-height: 1.4;
@@ -2165,7 +2277,7 @@ h1, h2 { font-family: var(--font-display); }
   justify-content: space-between;
   align-items: center;
   color: var(--paper-mute);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .km-taskcard__mins {
   display: inline-flex;
@@ -2204,13 +2316,13 @@ h1, h2 { font-family: var(--font-display); }
 .km-hanjacell--practicing { border-top: 2px solid var(--km-mastery-practicing); }
 .km-hanjacell--new        { border-top: 2px solid var(--km-mastery-new); }
 .km-hanjacell__char {
-  font-size: 32px;
+  font-size: 2rem;
   font-weight: 500;
   color: var(--paper);
   line-height: 1;
 }
 .km-hanjacell__caption {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--paper-mute);
   letter-spacing: 0;
 }
@@ -2263,7 +2375,7 @@ h1, h2 { font-family: var(--font-display); }
      clickable word huge + so widely spaced the passage read as a word list
      rather than prose). 16px + 1.8 keeps tap targets comfortable while reading
      as a paragraph. */
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.8;
   color: var(--paper);
   user-select: text;
@@ -2277,7 +2389,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   border-radius: 6px;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: 0.625rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
@@ -2286,7 +2398,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-passage__en {
   display: block;
   margin-top: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   font-family: 'Inter', sans-serif;
   line-height: 1.5;
@@ -2310,7 +2422,7 @@ h1, h2 { font-family: var(--font-display); }
   flex-wrap: wrap;
 }
 .km-popover__kr {
-  font-size: 32px;
+  font-size: 2rem;
   font-weight: 600;
   line-height: 1.1;
   color: var(--paper);
@@ -2319,25 +2431,25 @@ h1, h2 { font-family: var(--font-display); }
 .km-popover__lede {
   margin-top: 12px;
   color: var(--paper-dim);
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.5;
 }
 .km-popover__desc {
   margin-top: 6px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
 .km-popover__rule { margin: 16px 0; }
 .km-popover__eyebrow { margin-bottom: 6px; }
 .km-popover__ex-kr {
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: var(--paper);
   line-height: 1.55;
 }
 .km-popover__ex-en {
   margin-top: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -2368,16 +2480,16 @@ h1, h2 { font-family: var(--font-display); }
   gap: 10px;
 }
 .km-popover__extra-kr {
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--paper);
 }
 .km-popover__extra-en {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-popover__usage-rule { margin: 12px 0; }
 .km-popover__note {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   line-height: 1.5;
 }
@@ -2436,7 +2548,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-audioblock__transcript {
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 .km-audioblock__speeds {
   display: flex;
@@ -2453,13 +2565,13 @@ h1, h2 { font-family: var(--font-display); }
   border-top: 1px solid var(--line);
 }
 .km-audioblock__text-kr {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   line-height: 1.6;
 }
 .km-audioblock__text-en {
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   line-height: 1.55;
 }
@@ -2654,7 +2766,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 18px 20px;
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -2671,13 +2783,13 @@ h1, h2 { font-family: var(--font-display); }
 .km-topik__num {
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.06em;
 }
 .km-topik__prompt {
   margin: 0 0 18px;
-  font-size: 17px;
+  font-size: 1.0625rem;
   line-height: 1.6;
   color: var(--paper);
 }
@@ -2689,7 +2801,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px solid var(--line);
   border-radius: 4px;
   margin-bottom: 18px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.7;
   color: var(--paper-dim);
   white-space: pre-line;
@@ -2732,14 +2844,14 @@ h1, h2 { font-family: var(--font-display); }
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   padding-top: 2px;
   min-width: 18px;
 }
 .km-topik__choice-body { display: flex; flex-direction: column; gap: 4px; }
-.km-topik__choice-kr { font-size: 15px; color: var(--paper); }
-.km-topik__choice-en { font-size: 12px; color: var(--paper-mute); }
+.km-topik__choice-kr { font-size: 0.9375rem; color: var(--paper); }
+.km-topik__choice-en { font-size: 0.75rem; color: var(--paper-mute); }
 .km-topik__reveal {
   padding: 14px 16px;
   margin-bottom: 14px;
@@ -2747,13 +2859,13 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-topik__explain {
   margin: 6px 0 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--paper-dim);
 }
 .km-topik__answer {
   margin: 6px 0 0;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.55;
   color: var(--paper);
 }
@@ -2769,14 +2881,14 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-topik__image-desc {
   margin: 6px 0 0;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.6;
   color: var(--paper);
   white-space: pre-line; /* multi-segment descriptions join with newlines */
 }
 .km-topik__image-hint {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1.55;
   color: var(--paper-mute);
 }
@@ -2787,7 +2899,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 10px;
 }
 .km-topik__count {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.06em;
 }
@@ -2810,7 +2922,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   color: var(--paper-mute);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
   transition: color 140ms, background 140ms, border-color 140ms;
@@ -2825,7 +2937,7 @@ h1, h2 { font-family: var(--font-display); }
 /* TOPIK Mock-Test (FU-NF-39) ─────────────────────────────────────────── */
 .km-mock__lead {
   margin: 0 0 18px;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.55;
   color: var(--paper-dim);
   max-width: 560px;
@@ -2836,19 +2948,19 @@ h1, h2 { font-family: var(--font-display); }
   gap: 12px;
 }
 .km-mock__section-en {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 600;
   letter-spacing: -0.015em;
   color: var(--paper);
 }
-.km-mock__section-kr { font-size: 12px; color: var(--paper-mute); }
+.km-mock__section-kr { font-size: 0.75rem; color: var(--paper-mute); }
 .km-mock__section-go,
 .km-mock__section-soon {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--gold-light, var(--gold));
 }
 
@@ -2863,12 +2975,12 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   gap: 8px;
   font-variant-numeric: tabular-nums;
-  font-size: 18px;
+  font-size: 1.125rem;
   color: var(--paper);
 }
 .km-mock__timer-val { font-family: 'Inter', system-ui, sans-serif; }
 .km-mock__progress {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin-bottom: 12px;
   letter-spacing: 0.04em;
@@ -2888,7 +3000,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: border-color 140ms, background 140ms, color 140ms;
 }
@@ -2934,14 +3046,14 @@ h1, h2 { font-family: var(--font-display); }
 .km-mock__score-pct {
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
-  font-size: 48px;
+  font-size: 3rem;
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.02em;
   color: var(--paper);
   margin: 6px 0;
 }
-.km-mock__score-unit { font-size: 22px; color: var(--paper-mute); margin-left: 2px; }
+.km-mock__score-unit { font-size: 1.375rem; color: var(--paper-mute); margin-left: 2px; }
 .km-mock__review-head { margin-bottom: 10px; }
 .km-mock__review {
   list-style: none;
@@ -2964,14 +3076,14 @@ h1, h2 { font-family: var(--font-display); }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
 }
 .km-mock__verdict--correct { color: var(--moss-ink); }
 .km-mock__verdict--wrong { color: var(--danger-ink); }
 .km-mock__review-prompt {
   margin: 0 0 10px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.55;
   color: var(--paper);
 }
@@ -2980,7 +3092,7 @@ h1, h2 { font-family: var(--font-display); }
   flex-direction: column;
   gap: 4px;
   margin-bottom: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-mock__review-pick--correct { color: var(--moss-ink); }
@@ -2992,7 +3104,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 18px 20px;
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -3018,23 +3130,23 @@ h1, h2 { font-family: var(--font-display); }
 .km-diagnostic__section-num {
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   font-weight: 600;
   min-width: 18px;
 }
 .km-diagnostic__section-label { display: inline-flex; align-items: baseline; gap: 8px; }
-.km-diagnostic__section-kr { font-size: 17px; font-weight: 600; color: var(--paper); }
-.km-diagnostic__section-en { font-size: 13px; color: var(--paper-mute); }
+.km-diagnostic__section-kr { font-size: 1.0625rem; font-weight: 600; color: var(--paper); }
+.km-diagnostic__section-en { font-size: 0.8125rem; color: var(--paper-mute); }
 .km-diagnostic__section-count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   font-variant-numeric: tabular-nums;
 }
 .km-diagnostic__rule { margin: 24px 0 20px; }
 .km-diagnostic__hint {
   margin: 0 0 22px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.6;
 }
@@ -3060,7 +3172,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-diagnostic__prompt {
   margin: 0 0 14px;
-  font-size: 17px;
+  font-size: 1.0625rem;
   line-height: 1.6;
   color: var(--paper);
 }
@@ -3070,7 +3182,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px solid var(--line);
   border-radius: 4px;
   margin-bottom: 16px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.7;
   color: var(--paper-dim);
 }
@@ -3081,7 +3193,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 0 2px;
 }
 .km-diagnostic__hint {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.05em;
   margin-bottom: 10px;
@@ -3124,14 +3236,14 @@ h1, h2 { font-family: var(--font-display); }
   font-family: 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   padding-top: 2px;
   min-width: 18px;
 }
 .km-diagnostic__choice-body { display: flex; flex-direction: column; gap: 4px; }
-.km-diagnostic__choice-kr { font-size: 15px; color: var(--paper); font-weight: 500; }
-.km-diagnostic__choice-en { font-size: 12px; color: var(--paper-mute); }
+.km-diagnostic__choice-kr { font-size: 0.9375rem; color: var(--paper); font-weight: 500; }
+.km-diagnostic__choice-en { font-size: 0.75rem; color: var(--paper-mute); }
 .km-diagnostic__reveal {
   padding: 14px 16px;
   margin-bottom: 14px;
@@ -3139,7 +3251,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-diagnostic__explain {
   margin: 6px 0 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--paper-dim);
 }
@@ -3150,7 +3262,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 10px;
 }
 .km-diagnostic__count {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.06em;
 }
@@ -3167,12 +3279,12 @@ h1, h2 { font-family: var(--font-display); }
 .km-diagnostic__done-eyebrow { margin-top: 20px; }
 .km-diagnostic__done-title {
   margin: 10px 0 16px;
-  font-size: 34px;
+  font-size: 2.125rem;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 .km-diagnostic__done-hint {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper-mute);
   max-width: 320px;
   line-height: 1.6;
@@ -3181,14 +3293,14 @@ h1, h2 { font-family: var(--font-display); }
 
 .km-diagnostic__results-sub {
   margin: 12px 0 22px;
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--paper-dim);
   max-width: 560px;
   line-height: 1.55;
 }
 .km-diagnostic__skills-card { padding: 24px 26px; margin-bottom: 16px; }
 .km-diagnostic__skills-title {
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 600;
   margin-top: 4px;
   margin-bottom: 14px;
@@ -3202,7 +3314,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 18px 20px;
   border: 1px dashed var(--line-strong);
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -3220,25 +3332,25 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-grammar__pattern {
   margin: 4px 0 4px;
-  font-size: 26px;
+  font-size: 1.625rem;
   font-weight: 600;
   color: var(--paper);
 }
 .km-grammar__title {
   margin: 0;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper-dim);
 }
 .km-grammar__rule { margin: 18px 0; }
 .km-grammar__context {
   margin: 6px 0 18px;
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--paper);
   line-height: 1.6;
 }
 .km-grammar__seed-eyebrow { margin-top: 4px; margin-bottom: 8px; }
 .km-grammar__seed {
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: var(--paper-dim);
   line-height: 1.7;
   padding: 14px 16px;
@@ -3249,7 +3361,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-grammar__instruction {
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -3262,7 +3374,7 @@ h1, h2 { font-family: var(--font-display); }
   border: 1px solid var(--line-strong);
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   resize: vertical;
   margin-bottom: 14px;
@@ -3275,18 +3387,18 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-grammar__model {
   margin: 8px 0 4px;
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: var(--paper);
   line-height: 1.55;
 }
 .km-grammar__model-en {
   margin: 0 0 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-grammar__tutor-note {
   margin: 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   line-height: 1.5;
   padding-top: 10px;
@@ -3300,7 +3412,7 @@ h1, h2 { font-family: var(--font-display); }
   margin: 12px 0 0;
   padding-top: 10px;
   border-top: 1px solid var(--line);
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   letter-spacing: 0.01em;
 }
@@ -3314,23 +3426,23 @@ h1, h2 { font-family: var(--font-display); }
   margin-bottom: 10px;
 }
 .km-grammar__score-num {
-  font-size: 30px;
+  font-size: 1.875rem;
   font-weight: 600;
   color: var(--paper);
   line-height: 1;
 }
 .km-grammar__score-max {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
 }
 .km-grammar__uses-pattern {
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-grammar__summary {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper-dim);
   line-height: 1.55;
 }
@@ -3352,15 +3464,15 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 4px;
 }
 .km-grammar__correction-span {
-  font-size: 15px;
+  font-size: 0.9375rem;
   color: var(--paper);
 }
 .km-grammar__correction-issue {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-grammar__correction-fix {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--moss, var(--paper-dim));
 }
 
@@ -3392,7 +3504,7 @@ h1, h2 { font-family: var(--font-display); }
 /* Reading ─────────────────────────────────────────────────────────────── */
 .km-reading__title {
   margin: 0 0 16px;
-  font-size: clamp(26px, 4vw, 34px);
+  font-size: clamp(1.625rem, 4vw, 2.125rem);
   font-weight: 600;
   line-height: 1.2;
   letter-spacing: -0.02em;
@@ -3417,7 +3529,7 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   cursor: pointer;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   transition: background 140ms, color 140ms;
 }
 .km-review__tab--active {
@@ -3435,7 +3547,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-review__stripBody { flex: 1; min-width: 0; }
 .km-review__stripName {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--paper);
   overflow: hidden;
@@ -3447,7 +3559,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__progressMeta {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--paper-mute);
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -3466,7 +3578,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-2);
 }
 .km-review__word {
-  font-size: clamp(48px, 9vw, 78px);
+  font-size: clamp(3rem, 9vw, 4.875rem);
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1;
@@ -3488,15 +3600,15 @@ h1, h2 { font-family: var(--font-display); }
   gap: 10px;
 }
 .km-review__backWord {
-  font-size: 32px;
+  font-size: 2rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   margin: 0;
 }
-.km-review__en { font-size: 17px; color: var(--vermilion-ink); font-weight: 500; }
-.km-review__source { font-size: 13px; color: var(--paper-dim); font-style: italic; }
-.km-review__ex { font-size: 16px; color: var(--paper); line-height: 1.55; }
-.km-review__exEn { font-size: 12px; color: var(--paper-mute); margin-top: 4px; }
+.km-review__en { font-size: 1.0625rem; color: var(--vermilion-ink); font-weight: 500; }
+.km-review__source { font-size: 0.8125rem; color: var(--paper-dim); font-style: italic; }
+.km-review__ex { font-size: 1rem; color: var(--paper); line-height: 1.55; }
+.km-review__exEn { font-size: 0.75rem; color: var(--paper-mute); margin-top: 4px; }
 .km-review__drawerBtn {
   align-self: flex-start;
   display: flex;
@@ -3512,8 +3624,8 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-review__drawerRow { margin-bottom: 8px; }
 .km-review__drawerRow:last-child { margin-bottom: 0; }
-.km-review__drawerEn { font-size: 11px; color: var(--paper-mute); }
-.km-review__notes { font-size: 12px; color: var(--paper-mute); margin-top: 10px; font-style: italic; }
+.km-review__drawerEn { font-size: 0.6875rem; color: var(--paper-mute); }
+.km-review__notes { font-size: 0.75rem; color: var(--paper-mute); margin-top: 10px; font-style: italic; }
 
 .km-review__ratings {
   display: grid;
@@ -3539,15 +3651,15 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__rating--hard:hover  { border-color: var(--paper-mute); }
 .km-review__rating--good:hover  { border-color: var(--indigo); }
 .km-review__rating--easy:hover  { border-color: var(--moss); }
-.km-review__ratingLabel { font-size: 14px; font-weight: 500; }
+.km-review__ratingLabel { font-size: 0.875rem; font-weight: 500; }
 .km-review__rating--again .km-review__ratingLabel { color: var(--vermilion-ink); }
 .km-review__rating--hard  .km-review__ratingLabel { color: var(--paper-mute); }
 .km-review__rating--good  .km-review__ratingLabel { color: var(--indigo-ink); }
 .km-review__rating--easy  .km-review__ratingLabel { color: var(--moss-ink); }
-.km-review__ratingSub { font-size: 11px; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
+.km-review__ratingSub { font-size: 0.6875rem; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
 .km-review__hint {
   text-align: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin-top: 12px;
 }
@@ -3556,7 +3668,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 2px 6px;
   border: 1px solid var(--line);
   border-radius: 3px;
-  font-size: 11px;
+  font-size: 0.6875rem;
 }
 
 /* Review · Lists tab */
@@ -3567,8 +3679,8 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   margin-bottom: 10px;
 }
-.km-review__sectionTitle { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
-.km-review__sourcesMeta { font-size: 11px; color: var(--paper-mute); }
+.km-review__sectionTitle { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; }
+.km-review__sourcesMeta { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-review__listsCol { display: flex; flex-direction: column; gap: 8px; }
 
 /* FU-NF-42 B3: grammar production review section. Mirrors the list-row idiom
@@ -3591,13 +3703,13 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__grammarBody { flex: 1; min-width: 0; }
 .km-review__grammarPattern {
   display: block;
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 500;
   color: var(--paper);
 }
 .km-review__grammarSummary {
   display: block;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin-top: 2px;
 }
@@ -3627,7 +3739,7 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   justify-content: center;
   font-family: 'Noto Serif KR', serif;
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 600;
   border: 1px solid var(--line-strong);
 }
@@ -3638,14 +3750,14 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-review__listBody { flex: 1; min-width: 0; }
 .km-review__listHead { display: flex; align-items: center; gap: 8px; }
-.km-review__listName { font-size: 15px; font-weight: 500; color: var(--paper); }
-.km-review__listMeta { font-size: 12px; color: var(--paper-mute); margin-top: 2px; }
+.km-review__listName { font-size: 0.9375rem; font-weight: 500; color: var(--paper); }
+.km-review__listMeta { font-size: 0.75rem; color: var(--paper-mute); margin-top: 2px; }
 .km-review__listStats {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-top: 8px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.05em;
   font-variant-numeric: tabular-nums;
@@ -3663,7 +3775,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--moss);
   border-radius: 2px;
 }
-.km-review__pct { font-size: 10px; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
+.km-review__pct { font-size: 0.625rem; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
 
 .km-review__source {
   background: var(--ink-1);
@@ -3687,7 +3799,7 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   justify-content: center;
   font-family: 'Noto Serif KR', serif;
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 700;
   border-radius: 2px;
   color: var(--vermilion-ink);
@@ -3695,8 +3807,8 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__cover--grammar { color: var(--indigo-ink); }
 .km-review__cover--mixed   { color: var(--ochre-ink); }
 .km-review__sourceMeta { flex: 1; min-width: 0; }
-.km-review__sourceName { font-size: 14px; font-weight: 500; color: var(--paper); }
-.km-review__sourcePub  { font-size: 11px; color: var(--paper-mute); margin-top: 1px; }
+.km-review__sourceName { font-size: 0.875rem; font-weight: 500; color: var(--paper); }
+.km-review__sourcePub  { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 1px; }
 
 .km-review__sourceRow {
   width: 100%;
@@ -3714,14 +3826,14 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__sourceRow--last { border-bottom: none; }
 .km-review__sourceRow:hover { background: var(--ink-2); }
 .km-review__sourceRowBody { flex: 1; min-width: 0; }
-.km-review__sourceListName { font-size: 14px; color: var(--paper); font-weight: 500; }
-.km-review__sourceListEn { font-size: 11px; color: var(--paper-mute); }
+.km-review__sourceListName { font-size: 0.875rem; color: var(--paper); font-weight: 500; }
+.km-review__sourceListEn { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-review__sourceListMeta {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 6px;
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--paper-mute);
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -3759,7 +3871,7 @@ h1, h2 { font-family: var(--font-display); }
   outline: none;
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 16px;
+  font-size: 1rem;
 }
 .km-review__allCount { letter-spacing: 0.1em; text-transform: uppercase; }
 .km-review__allList { overflow: hidden; padding: 0; }
@@ -3767,7 +3879,7 @@ h1, h2 { font-family: var(--font-display); }
   display: grid;
   grid-template-columns: 1.4fr 1.6fr 1fr;
   padding: 10px 16px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -3782,9 +3894,9 @@ h1, h2 { font-family: var(--font-display); }
   border-bottom: 1px solid var(--line);
 }
 .km-review__allRow--last { border-bottom: none; }
-.km-review__allWord { font-size: 17px; font-weight: 500; }
-.km-review__allPos { font-size: 11px; color: var(--paper-mute); margin-left: 10px; }
-.km-review__allEn { font-size: 13px; color: var(--paper-dim); }
+.km-review__allWord { font-size: 1.0625rem; font-weight: 500; }
+.km-review__allPos { font-size: 0.6875rem; color: var(--paper-mute); margin-left: 10px; }
+.km-review__allEn { font-size: 0.8125rem; color: var(--paper-dim); }
 .km-review__matBar { display: inline-flex; gap: 3px; justify-content: flex-end; }
 .km-review__matCell {
   width: 14px;
@@ -3802,8 +3914,8 @@ h1, h2 { font-family: var(--font-display); }
   justify-content: space-between;
   gap: 12px;
 }
-.km-review__sheetTitle { font-size: 22px; font-weight: 600; line-height: 1.15; margin: 0; }
-.km-review__sheetMeta { font-size: 13px; color: var(--paper-mute); margin-top: 2px; }
+.km-review__sheetTitle { font-size: 1.375rem; font-weight: 600; line-height: 1.15; margin: 0; }
+.km-review__sheetMeta { font-size: 0.8125rem; color: var(--paper-mute); margin-top: 2px; }
 .km-review__sheetActions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 .km-review__sheetRule { margin: 20px 0 16px; }
 .km-review__previewHead { margin-bottom: 10px; }
@@ -3817,10 +3929,10 @@ h1, h2 { font-family: var(--font-display); }
   border-bottom: 1px solid var(--line);
 }
 .km-review__previewRow--last { border-bottom: none; }
-.km-review__previewWord { font-size: 16px; font-weight: 500; }
+.km-review__previewWord { font-size: 1rem; font-weight: 500; }
 .km-review__previewMore {
   padding: 14px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   text-align: center;
 }
@@ -3834,7 +3946,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-1);
   border: 1px solid var(--line-strong);
   color: var(--paper);
-  font-size: 15px;
+  font-size: 0.9375rem;
   outline: none;
   width: 100%;
   font-family: inherit;
@@ -3855,7 +3967,7 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 3px;
   cursor: pointer;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 0.75rem;
   border: 1px solid var(--line-strong);
   background: transparent;
   color: var(--paper-dim);
@@ -3904,7 +4016,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-hanja__statechip-count {
   font-family: var(--font-display); /* §10 — stat numbers use the display face */
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
@@ -3913,7 +4025,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-hanja__statechip--vermilion .km-hanja__statechip-count { color: var(--vermilion-ink); }
 .km-hanja__statechip--mute .km-hanja__statechip-count { color: var(--paper-mute); }
 .km-hanja__statechip-label {
-  font-size: 10px;
+  font-size: 0.625rem;
   color: var(--paper-mute);
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -3937,7 +4049,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-hanja__note {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   line-height: 1.5;
 }
@@ -3956,7 +4068,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   color: var(--paper-mute);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 .km-hanja__viewtab--active {
@@ -4003,7 +4115,7 @@ h1, h2 { font-family: var(--font-display); }
   justify-content: center;
 }
 .km-hanja__feature-char {
-  font-size: 96px;
+  font-size: 6rem;
   font-weight: 500;
   color: var(--paper);
   line-height: 1;
@@ -4016,7 +4128,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 6px;
 }
 .km-hanja__feature-gloss {
-  font-size: 22px;
+  font-size: 1.375rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--paper);
@@ -4024,7 +4136,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-hanja__feature-gloss-kr { color: var(--paper-mute); font-family: 'Noto Sans KR', sans-serif; }
 .km-hanja__feature-gloss-sound { color: var(--vermilion-ink); font-family: 'Noto Sans KR', sans-serif; }
 .km-hanja__feature-en {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-hanja__feature-pills {
@@ -4041,7 +4153,7 @@ h1, h2 { font-family: var(--font-display); }
   margin-top: 8px;
 }
 .km-hanja__compound-chip {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper);
   padding: 5px 9px;
   background: var(--ink-2);
@@ -4049,13 +4161,13 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 3px;
 }
 .km-hanja__compound-han { color: var(--vermilion-ink); margin-right: 4px; }
-.km-hanja__compound-en { font-size: 11px; color: var(--paper-mute); }
+.km-hanja__compound-en { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-hanja__feature-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 16px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-hanja__filters {
@@ -4079,7 +4191,7 @@ h1, h2 { font-family: var(--font-display); }
   padding: 24px;
   text-align: center;
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .km-hanja__skeleton,
 .km-hanja__error,
@@ -4101,19 +4213,19 @@ h1, h2 { font-family: var(--font-display); }
   margin-bottom: 18px;
 }
 .km-hanja__detail-char {
-  font-size: 76px;
+  font-size: 4.75rem;
   line-height: 1;
   color: var(--paper);
   font-weight: 500;
 }
 .km-hanja__detail-meta { min-width: 0; }
 .km-hanja__detail-gloss {
-  font-size: 24px;
+  font-size: 1.5rem;
   font-weight: 600;
 }
 .km-hanja__detail-sound { color: var(--vermilion-ink); }
 .km-hanja__detail-en {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   margin-top: 2px;
 }
@@ -4126,7 +4238,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-hanja__detail-eyebrow { margin-top: 18px; margin-bottom: 8px; }
 .km-hanja__detail-note {
   margin: 0;
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper-dim);
   line-height: 1.6;
 }
@@ -4140,17 +4252,17 @@ h1, h2 { font-family: var(--font-display); }
   border-bottom: 1px solid var(--line);
 }
 .km-hanja__detail-row:last-child { border-bottom: none; }
-.km-hanja__detail-compound-han { font-size: 22px; color: var(--paper); }
+.km-hanja__detail-compound-han { font-size: 1.375rem; color: var(--paper); }
 .km-hanja__detail-han--studied { color: var(--vermilion-ink); }
-.km-hanja__detail-compound-reading { font-size: 14px; color: var(--paper); }
-.km-hanja__detail-compound-en { font-size: 11px; color: var(--paper-mute); }
+.km-hanja__detail-compound-reading { font-size: 0.875rem; color: var(--paper); }
+.km-hanja__detail-compound-en { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-hanja__detail-compound-with {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   letter-spacing: 0.06em;
 }
 .km-hanja__detail-compound-with .hanja {
-  font-size: 16px;
+  font-size: 1rem;
   color: var(--paper-dim);
 }
 .km-hanja__detail-cta {
@@ -4195,14 +4307,14 @@ h1, h2 { font-family: var(--font-display); }
   justify-content: center;
 }
 .km-images__upload-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--paper);
   margin-top: 6px;
 }
 .km-images__upload-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   text-align: center;
   max-width: 240px;
@@ -4242,8 +4354,8 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper);
 }
 .km-images__sample-meta { flex: 1; min-width: 0; }
-.km-images__sample-kr { font-size: 13px; font-weight: 500; color: var(--paper); }
-.km-images__sample-en { font-size: 11px; color: var(--paper-mute); margin-top: 1px; }
+.km-images__sample-kr { font-size: 0.8125rem; font-weight: 500; color: var(--paper); }
+.km-images__sample-en { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 1px; }
 .km-images__recent-card {
   width: 100%;
   padding: 0;
@@ -4259,8 +4371,8 @@ h1, h2 { font-family: var(--font-display); }
   flex-direction: column;
 }
 .km-images__recent-meta { padding: 8px 10px; }
-.km-images__recent-kr { font-size: 12px; font-weight: 500; color: var(--paper); }
-.km-images__recent-en { font-size: 10px; color: var(--paper-mute); margin-top: 2px; }
+.km-images__recent-kr { font-size: 0.75rem; font-weight: 500; color: var(--paper); }
+.km-images__recent-en { font-size: 0.625rem; color: var(--paper-mute); margin-top: 2px; }
 .km-images__thumb {
   width: 100%;
   aspect-ratio: 16 / 10;
@@ -4303,13 +4415,13 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-images__upload-error-text {
   margin: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper);
 }
 .km-images__detected-empty {
   margin: 0;
   padding: 14px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-images__capture { margin: 0 18px; }
@@ -4355,8 +4467,8 @@ h1, h2 { font-family: var(--font-display); }
   align-items: center;
   justify-content: space-between;
 }
-.km-images__capture-caption-kr { font-size: 13px; font-weight: 500; color: var(--paper); }
-.km-images__capture-caption-en { font-size: 11px; color: var(--paper-mute); margin-top: 1px; }
+.km-images__capture-caption-kr { font-size: 0.8125rem; font-weight: 500; color: var(--paper); }
+.km-images__capture-caption-en { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 1px; }
 .km-images__list-eyebrow { margin-bottom: 10px; }
 .km-images__detected { padding: 0; overflow: hidden; }
 .km-images__detected-list { list-style: none; padding: 0; margin: 0; }
@@ -4379,13 +4491,13 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper);
 }
 .km-images__detected-kr {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 500;
   color: var(--paper);
   display: inline-block;
 }
-.km-images__detected-pos { font-size: 11px; color: var(--paper-mute); margin-top: 2px; display: block; }
-.km-images__detected-en { font-size: 12px; color: var(--paper-dim); }
+.km-images__detected-pos { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 2px; display: block; }
+.km-images__detected-en { font-size: 0.75rem; color: var(--paper-dim); }
 .km-images__detected-add {
   padding: 6px 10px;
   border-radius: 3px;
@@ -4394,7 +4506,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   color: var(--paper-dim);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 0.6875rem;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -4439,7 +4551,7 @@ h1, h2 { font-family: var(--font-display); }
   border: none;
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 17px;
+  font-size: 1.0625rem;
   outline: none;
 }
 .km-reference__filters {
@@ -4454,7 +4566,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-reference__count {
   margin: 0 18px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -4487,15 +4599,15 @@ h1, h2 { font-family: var(--font-display); }
   cursor: pointer;
   color: var(--paper);
 }
-.km-reference__row-kr { font-size: 18px; font-weight: 500; color: var(--paper); }
-.km-reference__row-en { font-size: 13px; color: var(--paper-dim); }
+.km-reference__row-kr { font-size: 1.125rem; font-weight: 500; color: var(--paper); }
+.km-reference__row-en { font-size: 0.8125rem; color: var(--paper-dim); }
 .km-reference__row-kind { text-transform: none; letter-spacing: 0; }
 .km-reference__row-level { min-width: 38px; justify-content: center; }
 .km-reference__empty {
   padding: 40px 20px;
   text-align: center;
   color: var(--paper-mute);
-  font-size: 14px;
+  font-size: 0.875rem;
   margin: 0;
 }
 .km-reference__skeleton,
@@ -4525,7 +4637,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-resources__week-hint {
   margin: 6px 0 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-resources__week-cols {
@@ -4558,8 +4670,8 @@ h1, h2 { font-family: var(--font-display); }
   border-bottom: 1px solid var(--line);
 }
 .km-resources__suggest-row:last-child { border-bottom: none; }
-.km-resources__suggest-kr { font-size: 16px; font-weight: 500; color: var(--paper); min-width: 0; overflow-wrap: anywhere; }
-.km-resources__suggest-en { font-size: 12px; color: var(--paper-dim); min-width: 0; overflow-wrap: anywhere; }
+.km-resources__suggest-kr { font-size: 1rem; font-weight: 500; color: var(--paper); min-width: 0; overflow-wrap: anywhere; }
+.km-resources__suggest-en { font-size: 0.75rem; color: var(--paper-dim); min-width: 0; overflow-wrap: anywhere; }
 .km-resources__suggest-level { min-width: 36px; justify-content: center; }
 
 .km-resources__entry-row,
@@ -4600,7 +4712,7 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 9px;
   background: transparent;
   color: var(--paper-mute);
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
@@ -4637,7 +4749,7 @@ h1, h2 { font-family: var(--font-display); }
   gap: 12px;
 }
 .km-resources__pager-count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   letter-spacing: 0.08em;
 }
@@ -4658,7 +4770,7 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 3px;
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 15px;
+  font-size: 0.9375rem;
   padding: 8px 12px;
   outline: none;
 }
@@ -4704,7 +4816,7 @@ h1, h2 { font-family: var(--font-display); }
   flex-shrink: 0;
 }
 .km-settings__group-title {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--paper);
@@ -4723,12 +4835,12 @@ h1, h2 { font-family: var(--font-display); }
   gap: 12px;
 }
 .km-settings__row-label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--paper);
 }
 .km-settings__row-hint {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   text-align: right;
   max-width: 200px;
@@ -4739,7 +4851,7 @@ h1, h2 { font-family: var(--font-display); }
   background: var(--ink-2);
   border: 1px solid var(--line-strong);
   color: var(--paper);
-  font-size: 14px;
+  font-size: 0.875rem;
   outline: none;
   width: 100%;
   font-family: inherit;
@@ -4770,7 +4882,7 @@ h1, h2 { font-family: var(--font-display); }
   background: transparent;
   color: var(--paper-dim);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
 }
@@ -4803,7 +4915,7 @@ h1, h2 { font-family: var(--font-display); }
 .km-settings__slider-value {
   min-width: 38px;
   text-align: right;
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   color: var(--paper-dim);
 }
@@ -4817,24 +4929,24 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 3px;
 }
 .km-settings__langpreview-caption {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--paper-mute);
 }
-.km-settings__langpreview-sample { font-size: 20px; }
+.km-settings__langpreview-sample { font-size: 1.25rem; }
 
 /* (.km-settings__toggle-row / --last removed in the P3a fix-pass — F-040
    replaced the intent-toggle rows with schedule rows in Settings.css. The
    __toggle-meta/label/hint pieces below are still consumed by those rows.) */
 .km-settings__toggle-meta { flex: 1; min-width: 0; }
-.km-settings__toggle-label { font-size: 13px; color: var(--paper); font-weight: 500; }
-.km-settings__toggle-hint { font-size: 11px; color: var(--paper-mute); margin-top: 2px; }
-.km-settings__reset { margin-top: 16px; font-size: 12px; }
+.km-settings__toggle-label { font-size: 0.8125rem; color: var(--paper); font-weight: 500; }
+.km-settings__toggle-hint { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 2px; }
+.km-settings__reset { margin-top: 16px; font-size: 0.75rem; }
 .km-settings__about {
   margin: 22px 18px 0;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   text-align: center;
   letter-spacing: 0.1em;
@@ -4878,7 +4990,7 @@ h1, h2 { font-family: var(--font-display); }
   border-left: 3px solid var(--vermilion);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper);
 }
 .km-pwa-update__text {

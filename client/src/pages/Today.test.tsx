@@ -579,7 +579,7 @@ describe('Today', () => {
 
   // ── Carousel 1 — Review & drills: Vocab (restored) / Grammar / Hanja ──
 
-  it('Vocab tile is RESTORED as a first-class activity — first tile of Review & drills, real due-count, routes to the FSRS due-review session (not the bare landing)', async () => {
+  it('Vocab tile is RESTORED as a first-class activity — MIDDLE tile of Review & drills (F-190), real due-count, routes to the FSRS due-review session (not the bare landing)', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
@@ -598,6 +598,54 @@ describe('Today', () => {
     expect(
       screen.getByText('VOCAB PAGE /learn/vocab?study=due'),
     ).toBeInTheDocument();
+  });
+
+  it('F-190: Review & drills opens with Vocab as the MIDDLE (centered) tile — Grammar / Vocab / Hanja in DOM order', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    const items = within(drills).getAllByRole('button');
+    // Three tile buttons, in DOM order — Vocab (the plan's due-review tile)
+    // sits in the MIDDLE slot, not first, so the peek slider's native
+    // scroll-snap centering lands on it (see the runtime centering test
+    // below for the actual scrollIntoView wiring).
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveAccessibleName('Open grammar drills');
+    expect(items[1]).toHaveAccessibleName(
+      'Open review — 24 cards due',
+    );
+    expect(items[2]).toHaveAccessibleName('Open Hanja study');
+  });
+
+  it('F-190: centers the Review & drills peek slider on the Vocab tile on mount (native scrollIntoView, once)', () => {
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+    loadDefaults();
+    renderTodayAt();
+
+    const vocabTile = screen.getByRole('button', {
+      name: 'Open review — 24 cards due',
+    });
+    const vocabItem = vocabTile.closest('.km-today__peekItem');
+    expect(vocabItem).not.toBeNull();
+
+    // Called exactly once (mount), inline-centered — never re-centers on
+    // every render (attempt-history fetches resolving later must not yank
+    // the view back to center out from under the user). `mock.contexts`
+    // (not `mock.instances`, which vitest/jest reserve for `new`-operator
+    // calls) records the `this` a plain method call like `el.scrollIntoView`
+    // ran against.
+    const centeringCalls = scrollIntoView.mock.contexts.filter(
+      (ctx) => ctx === vocabItem,
+    );
+    expect(centeringCalls).toHaveLength(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ inline: 'center' }),
+    );
+
+    scrollIntoView.mockRestore();
   });
 
   it('singularizes the Vocab due-count copy at exactly 1', () => {
@@ -679,6 +727,44 @@ describe('Today', () => {
     expect(screen.getByText('GRAMMAR PAGE')).toBeInTheDocument();
   });
 
+  it('F-189: Vocab/Grammar/Hanja each carry a distinct canonical skill tone — the same tokens the LEARN honeycomb uses', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const vocabTile = screen
+      .getByRole('button', { name: 'Open review — 24 cards due' })
+      .querySelector('.km-citycard');
+    const grammarTile = screen
+      .getByRole('button', { name: 'Open grammar drills' })
+      .querySelector('.km-citycard');
+    const hanjaTile = screen
+      .getByRole('button', { name: 'Open Hanja study' })
+      .querySelector('.km-citycard');
+
+    // Vocab = blue (indigo); Hanja = ochre (locked, unchanged). Grammar
+    // moves OFF "blue" (which used to cluster all three of these tiles
+    // together as the same hue) onto "crimson" — a dedicated, fixed
+    // (non-accent-tracking) hue added in the F-189 fix-pass round 4
+    // (BLOCKER-2, REVIEW_r4-colors.md), which replaced the old "accent"
+    // assignment: Grammar used to share the literal `--vermilion` token
+    // (and CSS class) with TOPIK, fusing the two honeycomb tiles into one
+    // shape and risking a 3-way collision with another skill's fixed hue
+    // under the blue/mint accent presets. See lib/skill-colors.ts.
+    expect(vocabTile).toHaveClass('km-tone--blue');
+    expect(grammarTile).toHaveClass('km-tone--crimson');
+    expect(grammarTile).not.toHaveClass('km-tone--blue');
+    expect(grammarTile).not.toHaveClass('km-tone--accent');
+    expect(hanjaTile).toHaveClass('km-tone--ochre');
+
+    // All three are pairwise distinct tones — no more blue/blue/ochre
+    // clustering.
+    const tones = [vocabTile, grammarTile, hanjaTile].map(
+      (el) =>
+        Array.from(el?.classList ?? []).find((c) => c.startsWith('km-tone--')),
+    );
+    expect(new Set(tones).size).toBe(3);
+  });
+
   it('renders NO coming-soon placeholder anywhere', () => {
     loadDefaults();
     renderTodayAt();
@@ -723,6 +809,90 @@ describe('Today', () => {
 
     expect(screen.getByText('Largest gap')).toBeInTheDocument();
     expect(screen.getByText('Register drill')).toBeInTheDocument();
+  });
+
+  it('F-190: Suggested learning opens with Reading as the MIDDLE (centered) tile — Listening / Reading / Writing in DOM order', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const region = screen.getByRole('region', { name: 'Suggested learning' });
+    const items = within(region).getAllByRole('button');
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveAccessibleName(/Open listening/);
+    expect(items[1]).toHaveAccessibleName(/Open reading/);
+    expect(items[2]).toHaveAccessibleName(/Open writing/);
+  });
+
+  it('F-190: centers the Suggested learning peek slider on the Reading tile on mount (native scrollIntoView, once)', () => {
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+    loadDefaults();
+    renderTodayAt();
+
+    const readingTile = screen.getByRole('button', {
+      name: /Open reading/,
+    });
+    const readingItem = readingTile.closest('.km-today__peekItem');
+    expect(readingItem).not.toBeNull();
+
+    const centeringCalls = scrollIntoView.mock.contexts.filter(
+      (ctx) => ctx === readingItem,
+    );
+    expect(centeringCalls).toHaveLength(1);
+    expect(scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ inline: 'center' }),
+    );
+
+    // Listening/Writing must NOT also have been centered — only Reading.
+    const listeningItem = screen
+      .getByRole('button', { name: /Open listening/ })
+      .closest('.km-today__peekItem');
+    const writingItem = screen
+      .getByRole('button', { name: /Open writing/ })
+      .closest('.km-today__peekItem');
+    expect(
+      scrollIntoView.mock.contexts.filter((ctx) => ctx === listeningItem),
+    ).toHaveLength(0);
+    expect(
+      scrollIntoView.mock.contexts.filter((ctx) => ctx === writingItem),
+    ).toHaveLength(0);
+
+    scrollIntoView.mockRestore();
+  });
+
+  it('F-189: Reading/Listening/Writing each carry a distinct canonical skill tone — cyan/moss/violet, no more shared "blue"/"accent"', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const readingTile = screen
+      .getByRole('button', { name: /Open reading/ })
+      .querySelector('.km-citycard');
+    const listeningTile = screen
+      .getByRole('button', { name: /Open listening/ })
+      .querySelector('.km-citycard');
+    const writingTile = screen
+      .getByRole('button', { name: /Open writing/ })
+      .querySelector('.km-citycard');
+
+    expect(readingTile).toHaveClass('km-tone--cyan');
+    expect(listeningTile).toHaveClass('km-tone--mint');
+    expect(writingTile).toHaveClass('km-tone--violet');
+    // Writing must no longer read "accent" — that's what used to collide
+    // it with the TOPIK tile below (the F-189 first pass's tradeoff).
+    expect(writingTile).not.toHaveClass('km-tone--accent');
+
+    // TOPIK (a separate carousel) — F-189 fix-pass round 4 (BLOCKER-2,
+    // REVIEW_r4-colors.md) gave it its OWN dedicated "stone" hue instead of
+    // sharing "accent"/vermilion with Grammar: the shared-token arrangement
+    // rendered Grammar and TOPIK as the identical CSS class (not just a
+    // similar color) and could 3-way-collide with another skill's fixed
+    // hue under the blue/mint accent presets. See lib/skill-colors.ts.
+    const topikTile = screen
+      .getByRole('button', { name: 'Open TOPIK study practice' })
+      .querySelector('.km-citycard');
+    expect(topikTile).toHaveClass('km-tone--stone');
+    expect(topikTile).not.toHaveClass('km-tone--accent');
   });
 
   // ── Wave 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6) — deep-link
@@ -1139,8 +1309,9 @@ describe('Today', () => {
     expect(titleRule).not.toBe('');
     expect(titleRule).toContain('text-align: center;');
     // Meaningfully larger than the old 10px eyebrow and bold enough to read
-    // as a header rather than a caption.
-    expect(titleRule).toMatch(/font-size:\s*16px;/);
+    // as a header rather than a caption. rem, not px (F-086 / B-036
+    // px->rem migration) — 1rem == 16px at the md root, same rendered size.
+    expect(titleRule).toMatch(/font-size:\s*1rem;/);
     expect(titleRule).toMatch(/font-weight:\s*700;/);
   });
 
@@ -1165,6 +1336,70 @@ describe('Today', () => {
     const marginMatch = /margin:\s*(\d+)px/.exec(titleRule);
     expect(marginMatch).not.toBeNull();
     expect(Number(marginMatch?.[1])).toBeLessThanOrEqual(12);
+  });
+
+  it('F-187: the TOPIK heading carries a scoped modifier that trims its top margin below the shared 12px — and ONLY the TOPIK heading', () => {
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings[0]).not.toHaveClass('km-today__sectionTitle--topik');
+    expect(headings[1]).not.toHaveClass('km-today__sectionTitle--topik');
+    expect(headings[2]).toHaveTextContent('TOPIK');
+    expect(headings[2]).toHaveClass('km-today__sectionTitle--topik');
+    // Sanity: exactly one heading carries the modifier.
+    expect(
+      container.querySelectorAll('.km-today__sectionTitle--topik'),
+    ).toHaveLength(1);
+
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+    const modifierRule =
+      /\.km-today__sectionTitle--topik\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
+      '';
+    expect(modifierRule).not.toBe('');
+    const modifierMargin = Number(
+      /margin-top:\s*(\d+)px/.exec(modifierRule)?.[1] ?? NaN,
+    );
+    // Strictly less than the shared `.km-today__sectionTitle` margin-top
+    // (12px, asserted above) — the Suggested-learning → TOPIK boundary
+    // specifically shrinks; Review&drills → Suggested-learning (which
+    // reads fine) keeps the full 12px via the un-modified shared rule.
+    expect(modifierMargin).toBeLessThan(12);
+  });
+
+  it('F-188: hides PageHubHeader\'s rail-divider glyph on Today ONLY, without collapsing the spacer box it reserves', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+
+    // The fix targets the nested DancheongRail element specifically...
+    const hideRule =
+      /\.km-today__hub \.km-hubheader__rail-divider \.km-dancheong-rail\s*\{[^}]*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(hideRule).not.toBe('');
+    expect(hideRule).toContain('display: none;');
+
+    // ...never the wrapping `.km-hubheader__rail-divider` box itself — that
+    // would collapse the header's own reserved spacing on top of removing
+    // the stray line, an unrequested second change. (No rule targets the
+    // bare wrapper selector directly — only the nested-rail selector above.)
+    expect(stylesheet).not.toMatch(
+      /\.km-today__hub \.km-hubheader__rail-divider\s*\{/,
+    );
+
+    // The wrapper element itself must still exist in the DOM (F-177's own
+    // test already pins this — this is a belt-and-braces check that F-188
+    // didn't quietly delete it instead of hiding just the inner rail).
+    loadDefaults();
+    const { container } = renderTodayAt();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).not.toBeNull();
   });
 
   it('CSS: BOTH peek carousels scale the centered tile larger than its neighbors, scroll-driven, reduced-motion gated', () => {

@@ -4,8 +4,10 @@
  * restructured into THREE carousels per direct user feedback on the live
  * site (mobile-hardening pass):
  *
- *   1. **Core drills carousel** ("Review & drills") — Vocab · Grammar ·
- *      Hanja, in that order. F-139 had removed the vocab/"words" due-count
+ *   1. **Core drills carousel** ("Review & drills") — Grammar · Vocab ·
+ *      Hanja, in that DOM order (F-190 put Vocab in the MIDDLE slot — see
+ *      `useCenterOnMountRef` below — so the peek slider opens centered on
+ *      it, not on Grammar). F-139 had removed the vocab/"words" due-count
  *      tile entirely on the theory that the Review tab (bottom nav) was
  *      its home — that was wrong: it deleted a first-class daily-action
  *      entry point users actually wanted here. RESTORED, exactly at its
@@ -21,11 +23,19 @@
  *      loop concept anymore — a continuous scroll rail has no "wrap").
  *      Only the Vocab tile's content swaps between skeleton/real/error (it
  *      alone depends on `today`); Grammar and Hanja are always the same
- *      static tile regardless of the plan's fate.
- *   2. **Suggested learning carousel** — Reading · Listening · Writing, as
- *      a horizontal PEEK SLIDER (the user's own description: "3 tiles
- *      side by side, slide carousel, doesn't switch to a new tile but can
- *      see the previous tile, like a spin table"). This was a genuinely
+ *      static tile regardless of the plan's fate. F-189 gives each tile its
+ *      own canonical skill color via `CityCard`'s `tone` prop — Vocab=blue
+ *      (indigo), Grammar=crimson (fixed, F-189 fix-pass round 4 — see
+ *      `lib/skill-colors.ts`), Hanja=ochre (locked) — the SAME
+ *      `SKILL_COLOR` map the LEARN honeycomb (`LearnMenu.tsx`) keys its
+ *      hexagons off, so a skill reads as one color everywhere, not just
+ *      here.
+ *   2. **Suggested learning carousel** — Listening · Reading · Writing, in
+ *      that DOM order (F-190 put Reading in the MIDDLE slot so the peek
+ *      slider opens centered on it, not on Listening), as a horizontal PEEK
+ *      SLIDER (the user's own description: "3 tiles side by side, slide
+ *      carousel, doesn't switch to a new tile but can see the previous
+ *      tile, like a spin table"). This was a genuinely
  *      different interaction model from `SwipeCarousel`'s hard
  *      one-page-at-a-time snap, so it was built as native CSS scroll-snap
  *      (`overflow-x: auto` + `scroll-snap-type: x mandatory`, tiles at
@@ -57,7 +67,10 @@
  *      the ids/keys (`chapterId`/`storyId`, `episodeNumber`, `promptId`)
  *      needed to deep-link to the EXACT item shown, instead of each tile's
  *      bare landing page (`readingHref`/`listeningHref`/`writingHref`
- *      below).
+ *      below). F-189: Reading=cyan, Listening=mint (moss), Writing=violet —
+ *      the same canonical `SKILL_COLOR` tokens LearnMenu's honeycomb
+ *      hexagons use, wired through `CityCard`'s `tone` prop the identical
+ *      way Carousel 1 is.
  *   3. **TOPIK carousel** — last, its own `SwipeCarousel` (a single page —
  *      dots/drag naturally no-op below 2 children). Carries the
  *      "Review mistakes" shortcut folded in (not its own page) and NO
@@ -72,6 +85,12 @@
  *      `SwipeCarousel` is now used ONLY here — a
  *      single hard-paged tile with a corner-slot banner is still the right
  *      tool for that shape; it is not a continuous-scroll rail like #1/#2.
+ *      TOPIK's tile reads `SKILL_COLOR.topik.tone` (`stone` — a dedicated
+ *      "assessment" hue, F-189 fix-pass round 4, REVIEW_r4-colors.md
+ *      BLOCKER-2): it used to share the accent/vermilion family with
+ *      Grammar, which fused the two tiles into one shape in LearnMenu's
+ *      honeycomb and could 3-way-collide with another skill's fixed hue
+ *      under the blue/mint accent presets — see `lib/skill-colors.ts`.
  *
  * Everything real stays real: per-tile "done today" counts come from
  * actual attempt-history endpoints, never a fabricated target or a
@@ -88,9 +107,14 @@
  *      shared component, C-2/C-3 fix, `REVIEW_batch1-fidelity.md`); it now
  *      renders the same `components/PageHubHeader.tsx` every Library page +
  *      Progress already adopted, so the recipe lives in exactly one place.
- *   2. Core drills carousel (Vocab / Grammar / Hanja).
- *   3. Suggested learning peek slider (Reading / Listening / Writing).
- *   4. TOPIK carousel.
+ *      F-188: this page hides PageHubHeader's own rail-divider glyph (a
+ *      Today-scoped Today.css override, not a change to the shared
+ *      component) — see Today.css for why.
+ *   2. Core drills carousel (Grammar / Vocab / Hanja — Vocab centered, F-190).
+ *   3. Suggested learning peek slider (Listening / Reading / Writing —
+ *      Reading centered, F-190).
+ *   4. TOPIK carousel (F-187: its heading carries a tightened top margin —
+ *      see Today.css).
  *
  * Data:
  *   useEndpointOrMock('today', loadTodayMock, { realFn: fetchToday })
@@ -133,6 +157,7 @@
  *   `episodeNumber`/`promptId`/`corpus`), never free text — no injection
  *   surface in the constructed path/query string.
  */
+import { useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
 import { Bilingual } from '../components/Bilingual';
@@ -163,6 +188,7 @@ import type { ListeningAttemptsPage } from '../services/ttmik';
 import type { DrillAttemptsPage, TodayPlan, TodayTask } from '../types/domain';
 import { cn } from '../lib/cn';
 import { isLocalToday } from '../lib/localDay';
+import { SKILL_COLOR } from '../lib/skill-colors';
 import './Today.css';
 
 /**
@@ -449,8 +475,62 @@ function PlanErrorCard({ onRetry }: { onRetry: () => void }): JSX.Element {
   );
 }
 
+/**
+ * F-190 — centers a specific peek-slider tile the moment it mounts, instead
+ * of leaving the browser's default scrollLeft:0 (which centers whichever
+ * tile happens to be FIRST in DOM order — see `.km-today__peekTrack`'s
+ * symmetric 11%-peek padding in Today.css, which is exactly what makes
+ * position 0 read as "centered" for a first tile). Both peek sliders are
+ * reordered (Carousel 1: Grammar/Vocab/Hanja; Carousel 2: Listening/Reading/
+ * Writing) so the desired skill sits in the middle DOM slot, and this ref
+ * callback is attached to THAT tile's wrapper to actually land the initial
+ * scroll position on it.
+ *
+ * A ref CALLBACK (not a `useEffect`) is the right tool here: Carousel 2's
+ * whole peek slider (and therefore the Reading wrapper) only mounts once
+ * `today.data` resolves and at least one task is present — a callback fires
+ * whenever React actually attaches that DOM node, on whatever render pass
+ * that turns out to be, with no dependency-array bookkeeping or "is it
+ * ready yet" flag to keep in sync. The REAL reason later re-renders
+ * (attempt-history fetches resolving, etc.) never re-invoke this and yank
+ * the view back to center is that `useCallback(..., [])` gives React a
+ * stable callback identity — a ref callback whose identity is unchanged
+ * only re-fires if its host DOM node is unmounted/remounted, so an
+ * unrelated re-render is a no-op here regardless of `firedRef`.
+ * `firedRef` is a defense-in-depth belt only, guarding the case where the
+ * SAME callback instance somehow runs twice for one mounted node (React
+ * does not do this today, but nothing enforces that it never will) — it is
+ * NOT what makes ordinary re-renders safe. Fix-pass note
+ * (REVIEW_r4-today.md): keep this distinction explicit, because a future
+ * "simplification" that removed `firedRef` believing it was merely
+ * redundant with the guarantee described here would be safe TODAY but
+ * would silently stop being safe the moment anyone gives this callback a
+ * non-empty dependency array.
+ *
+ * `scrollIntoView({ inline: 'center' })` (not hand-rolled pixel math) is the
+ * browser's own primitive for this, and it honours `scroll-snap-align:
+ * center` (the peek track's own CSS) instead of a client reimplementation
+ * that would have to duplicate that snap math. `behavior` is intentionally
+ * left at its default (an immediate jump, not a `'smooth'` animation) — an
+ * animated slide the instant the page appears would read as an unrequested
+ * swipe, not a landing position.
+ */
+function useCenterOnMountRef(): (el: HTMLDivElement | null) => void {
+  const firedRef = useRef(false);
+  return useCallback((el: HTMLDivElement | null) => {
+    if (el === null || firedRef.current) return;
+    firedRef.current = true;
+    el.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }, []);
+}
+
 export function Today(): JSX.Element {
   const navigate = useNavigate();
+  // F-190 — Review & drills opens centered on Vocab; Suggested learning
+  // opens centered on Reading (both reordered into the middle DOM slot
+  // below). See `useCenterOnMountRef`'s doc comment for the mechanism.
+  const vocabCenterRef = useCenterOnMountRef();
+  const readingCenterRef = useCenterOnMountRef();
 
   const today = useEndpointOrMock<TodayPlan>('today', loadTodayMock, {
     realFn: () => fetchToday(),
@@ -570,52 +650,19 @@ export function Today(): JSX.Element {
       </button>
     ) : undefined;
 
-  // ── Suggested-learning peek-slider items (Reading / Listening / Writing).
-  // A null server task is simply omitted — never a faked card (empty-corpus
-  // contract, unchanged from before the redesign).
+  // ── Suggested-learning peek-slider items (Listening / Reading / Writing —
+  // F-190 reorders Reading into the MIDDLE slot so it's the one the peek
+  // slider opens centered on; see `readingCenterRef` below). A null server
+  // task is simply omitted — never a faked card (empty-corpus contract,
+  // unchanged from before the redesign).
   const peekItems: ReactNode[] = [];
-
-  if (today.data?.reading) {
-    const t = today.data.reading;
-    peekItems.push(
-      <div key="reading" className="km-today__peekItem">
-        <ActivityTile
-          tone="blue"
-          icon="book"
-          ariaLabel={`Open reading — ${t.title}`}
-          pill={renderTag(t.tag, gapTag)}
-          headline={<span className="kr">{t.title}</span>}
-          meta={
-            <Bilingual
-              en={`Reading · ${t.level} · ${String(t.mins)} min`}
-              kr={`읽기 · ${t.level} · ${String(t.mins)}분`}
-            />
-          }
-          extra={
-            <DoneTodayRow
-              count={readingDoneToday}
-              tone="blue"
-              labelEn={(n) => (n === 1 ? '1 reading finished today' : `${String(n)} readings finished today`)}
-              labelKr={(n) => `오늘 완료한 읽기 ${String(n)}개`}
-            />
-          }
-          onClick={() => {
-            // Wave 2 (B4): deep-links to the exact chapter/story shown —
-            // reading is now sourced from the caller's own library, not the
-            // old public TTMIK-lesson pick.
-            navigate(readingHref(t));
-          }}
-        />
-      </div>,
-    );
-  }
 
   if (today.data?.listening) {
     const t = today.data.listening;
     peekItems.push(
       <div key="listening" className="km-today__peekItem">
         <ActivityTile
-          tone="mint"
+          tone={SKILL_COLOR.ttmik.tone}
           icon="headphones"
           ariaLabel={`Open listening — ${t.title}`}
           pill={renderTag(t.tag, gapTag)}
@@ -629,7 +676,7 @@ export function Today(): JSX.Element {
           extra={
             <DoneTodayRow
               count={listeningDoneToday}
-              tone="mint"
+              tone={SKILL_COLOR.ttmik.tone}
               labelEn={(n) => (n === 1 ? '1 episode finished today' : `${String(n)} episodes finished today`)}
               labelKr={(n) => `오늘 완료한 듣기 ${String(n)}개`}
             />
@@ -637,6 +684,41 @@ export function Today(): JSX.Element {
           onClick={() => {
             // Wave 2 (B5): deep-links to the exact Iyagi episode shown.
             navigate(listeningHref(t));
+          }}
+        />
+      </div>,
+    );
+  }
+
+  if (today.data?.reading) {
+    const t = today.data.reading;
+    peekItems.push(
+      <div key="reading" className="km-today__peekItem" ref={readingCenterRef}>
+        <ActivityTile
+          tone={SKILL_COLOR.reading.tone}
+          icon="book"
+          ariaLabel={`Open reading — ${t.title}`}
+          pill={renderTag(t.tag, gapTag)}
+          headline={<span className="kr">{t.title}</span>}
+          meta={
+            <Bilingual
+              en={`Reading · ${t.level} · ${String(t.mins)} min`}
+              kr={`읽기 · ${t.level} · ${String(t.mins)}분`}
+            />
+          }
+          extra={
+            <DoneTodayRow
+              count={readingDoneToday}
+              tone={SKILL_COLOR.reading.tone}
+              labelEn={(n) => (n === 1 ? '1 reading finished today' : `${String(n)} readings finished today`)}
+              labelKr={(n) => `오늘 완료한 읽기 ${String(n)}개`}
+            />
+          }
+          onClick={() => {
+            // Wave 2 (B4): deep-links to the exact chapter/story shown —
+            // reading is now sourced from the caller's own library, not the
+            // old public TTMIK-lesson pick.
+            navigate(readingHref(t));
           }}
         />
       </div>,
@@ -654,7 +736,7 @@ export function Today(): JSX.Element {
             Reading/Listening. The "done today" count rides in `extra`, same
             convention as Grammar/TOPIK. */}
         <ActivityTile
-          tone="accent"
+          tone={SKILL_COLOR.writing.tone}
           icon="pen"
           ariaLabel={`Open writing — ${t.title}`}
           pill={renderTag(t.tag, gapTag)}
@@ -668,7 +750,7 @@ export function Today(): JSX.Element {
           extra={
             <DoneTodayRow
               count={writingDoneToday}
-              tone="accent"
+              tone={SKILL_COLOR.writing.tone}
               labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
               labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
             />
@@ -714,19 +796,21 @@ export function Today(): JSX.Element {
         heading={<Bilingual kr="오늘" en="Today" />}
       />
 
-      {/* Carousel 1 — Review & drills: Vocab / Grammar / Hanja, as the SAME
+      {/* Carousel 1 — Review & drills: Grammar / Vocab / Hanja, as the SAME
           native-scroll-snap peek slider as Carousel 2 below (direct user
           request — see the module header comment and Today.css's
-          `.km-today__peekTrack` block for the shared mechanism). Vocab
-          (restored, reversing F-139) reads a real live due-count off the
-          plan, so it alone among these three tiles depends on `today` —
-          only its `km-today__peekItem` swaps between skeleton/tile/error;
-          Grammar and Hanja never depended on the plan and are always the
-          same static tile regardless of its fate. Deliberately a plain
-          labeled `<section>` (implicit `region`), not
-          `aria-roledescription="carousel"` — same reasoning as Carousel 2:
-          every tile is simultaneously real and focusable, the honest a11y
-          shape for a continuous scroll rail. */}
+          `.km-today__peekTrack` block for the shared mechanism). F-190
+          reorders Vocab into the MIDDLE slot (was first) so the peek slider
+          opens centered on it — `vocabCenterRef` lands the initial scroll
+          position there on mount. Vocab (restored, reversing F-139) reads a
+          real live due-count off the plan, so it alone among these three
+          tiles depends on `today` — only its `km-today__peekItem` swaps
+          between skeleton/tile/error; Grammar and Hanja never depended on
+          the plan and are always the same static tile regardless of its
+          fate. Deliberately a plain labeled `<section>` (implicit `region`),
+          not `aria-roledescription="carousel"` — same reasoning as
+          Carousel 2: every tile is simultaneously real and focusable, the
+          honest a11y shape for a continuous scroll rail. */}
       <h2 className="km-today__sectionTitle">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </h2>
@@ -734,11 +818,41 @@ export function Today(): JSX.Element {
         <div className="km-today__peekOuter">
           <div className="km-today__peekTrack">
             <div className="km-today__peekItem">
+              <ActivityTile
+                tone={SKILL_COLOR.grammar.tone}
+                icon="grammar"
+                ariaLabel="Open grammar drills"
+                pill={
+                  <Pill tone="red">
+                    <Bilingual en="Drill" kr="드릴" />
+                  </Pill>
+                }
+                headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
+                meta={
+                  <Bilingual
+                    en="Production practice on banked patterns"
+                    kr="저장한 문형으로 생산 연습"
+                  />
+                }
+                extra={
+                  <DoneTodayRow
+                    count={grammarDoneToday}
+                    tone={SKILL_COLOR.grammar.tone}
+                    labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
+                    labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
+                  />
+                }
+                onClick={() => {
+                  navigate('/learn/grammar');
+                }}
+              />
+            </div>
+            <div className="km-today__peekItem" ref={vocabCenterRef}>
               {today.loading ? (
                 <SkeletonCard />
               ) : today.data ? (
                 <ActivityTile
-                  tone="blue"
+                  tone={SKILL_COLOR.flashcards.tone}
                   icon="cards"
                   ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
                   pill={
@@ -775,37 +889,7 @@ export function Today(): JSX.Element {
             </div>
             <div className="km-today__peekItem">
               <ActivityTile
-                tone="blue"
-                icon="grammar"
-                ariaLabel="Open grammar drills"
-                pill={
-                  <Pill tone="red">
-                    <Bilingual en="Drill" kr="드릴" />
-                  </Pill>
-                }
-                headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
-                meta={
-                  <Bilingual
-                    en="Production practice on banked patterns"
-                    kr="저장한 문형으로 생산 연습"
-                  />
-                }
-                extra={
-                  <DoneTodayRow
-                    count={grammarDoneToday}
-                    tone="blue"
-                    labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
-                    labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
-                  />
-                }
-                onClick={() => {
-                  navigate('/learn/grammar');
-                }}
-              />
-            </div>
-            <div className="km-today__peekItem">
-              <ActivityTile
-                tone="ochre"
+                tone={SKILL_COLOR.hanja.tone}
                 icon="hanja"
                 ariaLabel="Open Hanja study"
                 pill={
@@ -823,7 +907,7 @@ export function Today(): JSX.Element {
                 extra={
                   <DoneTodayRow
                     count={hanjaDoneToday}
-                    tone="ochre"
+                    tone={SKILL_COLOR.hanja.tone}
                     labelEn={(n) => (n === 1 ? '1 character reviewed today' : `${String(n)} characters reviewed today`)}
                     labelKr={(n) => `오늘 복습한 한자 ${String(n)}자`}
                   />
@@ -837,11 +921,14 @@ export function Today(): JSX.Element {
         </div>
       </section>
 
-      {/* Carousel 2 — Suggested learning: Reading / Listening / Writing as
+      {/* Carousel 2 — Suggested learning: Listening / Reading / Writing as
           a native-scroll-snap PEEK SLIDER (see the module header comment
           for why this is not a SwipeCarousel — Carousel 1 above now shares
-          this exact mechanism/classes too). Deliberately a plain labeled
-          <section> (implicit `region`), not
+          this exact mechanism/classes too). F-190 reorders Reading into the
+          MIDDLE slot (was first) so the peek slider opens centered on it —
+          `readingCenterRef` (attached to the Reading `peekItems` entry
+          above) lands the initial scroll position there on mount.
+          Deliberately a plain labeled <section> (implicit `region`), not
           `aria-roledescription="carousel"` — every tile is simultaneously
           real and focusable (no aria-hidden/inert paging), which is the
           honest a11y shape for a continuous scroll rail. */}
@@ -872,8 +959,16 @@ export function Today(): JSX.Element {
           "Review mistakes" shortcut and the F-007 resume-exam corner
           banner — TOPIK is what a saved attempt resumes back into, so this
           is its natural home now that it's split from Reading/Listening/
-          Writing. No highlight styling on the meta line (F-137). */}
-      <h2 className="km-today__sectionTitle">
+          Writing. No highlight styling on the meta line (F-137).
+          F-187 — direct user feedback: the Suggested-learning → TOPIK
+          boundary specifically read as too much empty space on a real
+          phone even after an earlier general tightening pass (see
+          `.km-today__section`/`.km-today__sectionTitle` in Today.css). The
+          `--topik` modifier below trims JUST this header's own top margin
+          (Today.css) rather than touching the shared rule every section
+          title reads, so the Review&drills → Suggested-learning gap (which
+          reads fine) is untouched. */}
+      <h2 className="km-today__sectionTitle km-today__sectionTitle--topik">
         <Bilingual en="TOPIK" kr="토픽" />
       </h2>
       <section className="km-today__section">
@@ -891,7 +986,7 @@ export function Today(): JSX.Element {
             )}
           >
             <ActivityTile
-              tone="accent"
+              tone={SKILL_COLOR.topik.tone}
               feat
               icon="spark"
               ariaLabel="Open TOPIK study practice"
@@ -910,7 +1005,7 @@ export function Today(): JSX.Element {
               extra={
                 <DoneTodayRow
                   count={topikDoneToday}
-                  tone="accent"
+                  tone={SKILL_COLOR.topik.tone}
                   labelEn={(n) => (n === 1 ? '1 mock attempt today' : `${String(n)} mock attempts today`)}
                   labelKr={(n) => `오늘 완료한 모의고사 ${String(n)}회`}
                 />

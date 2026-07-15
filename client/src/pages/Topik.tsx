@@ -122,6 +122,7 @@ import {
 import { cn } from '../lib/cn';
 import { splitImageItem } from '../lib/topikImage';
 import { errorMessageFor } from '../lib/errorCopy';
+import { SKILL_COLOR } from '../lib/skill-colors';
 import {
   buildStudyDrawOptions,
   type SetSize,
@@ -288,19 +289,34 @@ function Topik(): JSX.Element {
           sheet (Esc/backdrop, or an explicit pick) always lands on a live,
           already-populated landing rather than a blank gate.
 
-          Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-d): `tone="accent"`
-          opts this sheet into the Seoul signboard/hanji edge — TOPIK's own
-          skill identity is the vermilion/accent family everywhere else on
-          this page (the tally/study CityCards below all pass `tone="accent"`
-          too), so the chooser's top-edge now matches instead of rendering
-          the old flat panel. */}
+          Fix-pass batch-4 (REVIEW_batch4-fidelity.md gap-d): a `tone`
+          opts this sheet into the Seoul signboard/hanji edge.
+
+          F-191 (fix-pass round 4 follow-up): this used to be the literal
+          `tone="accent"` — TOPIK's OWN chrome borrowing the runtime
+          accent-preset token, back when TOPIK and Grammar both shared it
+          (see `lib/skill-colors.ts`'s BLOCKER-2 history). Now that TOPIK has
+          its own dedicated fixed hue (`SKILL_COLOR.topik.tone`, resolving to
+          `stone`), every TOPIK-identity surface on this page and
+          `MockMode.tsx` — this chooser gate, the session tally, the study/
+          exam hero cards, the milestone stamps, the attempts tiles, and the
+          shared results score panel — reads that ONE token, so the page's
+          own "personality" matches its `stone` honeycomb tile/Today tile
+          instead of a leftover mix of the shared accent token and Vocab's
+          fixed `blue` (a hue collision the old `tone="blue"` sites had with
+          Vocab's own identity — see `CityCard.tsx`'s doc comment on what
+          `blue` means). The one deliberate exception is `MockMode.tsx`'s
+          `sectionTone()` — that differentiates the mock EXAM's
+          reading/listening/writing sections, a different concept from "this
+          is TOPIK," and is intentionally left alone (see its own doc
+          comment). */}
       <Sheet
         open={chooserOpen}
         onClose={() => {
           setChooserOpen(false);
         }}
         ariaLabel="Choose Study or Mock"
-        tone="accent"
+        tone={SKILL_COLOR.topik.tone}
       >
         <div className="km-topik__chooser">
           <Eyebrow>
@@ -310,7 +326,7 @@ function Topik(): JSX.Element {
             <Bilingual en="How do you want to work?" kr="어떻게 공부할까요?" />
           </p>
           <div className="km-topik__chooser-opts">
-            <CityCard tone="blue" rail className="km-topik__chooser-card">
+            <CityCard tone={SKILL_COLOR.topik.tone} rail className="km-topik__chooser-card">
               <button
                 type="button"
                 className="km-topik__chooser-opt focusring"
@@ -332,7 +348,7 @@ function Topik(): JSX.Element {
                 </span>
               </button>
             </CityCard>
-            <CityCard tone="accent" rail className="km-topik__chooser-card">
+            <CityCard tone={SKILL_COLOR.topik.tone} rail className="km-topik__chooser-card">
               <button
                 type="button"
                 className="km-topik__chooser-opt focusring"
@@ -405,10 +421,11 @@ function SessionTally({
   daily: DailyMockTotal;
 }): JSX.Element {
   return (
-    // F-128 device #1/#2 — a blue-tone CityCard signboard/hanji-paper
-    // surface with a leading DancheongRail, replacing the plain flat Card.
+    // F-128 device #1/#2 — a stone-tone (TOPIK's own dedicated identity,
+    // F-191) CityCard signboard/hanji-paper surface with a leading
+    // DancheongRail, replacing the plain flat Card.
     <CityCard
-      tone="blue"
+      tone={SKILL_COLOR.topik.tone}
       rail
       className="km-topik__tally"
       role="group"
@@ -541,7 +558,7 @@ function AttemptsReview(): JSX.Element {
           default-surface CollapsibleTile used before this pass. */}
       <CollapsibleTile
         surface="city"
-        tone="accent"
+        tone={SKILL_COLOR.topik.tone}
         rail
         title={
           <span className="km-topik__attempts-tile-title">
@@ -597,7 +614,7 @@ function AttemptsReview(): JSX.Element {
 
       <CollapsibleTile
         surface="city"
-        tone="blue"
+        tone={SKILL_COLOR.topik.tone}
         rail
         title={
           <span className="km-topik__attempts-tile-title">
@@ -958,7 +975,7 @@ function StudyMode({
             <SubwayProgress
               steps={draw.length}
               current={idx}
-              tone="accent"
+              tone={SKILL_COLOR.topik.tone}
               label="Study progress"
               valueText={`Item ${String(idx + 1)} of ${String(draw.length)}`}
             />
@@ -1003,7 +1020,7 @@ function StudyMode({
           <div className="km-topik__milestone">
             <SealStamp
               milestone
-              tone="accent"
+              tone={SKILL_COLOR.topik.tone}
               label={<Bilingual en="Set complete" kr="세트 완료" compact />}
             />
           </div>
@@ -1136,7 +1153,7 @@ function TopikBody({
     // surface, mirroring Grammar's live-drill treatment: a CityCard
     // signboard/hanji-paper card with a leading DancheongRail, not a bare
     // fragment riding on the page's own padding.
-    <CityCard rail tone="accent" className="km-topik__card">
+    <CityCard rail tone={SKILL_COLOR.topik.tone} className="km-topik__card">
       <div className="km-topik__meta">
         <Pill tone="gold">
           {item.section} · L{String(item.level)}

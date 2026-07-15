@@ -27,7 +27,7 @@
 
 /* Muted English gloss under the Korean task text. */
 .km-writing__gloss {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin-top: -6px;
   margin-bottom: 12px;
@@ -35,7 +35,7 @@
 
 /* Live 자 counter under the textarea. */
 .km-writing__count {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin-top: -8px;
   margin-bottom: 12px;

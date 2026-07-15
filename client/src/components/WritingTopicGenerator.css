@@ -36,7 +36,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   color: var(--paper-dim);
 }
@@ -64,7 +64,7 @@
   background: transparent;
   color: var(--paper-mute);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 500;
   cursor: pointer;
 }
@@ -93,13 +93,13 @@
 }
 
 .km-topicgen__kr {
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.55;
   color: var(--paper);
 }
 
 .km-topicgen__en {
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--paper-mute);
 }
 
@@ -111,6 +111,6 @@
 }
 
 .km-topicgen__error {
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--danger-ink);
 }

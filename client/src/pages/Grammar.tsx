@@ -1080,7 +1080,7 @@ function CardsPanel({
             {view === 'learning' ? (
               <>
                 <Eyebrow>Nothing in learning</Eyebrow>
-                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                <p style={{ fontSize: '0.875rem', color: 'var(--paper-dim)' }}>
                   {knownItems.length > 0
                     ? 'Every card is marked as known. Tap Relearn on a card in the Known view to study it again.'
                     : 'Save patterns from the grammar library to start learning them here.'}
@@ -1099,7 +1099,7 @@ function CardsPanel({
             ) : (
               <>
                 <Eyebrow>Nothing marked known yet</Eyebrow>
-                <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+                <p style={{ fontSize: '0.875rem', color: 'var(--paper-dim)' }}>
                   When you&apos;ve mastered a card, tap Mark known to retire it
                   from practice and reviews. It moves here, and Relearn brings
                   it back any time.
@@ -1423,7 +1423,7 @@ function HistoryPanel(): JSX.Element {
       >
         <Card variant="flat">
           <Eyebrow>Practice history</Eyebrow>
-          <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+          <p style={{ fontSize: '0.875rem', color: 'var(--paper-dim)' }}>
             No scored practice attempts yet. Answers you submit in Practice
             will appear here, newest first.
           </p>
@@ -2409,7 +2409,7 @@ function DetailSheet({
         ) : null}
         {detail && !loading ? <KgiuDetailBody detail={detail} /> : null}
         {!loading && !detail && !error && row && !row.isReal ? (
-          <p style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+          <p style={{ fontSize: '0.875rem', color: 'var(--paper-dim)' }}>
             Mock pattern — detail loads when the real KGIU corpus is wired.
           </p>
         ) : null}

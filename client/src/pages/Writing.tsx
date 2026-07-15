@@ -1222,7 +1222,7 @@ function AttemptRow({ attempt }: { attempt: WritingAttemptDTO }): JSX.Element {
           </div>
           <time
             dateTime={attempt.gradedAt}
-            style={{ fontSize: 13, color: 'var(--paper)', whiteSpace: 'nowrap' }}
+            style={{ fontSize: '0.8125rem', color: 'var(--paper)', whiteSpace: 'nowrap' }}
           >
             {new Date(attempt.gradedAt).toLocaleDateString()}
           </time>
@@ -1315,12 +1315,12 @@ function DimensionBlock({
           marginBottom: 4,
         }}
       >
-        <div style={{ fontSize: 15, color: 'var(--paper)' }}>
+        <div style={{ fontSize: '0.9375rem', color: 'var(--paper)' }}>
           {/* P3b: the rubric-dimension heading is a hand-composed kr/en pair —
               route it through the primitive so the setting applies. */}
           <Bilingual kr={krLabel} en={enLabel} />
         </div>
-        <div style={{ fontSize: 14, color: 'var(--paper)', whiteSpace: 'nowrap' }}>
+        <div style={{ fontSize: '0.875rem', color: 'var(--paper)', whiteSpace: 'nowrap' }}>
           {dim.score} / {dim.maxScore}
         </div>
       </div>

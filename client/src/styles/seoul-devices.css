@@ -144,11 +144,12 @@
 
 /* ── shared tone variable ─────────────────────────────────────────────────
  * `CityCard`, `DancheongRail`, and `SealStamp`'s milestone variant all take
- * the same tone prop (accent/blue/mint/ochre/plain) and need the SAME
- * per-theme color resolution — Day reads the dancheong set, Night the neon
- * set, `accent` tracks whichever `[data-accent]` the user picked. Centralised
- * here as `--km-tone` so the three components (and any future one) stay in
- * lockstep instead of re-deriving the mapping three times.
+ * the same tone prop (accent/blue/mint/ochre/cyan/violet/crimson/stone/
+ * plain) and need the SAME per-theme color resolution — Day reads the
+ * dancheong set, Night the neon set, `accent` tracks whichever
+ * `[data-accent]` the user picked. Centralised here as `--km-tone` so the
+ * three components (and any future one) stay in lockstep instead of
+ * re-deriving the mapping three times.
  *
  * `ochre` (fix-pass batch-3, REVIEW_batch3-fidelity.md's tone-enum
  * promotion): the Hanja SKILL color — Day dan-ochre / Night neon-amber, per
@@ -165,7 +166,33 @@
 [data-theme="dark"] .km-tone--mint { --km-tone: var(--neon-mint); }
 .km-tone--ochre  { --km-tone: var(--dan-ochre); }
 [data-theme="dark"] .km-tone--ochre { --km-tone: var(--neon-amber); }
-.km-tone--plain  { --km-tone: var(--line-strong); }
+/* F-189 — canonical per-skill color system: Reading (cyan) and Writing
+ * (violet) carry fixed `--km-tone` mappings alongside the pre-existing
+ * blue (Vocab) / mint (Listening) / ochre (Hanja) trio. Unlike `blue`/
+ * `mint`/`ochre` above, no separate `[data-theme="dark"]` override is
+ * needed here: `--cyan`/`--violet` themselves are ALREADY theme-branched
+ * (re-declared inside index.css's `[data-theme="dark"]` block), so a
+ * single declaration resolves correctly in both themes via the cascade.
+ *
+ * F-189 fix-pass round 4 (BLOCKER-2/SHOULD-FIX-6, REVIEW_r4-colors.md):
+ * `crimson` (Grammar) and `stone` (TOPIK) complete the set — SEVEN fixed
+ * `--km-tone` mappings for the app's 6 skills + TOPIK, all reachable
+ * through this one shared mechanism, none re-tinting with the accent
+ * picker. `.km-tone--accent` is UNCHANGED and still exists for its own,
+ * unrelated job — the dozens of general-purpose page chrome surfaces
+ * (Diagnostic/Progress/Settings/Ttmik/etc.) that intentionally track the
+ * user's global accent choice; only the 7 LEARN-sub-page tiles moved off
+ * it. The canonical skill→tone assignment lives in ONE place,
+ * `lib/skill-colors.ts`, consumed by both Today's tile carousels (this
+ * mechanism) and LearnMenu's honeycomb (`--<hue>` tokens directly) — see
+ * that file's doc comment for why the two vocabularies (`tone` prop names
+ * vs `--<hue>` token names) don't always textually match even though they
+ * resolve to the same underlying color. */
+.km-tone--cyan    { --km-tone: var(--cyan); }
+.km-tone--violet  { --km-tone: var(--violet); }
+.km-tone--crimson { --km-tone: var(--crimson); }
+.km-tone--stone   { --km-tone: var(--stone); }
+.km-tone--plain   { --km-tone: var(--line-strong); }
 
 /* One-time neon flicker-on (doc §7 "a one-time subtle neon flicker-on as a
  * screen mounts") — opt-in via `.km-neon-flicker`, Night only, honours

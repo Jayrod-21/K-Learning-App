@@ -39,7 +39,7 @@
 
 .km-linechart__tick {
   fill: var(--paper-faint);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-family: inherit;
 }
 
@@ -103,7 +103,7 @@
   gap: 10px;
   align-items: baseline;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
   min-height: 18px;
 }
@@ -112,7 +112,7 @@
   color: var(--paper-faint);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 10px;
+  font-size: 0.625rem;
 }
 
 /* F-174 — the trend-line caption. Real prose text (not a decorative
@@ -123,7 +123,7 @@
  * REVIEW_batch1-fidelity.md). */
 .km-linechart__trendnote {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
@@ -139,5 +139,5 @@
 
 .km-linechart__emptyText {
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }

@@ -343,11 +343,11 @@ function EmptyCard({
       <div className="km-eyebrow" style={{ marginBottom: 6 }}>
         <Bilingual en="Nothing here yet" kr="아직 없어요" />
       </div>
-      <div style={{ fontSize: 14, color: 'var(--paper-dim)' }}>
+      <div style={{ fontSize: '0.875rem', color: 'var(--paper-dim)' }}>
         <Bilingual en={message} kr={krMessage} />
       </div>
       {hint ? (
-        <div style={{ fontSize: 12, color: 'var(--paper-mute)', marginTop: 8 }}>
+        <div style={{ fontSize: '0.75rem', color: 'var(--paper-mute)', marginTop: 8 }}>
           {hint}
         </div>
       ) : null}
@@ -922,7 +922,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
         rail
       >
         <div className="km-review__seedBody">
-          <div style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 10 }}>
+          <div style={{ fontSize: '0.875rem', color: 'var(--paper-dim)', marginBottom: 10 }}>
             Seed review cards from the loaded vocab corpus so they show up in
             the review queue.
           </div>
@@ -945,7 +945,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
               className={
                 seedStatus.kind === 'error' ? 'km-review__inlineError' : undefined
               }
-              style={{ marginTop: 8, fontSize: 13 }}
+              style={{ marginTop: 8, fontSize: '0.8125rem' }}
             >
               {seedStatus.text}
             </div>

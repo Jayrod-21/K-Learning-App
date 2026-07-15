@@ -26,7 +26,7 @@ import type {
 } from '../types/domain';
 
 /** Body prose — matches the explanation style both Sheets already used. */
-const PROSE: CSSProperties = { fontSize: 14, color: 'var(--paper-dim)' };
+const PROSE: CSSProperties = { fontSize: '0.875rem', color: 'var(--paper-dim)' };
 
 /** Space between stacked sections inside the Sheet body. */
 const SECTION_GAP: CSSProperties = { marginTop: 16 };

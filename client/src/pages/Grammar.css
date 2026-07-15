@@ -23,7 +23,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--paper);
@@ -36,7 +36,7 @@
   border-radius: var(--radius-pill);
   background: var(--ink-2);
   border: 1px solid var(--line);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-align: center;
   color: var(--paper-dim);
@@ -96,7 +96,7 @@
 /* B-024: the grammar FORM stays on ONE line, always — truncate with an
    ellipsis rather than wrapping a long composite pattern onto two lines. */
 .km-grammar__row-kr {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--paper);
   white-space: nowrap;
@@ -106,7 +106,7 @@
 }
 
 .km-grammar__row-title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   max-width: 100%;
   white-space: nowrap;
@@ -135,7 +135,7 @@
 /* ── F-111: per-pattern FSRS schedule line on a mastery card row ────────── */
 
 .km-grammar__row-schedule {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-dim);
   opacity: 0.85;
 }
@@ -156,7 +156,7 @@
 
 .km-grammar__due-note {
   margin: 0 0 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 
@@ -178,7 +178,7 @@
   border-radius: var(--radius-sm);
   background: var(--ink-2);
   border: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
   line-height: 1.5;
   overflow-wrap: break-word;

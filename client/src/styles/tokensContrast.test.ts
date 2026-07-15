@@ -22,14 +22,24 @@ import { join } from 'node:path';
 // from the project root instead (vitest runs with root = client/).
 const CSS = readFileSync(join(process.cwd(), 'src/styles/index.css'), 'utf8');
 
-/** Hues the honeycomb color map uses (all six category families). */
+/**
+ * Hues the honeycomb color map uses — the app's 6 skills + TOPIK's own
+ * dedicated "assessment" hue (F-189 fix-pass round 4, REVIEW_r4-colors.md
+ * BLOCKER-2). `vermilion` itself is deliberately NOT in this list anymore:
+ * it is the runtime ACCENT-PRESET token (re-pointed by `[data-accent]`),
+ * no longer used for any of the 7 LEARN-sub-page tiles — Grammar reads the
+ * new fixed `crimson` token instead (see index.css's `--crimson` doc
+ * comment), and TOPIK reads the new fixed `stone` token. `--vermilion`'s
+ * own ink-on-fill contrast is covered separately by the accent-preset
+ * reasoning documented at its definition site in index.css. */
 const HUES = [
   'indigo',
   'violet',
   'ochre',
   'cyan',
   'moss',
-  'vermilion',
+  'crimson',
+  'stone',
 ] as const;
 
 /** Selector patterns (regex source) for the two base token blocks. */
@@ -168,7 +178,8 @@ describe('secondary text contrast (--paper-dim, WCAG AA)', () => {
 describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA)', () => {
   // CityCard's Night signboard body, DancheongRail's Night edge glow, and
   // SubwayProgress's fill/station dots all resolve `--km-tone` (the shared
-  // accent/blue/mint/plain mapping in seoul-devices.css). SealStamp's
+  // accent/blue/mint/ochre/cyan/violet/plain mapping in seoul-devices.css).
+  // SealStamp's
   // milestone variant is the one consumer that puts TEXT directly on that
   // fill (`background: var(--km-tone); color: var(--on-vermilion);` —
   // index.css .km-seal--milestone), so that's the pairing to guard.
@@ -182,13 +193,33 @@ describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA
   // neon-mint (Night). `accent` itself already tracks --vermilion, which is
   // covered by the existing accent-preset contrast reasoning (index.css
   // comments at the accent-preset block) — not re-derived here.
+  //
+  // F-189 adds cyan (Reading) and violet (Writing) as two more fixed
+  // `--km-tone` mappings (styles/seoul-devices.css) — unlike blue/mint,
+  // `.km-tone--cyan`/`.km-tone--violet` read `--cyan`/`--violet` directly
+  // (those tokens are ALREADY theme-branched in index.css), so both the Day
+  // and Night combos below resolve straight off the SAME token name.
+  //
+  // F-189 fix-pass round 4 (REVIEW_r4-colors.md): `crimson` (Grammar) and
+  // `stone` (TOPIK) complete the set the same way — both fixed, both
+  // already theme-branched at their definition site, so one declaration in
+  // seoul-devices.css resolves correctly in both themes and one combo
+  // entry here covers both.
   const DAY_COMBOS = [
     ['blue', 'dan-cobalt'],
     ['mint', 'dan-jade'],
+    ['cyan', 'cyan'],
+    ['violet', 'violet'],
+    ['crimson', 'crimson'],
+    ['stone', 'stone'],
   ] as const;
   const NIGHT_COMBOS = [
     ['blue', 'neon-blue'],
     ['mint', 'neon-mint'],
+    ['cyan', 'cyan'],
+    ['violet', 'violet'],
+    ['crimson', 'crimson'],
+    ['stone', 'stone'],
   ] as const;
 
   for (const [tone, fillToken] of DAY_COMBOS) {

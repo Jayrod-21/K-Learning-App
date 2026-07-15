@@ -263,7 +263,7 @@ export default function ReviewVocab(): JSX.Element {
             <Eyebrow>
               <Bilingual en="Adding words to" kr="단어 추가 중" />
             </Eyebrow>
-            <div className="kr" style={{ fontSize: 15, fontWeight: 500 }}>
+            <div className="kr" style={{ fontSize: '0.9375rem', fontWeight: 500 }}>
               {addToList.name}
             </div>
           </div>

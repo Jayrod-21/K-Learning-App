@@ -53,10 +53,10 @@
     height: 104px;
   }
   .screen.km-hanja .km-hanja__feature-char {
-    font-size: 64px;
+    font-size: 4rem;
   }
   .screen.km-hanja .km-hanja__detail-char {
-    font-size: 56px;
+    font-size: 3.5rem;
   }
 }
 
@@ -185,11 +185,11 @@
   flex: 1;
 }
 .km-hanja__quick-title {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
 }
 .km-hanja__quick-sub {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
 }
 
@@ -204,7 +204,7 @@
 .km-hanja__label {
   display: block;
   margin-top: 10px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--paper-mute);
@@ -218,19 +218,19 @@
   background: var(--ink-0);
   color: var(--paper);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .km-hanja__input::placeholder {
   color: var(--paper-faint);
 }
 .km-hanja__inline-error {
   margin-top: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--vermilion-ink);
 }
 .km-hanja__inline-status {
   margin-top: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-hanja__danger {
@@ -269,7 +269,7 @@
   background: var(--ink-1);
   color: var(--paper);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
   transition: border-color 140ms;
@@ -289,7 +289,7 @@
 }
 .km-hanja__quickadd-empty {
   margin: 8px 0 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
 }
 
@@ -335,7 +335,7 @@
   background: var(--ink-1);
   color: var(--paper);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   text-align: left;
   cursor: pointer;
   transition:
@@ -350,7 +350,7 @@
   background: var(--vermilion-soft);
 }
 .km-hanja__picker-char {
-  font-size: 20px;
+  font-size: 1.25rem;
   line-height: 1;
   flex-shrink: 0;
 }
@@ -364,12 +364,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-hanja__picker-note {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 
@@ -380,7 +380,7 @@
 .km-hanja__study-progress {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   font-variant-numeric: tabular-nums;
 }
@@ -404,23 +404,23 @@
 }
 .km-hanja__study-char {
   position: relative;
-  font-size: 84px;
+  font-size: 5.25rem;
   line-height: 1;
   color: var(--paper);
 }
 .km-hanja__study-backchar {
-  font-size: 40px;
+  font-size: 2.5rem;
   line-height: 1;
   color: var(--vermilion-ink);
 }
 .km-hanja__study-gloss {
-  font-size: 22px;
+  font-size: 1.375rem;
 }
 .km-hanja__study-sound {
   color: var(--vermilion-ink);
 }
 .km-hanja__study-en {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--paper-dim);
 }
 .km-hanja__study-pills {
@@ -430,12 +430,12 @@
   justify-content: center;
 }
 .km-hanja__study-hint {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
 }
 .km-hanja__study-hintline {
   text-align: center;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   margin: 12px 0 0;
 }
@@ -453,7 +453,7 @@
   color: var(--paper);
   cursor: pointer;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   transition: border-color 140ms;
 }
@@ -466,7 +466,7 @@
 .km-hanja__rating-sub {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
   font-variant-numeric: tabular-nums;
 }
@@ -485,7 +485,7 @@
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--vermilion-ink);
 }
 .km-hanja__complete-seal {
@@ -532,14 +532,14 @@
   background: var(--ink-2);
 }
 .km-hanja__list-name {
-  font-size: 15px;
+  font-size: 0.9375rem;
 }
 .km-hanja__list-en {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
 }
 .km-hanja__list-meta {
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--paper-mute);
 }
 .km-hanja__list-del {
@@ -567,16 +567,16 @@
   margin-top: 12px;
 }
 .km-hanja__ld-name {
-  font-size: 22px;
+  font-size: 1.375rem;
   margin-top: 2px;
 }
 .km-hanja__ld-en {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-hanja__ld-meta {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 .km-hanja__ld-row {
@@ -588,7 +588,7 @@
   padding: 6px 8px;
 }
 .km-hanja__ld-char {
-  font-size: 26px;
+  font-size: 1.625rem;
   line-height: 1;
   color: var(--paper);
 }
@@ -600,25 +600,25 @@
   gap: 1px;
 }
 .km-hanja__ld-sound {
-  font-size: 14px;
+  font-size: 0.875rem;
   color: var(--vermilion-ink);
 }
 .km-hanja__ld-gloss {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .km-hanja__ld-note {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
 }
 
 /* ── Drawing drill ──────────────────────────────────────────── */
 .km-hanja__draw-note {
   margin-top: 10px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-hanja__draw-subway {
@@ -647,7 +647,7 @@
   border: 1px solid var(--line-strong);
   background: var(--ink-1);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   cursor: pointer;
   transition: border-color 140ms;
@@ -670,7 +670,7 @@
 }
 .km-hanja__draw-mastery-note {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-mute);
   text-align: center;
   line-height: 1.5;
@@ -691,7 +691,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 190px;
+  font-size: 11.875rem;
   line-height: 1;
   color: var(--paper);
   opacity: 0.16;
@@ -725,7 +725,7 @@
 }
 .km-hanja__addlist-note {
   margin: 0 0 4px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 .km-hanja__addlist-select {
@@ -733,7 +733,7 @@
   min-width: 150px;
 }
 .km-hanja__addlist-loading {
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
 }
 .km-hanja__addlist-error {
