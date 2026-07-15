@@ -318,10 +318,10 @@
    * still reads as "exam ≠ skill" — deliberately achromatic-leaning, not a
    * 7th saturated color) but pushes lightness from 68% to 88% and
    * saturation from 18% to 39%, landing it in the "white/silver neon tube"
-   * family the ticket asked for. Distinctness only IMPROVES: the old value
-   * cleared a 43.2 min ΔE76 against the other 6 skill hues, the new one
-   * clears 40.6 (still far above the 28 floor — see
-   * `styles/skillHueDistinctness.test.ts`, updated for this value). AA:
+   * family the ticket asked for. Distinctness stays well clear of the
+   * floor: the old value cleared a 43.2 min ΔE76 against the other 6 skill
+   * hues, the new one clears 40.6 — a slight narrowing, still far above the
+   * 28 floor (see `styles/skillHueDistinctness.test.ts`). AA:
    * `--stone-ink` is (and was) a passthrough of `--stone` itself onto
    * `--stone-soft` (unchanged, `#1E182F`) — brightening the ink-twin only
    * widens that gap (6.77:1 -> 12.08:1, both comfortably over the 4.5:1

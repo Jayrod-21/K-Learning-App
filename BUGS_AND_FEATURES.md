@@ -1706,6 +1706,12 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 - **Key files:** `pages/Today.tsx` (carousel item ordering + initial index/scroll position), the peek-slider carousel (`.km-today__peekTrack` / SwipeCarousel initial-index prop), `pages/Today.css`.
 - **Fix hint:** reorder each carousel so the named skill sits in the center slot, and set the carousel's initial scroll/active index to that center card on mount (respect scroll-snap-align: center). Verify on a real phone.
 
+### F-191 · TOPIK's own page + mock mode carried the old accent/blue chrome (not its new stone hue)
+- **Status:** ✅ done (folded into the round-4 batch) · **Priority:** P3 · **Category:** design-system consistency
+- **Where / State:** After F-189 gave TOPIK its dedicated `stone` tone (tile + LEARN honeycomb), `pages/Topik.tsx` (×9) and `pages/topik/MockMode.tsx` (×6) still hardcoded `tone="accent"`/`tone="blue"` on their CityCard/Sheet chrome — so the TOPIK tile read stone but the TOPIK page read blue (a "one skill, two colors" split). Surfaced by the round-4 re-review.
+- **Resolution:** all 15 TOPIK-identity sites migrated to `SKILL_COLOR.topik.tone`; `sectionTone()` (reading/listening/writing exam-section differentiation) deliberately left (different axis). Also retuned TOPIK's Night hue #A69FBC → #DAD6ED ("white neon") to fit the Seoul-nightlife Night aesthetic while staying achromatic/distinct (min ΔE76 40.6, AA 12.08:1). Commit `b402008` on `feat/phone-round4`.
+- **Follow-up (non-blocking):** re-review suggested adding the `feat` prop to StartPage's exam-meta card so its pending-attempts pairing keeps the same hero/secondary weight the ExamChooser pair has (it now relies on stacking/headings alone). Minor polish — not shipped in this batch.
+
 ---
 
 <!-- Templates — copy when adding items.
