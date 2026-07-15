@@ -684,19 +684,19 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 #### ▸ Backend / DB
 
 ### F-022 · Database integrity + security audit, schema readiness for Wave 1
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATABASE (BACKEND) · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** DATABASE (BACKEND) · **Beta:** —
 - **What:** Verify the DB follows proper procedures and normalization: no duplications, no loopholes, nothing cheap or security-breachable. Confirm the schema will hold up under and support all newly added + Wave-1 features.
 - **Notes:** Run before/alongside the new-table work (ticketing F-023, lists F-048/F-061, uploads sub-pages F-053/F-056, writing history F-046/F-074).
 
 ### B-017 · Placeholders shown where real database data should render
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟡 partial (backend F-106 live but Mistakes.tsx WritingReviewSection still a "coming soon" stub — not wired into the page; re-verified 2026-07-15) · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** No placeholders on pages for areas that actually need to show database data. Sweep all pages and wire every such area to real data.
 - **Notes:** Same failure class as the earlier `useEndpointOrMock` fixture-as-real finding — treat as silently-broken, not cosmetic.
 
 #### ▸ All Pages
 
 ### F-023 · In-app ticketing / feedback system for beta testers
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (DATABASE, UI) · **Beta:** 🚩 blocker
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** BACKEND (DATABASE, UI) · **Beta:** 🚩 blocker
 - **What:** A ticketing place so beta-testing friends can report issues, concerns, bugs, suggestions, and requests. Users see their own previous tickets plus community tickets shown anonymously; tickets have date/time-stamped comments, an edit option for your own tickets, a type (bug/concern/suggestion/request), and a status field.
 - **Notes:** In-app feature, separate from this dev doc. Author IS stored (moderation) but hidden in the UI.
 
@@ -975,12 +975,12 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **What:** Change the Listen landing page to square tiles, 2 across and flowing down — ready for if/when more audio is added.
 
 ### B-025 · Verify TTMIK transcripts + highlights
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (UI) · **Beta:** —
+- **Status:** 🟡 partial (transcripts + highlights verified working; read-along highlight needs forced alignment — deferred) · **Priority:** P1 · **Category:** DATA (UI) · **Beta:** —
 - **What:** Verify the transcripts and the read-along highlights actually work for the TTMIK lessons.
 - **Notes:** Verify-class — check against real corpus content, not fixtures.
 
 ### B-026 · Missing audio investigation — ~10 TTMIK lessons + ~48 Iyagi episodes
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (BACKEND, CONFIG) · **Beta:** —
+- **Status:** 🟡 partial (root cause confirmed: ~58 mp3s absent from disk, loader correct; blocked on user-supplied audio) · **Priority:** P1 · **Category:** DATA (BACKEND, CONFIG) · **Beta:** —
 - **What:** All lessons/episodes are expected to have audio, but roughly 10 TTMIK lessons and 48 Iyagi episodes have no `audio_path`. Investigate why (missing source files vs bad ingest vs path mismatch) and restore the audio.
 - **Notes:** Investigation ticket — root-cause first, then repair. Corpus at `~/data/korean-master/corpus/`.
 
@@ -1084,7 +1084,7 @@ New tickets from Phase 0:
 - **Notes:** F-022 finding C1. Contained today (km-db has no host port, all SQL parameterized, single-user) but a latent RCE-class escalation if any SQL-exec leak ever appears.
 
 ### F-083 · DB hygiene cleanup migration
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
 - **What:** New migration: drop 6 redundant indexes (ix_diagnostic_responses_run_ordinal, ix_topik_items_test_number, ix_image_words_capture, ix_krdict_examples_sense, ix_krdict_senses_entry, ix_krdict_inflections_entry); export + drop the 2 orphan backup tables (topik_items_explanation_bak_20260706, _followup).
 - **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply. **Scope change (migration 045):** the audit's proposed FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` was DROPPED — the audit finding was wrong. `POST /grammar-drill` inserts the attempt row at generation time, but the grammar_entries row is only auto-banked at submit time, so a drill attempt for a not-yet-banked pattern is a legitimate state by design (the "5 orphan rows" were this state, not corruption); the FK would 500 the live drill route on every first drill of an unbanked pattern. The index/bak-table hygiene stands.
 
@@ -1109,7 +1109,7 @@ New tickets from Phase 0:
 - **Notes:** Surfaced by the dep-vuln /fixpass re-review. Non-blocking (CI currently runs Node 20.20.2 ≥20.19, so tests pass). Sibling of B-032.
 
 ### F-086 · App-wide px→rem font-size migration (makes the F-025 text-size setting fully effective)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** CONFIG (UI) · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** CONFIG (UI) · **Beta:** —
 - **What:** The F-025 text-size setting re-points the ROOT font-size, but almost all app text is pinned in px and ignores it: `client/src/styles/index.css` alone has ~256 `font-size: …px` declarations (0 rem) plus px font-sizes in the page/component CSS files (`Today.css`, `Progress.css`, `LineChart.css`, …) and ~20 inline `fontSize:` numbers in TSX. Migrate font-size declarations px→rem (÷16, keep the same rendered md size) so S/M/L visibly scales the whole app.
 - **Notes:** Unblocks F-025's real effect — today the setting only moves the rem-migrated Phase-1 primitives (BackButton/CollapsibleTile/Tabs/FilterSelect/ShowMore, converted in the Phase-1 fix-pass). Known-limitation notes live in `client/src/lib/text-size-presets.ts` and the index.css text-size block; Settings hint copy already worded honestly. Surfaced by the Phase-1 /fixpass text-size review (S1). New text should be authored in rem from day one.
 
@@ -1129,7 +1129,7 @@ New tickets from Phase 0:
 - **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030.
 
 ### F-090 · F-078 pre-046 attempt-history gap decision
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
 - **What:** Before migration 046, `topik_attempts` was a single overwrite-in-place slot per user, so **no historical attempts exist prior to 046** — the "Previous attempts" view (F-078/F-082) will start empty and only accrue history going forward. When building F-078, decide how to present this (e.g. accept the clean-start, or backfill a synthetic history row from `topik_responses` if desired).
 - **Notes:** Surfaced by the P2-G1 /fixpass re-review. Not a bug — a product decision for the F-078 build.
 
@@ -1179,7 +1179,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G3 /fixpass (writing/chat review coordination item — client slice, Phase-3).
 
 ### F-095 · Chat client slice for F-035/F-036 — "+" attach button + auto-name trigger
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** UI · **Beta:** —
 - **What:** The F-035/F-036 backends are live (`POST /conversation/:id/file` document attach; `POST /conversation/:id/name` auto-title — idempotent, race-safe, never clobbers a user rename; `PATCH /conversation/:id` rename) but the chat UI has neither the "+" attach button nor any auto-name call.
 - **Fix hint:** Add the "+" attach control (document branch → `/file` with `expected_version`; the image path already exists), and call `POST /conversation/:id/name` once after the first assistant reply. Repeat `/name` calls are free (no Claude spend) but still debit the expensive limiter — see the NIT in `db/docs/REVIEW_phase2g3_writing_chat.md` before wiring name-on-open.
 - **Notes:** Deferred from the P2-G3 /fixpass (Phase-3 client work by design).
@@ -1205,7 +1205,7 @@ New tickets from Phase 0:
 - **Notes:** Pairs with F-063 (grammar-mastery model). Progress Grammar tab is wired to accept a real panel with no further client rework.
 
 ### F-100 · Fix the stale `nav.ts` Uploads comment (fold into F-057–F-059)
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (DOC) · **Beta:** —
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P4 · **Category:** UI (DOC) · **Beta:** —
 - **What:** After F-039 removed Uploads from Settings, a comment in `client/src/lib/nav.ts` (~line 280) still says the Uploads page is "reached from Settings → Uploads." Left untouched during Phase 3A to avoid a shared-file edit across parallel branches. Fix it when `nav.ts` is next open — naturally, when Review→Uploads (F-057–F-059) lands and re-homes the entry point.
 
 ### F-101 · Carry a Today-generated writing topic into the Writing screen (F-027 → F-073 page half)
@@ -1418,81 +1418,81 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 - **Key files:** `client/src/styles/index.css` (tokens), new `client/src/components/*`, `client/src/hooks/accent-context.ts`.
 
 #### F-129 · Mobile responsiveness — horizontal overflow
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile
 - **Where:** Content clips off-screen-right on **Progress, Vocab, Grammar** (and audit all pages). Body must never scroll sideways; wide content gets its own `overflow-x:auto`.
 - **Fix hint:** mobile-first; relative units; `max-width:100%`; flex/grid + gap not fixed widths.
 
 #### F-130 · Mobile touch-swipe broken
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile
 - **Where:** Carousels + PDF viewer — swipe gestures don't register on touch. `components/SwipeCarousel.tsx` + PDF viewer (Uploads).
 
 #### F-131 · Accent-color hover states
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug
 - **Where:** Hover/active states are hardcoded red regardless of chosen accent; must follow `data-accent` (coral/blue/mint).
 
 #### F-132 · Auto-theme by time of day
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** feature
 - **What:** Optionally auto-switch Day/Night Seoul by local time (noted in `DESIGN_SEOUL_DAY_NIGHT.md`). Manual override always wins.
 
 ### Today
 
 #### F-133 · Tighten layout / reduce white space
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
 
 #### F-134 · Writing tile expands inline (not separate page)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
+- **Status:** 🔴 open (Writing inline-expand was reverted to a deep-link to /learn/writing — sole criterion unmet; re-verified 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
 
 #### F-135 · Tasks-title IA cleanup
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
 
 #### F-136 · Suggested learning = R/W/L/TOPIK + daily reading rotation
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Suggested-learning covers Reading/Writing/Listening/TOPIK, with the reading suggestion rotating daily.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** Suggested-learning covers Reading/Writing/Listening/TOPIK, with the reading suggestion rotating daily.
 
 #### F-137 · TOPIK progress bar — no highlights
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Where:** remove the highlight styling on the Today TOPIK progress bar.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** design · **Where:** remove the highlight styling on the Today TOPIK progress bar.
 
 #### F-138 · Per-tile daily progress bars tied to real daily exercises
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
 
 #### F-139 · Remove "words" tile
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
+- **Status:** ✅ done — SUPERSEDED (2026-07-15, user call: the removal was a misinterpretation; F-190 correctly restored the vocab tile as a first-class Today action — that IS the desired end state) · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
 
 #### F-140 · Hanja tile in the Today carousel
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
 
 ### Progress
 
 #### F-141 · Everything collapsible (TOPIK-compares default open)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Key files:** `pages/Progress.tsx`, `components/CollapsibleTile.tsx`
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Key files:** `pages/Progress.tsx`, `components/CollapsibleTile.tsx`
 
 #### F-142 · Better trend + data points on all graphs
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** richer trendlines and visible data points across every Progress chart.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** richer trendlines and visible data points across every Progress chart.
 
 #### F-143 · Remove "begin today's plan" + "gaps / next steps"
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop those two blocks from Progress.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** drop those two blocks from Progress.
 
 ### Library — Vocab
 
 #### F-144 · Remove leftover grammar UI from Vocab
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug · **Where:** F-047 removed WeeklySuggestions grammar but leftover `km-grammar__*` UI persists in Vocab ("WHY IS GRAMMAR IN HERE"). Grammar belongs only under Library→Grammar.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug · **Where:** F-047 removed WeeklySuggestions grammar but leftover `km-grammar__*` UI persists in Vocab ("WHY IS GRAMMAR IN HERE"). Grammar belongs only under Library→Grammar.
 
 #### F-145 · Vocab mobile responsiveness
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile · (see F-129)
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile · (see F-129)
 
 #### F-146 · Collapsible My Lists
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 #### F-147 · Create-list popup (vocab-only)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** create-list is a popup, scoped to vocab.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** create-list is a popup, scoped to vocab.
 
 #### F-148 · This-Week popup
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 #### F-149 · "Search for a word" label
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Where:** label the Vocab search field.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** design · **Where:** label the Vocab search field.
 
 #### F-150 · No grammar in All Words dictionary
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** All-Words dictionary must exclude grammar entries.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** All-Words dictionary must exclude grammar entries.
 
 #### F-151 · More genres
 - **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** expand the genre set in Vocab.
@@ -1500,77 +1500,77 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 ### Library — Grammar
 
 #### F-152 · Bank/banked → Mastered button + label
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** F-063 reworked the model but "Bank/banked" labels persist; replace with a Mastered button + mastery labeling.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** F-063 reworked the model but "Bank/banked" labels persist; replace with a Mastered button + mastery labeling.
 
 #### F-153 · 15-at-a-time
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** paginate grammar list 15 at a time (`usePagination`).
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** paginate grammar list 15 at a time (`usePagination`).
 
 ### Library — Mistakes
 
 #### F-154 · Square question-tiles, date-divided, click→popup
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** small square question-number tiles in a grid, divided by session/date; tap → popup with the question, your answer, jump-to-explanation.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** small square question-number tiles in a grid, divided by session/date; tap → popup with the question, your answer, jump-to-explanation.
 
 ### Library — Uploads
 
 #### F-155 · PDF mobile swipe
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile · (paired with F-130) — swipe/arrow page-turn on the PDF viewer must work on touch.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile · (paired with F-130) — swipe/arrow page-turn on the PDF viewer must work on touch.
 
 ### Flashcards
 
 #### F-156 · Add-to-review = 15, not 200
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** "add to review" batches 15, not 200.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** "add to review" batches 15, not 200.
 
 #### F-157 · Create-list popup (flashcards)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 ### Grammar practice
 
 #### F-158 · Pick a form to drill continuously
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** choose a single grammar form and drill it continuously (form-picker → endless drill).
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** choose a single grammar form and drill it continuously (form-picker → endless drill).
 
 ### TOPIK
 
 #### F-159 · Study/Mock chooser popup (semi-transparent)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** entering TOPIK shows a semi-transparent Study-vs-Mock chooser popup.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** entering TOPIK shows a semi-transparent Study-vs-Mock chooser popup.
 
 ### Listen
 
 #### F-160 · TTMIK / iyagi missing audio
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug · **Where:** audio not playing for TTMIK + iyagi sources.
+- **Status:** 🟡 partial (F-185 season-numbering fix shipped + tested, loader not re-run on live km-db; episodes #119/#236/#240 transcript gap) · **Priority:** P1 · **Category:** bug · **Where:** audio not playing for TTMIK + iyagi sources.
 
 #### F-161 · "Next page" not show-15
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Listen list uses next-page pagination instead of a show-15/expand.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** Listen list uses next-page pagination instead of a show-15/expand.
 
 #### F-162 · Preserve scroll on back
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** returning to the Listen list restores scroll position.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** returning to the Listen list restores scroll position.
 
 ### Writing
 
 #### F-163 · AI Prompt as top-level option
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** surface "AI Prompt" as a top-level Writing choice.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** surface "AI Prompt" as a top-level Writing choice.
 
 ### Hanja
 
 #### F-164 · Spacing
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Key files:** `pages/Hanja.tsx`
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** design · **Key files:** `pages/Hanja.tsx`
 
 #### F-165 · Drawing-drill anki right/wrong loop → mastery pool
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** drawing drill runs an Anki-style right/wrong loop feeding a mastery pool.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** drawing drill runs an Anki-style right/wrong loop feeding a mastery pool.
 
 #### F-166 · Create-list popup + Add-hanja picker
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 #### F-167 · Index tiles colored by mastery (green/yellow/red)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Hanja index tiles colored by mastery state.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** Hanja index tiles colored by mastery state.
 
 #### F-168 · Index "+"-to-list popup + "added to list" toast
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 #### F-169 · Index shows hangul sound, not the word
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · **Where:** index tile label shows the hangul reading/sound, not the gloss word.
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** index tile label shows the hangul reading/sound, not the gloss word.
 
 #### F-170 · Live progress bar (Hanja)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature
 
 ---
 
@@ -1579,19 +1579,19 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 Filed from the batch-1 /fixpass (Today+Progress). Each is an honest data/infra gap the pages currently handle by omitting rather than fabricating.
 
 #### F-171 · Hanja daily-attempt signal
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature/backend
 - **Where / State:** `services/hanja.ts` exposes only lifetime aggregate bands (`HanjaProgress`) — no per-attempt/per-day log. So Today's Hanja tile (F-140) can't show a real "done today" count like Grammar/Writing/TOPIK do (F-138). Needs a per-attempt Hanja history endpoint (mirror `/grammar-drill/attempts`).
 
 #### F-172 · Reading/Listening daily-attempt signal
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature/backend
 - **Where / State:** No attempt-history endpoint exists for Reading (`services/reading.ts`) or Listening (`services/ttmik.ts`), so Today's Reading/Listening suggestions (F-136) can't show a real per-day completion count. Add attempt logging + a history endpoint for each.
 
 #### F-173 · Resumed-TOPIK item-count for SubwayProgress
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Status:** 🟡 partial (backend totalItems on /topik/attempt shipped; Today.tsx still lacks the resumed-attempt SubwayProgress "X of N") · **Priority:** P3 · **Category:** feature
 - **Where / State:** `AttemptState` carries `answered` but no item-count total, and `sourceTest` alone is ambiguous between TOPIK I/II. A real `SubwayProgress` for a resumed exam on Today needs a total (item count) wired through `/plan/today` or `/topik/attempt`, or a safe `sourceTest`+`topikLevel`→itemCount lookup.
 
 #### F-174 · Shared LineChart trend-line prop for Progress skill carousel
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** feature
 - **Where / State:** F-142 added the least-squares trend line only to Progress's own `TrendChart`. The 5 skill-carousel charts render via the shared `components/LineChart.tsx` (already shows dots+line+area). Add an optional trend-line/regression prop to `LineChart` so the skill charts get F-142 parity. Shared component — was out of scope for the batch's page-only builders.
 
 ---
@@ -1601,15 +1601,15 @@ Filed from the batch-1 /fixpass (Today+Progress). Each is an honest data/infra g
 Filed from the batch-2 /fixpass (Library). Two need server work (client display is already honest); one is a consistency migration.
 
 #### F-175 · Dictionary grammar-exclusion: server-side WHERE clause for exact pager
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** bug/backend
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** bug/backend
 - **Where / State:** F-150 excludes grammar POS rows (`어미`/`조사`) client-side, so no grammar ever renders — but the server's `total`/page range is computed BEFORE the exclusion, so a grammar-heavy page can render short and the "N–M of T" count can be slightly off. Add `WHERE part_of_speech NOT IN ('어미','조사')` to the dictionary query in `server/src/routes/krdict.ts` (sole consumer — safe surgical change) so pager counts are exact.
 
 #### F-176 · Vocab genre/theme filter — promote `theme` to a filterable facet (was F-151)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature/backend
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature/backend
 - **Where / State:** F-151 "more genres" can't be done client-side — `content_domain` is a real 3-value Postgres enum (`general`/`research`/`business`). The richer signal is `vocab_entries.theme` (~30 real per-book categories, ~3,000 tagged rows) but `GET /vocab/entries` has no `theme` filter param. Add `theme` as a filterable facet in `server/src/routes/vocab.ts` + `lib/libraryFilters.ts` (shared with the Grammar pages), then surface it in the Vocab genre filter.
 
 #### F-177 · Migrate Today + Progress headers to shared PageHubHeader
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** refactor
 - **Where / State:** The batch-2 fixpass extracted the hub-header recipe (SkylineHeader title slot + DancheongRail divider) into shared `components/PageHubHeader.tsx`, adopted on all 7 Library pages. Today.tsx + Progress.tsx still use their own inline copy of the recipe — migrate them to `PageHubHeader` so the header lives in exactly one place and can't drift.
 
 ---
@@ -1619,7 +1619,7 @@ Filed from the batch-2 /fixpass (Library). Two need server work (client display 
 Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All low-priority polish/test-coverage; none block anything.
 
 #### F-178 · Adopt shared `ochre` tone on Today's Hanja tile
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** refactor
 - **Where / State:** Batch-3 added a shared `ochre` value to the CityCard/SubwayProgress/DancheongRail `tone` enum and adopted it on the Hanja page. Today.tsx's Hanja tile still uses the `plain` fallback (the pre-`ochre` workaround). Migrate it to `tone="ochre"` — fold into F-177 (Today/Progress header migration) if convenient.
 
 #### F-179 · SwipeCarousel `onChange`/settled-index prop (+ document F-130 on Flashcards)
@@ -1627,15 +1627,15 @@ Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All
 - **Where / State:** Swipe-to-advance on the Flashcards study card can't be built because shared `SwipeCarousel` exposes no `onChange`/settled-index prop (a parent can't observe a swipe settling). Low priority — F-130's real targets (carousels + PDF) already work; flashcard-swipe was self-invented scope, the mock never asked for it. If ever wanted, add the prop. Also add a one-line doc comment near `StudySession` in `Review.tsx` noting why flashcards don't swipe-advance.
 
 #### F-180 · Hanja StateChip "Practicing" tone mismatch (vermilion vs ochre)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** bug/design
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** bug/design
 - **Where / State:** `Hanja.tsx:721-726` — the "Practicing" `StateChip` still reads `tone="vermilion"` (accent-tracking) while the index grid two paragraphs below now reads the fixed `--ochre-ink` (from the B2 AA fix). So the same "Practicing" concept shows two different colors on one page. Point the chip at the same mastery token as the grid.
 
 #### F-181 · Hanja `masteredCount` label imprecision on no-op reconfirmation
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** bug
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P4 · **Category:** bug
 - **Where / State:** `Hanja.tsx:2482-2492,2639` — a right answer on an already-mastered character still increments the displayed "N of M mastered" copy on a no-op reconfirmation (the underlying state write is correctly a no-op; only the label is imprecise).
 
 #### F-182 · Hanja `promoteState` no-op branch test coverage
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** test
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P4 · **Category:** test
 - **Where / State:** the `promoteState` no-change guard (right answer on an already-banked/mastered char = no write) has no test in `Hanja.test.tsx`. Add one so a regression that double-writes or mis-promotes would be caught.
 
 ---
@@ -1645,11 +1645,11 @@ Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All
 The final page-rework batch's fixpass found the app is "one batch + two files from truly one app," plus the real fix for the Listen audio.
 
 #### F-183 · Reskin MockMode.tsx (TOPIK timed-exam body) to Seoul
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design
 - **Where / State:** `MockMode.tsx` (the TOPIK timed-exam flow) is still on the legacy flat look but is reached straight from batch B's new Study/Mock chooser Sheet — the app's most jarring flat→Seoul seam mid-flow. Reskin it to the shared kit (PageHubHeader/CityCard/tokens) to match Topik.tsx.
 
 #### F-184 · Reskin Images.tsx — last legacy flat Topbar page
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** design
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** design
 - **Where / State:** `Images.tsx` is the last page in the app still using the legacy flat `Topbar` instead of the shared `PageHubHeader` + Seoul kit. Bring it onto the shared header + character devices so every page is uniform.
 
 #### F-185 · Backend/ingest: Listen (TTMIK/Iyagi) audio coverage — Iyagi season-numbering bug (RE-SCOPED, partially fixed) [F-160 real fix]
@@ -1666,7 +1666,7 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 ## 🔎 Wave 2 follow-up — surfaced by the cleanup fix-pass
 
 #### F-186 · Migrate WordPopover.tsx to the shared tone-aware Sheet
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** refactor · post-beta
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** refactor · post-beta
 - **Where / State:** `components/WordPopover.tsx` (the app's most-used popup — Reading/Grammar/Hanja/Listen/Images all consume it) still renders bespoke `role="dialog"` chrome instead of the now-tone-aware shared `Sheet`. It already has full a11y parity (focus trap, Esc/backdrop, restore-focus). Migrating it is the last "promote to shared primitive" of the redesign — a cross-page refactor, so deferred post-beta.
 
 ---
@@ -1674,32 +1674,32 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 ## 📱 Phone round 4 — live beta feedback (filed 2026-07-14)
 
 ### B-036 · Settings → Appearance text-size (S / M / L) does nothing
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · regression
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · regression
 - **Where:** Settings → Appearance → text size control. Selecting Small / Medium / Large has no visible effect on the app's type scale. This is the F-025 Phase-1 primitive (global text-size setting) — built and gate-green, but not actually resizing anything on device.
 - **Root cause (suspect):** the documented px→rem limitation — the root `[data-text-size]` font-size scales only `rem`-based type, but most of the app's text uses hardcoded `km-*` px font-sizes that don't respond to the root scale. So the S/M/L control changes `--?`/root font-size but the visible copy is pinned in px. (Was flagged as a known limitation → F-086 px→rem sweep.) Verify the control is even writing the attribute + persisting the pref, THEN address the px→rem coverage so the setting produces a real, obvious size change.
 - **Key files:** `hooks/TextSizeProvider.tsx`, `lib/text-size-presets.ts`, `client/index.html` (data-text-size bootstrap), `client/src/styles/index.css` (`[data-text-size]` root font-size), `pages/Settings.tsx`; the px-based `km-*` font-size declarations across component CSS (F-086 sweep).
 - **Fix hint:** confirm the two-way pref sync works (attribute set + persisted + rehydrated), then convert the dominant px font-sizes to `rem` (or a `clamp()`/scale token driven by the root) so M→L is unmistakable. Ship with a real on-device size delta, not just an attribute flip.
 
 ### F-187 · Today — excess vertical gap between "Suggested Learning" and "TOPIK"
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** ui-polish
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** ui-polish
 - **Where / State:** Today page still has way too much whitespace between the Suggested-Learning carousel section and the TOPIK section. (Earlier spacing pass tightened it but not enough.)
 - **Key files:** `pages/Today.tsx`, `pages/Today.css` (section gap / carousel bottom margin between the Suggested-Learning block and the TOPIK block).
 - **Fix hint:** reduce the inter-section gap specifically at that boundary; verify on a real phone viewport, not just jsdom.
 
 ### F-188 · Today — stray small blue line above-and-left of "Review & Drills"
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** ui-polish
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** ui-polish
 - **Where / State:** a small blue line/rule appears just above and to the left of the "Review & Drills" section header on Today. Looks unintentional (leftover rail/divider/accent decoration). Remove it.
 - **Key files:** `pages/Today.tsx` / `pages/Today.css` (section-header decoration — likely a DancheongRail/SubwayProgress accent stub, a `::before`, or a stray hub-header rail on that block).
 - **Fix hint:** identify the element rendering the blue line and remove it (or the CSS rule); confirm nothing else depended on it.
 
 ### F-189 · Distinct per-skill highlight colors — shared across Today tiles AND the LEARN honeycomb
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design-system · cross-cutting
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design-system · cross-cutting
 - **Where / State:** The six skill surfaces — **Vocab, Grammar, Hanja, Reading, Listening, Writing** — currently share too-similar highlight colors (lots of blue, and the greens are barely distinguishable). Give EACH skill its own clearly-distinct highlight color. The SAME color must be used for a given skill in BOTH places: the Today-page tiles AND the LEARN launcher honeycombs (each hexagon its own color). One skill→color map, consumed by both surfaces, so a skill reads as the same color everywhere.
 - **Key files:** a new/central per-skill color token map in `client/src/styles/index.css` (or a `skill-colors` module); Today tile components (`pages/Today.tsx` + CSS, `CityCard`/tile highlight); the LEARN hexagon launcher (honeycomb component + CSS). Must respect both themes (Day/Night) and stay WCAG-AA.
 - **Fix hint:** define one canonical `--skill-<name>` accent set (6 visually-separated hues, AA-checked in light + dark), then wire both the Today tiles and the LEARN honeycombs to it. No hardcoded per-surface hex — single source of truth.
 
 ### F-190 · Center the default carousel card — Review & Drills → Vocab, Suggested Learning → Reading
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** ui-polish
+- **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** ui-polish
 - **Where / State:** On landing on Today, both swipeable carousels should open centered on a specific middle card, not the first card:
   - **Review & Drills:** put **Vocab** in the middle and make it the default centered/landing card.
   - **Suggested Learning:** put **Reading** in the middle and make it the default centered/landing card.
