@@ -19,6 +19,26 @@
  * deep inside the `<Outlet/>`) and the reader (ChatFab, shell chrome) sit
  * under one provider without lifting the flag to App.
  *
+ * DEVICE-ADAPTIVE CHROME (device-adaptive epic, Phase D0 — approved
+ * Option A nav model): `useDeviceClass()` decides which primary-nav chrome
+ * mounts.
+ *   - mobile (<768px, unchanged): the sticky `BottomNav` + center LEARN
+ *     hexagon, with `LearnMenu` overlaying it when open, exactly as before
+ *     this phase.
+ *   - tablet/desktop (≥768px): a persistent left `Sidebar` rail instead —
+ *     LEARN's 7 sub-pages are flattened into a visible section there, so
+ *     there is no launcher to open and `LearnMenu` is simply never
+ *     rendered. The LearnMenu open/close phase machine below is left
+ *     completely untouched: it costs nothing to keep running when nothing
+ *     reads `learnPhase` (no hexagon exists to toggle it, so it just sits
+ *     at 'closed' forever on desktop), and NOT touching it is what
+ *     guarantees zero behavior change to the existing mobile state
+ *     machine — only the render branch below is new.
+ *   - A one-time root wrapper (`.km-appframe`) sits above the existing
+ *     `.km-shell` column so the `Sidebar` can sit BESIDE it in a row at
+ *     ≥768px; the wrapper is `display: contents` (i.e. invisible to layout)
+ *     below that, so mobile's rendered box tree is unaffected.
+ *
  * LEARN MENU LIFECYCLE — a three-state machine (honeycomb motion polish):
  *
  *     'closed' ──open──▶ 'open' ──close request──▶ 'closing' ──▶ 'closed'
@@ -63,7 +83,9 @@ import { BottomNav } from './BottomNav';
 import { ChatFab } from './ChatFab';
 import { FeedbackFab } from './FeedbackFab';
 import { LearnMenu, LEARN_MENU_EXIT_MS } from './LearnMenu';
+import { Sidebar } from './Sidebar';
 import { ExamActiveProvider } from '../hooks/ExamActiveProvider';
+import { useDeviceClass } from '../hooks/useDeviceClass';
 
 /** DOM id linking the hexagon's `aria-controls` to the LearnMenu panel. */
 const LEARN_MENU_ID = 'km-learn-menu';
@@ -101,6 +123,11 @@ function closeTarget(): LearnPhase {
 export function Shell(): JSX.Element {
   const [learnPhase, setLearnPhase] = useState<LearnPhase>('closed');
   const location = useLocation();
+  // Device-adaptive epic Phase D0: the only render branch this phase adds.
+  // 'mobile' keeps today's bottom-bar + hexagon chrome; tablet/desktop swap
+  // in the persistent Sidebar rail (Option A).
+  const deviceClass = useDeviceClass();
+  const sidebarLayout = deviceClass !== 'mobile';
 
   // Safety net: close the menu on any route change (browser back/forward,
   // programmatic navigation from a page, tile activation — tiles navigate
@@ -151,29 +178,36 @@ export function Shell(): JSX.Element {
 
   return (
     <ExamActiveProvider>
-      <div className="km-shell">
-        <div className="km-shell__statusbar" aria-hidden="true" />
-        <main className="km-shell__scroll">
-          <Outlet />
-        </main>
-        <ChatFab />
-        <FeedbackFab />
-        <div className="km-shell__nav">
-          <BottomNav
-            learnOpen={learnPhase === 'open'}
-            learnClosing={learnPhase === 'closing'}
-            onToggleLearn={toggleLearn}
-            learnMenuId={LEARN_MENU_ID}
-          />
+      <div className="km-appframe">
+        {sidebarLayout ? <Sidebar /> : null}
+        <div className="km-shell">
+          <div className="km-shell__statusbar" aria-hidden="true" />
+          <main className="km-shell__scroll">
+            <Outlet />
+          </main>
+          <ChatFab />
+          <FeedbackFab />
+          {sidebarLayout ? null : (
+            <>
+              <div className="km-shell__nav">
+                <BottomNav
+                  learnOpen={learnPhase === 'open'}
+                  learnClosing={learnPhase === 'closing'}
+                  onToggleLearn={toggleLearn}
+                  learnMenuId={LEARN_MENU_ID}
+                />
+              </div>
+              {learnPhase !== 'closed' ? (
+                <LearnMenu
+                  id={LEARN_MENU_ID}
+                  onClose={closeLearn}
+                  closing={learnPhase === 'closing'}
+                  onExited={onLearnExited}
+                />
+              ) : null}
+            </>
+          )}
         </div>
-        {learnPhase !== 'closed' ? (
-          <LearnMenu
-            id={LEARN_MENU_ID}
-            onClose={closeLearn}
-            closing={learnPhase === 'closing'}
-            onExited={onLearnExited}
-          />
-        ) : null}
       </div>
     </ExamActiveProvider>
   );

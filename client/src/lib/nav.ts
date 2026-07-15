@@ -388,6 +388,41 @@ export function navItem(id: NavItemId): NavItem {
 }
 
 /**
+ * Map the current URL to the "active" id among a caller-supplied set of nav
+ * ids, or null if none match — longest-prefix, path-boundary match.
+ *
+ * Device-adaptive epic (Phase D0): shared by `BottomNav` (over
+ * `PRIMARY_TAB_IDS`) and `Sidebar` (over its wider flattened set — primary
+ * tabs + the 7 LEARN sub-pages) so both surfaces agree on exactly one "you
+ * are here" rule instead of maintaining two copies that could drift. A bare
+ * `startsWith(it.path)` would also light e.g. Review for a plausible future
+ * sibling route like `/review-history` — matching only on exact equality or
+ * a real `/` segment boundary avoids that, and "longest prefix wins" lets a
+ * more specific candidate (e.g. `/learn/vocab`) beat a shorter one that also
+ * happens to prefix-match the same path.
+ */
+export function matchActiveNavId<T extends NavItemId>(
+  pathname: string,
+  ids: ReadonlyArray<T>,
+): T | null {
+  let best: { id: T; len: number } | null = null;
+  for (const id of ids) {
+    const it = navItem(id);
+    const matches =
+      it.path === '/'
+        ? pathname === '/'
+        : pathname === it.path || pathname.startsWith(`${it.path}/`);
+    if (matches) {
+      const len = it.path.length;
+      if (!best || len > best.len) {
+        best = { id, len };
+      }
+    }
+  }
+  return best?.id ?? null;
+}
+
+/**
  * Best-effort human label for an app pathname (F-127: the global "!"
  * feedback FAB, `FeedbackFab.tsx`, stamps the current page's name onto a
  * filed ticket's `source_page`; `Tickets.tsx` re-derives the SAME label at
