@@ -94,10 +94,15 @@
  *
  * Everything real stays real: per-tile "done today" counts come from
  * actual attempt-history endpoints, never a fabricated target or a
- * landing-page-visit counter. `SubwayProgress` (device #5) is deliberately
- * NOT used here for the same reason as before the restructure — no genuine
- * multi-step total this page could show is available client-side without
- * fabricating a denominator; tracked in `BUGS_AND_FEATURES.md`.
+ * landing-page-visit counter. `SubwayProgress` (device #5) rides the TOPIK
+ * tile once a saved in-progress exam exists (F-173): `GET /topik/attempt`
+ * now resolves a real `AttemptState.totalItems` (the exam's served item
+ * count, server-computed) alongside the pre-existing `answered`, so the
+ * resumed attempt's real position/total is known client-side — no
+ * denominator is fabricated. `totalItems` falls back to `answered` itself
+ * (a real lower bound, never a guess above what's known) on the rare case
+ * the backing corpus paper can't be re-resolved server-side, or on a
+ * pre-F-173 fixture that predates the field.
  *
  * Layout, top to bottom:
  *   1. Shared `PageHubHeader` (F-177) — `SkylineHeader` carrying the real h1
@@ -171,6 +176,7 @@ import { SwipeCarousel } from '../components/SwipeCarousel';
 import { PageHubHeader } from '../components/PageHubHeader';
 import { CityCard, type CityCardTone } from '../components/CityCard';
 import { SealStamp } from '../components/SealStamp';
+import { SubwayProgress } from '../components/SubwayProgress';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
@@ -630,12 +636,39 @@ export function Today(): JSX.Element {
   const gapTag: TodayTask['tag'] = today.data?.largestGap ?? 'Listening';
 
   const openAttempt = attempt.data ?? null;
+  // F-173 — the exam's real served item count. Falls back to `answered`
+  // itself (a real lower bound the server already computed) rather than
+  // fabricating a total above what's actually known — same posture as the
+  // server's own `resolveServedTotal` fallback (topik.ts).
+  const resumeTotalItems = openAttempt?.totalItems ?? openAttempt?.answered ?? 0;
+  // F-173 fix-pass SHOULD-FIX #1 — `hasRealTotal` distinguishes a REAL
+  // server-resolved `totalItems` from the `?? answered` fallback above. The
+  // wire contract can't (yet) tell "the exam truly has exactly N items"
+  // apart from "we don't know the total, here's a lower bound" once
+  // `totalItems` is present (that's a server-side gap, out of scope for this
+  // client-only diff — see REVIEW_phaseA-today.md SHOULD-FIX #2) — but when
+  // `totalItems` is altogether ABSENT (pre-F-173 fixture data), we know for
+  // certain we're in the fallback, and must not render "of N" / a ~100%-full
+  // bar next to the "Resume exam" CTA, which would read as "exam complete."
+  const hasRealTotal = openAttempt?.totalItems !== undefined;
+  const resumeAnsweredEn =
+    openAttempt === null
+      ? ''
+      : hasRealTotal
+        ? `${String(openAttempt.answered)} of ${String(resumeTotalItems)} answered`
+        : `${String(openAttempt.answered)} answered`;
+  const resumeAnsweredKr =
+    openAttempt === null
+      ? ''
+      : hasRealTotal
+        ? `${String(resumeTotalItems)}문항 중 ${String(openAttempt.answered)}개 답변함`
+        : `${String(openAttempt.answered)}개 답변함`;
   const resumeBanner =
     openAttempt !== null ? (
       <button
         type="button"
         className="km-today__resume focusring"
-        aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${String(openAttempt.answered)} answered`}
+        aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${resumeAnsweredEn}`}
         onClick={() => {
           // `?mode=mock` skips Topik.tsx's Study/Mock chooser sheet
           // (chooserOpen is seeded from `searchParams.get('mode') === null`)
@@ -1014,6 +1047,40 @@ export function Today(): JSX.Element {
                 navigate('/learn/topik');
               }}
             />
+            {/* F-173 — the resumed attempt's real "X of N" position, once
+                `GET /topik/attempt` resolved a saved in-progress exam. Bar +
+                numeric readout (same pairing as Hanja.tsx's F-170 study-drill
+                bar) — the dots alone don't spell out the exact count once a
+                paper's item count exceeds SubwayProgress's dot-render cap.
+                F-173 fix-pass SHOULD-FIX #1 — this "X of N" + bar treatment
+                is ONLY honest when `totalItems` is a real server value
+                (`hasRealTotal`); the `?? answered` fallback renders a plain
+                "N answered" line instead, with no "of N" and no bar (a bar
+                built from `totalItems ?? answered` always fills ~100%,
+                which reads as "exam complete" beside the "Resume exam" CTA
+                — see the `hasRealTotal` comment above). */}
+            {openAttempt !== null ? (
+              <div className="km-today__resumeProgress">
+                {hasRealTotal ? (
+                  <>
+                    <SubwayProgress
+                      steps={resumeTotalItems}
+                      current={openAttempt.answered}
+                      tone={SKILL_COLOR.topik.tone}
+                      label="Resumed exam progress"
+                      valueText={resumeAnsweredEn}
+                    />
+                    <div className="km-today__resumeProgressCount">
+                      <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="km-today__resumeProgressCount">
+                    <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
+                  </div>
+                )}
+              </div>
+            ) : null}
             <div className="km-today__topikExtra">
               <button
                 type="button"

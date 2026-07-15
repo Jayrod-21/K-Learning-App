@@ -17,14 +17,24 @@
  * Left alone, the browser drops keyboard focus to `<body>` when a focused
  * element is removed from the DOM, forcing a keyboard user to re-traverse
  * the whole document to reach what they just revealed. Instead of
- * rendering `null`, the exhausted state renders a visually-hidden,
- * non-tab-stop stand-in (`tabIndex={-1}`) in the button's place, and an
- * effect moves focus onto it exactly when the transition happens with the
- * button focused. A list that starts already-exhausted (mouse user, or a
- * page that never had a "more" state) never had a button to lose focus
- * from, so the effect leaves focus alone in that case. This fixes the
- * primitive once for every consumer (Progress, ReviewVocab, Listen) —
- * do not re-solve this per-page.
+ * rendering `null`, the exhausted state renders a non-tab-stop stand-in
+ * (`tabIndex={-1}`) in the button's place, and an effect moves focus onto
+ * it exactly when the transition happens with the button focused. A list
+ * that starts already-exhausted (mouse user, or a page that never had a
+ * "more" state) never had a button to lose focus from, so the effect
+ * leaves focus alone in that case. This fixes the primitive once for every
+ * consumer (Progress, ReviewVocab, Listen) — do not re-solve this per-page.
+ *
+ * F-121 — the stand-in used to be `.km-sr-only` (clipped to 1px, off the
+ * visible canvas). That fixed the FOCUS-LOSS defect (a screen-reader user
+ * still landed somewhere sensible) but left a fresh WCAG 2.4.7 (visible
+ * focus) violation in its place: a sighted keyboard user who tabbed/clicked
+ * "Show more" into extinction had focus silently vanish from the screen —
+ * strictly better than `<body>`, but still not "visible". The stand-in now
+ * renders as normal in-flow, visible text (`.km-showmore__done`, muted
+ * "quiet" styling matching the button it replaces) in the exact position
+ * the button occupied, so the handed-off `.focusring` outline lands on
+ * something the user can actually see.
  *
  * No I/O — no threat model.
  */
@@ -57,7 +67,7 @@ export function ShowMore({
   className,
 }: ShowMoreProps): JSX.Element {
   const wasVisibleRef = useRef(canShowMore);
-  const focusCatchRef = useRef<HTMLSpanElement | null>(null);
+  const focusCatchRef = useRef<HTMLParagraphElement | null>(null);
 
   useEffect(() => {
     const wasVisible = wasVisibleRef.current;
@@ -69,9 +79,13 @@ export function ShowMore({
 
   if (!canShowMore) {
     return (
-      <span ref={focusCatchRef} tabIndex={-1} className="km-sr-only">
+      <p
+        ref={focusCatchRef}
+        tabIndex={-1}
+        className="km-showmore__done focusring"
+      >
         All items shown
-      </span>
+      </p>
     );
   }
 

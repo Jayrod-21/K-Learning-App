@@ -181,7 +181,7 @@
   width: 70%;
 }
 
-/* ── F-046 writing-review section (stubbed — ticket F-106) ─────────────── */
+/* ── F-046/B-017 writing-review section (real history, F-106) ──────────── */
 .km-mistakes__writing {
   display: flex;
   flex-direction: column;
@@ -195,9 +195,42 @@
   font-weight: 700;
 }
 
-/* Honest "coming soon" body copy. --paper-dim, not -mute: real content. */
-.km-mistakes__stub {
-  font-size: 0.875rem;
-  line-height: 1.6;
+/* One graded-writing history row (`.km-reference__row`'s inner content —
+ * mirrors ReviewVocab.tsx's `.km-resources__entry-row` shape: a shrinking
+ * text column + a fixed-width score pill). */
+.km-mistakes__writingRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+.km-mistakes__writingRow-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.km-mistakes__writingRow-prompt {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--paper);
+  /* Task prompts / generated topics can run long — clamp to 2 lines rather
+   * than pushing the score pill off the row or forcing horizontal scroll. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.km-mistakes__writingRow-meta {
+  font-size: 0.75rem;
   color: var(--paper-dim);
+}
+
+.km-mistakes__writingRow-score {
+  flex: none;
+  white-space: nowrap;
 }
