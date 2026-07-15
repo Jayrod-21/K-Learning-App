@@ -3,6 +3,17 @@
 Express + TypeScript API for the Korean Master app. Owns auth, sessions,
 Postgres access, and proxies for the Kiwi (B1) and Claude (B4) services.
 
+## Requirements
+
+- Node **>=20.19** (declared in `package.json`'s `engines`). Prod/CI/Docker all
+  run Node 22 (`server/Dockerfile`, `.github/workflows/ci.yml`,
+  `Deploy/local-test.sh`) — 22 is the intended runtime. The `engines` floor is
+  set to 20.19 rather than `>=22` so `npm ci`/`npm install` don't hard-fail on
+  a host still running Node 20.x (uuid@14's actual undeclared floor, per its
+  `require(esm)` support — see the rationale comment atop `server/Dockerfile`);
+  it does not weaken the CI/Docker guarantee, since those environments already
+  pin the 22 image/action version directly. (F-085)
+
 ## Stack
 
 - TypeScript (strict mode, `noUncheckedIndexedAccess`)

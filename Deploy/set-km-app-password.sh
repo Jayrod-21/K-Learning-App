@@ -75,16 +75,34 @@ main() {
     # Verify end-to-end: authenticate AS km_app (password auth over the
     # container's host socket — same auth path the app uses) and confirm the
     # session is NOT superuser. Same stdin discipline for the secret.
+    #
+    # F-126 FIX: this used to build the expected value with
+    # `(SELECT rolsuper ...)` concatenated into the string via `||` and compare
+    # the result to the literal 'km_app:f'. That literal is wrong: `-tAc`'s
+    # unaligned 't'/'f' rendering only applies when a boolean is returned
+    # DIRECTLY as an output column. Once a boolean is concatenated (or CAST) into
+    # text inside the query, Postgres uses its bool-to-text conversion, which
+    # renders 'true'/'false' — so the query actually produced 'km_app:false' and
+    # the `!=` check false-failed on every correctly-configured, non-superuser
+    # km_app (confirmed against a throwaway postgres:16-alpine container: a bare
+    # `SELECT rolsuper ...` column prints 't', but
+    # `SELECT ... || (SELECT rolsuper ...)` prints '...true'/'...false').
+    # This aborted the Wave-1 deploy (2026-07-11) even though km_app was fine.
+    #
+    # Fix: sidestep the cast ambiguity entirely with an explicit CASE that
+    # renders its own unambiguous, self-documenting tokens ('super'/'nonsuper')
+    # instead of relying on which of Postgres's several bool->text renderings
+    # applies in a given expression position.
     log_info "verifying km_app can authenticate and is not a superuser"
     local verify
     verify="$(printf '%s\n' "$KM_APP_PASSWORD" | docker exec -i km-db sh -ec '
         IFS= read -r PGPASSWORD
         export PGPASSWORD
         exec psql -h 127.0.0.1 -U km_app -d "$POSTGRES_DB" -tAc \
-            "SELECT current_user || chr(58) || (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)"
+            "SELECT current_user || chr(58) || (CASE WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN '"'"'super'"'"' ELSE '"'"'nonsuper'"'"' END)"
     ')"
-    if [[ "$verify" != "km_app:f" ]]; then
-        log_err "set-km-app-password: verification failed (got '${verify}', expected 'km_app:f')."
+    if [[ "$verify" != "km_app:nonsuper" ]]; then
+        log_err "set-km-app-password: verification failed (got '${verify}', expected 'km_app:nonsuper')."
         return 1
     fi
 

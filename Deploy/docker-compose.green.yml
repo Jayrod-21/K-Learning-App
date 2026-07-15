@@ -153,7 +153,7 @@ services:
     # Readiness signal the orchestrator polls — deployment-utils.sh wait_healthy
     # km-server-green gates the deploy on this (C-SF1). GET /health is unauthenticated
     # and returns 200/503 (server/src/routes/health.ts). Uses node (guaranteed in the
-    # node:20-alpine runtime) rather than assuming a wget/curl binary. start_period is
+    # node:22-alpine runtime) rather than assuming a wget/curl binary. start_period is
     # generous: the server waits on km-db + km-kiwi at boot.
     healthcheck:
       test:

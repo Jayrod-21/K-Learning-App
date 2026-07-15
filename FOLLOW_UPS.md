@@ -50,7 +50,7 @@ Consider promoting the audits to HARD gates once these are clean (bar wants SCA 
 ## Test-suite polish (from /fixpass reviews — deferred nits)
 - Move the `grammarKey` unit tests out of `Reference.test.tsx` into a dedicated
   file (R3 nit).
-- `local-test.sh`: pin `node:20-slim` / `python:3.12` by digest; make `db_suite`'s
+- `local-test.sh`: pin `node:22-slim` / `python:3.12` by digest; make `db_suite`'s
   inlined pin set track a manifest (N1, N6).
 
 ## Tester-sweep deferred items (2026-07-05, see db/docs/SWEEP_*.md)
