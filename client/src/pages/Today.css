@@ -22,7 +22,15 @@
 
 /* F-177 — the header (skyline strip + real <h1> + dancheong-rail divider)
  * is now the shared `PageHubHeader` component; its own margins/rail geometry
- * live in `components/PageHubHeader.css`, not here. */
+ * live in `components/PageHubHeader.css`, not here. This page's title
+ * carried one extra step of bottom margin (`4px 0 14px` vs the shared
+ * recipe's `4px 0 0`) before the migration — restored here via the
+ * `className` PageHubHeader forwards onto its root (same pattern as
+ * Progress.css's `.km-progress__hub`), so the migration is byte-for-byte
+ * visually, not just structurally. */
+.km-today__hub .km-hubheader__title {
+  margin-bottom: 14px;
+}
 
 /* Section titles — Carousel headers (Review & drills / Suggested learning /
  * TOPIK). Direct user feedback on the live app: these used to render through

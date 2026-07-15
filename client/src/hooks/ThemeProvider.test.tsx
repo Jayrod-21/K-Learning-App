@@ -21,9 +21,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import type { JSX, ReactNode } from 'react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { ThemeProvider } from './ThemeProvider';
 import { useTheme } from './useTheme';
-import { resolveAutoTheme, THEME_STORAGE_KEY } from './theme-context';
+import {
+  AUTO_DAY_END_HOUR,
+  AUTO_DAY_START_HOUR,
+  resolveAutoTheme,
+  THEME_STORAGE_KEY,
+} from './theme-context';
 
 // ─── matchMedia harness ───────────────────────────────────────────
 // A controllable prefers-color-scheme matcher. `setSystemDark` flips the
@@ -305,5 +313,31 @@ describe('resolveAutoTheme (pure function, F-132)', () => {
     const night = new Date('2026-07-14T21:30:00');
     expect(resolveAutoTheme(morning)).toBe('light');
     expect(resolveAutoTheme(night)).toBe('dark');
+  });
+});
+
+describe("'auto' boundary sync: index.html's no-flash bootstrap vs. theme-context.ts (F-132, SHOULD-FIX-1)", () => {
+  // The 06:00/18:00 Day/Night Seoul boundary is hand-duplicated in TWO
+  // places: `resolveAutoTheme`'s AUTO_DAY_START_HOUR/AUTO_DAY_END_HOUR
+  // constants above (the real, tested logic React runs after mount) and a
+  // literal `hour >= 6 && hour < 18` inside `index.html`'s inline no-flash
+  // bootstrap `<script>` (which can't import a TS module, so it can't just
+  // reference the constants directly). Both files' own comments call out
+  // the duplication and ask a future editor to update both — but a comment
+  // is not a guard. This test reads index.html's actual source (same
+  // readFileSync-from-source pattern already used for CSS pins elsewhere,
+  // e.g. Hanja.test.tsx's cross-file `--km-mastery-practicing` token check)
+  // and asserts its literal boundary numbers still equal the TS constants,
+  // so an edit to one side without the other fails CI instead of silently
+  // flashing the wrong theme on load.
+  it("index.html's bootstrap script uses the same hour boundary as AUTO_DAY_START_HOUR/AUTO_DAY_END_HOUR", () => {
+    const html = readFileSync(join(cwd(), 'index.html'), 'utf8');
+
+    const boundaryMatch = /hour >= (\d+) && hour < (\d+)/.exec(html);
+    expect(boundaryMatch).not.toBeNull();
+
+    const [, startHour, endHour] = boundaryMatch ?? [];
+    expect(Number(startHour)).toBe(AUTO_DAY_START_HOUR);
+    expect(Number(endHour)).toBe(AUTO_DAY_END_HOUR);
   });
 });

@@ -702,8 +702,13 @@ export function Today(): JSX.Element {
           Library page + Progress already render — Today used to carry its
           own inline copy of this recipe (it originated it, C-2 fix,
           REVIEW_batch1-fidelity.md), now migrated so it can't drift from the
-          shared version. */}
+          shared version. `km-today__hub` only restores this page's own extra
+          14px of title/rail gap (`.km-today__title` used to carry `margin:
+          4px 0 14px`, one step more than the shared recipe's `4px 0 0`) —
+          same fix Progress.tsx got, so the migration is byte-for-byte
+          visually, not just structurally. */}
       <PageHubHeader
+        className="km-today__hub"
         titleId="today-title"
         eyebrow={<Bilingual en={dateEn} kr={dateKr} />}
         heading={<Bilingual kr="오늘" en="Today" />}
