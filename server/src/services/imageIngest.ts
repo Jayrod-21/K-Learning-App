@@ -42,8 +42,8 @@ import { query } from '../db/pool.js';
 import {
   AppError,
   PayloadTooLargeError,
-  UpstreamError,
   ValidationError,
+  mapClaudeError,
 } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
 import { getClaudeProxy } from './claudeProxy.js';
@@ -267,8 +267,9 @@ export async function ocrUploadedImage(
   }
 
   // 3. Vision OCR — OUTSIDE any transaction. On failure this throws a Claude
-  //    proxy error mapped to a 502 UpstreamError; nothing is persisted, so
-  //    there is no half-capture.
+  //    proxy error mapped by the shared mapClaudeError (middleware/errors.js,
+  //    F-094) — 400/429 for a client-fault proxy error, 502 otherwise; nothing
+  //    is persisted, so there is no half-capture.
   const proxy = getClaudeProxy();
   let ocr: ProxyResult<ImageOcrResult>;
   try {
@@ -399,16 +400,4 @@ export function sanitizeFilename(name: string | undefined): string | null {
   // eslint-disable-next-line no-control-regex
   const cleaned = name.replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 200);
   return cleaned.length > 0 ? cleaned : null;
-}
-
-/** Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
- *  Mirrors diagnostic.ts mapClaudeError — we never forward the upstream status
- *  or provider-specific details to the wire. */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'vision error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
 }

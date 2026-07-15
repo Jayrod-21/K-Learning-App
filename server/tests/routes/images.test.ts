@@ -25,12 +25,17 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
-import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
+import { buildTestApp, makeStubProxy, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedImageCapture } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { setClaudeProxy } from '../../src/services/claudeProxy.js';
+import {
+  ClaudeRateLimitError,
+  PromptInjectionRejectedError,
+} from '../../src/services/claude/errors.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -212,6 +217,84 @@ describe('POST /images/ocr — upload + OCR + persist', () => {
       .post('/images/ocr')
       .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
     expect(res.status).toBe(429);
+  });
+
+  describe('Claude Vision failure mapping (F-094: shared mapClaudeError)', () => {
+    afterEach(() => {
+      // Restore the shared suite app's default deterministic stub.
+      setClaudeProxy(makeStubProxy());
+      resetLimiters();
+    });
+
+    it('a generic Vision failure → 502 and persists NO capture (no half-state)', async () => {
+      setClaudeProxy(
+        makeStubProxy({
+          ocrImage: async () => {
+            const e = new Error('simulated vision failure') as Error & {
+              httpStatus: number;
+              code: string;
+            };
+            e.httpStatus = 502;
+            e.code = 'upstream_unavailable';
+            throw e;
+          },
+        }),
+      );
+      const { agent, userId } = await registerUser(t.app, pg.pool);
+      const res = await agent
+        .post('/images/ocr')
+        .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
+      expect(res.status).toBe(502);
+      const caps = await pg.pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM image_captures WHERE user_id = $1`,
+        [userId],
+      );
+      expect(caps.rows[0]?.n).toBe('0');
+    });
+
+    // F-094: imageIngest.ts used to carry a private always-flatten-to-502
+    // mapClaudeError copy (this failure path had NO test coverage before this
+    // change). Now on the shared helper — a proxy-origin CLIENT-FAULT
+    // (injection rejection / the proxy's own per-route limiter) must surface
+    // as 400/429, matching the generation routes' contract, not a misleading
+    // 502 "outage".
+    it('proxy prompt-injection rejection → 400 (not 502) and persists NO capture', async () => {
+      setClaudeProxy(
+        makeStubProxy({
+          ocrImage: async () => {
+            throw new PromptInjectionRejectedError('image OCR text contains injection marker');
+          },
+        }),
+      );
+      const { agent, userId } = await registerUser(t.app, pg.pool);
+      const res = await agent
+        .post('/images/ocr')
+        .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('upstream_error');
+      expect(res.body.error.message).not.toContain('PromptInjectionRejectedError');
+      const caps = await pg.pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM image_captures WHERE user_id = $1`,
+        [userId],
+      );
+      expect(caps.rows[0]?.n).toBe('0');
+    });
+
+    it('proxy per-route rate limit → 429 (not 502)', async () => {
+      setClaudeProxy(
+        makeStubProxy({
+          ocrImage: async () => {
+            throw new ClaudeRateLimitError('ocr_image rate limit exhausted');
+          },
+        }),
+      );
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent
+        .post('/images/ocr')
+        .attach('image', TINY_PNG, { filename: 'menu.png', contentType: 'image/png' });
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe('upstream_error');
+    });
   });
 });
 

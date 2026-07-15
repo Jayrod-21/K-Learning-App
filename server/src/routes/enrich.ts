@@ -13,7 +13,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody } from '../middleware/validate.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
-import { UpstreamError } from '../middleware/errors.js';
+import { mapClaudeError } from '../middleware/errors.js';
 
 const router = Router();
 
@@ -45,17 +45,12 @@ router.post(
       });
       res.status(200).json(result);
     } catch (err) {
-      // Map B4 errors to our generic upstream error so the client sees a
-      // consistent shape. The B4 module already typed them; we re-wrap
-      // anything we don't recognize.
-      if (err && typeof err === 'object' && 'httpStatus' in err) {
-        const status = (err as { httpStatus?: number }).httpStatus ?? 502;
-        const code = (err as { code?: string }).code ?? 'upstream_error';
-        const message = (err as { message?: string }).message ?? 'claude error';
-        next(new UpstreamError(`${code}: ${message}`, { status }));
-        return;
-      }
-      next(err);
+      // F-124/F-094: route every Claude-proxy error through the shared,
+      // whitelisted mapper (middleware/errors.ts) instead of forwarding the
+      // raw `${code}: ${message}` — that used to leak upstream/provider text
+      // straight to the client. mapClaudeError passes non-proxy errors
+      // through unchanged, so they still fall to the generic opaque 500.
+      next(mapClaudeError(err));
     }
   },
 );

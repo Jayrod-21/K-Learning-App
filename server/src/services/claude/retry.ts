@@ -134,27 +134,61 @@ export function computeDelay(
   return Math.floor(random() * exp);
 }
 
+/**
+ * OS-level connection error codes that mean "the transport failed, not the
+ * request" — always safe to retry.
+ */
+const CONN_ERROR_CODE_RE =
+  /^(ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH)$/;
+
+/**
+ * Message-level fallback for the same failure class, for errors that don't
+ * carry a structured `.code` (e.g. a message-only rethrow, or the SDK's own
+ * generic "Connection error." / "Request timed out." text on
+ * APIConnectionError / APIConnectionTimeoutError — see below).
+ */
+const CONN_ERROR_MESSAGE_RE =
+  /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|EHOSTUNREACH|ENETUNREACH|connection error|connection terminated|request timed out|timeout|socket hang up/i;
+
+/** Narrow an unknown value to a plain object for duck-typing, else undefined. */
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return v != null && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+}
+
+/** True if `e` (or its `.cause`) duck-types as a transient connection failure. */
+function isConnectionErrorShape(e: Record<string, unknown> | undefined): boolean {
+  if (!e) return false;
+  const code = typeof e.code === 'string' ? e.code : '';
+  const message = typeof e.message === 'string' ? e.message : '';
+  return CONN_ERROR_CODE_RE.test(code) || CONN_ERROR_MESSAGE_RE.test(message);
+}
+
 /** Exported for tests. */
 export function isRetryable(err: unknown): boolean {
   if (err == null || typeof err !== 'object') return false;
   const e = err as Record<string, unknown>;
-  // Anthropic SDK: errors carry a `status` number and a `name` string.
+  // Anthropic SDK: HTTP-mapped errors carry a numeric `status`.
   const status = typeof e.status === 'number' ? e.status : undefined;
   if (status !== undefined) {
     return status === 408 || status === 425 || status === 429 || (status >= 500 && status < 600);
   }
-  // Network-level — message/code patterns. Anthropic SDK wraps these in
-  // APIConnectionError but consumers might pass any Error through.
-  const code = typeof e.code === 'string' ? e.code : '';
-  const message = typeof e.message === 'string' ? e.message : '';
-  const name = typeof e.name === 'string' ? e.name : '';
-  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') {
-    return true;
-  }
-  if (/ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE/.test(code)) {
-    return true;
-  }
-  if (/timeout|ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(message)) {
+
+  // No HTTP status: either the SDK's APIConnectionError / APIConnectionTimeoutError
+  // (network-level; the SDK constructs these with `status: undefined` by design —
+  // see @anthropic-ai/sdk's core/error.ts) or a raw transport error passed through
+  // directly.
+  //
+  // B-032: this used to gate on `err.name === 'APIConnectionError'`. That check is
+  // DEAD — neither APIConnectionError nor APIConnectionTimeoutError override
+  // `Error.prototype.name` in their constructors, so a real instance's `.name` is
+  // always the literal string "Error", never "APIConnectionError". A transient
+  // connection drop to Claude was therefore never retried. Duck-type on the
+  // actual shape instead: the SDK attaches the underlying transport error (with
+  // its OS `code`, e.g. ECONNREFUSED/ECONNRESET) as `.cause`, and/or the error's
+  // own message is one of the SDK's fixed connection-failure strings. We check
+  // both the error itself AND its `.cause` so this works whether or not the SDK
+  // wrapped the raw transport error.
+  if (isConnectionErrorShape(e) || isConnectionErrorShape(asRecord(e.cause))) {
     return true;
   }
   return false;

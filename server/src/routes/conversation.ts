@@ -34,9 +34,9 @@ import {
   ConflictError,
   NotFoundError,
   ValidationError,
+  mapClaudeError,
 } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
-import { UpstreamError } from '../middleware/errors.js';
 import type {
   ConversationInput,
   ConversationTurn,
@@ -1065,6 +1065,34 @@ router.post(
 
       // Store ONLY if still unnamed — a concurrent rename/auto-name between
       // the read above and here wins, and we return the surviving title.
+      //
+      // F-125: this conditional UPDATE is already exactly-once at the STORAGE
+      // layer, not just "usually fine" — two concurrent first-name calls can
+      // both pass the read-check and both burn a Claude call (the race this
+      // ticket is about), but they cannot both WRITE. Postgres READ COMMITTED
+      // guarantees it: both UPDATEs try to lock this row; the first one in
+      // commits (title now non-NULL); the second was blocked on the row lock
+      // and, once it's released, re-fetches the row and RE-EVALUATES the
+      // `title IS NULL` qual against the new committed value (EvalPlanQual) —
+      // so it affects 0 rows rather than clobbering the winner's title. The
+      // `upd.rows.length === 0` branch below always means "someone else already
+      // won" (or the row was swept), never a second write. No advisory lock or
+      // schema change needed for this half of the bug.
+      //
+      // What's NOT fixed here (by design, this pass): the double Claude-call
+      // cost when both requests race past the read-check before either
+      // commits. Storage never diverges and the window only exists once per
+      // conversation (every later call short-circuits above with no Claude
+      // spend), bounded further by `expensiveLimiter()`. Closing that cost gap
+      // needs either a schema change (a claim-first sentinel/column) or a
+      // session-scoped Postgres advisory lock held across the Claude network
+      // round-trip (real client-checkout/release lifecycle risk, no existing
+      // precedent in this codebase) — BUGS_AND_FEATURES.md's F-125 explicitly
+      // recommends deferring whichever of those to a full-suite-gated pass,
+      // not a migration-free targeted-test batch. Do not "fix" this into a
+      // sentinel-in-the-title-column hack: a crash between claiming and
+      // clearing the sentinel would strand the conversation permanently
+      // unnamed.
       const upd = await query<{ title: string }>(
         `UPDATE conversations
             SET title = $2
@@ -1097,21 +1125,6 @@ router.post(
     }
   },
 );
-
-/**
- * Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
- * Mirrors grammarDrill.ts / diagnostic.ts / images.ts mapClaudeError — we
- * never forward upstream status or provider detail to the wire (SECURITY.md
- * §13.7). Non-proxy errors pass through unchanged.
- */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
-}
 
 // ---------------------------------------------------------------------------
 // POST /conversation/:conversationId/file — document-in-chat (F-035 backend).

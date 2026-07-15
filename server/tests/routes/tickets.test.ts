@@ -332,6 +332,53 @@ describe('PATCH /tickets/:id', () => {
     expect(stale.body.error.code).toBe('conflict');
   });
 
+  it('404 (not 409) when the ticket vanishes between the pre-read and the UPDATE (B-033)', async () => {
+    // Root cause (BUGS_AND_FEATURES.md B-033): the PATCH pre-read and its
+    // versioned UPDATE aren't the same statement — if the row disappears in
+    // between (today only reachable via a cascading DELETE FROM users), the
+    // UPDATE affects 0 rows and the OLD code always read that as a stale
+    // version (409), even though the true state is "this ticket is gone"
+    // (404). Reproduce the exact window deterministically: hold a row lock via
+    // a raw client so the PATCH's own (non-locking) pre-read still sees the
+    // ticket, but its UPDATE blocks until we delete-and-commit out from under
+    // it.
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent
+      .post('/tickets')
+      .send({ type: 'bug', title: 't', body: 'b' });
+    const id = create.body.ticket.id;
+
+    const lockTx = await pg.pool.connect();
+    try {
+      await lockTx.query('BEGIN');
+      await lockTx.query('SELECT id FROM tickets WHERE id = $1 FOR UPDATE', [id]);
+
+      let patchSettled = false;
+      const patchPromise = agent
+        .patch(`/tickets/${id}`)
+        .send({ title: 'new', expected_version: 1 })
+        .then((r) => {
+          patchSettled = true;
+          return r;
+        });
+
+      // The PATCH's UPDATE must be genuinely blocked on our row lock (its
+      // pre-read is a plain SELECT and never blocks under MVCC) — prove it's
+      // still pending before we pull the row out from under it.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(patchSettled).toBe(false);
+
+      await lockTx.query('DELETE FROM tickets WHERE id = $1', [id]);
+      await lockTx.query('COMMIT');
+
+      const res = await patchPromise;
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('not_found');
+    } finally {
+      lockTx.release();
+    }
+  });
+
   it("404 on another user's ticket — no IDOR / ownership probe", async () => {
     const a = await registerUser(t.app, pg.pool);
     const create = await a.agent

@@ -41,7 +41,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
+import { ConflictError, NotFoundError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { DrillType, DrillVerdict, GrammarDrillItem } from '../services/claudeProxy.js';
 import { ratingFromVerdict } from '../services/grammarScheduler.js';
@@ -594,20 +594,5 @@ router.get(
     }
   },
 );
-
-/**
- * Map a Claude proxy error (carries httpStatus/code) to a 502 UpstreamError.
- * Mirrors diagnostic.ts / images.ts mapClaudeError — we never forward the
- * upstream status or provider-specific details to the wire (SECURITY.md §13.7).
- * Non-proxy errors (NotFound/Conflict/etc.) pass through unchanged.
- */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
-}
 
 export default router;

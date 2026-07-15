@@ -45,7 +45,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
+import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { DiagnosticTargetLevel, ProficiencyLevel } from '../services/claude/index.js';
 import {
@@ -498,6 +498,19 @@ async function buildGeneratedItem(
   // is down") carries no `httpStatus`, so mapClaudeError would pass it through to a
   // generic 500 — wrap it as UpstreamError here so every generation failure maps to
   // 502 (the `.catch` returns `never`, so `result`'s type is unchanged).
+  //
+  // R2-BLOCKER fix: never embed `err.message` in the client-facing message.
+  // `generateDiagnosticItem` can throw either a `ClaudeProxyError` (carries
+  // `httpStatus`/`code` — validation/rate-limit/output-schema/etc.) or a raw,
+  // unwrapped error that slipped past `retry.ts`'s classification (retry.ts:96-99
+  // rethrows a non-retryable error verbatim — this can be a raw Anthropic SDK or
+  // Node/undici network error whose `.message` may contain hostnames, ports, or
+  // literal SDK text). Route both through the shared `mapClaudeError`: a
+  // `ClaudeProxyError` becomes the whitelisted, wire-safe message it already
+  // produces for every other route; anything else (no `httpStatus`) is passed
+  // through unchanged by `mapClaudeError`, so we log the raw detail server-side
+  // only and rethrow a fixed generic message — preserving this route's existing
+  // "any generation failure is a 502" contract without ever forwarding raw text.
   const { result } = await proxy
     .generateDiagnosticItem(
       {
@@ -510,9 +523,27 @@ async function buildGeneratedItem(
       { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
     )
     .catch((err: unknown) => {
-      throw new UpstreamError(
-        `diagnostic ${section} item generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      const mapped = mapClaudeError(err);
+      if (mapped !== err) {
+        // A recognized ClaudeProxyError — `mapped` is already a safe,
+        // whitelisted UpstreamError (mapClaudeError logged the raw detail
+        // server-side itself). Reuse it rather than re-wrapping.
+        throw mapped;
+      }
+      // Not a ClaudeProxyError (raw network/SDK error — see comment above).
+      // Log the raw detail server-side only; the client never sees `err.message`.
+      getLogger().error(
+        {
+          section,
+          correlationId,
+          err:
+            err instanceof Error
+              ? { name: err.name, message: err.message }
+              : { value: String(err) },
+        },
+        `diagnostic ${section} item generation failed`,
       );
+      throw new UpstreamError(`diagnostic ${section} item generation failed`);
     });
 
   // The model's `kind` is schema-valid against the full generable union
@@ -1580,26 +1611,5 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
-
-/**
- * Map a Claude proxy error (which carries httpStatus/code) into our UpstreamError
- * so the error handler returns a clean 502. Non-proxy errors pass through.
- *
- * We deliberately do NOT forward the upstream's HTTP status: UpstreamError is
- * always 502 by design (the route's posture is "Claude failed, that's a bad
- * gateway, period"), and surfacing the upstream's raw status to the client
- * would leak information about our provider integration (SECURITY.md §13.7).
- * The upstream `code`/`message` are folded into the message for our own logs;
- * `UpstreamError`'s `details` is intentionally left undefined so nothing
- * provider-specific reaches the wire.
- */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
-}
 
 export default router;

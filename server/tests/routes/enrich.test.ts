@@ -103,8 +103,15 @@ describe('POST /enrich — downstream error', () => {
       const res = await agent
         .post('/enrich')
         .send({ lemma: '먹다', sourceSentence: '저는 밥을 먹어요' });
+      // F-094: this route now shares mapClaudeError. A proxy 4xx (here a 429
+      // rate-limit) legitimately passes its STATUS through — it's a
+      // caller-triggered condition, not an upstream outage — but the wire
+      // MESSAGE is the whitelisted generic string, never the raw
+      // `${code}: ${message}` this route used to forward (F-124's leak).
       expect(res.status).toBe(429);
       expect(res.body.error.code).toBe('upstream_error');
+      expect(res.body.error.message).not.toContain('b4_rate_limited');
+      expect(res.body.error.message).not.toContain('too many tokens');
     } finally {
       await teardownTestApp(broken);
     }
