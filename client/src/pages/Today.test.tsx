@@ -1300,8 +1300,9 @@ describe('Today', () => {
     expect(titleRule).not.toBe('');
     expect(titleRule).toContain('text-align: center;');
     // Meaningfully larger than the old 10px eyebrow and bold enough to read
-    // as a header rather than a caption.
-    expect(titleRule).toMatch(/font-size:\s*16px;/);
+    // as a header rather than a caption. rem, not px (F-086 / B-036
+    // px->rem migration) — 1rem == 16px at the md root, same rendered size.
+    expect(titleRule).toMatch(/font-size:\s*1rem;/);
     expect(titleRule).toMatch(/font-weight:\s*700;/);
   });
 

@@ -14,12 +14,14 @@
  *   md → 100%    (16px — the size the app has always been)
  *   lg → 112.5%  (18px)
  *
- * KNOWN LIMITATION (v1): the root scale only moves text sized in rem (or
- * inherited). Most existing styles pin font-size in px, so the visible
- * effect today is limited to the rem-migrated surfaces (the Phase-1
- * primitives). The app-wide px→rem migration that makes this setting fully
- * effective is ticketed as F-086 in BUGS_AND_FEATURES.md — size NEW text in
- * rem so it participates from day one.
+ * App-wide px→rem migration (F-086 / B-036) is DONE: the root scale moves
+ * font-size across the app, not just the Phase-1 primitives. A handful of
+ * declarations remain intentional-fixed px by design (documented inline at
+ * each site — e.g. `MockBadge`'s dev-only aria-hidden seal glyph, `Images`'
+ * decorative mock-scene overlay text) and do not participate; that's
+ * correct, not a gap. NEW text must still be sized in rem (or inherit) to
+ * participate in the scale — a px font-size added going forward silently
+ * opts out.
  *
  * Keyed by the `TextSize` union — ids must stay in lockstep with
  * `hooks/text-size-context.ts`, the CSS blocks, the `index.html` bootstrap,

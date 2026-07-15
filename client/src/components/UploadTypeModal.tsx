@@ -261,7 +261,7 @@ export function UploadTypeModal({
               <span className="km-field__label" id="km-upload-file-label">
                 Book file
               </span>
-              <p style={{ fontSize: 13, color: 'var(--paper-dim)', margin: '2px 0 8px' }}>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--paper-dim)', margin: '2px 0 8px' }}>
                 <Bilingual
                   en="Upload a scanned book (a PDF or a vFlat zip of page images)"
                   kr="스캔한 책을 업로드하세요 (PDF 또는 vFlat 페이지 이미지 zip)"

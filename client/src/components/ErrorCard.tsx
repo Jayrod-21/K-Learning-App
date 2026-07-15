@@ -51,7 +51,7 @@ export function ErrorCard({
         Couldn&apos;t load
       </div>
       <div
-        style={{ fontSize: 14, color: 'var(--paper-dim)', marginBottom: 12 }}
+        style={{ fontSize: '0.875rem', color: 'var(--paper-dim)', marginBottom: 12 }}
       >
         {message}
       </div>

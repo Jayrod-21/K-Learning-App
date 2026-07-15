@@ -72,7 +72,7 @@
 .km-progress__state {
   padding: 28px 0;
   color: var(--paper-dim);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 /* Chart ─────────────────────────────────────────────────── */
@@ -98,7 +98,7 @@
 
 .km-progress__tick {
   fill: var(--paper-faint);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-family: inherit;
 }
 
@@ -111,7 +111,7 @@
 
 .km-progress__reflabel {
   fill: var(--paper-faint);
-  font-size: 10px;
+  font-size: 0.625rem;
   font-family: inherit;
 }
 
@@ -131,7 +131,7 @@
 .km-progress__endlabel {
   /* Direct label text wears the text token, never the series color. */
   fill: var(--paper-dim);
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-family: inherit;
 }
 
@@ -174,7 +174,7 @@
  * themes (see the extended `tokensContrast.test.ts` guard). */
 .km-progress__trendnote {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
@@ -211,7 +211,7 @@
   gap: 4px 12px;
   min-height: 20px; /* reserve the line so hover doesn't shift layout */
   margin-top: 6px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
@@ -243,13 +243,13 @@
   list-style: none;
   margin: 10px 0 0;
   padding: 0;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
 .km-progress__note {
   margin: 10px 0 0;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-dim);
 }
 
@@ -265,7 +265,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
   /* F-129 — a flex item's default min-width is its content's min-content
    * size, which ignores the wrapping container: a long option string (e.g.
@@ -283,7 +283,7 @@
   border-radius: 4px;
   padding: 6px 8px;
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
   max-width: 100%;
 }
 
@@ -302,7 +302,7 @@
 .km-progress__table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .km-progress__table caption {
@@ -326,7 +326,7 @@
 .km-progress__table th[scope='col'] {
   color: var(--paper-mute);
   font-weight: 500;
-  font-size: 11px;
+  font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -366,7 +366,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 .km-mastery__chip b { color: var(--paper); font-weight: 700; }
@@ -385,10 +385,10 @@
   padding: 9px 2px;
   border-top: 1px solid var(--line);
 }
-.km-mastery__kr { font-size: 16px; }
+.km-mastery__kr { font-size: 1rem; }
 .km-mastery__en {
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -401,7 +401,7 @@
   min-width: 0;
 }
 .km-mastery__badge {
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -417,7 +417,7 @@
 .km-mastery__badge.is-mastered { border-color: var(--moss); }
 .km-mastery__stab {
   color: var(--paper-mute);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   min-width: 34px;
   text-align: right;
@@ -431,7 +431,7 @@
 }
 .km-mastery__pageinfo {
   color: var(--paper-mute);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 /* ── F-041 — hanja mastery tab ────────────────────────────────────────── */
@@ -451,7 +451,7 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 .km-mastery__stat b { color: var(--paper); font-weight: 700; }
 .km-mastery__stat.is-banked .km-mastery__dot { background: var(--moss); }
@@ -475,7 +475,7 @@
   border-radius: inherit;
 }
 
-.km-mastery__stale { color: var(--ochre-ink); font-size: 12px; margin: 0 0 8px; }
+.km-mastery__stale { color: var(--ochre-ink); font-size: 0.75rem; margin: 0 0 8px; }
 .km-mastery__retry {
   background: none;
   border: none;
@@ -538,7 +538,7 @@
 
 .km-progress__trendSkill {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 0.875rem;
   /* F-129 — defensive: a flex child's default min-width is its unshrunk
    * content size, which can force `.km-progress__trendHead` wider than its
    * container at narrow widths. */
@@ -564,7 +564,7 @@
 
 /* Latest value is the headline number — text ink, never the series color. */
 .km-progress__trendValue {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -580,7 +580,7 @@
   border: 1px dashed var(--line-strong);
   border-radius: 8px;
   color: var(--paper-mute);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: center;
 }
 

@@ -66,6 +66,10 @@ const STYLE: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   fontFamily: '"Noto Serif KR", "Inter", serif',
+  // Intentional-fixed px (F-086 px→rem sweep exception): this glyph must
+  // stay pinned to the fixed 18x18 box below, not scale with the user's
+  // text-size preference — it's aria-hidden dev-only chrome (never ships to
+  // prod), not user-facing copy.
   fontSize: 11,
   fontWeight: 600,
   lineHeight: 1,

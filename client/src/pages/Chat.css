@@ -142,19 +142,19 @@
 
 .km-chat__role {
   margin-bottom: 4px;
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .km-chat__bubble--tutor .km-chat__role { color: var(--vermilion-ink); }
 .km-chat__bubble--user .km-chat__role { color: var(--on-vermilion); }
 
-.km-chat__text { font-size: 16px; line-height: 1.55; }
+.km-chat__text { font-size: 1rem; line-height: 1.55; }
 .km-chat__bubble--tutor .km-chat__text { color: var(--paper); }
 .km-chat__bubble--user .km-chat__text { color: var(--on-vermilion); }
 
 .km-chat__en {
-  font-size: 12px;
+  font-size: 0.75rem;
   margin-top: 6px;
   font-style: italic;
 }
@@ -166,7 +166,7 @@
   padding: 0;
   border: none;
   background: transparent;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--vermilion);
   cursor: pointer;
 }
@@ -205,7 +205,7 @@
   border-radius: 999px;
   background: var(--ink-1);
   color: var(--paper-dim);
-  font-size: 12px;
+  font-size: 0.75rem;
 }
 .km-chat__fileName {
   overflow: hidden;
@@ -241,7 +241,7 @@
   border: none;
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 15px;
+  font-size: 0.9375rem;
   resize: vertical;
   min-height: 44px;
   max-height: 140px;
@@ -320,17 +320,17 @@
   background: transparent;
   color: var(--paper);
   font-family: 'Noto Sans KR', sans-serif;
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;
 }
 .km-chat__attachItem:hover { background: var(--ink-3); }
 
-.km-chat__uploadStatus { margin-top: 2px; font-size: 12px; opacity: 0.75; }
+.km-chat__uploadStatus { margin-top: 2px; font-size: 0.75rem; opacity: 0.75; }
 .km-chat__sendError {
   margin-top: 2px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--vermilion);
 }
 
@@ -436,17 +436,17 @@
   min-width: 0;
 }
 .km-chat__convTitle {
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.km-chat__convWhen { font-size: 10px; color: var(--paper-mute); }
+.km-chat__convWhen { font-size: 0.625rem; color: var(--paper-mute); }
 .km-chat__retention {
   margin: 0;
   padding: 8px 6px;
   border-top: 1px solid var(--line);
-  font-size: 10px;
+  font-size: 0.625rem;
   line-height: 1.4;
   text-align: center;
   color: var(--paper-mute);
@@ -464,7 +464,7 @@
   justify-content: center;
   gap: 10px;
   padding: 24px 12px;
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--paper-mute);
 }
 .km-chat__historyError { color: var(--danger-ink); }
@@ -494,7 +494,7 @@
   padding: 16px 18px;
 }
 .km-chat__askpopTitle {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   margin-bottom: 6px;
 }
@@ -505,7 +505,7 @@
   margin-bottom: 10px;
 }
 .km-chat__askpopFrom {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--paper-dim);
   overflow-wrap: anywhere;
 }

@@ -575,6 +575,10 @@ function ThumbCapture({
           style={{
             left: `${String(line.x)}%`,
             top: `${String(line.y)}%`,
+            // Intentional-fixed px (F-086 px→rem sweep exception): decorative
+            // mock-scene overlay text baked into a placeholder graphic, sized
+            // proportionally to `line.size` mock data — not real UI copy, so
+            // it should not respond to the text-size preference.
             fontSize: Math.max(6, line.size * (small ? 0.18 : 0.35)),
           }}
         >
@@ -662,6 +666,8 @@ function CaptureView({
                   style={{
                     left: `${String(line.x)}%`,
                     top: `${String(line.y)}%`,
+                    // Intentional-fixed px (F-086 px→rem sweep exception): see
+                    // the matching note on the thumbnail-scene renderer above.
                     fontSize: line.size,
                   }}
                 >

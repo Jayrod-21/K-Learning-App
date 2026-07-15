@@ -28,7 +28,7 @@
 
 .km-reading__section-title {
   margin: 0 0 8px;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--paper-dim);
@@ -38,7 +38,7 @@
  * hangul watermark) ride as extra classes straight from Reading.tsx. */
 .km-reading__empty-copy {
   margin: 0 0 14px;
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.6;
   color: var(--paper-dim);
   /* Relative measure, not a fixed px width — F-129: never a fixed-width
@@ -105,7 +105,7 @@
 
 .km-reading__translate-src {
   margin: 0;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.8;
   color: var(--paper);
   /* A long passage must scroll inside the sheet, not blow it out. */
@@ -128,7 +128,7 @@
 
 .km-reading__translate-note {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   line-height: 1.6;
   color: var(--paper-mute);
 }
@@ -137,7 +137,7 @@
  * replaces once the call resolves. */
 .km-reading__translate-result {
   margin: 0;
-  font-size: 15px;
+  font-size: 0.9375rem;
   line-height: 1.8;
   color: var(--paper);
   border-top: 1px dashed var(--line-strong);
@@ -162,7 +162,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 600;
   color: var(--paper-dim);
 }
@@ -202,7 +202,7 @@
   background: transparent;
   color: var(--paper-mute);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   font-weight: 500;
   cursor: pointer;
 }
@@ -225,7 +225,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--paper-dim);
 }
 
@@ -238,7 +238,7 @@
   background: var(--ink-2);
   color: var(--paper);
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
 }
 
 .km-reading__gen-topic input::placeholder {
@@ -254,7 +254,7 @@
 }
 
 .km-reading__gen-error {
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--danger-ink);
 }
 
@@ -268,6 +268,6 @@
 
 .km-reading__story-topic {
   margin: 2px 0 0;
-  font-size: 12.5px;
+  font-size: 0.78125rem;
   color: var(--paper-mute);
 }
