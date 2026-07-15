@@ -1671,6 +1671,43 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 
 ---
 
+## 📱 Phone round 4 — live beta feedback (filed 2026-07-14)
+
+### B-036 · Settings → Appearance text-size (S / M / L) does nothing
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug · regression
+- **Where:** Settings → Appearance → text size control. Selecting Small / Medium / Large has no visible effect on the app's type scale. This is the F-025 Phase-1 primitive (global text-size setting) — built and gate-green, but not actually resizing anything on device.
+- **Root cause (suspect):** the documented px→rem limitation — the root `[data-text-size]` font-size scales only `rem`-based type, but most of the app's text uses hardcoded `km-*` px font-sizes that don't respond to the root scale. So the S/M/L control changes `--?`/root font-size but the visible copy is pinned in px. (Was flagged as a known limitation → F-086 px→rem sweep.) Verify the control is even writing the attribute + persisting the pref, THEN address the px→rem coverage so the setting produces a real, obvious size change.
+- **Key files:** `hooks/TextSizeProvider.tsx`, `lib/text-size-presets.ts`, `client/index.html` (data-text-size bootstrap), `client/src/styles/index.css` (`[data-text-size]` root font-size), `pages/Settings.tsx`; the px-based `km-*` font-size declarations across component CSS (F-086 sweep).
+- **Fix hint:** confirm the two-way pref sync works (attribute set + persisted + rehydrated), then convert the dominant px font-sizes to `rem` (or a `clamp()`/scale token driven by the root) so M→L is unmistakable. Ship with a real on-device size delta, not just an attribute flip.
+
+### F-187 · Today — excess vertical gap between "Suggested Learning" and "TOPIK"
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** ui-polish
+- **Where / State:** Today page still has way too much whitespace between the Suggested-Learning carousel section and the TOPIK section. (Earlier spacing pass tightened it but not enough.)
+- **Key files:** `pages/Today.tsx`, `pages/Today.css` (section gap / carousel bottom margin between the Suggested-Learning block and the TOPIK block).
+- **Fix hint:** reduce the inter-section gap specifically at that boundary; verify on a real phone viewport, not just jsdom.
+
+### F-188 · Today — stray small blue line above-and-left of "Review & Drills"
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** ui-polish
+- **Where / State:** a small blue line/rule appears just above and to the left of the "Review & Drills" section header on Today. Looks unintentional (leftover rail/divider/accent decoration). Remove it.
+- **Key files:** `pages/Today.tsx` / `pages/Today.css` (section-header decoration — likely a DancheongRail/SubwayProgress accent stub, a `::before`, or a stray hub-header rail on that block).
+- **Fix hint:** identify the element rendering the blue line and remove it (or the CSS rule); confirm nothing else depended on it.
+
+### F-189 · Distinct per-skill highlight colors — shared across Today tiles AND the LEARN honeycomb
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** design-system · cross-cutting
+- **Where / State:** The six skill surfaces — **Vocab, Grammar, Hanja, Reading, Listening, Writing** — currently share too-similar highlight colors (lots of blue, and the greens are barely distinguishable). Give EACH skill its own clearly-distinct highlight color. The SAME color must be used for a given skill in BOTH places: the Today-page tiles AND the LEARN launcher honeycombs (each hexagon its own color). One skill→color map, consumed by both surfaces, so a skill reads as the same color everywhere.
+- **Key files:** a new/central per-skill color token map in `client/src/styles/index.css` (or a `skill-colors` module); Today tile components (`pages/Today.tsx` + CSS, `CityCard`/tile highlight); the LEARN hexagon launcher (honeycomb component + CSS). Must respect both themes (Day/Night) and stay WCAG-AA.
+- **Fix hint:** define one canonical `--skill-<name>` accent set (6 visually-separated hues, AA-checked in light + dark), then wire both the Today tiles and the LEARN honeycombs to it. No hardcoded per-surface hex — single source of truth.
+
+### F-190 · Center the default carousel card — Review & Drills → Vocab, Suggested Learning → Reading
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** ui-polish
+- **Where / State:** On landing on Today, both swipeable carousels should open centered on a specific middle card, not the first card:
+  - **Review & Drills:** put **Vocab** in the middle and make it the default centered/landing card.
+  - **Suggested Learning:** put **Reading** in the middle and make it the default centered/landing card.
+- **Key files:** `pages/Today.tsx` (carousel item ordering + initial index/scroll position), the peek-slider carousel (`.km-today__peekTrack` / SwipeCarousel initial-index prop), `pages/Today.css`.
+- **Fix hint:** reorder each carousel so the named skill sits in the center slot, and set the carousel's initial scroll/active index to that center card on mount (respect scroll-snap-align: center). Verify on a real phone.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>
