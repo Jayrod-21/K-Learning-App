@@ -8,9 +8,16 @@
  *   - 'mobile'  — narrower than `TABLET_MIN_WIDTH` (768px). Bottom-bar +
  *     LEARN hexagon launcher (today's chrome, unchanged).
  *   - 'tablet'  — `TABLET_MIN_WIDTH`–1023px. Persistent left sidebar rail.
- *   - 'desktop' — `DESKTOP_MIN_WIDTH` (1024px) and up. Same sidebar rail;
- *     only the content column's max-width grows (see `--shell-max-width`
- *     vs the desktop content cap in styles/index.css).
+ *   - 'desktop' — `DESKTOP_MIN_WIDTH` (1024px) and up. Same sidebar rail.
+ *     NOTE (D0): 'tablet' and 'desktop' are NOT visually distinguished
+ *     yet — the wider content-column max-width (`--shell-desktop-max-width`
+ *     in styles/index.css) is applied by the SAME `@media (min-width: 768px)`
+ *     rule that mounts the sidebar, i.e. starting at the tablet breakpoint,
+ *     not gated on `DESKTOP_MIN_WIDTH`. The three-bucket split exists so a
+ *     LATER phase can introduce a real 1024px-gated CSS rule (or a
+ *     desktop-only render branch) without another hook change — D0 only
+ *     consumes `'mobile'` vs. not-`'mobile'` (see `useIsSidebarLayout`
+ *     below).
  *
  * Implementation mirrors the codebase's existing external-store hooks
  * (`useKeyboardOpen`'s `visualViewport` subscription, `ThemeProvider`'s

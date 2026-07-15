@@ -50,10 +50,10 @@ function renderSidebarAt(path: string, examActive = false): void {
 }
 
 describe('Sidebar — structure', () => {
-  it('is a labelled nav landmark', () => {
+  it('is a labelled nav landmark, distinct from BottomNav\'s "Primary navigation"', () => {
     renderSidebarAt('/');
     expect(
-      screen.getByRole('navigation', { name: 'Primary navigation' }),
+      screen.getByRole('navigation', { name: 'Primary navigation, sidebar' }),
     ).toBeInTheDocument();
   });
 
@@ -182,5 +182,31 @@ describe('Sidebar — exam-active hide rule (mirrors ChatFab)', () => {
     expect(
       screen.getByRole('button', { name: /^Settings/ }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Sidebar — /settings quiet zone (mirrors ChatFab)', () => {
+  it('hides the chat action on /settings, honoring ChatFab\'s deliberate quiet zone', () => {
+    renderSidebarAt('/settings');
+    expect(
+      screen.queryByRole('button', { name: /^Chat/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still hides on a /settings sub-route (segment-boundary match)', () => {
+    renderSidebarAt('/settings/security');
+    expect(
+      screen.queryByRole('button', { name: /^Chat/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does NOT hide the chat action on /chat — unlike ChatFab, a considered difference', () => {
+    renderSidebarAt('/chat');
+    expect(screen.getByRole('button', { name: /^Chat/ })).toBeInTheDocument();
+  });
+
+  it('a sibling route that merely starts with "settings" text is not caught by the prefix match', () => {
+    renderSidebarAt('/settingsomething');
+    expect(screen.getByRole('button', { name: /^Chat/ })).toBeInTheDocument();
   });
 });

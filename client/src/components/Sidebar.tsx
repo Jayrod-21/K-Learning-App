@@ -16,7 +16,13 @@
  * (opens a NEW conversation, mirroring `ChatFab`'s Slice-3 behavior, but as
  * a persistent rail entry rather than a floating dot — desktop has no
  * "keyboard is up" concept for the FAB's hide rule, but a running mock
- * exam still hides it, same as the FAB).
+ * exam still hides it, same as the FAB). It also honors `ChatFab`'s
+ * `/settings` quiet zone (deliberate product policy, not FAB-specific
+ * chrome — see `ChatFab.tsx`'s header): the rail entry hides there too.
+ * Unlike `ChatFab`, it stays visible on `/chat` itself — a persistent rail
+ * entry isn't a floating dot sitting on top of the page a user is already
+ * chatting from, so "chat button on the chat page is noise" doesn't carry
+ * over the same way.
  *
  * Active state: `aria-current="page"` via the SAME longest-prefix,
  * path-boundary matcher `BottomNav` uses (`matchActiveNavId`, lib/nav.ts) —
@@ -61,6 +67,18 @@ const SIDEBAR_ROUTE_IDS = [
 ] as const satisfies ReadonlyArray<NavItemId>;
 
 const LEARN_HEADING_ID = 'km-sidebar-learn-heading';
+
+/** `/settings` quiet zone, mirroring `ChatFab.isHiddenPath`'s segment-
+ *  boundary prefix match — deliberately scoped to `/settings` ONLY (unlike
+ *  `ChatFab`, the rail's chat entry stays visible on `/chat`; see the
+ *  header comment for why that's a considered difference, not an
+ *  oversight). Kept as its own small check rather than importing
+ *  `ChatFab`'s private matcher so this component doesn't reach into
+ *  another component's module for a one-line prefix test. */
+function isSettingsPath(pathname: string): boolean {
+  const path = pathname.toLowerCase();
+  return path === '/settings' || path.startsWith('/settings/');
+}
 
 export function Sidebar(): JSX.Element {
   const location = useLocation();
@@ -120,7 +138,12 @@ export function Sidebar(): JSX.Element {
   }
 
   return (
-    <nav className="km-sidebar" aria-label="Primary navigation">
+    // Distinct accessible name from `BottomNav`'s "Primary navigation" —
+    // Shell mounts the two mutually exclusively today, but a distinct label
+    // means two `navigation` landmarks are never indistinguishable by
+    // landmark-navigation if that ever stops being true (a debug toggle, a
+    // transitional breakpoint state).
+    <nav className="km-sidebar" aria-label="Primary navigation, sidebar">
       <div className="km-sidebar__brand" aria-hidden="true">
         <SealStamp char="韓" size="sm" />
         <span className="km-sidebar__brandtext">
@@ -139,6 +162,7 @@ export function Sidebar(): JSX.Element {
         </h2>
         <div
           className="km-sidebar__group"
+          role="group"
           aria-labelledby={LEARN_HEADING_ID}
         >
           {LEARN_SUBPAGE_IDS.map((id) => renderLink(id))}
@@ -150,7 +174,7 @@ export function Sidebar(): JSX.Element {
         {renderLink('settings')}
       </div>
 
-      {!examActive ? (
+      {!examActive && !isSettingsPath(location.pathname) ? (
         <button
           type="button"
           className="km-sidebar__link km-sidebar__chat focusring"

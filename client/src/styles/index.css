@@ -1103,14 +1103,24 @@ h1, h2 { font-family: var(--font-display); }
  * can sit BESIDE the shell column in a row. `display: contents` makes the
  * wrapper a no-op in the box tree below that breakpoint — mobile's
  * rendered layout is byte-identical to before this phase; only ≥768px
- * turns it into the actual flex row. */
+ * turns it into the actual flex row.
+ *
+ * `justify-content` is deliberately `flex-start` (the flex default — kept
+ * explicit here as the row's contract, not left implicit), NOT `center`:
+ * `Sidebar` must be pinned to the true left edge of the viewport. Centering
+ * the row would center the [Sidebar, .km-shell] pair as ONE unit instead,
+ * which pushes Sidebar away from the edge by half of whatever space is left
+ * over once `.km-shell` stops growing at its max-width cap. `.km-shell`'s
+ * own `margin: 0 auto` (below) is what centers ITS content within the
+ * remaining track next to Sidebar — that responsibility must stay on
+ * `.km-shell`, not get pulled back up to this row. */
 .km-appframe {
   display: contents;
 }
 @media (min-width: 768px) {
   .km-appframe {
     display: flex;
-    justify-content: center;
+    justify-content: flex-start;
     min-height: 100dvh;
     background: var(--ink);
   }
@@ -1141,9 +1151,30 @@ h1, h2 { font-family: var(--font-display); }
    * Sidebar rail, not a centered "card" — no side hairlines of its own
    * (Sidebar's `border-right` is the one visible divider), and a wider cap
    * so pages actually get more room (D1 converts individual page grids to
-   * use it; D0 only raises the ceiling). */
+   * use it; D0 only raises the ceiling).
+   *
+   * `flex: 1 1 auto` + `min-width: 0` is the actual fix for the BLOCKER
+   * this comment used to hide from: without a flex-grow, a flex item's
+   * `flex-basis: auto` resolves to its own CONTENT size (max-content), not
+   * the row's available space — `.km-shell` was sizing to whatever its
+   * children happened to want, capped above by `max-width` but almost
+   * never reaching it, so the wider desktop cap was a visual no-op. With
+   * `flex-grow: 1`, `.km-shell` is the row's only growable item, so it
+   * claims 100% of the space left over after `Sidebar`'s fixed width, up
+   * to being clamped by its own `max-width` — beyond that cap, the
+   * (already-established) `margin: 0 auto` on the base rule above absorbs
+   * whatever space remains and centers the capped box within the track
+   * next to Sidebar (CSS Flexbox §8.1: positive free space left after
+   * flex-basis resolution is offered to auto margins before
+   * `justify-content` ever sees it). `min-width: 0` overrides the
+   * flex-item default `min-width: auto` (which would otherwise floor the
+   * item at its content's min-content width and could force the row wider
+   * than the viewport / cause horizontal overflow on narrow tablet widths
+   * with wide inline content). */
   .km-shell {
     max-width: var(--shell-desktop-max-width);
+    flex: 1 1 auto;
+    min-width: 0;
     border-left: none;
     border-right: none;
   }

@@ -38,6 +38,14 @@
  *     `.km-shell` column so the `Sidebar` can sit BESIDE it in a row at
  *     ≥768px; the wrapper is `display: contents` (i.e. invisible to layout)
  *     below that, so mobile's rendered box tree is unaffected.
+ *   - `LearnMenu` is mounted as a SIBLING of `.km-shell` (inside
+ *     `.km-appframe`, same as `Sidebar`), matching its pre-D0 position as a
+ *     sibling of the shell column. `.km-learnmenu` is `position: fixed;
+ *     inset: 0` (styles/index.css), so it must never end up nested inside
+ *     an element that could gain a `transform`/`filter`/`will-change` and
+ *     accidentally become its containing block — keeping it OUT of
+ *     `.km-shell` preserves that invariant for free instead of relying on
+ *     `.km-shell` never acquiring one of those properties in the future.
  *
  * LEARN MENU LIFECYCLE — a three-state machine (honeycomb motion polish):
  *
@@ -188,26 +196,26 @@ export function Shell(): JSX.Element {
           <ChatFab />
           <FeedbackFab />
           {sidebarLayout ? null : (
-            <>
-              <div className="km-shell__nav">
-                <BottomNav
-                  learnOpen={learnPhase === 'open'}
-                  learnClosing={learnPhase === 'closing'}
-                  onToggleLearn={toggleLearn}
-                  learnMenuId={LEARN_MENU_ID}
-                />
-              </div>
-              {learnPhase !== 'closed' ? (
-                <LearnMenu
-                  id={LEARN_MENU_ID}
-                  onClose={closeLearn}
-                  closing={learnPhase === 'closing'}
-                  onExited={onLearnExited}
-                />
-              ) : null}
-            </>
+            <div className="km-shell__nav">
+              <BottomNav
+                learnOpen={learnPhase === 'open'}
+                learnClosing={learnPhase === 'closing'}
+                onToggleLearn={toggleLearn}
+                learnMenuId={LEARN_MENU_ID}
+              />
+            </div>
           )}
         </div>
+        {/* Sibling of `.km-shell`, not a descendant — see the header
+         * comment above for why (matches the pre-D0 DOM shape exactly). */}
+        {!sidebarLayout && learnPhase !== 'closed' ? (
+          <LearnMenu
+            id={LEARN_MENU_ID}
+            onClose={closeLearn}
+            closing={learnPhase === 'closing'}
+            onExited={onLearnExited}
+          />
+        ) : null}
       </div>
     </ExamActiveProvider>
   );

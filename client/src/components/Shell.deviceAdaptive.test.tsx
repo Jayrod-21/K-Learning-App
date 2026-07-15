@@ -18,8 +18,12 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { Shell } from './Shell';
 
 function LocationProbe(): JSX.Element {
@@ -115,5 +119,56 @@ describe('Shell — sidebar chrome (≥768px)', () => {
     renderShellAt('/progress');
 
     expect(screen.getByTestId('pathname')).toHaveTextContent('/progress');
+  });
+});
+
+describe('Shell — LearnMenu DOM position (fix-pass: restored pre-D0 sibling relationship)', () => {
+  it('mounts .km-learnmenu as a sibling of .km-shell, not nested inside it', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route path="*" element={<LocationProbe />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Learn · 배움' }));
+
+    const shell = container.querySelector('.km-shell');
+    const learnMenu = container.querySelector('.km-learnmenu');
+    expect(shell).not.toBeNull();
+    expect(learnMenu).not.toBeNull();
+    // Sibling, not descendant: `.km-shell` must not contain `.km-learnmenu`
+    // (pre-D0 shape — see Shell.tsx's header comment on why this matters:
+    // `.km-learnmenu` is `position: fixed; inset: 0` and must never risk
+    // being trapped inside a future transformed/filtered `.km-shell`).
+    expect(shell?.contains(learnMenu)).toBe(false);
+    expect(learnMenu?.parentElement).toBe(shell?.parentElement);
+  });
+});
+
+describe('.km-appframe / .km-shell flex layout (fix-pass: BLOCKER-1)', () => {
+  it('`.km-shell` claims the row\'s remaining space at ≥768px via flex-grow, clamped by its max-width cap', () => {
+    const css = readFileSync(join(cwd(), 'src/styles/index.css'), 'utf8');
+    // Without this, `.km-shell` (a flex item with no flex-grow) sizes to
+    // its own content instead of stretching to the raised desktop cap —
+    // the exact BLOCKER this fix-pass addresses.
+    expect(css).toMatch(
+      /\.km-shell\s*\{\s*max-width:\s*var\(--shell-desktop-max-width\);\s*flex:\s*1 1 auto;\s*min-width:\s*0;/,
+    );
+  });
+
+  it('`.km-appframe` does not center the [Sidebar, .km-shell] row as one unit at ≥768px', () => {
+    const css = readFileSync(join(cwd(), 'src/styles/index.css'), 'utf8');
+    // `justify-content: center` on the row would center Sidebar+shell
+    // together, floating the persistent left rail away from the true
+    // viewport edge — Sidebar must stay pinned left, with `.km-shell`'s own
+    // margin centering its content within the remaining track instead.
+    expect(css).toMatch(
+      /\.km-appframe\s*\{\s*display:\s*flex;\s*justify-content:\s*flex-start;/,
+    );
   });
 });
