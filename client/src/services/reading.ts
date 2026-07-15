@@ -9,6 +9,8 @@
  *   - AI-generated short stories (F-068; `generated_stories`, migration
  *     054): `POST /reading/generate`, `GET /reading/generated`,
  *     `GET /reading/generated/:id`.
+ *   - Reading-completion attempts (F-172; `reading_attempts`, migration 060):
+ *     `POST /reading/attempts`, `GET /reading/attempts`.
  *
  * Threat model:
  *   - Auth + session: every route is `requireAuth` server-side; the session
@@ -38,6 +40,11 @@
  *     text children downstream (Reading.tsx / TapKorean) — escaped, never
  *     HTML. That includes Claude-authored story text: model output is
  *     untrusted display data like any other.
+ *   - Reading attempts (F-172): `POST /reading/attempts` is a plain, cheap
+ *     write (no Claude call) — a missing/foreign `chapterId`/`storyId` 404s,
+ *     same IDOR posture as every other id on this surface. `titleSnapshot` in
+ *     the response is server-derived; this client never sends free-text
+ *     "history" copy.
  */
 import { api, ApiError } from './api';
 import type {
@@ -382,4 +389,87 @@ export async function translatePassage(
     signal !== undefined ? { signal } : undefined,
   );
   return res.translation;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Reading attempts (F-172 — reading_attempts, migration 060)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One logged reading-completion event. `chapterId`/`storyId` mirror
+ * whichever target `sourceKind` names; the other is always null.
+ * `titleSnapshot` is server-derived (never round-tripped from client input).
+ */
+export interface ReadingAttempt {
+  id: number;
+  sourceKind: 'chapter' | 'story';
+  chapterId: number | null;
+  storyId: number | null;
+  titleSnapshot: string;
+  passageNumber: number | null;
+  completedAt: string;
+}
+
+interface ReadingAttemptEnvelope {
+  attempt: ReadingAttempt;
+}
+
+/** What `POST /reading/attempts` logs: a finished chapter (optionally with
+ *  how far — `passageNumber`) or a finished generated story. Mirrors the
+ *  server's discriminated-union body schema exactly. */
+export type LogReadingAttemptInput =
+  | { sourceKind: 'chapter'; chapterId: number; passageNumber?: number }
+  | { sourceKind: 'story'; storyId: number };
+
+/**
+ * POST /reading/attempts — log a completed reading action (F-172). Fired once
+ * from an explicit "mark as read/finished" affordance (there is no scroll- or
+ * position-derived auto-completion signal this phase — see Reading.tsx's
+ * `MarkChapterReadButton`/`MarkStoryFinishedButton`). 404s (as `ApiError`) for
+ * a missing or foreign chapter/story id.
+ */
+export async function logReadingAttempt(
+  input: LogReadingAttemptInput,
+  signal?: AbortSignal,
+): Promise<ReadingAttempt> {
+  const res = await api.post<ReadingAttemptEnvelope>(
+    '/reading/attempts',
+    input,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.attempt;
+}
+
+/** Envelope from `GET /reading/attempts` — a page of history + the total. */
+export interface ReadingAttemptsPage {
+  attempts: ReadingAttempt[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Query options for `GET /reading/attempts`. */
+export interface ListReadingAttemptsOptions {
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * GET /reading/attempts — the caller's own reading-completion history, newest
+ * first (paged). Not currently rendered by any screen this phase (F-172 wires
+ * the write path + the history read for a future Today/streak surface to
+ * consume); exported now so that surface doesn't need a service-layer change
+ * later.
+ */
+export async function listReadingAttempts(
+  opts: ListReadingAttemptsOptions = {},
+  signal?: AbortSignal,
+): Promise<ReadingAttemptsPage> {
+  const params: Record<string, number> = {};
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<ReadingAttemptsPage>('/reading/attempts', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }

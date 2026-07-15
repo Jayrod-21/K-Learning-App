@@ -780,10 +780,46 @@ export async function seedReadingPassage(
   return Number(rows[0]!.id);
 }
 
+/**
+ * Seed a single generated_stories row (F-068, migration 054) directly —
+ * bypasses POST /reading/generate (no Claude call). Returns the new story id.
+ * Used by F-172 reading_attempts tests to seed a story-sourced attempt target.
+ */
+export async function seedGeneratedStory(
+  pool: Pool,
+  userId: number,
+  opts: {
+    title?: string;
+    bodyKo?: string;
+    level?: 'L1' | 'L2' | 'L3' | 'L4' | 'L5+';
+    prompt?: string | null;
+  } = {},
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO generated_stories (user_id, title, body_ko, level, prompt)
+     VALUES ($1, $2, $3, $4::proficiency_level, $5)
+     RETURNING id`,
+    [
+      userId,
+      opts.title ?? '모의 이야기',
+      opts.bodyKo ?? '옛날 옛적에 이야기가 있었습니다.',
+      opts.level ?? 'L3',
+      opts.prompt ?? null,
+    ],
+  );
+  return Number(rows[0]!.id);
+}
+
 /** Insert a minimal krdict entry. Returns id. */
 export async function seedKrdictEntry(
   pool: Pool,
-  opts: { headword?: string; definitionEn?: string; definitionKo?: string } = {},
+  opts: {
+    headword?: string;
+    definitionEn?: string;
+    definitionKo?: string;
+    /** F-175 — KRDICT part-of-speech tag. Omit for the untagged (NULL) case. */
+    partOfSpeech?: string;
+  } = {},
 ): Promise<number> {
   const headword = opts.headword ?? '먹다';
   // krdict requires a krdict_source — seed one if absent.
@@ -804,8 +840,8 @@ export async function seedKrdictEntry(
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO krdict_entries (
         krdict_source_id, source_id, homograph_index, headword,
-        definition_korean, definition_english)
-     VALUES ($1, $2, 0, $3, $4, $5)
+        definition_korean, definition_english, part_of_speech)
+     VALUES ($1, $2, 0, $3, $4, $5, $6)
      RETURNING id`,
     [
       sourceRowId,
@@ -813,6 +849,7 @@ export async function seedKrdictEntry(
       headword,
       opts.definitionKo ?? '먹어서 배를 채우다',
       opts.definitionEn ?? 'to eat',
+      opts.partOfSpeech ?? null,
     ],
   );
   return Number(rows[0]!.id);

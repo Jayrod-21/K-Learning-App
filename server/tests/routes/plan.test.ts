@@ -1,5 +1,6 @@
 /**
- * Per-route tests for src/routes/plan.ts (Pass 4 — Today screen goes live).
+ * Per-route tests for src/routes/plan.ts (Pass 4 — Today screen goes live;
+ * Wave 2 backend batch re-sources Reading + adds deep-link fields).
  *
  * Route:
  *   GET /plan/today
@@ -8,15 +9,22 @@
  *   - auth required (401 unauthenticated)
  *   - dueCount counts only live, due, non-suspended, non-deleted, non-hanja
  *     cards (hanja excluded until the F-075 review UI can drain them)
- *   - reading / listening / writing tasks are surfaced from the corpora
- *   - reading band-preference follows the diagnostic reading estimate
+ *   - reading is sourced from THIS user's own reading_chapters /
+ *     generated_stories (Wave 2 re-source — replaces the old public
+ *     ttmik_lessons pick, TODAY_NAV_SCOPING.md B4 Option 2), carrying
+ *     sourceKind/chapterId/storyId for the Today tile's deep-link
+ *   - listening carries corpus + episodeNumber (Wave 2, B5)
+ *   - writing carries promptId (Wave 2, B6)
+ *   - reading/writing band-preference follows the diagnostic estimate
  *   - largestGap is the weakest of reading/listening/writing
  *   - selection is deterministic per (user, day) — refetch returns the same plan
  *   - empty corpus → that task is null (graceful), others still resolve
  *
  * writing_prompts is reference data seeded by migration 013, so the Writing
- * branch resolves without per-test seeding. The corpora (ttmik/iyagi) are
- * truncated per-test so each case controls exactly what is selectable.
+ * branch resolves without per-test seeding. The ttmik/iyagi corpora are
+ * truncated per-test; reading_chapters/generated_stories/book_uploads are
+ * user-owned and CASCADE away for free when `users` is truncated per-test —
+ * no explicit truncation needed for them.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -30,6 +38,10 @@ import {
   seedVocabCard,
   seedDiagnosticSnapshot,
   seedWritingPrompt,
+  seedBookUpload,
+  seedReadingChapter,
+  seedReadingPassage,
+  seedGeneratedStory,
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { planDateSql } from '../../src/routes/plan.js';
@@ -71,37 +83,79 @@ describe('plan — auth required', () => {
 });
 
 describe('GET /plan/today — shape + content', () => {
-  it('returns dueCount + reading + listening + writing + largestGap', async () => {
-    await seedTtmikLesson(pg.pool, { level: 1, number: 1 });
-    await seedIyagiEpisode(pg.pool, { number: 1 });
-    const { agent } = await registerUser(t.app, pg.pool);
+  it('returns dueCount + reading + listening + writing + largestGap, with Wave 2 deep-link fields', async () => {
+    // Reading (Wave 2): sourced from THIS user's own reading_chapters — an
+    // owned book + one chapter + one passage — not the public ttmik_lessons
+    // corpus the route used before the re-source.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+      chapterNumber: 1,
+      title: '1장',
+    });
+    // 120 chars → round(120 / 120) = 1, clamped up to the 2-min floor.
+    // Pinned exactly so a wrong pace constant or a broken clamp fails.
+    await seedReadingPassage(pg.pool, chapterId, { body: '가'.repeat(120) });
+    await seedIyagiEpisode(pg.pool, { number: 7 });
 
     const res = await agent.get('/plan/today');
     expect(res.status).toBe(200);
 
     const body = res.body as {
       dueCount: number;
-      reading: { title: string; mins: number; level: string; tag: string } | null;
-      listening: { title: string; mins: number; level: string; tag: string } | null;
-      writing: { title: string; mins: number; level: string; tag: string } | null;
+      reading: {
+        title: string;
+        mins: number;
+        level: string;
+        tag: string;
+        sourceKind: string;
+        chapterId: number | null;
+        storyId: number | null;
+      } | null;
+      listening: {
+        title: string;
+        mins: number;
+        level: string;
+        tag: string;
+        corpus: string;
+        episodeNumber: number;
+      } | null;
+      writing: {
+        title: string;
+        mins: number;
+        level: string;
+        tag: string;
+        promptId: number;
+      } | null;
       largestGap: string | null;
     };
 
     expect(body.dueCount).toBe(0); // no cards seeded
+
     expect(body.reading).not.toBeNull();
     expect(body.reading?.tag).toBe('Reading');
-    // 2 seeded sentences → round(2 * 12 / 60) = 0, clamped up to the 2-min
-    // floor. Pinned exactly so a wrong pace constant or a broken clamp fails.
+    expect(body.reading?.sourceKind).toBe('chapter');
+    expect(body.reading?.chapterId).toBe(chapterId);
+    expect(body.reading?.storyId).toBeUndefined();
+    expect(body.reading?.title).toBe('1장');
     expect(body.reading?.mins).toBe(2);
+    // reading_chapters carries no proficiency band at all → centre default.
+    expect(body.reading?.level).toBe('L4');
+
     expect(body.listening).not.toBeNull();
     expect(body.listening?.tag).toBe('Listening');
     expect(body.listening?.level).toBe('L3→L4');
+    expect(body.listening?.corpus).toBe('iyagi');
+    expect(body.listening?.episodeNumber).toBe(7);
     // 2 seeded sentences → round(2 * 15 / 60) = 1, clamped up to the 3-min
     // floor. Pinned exactly for the same reason as reading above.
     expect(body.listening?.mins).toBe(3);
+
     expect(body.writing).not.toBeNull();
     expect(body.writing?.tag).toBe('Writing');
     expect(['L3', 'L4', 'L5+']).toContain(body.writing?.level);
+    expect(typeof body.writing?.promptId).toBe('number');
+
     // No diagnostic snapshot yet → no gap highlight.
     expect(body.largestGap).toBeNull();
   });
@@ -184,30 +238,95 @@ describe('GET /plan/today — largestGap', () => {
   });
 });
 
-describe('GET /plan/today — reading band preference', () => {
-  it('prefers a reading passage whose band matches the reading estimate', async () => {
-    // A low reading estimate (<3) → prefer a 'beginner' lesson (label L3) even
-    // though an 'advanced' lesson (label L5+) is also selectable.
-    await seedTtmikLesson(pg.pool, { number: 1, bookLevel: 'beginner' });
-    await seedTtmikLesson(pg.pool, { number: 2, bookLevel: 'advanced' });
-    await seedIyagiEpisode(pg.pool);
+describe('GET /plan/today — reading re-source (Wave 2)', () => {
+  it('prefers a generated_stories row whose band matches the reading estimate, over a bandless chapter', async () => {
+    // A low reading estimate (<3.5) → estimateToProficiency → 'L3', so the
+    // band CASE must surface the L3 story even though a bandless chapter
+    // (reading_chapters carries no level at all — it can never win the
+    // band-match tier) and an L5+ story are also selectable.
     const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId);
+    await seedReadingPassage(pg.pool, chapterId);
+    const storyId = await seedGeneratedStory(pg.pool, userId, {
+      level: 'L3',
+      title: 'L3 story',
+    });
+    await seedGeneratedStory(pg.pool, userId, { level: 'L5+', title: 'L5+ story' });
     await seedDiagnosticSnapshot(pg.pool, userId, { reading: 2.0 });
 
     const res = await agent.get('/plan/today');
     expect(res.status).toBe(200);
-    expect((res.body as { reading: { level: string } | null }).reading?.level).toBe('L3');
+    const reading = (
+      res.body as {
+        reading: { sourceKind: string; storyId: number | null; level: string } | null;
+      }
+    ).reading;
+    expect(reading?.sourceKind).toBe('story');
+    expect(reading?.storyId).toBe(storyId);
+    expect(reading?.level).toBe('L3');
+  });
+
+  it('falls back to the chapter when no story exists, and defaults a NULL chapter title to "Chapter N"', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+      chapterNumber: 1,
+      title: null,
+    });
+    await seedReadingPassage(pg.pool, chapterId);
+    // A band preference exists but there is no story to match it — the
+    // chapter must still surface (never a fabricated null just because
+    // nothing matched the band).
+    await seedDiagnosticSnapshot(pg.pool, userId, { reading: 5.0 });
+
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    const reading = (
+      res.body as {
+        reading: { sourceKind: string; chapterId: number | null; title: string } | null;
+      }
+    ).reading;
+    expect(reading?.sourceKind).toBe('chapter');
+    expect(reading?.chapterId).toBe(chapterId);
+    // NULL chapter title → server-derived "Chapter N" fallback (mirrors the
+    // POST /reading/attempts route's own fallback), never an empty string.
+    expect(reading?.title).toBe('Chapter 1');
+  });
+
+  it('never surfaces another user’s reading_chapters or generated_stories — unlike the old public ttmik_lessons pick, this content is user-owned', async () => {
+    const other = await registerUser(t.app, pg.pool);
+    const otherUploadId = await seedBookUpload(pg.pool, other.userId, { type: 'literature' });
+    const otherChapterId = await seedReadingChapter(pg.pool, other.userId, otherUploadId);
+    await seedReadingPassage(pg.pool, otherChapterId);
+    await seedGeneratedStory(pg.pool, other.userId);
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/plan/today');
+    expect(res.status).toBe(200);
+    expect((res.body as { reading: unknown | null }).reading).toBeNull();
   });
 });
 
 describe('GET /plan/today — deterministic per day', () => {
   it('returns the same plan across repeated fetches in a day', async () => {
-    // Several selectable rows so a non-deterministic pick would likely differ.
+    // Several selectable candidates across BOTH reading sources + iyagi, so
+    // a non-deterministic pick would likely differ between the two fetches.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    for (let i = 1; i <= 3; i += 1) {
+      const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+        chapterNumber: i,
+        title: `chapter ${String(i)}`,
+      });
+      await seedReadingPassage(pg.pool, chapterId);
+    }
+    for (let i = 1; i <= 2; i += 1) {
+      await seedGeneratedStory(pg.pool, userId, { title: `story ${String(i)}` });
+    }
     for (let i = 1; i <= 5; i += 1) {
-      await seedTtmikLesson(pg.pool, { number: i, title: `lesson ${String(i)}` });
       await seedIyagiEpisode(pg.pool, { number: i });
     }
-    const { agent } = await registerUser(t.app, pg.pool);
 
     const first = await agent.get('/plan/today');
     const second = await agent.get('/plan/today');
@@ -287,7 +406,9 @@ describe('GET /plan/today — rollover boundary is timezone-pinned', () => {
 
 describe('GET /plan/today — graceful empty corpus', () => {
   it('returns null for a task whose corpus is empty, others still resolve', async () => {
-    // No TTMIK lessons seeded → reading is null. Iyagi seeded → listening real.
+    // No reading_chapters/generated_stories seeded for this user → reading is
+    // null (an empty personal library, same honest contract as before the
+    // Wave 2 re-source). Iyagi seeded → listening real.
     await seedIyagiEpisode(pg.pool, { number: 1 });
     const { agent } = await registerUser(t.app, pg.pool);
 
@@ -379,9 +500,13 @@ describe('GET /plan/today — rubric-NULL prompts are structurally excluded', ()
       isActive: true,
       rubric: null,
     });
-    await seedTtmikLesson(pg.pool);
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Reading (Wave 2) is user-scoped — seed a chapter for THIS user so the
+    // "other tasks still resolve" assertion below has something to resolve.
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId);
+    await seedReadingPassage(pg.pool, chapterId);
     await seedIyagiEpisode(pg.pool);
-    const { agent } = await registerUser(t.app, pg.pool);
 
     const res = await agent.get('/plan/today');
     expect(res.status).toBe(200);
@@ -397,9 +522,11 @@ describe('GET /plan/today — writing empty corpus', () => {
     // (a regression that threw or returned a malformed row on an empty bank
     // would surface here). Reading/listening still resolve from their corpora.
     await pg.pool.query('TRUNCATE TABLE writing_prompts RESTART IDENTITY CASCADE');
-    await seedTtmikLesson(pg.pool);
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { type: 'literature' });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId);
+    await seedReadingPassage(pg.pool, chapterId);
     await seedIyagiEpisode(pg.pool);
-    const { agent } = await registerUser(t.app, pg.pool);
 
     const res = await agent.get('/plan/today');
     expect(res.status).toBe(200);

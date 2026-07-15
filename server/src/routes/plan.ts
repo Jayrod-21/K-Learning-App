@@ -8,11 +8,30 @@
  *     dueCount:   number,                      // FSRS cards due as of now()
  *                                              // (hanja cards excluded until
  *                                              // the F-075 review UI ships)
- *     reading:    TodayTask | null,            // one TTMIK lesson
+ *     reading:    TodayTask | null,            // one of THIS user's own
+ *                                              // reading_chapters / stories
  *     listening:  TodayTask | null,            // one Iyagi episode
  *     writing:    TodayTask | null,            // one writing_prompts row
  *     largestGap: 'Reading'|'Listening'|'Writing'|null   // weakest modality
  *   }
+ *
+ * WAVE 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6): three additive
+ * changes so the Today screen's tiles can deep-link to the EXACT item they
+ * display, instead of the bare landing page:
+ *   1. Reading is re-sourced from `reading_chapters` (uploaded-book chapters)
+ *      and `generated_stories` (AI-generated stories) — the domain the
+ *      `/learn/reading` page actually serves — replacing the old
+ *      `ttmik_lessons` pick, which had no relationship to that page at all
+ *      (B4 Option 2). `reading.sourceKind`/`chapterId`/`storyId` ride along so
+ *      the tile can navigate to `?chapter=<id>` or `?story=<id>`.
+ *   2. `listening.corpus`/`episodeNumber` carry the Iyagi episode's natural
+ *      key (distinct from its internal DB id) so the tile can navigate to
+ *      `?corpus=iyagi&episode=<episodeNumber>` (B5).
+ *   3. `writing.promptId` carries the `writing_prompts.id` so the tile can
+ *      request this EXACT bank prompt instead of a fresh random draw (B6).
+ * All three are purely additive JSON fields on the existing nested
+ * `reading`/`listening`/`writing` objects — no shape is renamed or removed,
+ * safe for the shared blue/green `km-db`.
  *
  * SELECTION MODEL — "stable per user per day, leveled to ability"
  *   Each content task (reading / listening / writing) is picked by ordering on
@@ -32,6 +51,10 @@
  *   PREFER a row whose difficulty band matches that modality's estimate
  *   (band-match sorts first, deterministic hash breaks ties), so content is
  *   leveled to current ability. No snapshot → pure deterministic-random.
+ *   Reading's band-match (Wave 2) can only ever prefer a `generated_stories`
+ *   row — `reading_chapters` carries no proficiency band at all — so a
+ *   chapter is always a fallback-tier candidate, same tie-break shape as the
+ *   writing branch's own CASE.
  *
  * `largestGap` is the weakest of the three *surfaced* modalities (reading /
  * listening / writing) in the latest snapshot — it drives which Today tile
@@ -48,6 +71,11 @@
  *     queries; the limiter caps abusive polling.
  *   - All title/level strings are returned as data and rendered as React
  *     children client-side (escaped) — no HTML is ever emitted here.
+ *   - Wave 2's reading re-source (unlike the old ttmik_lessons pick, which
+ *     was PUBLIC corpus data) reads two USER-OWNED tables — every row is
+ *     scoped `WHERE user_id = $1` (the session's own id), so this endpoint
+ *     can never surface, or leak the existence of, another user's uploaded
+ *     book chapters or generated stories.
  */
 import { Router } from 'express';
 import { getUserId, requireAuth } from '../middleware/auth.js';
@@ -83,9 +111,6 @@ const PLAN_DATE_SQL = planDateSql();
 /** Korean-speech-level / TOPIK-band label the client renders on a task tile. */
 export type LevelLabel = 'L3' | 'L4' | 'L5+' | 'L3→L4';
 
-/** book_level enum values as they arrive from Postgres (or null). */
-export type BookLevel = 'beginner' | 'intermediate' | 'advanced' | null;
-
 /** proficiency_level enum values used by writing_prompts.level. */
 export type Proficiency = 'basic' | 'L3' | 'L4' | 'L5+';
 
@@ -93,42 +118,10 @@ export type Proficiency = 'basic' | 'L3' | 'L4' | 'L5+';
 export type GapTag = 'Reading' | 'Listening' | 'Writing';
 
 /**
- * Map a corpus `book_level` to the TOPIK-aligned label the design shows.
- * Reading content (TTMIK) carries a book_level; we surface it as L3/L4/L5+.
- * NULL (level-spanning or unset) defaults to L4 — the design's centre band.
- */
-export function bookLevelToLabel(book: BookLevel): LevelLabel {
-  switch (book) {
-    case 'beginner':
-      return 'L3';
-    case 'advanced':
-      return 'L5+';
-    case 'intermediate':
-      return 'L4';
-    default:
-      return 'L4';
-  }
-}
-
-/**
- * Diagnostic estimates are on the TOPIK 0–6 scale. To level reading content we
- * prefer a `book_level` band near the user's estimate. Returns null when there
- * is no estimate, which the SQL reads as "no band preference, pure random".
- *   < 3   → beginner   (TOPIK 1–2 territory)
- *   < 4.5 → intermediate
- *   ≥ 4.5 → advanced
- */
-export function estimateToBookLevel(estimate: number | null): BookLevel {
-  if (estimate === null || Number.isNaN(estimate)) return null;
-  if (estimate < 3) return 'beginner';
-  if (estimate < 4.5) return 'intermediate';
-  return 'advanced';
-}
-
-/**
- * Prefer a writing prompt whose `proficiency_level` band matches the user's
- * writing estimate (0–6 scale). The prompt bank starts at L3, so 'basic' is
- * never targeted. Null → no band preference.
+ * Prefer a writing prompt (or, since Wave 2, a `generated_stories` reading
+ * candidate) whose `proficiency_level` band matches the caller's estimate
+ * (0–6 scale). The writing bank starts at L3, so 'basic' is never targeted.
+ * Null → no band preference.
  *   < 3.5 → L3
  *   < 5   → L4
  *   ≥ 5   → L5+
@@ -143,14 +136,34 @@ export function estimateToProficiency(
 }
 
 /**
- * Estimate reading minutes from a lesson's sentence count. The corpus carries
- * no duration metadata, so we model a study pace of ~12s per sentence
- * (read + gloss + re-read) and clamp to a sane tile range.
+ * Estimate reading minutes from a character count (Wave 2 — reading_chapters
+ * and generated_stories carry no duration metadata, and unlike the old
+ * TTMIK-sourced pick, neither carries a sentence count either — a chapter's
+ * length lives in its `reading_passages.body` text, a story's in
+ * `body_ko`). Models a study pace of ~120 Korean characters/minute for a
+ * learner (read + occasional tap-to-define + re-read), clamped to the same
+ * [2, 12] tile range the old sentence-based estimate used.
  */
-export function readingMinsFromSentences(sentenceCount: number): number {
-  const PACE_SECONDS_PER_SENTENCE = 12;
-  const mins = Math.round((sentenceCount * PACE_SECONDS_PER_SENTENCE) / 60);
+export function readingMinsFromChars(charCount: number): number {
+  const CHARS_PER_MINUTE = 120;
+  const mins = Math.round(charCount / CHARS_PER_MINUTE);
   return Math.min(12, Math.max(2, mins));
+}
+
+/**
+ * Map a reading candidate's `proficiency_level` (generated_stories.level, or
+ * null for a reading_chapters row — chapters carry no level at all) to the
+ * TOPIK-aligned label the design shows. 'L3'/'L5+' pass through; 'L4',
+ * 'basic'/'L1'/'L2' (bands the story bank rarely if ever targets), and null
+ * (a chapter) all default to 'L4', the design's centre band — the same
+ * "no signal → centre band" default the old TTMIK-sourced pick used.
+ */
+export function readingLevelToLabel(
+  level: 'basic' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5+' | null,
+): LevelLabel {
+  if (level === 'L5+') return 'L5+';
+  if (level === 'L3') return 'L3';
+  return 'L4';
 }
 
 /**
@@ -197,6 +210,23 @@ interface TodayTask {
   mins: number;
   level: LevelLabel;
   tag: GapTag;
+  // ── Wave 2 deep-link fields (TODAY_NAV_SCOPING.md B4/B5/B6) — each is
+  // populated only for the task whose `tag` names it; additive/optional so
+  // the shape stays backward-compatible with any client still on the old
+  // envelope.
+  /** Reading only: which reading feature this task came from. */
+  sourceKind?: 'chapter' | 'story';
+  /** Reading only, when `sourceKind === 'chapter'`: reading_chapters.id. */
+  chapterId?: number;
+  /** Reading only, when `sourceKind === 'story'`: generated_stories.id. */
+  storyId?: number;
+  /** Listening only: the corpus this episode belongs to. */
+  corpus?: 'iyagi';
+  /** Listening only: iyagi_episodes.episode_number (the player's natural
+   *  key — distinct from the internal DB id). */
+  episodeNumber?: number;
+  /** Writing only: writing_prompts.id. */
+  promptId?: number;
 }
 
 router.get('/today', cheapLimiter(), async (req, res, next) => {
@@ -244,42 +274,93 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
 
     const userKey = String(userId);
 
-    // 3. Reading — one TTMIK lesson, band-preferred + deterministic per day.
-    const readingBand = estimateToBookLevel(readingEstimate);
+    // 3. Reading — one of THIS user's own reading_chapters (uploaded-book
+    //    chapters) or generated_stories, band-preferred + deterministic per
+    //    day (Wave 2 re-source, TODAY_NAV_SCOPING.md B4 Option 2 — replaces
+    //    the old ttmik_lessons pick, which had no relationship to the
+    //    /learn/reading page's actual content model). BOTH source tables are
+    //    user-owned, so every leg of the UNION is scoped `WHERE user_id =
+    //    $1` — an empty personal library (no uploads, no generated stories)
+    //    yields `reading: null`, the same honest empty-corpus contract the
+    //    old pick used. `reading_chapters` carries no proficiency band at
+    //    all, so it is always a fallback-tier candidate in the CASE below;
+    //    only a `generated_stories` row can win the band-match tier.
+    const readingBand = estimateToProficiency(readingEstimate);
     const reading = await query<{
+      source_kind: 'chapter' | 'story';
+      row_id: string;
       title: string | null;
-      book_level: BookLevel;
-      sentence_count: number;
+      chapter_number: number | null;
+      level: 'basic' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5+' | null;
+      char_count: string;
     }>(
-      `SELECT l.title,
-              l.book_level::text AS book_level,
-              (SELECT count(*)::int
-                 FROM ttmik_sentences s
-                WHERE s.lesson_id = l.id) AS sentence_count
-         FROM ttmik_lessons l
-        ORDER BY (CASE WHEN $2::book_level IS NOT NULL
-                        AND l.book_level = $2::book_level THEN 0 ELSE 1 END),
-                 md5($1::text || ${PLAN_DATE_SQL} || l.id::text)
+      `WITH candidates AS (
+         SELECT 'chapter'::text AS source_kind,
+                c.id AS row_id,
+                c.title,
+                c.chapter_number,
+                NULL::text AS level,
+                (SELECT COALESCE(sum(length(p.body)), 0)::int
+                   FROM reading_passages p
+                  WHERE p.chapter_id = c.id) AS char_count
+           FROM reading_chapters c
+          WHERE c.user_id = $1
+          UNION ALL
+         SELECT 'story'::text AS source_kind,
+                s.id AS row_id,
+                s.title,
+                NULL::int AS chapter_number,
+                s.level::text AS level,
+                length(s.body_ko) AS char_count
+           FROM generated_stories s
+          WHERE s.user_id = $1
+       )
+       SELECT candidates.source_kind,
+              candidates.row_id::text AS row_id,
+              candidates.title,
+              candidates.chapter_number,
+              candidates.level,
+              candidates.char_count::text AS char_count
+         FROM candidates
+        ORDER BY (CASE WHEN $3::text IS NOT NULL
+                        AND candidates.level = $3::text THEN 0 ELSE 1 END),
+                 md5($2::text || ${PLAN_DATE_SQL} || candidates.source_kind || candidates.row_id::text)
         LIMIT 1`,
-      [userKey, readingBand],
+      [userId, userKey, readingBand],
     );
-    const readingTask: TodayTask | null = reading.rows[0]
+    const readingRow = reading.rows[0];
+    const readingTask: TodayTask | null = readingRow
       ? {
-          title: reading.rows[0].title ?? 'TTMIK reading',
-          mins: readingMinsFromSentences(reading.rows[0].sentence_count),
-          level: bookLevelToLabel(reading.rows[0].book_level),
+          title:
+            readingRow.title ??
+            (readingRow.source_kind === 'chapter'
+              ? `Chapter ${String(readingRow.chapter_number ?? 1)}`
+              : 'Reading'),
+          mins: readingMinsFromChars(Number(readingRow.char_count)),
+          level: readingLevelToLabel(readingRow.level),
           tag: 'Reading',
+          sourceKind: readingRow.source_kind,
+          ...(readingRow.source_kind === 'chapter'
+            ? { chapterId: Number(readingRow.row_id) }
+            : { storyId: Number(readingRow.row_id) }),
         }
       : null;
 
     // 4. Listening — one Iyagi episode. Iyagi carries no per-episode level, so
     //    the label is the fixed 'L3→L4' band (Iyagi targets intermediate
     //    listeners) and selection is pure deterministic-per-day.
+    //    Wave 2 (B5): also select `episode_number` — the natural key
+    //    Ttmik.tsx/ttmik.ts addresses an episode by (distinct from the
+    //    internal `e.id` used only for the per-day hash) — so the Today tile
+    //    can deep-link to `?corpus=iyagi&episode=<episodeNumber>` instead of
+    //    the bare listening landing page.
     const listening = await query<{
       title: string | null;
+      episode_number: number;
       sentence_count: number;
     }>(
       `SELECT e.title,
+              e.episode_number,
               (SELECT count(*)::int
                  FROM iyagi_sentences s
                 WHERE s.episode_id = e.id) AS sentence_count
@@ -294,6 +375,8 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
           mins: listeningMinsFromSentences(listening.rows[0].sentence_count),
           level: 'L3→L4',
           tag: 'Listening',
+          corpus: 'iyagi',
+          episodeNumber: listening.rows[0].episode_number,
         }
       : null;
 
@@ -305,11 +388,12 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
     // mismatch — the invariant is enforced structurally in BOTH queries.
     const writingBand = estimateToProficiency(writingEstimate);
     const writing = await query<{
+      id: string;
       title: string;
       level: Proficiency;
       est_minutes: number;
     }>(
-      `SELECT title, level::text AS level, est_minutes
+      `SELECT id::text AS id, title, level::text AS level, est_minutes
          FROM writing_prompts
         WHERE is_active
           AND rubric IS NOT NULL
@@ -333,6 +417,9 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
               ? writingRow.level
               : 'L4',
           tag: 'Writing',
+          // Wave 2 (B6): the exact bank row, so Today's Writing tile can
+          // request THIS prompt by id instead of a fresh random draw.
+          promptId: Number(writingRow.id),
         }
       : null;
 

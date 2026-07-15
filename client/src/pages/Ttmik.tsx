@@ -172,6 +172,7 @@ import {
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
+import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { CityCard, type CityCardTone } from '../components/CityCard';
 import { ErrorCard } from '../components/ErrorCard';
@@ -203,6 +204,8 @@ import {
   getIyagiEpisodes,
   getTtmikLesson,
   getTtmikLessons,
+  logIyagiAttempt,
+  logTtmikAttempt,
 } from '../services/ttmik';
 import { mineWord } from '../services/vocab';
 import type {
@@ -993,6 +996,74 @@ async function loadDetail(
 /** Signature every tap surface funnels into: raw word + its sentence. */
 type TapWordHandler = (raw: string, sentenceText: string) => void;
 
+// ─────────────────────────────────────────────────────────────
+// Mark-as-listened (F-172 — listening_attempts, migration 061)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The completion-log POST's lifecycle (mirrors Reading.tsx's own
+ * `MarkReadState`, duplicated here rather than cross-imported — same
+ * page-local-duplication posture this file already takes for `TapKorean`/
+ * `SkeletonCard`). No 'idle' → 'saving' → 'done' loop back: once logged, the
+ * button stays done for the rest of this detail view's mount (re-opening a
+ * DIFFERENT lesson/episode remounts fresh via the parent's
+ * `key={selectionKey(...)}`).
+ */
+type MarkListenedState =
+  | { phase: 'idle' }
+  | { phase: 'saving' }
+  | { phase: 'done' }
+  | { phase: 'error'; message: string };
+
+/** Fixed fallback copy for a failed completion-log POST (errorCopy contract). */
+const MARK_LISTENED_FAILED_COPY = "Couldn't save — try again.";
+
+/**
+ * The explicit "I finished this" affordance — the same completion signal the
+ * `<audio>` `ended` event fires automatically (see `DetailView` below), also
+ * offered as a button so a unit with no mapped audio (`audioSrc === null`) or
+ * a listen that didn't play to the very end still has a way to log it.
+ * `aria-disabled` (not `disabled`) while saving/done — the hard attribute
+ * would drop keyboard focus to `<body>` mid-request.
+ */
+function MarkListenedButton({
+  state,
+  onMark,
+}: {
+  state: MarkListenedState;
+  onMark: () => void;
+}): JSX.Element {
+  const busy = state.phase === 'saving';
+  const done = state.phase === 'done';
+  return (
+    <div style={{ margin: '12px 0' }}>
+      <Button
+        variant={done ? 'ghost' : 'gold'}
+        size="sm"
+        leadingIcon={<Icon name="check" size={14} />}
+        aria-disabled={busy || done || undefined}
+        onClick={() => {
+          if (busy || done) return; // aria-disabled doesn't block clicks — we do.
+          onMark();
+        }}
+      >
+        {done ? (
+          <Bilingual en="Marked as listened" kr="들음으로 표시됨" compact />
+        ) : busy ? (
+          <Bilingual en="Saving…" kr="저장 중…" compact />
+        ) : (
+          <Bilingual en="Mark as listened" kr="들음으로 표시" compact />
+        )}
+      </Button>
+      {state.phase === 'error' ? (
+        <span role="alert" style={{ marginLeft: 8 }}>
+          {state.message}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function DetailView({ selection }: { selection: Selection }): JSX.Element {
   const [data, setData] = useState<DetailData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1016,6 +1087,59 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
   const onAudioError = useCallback((): void => {
     setAudioError(true);
   }, []);
+
+  // F-172 — "Mark as listened" (listening_attempts, migration 061). Fired
+  // either automatically (the `<audio>` element's `ended` event, wired below)
+  // or explicitly via `MarkListenedButton` — the only completion signal this
+  // screen had NONE of before (routes/ttmik.ts was pure read-only corpus
+  // serving; see that route's own header). Guarded against re-entry (a replay
+  // reaching `ended` again, or a second click) by checking `markState.phase`
+  // at the top rather than only in the button's own click handler, since the
+  // audio `ended` path doesn't go through that handler. Aborted on unmount /
+  // selection change so a closed or superseded detail view never lands a late
+  // setState.
+  const [markState, setMarkState] = useState<MarkListenedState>({ phase: 'idle' });
+  const markCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      markCtrlRef.current?.abort();
+    },
+    // Empty deps: this whole component remounts fresh per selection (the
+    // parent keys DetailView on `selectionKey(...)`), so unmount-only cleanup
+    // is exactly what's needed — no dependency on `detailKey` (declared later
+    // in this function; depping on it here would also be a use-before-define).
+    [],
+  );
+  const markListened = useCallback((): void => {
+    setMarkState((prev) => {
+      if (prev.phase === 'saving' || prev.phase === 'done') return prev;
+      markCtrlRef.current?.abort();
+      const ctrl = new AbortController();
+      markCtrlRef.current = ctrl;
+      const call =
+        selection.corpus === 'ttmik'
+          ? logTtmikAttempt(selection.level, selection.number, ctrl.signal)
+          : logIyagiAttempt(selection.number, ctrl.signal);
+      call.then(
+        () => {
+          if (ctrl.signal.aborted) return;
+          setMarkState({ phase: 'done' });
+        },
+        (err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof ApiError && err.code === 'canceled') return;
+          setMarkState({
+            phase: 'error',
+            message: errorMessageFor(err, MARK_LISTENED_FAILED_COPY),
+          });
+        },
+      );
+      return { phase: 'saving' };
+    });
+  }, [selection]);
+  const onAudioEnded = useCallback((): void => {
+    markListened();
+  }, [markListened]);
 
   // Publish the open lesson/episode for the chat FAB's discuss-this-page
   // popup (Slice 3). Selections come from the URL (no title), so publish
@@ -1269,6 +1393,11 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
               src={data.audioSrc}
               aria-label={`Audio for ${data.title}`}
               onError={onAudioError}
+              // F-172: reaching the end of the audio IS a completion signal —
+              // logs a listening_attempts row automatically. `markListened`
+              // no-ops if already saving/done, so a replay past `ended` again
+              // (or a click on the explicit button below) can't double-log.
+              onEnded={onAudioEnded}
               style={{ width: '100%' }}
             />
             {audioError ? (
@@ -1293,6 +1422,11 @@ function DetailView({ selection }: { selection: Selection }): JSX.Element {
           </p>
         )}
       </CityCard>
+
+      {/* F-172: explicit fallback trigger — covers a unit with no mapped
+          audio (audioSrc === null, so `ended` can never fire) and a listen
+          that didn't play all the way through. */}
+      <MarkListenedButton state={markState} onMark={markListened} />
 
       {data.corpus === 'ttmik' ? (
         visibleLessonTabs.length === 0 ? (

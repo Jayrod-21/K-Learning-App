@@ -68,6 +68,14 @@ const VocabSearchQuerySchema = z.object({
   // value 400s at the boundary instead of reaching the cast in SQL.
   domain: z.enum(['general', 'research', 'business']).optional(),
   book_level: z.enum(['beginner', 'intermediate', 'advanced']).optional(),
+  // F-176: per-book chapter/topic facet (`vocab_entries.theme`, migration 002)
+  // — a free-text label lifted verbatim from the source PDF extraction (e.g.
+  // "01 인간 / People"), NOT a closed enum like `domain`/`book_level`. Bounded
+  // to the column's own practical length so an absurd value can't ride an
+  // unindexed equality scan; exact match (never ILIKE) since real theme
+  // strings are stable corpus labels, not free text a user would misspell.
+  // See GET /vocab/themes below for the ~31 real values this binds against.
+  theme: z.string().trim().min(1).max(200).optional(),
   // U3a (source filtering): the `book_uploads.id` an uploaded-book source filter
   // is scoping to. Wired from the client's SourceFilterRow since U1 but inert
   // server-side until now — the WHERE clause below finally honours it. Coerced
@@ -126,25 +134,31 @@ router.get(
             AND ($3::proficiency_level IS NULL OR proficiency = $3::proficiency_level)
             AND ($4::content_domain IS NULL OR domain = $4::content_domain)
             AND ($5::book_level IS NULL OR book_level = $5::book_level)
+            -- F-176: theme is a free-text per-book facet, not a Postgres enum.
+            -- Exact match against the ix_vocab_entries_theme_subsection
+            -- index's leading column (a composite (theme, subsection) B-tree
+            -- fully serves an equality filter on theme alone).
+            AND ($6::text IS NULL OR theme = $6)
             -- U3a source filter. When a source id is given, the row must be
             -- tagged with it AND the upload must belong to the requesting user.
             -- The EXISTS guard means a user filtering by an upload they don't
             -- own gets zero rows (never another user's tagged entries), and a
             -- hard-deleted upload's id likewise matches nothing (book_uploads
             -- has no soft-delete column — migration 040 is hard-delete only).
-            AND ($6::bigint IS NULL
-                 OR (source_upload_id = $6::bigint
+            AND ($7::bigint IS NULL
+                 OR (source_upload_id = $7::bigint
                      AND EXISTS (SELECT 1 FROM book_uploads bu
-                                  WHERE bu.id = $6::bigint
-                                    AND bu.user_id = $7)))
+                                  WHERE bu.id = $7::bigint
+                                    AND bu.user_id = $8)))
           ORDER BY id
-          LIMIT $8 OFFSET $9`,
+          LIMIT $9 OFFSET $10`,
         [
           likePattern,
           q.corpus ?? null,
           q.proficiency ?? null,
           q.domain ?? null,
           q.book_level ?? null,
+          q.theme ?? null,
           q.source_upload_id ?? null,
           userId,
           q.limit,
@@ -163,6 +177,42 @@ router.get(
     }
   },
 );
+
+/**
+ * GET /vocab/themes — the distinct, non-null `theme` values across the
+ * curated corpus (F-176), for building a theme/genre filter UI.
+ *
+ * Unlike `domain`/`book_level` (closed Postgres enums), `theme` is free text
+ * lifted verbatim from each source book's own chapter numbering — there is
+ * no static whitelist in code or corpus JSON, so the client can't hardcode
+ * this list. Read-only, auth-required (mirrors every other corpus-lookup
+ * route in this file), cheap limiter. No user input — the query has no
+ * parameters, so there is no injection surface.
+ *
+ * Ordered alphabetically (`"C"` collation for stable byte ordering across
+ * Korean/mixed-script labels — same convention `GET /krdict/search`'s browse
+ * path uses) so a dropdown built from this renders deterministically.
+ */
+router.get('/themes', cheapLimiter(), async (_req, res, next) => {
+  try {
+    // NOTE: `SELECT DISTINCT theme ... ORDER BY theme COLLATE "C"` would fail
+    // with Postgres error 42803 ("for SELECT DISTINCT, ORDER BY expressions
+    // must appear in select list") — DISTINCT requires the ORDER BY
+    // expression to textually match a select-list item, and a bare `theme`
+    // is a different expression from `theme COLLATE "C"`. Collating the
+    // select-list column itself (aliased back to `theme`) makes the two
+    // expressions match.
+    const { rows } = await query<{ theme: string }>(
+      `SELECT DISTINCT theme COLLATE "C" AS theme
+         FROM vocab_entries
+        WHERE theme IS NOT NULL
+        ORDER BY theme COLLATE "C"`,
+    );
+    res.status(200).json({ themes: rows.map((r) => r.theme) });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /* ---------- FSRS cards ---------- */
 
@@ -219,6 +269,19 @@ router.get(
       // GET /hanja/cards/due, which joins hanja_characters for the fields the
       // hanja review UI renders. Serving them here too would double-present
       // every due hanja card and render it blank (all vocab_*/grammar_* NULL).
+      //
+      // COUNT reconciliation (TODAY_NAV_SCOPING Part A / the "665 due" vs
+      // "0 cards due" bug): this route previously had NO total — only the
+      // LIMIT-capped page's `.length`, which structurally can never exceed
+      // `limit` (default 20) no matter how large the real backlog is, and
+      // client code partitions that already-tiny page further into vocab vs.
+      // grammar-production rows — so a landing screen reading `.length`
+      // could show a wildly wrong (even zero) count against a real backlog
+      // in the hundreds. `COUNT(*) OVER ()` rides the SAME WHERE this page
+      // query uses (same `graduated_at` exclusion, same hanja exclusion) —
+      // one exact, unbounded total for "how many vocab cards are actually
+      // due," computed by the identical predicate the visible page obeys, so
+      // the two numbers can never independently drift again.
       const { rows } = await query<{
         id: number;
         face: string;
@@ -239,6 +302,7 @@ router.get(
         grammar_pattern_display: string | null;
         grammar_summary_en: string | null;
         grammar_pattern_key: string | null;
+        total: string;
       }>(
         // grammar_pattern_key is what a Review→Drill deep-link must hand back so
         // the drill resolves the SAME grammar_entries row (the server keys on
@@ -256,7 +320,8 @@ router.get(
                 ve.source_book     AS vocab_source_book,
                 ge.pattern_display AS grammar_pattern_display,
                 ge.summary_en      AS grammar_summary_en,
-                ge.pattern_key     AS grammar_pattern_key
+                ge.pattern_key     AS grammar_pattern_key,
+                COUNT(*) OVER ()::text AS total
            FROM vocab_cards c
            LEFT JOIN vocab_entries ve
                   ON ve.id = c.vocab_entry_id
@@ -277,7 +342,11 @@ router.get(
       // pg returns BIGINT columns as strings; the card DTO documents the id +
       // FK id fields as JSON numbers (nullable FKs stay null). NUMERIC columns
       // stability/difficulty are intentionally left as strings (precision-safe).
-      const cards = rows.map((c) => ({
+      // COUNT(*) OVER () is identical on every row; an empty page (nothing
+      // due) yields no rows, so total is legitimately 0 there — mirrors the
+      // idiom `GET /vocab/entries` already uses just above.
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      const cards = rows.map(({ total: _total, ...c }) => ({
         ...c,
         id: Number(c.id),
         vocab_entry_id: c.vocab_entry_id === null ? null : Number(c.vocab_entry_id),
@@ -286,7 +355,7 @@ router.get(
           c.source_sentence_id === null ? null : Number(c.source_sentence_id),
         topik_item_id: c.topik_item_id === null ? null : Number(c.topik_item_id),
       }));
-      res.status(200).json({ cards });
+      res.status(200).json({ cards, total });
     } catch (err) {
       next(err);
     }

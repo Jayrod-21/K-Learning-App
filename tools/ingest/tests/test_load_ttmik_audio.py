@@ -32,6 +32,7 @@ from loaders import load_ttmik_audio  # type: ignore  # noqa: E402
 from loaders.load_ttmik_audio import (  # type: ignore  # noqa: E402
     EpisodeKey,
     LessonKey,
+    _resolve_iyagi_episode_number,
     parse_audio_filename,
     scan_audio_tree,
 )
@@ -52,7 +53,10 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
         # Ground-truth shapes
         ("03 TTMIK Level 1 Lesson 3.mp3", LessonKey(level=1, number=3)),
         ("17 TTMIK Level 9 Lesson 17.mp3", LessonKey(level=9, number=17)),
-        ("143 TTMIK Iyagi 143.mp3", EpisodeKey(number=143)),
+        # F-185: local "143" is a season-3 local number; the real
+        # iyagi_episodes.episode_number is 143 + 100 = 243 (see
+        # _resolve_iyagi_episode_number / module docstring).
+        ("143 TTMIK Iyagi 143.mp3", EpisodeKey(number=243)),
         ("1 TTMIK Iyagi 1.mp3", EpisodeKey(number=1)),
         # Variance the regex must absorb: case, extra whitespace, extension case
         ("ttmik level 2 lesson 10.mp3", LessonKey(level=2, number=10)),
@@ -65,7 +69,13 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
         # real corpus files "Lesson 17-1.mp3", "Lesson 20-1.mp3", "Iyagi 67-1.mp3".
         ("17 TTMIK Level 9 Lesson 17-1.mp3", LessonKey(level=9, number=17)),
         ("20 TTMIK Level 5 Lesson 20-1.mp3", LessonKey(level=5, number=20)),
-        ("67 TTMIK Iyagi 67-1.mp3", EpisodeKey(number=67)),
+        # F-185: local "67" is a season-2 local number → real episode_number
+        # 67 + 50 = 117. Verified against the real corpus by decoding the
+        # mp3's embedded ID3 lyrics: local file "67 TTMIK Iyagi 67-1.mp3"'s
+        # transcript (SNS/소셜 네트워크 서비스 topic) is character-identical to
+        # iyagi_51_100.json's unit number=117 ("이야기 #117"), NOT to whatever
+        # (nonexistent) unit would be numbered 67.
+        ("67 TTMIK Iyagi 67-1.mp3", EpisodeKey(number=117)),
         # Non-matches: no key, wrong tokens, missing number
         ("random song.mp3", None),
         ("TTMIK Iyagi.mp3", None),
@@ -76,6 +86,30 @@ MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
 )
 def test_parse_audio_filename(name: str, expected: object) -> None:
     assert parse_audio_filename(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("local_number", "expected_episode_number"),
+    [
+        # Season 1 (1-50): local number IS the real episode_number.
+        (1, 1),
+        (50, 50),
+        # Season 2 (51-100): local + 50. Boundary-verified against real
+        # corpus content (local 51 -> "혈액형" topic == episode_number 101's
+        # transcript; local 100 -> episode_number 150's transcript).
+        (51, 101),
+        (100, 150),
+        # Season 3 (101-146 on disk): local + 100. Boundary-verified (local
+        # 101 -> "쇼핑" topic == episode_number 201's transcript; local 146 ->
+        # episode_number 246, the highest real Iyagi episode_number).
+        (101, 201),
+        (146, 246),
+    ],
+)
+def test_resolve_iyagi_episode_number_season_blocks(
+    local_number: int, expected_episode_number: int
+) -> None:
+    assert _resolve_iyagi_episode_number(local_number) == expected_episode_number
 
 
 # ---------------------------------------------------------------------------

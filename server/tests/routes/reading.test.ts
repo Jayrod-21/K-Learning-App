@@ -19,6 +19,7 @@ import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
   registerUser,
   seedBookUpload,
+  seedGeneratedStory,
   seedReadingChapter,
   seedReadingPassage,
 } from '../helpers/seed.js';
@@ -40,9 +41,12 @@ afterAll(async () => {
 beforeEach(async () => {
   // reading_* are user-owned content; CASCADE from users clears the whole
   // book_uploads → reading_chapters → reading_passages / reading_positions
-  // chain.
+  // chain. reading_attempts (F-172, migration 060) and generated_stories
+  // (F-068) are listed explicitly too (both also FK to users, so CASCADE
+  // would reach them transitively — spelled out for the same clarity every
+  // other table in this list gets, not relying on the transitive FK path).
   await pg.pool.query(
-    'TRUNCATE TABLE reading_positions, reading_passages, reading_chapters, book_uploads, sessions, users RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE reading_attempts, reading_positions, reading_passages, reading_chapters, generated_stories, book_uploads, sessions, users RESTART IDENTITY CASCADE',
   );
   resetLimiters();
 });
@@ -663,5 +667,232 @@ describe('POST /reading/translate — rate limit', () => {
     expect(retryAfter).toBeGreaterThan(0);
     expect(retryAfter).toBeLessThanOrEqual(60);
     expect(headers429['retry-after']).toBe(String(retryAfter));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST/GET /reading/attempts (F-172 — reading_attempts, migration 060)
+// ---------------------------------------------------------------------------
+
+describe('reading attempts — auth required', () => {
+  it('POST /reading/attempts unauthenticated → 401', async () => {
+    const res = await request(t.app)
+      .post('/reading/attempts')
+      .send({ sourceKind: 'story', storyId: 1 });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /reading/attempts unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/reading/attempts');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /reading/attempts — chapter completion', () => {
+  it('logs a chapter attempt using the chapter title as the snapshot', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+      chapterNumber: 2,
+      title: '두 번째 장',
+    });
+
+    const res = await agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'chapter', chapterId, passageNumber: 4 });
+    expect(res.status).toBe(201);
+    expect(res.body.attempt).toMatchObject({
+      sourceKind: 'chapter',
+      chapterId,
+      storyId: null,
+      titleSnapshot: '두 번째 장',
+      passageNumber: 4,
+    });
+    expect(typeof res.body.attempt.id).toBe('number');
+    expect(typeof res.body.attempt.completedAt).toBe('string');
+
+    const { rows } = await pg.pool.query(
+      'SELECT count(*)::int AS n FROM reading_attempts WHERE user_id = $1',
+      [userId],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('falls back to "Chapter N" when the chapter has no title', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+      chapterNumber: 5,
+      title: null,
+    });
+
+    const res = await agent.post('/reading/attempts').send({ sourceKind: 'chapter', chapterId });
+    expect(res.status).toBe(201);
+    expect(res.body.attempt.titleSnapshot).toBe('Chapter 5');
+    expect(res.body.attempt.passageNumber).toBeNull();
+  });
+
+  it('a non-existent chapter id → 404, no row written', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'chapter', chapterId: 99999999 });
+    expect(res.status).toBe(404);
+    const { rows } = await pg.pool.query('SELECT count(*)::int AS n FROM reading_attempts');
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("another user's chapter → 404 (IDOR: cannot log against a chapter you don't own)", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const ownerUpload = await seedBookUpload(pg.pool, owner.userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const ownerChapter = await seedReadingChapter(pg.pool, owner.userId, ownerUpload, {
+      chapterNumber: 1,
+    });
+
+    const other = await registerUser(t.app, pg.pool);
+    const res = await other.agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'chapter', chapterId: ownerChapter });
+    expect(res.status).toBe(404);
+    const { rows } = await pg.pool.query('SELECT count(*)::int AS n FROM reading_attempts');
+    expect(rows[0].n).toBe(0);
+  });
+});
+
+describe('POST /reading/attempts — story completion', () => {
+  it('logs a story attempt using the story title as the snapshot', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const storyId = await seedGeneratedStory(pg.pool, userId, { title: '바닷가 마을' });
+
+    const res = await agent.post('/reading/attempts').send({ sourceKind: 'story', storyId });
+    expect(res.status).toBe(201);
+    expect(res.body.attempt).toMatchObject({
+      sourceKind: 'story',
+      chapterId: null,
+      storyId,
+      titleSnapshot: '바닷가 마을',
+      passageNumber: null,
+    });
+  });
+
+  it('a non-existent story id → 404, no row written', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'story', storyId: 99999999 });
+    expect(res.status).toBe(404);
+    const { rows } = await pg.pool.query('SELECT count(*)::int AS n FROM reading_attempts');
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("another user's story → 404 (IDOR)", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const ownerStory = await seedGeneratedStory(pg.pool, owner.userId);
+
+    const other = await registerUser(t.app, pg.pool);
+    const res = await other.agent
+      .post('/reading/attempts')
+      .send({ sourceKind: 'story', storyId: ownerStory });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /reading/attempts — validation rejection', () => {
+  it.each([
+    { name: 'missing sourceKind', body: { chapterId: 1 } },
+    { name: 'unknown sourceKind', body: { sourceKind: 'bogus', chapterId: 1 } },
+    { name: 'chapter without chapterId', body: { sourceKind: 'chapter' } },
+    { name: 'story without storyId', body: { sourceKind: 'story' } },
+    {
+      name: 'unknown key on the chapter arm (storyId probe)',
+      body: { sourceKind: 'chapter', chapterId: 1, storyId: 2 },
+    },
+    { name: 'non-integer chapterId', body: { sourceKind: 'chapter', chapterId: 1.5 } },
+    { name: 'zero chapterId', body: { sourceKind: 'chapter', chapterId: 0 } },
+    {
+      name: 'non-positive passageNumber',
+      body: { sourceKind: 'chapter', chapterId: 1, passageNumber: 0 },
+    },
+  ])('$name → 400', async ({ body }) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/reading/attempts').send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+});
+
+describe('GET /reading/attempts — the caller\'s reading-completion history (F-172)', () => {
+  it('no attempts → 200 with an empty array (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/reading/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], total: 0, limit: 20, offset: 0 });
+  });
+
+  it('returns both chapter- and story-sourced attempts, newest first, with the total', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'literature',
+      status: 'ready',
+    });
+    const chapterId = await seedReadingChapter(pg.pool, userId, uploadId, {
+      chapterNumber: 1,
+      title: '1장',
+    });
+    const storyId = await seedGeneratedStory(pg.pool, userId, { title: '이야기' });
+
+    await agent.post('/reading/attempts').send({ sourceKind: 'chapter', chapterId }).expect(201);
+    await agent.post('/reading/attempts').send({ sourceKind: 'story', storyId }).expect(201);
+
+    const res = await agent.get('/reading/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.attempts).toHaveLength(2);
+    // Newest first: the story attempt (second POST) leads.
+    expect(res.body.attempts[0]).toMatchObject({ sourceKind: 'story', titleSnapshot: '이야기' });
+    expect(res.body.attempts[1]).toMatchObject({ sourceKind: 'chapter', titleSnapshot: '1장' });
+  });
+
+  it("is user-scoped (no IDOR) — another user's attempts never appear", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const aStory = await seedGeneratedStory(pg.pool, a.userId, { title: 'A의 이야기' });
+    await a.agent.post('/reading/attempts').send({ sourceKind: 'story', storyId: aStory }).expect(201);
+
+    const b = await registerUser(t.app, pg.pool);
+    const bStory = await seedGeneratedStory(pg.pool, b.userId, { title: 'B의 이야기' });
+    await b.agent.post('/reading/attempts').send({ sourceKind: 'story', storyId: bStory }).expect(201);
+
+    const resA = await a.agent.get('/reading/attempts');
+    expect(resA.body.attempts).toHaveLength(1);
+    expect(resA.body.attempts[0].titleSnapshot).toBe('A의 이야기');
+
+    const resB = await b.agent.get('/reading/attempts');
+    expect(resB.body.attempts).toHaveLength(1);
+    expect(resB.body.attempts[0].titleSnapshot).toBe('B의 이야기');
+  });
+
+  it('paginates via limit/offset, total reflects the full count', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    for (let i = 0; i < 3; i++) {
+      const storyId = await seedGeneratedStory(pg.pool, userId, { title: `이야기 ${String(i)}` });
+      // eslint-disable-next-line no-await-in-loop
+      await agent.post('/reading/attempts').send({ sourceKind: 'story', storyId }).expect(201);
+    }
+    const page1 = await agent.get('/reading/attempts?limit=2&offset=0');
+    expect(page1.body.attempts).toHaveLength(2);
+    expect(page1.body.total).toBe(3);
+
+    const page2 = await agent.get('/reading/attempts?limit=2&offset=2');
+    expect(page2.body.attempts).toHaveLength(1);
+    expect(page2.body.total).toBe(3);
   });
 });

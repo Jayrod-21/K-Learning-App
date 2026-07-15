@@ -31,6 +31,18 @@
  *                                              story paragraph (F-116).
  *                                              STATELESS — nothing persisted
  *                                              server-side by this route.
+ *   POST /reading/attempts                   → log a completed reading action
+ *                                              (F-172; reading_attempts, 060)
+ *                                              — a finished chapter (optional
+ *                                              passage reached) or a finished
+ *                                              generated story. A NEW
+ *                                              completion trigger point (no
+ *                                              existing transaction to
+ *                                              piggyback on, unlike
+ *                                              grammar-drill's submit).
+ *   GET /reading/attempts                    → the caller's own reading-
+ *                                              completion history, paged,
+ *                                              newest first (F-172).
  *
  * SECURITY:
  *   - IDOR: reading_chapters.user_id is the book owner (pinned to it by the
@@ -79,6 +91,16 @@
  *     deliberate variety, cacheTtl 0), translating a GIVEN passage is expected
  *     to be STABLE — the proxy caches (Layer B, 30-day TTL), so re-opening the
  *     same passage's translate sheet is a cache hit, not a repeat paid call.
+ *   - READING ATTEMPTS (F-172): POST /attempts is a plain, cheap DB write (no
+ *     Claude call) — cheapLimiter, not expensiveLimiter. IDOR: the named
+ *     chapter/story is looked up SCOPED to the caller in the same query that
+ *     resolves `titleSnapshot` (`WHERE id = $1 AND user_id = $2`) — a missing
+ *     or foreign id 404s uniformly before any INSERT runs, so a probe can
+ *     never confirm another user's chapter/story exists. `titleSnapshot` is
+ *     always SERVER-derived from that scoped row, never client-supplied free
+ *     text — the client cannot inject arbitrary "history" copy into its own
+ *     reading log. GET /attempts is user-scoped to `getUserId(req)` — no
+ *     client-supplied id can ever select another user's rows.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -601,6 +623,181 @@ router.get(
         throw new NotFoundError('story not found');
       }
       res.status(200).json({ story: toStoryDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- Reading attempts (F-172; reading_attempts, migration 060) ---------- */
+
+/**
+ * POST /reading/attempts body: a completed chapter (with an optional
+ * `passageNumber` recording how far) or a completed generated story.
+ * `.strict()` on each arm rejects unknown keys (a `storyId` alongside
+ * `sourceKind: 'chapter'` fails loud rather than silently ignored) and the
+ * discriminated union rejects any `sourceKind` outside the two known values
+ * before the handler ever runs.
+ */
+const LogReadingAttemptBodySchema = z.discriminatedUnion('sourceKind', [
+  z
+    .object({
+      sourceKind: z.literal('chapter'),
+      chapterId: z.number().int().positive().max(MAX_ID),
+      passageNumber: z.number().int().positive().max(MAX_INT4).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      sourceKind: z.literal('story'),
+      storyId: z.number().int().positive().max(MAX_ID),
+    })
+    .strict(),
+]);
+
+/** Wire shape of one logged reading attempt (BIGINT ids coerced to numbers). */
+interface ReadingAttemptDto {
+  id: number;
+  sourceKind: 'chapter' | 'story';
+  chapterId: number | null;
+  storyId: number | null;
+  titleSnapshot: string;
+  passageNumber: number | null;
+  completedAt: Date;
+}
+
+interface ReadingAttemptRow {
+  id: string;
+  source_kind: 'chapter' | 'story';
+  chapter_id: string | null;
+  story_id: string | null;
+  title_snapshot: string;
+  passage_number: number | null;
+  completed_at: Date;
+}
+
+function toReadingAttemptDto(row: ReadingAttemptRow): ReadingAttemptDto {
+  return {
+    id: Number(row.id),
+    sourceKind: row.source_kind,
+    chapterId: row.chapter_id === null ? null : Number(row.chapter_id),
+    storyId: row.story_id === null ? null : Number(row.story_id),
+    titleSnapshot: row.title_snapshot,
+    passageNumber: row.passage_number,
+    completedAt: row.completed_at,
+  };
+}
+
+const ATTEMPT_COLUMNS =
+  'id::text AS id, source_kind, chapter_id::text AS chapter_id, ' +
+  'story_id::text AS story_id, title_snapshot, passage_number, completed_at';
+
+/**
+ * POST /reading/attempts — log a completed reading action (F-172). This is a
+ * NEW completion trigger point (unlike grammar-drill's submit, there is no
+ * existing transaction to piggyback on): the client fires this once when the
+ * user finishes a chapter or a generated story. IDOR: the chapter/story is
+ * looked up SCOPED to the caller (`WHERE id = $1 AND user_id = $2`) — a
+ * missing or foreign id 404s uniformly, mirroring `assertOwnedUpload`/
+ * grammar-drill's submit gate. `titleSnapshot` is resolved from that same
+ * scoped row (the chapter's title / "Chapter N" fallback, or the story's
+ * title) — SERVER-derived, never client-supplied free text, so this table
+ * can never carry arbitrary injected "history" copy (migration 060's own
+ * design note). Cheap, synchronous DB work only — no Claude call, so
+ * `cheapLimiter`, not `expensiveLimiter`.
+ */
+router.post(
+  '/attempts',
+  cheapLimiter(),
+  validateBody(LogReadingAttemptBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof LogReadingAttemptBodySchema>;
+
+      let chapterId: number | null = null;
+      let storyId: number | null = null;
+      let titleSnapshot: string;
+      let passageNumber: number | null = null;
+
+      if (body.sourceKind === 'chapter') {
+        const chapterRes = await query<{ title: string | null; chapter_number: number }>(
+          `SELECT title, chapter_number FROM reading_chapters WHERE id = $1 AND user_id = $2 LIMIT 1`,
+          [body.chapterId, userId],
+        );
+        if (chapterRes.rows.length === 0) {
+          throw new NotFoundError('chapter not found');
+        }
+        const chapter = chapterRes.rows[0]!;
+        chapterId = body.chapterId;
+        titleSnapshot = chapter.title ?? `Chapter ${String(chapter.chapter_number)}`;
+        passageNumber = body.passageNumber ?? null;
+      } else {
+        const storyRes = await query<{ title: string }>(
+          `SELECT title FROM generated_stories WHERE id = $1 AND user_id = $2 LIMIT 1`,
+          [body.storyId, userId],
+        );
+        if (storyRes.rows.length === 0) {
+          throw new NotFoundError('story not found');
+        }
+        storyId = body.storyId;
+        titleSnapshot = storyRes.rows[0]!.title;
+      }
+
+      const { rows } = await query<ReadingAttemptRow>(
+        `INSERT INTO reading_attempts
+           (user_id, source_kind, chapter_id, story_id, title_snapshot, passage_number)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING ${ATTEMPT_COLUMNS}`,
+        [userId, body.sourceKind, chapterId, storyId, titleSnapshot, passageNumber],
+      );
+
+      res.status(201).json({ attempt: toReadingAttemptDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// `offset`'s ceiling is a real bound (not a symbolic MAX_SAFE_INTEGER one), same
+// posture writing.ts's AttemptsQuerySchema documents: a single user's reading
+// history could never legitimately reach six figures.
+const MAX_READING_ATTEMPTS_OFFSET = 100_000;
+
+const ReadingAttemptsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().max(MAX_READING_ATTEMPTS_OFFSET).default(0),
+});
+
+/**
+ * GET /reading/attempts?limit=1..100(def 20)&offset=0..(def 0) — the caller's
+ * own reading-completion history, newest first. User-scoped to
+ * `getUserId(req)` (no IDOR); `COUNT(*) OVER ()` rides the total alongside the
+ * page in one round trip, mirroring `GET /grammar-drill/attempts` and
+ * `GET /writing/attempts`. An empty history is a 200 with `attempts: []`,
+ * never an error.
+ */
+router.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(ReadingAttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof ReadingAttemptsQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<ReadingAttemptRow & { total: string }>(
+        `SELECT ${ATTEMPT_COLUMNS}, COUNT(*) OVER ()::text AS total
+           FROM reading_attempts
+          WHERE user_id = $1
+          ORDER BY completed_at DESC, id DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      const attempts = rows.map(({ total: _total, ...rest }) => toReadingAttemptDto(rest));
+      res.status(200).json({ attempts, total, limit: q.limit, offset: q.offset });
     } catch (err) {
       next(err);
     }

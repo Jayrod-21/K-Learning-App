@@ -6,9 +6,14 @@
  * `/iyagi/episodes/143/audio`) that streams `audio/mpeg` with HTTP Range
  * support, or `null` when no audio file is mapped.
  *
+ * Also covers listening-completion attempts (F-172; `listening_attempts`,
+ * migration 061) — the one WRITE surface on this otherwise read-only module:
+ * `POST /ttmik/attempts`, `POST /iyagi/attempts`, `GET /ttmik/attempts`.
+ *
  * Threat model:
- *   - All routes are GET — no CSRF surface. The cookie session rides via
- *     `withCredentials` on the shared axios instance for the JSON calls.
+ *   - Browse/detail routes are GET — no CSRF surface. The cookie session
+ *     rides via `withCredentials` on the shared axios instance for the JSON
+ *     calls.
  *   - The `<audio>` element cannot use axios; {@link buildAudioSrc} joins the
  *     SAME base URL the axios instance uses (`getApiBaseUrl()`), so in prod
  *     (empty base → page origin, served same-origin via the LB) and in dev
@@ -22,6 +27,12 @@
  *     response body cannot point the player at a third-party origin.
  *   - Body validation: server validates. We trust TS types client-side and
  *     the page renders every string through React text children.
+ *   - Listening attempts (F-172): both POST calls are plain, cheap writes (no
+ *     Claude call). A garbage (level, number)/episode number 404s (as
+ *     `ApiError`) — `ttmik_lessons`/`iyagi_episodes` are public corpus
+ *     content, so the server's only gate is existence, not per-user
+ *     ownership. `titleSnapshot` in the response is server-derived; this
+ *     client never sends free-text "history" copy.
  */
 import { api, getApiBaseUrl } from './api';
 import type {
@@ -110,4 +121,95 @@ export function buildAudioSrc(
   if (audioUrl === null) return null;
   if (!AUDIO_URL_ALLOW.test(audioUrl)) return null;
   return base === '' ? audioUrl : `${base}${audioUrl}`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Listening attempts (F-172 — listening_attempts, migration 061)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * One logged listening-completion event. `lessonId`/`episodeId` mirror
+ * whichever target `sourceKind` names; the other is always null.
+ * `titleSnapshot` is server-derived (never round-tripped from client input).
+ */
+export interface ListeningAttempt {
+  id: number;
+  sourceKind: 'ttmik_lesson' | 'iyagi_episode';
+  lessonId: number | null;
+  episodeId: number | null;
+  titleSnapshot: string;
+  completedAt: string;
+}
+
+interface ListeningAttemptEnvelope {
+  attempt: ListeningAttempt;
+}
+
+/**
+ * POST /ttmik/attempts — log a completed TTMIK lesson listen (F-172). Fired
+ * once from the detail view's `<audio>` `ended` event (or an explicit "mark
+ * listened" affordance) — this file previously wrote no user state at all.
+ * 404s (as `ApiError`) for a (level, number) pair that doesn't exist.
+ */
+export async function logTtmikAttempt(
+  level: number,
+  number: number,
+  signal?: AbortSignal,
+): Promise<ListeningAttempt> {
+  const res = await api.post<ListeningAttemptEnvelope>(
+    '/ttmik/attempts',
+    { level, number },
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.attempt;
+}
+
+/**
+ * POST /iyagi/attempts — log a completed Iyagi episode listen (F-172). Same
+ * trigger + IDOR posture as the TTMIK lesson leg above.
+ */
+export async function logIyagiAttempt(
+  number: number,
+  signal?: AbortSignal,
+): Promise<ListeningAttempt> {
+  const res = await api.post<ListeningAttemptEnvelope>(
+    '/iyagi/attempts',
+    { number },
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.attempt;
+}
+
+/** Envelope from `GET /ttmik/attempts` — a page of history + the total. */
+export interface ListeningAttemptsPage {
+  attempts: ListeningAttempt[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Query options for `GET /ttmik/attempts`. */
+export interface ListListeningAttemptsOptions {
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * GET /ttmik/attempts — the caller's own listening-completion history, newest
+ * first (paged), across BOTH TTMIK lessons and Iyagi episodes. Not currently
+ * rendered by any screen this phase (F-172 wires the write path + the history
+ * read for a future Today/streak surface to consume); exported now so that
+ * surface doesn't need a service-layer change later.
+ */
+export async function listListeningAttempts(
+  opts: ListListeningAttemptsOptions = {},
+  signal?: AbortSignal,
+): Promise<ListeningAttemptsPage> {
+  const params: Record<string, number> = {};
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<ListeningAttemptsPage>('/ttmik/attempts', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }

@@ -913,6 +913,20 @@ interface AttemptRow {
  * banner (F-007). "In progress" is exactly `status = 'active'` (046): at most
  * one such row exists per user (uq_topik_attempts_user_active), and completed/
  * abandoned history rows never resurface as resumable.
+ *
+ * F-173: also resolves `totalItems`/`topikLevel` for the resumed attempt so a
+ * client can show "answered / total" instead of just a bare answered count.
+ * Reuses the SAME `resolveServedTotal` helper `GET /topik/attempts` already
+ * uses for completed-attempt history — the identical best-effort re-
+ * derivation (037 predates the per-level natural key from 029, so an active
+ * attempt carries no `topik_level` column either), the identical
+ * deterministic resolution (`resolveMockTest` with no requestedLevel — the
+ * exact inputs `PUT /topik/attempt` and the resume flow's replayed
+ * `POST /topik/mock` already use, so a resumed attempt re-resolves to the
+ * SAME paper it was served from), and the identical safe fallback: when the
+ * backing corpus paper is gone, `totalItems` falls back to the attempt's own
+ * answered count — a real, non-fabricated LOWER BOUND, never a guess above
+ * what is actually known.
  */
 router.get('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
@@ -926,18 +940,30 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
       [userId],
     );
     const row = rows[0];
+    if (!row) {
+      res.status(200).json({ attempt: null });
+      return;
+    }
+    const answered = Object.keys(row.picks).length;
+    // row.section is only ever 'reading' | 'listening' — AttemptSectionSchema
+    // (the PUT body's validator) rejects 'writing' at the boundary, so no
+    // topik_attempts row can carry it.
+    const served = await resolveServedTotal(
+      row.section as Extract<SectionEnum, 'reading' | 'listening'>,
+      row.source_test,
+    );
     res.status(200).json({
-      attempt: row
-        ? {
-            section: row.section,
-            sourceTest: row.source_test,
-            currentIdx: row.current_idx,
-            picks: row.picks,
-            remainingMs: row.remaining_ms,
-            answered: Object.keys(row.picks).length,
-            updatedAt: row.updated_at.toISOString(),
-          }
-        : null,
+      attempt: {
+        section: row.section,
+        sourceTest: row.source_test,
+        topikLevel: served?.topikLevel ?? null,
+        currentIdx: row.current_idx,
+        picks: row.picks,
+        remainingMs: row.remaining_ms,
+        answered,
+        totalItems: served?.totalItems ?? answered,
+        updatedAt: row.updated_at.toISOString(),
+      },
     });
   } catch (err) {
     next(err);

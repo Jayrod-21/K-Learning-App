@@ -11,6 +11,13 @@
  *                                          deterministic and the client pinned
  *                                          index 0, so every visit opened the
  *                                          same prompt)
+ *   GET  /writing/prompts/:id            → ONE specific active bank prompt by
+ *                                          id (F-183: Today's Writing tile
+ *                                          deep-links `?promptId=<id>` and,
+ *                                          until now, there was no way to
+ *                                          open that exact row — only the
+ *                                          deterministic list or a random
+ *                                          draw)
  *   GET  /writing/series?days=           → daily normalized grade series (F-017)
  *   GET  /writing/attempts?limit=&offset= → the caller's own graded-writing
  *                                          history, newest first (F-106 —
@@ -47,7 +54,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
-import { validateBody, validateQuery } from '../middleware/validate.js';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
 import { mapClaudeError, NotFoundError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
@@ -188,6 +195,64 @@ router.get(
       const row = rows[0];
       if (!row) {
         throw new NotFoundError('no active prompts for this rubric');
+      }
+      res.status(200).json({ prompt: toPromptDTO(row) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /writing/prompts/:id — one specific active bank prompt by id (F-183)
+// ---------------------------------------------------------------------------
+
+/** Bound shared by every BIGINT-id path param across the server (mirrors
+ *  reading.ts/uploads.ts/hanja.ts/vocabLists.ts's own `MAX_ID`). */
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+
+const PromptIdParamsSchema = z.object({
+  id: z.coerce.number().int().positive().max(MAX_ID),
+});
+
+/**
+ * GET /writing/prompts/:id — fetch ONE specific active, rubric-tagged bank
+ * prompt by id (F-183: Today's Writing tile deep-links `?promptId=<id>` —
+ * the tile shows a SPECIFIC `writing_prompts` row, and until now there was
+ * no mechanism to open that exact row: only the deterministic list
+ * (`/prompts`) or a random draw (`/prompts/random`)).
+ *
+ * Shared reference data, not user-owned (mirrors `/prompts` and
+ * `/prompts/random`) — no session `user_id` scoping applies, but the SAME
+ * `is_active AND rubric IS NOT NULL` gate does: a retired row, a pre-F-014
+ * untagged legacy row, or an unknown id all 404 identically. This is
+ * deliberate, not an IDOR gap — the id space here names shared curriculum
+ * content, not another user's private data, so there is nothing to leak by
+ * distinguishing "missing" from "retired"; the uniform 404 exists purely so
+ * the client's fallback (degrade to the random-bank flow) has one status to
+ * branch on.
+ */
+router.get(
+  '/prompts/:id',
+  cheapLimiter(),
+  validateParams(PromptIdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const { id } = (
+        req as typeof req & { validatedParams: z.infer<typeof PromptIdParamsSchema> }
+      ).validatedParams;
+      const { rows } = await query<PromptRow>(
+        `SELECT id, prompt_kr, prompt_en, level::text AS level, rubric, est_minutes
+           FROM writing_prompts
+          WHERE id = $1
+            AND is_active
+            AND rubric IS NOT NULL
+          LIMIT 1`,
+        [id],
+      );
+      const row = rows[0];
+      if (!row) {
+        throw new NotFoundError('prompt not found');
       }
       res.status(200).json({ prompt: toPromptDTO(row) });
     } catch (err) {

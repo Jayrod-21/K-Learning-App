@@ -15,19 +15,21 @@
  *      "Review mistakes" shortcut and the F-007 resume banner.
  *      `SwipeCarousel` is exercised ONLY here now.
  *
- * We mock `useEndpointOrMock` to control the data the screen reads. Five
- * fetches share the hook, dispatched on the `key` arg: the plan
- * (`today`), the F-007 open-exam lookup (`today.attempt`), and the three
- * F-138 attempt-history sources (`today.grammarAttempts`,
- * `today.writingAttempts`, `today.topikAttempts`). All are realFn-backed;
- * the hook mock here stands in for any source, so the screen assertions
- * hold regardless of which resolved. `services/topik`, `services/writing`,
- * and `services/grammarDrill` are also mocked so no realFn closure can
- * touch the network.
+ * We mock `useEndpointOrMock` to control the data the screen reads. EIGHT
+ * fetches share the hook, dispatched on the `key` arg: the plan (`today`),
+ * the F-007 open-exam lookup (`today.attempt`), and six F-138 attempt-history
+ * sources (`today.grammarAttempts`, `today.writingAttempts`,
+ * `today.topikAttempts`, and — Wave 2 backend batch —
+ * `today.hanjaAttempts`, `today.readingAttempts`, `today.listeningAttempts`).
+ * All are realFn-backed; the hook mock here stands in for any source, so the
+ * screen assertions hold regardless of which resolved. `services/topik`,
+ * `services/writing`, `services/grammarDrill`, `services/hanja`,
+ * `services/reading`, and `services/ttmik` are also mocked so no realFn
+ * closure can touch the network.
  *
  * Contract pinned here:
- *   - Vocab is a first-class tile again → `/learn/vocab`, reading its
- *     count off the plan's real `reviewCount` (never fabricated); it
+ *   - Vocab is a first-class tile again → `/learn/vocab?study=due`, reading
+ *     its count off the plan's real `reviewCount` (never fabricated); it
  *     degrades to an honest ErrorCard when the plan fails, same as the
  *     peek slider — Grammar/Hanja/TOPIK have no plan dependency and keep
  *     working regardless.
@@ -38,8 +40,14 @@
  *   - The peek slider covers Reading/Writing/Listening; Writing NOW
  *     navigates to /learn/writing (F-134's inline CollapsibleTile expand
  *     doesn't fit the peek slider's fixed-width layout — see Today.tsx).
- *   - F-138: grammar/writing/TOPIK tiles show a real "done today" count
- *     derived from attempt-history fixtures, never a fabricated one.
+ *   - F-138: grammar/writing/TOPIK/Hanja/Reading/Listening tiles show a
+ *     real "done today" count derived from attempt-history fixtures, never
+ *     a fabricated one.
+ *   - Wave 2 (B4/B5/B6): Reading/Listening/Writing deep-link to the EXACT
+ *     item shown (`?chapter=`/`?story=`, `?corpus=&episode=`, `?promptId=`),
+ *     falling back to the bare landing page only when the plan payload
+ *     lacks the relevant field — asserted via the full pathname+search a
+ *     `LocationProbe` renders on each target route.
  *   - The CSS mechanism (scroll-snap on the peek slider) is pinned from
  *     source, mirroring `SkillsCompare.test.tsx`'s established pattern for
  *     this codebase — happy-dom does no layout, so the actual on-screen
@@ -71,6 +79,9 @@ const hoisted = vi.hoisted(() => {
     grammarAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
     writingAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
     topikAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
+    hanjaAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
+    readingAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
+    listeningAttempts: { state: { kind: 'loading' } as HookState, refetch: vi.fn() },
   };
 });
 
@@ -81,6 +92,9 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
       key === 'today.attempt' ? hoisted.attempt :
       key === 'today.grammarAttempts' ? hoisted.grammarAttempts :
       key === 'today.writingAttempts' ? hoisted.writingAttempts :
+      key === 'today.hanjaAttempts' ? hoisted.hanjaAttempts :
+      key === 'today.readingAttempts' ? hoisted.readingAttempts :
+      key === 'today.listeningAttempts' ? hoisted.listeningAttempts :
       hoisted.topikAttempts;
     const s = source.state;
     if (s.kind === 'loading') {
@@ -124,6 +138,15 @@ vi.mock('../services/writing', () => ({
 vi.mock('../services/grammarDrill', () => ({
   listAttempts: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
 }));
+vi.mock('../services/hanja', () => ({
+  fetchHanjaAttempts: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
+}));
+vi.mock('../services/reading', () => ({
+  listReadingAttempts: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
+}));
+vi.mock('../services/ttmik', () => ({
+  listListeningAttempts: vi.fn(() => Promise.reject(new Error('not wired in tests'))),
+}));
 
 // Pull the page AFTER the hook mock is set up so the screen wires to it.
 import { Today } from './Today';
@@ -131,18 +154,31 @@ import { getChatContext } from '../lib/chatContext';
 
 const PLAN: TodayPlan = {
   reviewCount: 24,
-  reading: { title: '도시화와 환경', mins: 3, level: 'L4', tag: 'Reading' },
+  // Wave 2 deep-link fields (sourceKind/chapterId, corpus/episodeNumber,
+  // promptId) — a chapter-sourced reading pick by default; a dedicated test
+  // below covers the story-sourced case separately.
+  reading: {
+    title: '도시화와 환경',
+    mins: 3,
+    level: 'L4',
+    tag: 'Reading',
+    sourceKind: 'chapter',
+    chapterId: 501,
+  },
   listening: {
     title: 'KBS — 재택근무 확산',
     mins: 4,
     level: 'L3→L4',
     tag: 'Listening',
+    corpus: 'iyagi',
+    episodeNumber: 42,
   },
   writing: {
     title: 'Paragraph in 합쇼체',
     mins: 8,
     level: 'L4',
     tag: 'Writing',
+    promptId: 77,
   },
   largestGap: 'Listening',
 };
@@ -168,6 +204,9 @@ const LONG_AGO_ISO = '2019-03-01T00:00:00.000Z';
 const GRAMMAR_ATTEMPTS_EMPTY = { attempts: [], total: 0, limit: 20, offset: 0 };
 const WRITING_ATTEMPTS_EMPTY = { attempts: [], limit: 20, offset: 0 };
 const TOPIK_ATTEMPTS_EMPTY = { attempts: [], total: 0 };
+const HANJA_ATTEMPTS_EMPTY = { attempts: [], total: 0, limit: 20, offset: 0 };
+const READING_ATTEMPTS_EMPTY = { attempts: [], total: 0, limit: 20, offset: 0 };
+const LISTENING_ATTEMPTS_EMPTY = { attempts: [], total: 0, limit: 20, offset: 0 };
 
 const GRAMMAR_ATTEMPTS_MIXED = {
   attempts: [
@@ -249,6 +288,80 @@ const TOPIK_ATTEMPTS_MIXED = {
   total: 2,
 };
 
+const HANJA_ATTEMPTS_MIXED = {
+  attempts: [
+    {
+      id: 1,
+      cardId: 9,
+      char: '計',
+      rating: 'good',
+      correct: true,
+      createdAt: TODAY_ISO,
+    },
+    {
+      id: 2,
+      cardId: 10,
+      char: '算',
+      rating: 'again',
+      correct: false,
+      createdAt: LONG_AGO_ISO,
+    },
+  ],
+  total: 2,
+  limit: 20,
+  offset: 0,
+};
+
+const READING_ATTEMPTS_MIXED = {
+  attempts: [
+    {
+      id: 1,
+      sourceKind: 'chapter' as const,
+      chapterId: 501,
+      storyId: null,
+      titleSnapshot: '1장',
+      passageNumber: 3,
+      completedAt: TODAY_ISO,
+    },
+    {
+      id: 2,
+      sourceKind: 'story' as const,
+      chapterId: null,
+      storyId: 12,
+      titleSnapshot: '옛날 이야기',
+      passageNumber: null,
+      completedAt: LONG_AGO_ISO,
+    },
+  ],
+  total: 2,
+  limit: 20,
+  offset: 0,
+};
+
+const LISTENING_ATTEMPTS_MIXED = {
+  attempts: [
+    {
+      id: 1,
+      sourceKind: 'iyagi_episode' as const,
+      lessonId: null,
+      episodeId: 42,
+      titleSnapshot: 'Iyagi #42: KBS — 재택근무 확산',
+      completedAt: TODAY_ISO,
+    },
+    {
+      id: 2,
+      sourceKind: 'ttmik_lesson' as const,
+      lessonId: 7,
+      episodeId: null,
+      titleSnapshot: 'Level 3 Lesson 7',
+      completedAt: LONG_AGO_ISO,
+    },
+  ],
+  total: 2,
+  limit: 20,
+  offset: 0,
+};
+
 /** Renders the destination label plus the FULL path+query it was reached
  *  at, so tests can assert the exact URL (including search params) Today
  *  navigated to — a route match alone (react-router ignores `?search` when
@@ -275,9 +388,18 @@ function renderTodayAt(path = '/'): ReturnType<typeof render> {
         />
         <Route path="/learn/grammar" element={<div>GRAMMAR PAGE</div>} />
         <Route path="/learn/hanja" element={<div>HANJA PAGE</div>} />
-        <Route path="/learn/reading" element={<div>READING PAGE</div>} />
-        <Route path="/learn/writing" element={<div>WRITING PAGE</div>} />
-        <Route path="/learn/listen" element={<div>LISTENING PAGE</div>} />
+        <Route
+          path="/learn/reading"
+          element={<LocationProbe label="READING PAGE" />}
+        />
+        <Route
+          path="/learn/writing"
+          element={<LocationProbe label="WRITING PAGE" />}
+        />
+        <Route
+          path="/learn/listen"
+          element={<LocationProbe label="LISTENING PAGE" />}
+        />
         <Route
           path="/learn/topik"
           element={<LocationProbe label="TOPIK PAGE" />}
@@ -296,6 +418,9 @@ function loadDefaults(): void {
   hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
   hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
   hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+  hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_EMPTY };
+  hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_EMPTY };
+  hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_EMPTY };
 }
 
 describe('Today', () => {
@@ -305,11 +430,17 @@ describe('Today', () => {
     hoisted.grammarAttempts.state = { kind: 'loading' };
     hoisted.writingAttempts.state = { kind: 'loading' };
     hoisted.topikAttempts.state = { kind: 'loading' };
+    hoisted.hanjaAttempts.state = { kind: 'loading' };
+    hoisted.readingAttempts.state = { kind: 'loading' };
+    hoisted.listeningAttempts.state = { kind: 'loading' };
     hoisted.today.refetch.mockClear();
     hoisted.attempt.refetch.mockClear();
     hoisted.grammarAttempts.refetch.mockClear();
     hoisted.writingAttempts.refetch.mockClear();
     hoisted.topikAttempts.refetch.mockClear();
+    hoisted.hanjaAttempts.refetch.mockClear();
+    hoisted.readingAttempts.refetch.mockClear();
+    hoisted.listeningAttempts.refetch.mockClear();
   });
 
   it('renders loading skeletons while the plan is pending', () => {
@@ -420,6 +551,9 @@ describe('Today', () => {
     hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
     hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
     hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+    hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_EMPTY };
+    hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_EMPTY };
+    hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_EMPTY };
     const user = userEvent.setup();
     renderTodayAt();
 
@@ -507,34 +641,122 @@ describe('Today', () => {
     expect(screen.getByText('Register drill')).toBeInTheDocument();
   });
 
-  it('navigates to /learn/reading when the Reading tile is clicked — no tab switch needed', async () => {
+  // ── Wave 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6) — deep-link
+  // navigations. Each tile must land on the EXACT item it displays, not the
+  // bare landing page — asserted via the full pathname+search LocationProbe
+  // renders (a route-match alone would miss a wrong/missing query param).
+
+  it('deep-links the Reading tile to the exact chapter shown — /learn/reading?chapter=<id>', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
     await user.click(screen.getByRole('button', { name: /도시화와 환경/ }));
 
-    expect(screen.getByText('READING PAGE')).toBeInTheDocument();
+    expect(
+      screen.getByText('READING PAGE /learn/reading?chapter=501'),
+    ).toBeInTheDocument();
   });
 
-  it('navigates to /learn/listen when the Listening tile is clicked — no tab switch needed', async () => {
+  it('deep-links the Reading tile to the exact generated story shown — /learn/reading?story=<id>', async () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        reading: {
+          title: '옛날 이야기',
+          mins: 4,
+          level: 'L3',
+          tag: 'Reading',
+          sourceKind: 'story',
+          storyId: 12,
+        },
+      },
+    };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /옛날 이야기/ }));
+
+    expect(
+      screen.getByText('READING PAGE /learn/reading?story=12'),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to the bare Reading landing page when the plan carries no deep-link id (never fabricates one)', async () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        reading: { title: '도시화와 환경', mins: 3, level: 'L4', tag: 'Reading' },
+      },
+    };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /도시화와 환경/ }));
+
+    expect(screen.getByText('READING PAGE /learn/reading')).toBeInTheDocument();
+  });
+
+  it('deep-links the Listening tile to the exact episode shown — /learn/listen?corpus=iyagi&episode=<n>', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
     await user.click(screen.getByRole('button', { name: /KBS/ }));
 
-    expect(screen.getByText('LISTENING PAGE')).toBeInTheDocument();
+    expect(
+      screen.getByText('LISTENING PAGE /learn/listen?corpus=iyagi&episode=42'),
+    ).toBeInTheDocument();
   });
 
-  it('navigates to /learn/writing when the Writing tile is clicked (F-134 inline-expand replaced by direct nav)', async () => {
+  it('falls back to the bare Listening landing page when the plan carries no episode key', async () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        listening: { title: 'KBS — 재택근무 확산', mins: 4, level: 'L3→L4', tag: 'Listening' },
+      },
+    };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /KBS/ }));
+
+    expect(screen.getByText('LISTENING PAGE /learn/listen')).toBeInTheDocument();
+  });
+
+  it('deep-links the Writing tile to the exact bank prompt shown — /learn/writing?promptId=<id>', async () => {
     loadDefaults();
     const user = userEvent.setup();
     renderTodayAt();
 
     await user.click(screen.getByRole('button', { name: /Paragraph in/ }));
 
-    expect(screen.getByText('WRITING PAGE')).toBeInTheDocument();
+    expect(
+      screen.getByText('WRITING PAGE /learn/writing?promptId=77'),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to the bare Writing landing page when the plan carries no promptId', async () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        writing: { title: 'Paragraph in 합쇼체', mins: 8, level: 'L4', tag: 'Writing' },
+      },
+    };
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /Paragraph in/ }));
+
+    expect(screen.getByText('WRITING PAGE /learn/writing')).toBeInTheDocument();
   });
 
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {
@@ -584,6 +806,9 @@ describe('Today', () => {
     hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
     hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
     hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+    hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_EMPTY };
+    hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_EMPTY };
+    hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_EMPTY };
     const user = userEvent.setup();
     renderTodayAt();
 
@@ -724,6 +949,48 @@ describe('Today', () => {
     renderTodayAt();
 
     expect(screen.queryByText(/drills today/)).not.toBeInTheDocument();
+  });
+
+  // ── Wave 2 (backend batch, F-171/F-172) — real "done today" counts for
+  // Hanja/Reading/Listening, the three tiles that previously had no
+  // attempt-history endpoint at all (module header). Same filtered-to-today
+  // + honest-empty-default discipline as the pre-existing grammar/writing/
+  // TOPIK counts above.
+
+  it('F-171/F-172: shows a REAL "done today" count for Hanja, filtered to today', () => {
+    loadDefaults();
+    hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_MIXED };
+    renderTodayAt();
+
+    // 1 of the 2 fixture rows is dated today; the other is from 2019.
+    expect(screen.getByText('1 character reviewed today')).toBeInTheDocument();
+    expect(screen.getByText('Done today')).toBeInTheDocument();
+  });
+
+  it('F-171/F-172: shows REAL "done today" counts for Reading and Listening, and omits the milestone at zero', () => {
+    loadDefaults();
+    hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_MIXED };
+    hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_MIXED };
+    renderTodayAt();
+
+    expect(screen.getByText('1 reading finished today')).toBeInTheDocument();
+    expect(screen.getByText('1 episode finished today')).toBeInTheDocument();
+
+    // Hanja stayed at the all-empty default — zero done today, no milestone
+    // stamp rendered (never a fabricated one at zero).
+    expect(screen.getByText('0 characters reviewed today')).toBeInTheDocument();
+    expect(screen.getAllByText('Done today')).toHaveLength(2);
+  });
+
+  it('F-171/F-172: shows no count at all for Hanja/Reading/Listening while their sources are still loading (never a fabricated zero)', () => {
+    loadDefaults();
+    hoisted.hanjaAttempts.state = { kind: 'loading' };
+    hoisted.readingAttempts.state = { kind: 'loading' };
+    hoisted.listeningAttempts.state = { kind: 'loading' };
+    renderTodayAt();
+
+    expect(screen.queryByText(/reviewed today/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/finished today/)).not.toBeInTheDocument();
   });
 
   // ── P3b — bilingual page chrome ────────────────────────────

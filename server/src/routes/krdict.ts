@@ -17,6 +17,14 @@
  *   - Metacharacters in the term are escaped (escapeLikePattern) so `%`/`_`
  *     match literally and an all-wildcard term can't scan the whole table.
  *
+ * F-175: both branches unconditionally exclude grammar-morpheme rows
+ * (`part_of_speech IN ('어미', '조사')` — verb/adjective endings and
+ * particles) — this is a VOCABULARY dictionary lookup, and those rows belong
+ * to the Grammar library's own corpus. The exclusion is NULL-safe (an
+ * untagged `part_of_speech` still matches) and folded into the WHERE clause
+ * both branches already build their `total` window count from, so the pager
+ * total is exact — no separate count query, no client-side adjustment.
+ *
  * Sits alongside GET /define (exact-headword tap lookup). Both share the SAME
  * availability cache (krdictAvailable) so there is one information_schema probe
  * budget and one migration-003-rollback degradation path — if the tables aren't
@@ -127,13 +135,26 @@ router.get(
           // pager's "N of M" without locale-dependent reordering.
           // An optional 초성 filter narrows the browse to one consonant's
           // Unicode syllable range; without it, browse the whole dictionary.
+          // F-175: grammar-morpheme rows (어미 = ending, 조사 = particle) are
+          // excluded from this VOCABULARY dictionary browse/search — they
+          // belong to the Grammar library tab's corpus, not a word lookup
+          // (mirrors ReviewDictionary.tsx's client-side `isGrammarPos`, now
+          // made exact server-side so `total`/pager counts stop over-
+          // counting the ~1.2% of rows the client was hiding anyway). The
+          // NULL-safe form matters: `part_of_speech NOT IN (...)` alone would
+          // silently exclude every row with a NULL part_of_speech too (SQL's
+          // three-valued logic — `NULL NOT IN (...)` is UNKNOWN, not TRUE),
+          // which would wrongly drop untagged vocabulary, not just grammar
+          // morphemes. This exclusion is now the leading, UNCONDITIONAL
+          // WHERE clause; the optional 초성 range narrows further with AND.
           const range = q.initial ? INITIAL_RANGES[q.initial] : null;
           const result = await query<KrdictSearchRow>(
             `SELECT id, headword, part_of_speech,
                     definition_korean, definition_english,
                     COUNT(*) OVER ()::text AS total
                FROM krdict_entries
-              ${range ? 'WHERE headword COLLATE "C" >= $3 AND headword COLLATE "C" < $4' : ''}
+              WHERE (part_of_speech IS NULL OR part_of_speech NOT IN ('어미', '조사'))
+              ${range ? 'AND headword COLLATE "C" >= $3 AND headword COLLATE "C" < $4' : ''}
               ORDER BY headword COLLATE "C", id ASC
               LIMIT $1 OFFSET $2`,
             range
@@ -152,14 +173,24 @@ router.get(
           // ORDER BY puts headword-prefix matches ahead of definition-only
           // matches, then by id for a stable page. COUNT(*) OVER () carries the
           // total matching count so the client paginates in one round-trip.
+          //
+          // F-175: the grammar-morpheme exclusion (see the browse branch's
+          // comment above) is ANDed onto the OUTSIDE of the parenthesized
+          // 3-way OR match group. Parenthesization is load-bearing here — a
+          // bare `... OR ... OR ... AND part_of_speech NOT IN (...)` would
+          // let SQL's AND-binds-tighter-than-OR precedence apply the
+          // exclusion to ONLY the last OR arm (definition_english), leaving
+          // 어미/조사 rows that match on headword or definition_korean
+          // unfiltered — a correctness bug, not a style nit.
           const result = await query<KrdictSearchRow>(
             `SELECT id, headword, part_of_speech,
                     definition_korean, definition_english,
                     COUNT(*) OVER ()::text AS total
                FROM krdict_entries
-              WHERE headword           ILIKE $1 ESCAPE '\\'
-                 OR definition_korean  ILIKE $2 ESCAPE '\\'
-                 OR definition_english ILIKE $2 ESCAPE '\\'
+              WHERE (headword           ILIKE $1 ESCAPE '\\'
+                  OR definition_korean  ILIKE $2 ESCAPE '\\'
+                  OR definition_english ILIKE $2 ESCAPE '\\')
+                AND (part_of_speech IS NULL OR part_of_speech NOT IN ('어미', '조사'))
               ORDER BY (headword ILIKE $1 ESCAPE '\\') DESC, id ASC
               LIMIT $3 OFFSET $4`,
             [prefixPattern, substringPattern, q.limit, q.offset],

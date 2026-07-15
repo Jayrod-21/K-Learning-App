@@ -133,6 +133,37 @@ export async function fetchRandomWritingPrompt(
   return res.prompt;
 }
 
+/** Envelope returned by `GET /writing/prompts/:id`. */
+interface WritingPromptByIdEnvelope {
+  prompt: WritingPromptDTO;
+}
+
+/**
+ * GET /writing/prompts/:id — fetch ONE specific active bank prompt by id
+ * (F-183: Today's Writing tile deep-links `?promptId=<id>` — until now there
+ * was no way to open that exact `writing_prompts` row, only the
+ * deterministic list or a random draw). Unlike `fetchRandomWritingPrompt`,
+ * this always resolves the SAME row for the SAME id — a lookup, not a draw.
+ * Rides the cheap bucket like the other two prompt reads.
+ *
+ * Rejects with `ApiError`:
+ *   - 404 — the id is missing, retired (`is_active = false`), or an
+ *     untagged pre-F-014 legacy row. Callers degrade to the normal
+ *     random-bank flow on ANY rejection here, never a dead end.
+ *   - 401 session expired / 429 cheap-bucket limit / 5xx — same fixed-copy
+ *     posture as the rest of this module.
+ */
+export async function fetchWritingPromptById(
+  id: number,
+  signal?: AbortSignal,
+): Promise<WritingPromptDTO> {
+  const res = await api.get<WritingPromptByIdEnvelope>(
+    `/writing/prompts/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.prompt;
+}
+
 /** Envelope returned by `GET /writing/attempts` (F-106). */
 interface WritingAttemptsEnvelope {
   attempts: WritingAttemptDTO[];

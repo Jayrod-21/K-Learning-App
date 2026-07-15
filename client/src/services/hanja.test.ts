@@ -5,10 +5,12 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  fetchHanjaAttempts,
   fetchHanjaList,
   fetchHanjaProgress,
   fetchHanjaToday,
   setHanjaState,
+  type HanjaAttempt,
 } from './hanja';
 import { api, ApiError } from './api';
 import type { Hanja, HanjaProgress } from '../types/domain';
@@ -231,5 +233,70 @@ describe('setHanjaState', () => {
     await expect(setHanjaState('學', 'banked')).rejects.toMatchObject({
       status: 400,
     });
+  });
+});
+
+describe('fetchHanjaAttempts (F-171)', () => {
+  const ATTEMPTS: HanjaAttempt[] = [
+    {
+      id: 901,
+      cardId: 42,
+      char: '學',
+      rating: 'good',
+      correct: true,
+      createdAt: '2026-07-05T00:00:00.000Z',
+    },
+    {
+      id: 900,
+      cardId: null,
+      char: '人',
+      rating: 'again',
+      correct: false,
+      createdAt: '2026-07-04T00:00:00.000Z',
+    },
+  ];
+
+  it('GETs /hanja/attempts and unwraps { attempts, total, limit, offset }', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: ATTEMPTS, total: 2, limit: 20, offset: 0 });
+
+    const out = await fetchHanjaAttempts();
+
+    // No params supplied → both keys forwarded as undefined (axios drops
+    // undefined-valued params from the query string; the server defaults).
+    expect(spy).toHaveBeenCalledWith('/hanja/attempts', {
+      params: { limit: undefined, offset: undefined },
+    });
+    expect(out.attempts).toEqual(ATTEMPTS);
+    expect(out.total).toBe(2);
+    expect(out.limit).toBe(20);
+    expect(out.offset).toBe(0);
+  });
+
+  it('forwards limit/offset and the abort signal', async () => {
+    const spy = vi
+      .spyOn(api, 'get')
+      .mockResolvedValueOnce({ attempts: [], total: 0, limit: 5, offset: 10 });
+    const ctrl = new AbortController();
+
+    const out = await fetchHanjaAttempts({ limit: 5, offset: 10 }, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/hanja/attempts', {
+      params: { limit: 5, offset: 10 },
+      signal: ctrl.signal,
+    });
+    // An empty history resolves as [] — never an error (a learner who has
+    // never rated a hanja card is not a failure state).
+    expect(out.attempts).toEqual([]);
+    expect(out.total).toBe(0);
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 503, code: 'server_error' }),
+    );
+
+    await expect(fetchHanjaAttempts()).rejects.toMatchObject({ status: 503 });
   });
 });

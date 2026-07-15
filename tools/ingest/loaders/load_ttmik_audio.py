@@ -12,7 +12,8 @@ across several TTMIK sets, but only the two below have tables — the ~796
 no table and stay unmatched BY DESIGN; ~383 lesson/Iyagi files map here.
 
   * Iyagi:   ``TTMIK/이야기들/이야기/<N> TTMIK Iyagi <N>.mp3``
-             → ``iyagi_episodes.episode_number = <N>``
+             → ``iyagi_episodes.episode_number = resolve(<N>)`` — NOT ``<N>``
+             verbatim; see the "IYAGI SEASON-BLOCK RENUMBERING" note below.
   * Lessons: ``TTMIK/Lessons/Lesson <L>/<track> TTMIK Level <L> Lesson <M>.mp3``
              → ``ttmik_lessons.(lesson_level=<L>, lesson_number=<M>)``
 
@@ -25,6 +26,45 @@ CONTRACT: the stored ``audio_path`` is RELATIVE to the corpus root (it always
 starts with ``TTMIK/``), never a host-absolute path. The serving route joins
 it under its own configured root and enforces containment — see migration 035
 and server/src/routes/ttmik.ts.
+
+IYAGI SEASON-BLOCK RENUMBERING (F-185 root cause — read before touching
+``_IYAGI_RE`` or ``_resolve_iyagi_episode_number``): the on-disk Iyagi mp3s
+are named with a LOCAL, gap-tolerant sequential number (``1`` .. ``146``) that
+is NOT the same number space as ``iyagi_episodes.episode_number``, which
+carries TTMIK's real site numbering, published in three season blocks
+(1-50, 101-150, 201-246 — TTMIK restarts near-``1`` at the start of each
+season rather than continuing the raw count). Proven empirically (2026-07-14)
+by decoding each mp3's embedded ID3 lyrics (``USLT`` frame) and string-matching
+that Korean transcript text against ``iyagi_*.json``'s per-unit sentence text:
+local file "51" is content-identical to ``episode_number = 101`` (both are the
+혈액형/blood-type episode), local "67" to ``episode_number = 117`` (both are
+SNS/소셜), local "110"→"210", "119"→"219", "130"→"230", "146"→"246", every
+pair off by exactly +50 (local 51-100) or +100 (local 101-146) — a clean,
+2-breakpoint step function, not a gradual drift. Local numbers 1-50 need no
+adjustment (season 1 keeps TTMIK's real numbers). ``ordinal`` on
+``iyagi_episodes`` does NOT encode this — it's the row's position in its
+season's JSON array with gaps collapsed out (e.g. episode_number=110 has
+ordinal=10, which coincidentally equals the correct local-block offset only
+because no content gap precedes it in that season; it under-counts once a
+gap is passed and cannot be used as the season-number source of truth).
+
+Before this fix, ``parse_audio_filename`` returned the LOCAL number verbatim
+for Iyagi files, so the loader keyed its UPDATE on the wrong ``episode_number``
+for every local file above 50. This was not merely "some files don't map" —
+it was live, silent MIS-mapping: local season-3 files (101-146, real content
+201-246) numerically collided with DB rows 101-146 (real content is the
+season-2 topics) and overwrote their ``audio_path`` with the WRONG episode's
+audio, while the true season-2 audio (local 51-100) and season-3 audio
+(would-be local 201-246, which doesn't exist under that name) never matched
+anything and silently landed in ``files_without_row``. Confirmed live in
+``km-db``: ``iyagi_episodes.episode_number = 101`` (혈액형 topic) was serving
+``TTMIK/이야기들/이야기/101 TTMIK Iyagi 101.mp3`` — which is actually the
+쇼핑/shopping episode (real episode_number 201's audio). ``_resolve_iyagi_episode_number``
+below fixes the key computed by ``parse_audio_filename``; running this loader
+again (see ``tools/ingest/README.md`` / the runbook in ``BUGS_AND_FEATURES.md``
+F-185) corrects the live rows — it does not require a migration or a content
+reload, only a loader re-run, and is safe/idempotent per the IDEMPOTENCY note
+below.
 
 IDEMPOTENCY: a plain keyed UPDATE per file — re-running against the same tree
 rewrites identical values and is a no-op in effect. Rows whose mp3 vanished
@@ -90,6 +130,31 @@ class EpisodeKey:
     number: int
 
 
+# Season-block boundaries of the LOCAL (on-disk) Iyagi numbering — see the
+# "IYAGI SEASON-BLOCK RENUMBERING" module docstring section for how these
+# were derived and verified. Local numbers 1..50 are season 1 and need no
+# adjustment; 51..100 are season 2 (real episode_number = local + 50);
+# 101.. are season 3 (real episode_number = local + 100).
+_IYAGI_SEASON1_MAX = 50
+_IYAGI_SEASON2_MAX = 100
+
+
+def _resolve_iyagi_episode_number(local_number: int) -> int:
+    """Map the corpus's on-disk Iyagi track number to the real
+    ``iyagi_episodes.episode_number`` TTMIK actually publishes it under.
+
+    The local corpus renames each season's mp3s starting near 1 instead of
+    preserving TTMIK's own season-prefixed site numbering (season 2 starts
+    at 101, season 3 at 201). See the module docstring for the ID3-lyrics
+    cross-reference that proved this exact 2-breakpoint offset.
+    """
+    if local_number <= _IYAGI_SEASON1_MAX:
+        return local_number
+    if local_number <= _IYAGI_SEASON2_MAX:
+        return local_number + 50
+    return local_number + 100
+
+
 def parse_audio_filename(name: str) -> LessonKey | EpisodeKey | None:
     """Map an mp3 filename to its DB natural key, or None if unrecognized.
 
@@ -100,7 +165,7 @@ def parse_audio_filename(name: str) -> LessonKey | EpisodeKey | None:
         return LessonKey(level=int(m.group(1)), number=int(m.group(2)))
     m = _IYAGI_RE.search(name)
     if m:
-        return EpisodeKey(number=int(m.group(1)))
+        return EpisodeKey(number=_resolve_iyagi_episode_number(int(m.group(1))))
     return None
 
 

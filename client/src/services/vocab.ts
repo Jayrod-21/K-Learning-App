@@ -57,6 +57,13 @@ export interface SearchEntriesOptions {
   /** Difficulty filter — the source book's `book_level` band (F-003). */
   book_level?: BookLevel;
   /**
+   * Per-book chapter/topic facet (F-176) — `vocab_entries.theme`, a free-text
+   * label lifted verbatim from the source PDF (e.g. "01 인간 / People"), NOT
+   * a closed enum like `domain`/`book_level`. Exact match. See
+   * `fetchVocabThemes` for the values list this binds against.
+   */
+  theme?: string;
+  /**
    * Source-book filter (U1 scaffolding — `db/docs/PDF_UPLOAD_DESIGN.md`
    * §"U1 → sort-by-source filter"). The `book_uploads.id` to filter by.
    * WIRED but inert until U2 lands: no `vocab_entries` row carries a
@@ -137,6 +144,23 @@ export async function getEntry(
   );
 }
 
+/**
+ * GET /vocab/themes — the distinct, non-null `theme` values across the
+ * curated corpus (F-176). Themes are free text lifted per-book from the
+ * source extraction (beginner and intermediate corpora each have their OWN
+ * "01"/"02"… numbered taxonomy with similar-but-not-identical labels — e.g.
+ * "01 인간 / People" vs "01 사람 / People" are two DIFFERENT strings from two
+ * different books), so this is fetched from the live corpus rather than
+ * hardcoded client-side.
+ */
+export async function fetchVocabThemes(signal?: AbortSignal): Promise<string[]> {
+  const res = await api.get<{ themes: string[] }>(
+    '/vocab/themes',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.themes;
+}
+
 /** Filter + pagination for `GET /vocab/mastery` (F-013). */
 export interface FetchMasteryOptions {
   /** Restrict the word list to one bucket; omit for all buckets. */
@@ -194,6 +218,31 @@ export async function getDueCards(
     ...(signal !== undefined ? { signal } : {}),
   });
   return res.cards.map(normalizeDueCard);
+}
+
+/**
+ * GET /vocab/cards/due — the page PLUS a real, unbounded `total` (count
+ * reconciliation, TODAY_NAV_SCOPING Part A / the "665 due" vs "0 cards due"
+ * bug). `getDueCards` above discards `total` for its existing callers
+ * (Grammar.tsx's due-queue check, which only ever needed the rows); this
+ * sibling exists so a screen that needs to DISPLAY a due count (Review.tsx's
+ * landing) can show the server's exact total instead of the capped page's
+ * `.length`, which structurally can never exceed `limit` (default 20) no
+ * matter how large the real backlog is.
+ */
+export async function getDueCardsPage(
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<{ cards: DueCard[]; total: number }> {
+  const params = limit !== undefined ? { limit } : undefined;
+  const res = await api.get<{ cards: DueCardWire[]; total: number }>(
+    '/vocab/cards/due',
+    {
+      ...(params !== undefined ? { params } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    },
+  );
+  return { cards: res.cards.map(normalizeDueCard), total: res.total };
 }
 
 /**

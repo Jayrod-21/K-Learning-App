@@ -458,10 +458,25 @@ export function Review(): JSX.Element {
     readonly GrammarProductionCard[]
   >([]);
 
+  // Count reconciliation (TODAY_NAV_SCOPING Part A / the "665 due" vs "0
+  // cards due" bug): `due.data.length` is the LIMIT-capped page's row count
+  // (default 20, further split into vocab-vs-grammar below) — it can never
+  // reflect a real backlog larger than one page, and a backlog that happens
+  // to skew toward grammar-production cards can leave the vocab page's
+  // `.length` at literally 0 while hundreds are still due. `dueTotal` holds
+  // the server's real, unbounded count (`GET /vocab/cards/due`'s new `total`
+  // — the SAME WHERE predicate the page obeys, including the graduated-
+  // pattern exclusion) and is the source of truth `dueCount` below reads.
+  // Stays null until the real fetch settles — the mock-fallback path (DEV
+  // real-call failure, or no realFn) never sets it, so `dueCount` falls back
+  // to `due.data?.length` in that case, matching this page's pre-existing
+  // mock-fixture behavior exactly.
+  const [dueTotal, setDueTotal] = useState<number | null>(null);
+
   // realFn: GET /vocab/cards/due → StudyCard[] + side-effect partitions
-  // grammar production cards into their own section.
+  // grammar production cards into their own section + captures the real total.
   const dueRealFn = useCallback(async (): Promise<StudyCard[]> => {
-    const rows = await vocabService.getDueCards();
+    const { cards: rows, total } = await vocabService.getDueCardsPage();
     const grammar: GrammarProductionCard[] = [];
     const ui: StudyCard[] = [];
     for (const d of rows) {
@@ -472,6 +487,7 @@ export function Review(): JSX.Element {
       ui.push(dueCardToStudyCard(d));
     }
     setGrammarCards((prev) => (sameGrammarCards(prev, grammar) ? prev : grammar));
+    setDueTotal(total);
     return ui;
   }, []);
 
@@ -670,7 +686,7 @@ export function Review(): JSX.Element {
         listsLoading={lists.loading}
         listsError={lists.error !== null && lists.data === null}
         onRetryLists={lists.refetch}
-        dueCount={due.data?.length ?? null}
+        dueCount={dueTotal ?? due.data?.length ?? null}
         dueLoading={due.loading}
         dueErrored={due.error !== null && due.data === null}
         onRetryDue={due.refetch}

@@ -25,6 +25,12 @@
  *                             /reading/chapters + GET /uploads/:id + the
  *                             F-069 resume position, fetched together).
  *     ?book=ID&chapter=N    — the chapter reader (tappable passages).
+ *     ?chapter=N (no book)  — F-183: Today's Reading-tile deep link opens
+ *                             the SAME chapter reader directly, with no book
+ *                             context (the reader only ever needs its own
+ *                             chapter id — see `ChapterReader`/`getChapter`).
+ *                             Back goes to the Reading root, not a picker
+ *                             for an unknown book.
  *     ?story=N              — one generated story, same tappable treatment.
  *
  *   F-069 (resume, `reading_positions`/051): opening a chapter IS the
@@ -142,6 +148,7 @@ import {
   getReadingPosition,
   listChapters,
   listGeneratedStories,
+  logReadingAttempt,
   saveReadingPosition,
   translatePassage,
 } from '../services/reading';
@@ -216,6 +223,16 @@ export default function Reading(): JSX.Element {
   let view: JSX.Element;
   if (bookId !== null && chapterId !== null) {
     back = { to: `${READING_PATH}?book=${bookId}`, label: 'Chapters' };
+    view = <ChapterReader key={chapterId} chapterId={chapterId} />;
+  } else if (chapterId !== null) {
+    // F-183 (Today's Reading-tile deep link, `?chapter=<id>` with no
+    // `?book=`): `ChapterReader` only ever needs the chapter's OWN id —
+    // it fetches by `chapterId` alone, and "View original scan" reads
+    // `sourceUploadId` off the FETCHED chapter, never a route param — so a
+    // bare `?chapter=` opens the reader directly. There's no book context
+    // to link Back to (Today doesn't know/send it), so Back goes to the
+    // Reading root rather than a chapter-picker for an unknown book.
+    back = { to: READING_PATH, label: 'Reading' };
     view = <ChapterReader key={chapterId} chapterId={chapterId} />;
   } else if (bookId !== null) {
     back = { to: READING_PATH, label: 'Reading' };
@@ -984,6 +1001,81 @@ function SkeletonCard(): JSX.Element {
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Mark-as-read/finished (F-172 — reading_attempts, migration 060)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * The completion-log POST's lifecycle. No 'idle' → 'saving' → 'done' loop
+ * back to 'idle': once logged, the button stays in its done state for the
+ * rest of this reader's mount (re-opening the chapter/story remounts fresh,
+ * per the `key={chapterId}`/`key={storyId}` on the parent's view branch) —
+ * a second mark against the SAME open session would just be a duplicate log
+ * row for no user-visible benefit.
+ */
+type MarkReadState =
+  | { phase: 'idle' }
+  | { phase: 'saving' }
+  | { phase: 'done' }
+  | { phase: 'error'; message: string };
+
+/** Fixed fallback copy for a failed completion-log POST (errorCopy contract). */
+const MARK_READ_FAILED_COPY = "Couldn't save — try again.";
+
+/**
+ * The explicit "I finished this" affordance shared by the chapter reader and
+ * the story reader (F-172; there is no scroll- or position-derived
+ * auto-completion signal this phase — see the scoping doc's own note that a
+ * generated story has no passage/position tracking at all). `aria-disabled`
+ * (not `disabled`) while saving/done, matching this file's `StoryGenerator`
+ * busy-button convention — the hard attribute would drop keyboard focus.
+ */
+function MarkCompleteButton({
+  state,
+  onMark,
+  labelEn,
+  labelKr,
+  doneLabelEn,
+  doneLabelKr,
+}: {
+  state: MarkReadState;
+  onMark: () => void;
+  labelEn: string;
+  labelKr: string;
+  doneLabelEn: string;
+  doneLabelKr: string;
+}): JSX.Element {
+  const busy = state.phase === 'saving';
+  const done = state.phase === 'done';
+  return (
+    <div style={{ margin: '16px 0' }}>
+      <Button
+        variant={done ? 'ghost' : 'gold'}
+        size="sm"
+        leadingIcon={<Icon name="check" size={14} />}
+        aria-disabled={busy || done || undefined}
+        onClick={() => {
+          if (busy || done) return; // aria-disabled doesn't block clicks — we do.
+          onMark();
+        }}
+      >
+        {done ? (
+          <Bilingual en={doneLabelEn} kr={doneLabelKr} compact />
+        ) : busy ? (
+          <Bilingual en="Saving…" kr="저장 중…" compact />
+        ) : (
+          <Bilingual en={labelEn} kr={labelKr} compact />
+        )}
+      </Button>
+      {state.phase === 'error' ? (
+        <span role="alert" style={{ marginLeft: 8 }}>
+          {state.message}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -1057,6 +1149,52 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
     () => [...passages].sort((a, b) => a.passageNumber - b.passageNumber),
     [passages],
   );
+
+  // F-172 — "Mark chapter as read" (reading_attempts, migration 060). A NEW
+  // explicit completion trigger (this reader has no scroll-position telemetry
+  // to derive completion from); passageNumber records the LAST passage
+  // rendered, when any exist, so the log carries "how far" alongside "which
+  // chapter". Aborted on unmount so a closed reader never lands a late
+  // setState.
+  const [markState, setMarkState] = useState<MarkReadState>({ phase: 'idle' });
+  const markCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      markCtrlRef.current?.abort();
+    },
+    [],
+  );
+  const markChapterRead = useCallback((): void => {
+    if (chapter === null) return;
+    markCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    markCtrlRef.current = ctrl;
+    setMarkState({ phase: 'saving' });
+    const lastPassage = orderedPassages[orderedPassages.length - 1];
+    logReadingAttempt(
+      {
+        sourceKind: 'chapter',
+        chapterId: chapter.id,
+        ...(lastPassage !== undefined
+          ? { passageNumber: lastPassage.passageNumber }
+          : {}),
+      },
+      ctrl.signal,
+    ).then(
+      () => {
+        if (ctrl.signal.aborted) return;
+        setMarkState({ phase: 'done' });
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setMarkState({
+          phase: 'error',
+          message: errorMessageFor(err, MARK_READ_FAILED_COPY),
+        });
+      },
+    );
+  }, [chapter, orderedPassages]);
 
   if (loading) return <SkeletonCard />;
   if (error !== null || chapter === null) {
@@ -1132,6 +1270,15 @@ function ChapterReader({ chapterId }: { chapterId: number }): JSX.Element {
           ))}
         </CityCard>
       )}
+
+      <MarkCompleteButton
+        state={markState}
+        onMark={markChapterRead}
+        labelEn="Mark chapter as read"
+        labelKr="장 읽음으로 표시"
+        doneLabelEn="Chapter read"
+        doneLabelKr="읽음"
+      />
 
       {popover}
       {translateText !== null ? (
@@ -1508,6 +1655,41 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
       .filter((block) => block !== '');
   }, [story]);
 
+  // F-172 — "Mark story as finished" (reading_attempts, migration 060). A
+  // generated story has no passage/position tracking at all (unlike a
+  // chapter), so this is the ONLY completion signal for this reader —
+  // storyId alone, no passageNumber. Aborted on unmount so a closed reader
+  // never lands a late setState.
+  const [markState, setMarkState] = useState<MarkReadState>({ phase: 'idle' });
+  const markCtrlRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      markCtrlRef.current?.abort();
+    },
+    [],
+  );
+  const markStoryFinished = useCallback((): void => {
+    if (story === null) return;
+    markCtrlRef.current?.abort();
+    const ctrl = new AbortController();
+    markCtrlRef.current = ctrl;
+    setMarkState({ phase: 'saving' });
+    logReadingAttempt({ sourceKind: 'story', storyId: story.id }, ctrl.signal).then(
+      () => {
+        if (ctrl.signal.aborted) return;
+        setMarkState({ phase: 'done' });
+      },
+      (err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setMarkState({
+          phase: 'error',
+          message: errorMessageFor(err, MARK_READ_FAILED_COPY),
+        });
+      },
+    );
+  }, [story]);
+
   if (loading) return <SkeletonCard />;
   if (error !== null || story === null) {
     return (
@@ -1558,6 +1740,15 @@ function StoryReader({ storyId }: { storyId: number }): JSX.Element {
           />
         ))}
       </CityCard>
+
+      <MarkCompleteButton
+        state={markState}
+        onMark={markStoryFinished}
+        labelEn="Mark story as finished"
+        labelKr="이야기 완료로 표시"
+        doneLabelEn="Story finished"
+        doneLabelKr="완료"
+      />
 
       {popover}
       {translateText !== null ? (

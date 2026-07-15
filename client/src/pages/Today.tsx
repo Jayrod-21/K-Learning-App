@@ -47,9 +47,17 @@
  *      copy and accepts the identical `location.state.generatedTopic`
  *      handoff) — the generator is preserved, one tap away instead of
  *      inline on Today. Reading's daily rotation stays real and
- *      server-side (`server/src/routes/plan.ts` orders the TTMIK pick by
- *      `md5(user || date || lesson_id)` — this screen only renders
- *      whatever `/plan/today` sends, which already changes day to day).
+ *      server-side (`server/src/routes/plan.ts` orders the pick by
+ *      `md5(user || date || row_id)` — this screen only renders whatever
+ *      `/plan/today` sends, which already changes day to day). Wave 2
+ *      (backend batch) re-sourced that pick from the caller's own
+ *      `reading_chapters`/`generated_stories` (replacing the old public
+ *      TTMIK-lesson pick, which had no relationship to `/learn/reading`'s
+ *      actual content) and all three of Reading/Listening/Writing now carry
+ *      the ids/keys (`chapterId`/`storyId`, `episodeNumber`, `promptId`)
+ *      needed to deep-link to the EXACT item shown, instead of each tile's
+ *      bare landing page (`readingHref`/`listeningHref`/`writingHref`
+ *      below).
  *   3. **TOPIK carousel** — last, its own `SwipeCarousel` (a single page —
  *      dots/drag naturally no-op below 2 children). Carries the
  *      "Review mistakes" shortcut folded in (not its own page) and NO
@@ -87,20 +95,20 @@
  *   useEndpointOrMock('today.grammarAttempts', …, { realFn: listAttempts })
  *   useEndpointOrMock('today.writingAttempts', …, { realFn: fetchWritingAttempts })
  *   useEndpointOrMock('today.topikAttempts', …, { realFn: fetchAttemptHistory })
+ *   useEndpointOrMock('today.hanjaAttempts', …, { realFn: fetchHanjaAttempts })
+ *   useEndpointOrMock('today.readingAttempts', …, { realFn: listReadingAttempts })
+ *   useEndpointOrMock('today.listeningAttempts', …, { realFn: listListeningAttempts })
  *
- * The three attempt-history fetches back F-138's per-tile "done today"
- * counts (grammar/writing/TOPIK) — filtered client-side to the viewer's
- * local calendar day, since these are the caller's own scored/graded
- * history, newest first, and carry no "today only" server filter. Hanja,
- * Vocab, and Reading/Listening have NO attempt-history endpoint today
- * (`services/hanja` only exposes lifetime aggregate bands; `services/vocab`
- * exposes a live due-count, not a "reviewed today" tally;
- * `services/reading`/`services/ttmik` expose no per-attempt log at all) —
- * those tiles show their existing server-supplied content with no
- * daily-count claim, which is the honest choice over fabricating one.
- * Tracked as durable follow-ups in `BUGS_AND_FEATURES.md` — "Hanja
- * daily-attempt signal" and "Reading/Listening daily-attempt signal" —
- * rather than left as a dangling PR-description note.
+ * SIX attempt-history fetches back F-138's per-tile "done today" counts
+ * (grammar/writing/TOPIK, and — Wave 2 backend batch — Hanja/Reading/
+ * Listening, once F-171/F-172 added `GET /hanja/attempts`,
+ * `GET /reading/attempts`, `GET /ttmik/attempts`) — filtered client-side to
+ * the viewer's local calendar day (`isLocalToday`), since these are the
+ * caller's own history, newest first, and carry no "today only" server
+ * filter. Vocab still has no attempt-history endpoint (`services/vocab`
+ * exposes a live due-count, not a "reviewed today" tally) — that tile shows
+ * its existing server-supplied due-count with no daily-count claim, the
+ * honest choice over fabricating one.
  *
  * A plan failure (never loading, never mock-fallback data) degrades the
  * Vocab tile (Carousel 1) and the whole Suggested-learning peek slider
@@ -109,14 +117,18 @@
  *
  * Threat model:
  *   Fixture/server text rendered as React children → escaped by React. Pass
- *   3+ wire must keep this contract (text fields, not HTML strings). The
- *   three attempt-history fetches are read-only GETs behind the same
- *   auth+session posture as every other service in this app (see
- *   services/grammarDrill.ts, services/writing.ts, services/topik.ts) —
- *   this screen adds no new endpoint, just three more consumers of ones
- *   that already exist for their own history screens. The restored Vocab
- *   tile adds no new endpoint either — it reads `reviewCount` off the
- *   plan the screen already fetches.
+ *   3+ wire must keep this contract (text fields, not HTML strings). All six
+ *   attempt-history fetches are read-only GETs behind the same auth+session
+ *   posture as every other service in this app (see services/grammarDrill.ts,
+ *   services/writing.ts, services/topik.ts, services/hanja.ts,
+ *   services/reading.ts, services/ttmik.ts) — this screen adds no new
+ *   endpoint, just more consumers of ones that already exist for their own
+ *   history screens. The restored Vocab tile adds no new endpoint either —
+ *   it reads `reviewCount` off the plan the screen already fetches. The
+ *   Reading/Listening/Writing deep-link navigations (Wave 2) build a URL
+ *   from server-returned integer ids/enums (`chapterId`/`storyId`/
+ *   `episodeNumber`/`promptId`/`corpus`), never free text — no injection
+ *   surface in the constructed path/query string.
  */
 import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
@@ -142,6 +154,11 @@ import { fetchAttempt, fetchAttemptHistory } from '../services/topik';
 import type { AttemptHistoryResult, AttemptState } from '../services/topik';
 import { fetchWritingAttempts } from '../services/writing';
 import { listAttempts as listGrammarAttempts } from '../services/grammarDrill';
+import { fetchHanjaAttempts } from '../services/hanja';
+import { listReadingAttempts } from '../services/reading';
+import type { ReadingAttemptsPage } from '../services/reading';
+import { listListeningAttempts } from '../services/ttmik';
+import type { ListeningAttemptsPage } from '../services/ttmik';
 import type { DrillAttemptsPage, TodayPlan, TodayTask } from '../types/domain';
 import { cn } from '../lib/cn';
 import { isLocalToday } from '../lib/localDay';
@@ -208,6 +225,45 @@ function renderTag(tag: TodayTask['tag'], gap: TodayTask['tag']): ReactNode {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Wave 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6) — deep-link targets
+// for the Suggested-learning tiles, built from server-returned integer
+// ids/enums (never free text — no injection surface). Each falls back to the
+// existing bare landing-page path when the plan payload lacks the relevant
+// field (an older cached fixture, or a genuinely missing id) — never
+// fabricates one.
+// ─────────────────────────────────────────────────────────────
+
+/** Reading tile target: the exact chapter (`?chapter=<id>`) or generated
+ *  story (`?story=<id>`) the tile displays (B4 Option 2 — reading is now
+ *  sourced from the caller's own reading_chapters/generated_stories, not the
+ *  old public TTMIK-lesson pick). */
+function readingHref(t: TodayTask): string {
+  if (t.sourceKind === 'story' && t.storyId !== undefined) {
+    return `/learn/reading?story=${String(t.storyId)}`;
+  }
+  if (t.sourceKind === 'chapter' && t.chapterId !== undefined) {
+    return `/learn/reading?chapter=${String(t.chapterId)}`;
+  }
+  return '/learn/reading';
+}
+
+/** Listening tile target: the exact Iyagi episode (B5). */
+function listeningHref(t: TodayTask): string {
+  if (t.corpus !== undefined && t.episodeNumber !== undefined) {
+    return `/learn/listen?corpus=${t.corpus}&episode=${String(t.episodeNumber)}`;
+  }
+  return '/learn/listen';
+}
+
+/** Writing tile target: the exact bank prompt, by id (B6) — the target page
+ *  requests this prompt instead of drawing a fresh random one. */
+function writingHref(t: TodayTask): string {
+  return t.promptId !== undefined
+    ? `/learn/writing?promptId=${String(t.promptId)}`
+    : '/learn/writing';
+}
+
+// ─────────────────────────────────────────────────────────────
 // Open-exam lookup (F-007 attempt surfaced on the action hub)
 // ─────────────────────────────────────────────────────────────
 
@@ -257,6 +313,26 @@ async function loadWritingAttemptsMock(): Promise<
 async function loadTopikAttemptsMock(): Promise<AttemptHistoryResult> {
   await mockDelay();
   return { attempts: [], total: 0 };
+}
+
+// Wave 2 (backend batch, F-171/F-172) — same `limit: 100` posture as the
+// three fetches above, now that Hanja/Reading/Listening carry their own
+// attempt-history routes too.
+async function loadHanjaAttemptsMock(): Promise<
+  Awaited<ReturnType<typeof fetchHanjaAttempts>>
+> {
+  await mockDelay();
+  return { attempts: [], total: 0, limit: 100, offset: 0 };
+}
+
+async function loadReadingAttemptsMock(): Promise<ReadingAttemptsPage> {
+  await mockDelay();
+  return { attempts: [], total: 0, limit: 100, offset: 0 };
+}
+
+async function loadListeningAttemptsMock(): Promise<ListeningAttemptsPage> {
+  await mockDelay();
+  return { attempts: [], total: 0, limit: 100, offset: 0 };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -405,6 +481,24 @@ export function Today(): JSX.Element {
     loadTopikAttemptsMock,
     { realFn: () => fetchAttemptHistory({ limit: 100 }) },
   );
+  // Wave 2 (backend batch, F-171/F-172) — the same real "done today" signal,
+  // now available for Hanja/Reading/Listening too (previously these three
+  // tiles had no attempt-history endpoint at all — see the module header).
+  const hanjaAttempts = useEndpointOrMock<
+    Awaited<ReturnType<typeof fetchHanjaAttempts>>
+  >('today.hanjaAttempts', loadHanjaAttemptsMock, {
+    realFn: () => fetchHanjaAttempts({ limit: 100 }),
+  });
+  const readingAttempts = useEndpointOrMock<ReadingAttemptsPage>(
+    'today.readingAttempts',
+    loadReadingAttemptsMock,
+    { realFn: () => listReadingAttempts({ limit: 100 }) },
+  );
+  const listeningAttempts = useEndpointOrMock<ListeningAttemptsPage>(
+    'today.listeningAttempts',
+    loadListeningAttemptsMock,
+    { realFn: () => listListeningAttempts({ limit: 100 }) },
+  );
 
   useChatContext(
     today.data
@@ -422,7 +516,8 @@ export function Today(): JSX.Element {
   const retryToday = today.refetch;
   const isMock =
     today.isMock || attempt.isMock || grammarAttempts.isMock ||
-    writingAttempts.isMock || topikAttempts.isMock;
+    writingAttempts.isMock || topikAttempts.isMock ||
+    hanjaAttempts.isMock || readingAttempts.isMock || listeningAttempts.isMock;
 
   // `null` while loading/errored (unknown — never presented as a confirmed
   // zero); a real non-negative count once the fetch resolves.
@@ -433,6 +528,18 @@ export function Today(): JSX.Element {
   const writingDoneToday =
     writingAttempts.data && !writingAttempts.loading
       ? writingAttempts.data.attempts.filter((a) => isLocalToday(a.gradedAt, now)).length
+      : null;
+  const hanjaDoneToday =
+    hanjaAttempts.data && !hanjaAttempts.loading
+      ? hanjaAttempts.data.attempts.filter((a) => isLocalToday(a.createdAt, now)).length
+      : null;
+  const readingDoneToday =
+    readingAttempts.data && !readingAttempts.loading
+      ? readingAttempts.data.attempts.filter((a) => isLocalToday(a.completedAt, now)).length
+      : null;
+  const listeningDoneToday =
+    listeningAttempts.data && !listeningAttempts.loading
+      ? listeningAttempts.data.attempts.filter((a) => isLocalToday(a.completedAt, now)).length
       : null;
   const topikDoneToday =
     topikAttempts.data && !topikAttempts.loading
@@ -483,8 +590,19 @@ export function Today(): JSX.Element {
               kr={`읽기 · ${t.level} · ${String(t.mins)}분`}
             />
           }
+          extra={
+            <DoneTodayRow
+              count={readingDoneToday}
+              tone="blue"
+              labelEn={(n) => (n === 1 ? '1 reading finished today' : `${String(n)} readings finished today`)}
+              labelKr={(n) => `오늘 완료한 읽기 ${String(n)}개`}
+            />
+          }
           onClick={() => {
-            navigate('/learn/reading');
+            // Wave 2 (B4): deep-links to the exact chapter/story shown —
+            // reading is now sourced from the caller's own library, not the
+            // old public TTMIK-lesson pick.
+            navigate(readingHref(t));
           }}
         />
       </div>,
@@ -507,8 +625,17 @@ export function Today(): JSX.Element {
               kr={`듣기 · ${t.level} · ${String(t.mins)}분`}
             />
           }
+          extra={
+            <DoneTodayRow
+              count={listeningDoneToday}
+              tone="mint"
+              labelEn={(n) => (n === 1 ? '1 episode finished today' : `${String(n)} episodes finished today`)}
+              labelKr={(n) => `오늘 완료한 듣기 ${String(n)}개`}
+            />
+          }
           onClick={() => {
-            navigate('/learn/listen');
+            // Wave 2 (B5): deep-links to the exact Iyagi episode shown.
+            navigate(listeningHref(t));
           }}
         />
       </div>,
@@ -521,9 +648,10 @@ export function Today(): JSX.Element {
       <div key="writing" className="km-today__peekItem">
         {/* F-134's inline CollapsibleTile expand does not fit the peek
             slider's fixed-width, center-snap layout (see the module header
-            comment) — Writing is a plain ActivityTile that navigates to
-            /learn/writing, same as Reading/Listening. The "done today"
-            count rides in `extra`, same convention as Grammar/TOPIK. */}
+            comment) — Writing is a plain ActivityTile that deep-links to
+            /learn/writing?promptId=<id> (Wave 2, B6), same shape as
+            Reading/Listening. The "done today" count rides in `extra`, same
+            convention as Grammar/TOPIK. */}
         <ActivityTile
           tone="accent"
           icon="pen"
@@ -545,7 +673,8 @@ export function Today(): JSX.Element {
             />
           }
           onClick={() => {
-            navigate('/learn/writing');
+            // Wave 2 (B6): deep-links to this exact bank prompt by id.
+            navigate(writingHref(t));
           }}
         />
       </div>,
@@ -697,6 +826,14 @@ export function Today(): JSX.Element {
                   <Bilingual
                     en="Character drills & compounds"
                     kr="한자 드릴과 단어"
+                  />
+                }
+                extra={
+                  <DoneTodayRow
+                    count={hanjaDoneToday}
+                    tone="ochre"
+                    labelEn={(n) => (n === 1 ? '1 character reviewed today' : `${String(n)} characters reviewed today`)}
+                    labelKr={(n) => `오늘 복습한 한자 ${String(n)}자`}
                   />
                 }
                 onClick={() => {

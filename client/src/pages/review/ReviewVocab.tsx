@@ -142,13 +142,18 @@ const LIBRARY_NAV = navItem('review');
  * consumed by the Grammar library pages, which another agent is reworking in
  * parallel this pass, so it's out of this ticket's edit scope. Expanding the
  * genre SET (not just this list) needs a schema/enum change + a server
- * filter param, not a client tweak. There IS richer real data already sitting
- * on `vocab_entries.theme` (per-book chapter categories — People, Education,
- * Economy, Health, … ~30 real values on ~3,000 rows) but `GET /vocab/entries`
- * has no `theme` query param today (`server/src/routes/vocab.ts`), so it
- * can't be wired from the client alone either. Deferred — see this build's
- * fixpass report for the concrete follow-up (either promote `theme` to a
- * filterable facet, or extend `content_domain`).
+ * filter param, not a client tweak.
+ *
+ * F-176 (done): the richer real data sitting on `vocab_entries.theme`
+ * (per-book chapter categories — People, Education, Economy, Health, …, ~31
+ * real values on ~3,188 rows) is now ALSO a filterable facet, separate from
+ * the Genre dropdown above — see the "Theme" `FilterSelect` in `VocabBrowse`
+ * below, fed by the new `GET /vocab/themes` values route
+ * (`server/src/routes/vocab.ts`) rather than a hardcoded list (themes are
+ * free text lifted per-book from the source extraction, not a designed
+ * taxonomy — two different corpora can carry a similar-looking "01 …" label
+ * that means something different, so the values must come from the live
+ * corpus, never be guessed client-side).
  */
 const GENRE_OPTIONS: ReadonlyArray<FilterSelectOption> = DOMAIN_FILTERS.filter(
   (f) => f.id !== 'all',
@@ -426,9 +431,38 @@ function VocabBrowse({
   // omits the param so the endpoint returns every row.
   const [domain, setDomain] = useState<DomainFilter>('all');
   const [level, setLevel] = useState<LevelFilter>('all');
+  // F-176 — per-book theme/chapter facet (`vocab_entries.theme`). '' is the
+  // FilterSelect placeholder state ("All themes") and omits the param, same
+  // convention as `domain`/`level` above. Unlike those two, the value set is
+  // corpus-derived data (~31 free-text labels), not a closed enum — fetched
+  // once from `GET /vocab/themes` below rather than hardcoded.
+  const [theme, setTheme] = useState('');
+  const [themeOptions, setThemeOptions] = useState<
+    ReadonlyArray<FilterSelectOption>
+  >([]);
   // U1/U3a — sort-by-source filter (see SourceFilterRow's header doc).
   const [source, setSource] = useState<string>(ALL_SOURCES);
   const ctrlRef = useRef<AbortController | null>(null);
+
+  // F-176 — load the live theme values once on mount. Best-effort: a failed
+  // fetch just leaves the dropdown at "All themes only" (no options to pick
+  // beyond the placeholder) rather than blocking or erroring the whole
+  // Browse panel over a non-critical filter facet.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    vocabService
+      .fetchVocabThemes(ctrl.signal)
+      .then((themes) => {
+        if (ctrl.signal.aborted) return;
+        setThemeOptions(themes.map((t) => ({ value: t, label: t })));
+      })
+      .catch(() => {
+        // Silent — see the effect's doc comment above.
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, []);
 
   // F-051 — client window over the fetched server page: 15 visible, one
   // show-more step to the 30-row cap (= PAGE_SIZE, so a fully expanded
@@ -446,10 +480,10 @@ function VocabBrowse({
   // result set. Sync-to-derived-state on a key change — same documented
   // exception the hooks use.
   useEffect(() => {
-     
+
     setOffset(0);
     resetWindow();
-  }, [q, domain, level, source, resetWindow]);
+  }, [q, domain, level, theme, source, resetWindow]);
 
   // Collapse the window on a server-page move too (Prev/Next) — a new page
   // must never open pre-expanded.
@@ -473,6 +507,7 @@ function VocabBrowse({
           ...(q ? { q } : {}),
           ...(domain !== 'all' ? { domain } : {}),
           ...(level !== 'all' ? { book_level: level } : {}),
+          ...(theme !== '' ? { theme } : {}),
           ...(source !== ALL_SOURCES ? { source_upload_id: source } : {}),
           limit: PAGE_SIZE,
           offset,
@@ -496,7 +531,7 @@ function VocabBrowse({
     return () => {
       ctrl.abort();
     };
-  }, [q, offset, domain, level, source, reloadTick]);
+  }, [q, offset, domain, level, theme, source, reloadTick]);
 
   const refetch = useCallback(() => {
     setReloadTick((t) => t + 1);
@@ -563,6 +598,22 @@ function VocabBrowse({
           onChange={(v) => {
             setLevel(toLevelFilter(v));
           }}
+        />
+        {/* F-176 — theme/chapter facet (`vocab_entries.theme`). Distinct from
+            "Genre" (content_domain) above: theme is a per-book chapter label
+            (~31 real values, e.g. "01 인간 / People"), not the 3-value genre
+            enum. Options come from the live corpus (see the mount effect
+            above), never hardcoded. Unlike Genre/Difficulty there is no
+            `toXFilter` boundary guard needed: FilterSelect is a native
+            `<select>` whose only choosable values are the `themeOptions` it
+            was given plus the placeholder, so there is no free-form input
+            path for an out-of-vocabulary string to arrive through. */}
+        <FilterSelect
+          label="Theme"
+          options={themeOptions}
+          value={theme}
+          onChange={setTheme}
+          placeholder="All themes"
         />
       </div>
       <SourceFilterRow

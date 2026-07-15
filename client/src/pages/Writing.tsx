@@ -7,11 +7,21 @@
  *
  *   WRITE — the practice surface. The active task comes from ONE of two
  *   sources, modeled as a discriminated union (`ActiveTask`):
- *     - 'bank': a curated prompt from `GET /writing/prompts/random?rubric=`
- *       (B-027: the old flow fetched the deterministic `/prompts` list and
- *       pinned index 0, so every visit opened the SAME task; the pick is now
- *       genuinely random, server-side). The Q53/Q54 radiogroup selects which
- *       rubric's pool to draw from; "New prompt" redraws.
+ *     - 'bank': a curated prompt, either a random draw from
+ *       `GET /writing/prompts/random?rubric=` (B-027: the old flow fetched
+ *       the deterministic `/prompts` list and pinned index 0, so every visit
+ *       opened the SAME task; the pick is now genuinely random, server-side)
+ *       or, on the FIRST fetch only, ONE specific pinned prompt fetched via
+ *       `GET /writing/prompts/:id` when the page was opened with
+ *       `?promptId=<id>` (F-183: Today's Writing tile shows a SPECIFIC
+ *       `writing_prompts` row — unlike the Vocab/Reading/Listen tiles this
+ *       needed a genuinely new lookup-by-id mechanism, since the bank flow
+ *       only ever drew randomly before). The Q53/Q54 radiogroup selects
+ *       which rubric's pool to draw from; "New prompt" redraws — both always
+ *       clear the pin, so a deep link opens ONE specific prompt, never a
+ *       permanently-stuck one. A bad/missing/retired `promptId` (the id
+ *       fetch's ANY failure) degrades to the normal random-bank draw for the
+ *       currently-selected rubric rather than a dead end.
  *     - 'generated': a Claude-authored topic — adopted from the on-page
  *       `WritingTopicGenerator` via its "Write this topic" action (F-073),
  *       or carried in through `location.state.generatedTopic` by the Today
@@ -64,6 +74,12 @@
  *     can navigate with state), so `readGeneratedTopic` narrows it field by
  *     field at runtime — a malformed payload falls back to the bank flow,
  *     never a crash or a type lie.
+ *   - `?promptId=` (F-183) is untrusted URL input like any search param:
+ *     `parsePositiveIntParam` accepts digits only (no signs/decimals/
+ *     whitespace `Number()` alone would admit), bounded — a malformed value
+ *     is simply `null` and the page falls into the ordinary random-bank
+ *     draw. A well-formed-but-foreign/retired id 404s server-side and the
+ *     client degrades the same way (see `fetchWritingPromptById`).
  *   - Error copy is a fixed lookup keyed on `ApiError.code`/`status`; server
  *     message strings are never echoed (the Login.messageFor contract).
  *   - The sample is soft-capped by `maxLength` (5,000 — the server's own Zod
@@ -123,6 +139,7 @@ import { ApiError } from '../services/api';
 import {
   fetchRandomWritingPrompt,
   fetchWritingAttempts,
+  fetchWritingPromptById,
   gradeWriting,
 } from '../services/writing';
 import type {
@@ -316,6 +333,20 @@ function readGeneratedTopic(state: unknown): GeneratedWritingPrompt | null {
 }
 
 /**
+ * Strict positive-int parse for the `?promptId=` deep link (F-183 — Today's
+ * Writing tile). Mirrors Reading.tsx/Ttmik.tsx's own search-param parsers:
+ * digits only (no signs, decimals, exponents, whitespace — `Number()` alone
+ * would admit all of those), bounded, so a malformed/garbage param never
+ * reaches a request — it just resolves to `null` and the page falls into
+ * the ordinary random-bank draw.
+ */
+function parsePositiveIntParam(raw: string | null): number | null {
+  if (raw === null || !/^\d{1,15}$/.test(raw)) return null;
+  const n = Number(raw);
+  return n > 0 ? n : null;
+}
+
+/**
  * Fixed-string error copy keyed on the normalised `ApiError` — server prose is
  * never echoed (only the structured numeric `retryAfter` is interpolated).
  */
@@ -409,6 +440,30 @@ function Writing(): JSX.Element {
   // Monotonic redraw/retry trigger for the fetch effect (the TTMIK idiom).
   const [drawTick, setDrawTick] = useState(0);
 
+  // F-183: a specific bank prompt id from Today's Writing tile
+  // (`?promptId=<id>`), captured once on mount — the query string is stable
+  // for the life of one navigation into this page, so a lazy initializer is
+  // enough (mirrors `seedTopic` above, which uses the same one-shot-capture
+  // idiom for `location.state`). If BOTH a `generatedTopic` state payload
+  // and a `?promptId=` were somehow present at once, `seedTopic` wins — the
+  // bank-fetch effect below never runs while `source !== 'bank'`.
+  const [seedPromptId] = useState<number | null>(() =>
+    parsePositiveIntParam(new URLSearchParams(location.search).get('promptId')),
+  );
+  // Consumed by the bank-fetch effect: non-null only for that FIRST bank
+  // fetch. Cleared unconditionally once that fetch settles (success or
+  // failure), so every later rubric switch / "New prompt" / retry in this
+  // session is a normal random draw — the deep link opens ONE specific
+  // prompt, never a permanently pinned one.
+  const pinnedPromptIdRef = useRef<number | null>(seedPromptId);
+  // Set immediately before a pinned-fetch settle syncs `rubric` to the
+  // served prompt's OWN rubric (see below) — `rubric` is one of the bank
+  // effect's own dependencies, so that sync would otherwise be
+  // indistinguishable from a genuine user rubric switch and trigger an
+  // unwanted SECOND fetch (a real random draw for the just-synced rubric).
+  // The effect checks this flag first and no-ops once, consuming it.
+  const syncingRubricRef = useRef(false);
+
   const [sample, setSample] = useState('');
   const [phase, setPhase] = useState<WritingPhase>('composing');
   const [grade, setGrade] = useState<WritingGradeResult | null>(null);
@@ -448,16 +503,54 @@ function Writing(): JSX.Element {
   // unmount, so a stale settle can never clobber newer state.
   useEffect(() => {
     if (source !== 'bank') return;
+    if (syncingRubricRef.current) {
+      // This run exists ONLY because the previous settle synced `rubric` to
+      // match a deep-linked prompt's own rubric (below) — not a real user
+      // switch/redraw. Consume the flag and skip the fetch entirely so that
+      // sync can never spend a second, unwanted random draw.
+      syncingRubricRef.current = false;
+      return;
+    }
     const ctrl = new AbortController();
     // Sync-to-external-system (network fetch) — same documented exception
     // the Reference/TTMIK tabs use for their kickoff setState.
     setTaskState({ phase: 'loading' });
-    fetchRandomWritingPrompt(rubric, ctrl.signal)
+
+    // F-183: the FIRST bank fetch after a `?promptId=` deep link opens that
+    // SPECIFIC prompt instead of a random draw. `pinnedPromptIdRef` reads
+    // its snapshot ONCE per effect run (not re-read inside the settle
+    // handlers below) so a redraw/rubric-switch that fires while this fetch
+    // is still in flight can't race it.
+    const pinnedId = pinnedPromptIdRef.current;
+    const request =
+      pinnedId !== null
+        ? fetchWritingPromptById(pinnedId, ctrl.signal)
+        : fetchRandomWritingPrompt(rubric, ctrl.signal);
+
+    request
       .then((prompt) => {
         if (ctrl.signal.aborted) return;
+        // Consumed — cleared unconditionally so every later redraw/switch/
+        // retry is a normal random pick, even though THIS run succeeded.
+        pinnedPromptIdRef.current = null;
         const changed = prompt.id !== lastBankIdRef.current;
         lastBankIdRef.current = prompt.id;
         setTaskState({ phase: 'ready', task: { source: 'bank', prompt } });
+        if (pinnedId !== null) {
+          // The deep-linked prompt may carry a DIFFERENT rubric than
+          // whichever radio happens to be selected — sync the segmented
+          // control unconditionally (display-only, not an effect
+          // dependency) and, if it actually differs, `rubric` itself too
+          // (so a later "New prompt" redraws from the pool that matches
+          // what's ACTUALLY on the surface) — guarded by
+          // `syncingRubricRef` so that second `setRubric` can't trigger an
+          // unwanted extra random fetch (see the effect's own guard above).
+          setUiChoice(prompt.rubric);
+          if (prompt.rubric !== rubric) {
+            syncingRubricRef.current = true;
+            setRubric(prompt.rubric);
+          }
+        }
         if (clearOnArrivalRef.current && changed) {
           // An explicit "New prompt" landed a genuinely new task — fresh sheet.
           setSample('');
@@ -471,6 +564,17 @@ function Writing(): JSX.Element {
         if (ctrl.signal.aborted) return;
         if (err instanceof ApiError && err.code === 'canceled') return;
         clearOnArrivalRef.current = false;
+        if (pinnedId !== null) {
+          // Bad/missing/retired deep-linked prompt id (or any other failure
+          // fetching it) — degrade gracefully to the normal random-bank
+          // flow for the current rubric instead of a dead end (F-183).
+          // Deliberately NOT the empty-pool state below: that means "no
+          // active prompts for this rubric AT ALL," a different condition
+          // from "this one id didn't resolve."
+          pinnedPromptIdRef.current = null;
+          setDrawTick((t) => t + 1);
+          return;
+        }
         if (err instanceof ApiError && err.status === 404) {
           // The rubric's active pool is empty — honest empty state, not an
           // error card with a retry that can never succeed.

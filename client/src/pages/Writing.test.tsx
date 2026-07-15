@@ -32,6 +32,7 @@ import type {
 vi.mock('../services/writing', () => ({
   fetchRandomWritingPrompt: vi.fn(),
   fetchWritingAttempts: vi.fn(),
+  fetchWritingPromptById: vi.fn(),
   gradeWriting: vi.fn(),
   generateWritingPrompt: vi.fn(),
 }));
@@ -41,12 +42,14 @@ import Writing from './Writing';
 import {
   fetchRandomWritingPrompt,
   fetchWritingAttempts,
+  fetchWritingPromptById,
   gradeWriting,
   generateWritingPrompt,
 } from '../services/writing';
 
 const fetchRandomMock = vi.mocked(fetchRandomWritingPrompt);
 const fetchAttemptsMock = vi.mocked(fetchWritingAttempts);
+const fetchByIdMock = vi.mocked(fetchWritingPromptById);
 const gradeWritingMock = vi.mocked(gradeWriting);
 const generateMock = vi.mocked(generateWritingPrompt);
 
@@ -166,11 +169,18 @@ const ATTEMPT_FREE_WRITE: WritingAttemptDTO = {
   gradedAt: '2026-07-05T00:00:00.000Z',
 };
 
-/** Render inside a MemoryRouter, optionally with F-101 deep-link state. */
-function renderWriting(state?: unknown): void {
+/** Render inside a MemoryRouter, optionally with F-101 deep-link state
+ *  and/or an F-183 `?promptId=` search string (e.g. `'?promptId=101'`). */
+function renderWriting(state?: unknown, search?: string): void {
   render(
     <MemoryRouter
-      initialEntries={[{ pathname: '/learn/writing', ...(state !== undefined ? { state } : {}) }]}
+      initialEntries={[
+        {
+          pathname: '/learn/writing',
+          ...(search !== undefined ? { search } : {}),
+          ...(state !== undefined ? { state } : {}),
+        },
+      ]}
     >
       <Writing />
     </MemoryRouter>,
@@ -187,6 +197,7 @@ beforeEach(() => {
   gradeWritingMock.mockReset();
   fetchRandomMock.mockReset();
   fetchAttemptsMock.mockReset();
+  fetchByIdMock.mockReset();
   generateMock.mockReset();
   generateMock.mockRejectedValue(new Error('not wired in this test'));
   // Default happy path: each rubric serves its own random draw.
@@ -696,6 +707,98 @@ describe('Writing', () => {
 
     // The runtime narrowing rejected the payload — normal bank flow.
     expect(await screen.findByText(/스트레스 해소 방법/)).toBeInTheDocument();
+    expect(fetchRandomMock).toHaveBeenCalledWith(
+      'topik_ii_53',
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('F-183: opens the SPECIFIC bank prompt from ?promptId=, never a random draw', async () => {
+    fetchByIdMock.mockResolvedValueOnce(Q54_PROMPT);
+    renderWriting(undefined, '?promptId=201');
+
+    expect(await screen.findByText(/인공지능의 발달/)).toBeInTheDocument();
+    expect(fetchByIdMock).toHaveBeenCalledWith(201, expect.any(AbortSignal));
+    expect(fetchRandomMock).not.toHaveBeenCalled();
+
+    // The linked prompt is Q54 — the segmented control and header must
+    // agree with the SERVED task, even though Q53 is the default radio.
+    expect(
+      screen.getByRole('radio', { name: 'Q54 · 600–700자' }),
+    ).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('주장하는 글')).toBeInTheDocument();
+  });
+
+  it('F-183: grades the pinned prompt with its own id (not a random draw\'s)', async () => {
+    fetchByIdMock.mockResolvedValueOnce(Q54_PROMPT);
+    gradeWritingMock.mockResolvedValueOnce({
+      ...RESPONSE,
+      result: { ...RESPONSE.result, rubric: 'topik_ii_54' },
+    });
+    const user = userEvent.setup();
+    renderWriting(undefined, '?promptId=201');
+    await screen.findByText(/인공지능의 발달/);
+
+    await user.type(
+      screen.getByRole('textbox', { name: /Your writing in Korean/ }),
+      '인공지능은 편리합니다.',
+    );
+    await user.click(
+      screen.getByRole('button', { name: '채점하기 · Grade my writing' }),
+    );
+
+    await waitFor(() => {
+      expect(gradeWritingMock).toHaveBeenCalledTimes(1);
+    });
+    const [body] = gradeWritingMock.mock.calls[0]!;
+    expect(body).toEqual({
+      prompt: Q54_PROMPT.promptKr,
+      sample: '인공지능은 편리합니다.',
+      rubric: 'topik_ii_54',
+      promptId: 201,
+    });
+  });
+
+  it('F-183: a malformed ?promptId= falls back to the random-bank draw, never calling the by-id lookup', async () => {
+    renderWriting(undefined, '?promptId=abc');
+
+    expect(await screen.findByText(/스트레스 해소 방법/)).toBeInTheDocument();
+    expect(fetchByIdMock).not.toHaveBeenCalled();
+    expect(fetchRandomMock).toHaveBeenCalledWith(
+      'topik_ii_53',
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('F-183: a missing/retired ?promptId= (404) degrades to the random-bank draw', async () => {
+    fetchByIdMock.mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+    renderWriting(undefined, '?promptId=999');
+
+    expect(await screen.findByText(/스트레스 해소 방법/)).toBeInTheDocument();
+    expect(fetchByIdMock).toHaveBeenCalledWith(999, expect.any(AbortSignal));
+    expect(fetchRandomMock).toHaveBeenCalledWith(
+      'topik_ii_53',
+      expect.any(AbortSignal),
+    );
+    // Degraded to the honest random draw, never the dead-end error/empty
+    // states (those mean something different: a real server failure, or an
+    // entirely empty rubric pool).
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('F-183: the pin is one-shot — a later "New prompt" draws randomly', async () => {
+    fetchByIdMock.mockResolvedValueOnce(Q53_PROMPT);
+    fetchRandomMock.mockResolvedValueOnce(Q53_PROMPT_B);
+    const user = userEvent.setup();
+    renderWriting(undefined, '?promptId=101');
+    await screen.findByText(/스트레스 해소 방법/);
+
+    await user.click(screen.getByRole('button', { name: '새 과제 · New prompt' }));
+
+    expect(await screen.findByText(/인터넷 쇼핑/)).toBeInTheDocument();
+    expect(fetchByIdMock).toHaveBeenCalledTimes(1);
     expect(fetchRandomMock).toHaveBeenCalledWith(
       'topik_ii_53',
       expect.any(AbortSignal),

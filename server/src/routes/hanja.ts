@@ -14,7 +14,12 @@
  *   POST /hanja/:char/card          → seed a recognition card (idempotent)
  *   GET  /hanja/cards/due           → this user's due hanja cards
  *   POST /hanja/cards/:cardId/reviews → self-rate a due card (shared FSRS
- *                                     engine via services/cardReview.ts)
+ *                                     engine via services/cardReview.ts);
+ *                                     ALSO appends a hanja_attempts row in
+ *                                     the SAME transaction (F-171, migration
+ *                                     059 — see services/cardReview.ts)
+ *   GET  /hanja/attempts            → this user's hanja-attempt history,
+ *                                     paged (F-171)
  *
  * DTO — matches the client `Hanja` shape (see client domain types):
  *   { id, ch, sound, gloss, en, level, strokes, state, note, compounds }
@@ -42,6 +47,12 @@
  *     character + the client shows an empty state).
  *   - cheapLimiter on every route (per-IP); no route calls any upstream (no
  *     Claude), so there is no cost amplification.
+ *   - hanja_attempts (F-171) is USER-SCOPED exactly like hanja_progress: every
+ *     row is written with the SESSION user_id (never client-supplied, stamped
+ *     inside services/cardReview.ts's own transaction), and GET /hanja/attempts
+ *     filters `WHERE user_id = $1`. There is no answer-secret to strip (a
+ *     rating is the caller's own self-report, not a graded reference), so the
+ *     row is served back to its owner unmodified.
  */
 import { Router } from 'express';
 import { z } from 'zod';
@@ -703,6 +714,11 @@ const CardReviewBodySchema = z
  * derives the FSRS transition via the shared engine (services/fsrs.ts),
  * advances the card, and appends the BEFORE/AFTER snapshot to card_reviews.
  * 404 unknown / cross-user / non-hanja card; 409 stale expected_version.
+ *
+ * F-171: `logHanjaAttempt: true` additionally appends a `hanja_attempts` row
+ * INSIDE that same transaction — one completed review, one atomic write of
+ * both the FSRS advance and the attempt-log line (see services/cardReview.ts
+ * for why this lives there rather than a second call from this handler).
  */
 router.post(
   '/cards/:cardId/reviews',
@@ -724,6 +740,7 @@ router.post(
         durationMs: body.duration_ms,
         expectedVersion: body.expected_version,
         requireHanjaTarget: true,
+        logHanjaAttempt: true,
         cardNoun: 'hanja card',
       });
       res.status(200).json({
@@ -731,6 +748,86 @@ router.post(
         due_at: out.dueAt,
         scheduled_days: out.scheduledDays,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /hanja/attempts — this user's hanja-attempt history, paged (F-171).
+// ---------------------------------------------------------------------------
+
+// Mirrors grammarDrill.ts's / writing.ts's AttemptsQuerySchema exactly: a
+// personal practice-history feed never needs a huge page, and 100 bounds a
+// runaway client the same way those routes' ceilings do.
+const HanjaAttemptsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+});
+
+interface HanjaAttemptHistoryRow {
+  id: string;
+  card_id: string | null;
+  char: string;
+  rating: string;
+  correct: boolean;
+  created_at: Date;
+  total: string;
+}
+
+/** One entry in `GET /hanja/attempts`' `attempts` array. */
+interface HanjaAttemptDTO {
+  readonly id: number;
+  readonly cardId: number | null;
+  readonly char: string;
+  readonly rating: string;
+  readonly correct: boolean;
+  readonly createdAt: Date;
+}
+
+/**
+ * GET /hanja/attempts — `{ attempts, total, limit, offset }`.
+ *
+ * Every row `POST /hanja/cards/:cardId/reviews` wrote for THIS user (F-171),
+ * newest first. `COUNT(*) OVER ()` rides along on every row (mirrors
+ * GET /grammar-drill/attempts, GET /writing/attempts) so the client can page
+ * without a second round trip; `total` is read off row 0 and defaults to 0 on
+ * an empty page. A later builder / the Today screen reads this for a daily
+ * "drilled today" count (F-171's own stated motivation) by filtering the
+ * returned `createdAt`s client-side, or a future date-ranged query param —
+ * out of this ticket's scope, the shape here is what that follow-up builds on.
+ */
+router.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(HanjaAttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (req as typeof req & {
+        validatedQuery: z.infer<typeof HanjaAttemptsQuerySchema>;
+      }).validatedQuery;
+
+      const { rows } = await query<HanjaAttemptHistoryRow>(
+        `SELECT id::text AS id, card_id::text AS card_id, char, rating, correct,
+                created_at, COUNT(*) OVER ()::text AS total
+           FROM hanja_attempts
+          WHERE user_id = $1
+          ORDER BY created_at DESC, id DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      const attempts: HanjaAttemptDTO[] = rows.map((r) => ({
+        id: Number(r.id),
+        cardId: r.card_id === null ? null : Number(r.card_id),
+        char: r.char,
+        rating: r.rating,
+        correct: r.correct,
+        createdAt: r.created_at,
+      }));
+      res.status(200).json({ attempts, total, limit: q.limit, offset: q.offset });
     } catch (err) {
       next(err);
     }

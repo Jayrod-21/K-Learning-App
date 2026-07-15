@@ -9,6 +9,14 @@
  *   GET /iyagi/episodes/:number               → { meta, sentences[], audioUrl }
  *   GET /iyagi/episodes/:number/audio         → the mp3 (Range-capable)
  *
+ * Listening attempts (F-172; listening_attempts, migration 061) — the one
+ * user-STATE-writing surface in this otherwise pure read-only file:
+ *   POST /ttmik/attempts   → log a completed lesson listen, { level, number }
+ *   POST /iyagi/attempts   → log a completed episode listen, { number }
+ *   GET  /ttmik/attempts   → the caller's own listening history (BOTH TTMIK
+ *                            lessons and Iyagi episodes — one shared table),
+ *                            paged, newest first
+ *
  * TTMIK lesson detail carries TWO bodies of text:
  *   - `highlights`  — the curated key phrases/vocab from ttmik_sentences
  *                     (previously the `sentences` field; renamed when the full
@@ -51,6 +59,17 @@
  *     with backpressure; cheapLimiter caps request rate; Content-Length is
  *     always set so clients can't hold slow unbounded reads open.
  *   - AuthN: requireAuth on every route (corpus is licensed content).
+ *   - LISTENING ATTEMPTS (F-172): both POST routes are plain, cheap DB writes
+ *     (no Claude call) — cheapLimiter, not expensiveLimiter. Unlike Reading's
+ *     attempts (which target USER-OWNED chapter/story rows and need an
+ *     ownership check), `ttmik_lessons`/`iyagi_episodes` are PUBLIC licensed
+ *     corpus content — every authenticated user may log a listen against any
+ *     REAL lesson/episode, so the only gate is existence (a garbage
+ *     level/number/episode-number 404s before any INSERT runs), never a
+ *     per-user ownership check. `titleSnapshot` is always SERVER-derived from
+ *     the resolved lesson/episode row, never client-supplied free text. GET
+ *     /ttmik/attempts is user-scoped to `getUserId(req)` — no client-supplied
+ *     id can ever select another user's rows.
  */
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -58,9 +77,9 @@ import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, resolve, sep } from 'node:path';
 import { getLogger } from '../logging.js';
-import { requireAuth } from '../middleware/auth.js';
+import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, mediaLimiter } from '../middleware/rateLimits.js';
-import { validateParams } from '../middleware/validate.js';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
@@ -330,6 +349,207 @@ iyagiRouter.get(
         [p.number],
       );
       await streamCorpusAudio(req, res, next, rows[0]?.audio_path ?? null);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Listening attempts (F-172; listening_attempts, migration 061)
+// ---------------------------------------------------------------------------
+//
+// Unlike Reading (which already has a resume bookmark, reading_positions/051)
+// and Hanja (whose FSRS card-review submit is an existing transaction to
+// piggyback the attempt-log write onto), this file has ZERO user-state
+// writing anywhere today — pure read-only corpus serving. F-172 is therefore
+// a genuinely NEW completion trigger point, with no existing transaction to
+// hang off of: the client fires POST /ttmik/attempts or POST /iyagi/attempts
+// once when the `<audio>` element reaches its `ended` event (or an explicit
+// "mark listened" action), and GET /ttmik/attempts serves the caller's own
+// history across BOTH corpora (one underlying table, listening_attempts) —
+// mirroring how GET /reading/attempts already serves both chapter- and
+// story-sourced rows from one table. No duplicate GET is exposed on
+// iyagiRouter: nothing in the client currently wants a corpus-scoped-only
+// history feed, and a single canonical read keeps the "did the user listen
+// today" query in one place (Today will read this later).
+
+/** Wire shape of one logged listening attempt (BIGINT ids coerced to numbers). */
+interface ListeningAttemptDto {
+  id: number;
+  sourceKind: 'ttmik_lesson' | 'iyagi_episode';
+  lessonId: number | null;
+  episodeId: number | null;
+  titleSnapshot: string;
+  completedAt: Date;
+}
+
+interface ListeningAttemptRow {
+  id: string;
+  source_kind: 'ttmik_lesson' | 'iyagi_episode';
+  lesson_id: string | null;
+  episode_id: string | null;
+  title_snapshot: string;
+  completed_at: Date;
+}
+
+function toListeningAttemptDto(row: ListeningAttemptRow): ListeningAttemptDto {
+  return {
+    id: Number(row.id),
+    sourceKind: row.source_kind,
+    lessonId: row.lesson_id === null ? null : Number(row.lesson_id),
+    episodeId: row.episode_id === null ? null : Number(row.episode_id),
+    titleSnapshot: row.title_snapshot,
+    completedAt: row.completed_at,
+  };
+}
+
+const LISTENING_ATTEMPT_COLUMNS =
+  'id::text AS id, source_kind, lesson_id::text AS lesson_id, ' +
+  'episode_id::text AS episode_id, title_snapshot, completed_at';
+
+/**
+ * POST /ttmik/attempts body: the completed lesson, identified by
+ * (level, number) — the same pair the client already addresses a lesson by
+ * (mirrors LessonParamsSchema). `.strict()` rejects unknown keys.
+ */
+const LogTtmikAttemptBodySchema = z
+  .object({
+    level: z.number().int().positive().max(100),
+    number: z.number().int().positive().max(100_000),
+  })
+  .strict();
+
+/**
+ * POST /ttmik/attempts — log a completed TTMIK lesson listen (F-172). A NEW
+ * completion trigger point (this file has no prior user-state write to
+ * piggyback on). Unlike reading_attempts' chapter/story targets (user-owned
+ * rows needing an ownership check), ttmik_lessons is PUBLIC licensed corpus
+ * content — every authenticated user may log any real lesson, so the only
+ * gate is existence: a garbage (level, number) pair 404s. `titleSnapshot` is
+ * SERVER-derived from the resolved lesson row, never client-supplied text.
+ * Cheap, synchronous DB work only — no Claude call, so `cheapLimiter`.
+ */
+ttmikRouter.post(
+  '/attempts',
+  cheapLimiter(),
+  validateBody(LogTtmikAttemptBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof LogTtmikAttemptBodySchema>;
+
+      const lessonRes = await query<{ id: string; title: string }>(
+        `SELECT id, title FROM ttmik_lessons WHERE lesson_level = $1 AND lesson_number = $2 LIMIT 1`,
+        [body.level, body.number],
+      );
+      if (lessonRes.rows.length === 0) {
+        throw new NotFoundError('lesson not found');
+      }
+      const lesson = lessonRes.rows[0]!;
+      const titleSnapshot = `Level ${String(body.level)} Lesson ${String(body.number)}: ${lesson.title}`;
+
+      const { rows } = await query<ListeningAttemptRow>(
+        `INSERT INTO listening_attempts (user_id, source_kind, lesson_id, title_snapshot)
+         VALUES ($1, 'ttmik_lesson', $2, $3)
+         RETURNING ${LISTENING_ATTEMPT_COLUMNS}`,
+        [userId, lesson.id, titleSnapshot],
+      );
+
+      res.status(201).json({ attempt: toListeningAttemptDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * POST /iyagi/attempts body: the completed episode, identified by its
+ * episode number (mirrors EpisodeParamsSchema). `.strict()` rejects unknown
+ * keys.
+ */
+const LogIyagiAttemptBodySchema = z
+  .object({
+    number: z.number().int().positive().max(100_000),
+  })
+  .strict();
+
+/**
+ * POST /iyagi/attempts — log a completed Iyagi episode listen (F-172). Same
+ * posture as the TTMIK lesson leg above: public corpus content, existence-only
+ * gate (404 on a garbage episode number), server-derived titleSnapshot.
+ */
+iyagiRouter.post(
+  '/attempts',
+  cheapLimiter(),
+  validateBody(LogIyagiAttemptBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const body = req.body as z.infer<typeof LogIyagiAttemptBodySchema>;
+
+      const episodeRes = await query<{ id: string; title: string }>(
+        `SELECT id, title FROM iyagi_episodes WHERE episode_number = $1 LIMIT 1`,
+        [body.number],
+      );
+      if (episodeRes.rows.length === 0) {
+        throw new NotFoundError('episode not found');
+      }
+      const episode = episodeRes.rows[0]!;
+      const titleSnapshot = `Iyagi #${String(body.number)}: ${episode.title}`;
+
+      const { rows } = await query<ListeningAttemptRow>(
+        `INSERT INTO listening_attempts (user_id, source_kind, episode_id, title_snapshot)
+         VALUES ($1, 'iyagi_episode', $2, $3)
+         RETURNING ${LISTENING_ATTEMPT_COLUMNS}`,
+        [userId, episode.id, titleSnapshot],
+      );
+
+      res.status(201).json({ attempt: toListeningAttemptDto(rows[0]!) });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// `offset`'s ceiling is a real bound (not a symbolic MAX_SAFE_INTEGER one),
+// same posture as writing.ts's / reading.ts's attempts-history query schemas.
+const MAX_LISTENING_ATTEMPTS_OFFSET = 100_000;
+
+const ListeningAttemptsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().nonnegative().max(MAX_LISTENING_ATTEMPTS_OFFSET).default(0),
+});
+
+/**
+ * GET /ttmik/attempts?limit=1..100(def 20)&offset=0..(def 0) — the caller's
+ * own listening-completion history, newest first, across BOTH TTMIK lessons
+ * and Iyagi episodes (one underlying table). User-scoped to `getUserId(req)`
+ * (no IDOR); `COUNT(*) OVER ()` rides the total alongside the page in one
+ * round trip, mirroring `GET /grammar-drill/attempts` / `GET /reading/attempts`.
+ * An empty history is a 200 with `attempts: []`, never an error.
+ */
+ttmikRouter.get(
+  '/attempts',
+  cheapLimiter(),
+  validateQuery(ListeningAttemptsQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & { validatedQuery: z.infer<typeof ListeningAttemptsQuerySchema> }
+      ).validatedQuery;
+      const { rows } = await query<ListeningAttemptRow & { total: string }>(
+        `SELECT ${LISTENING_ATTEMPT_COLUMNS}, COUNT(*) OVER ()::text AS total
+           FROM listening_attempts
+          WHERE user_id = $1
+          ORDER BY completed_at DESC, id DESC
+          LIMIT $2 OFFSET $3`,
+        [userId, q.limit, q.offset],
+      );
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      const attempts = rows.map(({ total: _total, ...rest }) => toListeningAttemptDto(rest));
+      res.status(200).json({ attempts, total, limit: q.limit, offset: q.offset });
     } catch (err) {
       next(err);
     }

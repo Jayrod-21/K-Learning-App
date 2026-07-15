@@ -35,6 +35,14 @@
  *   - migration 050 constraints through the applied chain: five-leg XOR
  *     rejects a two-target row; the partial unique rejects a duplicate live
  *     (user, character, face) card
+ *
+ * hanja_attempts (F-171, migration 059):
+ *   - POST /cards/:cardId/reviews ALSO appends a hanja_attempts row in the
+ *     SAME transaction: correct rating/char/card_id captured, correct=false
+ *     only on 'again', a 409 (stale version) writes NEITHER card_reviews NOR
+ *     hanja_attempts (whole-transaction rollback)
+ *   - GET /attempts: user-scoped, newest-first, paged with `total` riding
+ *     along on every row (COUNT(*) OVER ()), 401 unauthenticated
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -82,6 +90,7 @@ describe('hanja — auth required', () => {
     ['POST', '/hanja/學/card'],
     ['GET', '/hanja/cards/due'],
     ['POST', '/hanja/cards/1/reviews'],
+    ['GET', '/hanja/attempts'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const m = method as 'GET' | 'POST';
     const res = m === 'GET' ? await request(t.app).get(p) : await request(t.app).post(p).send({});
@@ -566,6 +575,19 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     expect(log.rows[0].elapsed_days_before).toBe(-1); // never-reviewed sentinel
     expect(log.rows[0].scheduled_days_after).toBe(1);
     expect(log.rows[0].duration_ms).toBe(4200);
+
+    // F-171: the SAME transaction ALSO appended a hanja_attempts row.
+    const attempt = await pg.pool.query(
+      `SELECT user_id::int, card_id::int, char, rating, correct
+         FROM hanja_attempts WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(attempt.rowCount).toBe(1);
+    expect(attempt.rows[0].user_id).toBe(userId);
+    expect(attempt.rows[0].card_id).toBe(cardId);
+    expect(attempt.rows[0].char).toBe('學');
+    expect(attempt.rows[0].rating).toBe('good');
+    expect(attempt.rows[0].correct).toBe(true); // good ≠ 'again'
   });
 
   it('again → relearning, <1-minute re-queue (never due-now)', async () => {
@@ -591,6 +613,15 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     );
     expect(card.rows[0].fsrs_state).toBe('relearning');
     expect(card.rows[0].lapses).toBe(1);
+
+    // F-171: 'again' logs correct=false — the derived-outcome rule.
+    const attempt = await pg.pool.query(
+      `SELECT rating, correct FROM hanja_attempts WHERE card_id = $1`,
+      [cardId],
+    );
+    expect(attempt.rowCount).toBe(1);
+    expect(attempt.rows[0].rating).toBe('again');
+    expect(attempt.rows[0].correct).toBe(false);
   });
 
   it('stale expected_version → 409, and nothing is written', async () => {
@@ -610,6 +641,12 @@ describe('POST /hanja/cards/:cardId/reviews — shared FSRS engine (F-075)', () 
     expect(log.rowCount).toBe(0);
     const card = await pg.pool.query(`SELECT version FROM vocab_cards WHERE id = $1`, [cardId]);
     expect(card.rows[0].version).toBe(1);
+    // F-171: the attempt-log insert is in the SAME transaction — a 409 must
+    // not leave a hanja_attempts row for a review that never actually applied.
+    const attempt = await pg.pool.query(`SELECT 1 FROM hanja_attempts WHERE card_id = $1`, [
+      cardId,
+    ]);
+    expect(attempt.rowCount).toBe(0);
   });
 
   it('unknown card → 404', async () => {
@@ -696,5 +733,103 @@ describe('migration 050 constraints (through the applied chain)', () => {
         [userId, characterId],
       ),
     ).rejects.toMatchObject({ constraint: 'uq_vocab_cards_user_hanja_face' });
+  });
+});
+
+describe('GET /hanja/attempts — hanja-attempt history (F-171)', () => {
+  it('returns this user\'s attempts newest-first with the DTO fields', async () => {
+    await seedHanjaCharacter(pg.pool, { char: '學' });
+    await seedHanjaCharacter(pg.pool, { char: '人' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const first = await seedCardViaApi(agent, '學');
+    const second = await seedCardViaApi(agent, '人');
+
+    await agent.post(`/hanja/cards/${first.cardId}/reviews`).send({
+      rating: 'good',
+      expected_version: first.version,
+    });
+    await agent.post(`/hanja/cards/${second.cardId}/reviews`).send({
+      rating: 'again',
+      expected_version: second.version,
+    });
+    // Force a deterministic ordering independent of real-clock granularity —
+    // mirrors this file's own `UPDATE ... due_at`/`suspended_at` idiom.
+    await pg.pool.query(
+      `UPDATE hanja_attempts SET created_at = now() - interval '1 hour' WHERE char = '學'`,
+    );
+
+    const res = await agent.get('/hanja/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.limit).toBe(20);
+    expect(res.body.offset).toBe(0);
+    expect(res.body.attempts).toHaveLength(2);
+
+    // Newest first: 人 (again) before 學 (good, backdated).
+    const [newest, oldest] = res.body.attempts;
+    expect(newest.char).toBe('人');
+    expect(newest.rating).toBe('again');
+    expect(newest.correct).toBe(false);
+    expect(typeof newest.id).toBe('number');
+    expect(newest.cardId).toBe(second.cardId);
+    expect(oldest.char).toBe('學');
+    expect(oldest.rating).toBe('good');
+    expect(oldest.correct).toBe(true);
+    expect(oldest.cardId).toBe(first.cardId);
+  });
+
+  it('is user-scoped: another user\'s attempts never appear (IDOR)', async () => {
+    await seedHanjaCharacter(pg.pool, { char: '學' });
+    const a = await registerUser(t.app, pg.pool);
+    const { cardId, version } = await seedCardViaApi(a.agent, '學');
+    await a.agent.post(`/hanja/cards/${cardId}/reviews`).send({
+      rating: 'good',
+      expected_version: version,
+    });
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/hanja/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.attempts).toEqual([]);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('pages with limit/offset while `total` reflects the FULL count', async () => {
+    await seedHanjaCharacter(pg.pool, { char: '學' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Three reviews of the SAME live card (seedCardViaApi is idempotent —
+    // each call returns the one live card) → three hanja_attempts rows, one
+    // per rating, each carrying the next `version` the previous rating left.
+    const ratings: Array<'good' | 'again' | 'hard'> = ['good', 'again', 'hard'];
+    for (const rating of ratings) {
+      const { cardId, version } = await seedCardViaApi(agent, '學');
+      await agent.post(`/hanja/cards/${cardId}/reviews`).send({
+        rating,
+        expected_version: version,
+      });
+    }
+
+    const page1 = await agent.get('/hanja/attempts').query({ limit: 2, offset: 0 });
+    expect(page1.status).toBe(200);
+    expect(page1.body.attempts).toHaveLength(2);
+    expect(page1.body.total).toBe(3);
+
+    const page2 = await agent.get('/hanja/attempts').query({ limit: 2, offset: 2 });
+    expect(page2.status).toBe(200);
+    expect(page2.body.attempts).toHaveLength(1);
+    expect(page2.body.total).toBe(3);
+  });
+
+  it('returns an empty page (never an error) for a user with no attempts', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/hanja/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], total: 0, limit: 20, offset: 0 });
+  });
+
+  it('rejects a bogus limit (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/hanja/attempts').query({ limit: 'lots' });
+    expect(res.status).toBe(400);
   });
 });

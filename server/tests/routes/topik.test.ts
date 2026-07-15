@@ -717,6 +717,101 @@ describe('TOPIK mock-attempt persistence — resume (F-007)', () => {
   });
 });
 
+describe('GET /topik/attempt — F-173 resumed-exam totalItems/topikLevel', () => {
+  it('reuses resolveServedTotal to report the exam\'s served item count + level alongside the answered count', async () => {
+    // 3 answerable reading items under test_number 4000 (seedTopikItem
+    // defaults to TOPIK II — same corpus fixture convention the F-104
+    // history tests above rely on).
+    const id1 = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4000,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2,
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4000,
+      itemNumber: 2,
+      options: ['가', '나', '다', '라'],
+      answer: 3,
+    });
+    await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4000,
+      itemNumber: 3,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4000,
+      currentIdx: 1,
+      picks: { [String(id1)]: 'b' },
+      remainingMs: 500_000,
+    });
+
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt).toMatchObject({
+      section: 'reading',
+      sourceTest: 4000,
+      topikLevel: 'TOPIK II',
+      answered: 1,
+      totalItems: 3, // the paper's served size, not just the 1 answered so far
+    });
+  });
+
+  it('falls back to the answered count (never a fabricated total) when the backing paper can no longer be resolved', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // No topik_items exist for sourceTest 4001 — resolveMockTest (and
+    // therefore resolveServedTotal) resolves to null, mirroring the
+    // documented "corpus row backing this paper is gone" fallback the
+    // GET /topik/attempts history route already has coverage for.
+    await agent.put('/topik/attempt').send({
+      section: 'listening',
+      sourceTest: 4001,
+      currentIdx: 2,
+      picks: { '1': 'a', '2': 'b' },
+      remainingMs: 100_000,
+    });
+
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt).toMatchObject({
+      sourceTest: 4001,
+      topikLevel: null,
+      answered: 2,
+      totalItems: 2, // real lower bound = answered, never a guessed exam size
+    });
+  });
+
+  it('is capped at OFFICIAL_MOCK_SECTION_SIZE, matching what POST /topik/mock would actually serve', async () => {
+    for (let i = 1; i <= 55; i += 1) {
+      await seedTopikItem(pg.pool, {
+        section: 'reading',
+        testNumber: 4002,
+        itemNumber: i,
+        options: ['가', '나', '다', '라'],
+        answer: 1,
+      });
+    }
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4002,
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 1000,
+    });
+
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt.totalItems).toBe(50); // OFFICIAL_MOCK_SECTION_SIZE
+  });
+});
+
 describe('shared reading passages on the item DTO (B-008)', () => {
   const PASSAGE =
     '도시의 도로는 대부분 아스팔트로 뒤덮여 있다. 그래서 비가 오면 빗물이 지하로 잘 흘러 들어가지 ( ㉠ ) 도로가 물에 잠기는 일도 자주 발생한다.';
