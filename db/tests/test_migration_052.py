@@ -224,11 +224,15 @@ def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
             assert cur.fetchone()[0] is True, "trigger must bump updated_at"
 
         # -- Delivery log: pending needs no sent_at; sent REQUIRES one.
+        # window_start (063, F-092's claim-key column) is NOT NULL with no
+        # default — every insert below supplies a distinct literal so the
+        # (schedule_id, window_start) UNIQUE claim key never spuriously
+        # collides between these same-schedule rows.
         with conn.cursor(row_factory=tuple_row) as cur:
             cur.execute(
                 """
-                INSERT INTO notification_deliveries (schedule_id, status)
-                VALUES (%s, 'pending') RETURNING id
+                INSERT INTO notification_deliveries (schedule_id, status, window_start)
+                VALUES (%s, 'pending', '2026-07-01 07:30:00+00') RETURNING id
                 """,
                 (daily_id,),
             )
@@ -236,8 +240,8 @@ def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO notification_deliveries (schedule_id, status)
-                    VALUES (%s, 'bounced')
+                    INSERT INTO notification_deliveries (schedule_id, status, window_start)
+                    VALUES (%s, 'bounced', '2026-07-01 07:31:00+00')
                     """,
                     (daily_id,),
                 )
@@ -245,8 +249,8 @@ def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO notification_deliveries (schedule_id, status)
-                    VALUES (%s, 'sent')
+                    INSERT INTO notification_deliveries (schedule_id, status, window_start)
+                    VALUES (%s, 'sent', '2026-07-01 07:32:00+00')
                     """,
                     (daily_id,),
                 )
@@ -254,8 +258,8 @@ def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
             cur.execute(
                 """
                 INSERT INTO notification_deliveries
-                        (schedule_id, status, sent_at, provider_ref)
-                VALUES (%s, 'sent', now(), 'ses-msg-0001')
+                        (schedule_id, status, sent_at, provider_ref, window_start)
+                VALUES (%s, 'sent', now(), 'ses-msg-0001', '2026-07-01 07:33:00+00')
                 """,
                 (daily_id,),
             )
@@ -263,8 +267,8 @@ def test_052_up_schema_constraints_and_cascade(env, dsn: str, full_dir) -> None:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO notification_deliveries (schedule_id, status)
-                    VALUES (%s, 'pending')
+                    INSERT INTO notification_deliveries (schedule_id, status, window_start)
+                    VALUES (%s, 'pending', '2026-07-01 07:34:00+00')
                     """,
                     (daily_id + 100000,),
                 )
@@ -308,13 +312,16 @@ def test_052_down_drops_both_tables_then_reups(env, dsn: str, full_dir) -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO notification_deliveries (schedule_id, status)
-                VALUES (%s, 'pending')
+                INSERT INTO notification_deliveries (schedule_id, status, window_start)
+                VALUES (%s, 'pending', '2026-07-01 07:30:00+00')
                 """,
                 (sched_id,),
             )
 
-    # The destructive gate must refuse a 052 rollback without the flag...
+    # The destructive gate must refuse a 052 rollback without the flag — this
+    # target also traverses 063's down (window_start/claim-key, F-092), which
+    # is independently marked destructive (F-088), so the refusal holds for
+    # either reason.
     rc = migrate.main(
         ["--migrations-dir", str(full_dir), "--target", PRE_052, "down"]
     )

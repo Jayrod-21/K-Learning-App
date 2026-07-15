@@ -734,6 +734,67 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
     expect(body.palette).toEqual({ ...storedPalette, accent: 'blue' });
   });
 
+  it('F-093: "Reset to defaults" cannot smuggle a diverged notif into the prefs PUT', async () => {
+    // resetSettings() (SettingsProvider) reverts the LOCAL `settings.notif`
+    // (localStorage cache) to DEFAULT_SETTINGS.notif. Pre-F-093 the outgoing
+    // PUT echoed `settings.notif` directly, so clicking Reset — an APPEARANCE
+    // action with no notification UI at all (F-040 removed those toggles) —
+    // would silently revert the user's server-stored notification intent as
+    // a side effect. The fix always echoes `lastSyncedPrefsRef.current.notif`
+    // (the last value the SERVER reported) instead, so Reset can no longer
+    // touch it.
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    const storedNotif = {
+      channel: { email: true, sms: true },
+      reviewsDue: false,
+      daily: true,
+      weekly: false,
+    };
+    // languageDisplay mode 'en' is the deterministic hydration-settled probe
+    // (same technique as "does not echo the server-hydrated prefs" above).
+    mocks.fetchPrefs.mockResolvedValue({
+      ...DEFAULT_PREFS,
+      notif: storedNotif,
+      languageDisplay: { mode: 'en', primary: 'ko', subScale: 0.7 },
+    });
+
+    renderSettings();
+    expandGroup(/Appearance/);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('radio', { name: 'English' }),
+      ).toHaveAttribute('aria-checked', 'true');
+    });
+
+    await user.click(screen.getByRole('button', { name: /Reset to defaults/ }));
+    // Reset applies instantly to the provider (localStorage), same as any
+    // other appearance change — no debounce on the reset button itself.
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+
+    // A real change (accent) fires the debounced PUT that would previously
+    // have carried the just-reset (diverged) notif.
+    await user.click(screen.getByRole('radio', { name: 'Cyber Blue' }));
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+
+    await waitFor(() => {
+      expect(mocks.putPrefs).toHaveBeenCalled();
+    });
+    const body = mocks.putPrefs.mock.calls.at(-1)?.[0] as { notif: unknown };
+    // The PUT must still carry the STORED server notif — never the reset
+    // default (`DEFAULT_PREFS.notif` differs from `storedNotif` on
+    // sms/reviewsDue/daily/weekly, so a leak of the reset value would fail
+    // this assertion).
+    expect(body.notif).toEqual(storedNotif);
+  });
+
   it('a failed putPrefs never breaks the screen — surfaces a non-blocking toast (A3)', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({

@@ -16,8 +16,15 @@
  *     per-kind timing rows (time-of-day + weekday for the weekly report),
  *     NOT the old timing-less intent booleans. The `notif` slice of
  *     `/settings/prefs` is wire-echo-only now (like the legacy palette
- *     fields): still round-tripped verbatim so older blobs survive, but no
- *     UI reads or writes it.
+ *     fields): no UI reads or writes it, and (F-093) the outgoing PUT
+ *     always echoes the LAST value the SERVER reported
+ *     (`lastSyncedPrefsRef.current.notif`), never `settings.notif` (the
+ *     localStorage-cached copy that "Reset to defaults" can independently
+ *     revert) — so this screen can no longer originate a diverging write
+ *     into the 018 blob's notif keys. Full retirement of that blob slice in
+ *     favor of `notification_schedules` (052) as the sole source of truth
+ *     is a follow-up (see F-093's notes) once the server's `/settings/prefs`
+ *     GET/PUT contract migrates too.
  *   - **Appearance** persists to `localStorage` via `useSettings()` /
  *     the theme+accent+text-size providers, with a debounced
  *     `/settings/prefs` PUT for cross-device sync.
@@ -868,15 +875,21 @@ export default function Settings(): JSX.Element {
     // succeed anyway, and localStorage preserves the choice for the next
     // reachable session.
     if (!prefsHydratedRef.current) return;
+    const last = lastSyncedPrefsRef.current;
+    // F-093: `notif` is echoed from `last.notif` (the last value the SERVER
+    // reported), NEVER from `settings.notif` (the client's own
+    // localStorage-cached copy — "Reset to defaults" can revert it
+    // independently of anything server-side). This is a transparent
+    // pass-through: the client can no longer originate a value for this
+    // slice, only relay what the server already said, which closes the one
+    // drift vector this screen could otherwise introduce into the 018 blob.
     const current: Prefs = {
-      notif: settings.notif,
-      palette: { ...lastSyncedPrefsRef.current.palette, accent },
+      notif: last.notif,
+      palette: { ...last.palette, accent },
       languageDisplay: settings.languageDisplay,
       textSize,
     };
-    const last = lastSyncedPrefsRef.current;
     if (
-      notifEqual(current.notif, last.notif) &&
       current.palette.accent === last.palette.accent &&
       languageDisplayEqual(current.languageDisplay, last.languageDisplay) &&
       current.textSize === last.textSize
@@ -894,7 +907,7 @@ export default function Settings(): JSX.Element {
     }, PREFS_DEBOUNCE_MS);
     // `flushPrefs` is stable (no deps); the effect keys on the synced slices.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.notif, settings.languageDisplay, accent, textSize]);
+  }, [settings.languageDisplay, accent, textSize]);
 
   // ───── Notification schedules (F-040) server-sync ─────
   //

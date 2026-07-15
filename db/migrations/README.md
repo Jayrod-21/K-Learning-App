@@ -69,6 +69,33 @@ Per ADR-001 D11, every migration ships as `NNN_<short>.up.sql` +
 | 059 | `hanja_attempts` | F-171 | Append-only log of completed hanja FSRS card reviews: `hanja_attempts` (soft, `ON DELETE SET NULL` FK to `vocab_cards`, `char` snapshotted so a corpus reload never orphans history, `rating` reuses the shared `fsrs_rating` enum). Add-only new table, zero-downtime safe. Down → `--allow-destructive` |
 | 060 | `reading_attempts` | F-172 | Append-only log of completed reading actions: `reading_attempts` (soft, `ON DELETE SET NULL` FKs to `reading_chapters`/`generated_stories`, discriminated by `source_kind`, `title_snapshot` survives either target's removal). Add-only new table, zero-downtime safe. Down → `--allow-destructive` |
 | 061 | `listening_attempts` | F-172 | Append-only log of completed listening actions: `listening_attempts` (soft, `ON DELETE SET NULL` FKs to `ttmik_lessons`/`iyagi_episodes`, discriminated by `source_kind`, `title_snapshot` survives a corpus reload). Add-only new table, zero-downtime safe. Down → `--allow-destructive` |
+| 062 | `revoke_km_app_temp` | F-089 | Revokes `km_app`'s (047) default `TEMPORARY` privilege on the database — both its own grant (defensive, never explicit) and `PUBLIC`'s database-level default (the real fix, protects future roles too). Verified zero `CREATE TEMP`/`pg_temp` usage anywhere in the codebase first. Marked `-- migrate: non-destructive` (F-088) — a privilege REVOKE is not data loss. Down re-GRANTs both, also non-destructive |
+| 063 | `notification_deliveries_claim_key` | F-092 | Adds `notification_deliveries.window_start TIMESTAMPTZ NOT NULL` + `UNIQUE (schedule_id, window_start)` — the real idempotency claim key for the future F-040 sender (an `INSERT ... ON CONFLICT DO NOTHING` on this key, not a probe-then-insert, arbiters concurrent claims of the same firing). No sender ships here — see `server/src/services/notificationDelivery.ts`'s `claimDelivery`/`settleDelivery`. Down `DROP COLUMN` is marked `-- migrate: destructive` (F-088) — the exact mass-DROP-COLUMN shape the legacy sniff would have missed |
+| 064 | `backfill_notification_schedules_from_prefs` | F-093 | One-time data backfill (no schema change): for every user whose 018 `preferences->notif` blob already expresses an enabled email intent, inserts the equivalent `notification_schedules` (052) row when one doesn't already exist (`ON CONFLICT DO NOTHING` — real user data always wins). Defensive `jsonb_typeof` guards so a malformed/legacy blob can't abort the migration. Down is marked `-- migrate: destructive` (mass DELETE) and only removes rows still untouched since the backfill (`created_at = updated_at`) |
+
+## Explicit destructive marker (F-088)
+
+Every migration's destructive classification first checks for a directive
+comment, anywhere in the file:
+
+```sql
+-- migrate: destructive
+-- migrate: non-destructive
+```
+
+When present, the declaration is authoritative — it overrides the legacy
+keyword-sniff (`DROP TABLE`/`DROP SCHEMA`/`DROP DATABASE`/`TRUNCATE`), which
+does not catch a mass `DELETE FROM` or a `DROP COLUMN` (see 046.down / 041 for
+pre-existing examples the sniff still doesn't catch — they predate this
+ticket and were not retrofitted, since already-applied migration content is
+checksum-locked). A migration with NO directive falls back to the unchanged
+legacy sniff — every migration written before F-088 (001-061) classifies
+exactly as it always has. See `db/migrate.py`'s `explicit_destructiveness` /
+`contains_destructive` and `db/tests/test_migrations.py` for the full
+contract (case-insensitivity, string-literal-forging guard, conflicting-marker
+rejection).
+
+New migrations should prefer the explicit marker over relying on the sniff.
 
 ## Transaction ownership (ADR-013)
 

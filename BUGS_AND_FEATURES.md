@@ -1119,14 +1119,14 @@ New tickets from Phase 0:
 - **Notes:** Surfaced + ruled non-blocking by the Phase-1 /fixpass re-review; the mint 2.99:1 gap predates Phase-1 (in `rebuild`'s own token comments). Do this **before the overhaul mounts Tabs / accent-driven selection at scale**.
 
 ### F-088 · Per-migration explicit destructive marker (vs pattern-sniffing)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** CONFIG (DATABASE) · **Beta:** —
+- **Status:** 🟢 done (Phase B2a) · **Priority:** P3 · **Category:** CONFIG (DATABASE) · **Beta:** —
 - **What:** `migrate.py`'s destructive gate detects `DROP TABLE`/`TRUNCATE` by SQL-pattern. It does NOT catch mass `DELETE FROM` (046.down) or `DROP COLUMN` (041) — and widening the patterns would force `--allow-destructive` onto legitimate additive migrations (e.g. 045's `DELETE`, 041's `DROP COLUMN`). Cleaner: an explicit per-migration marker (e.g. a header directive `-- migrate: destructive`) the runner reads, so destructiveness is declared, not sniffed.
-- **Notes:** Surfaced by the P2-G1 /fixpass (gate-widening deferred with rationale). Would also make 046.down's history-DELETE properly gated.
+- **Notes:** Surfaced by the P2-G1 /fixpass (gate-widening deferred with rationale). Implemented as `-- migrate: destructive|non-destructive` (`MIGRATE_DIRECTIVE_PATTERN`, `explicit_destructiveness`, `db/migrate.py`): an explicit marker wins over the sniff when present; unmarked files (every migration 001-061) fall back to the unchanged legacy sniff (backward-compat preserved). String literals can't forge a marker (`_strip_string_literals_only`); both directives in one file raises `ConflictingDestructiveMarkers`. Unit tests in `db/tests/test_migrations.py`; exercised end-to-end by 062 (non-destructive) and 063/064's down files (destructive — the mass-DELETE/DROP-COLUMN gap this ticket names, now correctly gated). 046.down itself was NOT retrofitted with a marker (out of scope — already-applied migration content is checksum-locked).
 
 ### F-089 · Revoke default TEMP privilege from `km_app`
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE (CONFIG) · **Beta:** —
+- **Status:** 🟢 done (Phase B2a, migration 062) · **Priority:** P3 · **Category:** DATABASE (CONFIG) · **Beta:** —
 - **What:** `km_app` (migration 047) is least-privilege for DML but still holds Postgres's default `TEMP` privilege on the database (temp-table creation). Tighten to true least-privilege: `REVOKE TEMP ON DATABASE ... FROM km_app` (+ from PUBLIC). Low risk; completes the B-030 hardening.
-- **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030.
+- **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030. Verified zero `CREATE TEMP`/`CREATE TEMPORARY`/`pg_temp` usage anywhere in `server/src` or `db/migrations` before writing the REVOKE (repo-wide grep, confirmed clean). `db/migrations/062_revoke_km_app_temp.{up,down}.sql` revokes/restores both km_app's own grant (defensive — never explicitly granted) and PUBLIC's database-level default (the real fix, protects future roles too); marked non-destructive (F-088) since a privilege REVOKE is not data loss. Tests: `db/tests/test_migration_062.py`.
 
 ### F-090 · F-078 pre-046 attempt-history gap decision
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
@@ -1147,16 +1147,16 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G2 /fixpass (lists review SF-2). Harmless today — no UI can put a non-vocab item in a list yet.
 
 ### F-092 · notification_deliveries needs a uniqueness-based claim key before a sender ships
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **Status:** 🟢 done (Phase B2a, migration 063) · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
 - **What:** The 052 deliveries log's idempotency story is probe-newest-then-insert-pending. Without a `UNIQUE (schedule_id, <firing-window>)` there is a probe→insert race in which two workers both claim the same firing and double-send.
 - **Fix hint:** When the F-040 sender phase is built, add a `window_start` (or equivalent firing-window) column + UNIQUE constraint as the real claim — the insert, not the probe, must be the arbiter. Table is trivially alterable until then.
-- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-2). Copy into the sender-phase spec.
+- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-2). Copy into the sender-phase spec. `db/migrations/063_notification_deliveries_claim_key.{up,down}.sql` adds `window_start TIMESTAMPTZ NOT NULL` + `uq_notification_deliveries_schedule_window UNIQUE (schedule_id, window_start)`. Claim/settle primitives in `server/src/services/notificationDelivery.ts` (`claimDelivery` = atomic `INSERT ... ON CONFLICT DO NOTHING`; `settleDelivery` = `UPDATE ... WHERE status='pending'`, the "unclaimed" guard) — still no sender/scheduler, just the guard rail per the ticket's own scope. Tests: `server/tests/services/notificationDelivery.test.ts`, including an 8-way `Promise.all` concurrent-claim test proving exactly one winner under real Postgres. Down is marked destructive (F-088) — DROP COLUMN would lose claim history.
 
 ### F-093 · Migrate client Settings off the 018 preferences-blob notification booleans
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟡 partial (Phase B2a) · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** The Settings screen still reads/writes the migration-018 `users.preferences` JSONB notification booleans; migration 052 + `/notifications/schedules` is now the real notification-intent store. Until the client migrates, two sources of truth drift (the blob's booleans are documented as future-dead keys in 052's header).
 - **Fix hint:** Point the Settings notification section at GET/PUT `/notifications/schedules` (note: `weekday` must be *omitted*, not `null`, for daily kinds), then retire the blob's notification keys from `NotifPrefsSchema` in a follow-up once nothing reads them.
-- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3).
+- **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3). The Settings notification SECTION (the actual UI) had already migrated to `/notifications/schedules` before this batch — the schedule rows are what F-040 shipped. Phase B2a did the EXPAND half: `db/migrations/064_backfill_notification_schedules_from_prefs.{up,down}.sql` backfills `notification_schedules` from any pre-existing blob intent (gated on `channel.email`, `ON CONFLICT DO NOTHING` so real user data always wins, defensive `jsonb_typeof` guards against a malformed blob aborting the migration) — see `db/tests/test_migration_064.py`. Also closed the one live client-side drift vector: `client/src/pages/Settings.tsx`'s outgoing prefs PUT now echoes `lastSyncedPrefsRef.current.notif` (the last value the SERVER reported) instead of `settings.notif` (the localStorage cache "Reset to defaults" can independently revert) — see the F-093 regression test in `Settings.test.tsx`. **NOT done in this batch:** making `GET`/`PUT /settings/prefs` actually SOURCE `notif` from `notification_schedules` server-side. Investigated and deliberately deferred — that wire-contract change (the route stops trusting/persisting the client's `notif` and instead derives+overrides it from the canonical schedules table) breaks ~15 assertions in `server/tests/routes/settings.test.ts` that currently pin "PUT echoes whatever notif you send, verbatim" as the contract, and is a bigger, coordinated client+server redesign than an expand-only batch should carry — exactly the "CONTRACT step, do it as a follow-up" the ticket's own fix hint already anticipated. Recommend its own ticket/batch.
 
 ### F-094 · Migrate the remaining private `mapClaudeError` copies to the shared 4xx-aware helper
 - **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
@@ -1711,6 +1711,16 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 - **Where / State:** After F-189 gave TOPIK its dedicated `stone` tone (tile + LEARN honeycomb), `pages/Topik.tsx` (×9) and `pages/topik/MockMode.tsx` (×6) still hardcoded `tone="accent"`/`tone="blue"` on their CityCard/Sheet chrome — so the TOPIK tile read stone but the TOPIK page read blue (a "one skill, two colors" split). Surfaced by the round-4 re-review.
 - **Resolution:** all 15 TOPIK-identity sites migrated to `SKILL_COLOR.topik.tone`; `sectionTone()` (reading/listening/writing exam-section differentiation) deliberately left (different axis). Also retuned TOPIK's Night hue #A69FBC → #DAD6ED ("white neon") to fit the Seoul-nightlife Night aesthetic while staying achromatic/distinct (min ΔE76 40.6, AA 12.08:1). Commit `b402008` on `feat/phone-round4`.
 - **Follow-up (non-blocking):** re-review suggested adding the `feat` prop to StartPage's exam-meta card so its pending-attempts pairing keeps the same hero/secondary weight the ExamChooser pair has (it now relies on stacking/headings alone). Minor polish — not shipped in this batch.
+
+---
+
+## 🌊 Phase B2a follow-up tickets (filed 2026-07-15)
+
+### F-194 · 064's down-migration can't distinguish "backfilled" from "a real pre-064 row that happens to match the shape"
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **What:** `db/migrations/064_backfill_notification_schedules_from_prefs.down.sql`'s DELETE guards on `created_at = updated_at` (never edited since insert) to avoid removing a user's genuine post-backfill edit, but that guard cannot distinguish "this row was INSERTed by the 064 backfill" from "this row was INSERTed by a real, single `PUT /notifications/schedules` call that happened to land on the exact same kind/channel/blob-intent combination and was never touched again" — the latter is plausible, not hypothetical, since the `/notifications/schedules` route already ships in prod.
+- **Fix hint:** have 064's up-migration tag exactly the rows it inserts (e.g. a transient marker column, or a side-table log of the affected `(user_id, kind)` pairs) so the down can target precisely what it created instead of re-deriving the predicate.
+- **Notes:** Surfaced by the B2a /fixpass re-review (R1 SHOULD-FIX 1). Deliberately NOT implemented in Phase B2a — the down path is rollback-only (gated behind `--allow-destructive`, never part of the forward deploy path), and the imprecision is documented in-file (see the down-migration's own header). A stronger fix is a real but bounded schema change (either an added column or a side-table), out of scope for an expand-only batch. Tracked here so it isn't silently re-forgotten.
 
 ---
 
