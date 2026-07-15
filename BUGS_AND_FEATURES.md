@@ -684,19 +684,19 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 #### ▸ Backend / DB
 
 ### F-022 · Database integrity + security audit, schema readiness for Wave 1
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATABASE (BACKEND) · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P1 · **Category:** DATABASE (BACKEND) · **Beta:** —
 - **What:** Verify the DB follows proper procedures and normalization: no duplications, no loopholes, nothing cheap or security-breachable. Confirm the schema will hold up under and support all newly added + Wave-1 features.
 - **Notes:** Run before/alongside the new-table work (ticketing F-023, lists F-048/F-061, uploads sub-pages F-053/F-056, writing history F-046/F-074).
 
 ### B-017 · Placeholders shown where real database data should render
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** No placeholders on pages for areas that actually need to show database data. Sweep all pages and wire every such area to real data.
 - **Notes:** Same failure class as the earlier `useEndpointOrMock` fixture-as-real finding — treat as silently-broken, not cosmetic.
 
 #### ▸ All Pages
 
 ### F-023 · In-app ticketing / feedback system for beta testers
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** BACKEND (DATABASE, UI) · **Beta:** 🚩 blocker
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P1 · **Category:** BACKEND (DATABASE, UI) · **Beta:** 🚩 blocker
 - **What:** A ticketing place so beta-testing friends can report issues, concerns, bugs, suggestions, and requests. Users see their own previous tickets plus community tickets shown anonymously; tickets have date/time-stamped comments, an edit option for your own tickets, a type (bug/concern/suggestion/request), and a status field.
 - **Notes:** In-app feature, separate from this dev doc. Author IS stored (moderation) but hidden in the UI.
 
@@ -975,12 +975,12 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **What:** Change the Listen landing page to square tiles, 2 across and flowing down — ready for if/when more audio is added.
 
 ### B-025 · Verify TTMIK transcripts + highlights
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (UI) · **Beta:** —
+- **Status:** 🟡 partial (transcripts + highlights verified working; read-along highlight needs forced alignment — deferred) · **Priority:** P1 · **Category:** DATA (UI) · **Beta:** —
 - **What:** Verify the transcripts and the read-along highlights actually work for the TTMIK lessons.
 - **Notes:** Verify-class — check against real corpus content, not fixtures.
 
 ### B-026 · Missing audio investigation — ~10 TTMIK lessons + ~48 Iyagi episodes
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** DATA (BACKEND, CONFIG) · **Beta:** —
+- **Status:** 🟡 partial (root cause confirmed: ~58 mp3s absent from disk, loader correct; blocked on user-supplied audio files) · **Priority:** P1 · **Category:** DATA (BACKEND, CONFIG) · **Beta:** —
 - **What:** All lessons/episodes are expected to have audio, but roughly 10 TTMIK lessons and 48 Iyagi episodes have no `audio_path`. Investigate why (missing source files vs bad ingest vs path mismatch) and restore the audio.
 - **Notes:** Investigation ticket — root-cause first, then repair. Corpus at `~/data/korean-master/corpus/`.
 
@@ -1084,7 +1084,7 @@ New tickets from Phase 0:
 - **Notes:** F-022 finding C1. Contained today (km-db has no host port, all SQL parameterized, single-user) but a latent RCE-class escalation if any SQL-exec leak ever appears.
 
 ### F-083 · DB hygiene cleanup migration
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
 - **What:** New migration: drop 6 redundant indexes (ix_diagnostic_responses_run_ordinal, ix_topik_items_test_number, ix_image_words_capture, ix_krdict_examples_sense, ix_krdict_senses_entry, ix_krdict_inflections_entry); export + drop the 2 orphan backup tables (topik_items_explanation_bak_20260706, _followup).
 - **Notes:** F-022 A2/A3/B1. Author as a migration; the deploy runner applies it — do NOT hand-apply. **Scope change (migration 045):** the audit's proposed FK `grammar_drill_attempts → grammar_entries(user_id, pattern_key)` was DROPPED — the audit finding was wrong. `POST /grammar-drill` inserts the attempt row at generation time, but the grammar_entries row is only auto-banked at submit time, so a drill attempt for a not-yet-banked pattern is a legitimate state by design (the "5 orphan rows" were this state, not corruption); the FK would 500 the live drill route on every first drill of an unbanked pattern. The index/bak-table hygiene stands.
 
@@ -1109,7 +1109,7 @@ New tickets from Phase 0:
 - **Notes:** Surfaced by the dep-vuln /fixpass re-review. Non-blocking (CI currently runs Node 20.20.2 ≥20.19, so tests pass). Sibling of B-032.
 
 ### F-086 · App-wide px→rem font-size migration (makes the F-025 text-size setting fully effective)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** CONFIG (UI) · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** CONFIG (UI) · **Beta:** —
 - **What:** The F-025 text-size setting re-points the ROOT font-size, but almost all app text is pinned in px and ignores it: `client/src/styles/index.css` alone has ~256 `font-size: …px` declarations (0 rem) plus px font-sizes in the page/component CSS files (`Today.css`, `Progress.css`, `LineChart.css`, …) and ~20 inline `fontSize:` numbers in TSX. Migrate font-size declarations px→rem (÷16, keep the same rendered md size) so S/M/L visibly scales the whole app.
 - **Notes:** Unblocks F-025's real effect — today the setting only moves the rem-migrated Phase-1 primitives (BackButton/CollapsibleTile/Tabs/FilterSelect/ShowMore, converted in the Phase-1 fix-pass). Known-limitation notes live in `client/src/lib/text-size-presets.ts` and the index.css text-size block; Settings hint copy already worded honestly. Surfaced by the Phase-1 /fixpass text-size review (S1). New text should be authored in rem from day one.
 
@@ -1129,7 +1129,7 @@ New tickets from Phase 0:
 - **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030.
 
 ### F-090 · F-078 pre-046 attempt-history gap decision
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P3 · **Category:** DATA (UI) · **Beta:** —
 - **What:** Before migration 046, `topik_attempts` was a single overwrite-in-place slot per user, so **no historical attempts exist prior to 046** — the "Previous attempts" view (F-078/F-082) will start empty and only accrue history going forward. When building F-078, decide how to present this (e.g. accept the clean-start, or backfill a synthetic history row from `topik_responses` if desired).
 - **Notes:** Surfaced by the P2-G1 /fixpass re-review. Not a bug — a product decision for the F-078 build.
 
@@ -1179,7 +1179,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G3 /fixpass (writing/chat review coordination item — client slice, Phase-3).
 
 ### F-095 · Chat client slice for F-035/F-036 — "+" attach button + auto-name trigger
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** UI · **Beta:** —
 - **What:** The F-035/F-036 backends are live (`POST /conversation/:id/file` document attach; `POST /conversation/:id/name` auto-title — idempotent, race-safe, never clobbers a user rename; `PATCH /conversation/:id` rename) but the chat UI has neither the "+" attach button nor any auto-name call.
 - **Fix hint:** Add the "+" attach control (document branch → `/file` with `expected_version`; the image path already exists), and call `POST /conversation/:id/name` once after the first assistant reply. Repeat `/name` calls are free (no Claude spend) but still debit the expensive limiter — see the NIT in `db/docs/REVIEW_phase2g3_writing_chat.md` before wiring name-on-open.
 - **Notes:** Deferred from the P2-G3 /fixpass (Phase-3 client work by design).
@@ -1205,7 +1205,7 @@ New tickets from Phase 0:
 - **Notes:** Pairs with F-063 (grammar-mastery model). Progress Grammar tab is wired to accept a real panel with no further client rework.
 
 ### F-100 · Fix the stale `nav.ts` Uploads comment (fold into F-057–F-059)
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (DOC) · **Beta:** —
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P4 · **Category:** UI (DOC) · **Beta:** —
 - **What:** After F-039 removed Uploads from Settings, a comment in `client/src/lib/nav.ts` (~line 280) still says the Uploads page is "reached from Settings → Uploads." Left untouched during Phase 3A to avoid a shared-file edit across parallel branches. Fix it when `nav.ts` is next open — naturally, when Review→Uploads (F-057–F-059) lands and re-homes the entry point.
 
 ### F-101 · Carry a Today-generated writing topic into the Writing screen (F-027 → F-073 page half)
@@ -1418,55 +1418,55 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 - **Key files:** `client/src/styles/index.css` (tokens), new `client/src/components/*`, `client/src/hooks/accent-context.ts`.
 
 #### F-129 · Mobile responsiveness — horizontal overflow
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile
 - **Where:** Content clips off-screen-right on **Progress, Vocab, Grammar** (and audit all pages). Body must never scroll sideways; wide content gets its own `overflow-x:auto`.
 - **Fix hint:** mobile-first; relative units; `max-width:100%`; flex/grid + gap not fixed widths.
 
 #### F-130 · Mobile touch-swipe broken
-- **Status:** 🔴 open · **Priority:** P1 · **Category:** bug/mobile
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P1 · **Category:** bug/mobile
 - **Where:** Carousels + PDF viewer — swipe gestures don't register on touch. `components/SwipeCarousel.tsx` + PDF viewer (Uploads).
 
 #### F-131 · Accent-color hover states
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** bug
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug
 - **Where:** Hover/active states are hardcoded red regardless of chosen accent; must follow `data-accent` (coral/blue/mint).
 
 #### F-132 · Auto-theme by time of day
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** feature
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P3 · **Category:** feature
 - **What:** Optionally auto-switch Day/Night Seoul by local time (noted in `DESIGN_SEOUL_DAY_NIGHT.md`). Manual override always wins.
 
 ### Today
 
 #### F-133 · Tighten layout / reduce white space
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
 
 #### F-134 · Writing tile expands inline (not separate page)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
 
 #### F-135 · Tasks-title IA cleanup
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
 
 #### F-136 · Suggested learning = R/W/L/TOPIK + daily reading rotation
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Suggested-learning covers Reading/Writing/Listening/TOPIK, with the reading suggestion rotating daily.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** Suggested-learning covers Reading/Writing/Listening/TOPIK, with the reading suggestion rotating daily.
 
 #### F-137 · TOPIK progress bar — no highlights
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** design · **Where:** remove the highlight styling on the Today TOPIK progress bar.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P3 · **Category:** design · **Where:** remove the highlight styling on the Today TOPIK progress bar.
 
 #### F-138 · Per-tile daily progress bars tied to real daily exercises
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
 
 #### F-139 · Remove "words" tile
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
 
 #### F-140 · Hanja tile in the Today carousel
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
 
 ### Progress
 
 #### F-141 · Everything collapsible (TOPIK-compares default open)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Key files:** `pages/Progress.tsx`, `components/CollapsibleTile.tsx`
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Key files:** `pages/Progress.tsx`, `components/CollapsibleTile.tsx`
 
 #### F-142 · Better trend + data points on all graphs
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **What:** richer trendlines and visible data points across every Progress chart.
+- **Status:** ✅ done (verified shipped — backlog reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** richer trendlines and visible data points across every Progress chart.
 
 #### F-143 · Remove "begin today's plan" + "gaps / next steps"
 - **Status:** 🔴 open · **Priority:** P2 · **Category:** design · **Where:** drop those two blocks from Progress.
