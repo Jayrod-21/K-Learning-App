@@ -149,10 +149,15 @@ const DEFAULT_UPSTREAM_MESSAGE =
  *
  * F-094: the SINGLE shared mapper for every Claude-touching route
  * (writing.ts / reading.ts / grammarDrill.ts / diagnostic.ts / conversation.ts /
- * imageIngest.ts). Those routes used to carry private flatten-always-to-502
- * copies that predated the 4xx passthrough above — migrated onto this helper
- * so an injection rejection or the proxy's own limiter reads as 400/429
- * everywhere, not just on the generation routes.
+ * imageIngest.ts / enrich.ts / gradeWriting.ts). Those routes used to carry
+ * private flatten-always-to-502 copies (several of them forwarding the raw
+ * `${code}: ${message}` straight to the client — the exact leak F-124 exists
+ * to close) that predated the 4xx passthrough above — all migrated onto this
+ * helper so an injection rejection or the proxy's own limiter reads as
+ * 400/429 everywhere, not just on the generation routes, and no route can
+ * forward raw upstream/provider text. `diagnostic.ts`'s own pre-wrap
+ * (`buildGeneratedItem`) calls this helper too, rather than embedding
+ * `err.message` directly, for the same reason.
  */
 export function mapClaudeError(err: unknown): unknown {
   if (err && typeof err === 'object' && 'httpStatus' in err) {

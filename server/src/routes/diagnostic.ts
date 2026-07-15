@@ -498,6 +498,19 @@ async function buildGeneratedItem(
   // is down") carries no `httpStatus`, so mapClaudeError would pass it through to a
   // generic 500 — wrap it as UpstreamError here so every generation failure maps to
   // 502 (the `.catch` returns `never`, so `result`'s type is unchanged).
+  //
+  // R2-BLOCKER fix: never embed `err.message` in the client-facing message.
+  // `generateDiagnosticItem` can throw either a `ClaudeProxyError` (carries
+  // `httpStatus`/`code` — validation/rate-limit/output-schema/etc.) or a raw,
+  // unwrapped error that slipped past `retry.ts`'s classification (retry.ts:96-99
+  // rethrows a non-retryable error verbatim — this can be a raw Anthropic SDK or
+  // Node/undici network error whose `.message` may contain hostnames, ports, or
+  // literal SDK text). Route both through the shared `mapClaudeError`: a
+  // `ClaudeProxyError` becomes the whitelisted, wire-safe message it already
+  // produces for every other route; anything else (no `httpStatus`) is passed
+  // through unchanged by `mapClaudeError`, so we log the raw detail server-side
+  // only and rethrow a fixed generic message — preserving this route's existing
+  // "any generation failure is a 502" contract without ever forwarding raw text.
   const { result } = await proxy
     .generateDiagnosticItem(
       {
@@ -510,9 +523,27 @@ async function buildGeneratedItem(
       { ...(correlationId !== undefined ? { requestId: correlationId } : {}), userId },
     )
     .catch((err: unknown) => {
-      throw new UpstreamError(
-        `diagnostic ${section} item generation failed: ${err instanceof Error ? err.message : String(err)}`,
+      const mapped = mapClaudeError(err);
+      if (mapped !== err) {
+        // A recognized ClaudeProxyError — `mapped` is already a safe,
+        // whitelisted UpstreamError (mapClaudeError logged the raw detail
+        // server-side itself). Reuse it rather than re-wrapping.
+        throw mapped;
+      }
+      // Not a ClaudeProxyError (raw network/SDK error — see comment above).
+      // Log the raw detail server-side only; the client never sees `err.message`.
+      getLogger().error(
+        {
+          section,
+          correlationId,
+          err:
+            err instanceof Error
+              ? { name: err.name, message: err.message }
+              : { value: String(err) },
+        },
+        `diagnostic ${section} item generation failed`,
       );
+      throw new UpstreamError(`diagnostic ${section} item generation failed`);
     });
 
   // The model's `kind` is schema-valid against the full generable union

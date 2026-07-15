@@ -339,7 +339,7 @@ describe('POST /grade-writing — attempt persistence (F-014)', () => {
 });
 
 describe('POST /grade-writing — downstream error', () => {
-  it('B4 httpStatus error → mapped to upstream_error with that status', async () => {
+  it('B4 5xx error → flattened to a blanket 502 upstream_error, no raw upstream detail leaked (F-124/F-094)', async () => {
     const broken = buildTestApp({
       connectionString: pg.connectionString,
       claudeProxy: {
@@ -359,8 +359,18 @@ describe('POST /grade-writing — downstream error', () => {
       const res = await agent
         .post('/grade-writing')
         .send({ prompt: 'topic', sample: 'body' });
-      expect(res.status).toBe(504);
+      // F-094: this route now shares mapClaudeError, which — per SECURITY.md
+      // §13.7 — NEVER forwards an upstream 5xx status or its message. Every
+      // 5xx-class proxy failure flattens to a blanket 502 with a fixed generic
+      // client message. (Pre-consolidation this route passed the raw 504 and
+      // the raw `${code}: ${message}` straight through — the exact leak F-124
+      // closes.)
+      expect(res.status).toBe(502);
       expect(res.body.error.code).toBe('upstream_error');
+      // The wire message is the whitelisted generic string — it must NOT carry
+      // the raw upstream code/message.
+      expect(res.body.error.message).not.toContain('b4_timeout');
+      expect(res.body.error.message).not.toContain('upstream timeout');
       // F-014: only a SUCCESSFUL grade persists — a failed one writes nothing.
       const { rows } = await pg.pool.query(
         `SELECT 1 FROM writing_attempts WHERE user_id = $1`,

@@ -850,17 +850,36 @@ describe('conversation titles — auto-name (F-036) + rename', () => {
         .post(`/conversation/${id}/messages`)
         .send({ content: '내일 면접이 있어서 연습하고 싶어요', expected_version: 1 });
 
+      // R1 SHOULD-FIX (proof-test toothlessness): the ORIGINAL version of this
+      // test had both racing calls compute the byte-identical title (both
+      // derived from the same pre-write conversation content), so a reviewer's
+      // repro that deleted the `AND title IS NULL` guard entirely still passed
+      // — with identical candidate titles, "both writes land" and "exactly one
+      // write lands" are indistinguishable from the outside. Fold a
+      // per-invocation counter into the stub's title so the two calls'
+      // candidates provably DIFFER — that's what lets the assertions below
+      // actually distinguish "the guard enforced exactly-once" from "both
+      // writes landed" (whichever ran last would simply win, and each
+      // response would echo its OWN candidate instead of converging on one).
+      //
       // Widen the race window with an artificial delay in the Claude call so
       // both requests' read-check (`title IS NULL`) reliably lands before
       // either commits its UPDATE — a real network round-trip does this
       // naturally; the delay makes the test deterministic instead of relying
       // on scheduler luck.
+      let nameCalls = 0;
       const baseProxy = makeStubProxy();
       setClaudeProxy(
         makeStubProxy({
           nameConversation: async (input) => {
+            nameCalls += 1;
+            const candidateNo = nameCalls;
             await new Promise((r) => setTimeout(r, 50));
-            return baseProxy.nameConversation(input);
+            const base = await baseProxy.nameConversation(input);
+            return {
+              ...base,
+              result: { title: `${base.result.title} #${candidateNo}` },
+            };
           },
         }),
       );
@@ -872,17 +891,36 @@ describe('conversation titles — auto-name (F-036) + rename', () => {
 
       expect(r1.status).toBe(200);
       expect(r2.status).toBe(200);
-      // Storage never diverges: whichever call's UPDATE wins, the OTHER call's
-      // `WHERE title IS NULL` guard fails (0 rows), so it re-reads and returns
-      // the winner's title — both responses must agree.
+      // Proves the race window was actually hit (both calls read the
+      // conversation as unnamed and both burned a Claude call), not merely
+      // sequenced — a prerequisite for the divergent-title setup above to mean
+      // anything.
+      expect(nameCalls).toBe(2);
+
+      // Storage never diverges: whichever call's UPDATE wins persists ITS OWN
+      // (uniquely-numbered) candidate title and returns it directly; the
+      // guard forces the OTHER call's UPDATE to affect 0 rows (EvalPlanQual
+      // re-checks `title IS NULL` against the now-committed row and finds it
+      // false), so the loser falls through to the re-read branch and returns
+      // the WINNER's title instead of its own. Both responses therefore must
+      // converge on the same one of the two numbered candidates.
+      //
+      // WITHOUT the guard (reviewer's repro: delete `AND title IS NULL`),
+      // both UPDATEs unconditionally match and each returns its OWN distinct
+      // candidate via `RETURNING title` — this next assertion would then
+      // fail, because r1 and r2 would echo different `#1`/`#2` suffixes.
       expect(r1.body.title).toBe(r2.body.title);
-      expect(typeof r1.body.title).toBe('string');
+      expect(r1.body.title).toMatch(/#[12]$/);
 
       const row = await pg.pool.query<{ title: string | null }>(
         'SELECT title FROM conversations WHERE id = $1',
         [id],
       );
       expect(row.rows).toHaveLength(1);
+      // The persisted row must match whichever candidate the responses
+      // converged on — not a hybrid, and not the OTHER candidate (which would
+      // indicate the loser's write clobbered the winner's, i.e. no exactly-
+      // once guarantee at the storage layer).
       expect(row.rows[0]!.title).toBe(r1.body.title);
     });
   });
