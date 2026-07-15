@@ -31,6 +31,16 @@
  * Progress.css — color follows the entity). All text wears text tokens.
  * Theme-awareness comes free from the CSS variables.
  *
+ * F-174 — optional `trend` prop (default OFF, so every existing consumer
+ * renders byte-identical unless it opts in): a dashed least-squares
+ * regression line over (index, value) pairs, the SAME treatment Progress's
+ * own `TrendChart` already applies to its Overall series (F-142) — guarded
+ * at n < 3 (a 2-point regression would just double the raw line), a neutral
+ * `--paper-mute` stroke (never the series accent — it's a derived overlay,
+ * not a fifth identity), and an emphasized ring on the series' latest point
+ * so "where you are right now" reads without hovering. Only the caller that
+ * passes `trend` opts into either change.
+ *
  * Threat model: `unit` / `metricLabel` / `ariaLabel` and point data render
  * as React children or attribute strings → escaped by React. No HTML is
  * ever injected.
@@ -49,6 +59,49 @@ export interface LineChartProps {
   metricLabel: string;
   /** Accessible name for the chart image. */
   ariaLabel: string;
+  /**
+   * F-174 — opt-in dashed least-squares trend line + emphasized latest-point
+   * marker (Progress `TrendChart`'s F-142 treatment, generalized to one
+   * series). Default `false`/omitted: every existing consumer is unaffected.
+   */
+  trend?: boolean;
+}
+
+/**
+ * Least-squares linear regression over a series' (index, value) pairs —
+ * the same math as Progress's `TrendChart` (`regressionTrend`), generalized
+ * to LineChart's single-series contract (points are always index-contiguous
+ * here — LineChart has no "missing day" gap concept, unlike the diagnostic
+ * attempt series). Returns `null` under 3 points or a degenerate all-equal-x
+ * input (unreachable — indices are 0..n-1 and always distinct — guarded
+ * anyway so a future caller can't divide by zero). Endpoints are clamped
+ * into the chart's own `[0, yMax]` value domain, same as every plotted point.
+ */
+function regressionTrend(
+  pts: readonly SeriesPoint[],
+  yMax: number,
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  const n = pts.length;
+  if (n < 3) return null;
+  const meanX = pts.reduce((acc: number, _p, i) => acc + i, 0) / n;
+  const meanY = pts.reduce((acc, p) => acc + p.value, 0) / n;
+  let num = 0;
+  let den = 0;
+  pts.forEach((p, i) => {
+    const dx = i - meanX;
+    num += dx * (p.value - meanY);
+    den += dx * dx;
+  });
+  if (den === 0) return null;
+  const slope = num / den;
+  const intercept = meanY - slope * meanX;
+  const clamp = (v: number): number => Math.min(yMax, Math.max(0, v));
+  return {
+    x1: 0,
+    y1: clamp(intercept),
+    x2: n - 1,
+    y2: clamp(intercept + slope * (n - 1)),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -118,6 +171,7 @@ export function LineChart({
   unit,
   metricLabel,
   ariaLabel,
+  trend = false,
 }: LineChartProps): JSX.Element {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   // Hit-button elements for the roving-tabindex focus moves (callback refs —
@@ -160,6 +214,11 @@ export function LineChart({
   // Every point gets a marker while they still read as marks; beyond that
   // only the endpoint is dotted and the hover layer carries per-point detail.
   const dotted = n <= MAX_DOTTED_POINTS ? pts.map((_, i) => i) : [n - 1];
+
+  // F-174 — opt-in only: the raw regression math always guards n < 3
+  // (`regressionTrend` returns null), but gate the CALL itself on `trend` too
+  // so an off consumer never even runs the extra math, let alone renders it.
+  const trendLine = trend ? regressionTrend(pts, yMax) : null;
 
   // The readout defaults to the latest point so its value is visible with no
   // pointer at all — hover/focus enhances, never gates.
@@ -253,15 +312,40 @@ export function LineChart({
               <polyline className="km-linechart__line" points={linePoints} />
             </>
           ) : null}
-          {dotted.map((i) => (
-            <circle
-              key={`dot-${pts[i]?.date ?? String(i)}`}
-              className="km-linechart__dot"
-              cx={xs[i]}
-              cy={yFor(pts[i]?.value ?? 0, yMax)}
-              r={4}
+          {/* F-174 — dashed least-squares trend line, drawn BEHIND the series'
+              own dots (painted before them in markup), same as TrendChart's
+              Overall-series overlay. Neutral `--paper-mute` stroke, never the
+              series accent — a derived overlay, not the identity itself. */}
+          {trendLine !== null ? (
+            <line
+              className="km-linechart__trendfit"
+              x1={xFor(trendLine.x1, n)}
+              y1={yFor(trendLine.y1, yMax)}
+              x2={xFor(trendLine.x2, n)}
+              y2={yFor(trendLine.y2, yMax)}
             />
-          ))}
+          ) : null}
+          {dotted.map((i) => {
+            // F-174 — when trend is on, the latest point gets a larger,
+            // thicker ring so "where you are right now" reads at a glance
+            // without hovering (same treatment as TrendChart's per-series
+            // emphasis). Gated behind `trend` so an opted-out consumer's
+            // markup is byte-identical to before this feature existed.
+            const isLatest = trend && i === n - 1;
+            return (
+              <circle
+                key={`dot-${pts[i]?.date ?? String(i)}`}
+                className={
+                  isLatest
+                    ? 'km-linechart__dot km-linechart__dot--latest'
+                    : 'km-linechart__dot'
+                }
+                cx={xs[i]}
+                cy={yFor(pts[i]?.value ?? 0, yMax)}
+                r={isLatest ? 5.5 : 4}
+              />
+            );
+          })}
         </svg>
 
         {/* Keyboard-reachable hover layer: one real button per point, with a
@@ -314,6 +398,17 @@ export function LineChart({
           </span>
         ) : null}
       </div>
+
+      {/* F-174 — names what the dashed overlay means (same caption pattern as
+          TrendChart's `.km-progress__trendnote`); only appears when the line
+          is actually drawn (`trend` on AND n >= 3). Text-token color, so it
+          clears the WCAG AA text-contrast bar in both themes (not just the
+          graphical-object bar the dashed line itself needs). */}
+      {trendLine !== null ? (
+        <p className="km-linechart__trendnote">
+          Dashed line: trend across the series
+        </p>
+      ) : null}
     </div>
   );
 }

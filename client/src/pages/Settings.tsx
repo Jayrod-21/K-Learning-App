@@ -1806,15 +1806,28 @@ function ReEnrollFlow({
 }
 
 /**
- * Theme-mode control (PF-A A4) — Light / Dark / System segmented radiogroup.
+ * Theme-mode control (PF-A A4, extended by F-132) — Light / Dark / System /
+ * Auto segmented radiogroup.
  *
  * Lives in the Appearance group above the palette swatches. Unlike the
  * palette (which persists through `km.settings` + the server `/settings/prefs`
  * sync), the light/dark mode persists through `ThemeProvider` into
- * `km.theme` — 'system' CLEARS the key and follows the OS pref live. The two
- * concerns are deliberately separate stores.
+ * `km.theme` — 'system' CLEARS the key and follows the OS pref live; 'auto'
+ * (F-132) stores 'auto' and follows the local time-of-day boundary live
+ * (Day Seoul 06:00–18:00, Night Seoul otherwise — see `resolveAutoTheme` in
+ * `hooks/theme-context.ts`). The two concerns (theme mode vs. palette) are
+ * deliberately separate stores.
  *
- * A11y: a `radiogroup` of three `radio` buttons implementing the full
+ * The button reads "Auto" — one word, matching its Light/Dark/System
+ * siblings — with the time-of-day behavior spelled out in the row hint
+ * below instead of crammed into the segmented label.
+ *
+ * Picking ANY mode here — including toggling elsewhere via `toggleTheme` —
+ * is a manual choice that wins outright over whatever 'system'/'auto' would
+ * otherwise resolve to; there's no separate "override" concept because the
+ * modes are mutually exclusive radio options, not layered.
+ *
+ * A11y: a `radiogroup` of four `radio` buttons implementing the full
  * WAI-ARIA APG radio-group keyboard contract, mirroring the in-repo
  * `SwatchPicker`:
  *   - Roving tabindex — only the checked radio is tabbable (`tabIndex={0}`);
@@ -1835,12 +1848,13 @@ function ReEnrollFlow({
  * (the standard "selection follows focus" APG variant). Switching theme mode
  * is cheap and idempotent (a single `data-theme` swap), there is no
  * per-keypress cost to avoid, and selection-follows-focus is the behaviour a
- * user expects from a small segmented Light/Dark/System control.
+ * user expects from a small segmented Light/Dark/System/Auto control.
  */
 const THEME_MODES: ReadonlyArray<{ id: ThemeMode; label: string }> = [
   { id: 'light', label: 'Light' },
   { id: 'dark', label: 'Dark' },
   { id: 'system', label: 'System' },
+  { id: 'auto', label: 'Auto' },
 ];
 
 function ThemeModeControl({
@@ -1903,7 +1917,8 @@ function ThemeModeControl({
       <div className="km-settings__row-head">
         <span className="km-settings__row-label">Theme</span>
         <span className="km-settings__row-hint">
-          Light, dark, or match your device.
+          Light, dark, match your device, or Auto — Day Seoul 6am–6pm, Night
+          Seoul after.
         </span>
       </div>
       <div

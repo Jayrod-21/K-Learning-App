@@ -2293,32 +2293,9 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0;
 }
 
-/* WordPopover ───────────────────────────────────────────────────────── */
-.km-popover__backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(6, 8, 12, 0.32);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  z-index: 60;
-  border: none;
-  cursor: pointer;
-  animation: fade 160ms ease-out;
-}
-.km-popover {
-  position: fixed;
-  left: 50%;
-  bottom: calc(var(--shell-bottomnav-h) + 28px);
-  transform: translateX(-50%);
-  width: min(calc(100% - 24px), calc(var(--shell-max-width) - 24px));
-  background: var(--ink-3);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  padding: 18px 20px 16px;
-  z-index: 61;
-  animation: rise 200ms ease-out;
-}
+/* WordPopover (F-186 — outer chrome now lives in Sheet's `.km-sheet` /
+ * `.km-sheet__backdrop` / `.km-sheet__panel`; only inner content styling
+ * remains here) ───────────────────────────────────────────────────── */
 .km-popover__head {
   display: flex;
   justify-content: space-between;

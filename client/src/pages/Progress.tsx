@@ -38,10 +38,11 @@
  * regardless of which sections start folded; collapsing only affects what a
  * screen reader/keyboard user can currently reach, never data freshness.
  *
- * F-128 reskin: the page opens with a `SkylineHeader` (device #4) carrying
- * the real `<h1>`, a `DancheongRail` accent underneath (device #2), a
- * `.km-giwa`/`.km-hangul-watermark` texture on the empty state (devices
- * #3/#6), a `.km-rain-sheen` ambient overlay on the page root (device #8,
+ * F-128 reskin: the page opens with the shared `PageHubHeader` (F-177 —
+ * devices #4/#2, a skyline strip carrying the real `<h1>` + a dancheong-rail
+ * accent underneath), a `.km-giwa`/`.km-hangul-watermark` texture on the
+ * empty state (devices #3/#6), a `.km-rain-sheen` ambient overlay on the
+ * page root (device #8,
  * Night-only per its own CSS gate), and `.km-najeon` on the milestone seal
  * (device #9, sparingly). Every `CollapsibleTile` section renders
  * `surface="city"` — the shared CityCard-backed variant added to close
@@ -98,18 +99,17 @@ import { useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { CollapsibleTile } from '../components/CollapsibleTile';
-import { DancheongRail } from '../components/DancheongRail';
 import { Eyebrow } from '../components/Eyebrow';
 import { Icon } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { LineChart } from '../components/LineChart';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { Pill } from '../components/Pill';
 import { SealStamp } from '../components/SealStamp';
 import { ShowMore } from '../components/ShowMore';
 import { SkillsCompare } from '../components/SkillsCompare';
 import type { SkillReference, SkillRow } from '../components/SkillsCompare';
-import { SkylineHeader } from '../components/SkylineHeader';
 import { SubwayProgress } from '../components/SubwayProgress';
 import { SwipeCarousel } from '../components/SwipeCarousel';
 import { Tabs } from '../components/Tabs';
@@ -326,6 +326,10 @@ function SkillTrendPanel({
           unit={series.unit}
           metricLabel={METRIC_LABELS[series.metric]}
           ariaLabel={`${label} trend over the last ${String(TREND_WINDOW_DAYS)} days`}
+          // F-174 — parity with the diagnostic Trend chart's F-142 treatment:
+          // a dashed least-squares trend line (guarded at n < 3) + an
+          // emphasized latest-point marker on every skill panel.
+          trend
         />
       )}
     </div>
@@ -552,31 +556,27 @@ function Progress(): JSX.Element {
         <MockBadge />
       ) : null}
 
-      {/* F-128 device #4 — the Namsan skyline strip carries the real
-          page heading; SkylineHeader itself renders plain markup (no
-          heading semantics of its own), so `aria-labelledby` above still
-          points at a real <h1>. */}
-      <SkylineHeader
-        className="km-progress__skyline"
-        title={
-          <>
-            <Eyebrow>
-              {/* P3b: the page eyebrow renders nav.ts's en/kr pair bilingually. */}
-              <Bilingual en={PROGRESS_NAV.eyebrow} kr={PROGRESS_NAV.krEyebrow} />
-            </Eyebrow>
-            <h1 id="progress-title" className="kr-display km-progress__title">
-              {/* P3a: page-title chrome follows the language-display setting. */}
-              <Bilingual kr="성장" en="Progress" />
-            </h1>
-          </>
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (Namsan skyline
+          strip carrying the real <h1> + a dancheong-rail accent underneath),
+          migrated to the shared `PageHubHeader` component per F-177 so the
+          recipe lives in exactly one place (matches the 7 Library pages'
+          batch-2 migration; Today.tsx gets the same treatment separately).
+          `km-progress__hub` only restores this page's own extra 14px of
+          title/rail gap (`.km-progress__title` used to carry `margin: 4px 0
+          14px`, one step more than the shared recipe's `4px 0 0`) so the
+          migration is byte-for-byte visually, not just structurally. */}
+      <PageHubHeader
+        className="km-progress__hub"
+        titleId="progress-title"
+        eyebrow={
+          // P3b: the page eyebrow renders nav.ts's en/kr pair bilingually.
+          <Bilingual en={PROGRESS_NAV.eyebrow} kr={PROGRESS_NAV.krEyebrow} />
+        }
+        heading={
+          // P3a: page-title chrome follows the language-display setting.
+          <Bilingual kr="성장" en="Progress" />
         }
       />
-
-      {/* F-128 device #2 — a short dancheong-rail accent under the
-          skyline. Purely decorative (DancheongRail is aria-hidden itself). */}
-      <div className="km-progress__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       {/* F-141 — every section is a CollapsibleTile. The TOPIK-compare
           section is the one the ticket names explicitly as default-OPEN;

@@ -328,6 +328,45 @@ beforeEach(() => {
   hanjaSvc.fetchHanjaProgress.mockResolvedValue(HANJA_DEFAULT);
 });
 
+describe('Progress page — F-177 shared PageHubHeader', () => {
+  it('renders the page heading + eyebrow + dancheong rail via the shared PageHubHeader recipe', () => {
+    // Migrated off the inline SkylineHeader+DancheongRail copy onto the
+    // shared component (matches the 7 Library pages' batch-2 migration) —
+    // this pins that the real <h1> (the target of the section's own
+    // `aria-labelledby="progress-title"`), the eyebrow text, and the
+    // decorative rail divider all still render. Default language display is
+    // 'both'/Korean-first (no SettingsProvider in this test tree), so the
+    // heading's computed accessible name is "성장 · Progress" — same shape
+    // every other page's migrated <h1> test already asserts (Mistakes,
+    // Images, Ttmik).
+    renderPage();
+
+    const heading = screen.getByRole('heading', {
+      level: 1,
+      name: '성장 · Progress',
+    });
+    expect(heading).toHaveAttribute('id', 'progress-title');
+
+    // The eyebrow (nav.ts's en/kr pair) renders above the heading — each
+    // Bilingual half is its own DOM node (same assertion shape the existing
+    // P3b bilingual-chrome tests already use below).
+    expect(screen.getByText('Diagnostic history')).toBeInTheDocument();
+    expect(screen.getByText('진단 기록')).toBeInTheDocument();
+
+    // The section's own aria-labelledby still resolves to this real <h1> —
+    // the whole page section now has an accessible "region" name.
+    expect(
+      screen.getByRole('region', { name: '성장 · Progress' }),
+    ).toBeInTheDocument();
+
+    expect(
+      document.querySelector(
+        '.km-hubheader__rail-divider .km-dancheong-rail',
+      ),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('Progress page — trend', () => {
   it('renders the chart + legend on the first history page, the attempts table on the last', async () => {
     const user = userEvent.setup();
@@ -741,6 +780,47 @@ describe('Progress page — per-skill trends carousel (F-017, moved from Today)'
     expect(
       screen.getByRole('region', { name: 'Progress by skill' }),
     ).toBeInTheDocument();
+  });
+
+  it('F-174: enables the shared LineChart\'s trend line on the skill carousel (Reading has 3 points)', () => {
+    // Parity with the diagnostic Trend chart's F-142 treatment — SkillTrendPanel
+    // now passes `trend` to LineChart. Reading's fixture (58/66/74 across three
+    // dates) has n >= 3, so its panel draws the dashed regression line.
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    const firstPanel = within(region).getAllByRole('tabpanel', {
+      hidden: true,
+    })[0];
+    expect(firstPanel).toBeDefined();
+    expect(
+      firstPanel?.querySelector('.km-linechart__trendfit'),
+    ).not.toBeNull();
+    expect(
+      firstPanel?.querySelector('.km-linechart__dot--latest'),
+    ).not.toBeNull();
+  });
+
+  it('F-174: omits the trend line on a skill panel with only 2 points (Listening)', async () => {
+    // Listening's fixture has only two points — the shared LineChart's own
+    // n < 3 guard applies here exactly as it does on Reading's panel above;
+    // the latest-point emphasis still renders (independent of the guard).
+    const user = userEvent.setup();
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    await user.click(within(region).getByRole('tab', { name: 'Page 2 of 5' }));
+
+    const panels = within(region).getAllByRole('tabpanel', { hidden: true });
+    const listeningPanel = panels[1];
+    expect(listeningPanel).toBeDefined();
+    expect(listeningPanel).toHaveTextContent('Listening');
+    expect(
+      listeningPanel?.querySelector('.km-linechart__trendfit'),
+    ).toBeNull();
+    expect(
+      listeningPanel?.querySelector('.km-linechart__dot--latest'),
+    ).not.toBeNull();
   });
 });
 

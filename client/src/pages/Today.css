@@ -20,25 +20,16 @@
   padding-bottom: 20px;
 }
 
-/* F-128 device #4 — the skyline strip now carries the real <h1> overlaid on
- * it (C-2 fix: matches Progress's `.km-progress__skyline` treatment, so the
- * app's two hub pages share one header recipe instead of two). */
-.km-today__skyline {
-  margin: 0 0 12px;
-}
-
-.km-today__title {
-  margin: 4px 0 14px;
-}
-
-/* C-3 — the dancheong-rail divider under the header (folded into the C-2
- * unification; matches Progress's `.km-progress__rail-divider`).
- * `DancheongRail` is `position: absolute; inset: <edge> 0` against its
- * nearest positioned ancestor — give it one with real height. */
-.km-today__rail-divider {
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
+/* F-177 — the header (skyline strip + real <h1> + dancheong-rail divider)
+ * is now the shared `PageHubHeader` component; its own margins/rail geometry
+ * live in `components/PageHubHeader.css`, not here. This page's title
+ * carried one extra step of bottom margin (`4px 0 14px` vs the shared
+ * recipe's `4px 0 0`) before the migration — restored here via the
+ * `className` PageHubHeader forwards onto its root (same pattern as
+ * Progress.css's `.km-progress__hub`), so the migration is byte-for-byte
+ * visually, not just structurally. */
+.km-today__hub .km-hubheader__title {
+  margin-bottom: 14px;
 }
 
 /* Section titles — Carousel headers (Review & drills / Suggested learning /

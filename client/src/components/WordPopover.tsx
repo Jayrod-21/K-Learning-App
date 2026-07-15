@@ -1,26 +1,44 @@
 /**
  * WordPopover — the gesture that defines the app.
  *
- * Centered popover with: KR word + POS pill + EN gloss + example + "Add
- * to bank" toggle + "More examples" drawer. Same component renders for
- * vocab words AND grammar patterns; `data.kind === 'grammar'` flips
- * pill copy ("Grammar pattern"), button copy ("grammar bank"), and the
- * subhead from gloss to pattern title.
+ * KR word + POS pill + EN gloss + example + "Add to bank" toggle + "More
+ * examples" drawer, rendered inside the shared tone-aware `Sheet` (F-186).
+ * Same component renders for vocab words AND grammar patterns;
+ * `data.kind === 'grammar'` flips pill copy ("Grammar pattern"), button
+ * copy ("grammar bank"), and the subhead from gloss to pattern title.
  *
  * Why a single component for both: the gesture is the same — "I tapped
  * something, give me the definition + let me bank it". Splitting into
  * VocabPopover + GrammarPopover would duplicate ~80% of the markup.
  *
+ * Why `Sheet` and not bespoke dialog chrome (F-186): this was the last
+ * "promote to shared primitive" of the redesign — every other tap-a-thing
+ * popup in the app (Review/Grammar/Hanja detail sheets, Topik's chooser,
+ * MyVocabLists) already renders on `Sheet`; WordPopover was the one
+ * holdout still hand-rolling its own `role="dialog"` + backdrop + focus
+ * trap. `tone="accent"` matches the Seoul kit's default signboard/hanji
+ * edge treatment (same one `CityCard`/`DancheongRail` use elsewhere) so the
+ * app's single most-used popup now reads as the same object as every other
+ * popup, not a one-off. `Sheet` owns ALL a11y plumbing via the shared
+ * `useModalA11y` hook (open/close, Esc, backdrop click, Tab-trap, restore
+ * focus, ref-counted body-scroll lock) — WordPopover no longer calls the
+ * hook itself, which also means it no longer double-acquires the scroll
+ * lock alongside `Sheet`'s own instance.
+ *
  * A11y:
- *   - `role="dialog"` + `aria-modal="true"` + `aria-labelledby` pointing
- *     at the KR word.
- *   - Esc closes; backdrop click closes.
- *   - Focus moves to the close button on mount (least surprising place
- *     to land — the user just tapped a word, so the next likely action
- *     is dismiss).
+ *   - `Sheet` supplies `role="dialog"` + `aria-modal="true"` +
+ *     `aria-label` (we pass the KR headword/pattern, mirroring the old
+ *     `aria-labelledby` target).
+ *   - Esc closes; backdrop click closes; both handled by `Sheet`.
+ *   - Focus lands on the close button on mount: `Sheet`'s a11y hook
+ *     auto-focuses the first focusable descendant of the panel when no
+ *     `initialFocusRef` is supplied, and the close button is deliberately
+ *     the first focusable element in this component's markup (before Add
+ *     and the info-toggle) — so the "land on close" UX from the bespoke
+ *     implementation carries over for free, no `Sheet` API change needed.
  *   - Tab order: close → add → info-toggle. Shift-Tab from close wraps
- *     to info. We use a small focus-trap (cycle within the dialog) so
- *     keyboard users can't tab back into the reading passage behind.
+ *     to info. `Sheet`'s focus-trap (cycle within the panel) keeps
+ *     keyboard users from tabbing back into the reading passage behind.
  *
  * Threat model:
  *   - Display fields (`kr`, `en`, `ex_kr`, etc.) render as React text
@@ -35,15 +53,11 @@
  *     onAdd={(d) => bank.add(d.kr)}
  *   />
  */
-import {
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
-import { useModalA11y } from '../hooks/useModalA11y';
+import { useState, type JSX } from 'react';
 import type { VocabExample } from '../types/domain';
 import { Icon } from './Icon';
 import { Pill } from './Pill';
+import { Sheet } from './Sheet';
 
 /** Vocab + grammar fields the popover renders. Superset of both shapes. */
 export interface WordPopoverData {
@@ -110,23 +124,7 @@ export function WordPopover({
 }: WordPopoverProps): JSX.Element {
   const [drawer, setDrawer] = useState(false);
   const [added, setAdded] = useState(false);
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
   const isGrammar = data.kind === 'grammar';
-
-  // Modal a11y — focus restoration, Esc close, Tab trap, body scroll
-  // lock — all in one hook (extracted in Pass 2 fix-pass; rule-of-three
-  // with Sheet + MoreSheet). The close button is the least-surprising
-  // landing spot for a keyboard user who just tapped a word, so we pass
-  // its ref as the initial-focus override; otherwise the hook would land
-  // on the first focusable descendant (the dialog div with tabIndex=-1
-  // is skipped — see the hook's docstring).
-  useModalA11y({
-    open: true,
-    onClose,
-    containerRef: dialogRef,
-    initialFocusRef: closeRef,
-  });
 
   const handleAdd = (): void => {
     if (added) return;
@@ -151,172 +149,154 @@ export function WordPopover({
   const hasDrawer = extras.length > 0 || hasUsage;
 
   return (
-    <>
-      <button
-        type="button"
-        className="km-popover__backdrop"
-        aria-label="Close popover"
-        tabIndex={-1}
-        onClick={onClose}
-      />
-      <div
-        ref={dialogRef}
-        className="km-popover"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="km-popover-title"
-      >
-        <div className="km-popover__head">
-          <div>
-            <div className="km-popover__pills">
-              <Pill tone={isGrammar ? 'red' : 'gold'}>
-                {isGrammar ? 'Grammar pattern' : data.pos ?? 'word'}
-              </Pill>
-              {data.mined ? <Pill>already banked</Pill> : null}
-            </div>
-            <div id="km-popover-title" className="kr km-popover__kr">
-              {data.kr}
-            </div>
+    <Sheet open onClose={onClose} ariaLabel={data.kr} tone="accent">
+      <div className="km-popover__head">
+        <div>
+          <div className="km-popover__pills">
+            <Pill tone={isGrammar ? 'red' : 'gold'}>
+              {isGrammar ? 'Grammar pattern' : data.pos ?? 'word'}
+            </Pill>
+            {data.mined ? <Pill>already banked</Pill> : null}
           </div>
-          <button
-            ref={closeRef}
-            type="button"
-            className="km-btn km-btn--ghost km-btn--sm focusring km-popover__close"
-            aria-label="Close"
-            onClick={onClose}
-          >
-            <Icon name="close" size={16} />
-          </button>
+          <div className="kr km-popover__kr">{data.kr}</div>
         </div>
+        <button
+          type="button"
+          className="km-btn km-btn--ghost km-btn--sm focusring km-popover__close"
+          aria-label="Close"
+          onClick={onClose}
+        >
+          <Icon name="close" size={16} />
+        </button>
+      </div>
 
-        {isLoading ? (
-          <div
-            className="km-popover__loading"
-            role="status"
-            aria-live="polite"
-            data-testid="word-popover-loading"
+      {isLoading ? (
+        <div
+          className="km-popover__loading"
+          role="status"
+          aria-live="polite"
+          data-testid="word-popover-loading"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '14px 0',
+          }}
+        >
+          <span
+            className="km-popover__spinner"
+            aria-hidden="true"
             style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '14px 0',
+              width: 14,
+              height: 14,
+              borderRadius: '50%',
+              border: '2px solid currentColor',
+              borderRightColor: 'transparent',
+              animation: 'km-spin 0.8s linear infinite',
+              opacity: 0.65,
             }}
-          >
-            <span
-              className="km-popover__spinner"
-              aria-hidden="true"
-              style={{
-                width: 14,
-                height: 14,
-                borderRadius: '50%',
-                border: '2px solid currentColor',
-                borderRightColor: 'transparent',
-                animation: 'km-spin 0.8s linear infinite',
-                opacity: 0.65,
-              }}
-            />
-            <span className="km-popover__loading-label">Looking it up…</span>
+          />
+          <span className="km-popover__loading-label">Looking it up…</span>
+        </div>
+      ) : (
+        <>
+          <div className="km-popover__lede">
+            {isGrammar ? data.title ?? data.en : data.en}
           </div>
-        ) : (
-          <>
-            <div className="km-popover__lede">
-              {isGrammar ? data.title ?? data.en : data.en}
-            </div>
-            {isGrammar && data.desc ? (
-              <div className="km-popover__desc">{data.desc}</div>
-            ) : null}
+          {isGrammar && data.desc ? (
+            <div className="km-popover__desc">{data.desc}</div>
+          ) : null}
 
-            {/* Only render the Example block when there's an actual example —
-                ~4% of KRDICT entries (and any enrichment miss) have none, and an
-                empty "Example" label with nothing under it reads as broken. */}
-            {data.ex_kr ? (
-              <>
-                <hr className="hr-gold km-popover__rule" />
-                <div className="km-eyebrow km-popover__eyebrow">Example</div>
-                <div className="kr km-popover__ex-kr">{data.ex_kr}</div>
-                {data.ex_en ? (
-                  <div className="km-popover__ex-en">{data.ex_en}</div>
-                ) : null}
-              </>
-            ) : null}
-          </>
-        )}
+          {/* Only render the Example block when there's an actual example —
+              ~4% of KRDICT entries (and any enrichment miss) have none, and an
+              empty "Example" label with nothing under it reads as broken. */}
+          {data.ex_kr ? (
+            <>
+              <hr className="hr-gold km-popover__rule" />
+              <div className="km-eyebrow km-popover__eyebrow">Example</div>
+              <div className="kr km-popover__ex-kr">{data.ex_kr}</div>
+              {data.ex_en ? (
+                <div className="km-popover__ex-en">{data.ex_en}</div>
+              ) : null}
+            </>
+          ) : null}
+        </>
+      )}
 
-        {isLoading ? null : (
-          <>
-            <div className="km-popover__actions">
+      {isLoading ? null : (
+        <>
+          <div className="km-popover__actions">
+            <button
+              type="button"
+              onClick={handleAdd}
+              className={`km-btn ${added ? 'km-btn--ghost' : 'km-btn--gold'} km-btn--md focusring km-popover__add`}
+              aria-pressed={added}
+            >
+              {added ? (
+                <>
+                  <Icon name="check" size={16} />
+                  <span>Added to {isGrammar ? 'grammar bank' : 'vocab'}</span>
+                </>
+              ) : (
+                <>
+                  <Icon name="plus" size={16} />
+                  <span>Add to {isGrammar ? 'grammar bank' : 'vocab'}</span>
+                </>
+              )}
+            </button>
+            {hasDrawer ? (
               <button
                 type="button"
-                onClick={handleAdd}
-                className={`km-btn ${added ? 'km-btn--ghost' : 'km-btn--gold'} km-btn--md focusring km-popover__add`}
-                aria-pressed={added}
+                className="km-btn km-btn--ghost km-btn--md focusring km-popover__info"
+                aria-label="More examples"
+                aria-expanded={drawer}
+                onClick={() => {
+                  setDrawer((d) => !d);
+                }}
               >
-                {added ? (
-                  <>
-                    <Icon name="check" size={16} />
-                    <span>Added to {isGrammar ? 'grammar bank' : 'vocab'}</span>
-                  </>
-                ) : (
-                  <>
-                    <Icon name="plus" size={16} />
-                    <span>Add to {isGrammar ? 'grammar bank' : 'vocab'}</span>
-                  </>
-                )}
+                <Icon name="info" size={18} />
               </button>
-              {hasDrawer ? (
-                <button
-                  type="button"
-                  className="km-btn km-btn--ghost km-btn--md focusring km-popover__info"
-                  aria-label="More examples"
-                  aria-expanded={drawer}
-                  onClick={() => {
-                    setDrawer((d) => !d);
-                  }}
-                >
-                  <Icon name="info" size={18} />
-                </button>
+            ) : null}
+          </div>
+
+          {drawer && hasDrawer ? (
+            <div className="km-popover__drawer">
+              {extras.length > 0 ? (
+                <>
+                  <div className="km-eyebrow km-popover__eyebrow">More examples</div>
+                  <div className="km-popover__extras">
+                    {extras.map((ex, i) => (
+                      <div key={i} className="km-popover__extra">
+                        <div className="kr km-popover__extra-kr">{ex.kr}</div>
+                        <div className="km-popover__extra-en">{ex.en}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+              {hasUsage ? (
+                <>
+                  {extras.length > 0 ? (
+                    <hr className="hr km-popover__usage-rule" />
+                  ) : null}
+                  <div className="km-eyebrow km-popover__eyebrow">Usage</div>
+                  {data.notes ? (
+                    <div className="km-popover__note">{data.notes}</div>
+                  ) : null}
+                  {data.contrast ? (
+                    <div className="km-popover__note km-popover__note--contrast">
+                      <span className="km-popover__contrast-tag">
+                        Don&apos;t confuse:
+                      </span>{' '}
+                      {data.contrast}
+                    </div>
+                  ) : null}
+                </>
               ) : null}
             </div>
-
-            {drawer && hasDrawer ? (
-              <div className="km-popover__drawer">
-                {extras.length > 0 ? (
-                  <>
-                    <div className="km-eyebrow km-popover__eyebrow">More examples</div>
-                    <div className="km-popover__extras">
-                      {extras.map((ex, i) => (
-                        <div key={i} className="km-popover__extra">
-                          <div className="kr km-popover__extra-kr">{ex.kr}</div>
-                          <div className="km-popover__extra-en">{ex.en}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </>
-                ) : null}
-                {hasUsage ? (
-                  <>
-                    {extras.length > 0 ? (
-                      <hr className="hr km-popover__usage-rule" />
-                    ) : null}
-                    <div className="km-eyebrow km-popover__eyebrow">Usage</div>
-                    {data.notes ? (
-                      <div className="km-popover__note">{data.notes}</div>
-                    ) : null}
-                    {data.contrast ? (
-                      <div className="km-popover__note km-popover__note--contrast">
-                        <span className="km-popover__contrast-tag">
-                          Don&apos;t confuse:
-                        </span>{' '}
-                        {data.contrast}
-                      </div>
-                    ) : null}
-                  </>
-                ) : null}
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
-    </>
+          ) : null}
+        </>
+      )}
+    </Sheet>
   );
 }

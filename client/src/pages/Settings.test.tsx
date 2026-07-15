@@ -1187,8 +1187,8 @@ describe('Settings — text size (F-025 cross-device sync)', () => {
   });
 });
 
-describe('Settings — theme-mode control (A4)', () => {
-  it('renders Light / Dark / System as a labelled radiogroup', () => {
+describe('Settings — theme-mode control (A4, extended by F-132)', () => {
+  it('renders Light / Dark / System / Auto as a labelled radiogroup', () => {
     mocks.fetchMe.mockResolvedValue({
       id: 1,
       email: 'jay@example.com',
@@ -1200,6 +1200,68 @@ describe('Settings — theme-mode control (A4)', () => {
     expect(within(group).getByRole('radio', { name: 'Light' })).toBeInTheDocument();
     expect(within(group).getByRole('radio', { name: 'Dark' })).toBeInTheDocument();
     expect(within(group).getByRole('radio', { name: 'System' })).toBeInTheDocument();
+    expect(within(group).getByRole('radio', { name: 'Auto' })).toBeInTheDocument();
+  });
+
+  it("selecting Auto (F-132) resolves data-theme from the local hour and persists 'auto'", async () => {
+    // Daytime: 10:00 local, inside the 06:00–18:00 window → light.
+    vi.setSystemTime(new Date('2026-07-14T10:00:00'));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+    expandGroup(/Appearance/);
+
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('km.theme')).toBe('auto');
+    expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  it("selecting Auto (F-132) at a nighttime hour resolves dark", async () => {
+    // Nighttime: 22:00 local, outside the window → dark.
+    vi.setSystemTime(new Date('2026-07-14T22:00:00'));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+    expandGroup(/Appearance/);
+
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(window.localStorage.getItem('km.theme')).toBe('auto');
+  });
+
+  it('a manual Dark pick after Auto overrides the clock-resolved theme (manual always wins)', async () => {
+    vi.setSystemTime(new Date('2026-07-14T10:00:00')); // daytime — auto → light
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+    renderSettings();
+    expandGroup(/Appearance/);
+
+    await user.click(screen.getByRole('radio', { name: 'Auto' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+
+    await user.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(window.localStorage.getItem('km.theme')).toBe('dark');
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
   });
 
   it("selecting Dark sets data-theme + persists km.theme; System clears it", async () => {
@@ -1229,7 +1291,9 @@ describe('Settings — theme-mode control (A4)', () => {
     );
   });
 
-  it('exposes a single roving Tab stop and moves selection with arrow keys', async () => {
+  it('exposes a single roving Tab stop and moves selection with arrow keys (Light/Dark/System/Auto)', async () => {
+    // Pin the clock so Auto's resolved theme is deterministic (daytime → light).
+    vi.setSystemTime(new Date('2026-07-14T10:00:00'));
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     mocks.fetchMe.mockResolvedValue({
       id: 1,
@@ -1242,19 +1306,29 @@ describe('Settings — theme-mode control (A4)', () => {
     const light = screen.getByRole('radio', { name: 'Light' });
     const dark = screen.getByRole('radio', { name: 'Dark' });
     const system = screen.getByRole('radio', { name: 'System' });
+    const auto = screen.getByRole('radio', { name: 'Auto' });
 
     // Roving tabindex: only the checked radio (System, the default with no
     // stored km.theme) is tabbable; the rest are removed from the Tab order.
     expect(system).toHaveAttribute('tabindex', '0');
     expect(light).toHaveAttribute('tabindex', '-1');
     expect(dark).toHaveAttribute('tabindex', '-1');
+    expect(auto).toHaveAttribute('tabindex', '-1');
 
     // Focus the active radio, then drive the WAI-ARIA arrow-key contract.
     system.focus();
     expect(system).toHaveFocus();
 
-    // ArrowRight wraps from the last option (System) back to the first (Light),
+    // ArrowRight advances System → Auto (the last option in the row),
     // committing selection AND moving focus (selection follows focus).
+    await user.keyboard('{ArrowRight}');
+    expect(auto).toHaveAttribute('aria-checked', 'true');
+    expect(auto).toHaveFocus();
+    expect(auto).toHaveAttribute('tabindex', '0');
+    expect(document.documentElement.dataset.theme).toBe('light'); // 10:00 → daytime
+    expect(window.localStorage.getItem('km.theme')).toBe('auto');
+
+    // ArrowRight again wraps Auto → Light (back to the first option).
     await user.keyboard('{ArrowRight}');
     expect(light).toHaveAttribute('aria-checked', 'true');
     expect(light).toHaveFocus();
@@ -1272,11 +1346,12 @@ describe('Settings — theme-mode control (A4)', () => {
     expect(light).toHaveAttribute('aria-checked', 'true');
     expect(light).toHaveFocus();
 
-    // End jumps to the last option (System), clearing the stored choice.
+    // End jumps to the last option (Auto), storing 'auto' (not clearing it —
+    // only 'system' clears the stored choice).
     await user.keyboard('{End}');
-    expect(system).toHaveAttribute('aria-checked', 'true');
-    expect(system).toHaveFocus();
-    expect(window.localStorage.getItem('km.theme')).toBeNull();
+    expect(auto).toHaveAttribute('aria-checked', 'true');
+    expect(auto).toHaveFocus();
+    expect(window.localStorage.getItem('km.theme')).toBe('auto');
 
     // Home jumps to the first option (Light).
     await user.keyboard('{Home}');

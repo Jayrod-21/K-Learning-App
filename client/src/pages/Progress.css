@@ -40,21 +40,14 @@
   --kmp-grammar: #b98a2b;
 }
 
-.km-progress__title {
-  margin: 4px 0 14px;
-}
-
-/* ── F-128 reskin — skyline header + dancheong divider + collapsible sections ── */
-.km-progress__skyline {
-  margin: 0 0 12px;
-}
-
-.km-progress__rail-divider {
-  /* DancheongRail is `position: absolute; inset: <edge> 0` against its
-   * nearest positioned ancestor — give it one with real height. */
-  position: relative;
-  height: 26px;
-  margin: 0 0 4px;
+/* ── F-177 — skyline header + dancheong divider: extracted into the shared
+ * `PageHubHeader` component (components/PageHubHeader.css owns the base
+ * recipe now). This page's title carried one extra step of bottom margin
+ * (`4px 0 14px` vs the shared recipe's `4px 0 0`) before the migration —
+ * restored here via the `className` PageHubHeader forwards onto its root, so
+ * the migration is byte-for-byte visually, not just structurally. */
+.km-progress__hub .km-hubheader__title {
+  margin-bottom: 14px;
 }
 
 /* F-141 — replaces the old `.km-progress__card` margin (every section is

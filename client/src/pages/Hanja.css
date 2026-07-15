@@ -100,6 +100,23 @@
  * rather than patched. See `docs/redesign/FIX_REPORT_batch3.md` for the
  * measured contrast numbers. */
 
+/* ── F-180 — "Practicing" StateChip matches the index-grid mastery color ─
+ * The EncounteredBand's "Practicing" chip used to read the shared
+ * `.km-hanja__statechip--vermilion` rule (styles/index.css) — accent-
+ * tracking, so it silently recolored with the user's accent choice. The
+ * index grid two paragraphs below (`HanjaCell`, F-167 fix-pass) reads the
+ * FIXED `--km-mastery-practicing` token instead. Rather than edit the
+ * shared stylesheet (this component is Hanja-local — `StateChip` above —
+ * but its base CSS happens to live there for the other two tones), this
+ * page adds its own `ochre` variant here, reading the exact same mastery
+ * token the grid does, so "Practicing" is ONE color on this page, not two.
+ * Already AA-checked in both themes as `--km-mastery-practicing`
+ * (styles/index.css: 5.20:1 Day, 10.03:1 Night — see that file's F-167
+ * comment for the measured numbers); this rule adds no new contrast risk. */
+.km-hanja__statechip--ochre .km-hanja__statechip-count {
+  color: var(--km-mastery-practicing);
+}
+
 /* ── F-168 — index-tile "+" quick-add ─────────────────────────────── */
 .km-hanja__cell-wrap {
   position: relative;

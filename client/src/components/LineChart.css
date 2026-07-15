@@ -69,6 +69,21 @@
   stroke-width: 2;
 }
 
+/* F-174 — opt-in (`trend` prop) parity with Progress's own TrendChart
+ * (F-142): a dashed least-squares regression line, neutral `--paper-mute`
+ * ink (never the series accent — it's a derived overlay, not a fifth
+ * identity), and a thicker ring on the latest point. No animation on either
+ * — static SVG geometry, so `prefers-reduced-motion` has nothing to gate. */
+.km-linechart__trendfit {
+  stroke: var(--paper-mute);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+.km-linechart__dot--latest {
+  stroke-width: 2.5;
+}
+
 /* Invisible per-point hit columns over the plot (hover + keyboard focus). */
 .km-linechart__hit {
   position: absolute;
@@ -98,6 +113,18 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 10px;
+}
+
+/* F-174 — the trend-line caption. Real prose text (not a decorative
+ * graphical element like the ticks/grid above), so it wears the TEXT
+ * contrast token (`--paper-dim`, >= 4.5:1 in both themes) rather than the
+ * graphical-object bar the dashed line itself only needs (>= 3:1) — same
+ * fix Progress's `.km-progress__trendnote` already applied (SF3,
+ * REVIEW_batch1-fidelity.md). */
+.km-linechart__trendnote {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--paper-dim);
 }
 
 /* Empty series — a friendly placeholder, never a broken chart. */

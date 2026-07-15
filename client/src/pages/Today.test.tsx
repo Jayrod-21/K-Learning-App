@@ -496,6 +496,72 @@ describe('Today', () => {
     expect(order).toEqual([drills, suggested, topik]);
   });
 
+  it('F-177: renders the header via the shared PageHubHeader recipe, not its own inline SkylineHeader+DancheongRail copy', () => {
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    // PageHubHeader's own class names — proof the shared component (not a
+    // hand-rolled duplicate) rendered the header.
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).not.toBeNull();
+
+    // The old page-local classes this recipe used to carry (removed from
+    // Today.css alongside the migration) must be gone — never left dangling
+    // as dead-but-harmless markup.
+    expect(container.querySelector('.km-today__skyline')).toBeNull();
+    expect(container.querySelector('.km-today__rail-divider')).toBeNull();
+
+    // Content/semantics unchanged: real <h1>, same id as the page's own
+    // `aria-labelledby`, same bilingual pair.
+    const h1 = screen.getByRole('heading', { level: 1, name: '오늘 · Today' });
+    expect(h1).toHaveAttribute('id', 'today-title');
+    expect(container.querySelector('.screen.km-today')).toHaveAttribute(
+      'aria-labelledby',
+      'today-title',
+    );
+  });
+
+  it('F-177: restores the page\'s own extra 14px of title-to-rail-divider gap via a scoped `.km-today__hub` override (same fix Progress.tsx got)', () => {
+    // Before this migration, Today.css's own `.km-today__title` carried
+    // `margin: 4px 0 14px` — one step more bottom margin than the shared
+    // `PageHubHeader.css`'s base recipe (`margin: 4px 0 0`). Progress.tsx's
+    // migration restored this via a `className="km-progress__hub"` +
+    // scoped `.km-progress__hub .km-hubheader__title { margin-bottom: 14px }`
+    // override; Today's initial migration silently dropped it (BLOCKER-1,
+    // REVIEW_polish-logic.md / REVIEW_polish-fidelity.md). happy-dom does no
+    // layout, so the actual computed gap can't be measured by rendering —
+    // pin both halves of the fix from source instead (same CSS-source-read
+    // pattern as the section-title/peek-slider tests elsewhere in this
+    // file, and as Hanja.test.tsx's cross-file token pin).
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    // Half 1: the DOM side — PageHubHeader must actually receive the
+    // scoping className (it forwards `className` onto its `.km-hubheader`
+    // root, per components/PageHubHeader.tsx).
+    const hub = container.querySelector('.km-hubheader');
+    expect(hub).not.toBeNull();
+    expect(hub).toHaveClass('km-today__hub');
+
+    // Half 2: the CSS side — the scoped override rule exists in Today.css
+    // and restores exactly 14px, mirroring Progress.css's rule byte-for-byte
+    // (module-scoped `.km-progress__hub` -> `.km-today__hub`).
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+    const overrideRule =
+      /\.km-today__hub \.km-hubheader__title\s*\{[^}]*\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(overrideRule).not.toBe('');
+    expect(overrideRule).toContain('margin-bottom: 14px;');
+  });
+
   it('Review & drills and Suggested learning are the SAME peek-slider mechanism — same track/item classes, no tabs on either', () => {
     loadDefaults();
     renderTodayAt();
@@ -581,6 +647,24 @@ describe('Today', () => {
     await user.click(screen.getByRole('button', { name: 'Open Hanja study' }));
 
     expect(screen.getByText('HANJA PAGE')).toBeInTheDocument();
+  });
+
+  it('F-178: the Hanja tile uses the shared ochre skill tone, not the pre-ochre plain fallback', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const hanjaTile = screen
+      .getByRole('button', { name: 'Open Hanja study' })
+      .querySelector('.km-citycard');
+    expect(hanjaTile).toHaveClass('km-tone--ochre');
+    expect(hanjaTile).not.toHaveClass('km-tone--plain');
+
+    // The tile's pill and "done today" SealStamp ride the same tone —
+    // ochre throughout, not a mix of the old plain fallback and the newer
+    // hue on just one element.
+    expect(screen.getByText('연습').closest('.km-pill')).toHaveClass(
+      'km-pill--ochre',
+    );
   });
 
   it('navigates to /learn/grammar from the grammar drills tile (real page not "coming soon")', async () => {
