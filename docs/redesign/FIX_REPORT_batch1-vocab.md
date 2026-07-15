@@ -162,7 +162,7 @@ directly serves the same collision guarantee the reviewers were validating.
 | Client `vite build --outDir /tmp/km-b1fix` | exit **0** |
 | Server `tsc --noEmit` (typecheck) | **0** errors |
 | Server targeted vitest (`tests/routes/vocabLists.test.ts`) | **58/58** passed |
-| Server full vitest (`npx vitest run`) | **(see final message — run separately, foreground, result relayed there)** |
+| Server full vitest (`npx vitest run`) | **1359 passed / 4 skipped** (58 files passed, 1 skipped) |
 | DB suite (`docker run … python:3.12 … pytest db/tests --ignore=db/tests/test_discriminator_coverage.py -q`, up+down, `--allow-destructive`) | **113/113** passed |
 
 ## Self-assessment
