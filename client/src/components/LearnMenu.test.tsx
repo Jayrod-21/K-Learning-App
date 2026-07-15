@@ -97,6 +97,49 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     }
   });
 
+  it('F-189: wires the canonical per-skill hue map — the SAME six skill→hue tokens Today\'s tile carousels consume — with Writing no longer colliding with TOPIK', () => {
+    // Regression pin for the F-189 fix: before this batch, `writing` and
+    // `topik` both carried `--hexwrap--vermilion`, the exact bug this
+    // ticket fixes (a "Register drill" tile and the "Recommended" tile
+    // reading as the same color). Grammar now takes over the vermilion/
+    // accent family from Writing (an accepted, non-adjacent tradeoff with
+    // TOPIK — see the module header comment), freeing Writing onto violet.
+    renderMenu();
+
+    function hueOf(name: string): string {
+      const btn = screen.getByRole('button', { name: new RegExp(name) });
+      const wrap = btn.closest<HTMLElement>('.km-learnmenu__hexwrap');
+      expect(wrap).not.toBeNull();
+      const hueClass = Array.from(wrap?.classList ?? []).find((c) =>
+        c.startsWith('km-learnmenu__hexwrap--'),
+      );
+      return hueClass?.replace('km-learnmenu__hexwrap--', '') ?? '';
+    }
+
+    expect(hueOf('Vocab flashcards')).toBe('indigo');
+    expect(hueOf('Grammar practice')).toBe('vermilion');
+    expect(hueOf('Hanja')).toBe('ochre');
+    expect(hueOf('Reading')).toBe('cyan');
+    expect(hueOf('Writing')).toBe('violet');
+    expect(hueOf('TOPIK')).toBe('vermilion');
+
+    // Writing must NOT share a hue with TOPIK anymore (the bug F-189 fixes)…
+    expect(hueOf('Writing')).not.toBe(hueOf('TOPIK'));
+    // …and every one of the SIX canonical skills (excluding TOPIK, which is
+    // deliberately kept on the accent/vermilion family, not one of the 6)
+    // is pairwise distinct from every other one.
+    const sixSkillHues = [
+      hueOf('Vocab flashcards'),
+      hueOf('Grammar practice'),
+      hueOf('Hanja'),
+      hueOf('Reading'),
+      // Listening's accessible name (nav.ts) — matched loosely below.
+      hueOf('Listen'),
+      hueOf('Writing'),
+    ];
+    expect(new Set(sixSkillHues).size).toBe(sixSkillHues.length);
+  });
+
   it('navigates to the tile target and closes on activation', async () => {
     const user = userEvent.setup();
     const { onClose } = renderMenu();

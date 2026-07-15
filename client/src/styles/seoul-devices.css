@@ -165,6 +165,20 @@
 [data-theme="dark"] .km-tone--mint { --km-tone: var(--neon-mint); }
 .km-tone--ochre  { --km-tone: var(--dan-ochre); }
 [data-theme="dark"] .km-tone--ochre { --km-tone: var(--neon-amber); }
+/* F-189 — canonical per-skill color system: Reading (cyan) and Writing
+ * (violet) gain fixed `--km-tone` mappings alongside the pre-existing
+ * blue (Vocab) / mint (Listening) / ochre (Hanja) trio, so all SIX skill
+ * hues (indigo/vermilion/ochre/cyan/moss/violet) are reachable through this
+ * one shared mechanism — Today's ActivityTile tone prop and any future
+ * CityCard/DancheongRail/SealStamp consumer key off the exact same tokens
+ * the LearnMenu honeycomb already reads directly (`--cyan`/`--violet`,
+ * index.css). Unlike `blue`/`mint`/`ochre` above, no separate
+ * `[data-theme="dark"]` override is needed here: `--cyan`/`--violet`
+ * themselves are ALREADY theme-branched (re-declared inside index.css's
+ * `[data-theme="dark"]` block), so a single declaration resolves correctly
+ * in both themes via the cascade. */
+.km-tone--cyan   { --km-tone: var(--cyan); }
+.km-tone--violet { --km-tone: var(--violet); }
 .km-tone--plain  { --km-tone: var(--line-strong); }
 
 /* One-time neon flicker-on (doc §7 "a one-time subtle neon flicker-on as a

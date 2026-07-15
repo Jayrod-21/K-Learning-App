@@ -25,23 +25,27 @@
  * unmounts. While closing, the CSS turns pointer-events off (display-only
  * exit; the hexagon in BottomNav stays tappable to re-open).
  *
- * Honeycomb geometry / color coding (fix-pass batch-4, S4/N2,
- * REVIEW_batch4-fidelity.md — this comment previously described a
- * Row1=Reading·Hanja / Row2=Vocab·Grammar·Listen / Row3=Writing·TOPIK
- * layout that does not match `COMB_ROWS` below and never has; corrected to
- * the actual rendered arrangement):
- *   - Row 1: Vocab flashcards (indigo) · Grammar (violet)
+ * Honeycomb geometry / color coding (F-189 fix-pass — canonical per-skill
+ * color system, BUGS_AND_FEATURES.md "Phone round 4": Grammar and Writing
+ * swap hue families so Writing no longer collides with TOPIK, matching the
+ * SAME six skill→hue tokens Today's tile carousels now consume via
+ * `CityCard`'s `tone` prop, styles/seoul-devices.css's `.km-tone--*`
+ * mapping — one skill reads as one color everywhere, not just here):
+ *   - Row 1: Vocab flashcards (indigo) · Grammar (vermilion)
  *   - Row 2: Reading (cyan) · TOPIK (accent) · Listen/TTMIK (moss)
- *   - Row 3: Writing (accent) · Hanja (ochre)
+ *   - Row 3: Writing (violet) · Hanja (ochre)
  *   Each tile's background is the category `*-soft` chip and its TEXT uses
  *   the AA-safe `*-ink` twin; only the (non-text) icon uses the raw bright
- *   hue. Writing + TOPIK share the accent family — only 6 category hues
- *   exist and those are the two "extra" skills — but in this true 2-3-2
- *   tessellation they land non-adjacent (TOPIK row-2-center, Writing
- *   row-3-left), so the shared hue reads as "these two are special" rather
- *   than a deliberately paired block. That's an accepted tradeoff of this
- *   layout, not a bug: the 2-3-2 honeycomb (vs. a mockup 2-2-2-1 with TOPIK
- *   alone nearest the hex) is the truer tessellation for 7 tiles.
+ *   hue. Grammar + TOPIK share the vermilion/accent family — only 6 category
+ *   hues exist for the app's 6 skills, and TOPIK (the 7th, not one of the 6
+ *   F-189 canonicalizes) is deliberately kept on `accent` rather than given
+ *   a dedicated hue of its own — but in this true 2-3-2 tessellation they
+ *   land non-adjacent (TOPIK row-2-center, Grammar row-1-right), so the
+ *   shared family reads as "these two are both accent-flavored" rather than
+ *   a deliberately paired block. That's an accepted tradeoff of this layout
+ *   (the SAME tradeoff Writing+TOPIK previously made before this swap), not
+ *   a bug: the 2-3-2 honeycomb (vs. a mockup 2-2-2-1 with TOPIK alone
+ *   nearest the hex) is the truer tessellation for 7 tiles.
  *
  * Each hex is a real `<button>` that navigates + closes; there is no dead
  * center hub. Because the tiles are clip-path hexagons, a rectangular
@@ -126,9 +130,10 @@ type LearnSubpageId = (typeof LEARN_SUBPAGE_IDS)[number];
  * writing+TOPIK accent pair as adjacent "nearest the hexagon" — neither
  * matches the array below. Row 1 is vocab+grammar; row 2 is
  * reading+topik+ttmik (listen); row 3 is writing+hanja — so the two accent
- * (vermilion) tiles, TOPIK and writing, are NOT adjacent. See the module
- * header comment for the corrected color-coding + the honest tradeoff this
- * implies for the "shared hue reads as intentional" framing.
+ * (vermilion) tiles, TOPIK and grammar (F-189 moved this pairing off
+ * writing — see HEX_HUE below), are NOT adjacent. See the module header
+ * comment for the corrected color-coding + the honest tradeoff this implies
+ * for the "shared hue reads as intentional" framing.
  */
 const COMB_ROWS = [
   ['flashcards', 'grammar'],
@@ -148,15 +153,25 @@ export const LEARN_MENU_EXIT_MS =
 /**
  * Category hue per sub-page — keys into the `--<hue>` / `--<hue>-ink` /
  * `--<hue>-soft` token triplets via the `.km-learnmenu__hexwrap--<hue>`
- * CSS modifiers. The 5 token-mapped skills use their §4 hues; writing +
- * topik share the accent (vermilion) family — see the header comment.
+ * CSS modifiers. F-189 (canonical per-skill color system, "Phone round 4"):
+ * this map is now the SAME six skill→hue assignment Today's tile carousels
+ * consume via `CityCard`'s `tone` prop (`pages/Today.tsx`) — Vocab=indigo,
+ * Grammar=vermilion, Hanja=ochre (locked), Reading=cyan, Listening/ttmik=
+ * moss, Writing=violet. TOPIK (the 7th sub-page, not one of the 6 canonical
+ * skills) stays on the accent family (vermilion) so it no longer collides
+ * with Writing — Writing moved to violet, freeing vermilion for Grammar
+ * (previously Grammar was violet and Writing was vermilion; this batch
+ * swaps the two so Writing no longer doubles up with TOPIK). Grammar and
+ * TOPIK now share the vermilion/accent family instead — an accepted
+ * tradeoff (see the module header comment), not a new collision, since
+ * they land non-adjacent in the 2-3-2 tessellation.
  */
 const HEX_HUE = {
   topik: 'vermilion',
   ttmik: 'moss',
   flashcards: 'indigo',
-  grammar: 'violet',
-  writing: 'vermilion',
+  grammar: 'vermilion',
+  writing: 'violet',
   hanja: 'ochre',
   reading: 'cyan',
 } as const satisfies Record<LearnSubpageId, string>;

@@ -32,6 +32,35 @@
   margin-bottom: 14px;
 }
 
+/* F-188 — direct user feedback: a small stray colored line appeared just
+ * above-and-left of the "Review & drills" header. Root cause: PageHubHeader
+ * reuses `DancheongRail` for its `.km-hubheader__rail-divider` "divider"
+ * slot, but `DancheongRail`'s OWN geometry (DancheongRail.css) is a CARD's
+ * left-EDGE accent stripe — `position: absolute; left: 0; width: 5px` (3px
+ * Night), `top`/`bottom: 0` filling whatever height its wrapper gives it —
+ * never a horizontal rule. Inside `.km-hubheader__rail-divider`'s 26px-tall
+ * box that renders as a short vertical tick pinned to the top-left corner,
+ * sitting immediately above this page's very next element (the "Review &
+ * drills" `<h2>`, with no other content between them) — exactly the "small
+ * blue line above-and-left" the feedback describes (the color itself
+ * follows whichever accent the user has picked; `--vermilion` resolves to
+ * neon-blue under `data-accent="blue"`).
+ *
+ * Fixed by hiding just the `DancheongRail` child, scoped to THIS page's
+ * `.km-today__hub` instance (the className Today already forwards onto
+ * PageHubHeader's root — same scoping hook `.km-today__hub .km-hubheader__title`
+ * above already uses). The wrapper `.km-hubheader__rail-divider` itself is
+ * left alone (not `display:none`d) so its 26px height + 4px margin keep
+ * reserving the SAME breathing room between the header and "Review &
+ * drills" — nothing else depends on the rail's own box, only on the space
+ * it occupies. The other 6+ PageHubHeader consumers (Progress, the Library
+ * pages) do not carry `.km-today__hub`, so their own rail-divider is
+ * completely unaffected — this is a Today-local polish call, not a
+ * shared-component redesign. */
+.km-today__hub .km-hubheader__rail-divider .km-dancheong-rail {
+  display: none;
+}
+
 /* Section titles — Carousel headers (Review & drills / Suggested learning /
  * TOPIK). Direct user feedback on the live app: these used to render through
  * the shared `Eyebrow` component — a 10px all-caps subscript designed to sit
@@ -53,6 +82,17 @@
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--paper);
+}
+
+/* F-187 — direct user feedback: even after the general inter-section
+ * tightening below, the Suggested-learning → TOPIK boundary SPECIFICALLY
+ * still read as too much empty space on a real phone. Scoped to only the
+ * TOPIK heading (via the `--topik` modifier Today.tsx adds to just that
+ * `<h2>`) rather than lowering `.km-today__sectionTitle`'s shared
+ * `margin-top` for all three headers — the Review&drills → Suggested-
+ * learning gap already reads correctly and must stay exactly as-is. */
+.km-today__sectionTitle--topik {
+  margin-top: 4px;
 }
 
 /* Direct user feedback: the gap BETWEEN the three stacked carousel sections

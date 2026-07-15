@@ -168,7 +168,8 @@ describe('secondary text contrast (--paper-dim, WCAG AA)', () => {
 describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA)', () => {
   // CityCard's Night signboard body, DancheongRail's Night edge glow, and
   // SubwayProgress's fill/station dots all resolve `--km-tone` (the shared
-  // accent/blue/mint/plain mapping in seoul-devices.css). SealStamp's
+  // accent/blue/mint/ochre/cyan/violet/plain mapping in seoul-devices.css).
+  // SealStamp's
   // milestone variant is the one consumer that puts TEXT directly on that
   // fill (`background: var(--km-tone); color: var(--on-vermilion);` —
   // index.css .km-seal--milestone), so that's the pairing to guard.
@@ -182,13 +183,23 @@ describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA
   // neon-mint (Night). `accent` itself already tracks --vermilion, which is
   // covered by the existing accent-preset contrast reasoning (index.css
   // comments at the accent-preset block) — not re-derived here.
+  //
+  // F-189 adds cyan (Reading) and violet (Writing) as two more fixed
+  // `--km-tone` mappings (styles/seoul-devices.css) — unlike blue/mint,
+  // `.km-tone--cyan`/`.km-tone--violet` read `--cyan`/`--violet` directly
+  // (those tokens are ALREADY theme-branched in index.css), so both the Day
+  // and Night combos below resolve straight off the SAME token name.
   const DAY_COMBOS = [
     ['blue', 'dan-cobalt'],
     ['mint', 'dan-jade'],
+    ['cyan', 'cyan'],
+    ['violet', 'violet'],
   ] as const;
   const NIGHT_COMBOS = [
     ['blue', 'neon-blue'],
     ['mint', 'neon-mint'],
+    ['cyan', 'cyan'],
+    ['violet', 'violet'],
   ] as const;
 
   for (const [tone, fillToken] of DAY_COMBOS) {
