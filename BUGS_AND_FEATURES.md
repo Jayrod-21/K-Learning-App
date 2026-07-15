@@ -1455,7 +1455,7 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **What:** Each tile's progress bar reflects that day's actual completed exercises, not landing-page visits.
 
 #### F-139 · Remove "words" tile
-- **Status:** 🔴 open (removal shipped then REVERSED by F-190 — vocab tile restored as first-class; needs product call: reopen vs SUPERSEDED) · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
+- **Status:** ✅ done — SUPERSEDED (2026-07-15, user call: the removal was a misinterpretation; F-190 correctly restored the vocab tile as a first-class Today action — that IS the desired end state) · **Priority:** P2 · **Category:** design · **Where:** drop the words section/tile from Today.
 
 #### F-140 · Hanja tile in the Today carousel
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** add Hanja into the Today activity carousel.
