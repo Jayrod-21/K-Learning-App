@@ -714,6 +714,15 @@ describe('GET /vocab/lists/:id/cards/due (F-113)', () => {
     expect(res.status).toBe(404);
   });
 
+  it('404 after the list is soft-deleted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: 'X' });
+    const id = create.body.list.id;
+    await agent.delete(`/vocab/lists/${id}`);
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(404);
+  });
+
   it('overflowing id → 400, not a pg 500 (routes sweep #3)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(
@@ -787,6 +796,15 @@ describe('POST /vocab/lists/:id/cards/seed (F-113)', () => {
     const id = create.body.list.id;
     const b = await registerUser(t.app, pg.pool);
     const res = await b.agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(res.status).toBe(404);
+  });
+
+  it('404 after the list is soft-deleted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: 'X' });
+    const id = create.body.list.id;
+    await agent.delete(`/vocab/lists/${id}`);
+    const res = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
     expect(res.status).toBe(404);
   });
 });

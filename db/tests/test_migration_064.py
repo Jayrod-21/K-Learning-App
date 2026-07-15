@@ -410,7 +410,13 @@ def test_064_round_trip_up_down_up_rederives_cleanly(env, dsn: str, full_dir) ->
         after_down = _schedules(conn, user_id)
     assert after_down == [], "down must remove the untouched backfill rows before re-up"
 
-    rc = migrate.main(["--migrations-dir", str(full_dir), "up"])
+    # --allow-destructive: migration 065 (vocab_recognition_card_uniq) now
+    # sits after 064 in the merged chain and is itself declared destructive
+    # (its de-dupe step), so a bare "up" with no --target — which re-applies
+    # EVERYTHING still pending, not just 064 — must pass the flag too. Same
+    # collateral-flag pattern test_migration_050.py's header documents for
+    # 045 sitting ahead of 050 in ITS chain.
+    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
     assert rc == 0, (
         "064 must re-apply cleanly after its own down, re-deriving from the "
         "still-present users.preferences blob"

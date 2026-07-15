@@ -1520,7 +1520,10 @@ function ListDetailView({
                 // server's own pre-049 shape rather than assuming it.
                 const itemType = e.item_type ?? 'vocab';
                 return (
-                  <li key={e.entry_id} className="km-review__entryRow">
+                  <li
+                    key={`${itemType}:${String(e.entry_id)}`}
+                    className="km-review__entryRow"
+                  >
                     <div className="km-review__entryMain">
                       <span className="kr km-review__entryKr">
                         {e.korean ?? ''}

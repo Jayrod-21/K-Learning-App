@@ -838,10 +838,24 @@ router.get(
  * seeds a recognition card (`due_at = now()`, immediately studyable) for
  * every VOCAB entry in the list that doesn't already have one for this user.
  *
- * Idempotency mirrors `POST /vocab/cards/init` / `POST /vocab/entries/:id/
- * bank`: there is no UNIQUE constraint on (user_id, vocab_entry_id, face) —
- * see cards/init's doc comment — so re-running this is a NOT-EXISTS-gated
- * no-op for entries already carded, never a duplicate insert or a 409.
+ * Idempotency (fix-pass follow-up to the original NOT-EXISTS-gated version,
+ * server-review SHOULD-FIX #1): backed by a real DB-level guarantee now —
+ * migration 065's partial UNIQUE index `uq_vocab_cards_user_vocab_recognition`
+ * ON (user_id, vocab_entry_id) WHERE face = 'recognition' AND vocab_entry_id
+ * IS NOT NULL AND deleted_at IS NULL, mirroring the existing
+ * `uq_vocab_cards_user_grammar_production` (020) / `uq_vocab_cards_user_hanja_
+ * face` (050) precedent. `ON CONFLICT ... DO NOTHING` is atomic across
+ * concurrent transactions (unlike a bare NOT-EXISTS-then-INSERT under READ
+ * COMMITTED), so two truly concurrent seed calls for the same
+ * (user_id, vocab_entry_id) — whether same-list double-tap or racing
+ * `POST /vocab/cards/init` / `POST /vocab/entries/:id/bank` for a
+ * list-member entry — can no longer both insert. `POST /vocab/cards/init`
+ * itself is intentionally NOT touched here (out of scope for this PR; still
+ * NOT-EXISTS-gated) — it becomes safe to harden the same way once someone
+ * ports its INSERT to the same ON CONFLICT target, but the index alone
+ * already closes THIS route's exposure and backstops init's races too.
+ * The per-list `FOR UPDATE` lock is kept — it still serializes the realistic
+ * same-list double-tap case before either statement reaches the index.
  * Scoped to `entry_id IS NOT NULL` (the vocab leg) for the same reason the
  * due-queue route above is vocab-only.
  */
@@ -867,26 +881,20 @@ router.post(
         if (owner.rowCount === 0) throw new NotFoundError('vocab list not found');
 
         const { rows } = await client.query<{ inserted: number }>(
-          `WITH candidates AS (
-              SELECT le.entry_id, v.proficiency
+          `WITH ins AS (
+              INSERT INTO vocab_cards (
+                  user_id, face, vocab_entry_id, proficiency, due_at)
+              SELECT $2, 'recognition'::card_face, le.entry_id,
+                     COALESCE(v.proficiency, 'L3'::proficiency_level), now()
                 FROM vocab_list_entries le
                 JOIN vocab_entries v ON v.id = le.entry_id
                WHERE le.list_id = $1
                  AND le.entry_id IS NOT NULL
-                 AND NOT EXISTS (
-                       SELECT 1 FROM vocab_cards c
-                        WHERE c.user_id = $2
-                          AND c.vocab_entry_id = le.entry_id
-                          AND c.face = 'recognition'
-                          AND c.deleted_at IS NULL
-                     )
-           ),
-           ins AS (
-              INSERT INTO vocab_cards (
-                  user_id, face, vocab_entry_id, proficiency, due_at)
-              SELECT $2, 'recognition'::card_face, c.entry_id,
-                     COALESCE(c.proficiency, 'L3'::proficiency_level), now()
-                FROM candidates c
+              ON CONFLICT (user_id, vocab_entry_id)
+                  WHERE face = 'recognition'
+                    AND vocab_entry_id IS NOT NULL
+                    AND deleted_at IS NULL
+              DO NOTHING
               RETURNING 1
            )
            SELECT COUNT(*)::int AS inserted FROM ins`,

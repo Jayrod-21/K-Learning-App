@@ -493,7 +493,16 @@ function ListDetailSheet({
   const [entries, setEntries] = useState<VocabListEntryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [removingId, setRemovingId] = useState<number | null>(null);
+  // F-091 follow-up (SHOULD-FIX): keyed on the (entryId, itemType) PAIR, not
+  // entryId alone — a vocab row and a grammar row in the same list can share
+  // a numeric entry_id (different corpus tables), so a bare entryId key would
+  // spuriously disable the UNRELATED sibling's remove button while this one
+  // is in flight. Mirrors the composite key already used for removeEntry's
+  // optimistic filter (below) and the React `key` on each row.
+  const [removingId, setRemovingId] = useState<{
+    entryId: number;
+    itemType: ListEntryItemType;
+  } | null>(null);
   // Rename state (ported from the old Review.tsx ListDetailSheet so the
   // capability survived the dedup). `displayName` shadows the row prop after
   // a successful rename so the header updates without waiting on the parent
@@ -546,7 +555,7 @@ function ListDetailSheet({
   const removeEntry = useCallback(
     async (entryId: number, itemType: ListEntryItemType): Promise<void> => {
       if (listId === null) return;
-      setRemovingId(entryId);
+      setRemovingId({ entryId, itemType });
       // Optimistic removal — drop the row immediately; restore on failure.
       // F-091: match on the (item_type, entry_id) PAIR, not entry_id alone —
       // a grammar and a vocab membership in the same list can carry the
@@ -721,7 +730,11 @@ function ListDetailSheet({
                       onClick={() => {
                         void removeEntry(e.entry_id, itemType);
                       }}
-                      disabled={removingId === e.entry_id}
+                      disabled={
+                        removingId !== null &&
+                        removingId.entryId === e.entry_id &&
+                        removingId.itemType === itemType
+                      }
                       aria-label={`Remove ${e.korean ?? 'word'} from the list`}
                     >
                       <Icon name="close" size={12} />

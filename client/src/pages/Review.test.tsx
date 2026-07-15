@@ -696,6 +696,59 @@ describe('Review — list detail (F-060/F-061)', () => {
     ).toBeEnabled();
   });
 
+  it('F-091 collision: two rows sharing an entry_id but different item_type render + delete INDEPENDENTLY', async () => {
+    // The literal motivating scenario the ticket names: a vocab entry and a
+    // grammar entry happen to share the same numeric entry_id (different
+    // corpus tables, no cross-table uniqueness). Composite (item_type,
+    // entry_id) keying — both in the React `key` and in removeEntry's
+    // optimistic filter — must resolve the collision.
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      ...LIST_DETAIL,
+      entries: [
+        {
+          entry_id: 42,
+          item_type: 'vocab',
+          position: 1,
+          added_at: '2026-07-01T00:00:00Z',
+          korean: '학교',
+          english: 'school',
+          proficiency: 'L1',
+        },
+        {
+          entry_id: 42,
+          item_type: 'grammar',
+          position: 2,
+          added_at: '2026-07-01T00:00:00Z',
+          korean: '-으면',
+          english: 'if/when',
+          proficiency: null,
+        },
+      ],
+    });
+    vi.mocked(vocabService.removeListEntry).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(await screen.findByRole('button', { name: /Edit list/ }));
+    // Both colliding rows render distinctly — no key clobbering.
+    expect(screen.getByText('학교')).toBeInTheDocument();
+    expect(screen.getByText('-으면')).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 학교 from the list' }),
+    );
+
+    // Optimistic removal targeted the VOCAB leg only — the grammar sibling
+    // (same entry_id) survives.
+    expect(screen.queryByText('학교')).not.toBeInTheDocument();
+    expect(screen.getByText('-으면')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vocabService.removeListEntry).toHaveBeenCalledWith(7, 42, 'vocab');
+    });
+    expect(vocabService.removeListEntry).not.toHaveBeenCalledWith(7, 42, 'grammar');
+  });
+
   it('states the truncation honestly when the list is bigger than the fetched page (SF-3)', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue({
