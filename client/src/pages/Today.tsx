@@ -641,12 +641,34 @@ export function Today(): JSX.Element {
   // fabricating a total above what's actually known — same posture as the
   // server's own `resolveServedTotal` fallback (topik.ts).
   const resumeTotalItems = openAttempt?.totalItems ?? openAttempt?.answered ?? 0;
+  // F-173 fix-pass SHOULD-FIX #1 — `hasRealTotal` distinguishes a REAL
+  // server-resolved `totalItems` from the `?? answered` fallback above. The
+  // wire contract can't (yet) tell "the exam truly has exactly N items"
+  // apart from "we don't know the total, here's a lower bound" once
+  // `totalItems` is present (that's a server-side gap, out of scope for this
+  // client-only diff — see REVIEW_phaseA-today.md SHOULD-FIX #2) — but when
+  // `totalItems` is altogether ABSENT (pre-F-173 fixture data), we know for
+  // certain we're in the fallback, and must not render "of N" / a ~100%-full
+  // bar next to the "Resume exam" CTA, which would read as "exam complete."
+  const hasRealTotal = openAttempt?.totalItems !== undefined;
+  const resumeAnsweredEn =
+    openAttempt === null
+      ? ''
+      : hasRealTotal
+        ? `${String(openAttempt.answered)} of ${String(resumeTotalItems)} answered`
+        : `${String(openAttempt.answered)} answered`;
+  const resumeAnsweredKr =
+    openAttempt === null
+      ? ''
+      : hasRealTotal
+        ? `${String(resumeTotalItems)}문항 중 ${String(openAttempt.answered)}개 답변함`
+        : `${String(openAttempt.answered)}개 답변함`;
   const resumeBanner =
     openAttempt !== null ? (
       <button
         type="button"
         className="km-today__resume focusring"
-        aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${String(openAttempt.answered)} of ${String(resumeTotalItems)} answered`}
+        aria-label={`Resume exam — ${SECTION_LABELS[openAttempt.section].label} mock, ${resumeAnsweredEn}`}
         onClick={() => {
           // `?mode=mock` skips Topik.tsx's Study/Mock chooser sheet
           // (chooserOpen is seeded from `searchParams.get('mode') === null`)
@@ -1029,22 +1051,34 @@ export function Today(): JSX.Element {
                 `GET /topik/attempt` resolved a saved in-progress exam. Bar +
                 numeric readout (same pairing as Hanja.tsx's F-170 study-drill
                 bar) — the dots alone don't spell out the exact count once a
-                paper's item count exceeds SubwayProgress's dot-render cap. */}
+                paper's item count exceeds SubwayProgress's dot-render cap.
+                F-173 fix-pass SHOULD-FIX #1 — this "X of N" + bar treatment
+                is ONLY honest when `totalItems` is a real server value
+                (`hasRealTotal`); the `?? answered` fallback renders a plain
+                "N answered" line instead, with no "of N" and no bar (a bar
+                built from `totalItems ?? answered` always fills ~100%,
+                which reads as "exam complete" beside the "Resume exam" CTA
+                — see the `hasRealTotal` comment above). */}
             {openAttempt !== null ? (
               <div className="km-today__resumeProgress">
-                <SubwayProgress
-                  steps={resumeTotalItems}
-                  current={openAttempt.answered}
-                  tone={SKILL_COLOR.topik.tone}
-                  label="Resumed exam progress"
-                  valueText={`${String(openAttempt.answered)} of ${String(resumeTotalItems)} answered`}
-                />
-                <div className="km-today__resumeProgressCount">
-                  <Bilingual
-                    en={`${String(openAttempt.answered)} of ${String(resumeTotalItems)} answered`}
-                    kr={`${String(resumeTotalItems)}문항 중 ${String(openAttempt.answered)}개 답변함`}
-                  />
-                </div>
+                {hasRealTotal ? (
+                  <>
+                    <SubwayProgress
+                      steps={resumeTotalItems}
+                      current={openAttempt.answered}
+                      tone={SKILL_COLOR.topik.tone}
+                      label="Resumed exam progress"
+                      valueText={resumeAnsweredEn}
+                    />
+                    <div className="km-today__resumeProgressCount">
+                      <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
+                    </div>
+                  </>
+                ) : (
+                  <div className="km-today__resumeProgressCount">
+                    <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
+                  </div>
+                )}
               </div>
             ) : null}
             <div className="km-today__topikExtra">

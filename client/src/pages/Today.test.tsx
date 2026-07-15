@@ -1211,21 +1211,29 @@ describe('Today', () => {
     expect(within(topik).getByText('12 of 20 answered')).toBeInTheDocument();
   });
 
-  it('F-173: falls back to the real `answered` count (never a fabricated total) when a saved attempt predates `totalItems`', () => {
+  it('F-173 fix-pass SHOULD-FIX #1: a saved attempt predating `totalItems` shows the honest "N answered" wording — no "of N", no ~100%-full bar that would read as "exam complete" beside "Resume exam"', () => {
     loadDefaults();
     hoisted.attempt.state = { kind: 'data', data: ATTEMPT_NO_TOTAL };
     renderTodayAt();
 
     const topik = screen.getByRole('region', { name: 'TOPIK' });
+    // No fabricated "of N" — the fallback is a real lower bound, not a
+    // known total, so it must not be presented as one.
     const banner = within(topik).getByRole('button', {
-      name: 'Resume exam — Reading mock, 7 of 7 answered',
+      name: 'Resume exam — Reading mock, 7 answered',
     });
     expect(banner).toBeInTheDocument();
-    const bar = within(topik).getByRole('progressbar', {
-      name: 'Resumed exam progress',
-    });
-    expect(bar).toHaveAttribute('aria-valuemax', '7');
-    expect(within(topik).getByText('7 of 7 answered')).toBeInTheDocument();
+    expect(
+      within(topik).queryByRole('button', { name: /7 of 7 answered/ }),
+    ).not.toBeInTheDocument();
+    // No progress bar either — a bar built from `totalItems ?? answered`
+    // always renders ~100% full, which is the "reads as complete" bug this
+    // finding calls out.
+    expect(
+      within(topik).queryByRole('progressbar', { name: 'Resumed exam progress' }),
+    ).not.toBeInTheDocument();
+    expect(within(topik).getByText('7 answered')).toBeInTheDocument();
+    expect(within(topik).queryByText(/7 of 7 answered/)).not.toBeInTheDocument();
   });
 
   it('F-173: renders no resumed-progress bar when no attempt is saved', () => {

@@ -630,11 +630,18 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     ).toBeInTheDocument();
   });
 
-  it('B-017: the writing-review section renders even while mistakes are loading or errored', () => {
+  it('B-017: the writing-review section renders even while mistakes are loading or errored', async () => {
     hoisted.state = { kind: 'error' };
     renderPage();
     expect(
       screen.getByRole('heading', { name: /Writing review/ }),
+    ).toBeInTheDocument();
+    // Let the mocked `fetchWritingAttempts()` promise (beforeEach's default
+    // empty-history resolve) actually settle before the test ends — asserting
+    // synchronously here left it in flight, risking an "update not wrapped in
+    // act(...)" warning if a later render tick landed after teardown.
+    expect(
+      await screen.findByRole('button', { name: /TOPIK writing responses/ }),
     ).toBeInTheDocument();
   });
 

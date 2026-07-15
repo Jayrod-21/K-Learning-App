@@ -356,13 +356,59 @@ function MistakeSheetBody({
  */
 const WRITING_ATTEMPTS_FETCH_LIMIT = 100;
 
-/** Rubric → short bilingual label for one history row. */
+/**
+ * Rubric → short bilingual label for one history row. Exhaustive `switch`
+ * (matches `Diagnostic.tsx`'s `sectionLabel` / `Ttmik.tsx`'s
+ * `TranscriptPanel` idiom) — B-017 fix-pass: a widened
+ * `ck_writing_attempts_rubric` CHECK (migration 056+) that adds a 4th
+ * `WritingRubric` value must fail this file at compile time, not fall
+ * through to a mislabeled default.
+ */
 function writingRubricLabel(
   rubric: WritingAttemptDTO['rubric'],
 ): { en: string; kr: string } {
-  if (rubric === 'topik_ii_53') return { en: 'Q53', kr: '53번' };
-  if (rubric === 'topik_ii_54') return { en: 'Q54', kr: '54번' };
-  return { en: 'Free write', kr: '자유 작문' };
+  switch (rubric) {
+    case 'topik_ii_53':
+      return { en: 'Q53', kr: '53번' };
+    case 'topik_ii_54':
+      return { en: 'Q54', kr: '54번' };
+    case 'free_write':
+      return { en: 'Free write', kr: '자유 작문' };
+    default: {
+      // Exhaustiveness guard — a new WritingRubric member must update this switch.
+      const exhausted: never = rubric;
+      throw new Error(`writingRubricLabel: unhandled WritingRubric ${String(exhausted)}`);
+    }
+  }
+}
+
+/**
+ * Which writing-review sub-section a rubric's attempts belong in — exhaustive
+ * `switch` over the closed `WritingRubric` type, same idiom as
+ * `writingRubricLabel` above. B-017 fix-pass: the previous two-way
+ * `filter`/`filter` split (`a.rubric !== 'free_write'` /
+ * `a.rubric === 'free_write'`) would silently land any future 4th rubric
+ * value in the TOPIK bucket instead of surfacing it. A `never`-typed default
+ * makes that a compile error the moment `WritingRubric` (or the DB CHECK it
+ * mirrors, migration 056) is widened without updating this file, and throws
+ * loudly if an unrecognized value somehow still reaches runtime (e.g. a
+ * server/client version skew).
+ */
+function writingRubricBucket(
+  rubric: WritingAttemptDTO['rubric'],
+): 'topik' | 'generated' {
+  switch (rubric) {
+    case 'topik_ii_53':
+    case 'topik_ii_54':
+      return 'topik';
+    case 'free_write':
+      return 'generated';
+    default: {
+      // Exhaustiveness guard — a new WritingRubric member must update this switch.
+      const exhausted: never = rubric;
+      throw new Error(`writingRubricBucket: unhandled WritingRubric ${String(exhausted)}`);
+    }
+  }
 }
 
 /**
@@ -483,9 +529,15 @@ function WritingReviewSection(): JSX.Element {
 
   // The DB's own CHECK constraint (migration 038/056) is the ONLY taxonomy
   // here: `free_write` is a Claude-generated topic; the other two are
-  // TOPIK-bank prompts. No client-invented bucketing.
-  const topikAttempts = attempts.filter((a) => a.rubric !== 'free_write');
-  const generatedAttempts = attempts.filter((a) => a.rubric === 'free_write');
+  // TOPIK-bank prompts. No client-invented bucketing. `writingRubricBucket`
+  // is an exhaustive switch (see above) rather than a two-way filter, so a
+  // future 4th rubric value fails to compile instead of silently misfiling.
+  const topikAttempts = attempts.filter(
+    (a) => writingRubricBucket(a.rubric) === 'topik',
+  );
+  const generatedAttempts = attempts.filter(
+    (a) => writingRubricBucket(a.rubric) === 'generated',
+  );
 
   return (
     <section
