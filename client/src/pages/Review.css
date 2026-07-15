@@ -294,13 +294,18 @@
 }
 .km-review__entryRow {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
 }
 .km-review__entryRow:last-child {
   border-bottom: none;
+}
+.km-review__entryMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .km-review__entryKr {
   font-size: 0.9375rem;
@@ -315,6 +320,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* F-112 — the corpus example sentence rendered under a list-entry row. */
+.km-review__entryExample {
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+}
+.km-review__entryExampleEn {
+  color: var(--paper-dim);
 }
 /* Honest-truncation note under the entry rows (lists past the server's
    100-row detail page). */

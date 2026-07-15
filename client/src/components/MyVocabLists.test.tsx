@@ -352,7 +352,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     await user.click(
       within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
     );
-    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1);
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
     // Optimistic: the row is gone BEFORE the server answers; its sibling stays.
     expect(within(dialog).queryByText('영향')).not.toBeInTheDocument();
     expect(within(dialog).getByText('환경')).toBeInTheDocument();
@@ -458,6 +458,86 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('F-091: removes an entry by (item_type, entry_id) — passes the type through to the server call', async () => {
+    vocabSvc.getListDetail.mockResolvedValue({
+      list: SERVER_LIST,
+      entries: [
+        {
+          entry_id: 1,
+          item_type: 'vocab',
+          position: 0,
+          added_at: 'x',
+          korean: '영향',
+          english: 'influence',
+          proficiency: 'L3',
+        },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('영향');
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
+    );
+
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
+  });
+
+  it('F-091: defaults a missing item_type to \'vocab\' (back-compat with a pre-091 fixture)', async () => {
+    // LIST_DETAIL's default rows (set in beforeEach) carry no item_type.
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('영향');
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
+    );
+
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
+  });
+
+  it('F-112: renders the corpus example sentence under a row when the entry has one on file', async () => {
+    vocabSvc.getListDetail.mockResolvedValue({
+      list: SERVER_LIST,
+      entries: [
+        {
+          entry_id: 1,
+          position: 0,
+          added_at: 'x',
+          korean: '영향',
+          english: 'influence',
+          proficiency: 'L3',
+          example_korean: '이것은 큰 영향을 미친다.',
+          example_english: 'This has a big influence.',
+        },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText('이것은 큰 영향을 미친다.'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/This has a big influence\./)).toBeInTheDocument();
   });
 
   it('shows the honest empty invitation when there are no lists yet', async () => {

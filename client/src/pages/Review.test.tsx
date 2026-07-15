@@ -104,9 +104,10 @@ vi.mock('../services/vocab', () => ({
   getDueCards: vi.fn(),
   getDueCardsPage: vi.fn(),
   submitReview: vi.fn(),
-  bankEntry: vi.fn(),
   listLists: vi.fn(),
   getListDetail: vi.fn(),
+  getListDueCards: vi.fn(),
+  seedListCards: vi.fn(),
   createList: vi.fn(),
   patchList: vi.fn(),
   deleteList: vi.fn(),
@@ -246,6 +247,44 @@ const DUE_STUDY: StudyCard[] = [
     wire: { kind: 'due', snapshot: DUE_RAW },
   },
 ];
+
+/**
+ * F-113 — the list-due queue's wire shape is byte-identical to the global
+ * due queue's (both go through `normalizeDueCard`), so these are plain
+ * `DueCard`s matching LIST_DETAIL's two entries (42 → 학교, 43 → 영향), as
+ * `vocabService.getListDueCards` would resolve them post-normalization.
+ */
+const LIST_DUE_SCHOOL: DueCard = {
+  id: 900,
+  face: 'recognition',
+  due_at: new Date().toISOString(),
+  stability: '0',
+  difficulty: '0',
+  fsrs_state: 'new',
+  vocab_entry_id: 42,
+  grammar_entry_id: null,
+  source_sentence_id: null,
+  topik_item_id: null,
+  version: 1,
+  vocabKorean: '학교',
+  vocabEnglish: 'school',
+};
+
+const LIST_DUE_INFLUENCE: DueCard = {
+  id: 901,
+  face: 'recognition',
+  due_at: new Date().toISOString(),
+  stability: '0',
+  difficulty: '0',
+  fsrs_state: 'new',
+  vocab_entry_id: 43,
+  grammar_entry_id: null,
+  source_sentence_id: null,
+  topik_item_id: null,
+  version: 1,
+  vocabKorean: '영향',
+  vocabEnglish: 'influence',
+};
 
 const GRAMMAR_DUE: DueCard[] = [
   {
@@ -595,7 +634,10 @@ describe('Review — list detail (F-060/F-061)', () => {
     // Optimistic: the row is gone before the server settles.
     expect(screen.queryByText('학교')).not.toBeInTheDocument();
     await waitFor(() => {
-      expect(vocabService.removeListEntry).toHaveBeenCalledWith(7, 42);
+      // F-091: the type-qualified delete — LIST_DETAIL's fixture rows carry
+      // no item_type, so the component defaults the missing field to
+      // 'vocab' (the pre-049 shape every such row actually is).
+      expect(vocabService.removeListEntry).toHaveBeenCalledWith(7, 42, 'vocab');
     });
   });
 
@@ -687,6 +729,118 @@ describe('Review — list detail (F-060/F-061)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// F-112 — example sentences on list-detail rows
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — F-112 example sentences on list-detail rows', () => {
+  it('renders the corpus example sentence under a row when the entry has one on file', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      ...LIST_DETAIL,
+      entries: [
+        {
+          ...LIST_DETAIL.entries[0]!,
+          example_korean: '학교에 간다.',
+          example_english: 'I go to school.',
+        },
+        LIST_DETAIL.entries[1]!,
+      ],
+    });
+    renderReview('/learn/vocab?list=7');
+
+    expect(await screen.findByText('학교에 간다.')).toBeInTheDocument();
+    expect(screen.getByText(/I go to school\./)).toBeInTheDocument();
+  });
+
+  it('renders no example line for a row with none on file', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    renderReview('/learn/vocab?list=7');
+
+    await screen.findByText('학교');
+    expect(screen.queryByText('학교에 간다.')).not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// F-113 — bulk "add all to review" (list detail)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — bulk add-all-to-review (F-113)', () => {
+  it('seeds every word in the list into review and reports the inserted count', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.seedListCards).mockResolvedValue({ inserted: 2 });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(
+      await screen.findByRole('button', { name: /Add all to review/ }),
+    );
+
+    await waitFor(() => {
+      expect(vocabService.seedListCards).toHaveBeenCalledWith(7);
+    });
+    expect(
+      await screen.findByText('Added 2 cards to review.'),
+    ).toBeInTheDocument();
+  });
+
+  it('reports an honest "already in review" message when nothing new was inserted (idempotent re-seed)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.seedListCards).mockResolvedValue({ inserted: 0 });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(
+      await screen.findByRole('button', { name: /Add all to review/ }),
+    );
+
+    expect(
+      await screen.findByText('Every word here is already in review.'),
+    ).toBeInTheDocument();
+  });
+
+  it('surfaces a fixed-copy alert when seeding fails — never the server prose', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.seedListCards).mockRejectedValue(
+      new ApiError('constraint violated', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?list=7');
+
+    await user.click(
+      await screen.findByRole('button', { name: /Add all to review/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Could not add these words to review. Try again.',
+    );
+    expect(alert).not.toHaveTextContent('constraint violated');
+  });
+
+  it('disables Add all to review for a list with no studyable words', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue({
+      ...LIST_DETAIL,
+      list: LISTS[1]!,
+      entries: [],
+    });
+    renderReview('/learn/vocab?list=8');
+
+    expect(
+      await screen.findByRole('heading', { name: '뉴스 어휘' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Add all to review/ }),
+    ).toBeDisabled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // Study session
 // ─────────────────────────────────────────────────────────────
 
@@ -694,6 +848,10 @@ describe('Review — study session', () => {
   it('pins the displayed rating intervals to the server FSRS tuning (B-021)', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.getListDueCards).mockResolvedValue({
+      cards: [LIST_DUE_SCHOOL],
+      total: 1,
+    });
     const user = userEvent.setup();
     renderReview('/learn/vocab?list=7&study=1');
 
@@ -714,14 +872,15 @@ describe('Review — study session', () => {
     }
   });
 
-  it('persists a list-card rating via the bank→review pair', async () => {
+  it('persists a list-study rating directly against the list-due card snapshot (F-113)', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
-    vi.mocked(vocabService.bankEntry).mockResolvedValue({
-      card: { id: 900, version: 3 },
+    vi.mocked(vocabService.getListDueCards).mockResolvedValue({
+      cards: [LIST_DUE_SCHOOL],
+      total: 1,
     });
     vi.mocked(vocabService.submitReview).mockResolvedValue({
-      version: 4,
+      version: 2,
       due_at: new Date().toISOString(),
       scheduled_days: 1,
     });
@@ -731,16 +890,37 @@ describe('Review — study session', () => {
     await user.click(await screen.findByRole('button', { name: 'Flip card' }));
     await user.click(screen.getByRole('button', { name: /Good/ }));
 
+    // F-113: list study is due-aware — the card came from the list's own
+    // due queue already carrying its version snapshot, so the rating posts
+    // straight through submitReview, exactly like the global due queue (no
+    // separate bank-then-review round trip).
     await waitFor(() => {
-      expect(vocabService.bankEntry).toHaveBeenCalledWith(42);
-      // The review rides the bank call's fresh version snapshot — the
-      // server owns the FSRS transition, so the payload is rating+version
-      // ONLY.
       expect(vocabService.submitReview).toHaveBeenCalledWith(900, {
         rating: 'good',
-        expected_version: 3,
+        expected_version: 1,
       });
     });
+  });
+
+  it('shows an honest empty state when nothing in the list is due, hinting at bulk-seeding (F-113)', async () => {
+    settleLanding();
+    vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
+    vi.mocked(vocabService.getListDueCards).mockResolvedValue({
+      cards: [],
+      total: 0,
+    });
+    renderReview('/learn/vocab?list=7&study=1');
+
+    expect(
+      await screen.findByText(
+        'Nothing in this list is due for review right now.',
+      ),
+    ).toBeInTheDocument();
+    expect(vocabService.getListDueCards).toHaveBeenCalledWith(
+      7,
+      undefined,
+      expect.anything(),
+    );
   });
 
   it('persists a due-queue rating directly against the card snapshot', async () => {
@@ -762,7 +942,6 @@ describe('Review — study session', () => {
         expected_version: 1,
       });
     });
-    expect(vocabService.bankEntry).not.toHaveBeenCalled();
   });
 
   it('spacebar reveals the answer face', async () => {
@@ -1023,9 +1202,10 @@ describe('Review — completion (F-062)', () => {
   it('shows session stats after the last card: count, breakdown, next-due summary', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
-    vi.mocked(vocabService.bankEntry)
-      .mockResolvedValueOnce({ card: { id: 900, version: 1 } })
-      .mockResolvedValueOnce({ card: { id: 901, version: 1 } });
+    vi.mocked(vocabService.getListDueCards).mockResolvedValue({
+      cards: [LIST_DUE_SCHOOL, LIST_DUE_INFLUENCE],
+      total: 2,
+    });
     vi.mocked(vocabService.submitReview)
       .mockResolvedValueOnce({
         version: 2,
@@ -1152,8 +1332,9 @@ describe('Review — completion (F-062)', () => {
   it('Done returns to the list detail view', async () => {
     settleLanding();
     vi.mocked(vocabService.getListDetail).mockResolvedValue(LIST_DETAIL);
-    vi.mocked(vocabService.bankEntry).mockResolvedValue({
-      card: { id: 900, version: 1 },
+    vi.mocked(vocabService.getListDueCards).mockResolvedValue({
+      cards: [LIST_DUE_SCHOOL, LIST_DUE_INFLUENCE],
+      total: 2,
     });
     vi.mocked(vocabService.submitReview).mockResolvedValue({
       version: 2,

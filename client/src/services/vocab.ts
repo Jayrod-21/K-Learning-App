@@ -28,6 +28,7 @@ import type {
   DueCard,
   InitCardsBody,
   InitCardsResult,
+  ListEntryItemType,
   ListListsResponse,
   MasteryBucket,
   MasteryPage,
@@ -441,13 +442,66 @@ export async function addListEntries(
   });
 }
 
-/** DELETE /vocab/lists/:id/entries/:entryId */
+/**
+ * DELETE /vocab/lists/:id/entries/:entryId — F-091: `itemType` selects WHICH
+ * target column the server deletes against (`?type=`). Defaults to `'vocab'`
+ * for back-compat with every caller before this — that was the only target
+ * type any live UI could add, so an unqualified call keeps its exact
+ * pre-091 behavior. Callers rendering a multitype list (migration 049 — a
+ * list can hold vocab AND grammar AND hanja rows whose numeric ids may
+ * collide) MUST pass the row's real `item_type`, or a grammar/hanja removal
+ * either 404s (nothing to delete in the vocab column) or — worse — deletes
+ * an unrelated vocab row that happens to share the same numeric id.
+ */
 export async function removeListEntry(
   id: number,
   entryId: number,
+  itemType: ListEntryItemType = 'vocab',
 ): Promise<void> {
   await api.delete<void>(
     `/vocab/lists/${String(id)}/entries/${String(entryId)}`,
+    { params: { type: itemType } },
+  );
+}
+
+/**
+ * GET /vocab/lists/:id/cards/due — F-113: the due-aware twin of
+ * `getDueCardsPage`, scoped to one list's vocab memberships. Reuses the exact
+ * same wire shape (`DueCardWire`/`normalizeDueCard`) as the global due queue,
+ * so a list-study session persists ratings through the SAME server-
+ * authoritative `submitReview` path — no parallel FSRS write path.
+ */
+export async function getListDueCards(
+  listId: number,
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<{ cards: DueCard[]; total: number }> {
+  const params = limit !== undefined ? { limit } : undefined;
+  const res = await api.get<{ cards: DueCardWire[]; total: number }>(
+    `/vocab/lists/${String(listId)}/cards/due`,
+    {
+      ...(params !== undefined ? { params } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    },
+  );
+  return { cards: res.cards.map(normalizeDueCard), total: res.total };
+}
+
+/**
+ * POST /vocab/lists/:id/cards/seed — F-113 bulk "add all to review": seeds a
+ * recognition card for every vocab entry in the list that doesn't already
+ * have one. Idempotent server-side (NOT EXISTS-gated, same convention as
+ * `initCards`/`bankEntry`) — safe to call repeatedly; already-carded entries
+ * are silently skipped and `inserted` only counts the new ones.
+ */
+export async function seedListCards(
+  listId: number,
+  signal?: AbortSignal,
+): Promise<{ inserted: number }> {
+  return api.post<{ inserted: number }>(
+    `/vocab/lists/${String(listId)}/cards/seed`,
+    {},
+    signal !== undefined ? { signal } : undefined,
   );
 }
 
