@@ -8,6 +8,7 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
+import { getLogger } from '../logging.js';
 
 export class AppError extends Error {
   public readonly status: number;
@@ -105,6 +106,23 @@ export class UpstreamError extends AppError {
 }
 
 /**
+ * Client-safe message per Claude-proxy error `code` (services/claude/errors.ts
+ * — every ClaudeProxyError's `code` is its class name). Deliberately generic:
+ * no upstream/provider text, no request internals. Anything not listed here
+ * (every 5xx-class proxy error: ClaudeUnavailableError, ClaudeOutputSchemaError,
+ * ClaudeAuthError, ClaudePersistenceError, and any future/unknown code) falls
+ * back to `DEFAULT_UPSTREAM_MESSAGE` below.
+ */
+const CLAUDE_CLIENT_MESSAGES: Readonly<Record<string, string>> = {
+  ClaudeInputValidationError: 'your request could not be processed',
+  PromptInjectionRejectedError: 'your message could not be processed',
+  ClaudeRateLimitError: 'too many requests — please slow down and try again shortly',
+};
+
+const DEFAULT_UPSTREAM_MESSAGE =
+  'the AI assistant is temporarily unavailable — please try again';
+
+/**
  * Map an error thrown by the Claude proxy (it carries `httpStatus`/`code` —
  * see services/claude/errors.ts) to a wire-safe UpstreamError.
  *
@@ -120,20 +138,37 @@ export class UpstreamError extends AppError {
  * misconfig) still flattens to a blanket 502 with no provider detail.
  * Non-proxy errors (NotFound/Conflict/…) pass through unchanged.
  *
- * Shared by the generation routes (writing.ts / reading.ts). grammarDrill /
- * diagnostic / imageIngest / conversation still carry private flatten-to-502
- * copies — migrating them is a wire-contract change tracked as F-094 in
- * BUGS_AND_FEATURES.md.
+ * F-124: the wire message is now a fixed, whitelisted string picked by `code`
+ * (`CLAUDE_CLIENT_MESSAGES` / `DEFAULT_UPSTREAM_MESSAGE`) — NEVER the raw
+ * `${code}: ${message}` template this used to forward. That was safe only by
+ * accident (every proxy message today happens to be a fixed generic string);
+ * a future non-generic upstream message (or a code we don't explicitly
+ * whitelist) would otherwise leak straight to the client. The raw code/message
+ * are still captured, but only in the server-side log line below — never on
+ * the response body.
+ *
+ * F-094: the SINGLE shared mapper for every Claude-touching route
+ * (writing.ts / reading.ts / grammarDrill.ts / diagnostic.ts / conversation.ts /
+ * imageIngest.ts). Those routes used to carry private flatten-always-to-502
+ * copies that predated the 4xx passthrough above — migrated onto this helper
+ * so an injection rejection or the proxy's own limiter reads as 400/429
+ * everywhere, not just on the generation routes.
  */
 export function mapClaudeError(err: unknown): unknown {
   if (err && typeof err === 'object' && 'httpStatus' in err) {
     const status = (err as { httpStatus?: unknown }).httpStatus;
     const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
+    const rawMessage = (err as { message?: string }).message ?? 'claude error';
+    // Server-side-only detail — never forwarded to the client (see doc comment).
+    getLogger().warn(
+      { claudeCode: code, claudeMessage: rawMessage, claudeHttpStatus: status },
+      'claude proxy error mapped to client response',
+    );
     if (typeof status === 'number' && status >= 400 && status < 500) {
-      return new UpstreamError(`${code}: ${message}`, { status });
+      const clientMessage = CLAUDE_CLIENT_MESSAGES[code] ?? 'your request could not be processed';
+      return new UpstreamError(clientMessage, { status });
     }
-    return new UpstreamError(`${code}: ${message}`);
+    return new UpstreamError(DEFAULT_UPSTREAM_MESSAGE);
   }
   return err;
 }

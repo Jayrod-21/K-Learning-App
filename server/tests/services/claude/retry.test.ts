@@ -40,10 +40,46 @@ describe('isRetryable', () => {
     expect(isRetryable(new Error('socket hang up'))).toBe(true);
   });
 
-  it('retries APIConnectionError by name', () => {
-    const e = new Error('failed to connect');
-    e.name = 'APIConnectionError';
+  it('B-032: retries a real APIConnectionError-shaped error (status undefined, generic SDK message) — NOT by name', () => {
+    // Mirrors the real @anthropic-ai/sdk shape: APIConnectionError extends
+    // APIError<undefined, ...> and never overrides Error.prototype.name, so a
+    // genuine instance's `.name` is "Error", not "APIConnectionError". The old
+    // `name === 'APIConnectionError'` check could never match a real error —
+    // this test builds the ACTUAL shape (no status, no name override) to prove
+    // the fix recognizes it structurally instead.
+    const e = new Error('Connection error.') as Error & { status?: number };
+    expect(e.name).toBe('Error');
     expect(isRetryable(e)).toBe(true);
+  });
+
+  it('B-032: retries a connection error surfaced via `.cause` (the SDK attaches the raw transport error there)', () => {
+    const transport = new Error('connect ECONNREFUSED 127.0.0.1:443') as Error & {
+      code: string;
+    };
+    transport.code = 'ECONNREFUSED';
+    const wrapped = new Error('Connection error.', { cause: transport });
+    expect(isRetryable(wrapped)).toBe(true);
+  });
+
+  it('retries plain connection errors by OS code (ECONNRESET/ECONNREFUSED)', () => {
+    const reset = new Error('read ECONNRESET') as Error & { code: string };
+    reset.code = 'ECONNRESET';
+    expect(isRetryable(reset)).toBe(true);
+
+    const refused = new Error('connect ECONNREFUSED') as Error & { code: string };
+    refused.code = 'ECONNREFUSED';
+    expect(isRetryable(refused)).toBe(true);
+  });
+
+  it('retries "connection terminated" style messages', () => {
+    expect(isRetryable(new Error('Connection terminated unexpectedly'))).toBe(true);
+  });
+
+  it('does NOT retry a non-connection Error with no status (e.g. a logic/programming bug)', () => {
+    // A plain thrown Error that ISN'T a connection failure must still fail
+    // fast — the fix must not turn "any status-less error" into retryable.
+    expect(isRetryable(new Error('undefined is not a function'))).toBe(false);
+    expect(isRetryable(new Error('Zod validation failed'))).toBe(false);
   });
 
   it('does not retry non-error values', () => {
@@ -145,5 +181,32 @@ describe('withRetry', () => {
     });
     await expect(withRetry(fn, opts)).rejects.toBeInstanceOf(ClaudeUnavailableError);
     expect(fn).toHaveBeenCalledTimes(4);
+  });
+
+  it('B-032: retries a simulated transient connection error (ECONNRESET) then succeeds', async () => {
+    sleep.mockClear();
+    let n = 0;
+    const fn = vi.fn(async () => {
+      n += 1;
+      if (n < 2) {
+        const e = new Error('read ECONNRESET') as Error & { code: string };
+        e.code = 'ECONNRESET';
+        throw e;
+      }
+      return 'recovered';
+    });
+    const r = await withRetry(fn, opts);
+    expect(r).toBe('recovered');
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry a non-transient error (e.g. a Zod/logic failure with no status/connection shape)', async () => {
+    const err = new Error('output failed schema validation');
+    const fn = vi.fn(async () => {
+      throw err;
+    });
+    await expect(withRetry(fn, opts)).rejects.toBe(err);
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 });

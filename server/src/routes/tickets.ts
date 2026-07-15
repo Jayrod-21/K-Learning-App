@@ -291,7 +291,25 @@ router.patch(
         ],
       );
       const ticket = rows[0];
-      if (!ticket) throw new ConflictError('stale ticket version');
+      if (!ticket) {
+        // The UPDATE matched no row. Two distinct causes collapse into the
+        // same rowCount=0 here (B-033): the version genuinely moved on
+        // (real optimistic-concurrency conflict, 409), OR the ticket vanished
+        // between the pre-read above and this UPDATE (today only reachable
+        // via a cascading DELETE FROM users — there is no DELETE /tickets/:id
+        // yet). Re-probe (owner-scoped, same IDOR posture as the pre-read) to
+        // tell them apart: gone → 404, so the client sees the truthful state
+        // instead of being told to refetch-and-retry a ticket that no longer
+        // exists; still present → the version really did move → 409.
+        const probe = await query<{ id: number }>(
+          `SELECT id FROM tickets WHERE id = $1 AND user_id = $2`,
+          [ticketId, userId],
+        );
+        if (probe.rows.length === 0) {
+          throw new NotFoundError('ticket not found');
+        }
+        throw new ConflictError('stale ticket version');
+      }
       res.status(200).json({ ticket });
     } catch (err) {
       next(err);

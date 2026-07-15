@@ -11,7 +11,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Pool } from 'pg';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
@@ -23,6 +23,7 @@ import {
 } from '../helpers/app.js';
 import { registerUser, seedImageCapture } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { setClaudeProxy } from '../../src/services/claudeProxy.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -45,6 +46,30 @@ let ocrImageCalls = 0;
  * call count can pin "no second Claude call".
  */
 let nameConversationCalls = 0;
+
+/**
+ * (Re)install the suite's default Claude proxy: the deterministic stub with
+ * `ocrImage`/`nameConversation` wrapped in the SF-1/F-036 call counters above.
+ * Factored out so a test that needs to temporarily swap in a different
+ * `nameConversation` (F-125 concurrency test below) can cleanly restore the
+ * shared app's normal counted behavior afterward instead of leaking its
+ * override into later tests.
+ */
+function installCountedProxy(): void {
+  const baseProxy = makeStubProxy();
+  setClaudeProxy(
+    makeStubProxy({
+      ocrImage: async (input) => {
+        ocrImageCalls += 1;
+        return baseProxy.ocrImage(input);
+      },
+      nameConversation: async (input) => {
+        nameConversationCalls += 1;
+        return baseProxy.nameConversation(input);
+      },
+    }),
+  );
+}
 
 /**
  * A minimal but VALID 1x1 PNG (8-byte signature + IHDR + IDAT + IEND) —
@@ -106,6 +131,9 @@ beforeAll(async () => {
       },
     },
   });
+  // buildTestApp already installed the equivalent via setClaudeProxy
+  // internally; installCountedProxy() below is only for tests that need to
+  // temporarily swap the proxy and then restore this exact behavior.
 });
 
 afterAll(async () => {
@@ -802,6 +830,61 @@ describe('conversation titles — auto-name (F-036) + rename', () => {
     expect(second.body.generated).toBe(false);
     expect(second.body.title).toBe(first.body.title);
     expect(nameConversationCalls).toBe(1);
+  });
+
+  describe('two concurrent first-name calls (F-125)', () => {
+    afterEach(() => {
+      // This block temporarily swaps in an artificially-delayed proxy to
+      // widen the race window (below) — restore the suite's normal counted
+      // stub so later tests' `nameConversationCalls`/`ocrImageCalls`
+      // assertions keep working.
+      installCountedProxy();
+      resetLimiters();
+    });
+
+    it('exactly one title is PERSISTED, and both callers observe the same survivor title', async () => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const start = await agent.post('/conversation').send({ mode: 'casual' });
+      const id = start.body.conversation.id as number;
+      await agent
+        .post(`/conversation/${id}/messages`)
+        .send({ content: '내일 면접이 있어서 연습하고 싶어요', expected_version: 1 });
+
+      // Widen the race window with an artificial delay in the Claude call so
+      // both requests' read-check (`title IS NULL`) reliably lands before
+      // either commits its UPDATE — a real network round-trip does this
+      // naturally; the delay makes the test deterministic instead of relying
+      // on scheduler luck.
+      const baseProxy = makeStubProxy();
+      setClaudeProxy(
+        makeStubProxy({
+          nameConversation: async (input) => {
+            await new Promise((r) => setTimeout(r, 50));
+            return baseProxy.nameConversation(input);
+          },
+        }),
+      );
+
+      const [r1, r2] = await Promise.all([
+        agent.post(`/conversation/${id}/name`).send({}),
+        agent.post(`/conversation/${id}/name`).send({}),
+      ]);
+
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      // Storage never diverges: whichever call's UPDATE wins, the OTHER call's
+      // `WHERE title IS NULL` guard fails (0 rows), so it re-reads and returns
+      // the winner's title — both responses must agree.
+      expect(r1.body.title).toBe(r2.body.title);
+      expect(typeof r1.body.title).toBe('string');
+
+      const row = await pg.pool.query<{ title: string | null }>(
+        'SELECT title FROM conversations WHERE id = $1',
+        [id],
+      );
+      expect(row.rows).toHaveLength(1);
+      expect(row.rows[0]!.title).toBe(r1.body.title);
+    });
   });
 
   it('PATCH /:id renames; a later auto-name does NOT clobber the user-chosen title (no Claude spend)', async () => {

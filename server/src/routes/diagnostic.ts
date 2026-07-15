@@ -45,7 +45,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ConflictError, NotFoundError, UpstreamError } from '../middleware/errors.js';
+import { ConflictError, NotFoundError, UpstreamError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { DiagnosticTargetLevel, ProficiencyLevel } from '../services/claude/index.js';
 import {
@@ -1580,26 +1580,5 @@ router.get('/history', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
-
-/**
- * Map a Claude proxy error (which carries httpStatus/code) into our UpstreamError
- * so the error handler returns a clean 502. Non-proxy errors pass through.
- *
- * We deliberately do NOT forward the upstream's HTTP status: UpstreamError is
- * always 502 by design (the route's posture is "Claude failed, that's a bad
- * gateway, period"), and surfacing the upstream's raw status to the client
- * would leak information about our provider integration (SECURITY.md §13.7).
- * The upstream `code`/`message` are folded into the message for our own logs;
- * `UpstreamError`'s `details` is intentionally left undefined so nothing
- * provider-specific reaches the wire.
- */
-function mapClaudeError(err: unknown): unknown {
-  if (err && typeof err === 'object' && 'httpStatus' in err) {
-    const code = (err as { code?: string }).code ?? 'upstream_error';
-    const message = (err as { message?: string }).message ?? 'claude error';
-    return new UpstreamError(`${code}: ${message}`);
-  }
-  return err;
-}
 
 export default router;

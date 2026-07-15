@@ -32,6 +32,10 @@ import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import {
+  ClaudeRateLimitError,
+  PromptInjectionRejectedError,
+} from '../../src/services/claude/errors.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -171,6 +175,56 @@ describe('POST /grammar-drill — generate + persist + answer-strip', () => {
         `SELECT count(*)::text AS n FROM grammar_drill_attempts`,
       );
       expect(rows[0]!.n).toBe('0');
+    } finally {
+      await teardownTestApp(failApp);
+    }
+  });
+
+  // F-094: grammarDrill.ts used to carry a private always-flatten-to-502
+  // mapClaudeError copy. Now on the shared helper (middleware/errors.ts,
+  // hardened by F-124) — a proxy-origin CLIENT-FAULT (injection rejection /
+  // the proxy's own per-route limiter) must surface as 400/429, not a
+  // misleading 502 "outage". Mirrors generation.test.ts's equivalent
+  // assertion for writing/reading.
+  it('proxy prompt-injection rejection → 400 (not 502) and writes NO attempt row', async () => {
+    const failApp = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        generateGrammarDrill: async () => {
+          throw new PromptInjectionRejectedError('user input contains injection marker');
+        },
+      },
+    });
+    try {
+      const { agent } = await registerUser(failApp.app, pg.pool);
+      const res = await agent.post('/grammar-drill').send(GEN_BODY);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('upstream_error');
+      // The safe client message must NOT leak the raw upstream code:message.
+      expect(res.body.error.message).not.toContain('PromptInjectionRejectedError');
+      const { rows } = await pg.pool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM grammar_drill_attempts`,
+      );
+      expect(rows[0]!.n).toBe('0');
+    } finally {
+      await teardownTestApp(failApp);
+    }
+  });
+
+  it('proxy per-route rate limit → 429 (not 502)', async () => {
+    const failApp = buildTestApp({
+      connectionString: pg.connectionString,
+      claudeProxy: {
+        generateGrammarDrill: async () => {
+          throw new ClaudeRateLimitError('generate_grammar_drill rate limit exhausted');
+        },
+      },
+    });
+    try {
+      const { agent } = await registerUser(failApp.app, pg.pool);
+      const res = await agent.post('/grammar-drill').send(GEN_BODY);
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe('upstream_error');
     } finally {
       await teardownTestApp(failApp);
     }
