@@ -183,7 +183,10 @@ const PLAN: TodayPlan = {
   largestGap: 'Listening',
 };
 
-/** A saved F-007 mock attempt, as GET /topik/attempt returns it. */
+/** A saved F-007 mock attempt, as GET /topik/attempt returns it. `totalItems`
+ *  (F-173) is deliberately DIFFERENT from `answered` so a test asserting the
+ *  real total can't pass by coincidence against a fallback-to-`answered`
+ *  value. */
 const ATTEMPT: AttemptState = {
   section: 'listening',
   sourceTest: 60,
@@ -191,6 +194,21 @@ const ATTEMPT: AttemptState = {
   picks: { '101': 'a', '102': 'c' },
   remainingMs: 1_260_000,
   answered: 12,
+  totalItems: 20,
+  updatedAt: '2026-07-01T09:00:00.000Z',
+};
+
+/** F-173 — a pre-F-173 attempt fixture missing `totalItems` entirely (an
+ *  older saved attempt, or a fixture predating the field). The client type
+ *  marks it optional for exactly this case; the resumed-progress readout
+ *  must fall back to the real `answered` count, never fabricate a total. */
+const ATTEMPT_NO_TOTAL: AttemptState = {
+  section: 'reading',
+  sourceTest: 41,
+  currentIdx: 7,
+  picks: { '201': 'b' },
+  remainingMs: 900_000,
+  answered: 7,
   updatedAt: '2026-07-01T09:00:00.000Z',
 };
 
@@ -1149,7 +1167,7 @@ describe('Today', () => {
 
     const topik = screen.getByRole('region', { name: 'TOPIK' });
     const banner = within(topik).getByRole('button', {
-      name: 'Resume exam — Listening mock, 12 answered',
+      name: 'Resume exam — Listening mock, 12 of 20 answered',
     });
     await user.click(banner);
     // Must carry `?mode=mock` — Topik.tsx seeds its Study/Mock chooser sheet
@@ -1168,6 +1186,56 @@ describe('Today', () => {
       screen.queryByRole('button', { name: /Resume exam/ }),
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/No exam in progress/)).not.toBeInTheDocument();
+  });
+
+  // ── F-173 — real "X of N" resumed-attempt progress ───────────────
+
+  it('F-173: renders a real "X of N" SubwayProgress + numeric readout for a resumed attempt, sourced from AttemptState.totalItems', () => {
+    loadDefaults();
+    hoisted.attempt.state = { kind: 'data', data: ATTEMPT };
+    renderTodayAt();
+
+    const topik = screen.getByRole('region', { name: 'TOPIK' });
+    // The SubwayProgress bar itself: a real progressbar carrying the exact
+    // answered/total the fixture set (12/20) — not a fabricated ratio.
+    const bar = within(topik).getByRole('progressbar', {
+      name: 'Resumed exam progress',
+    });
+    expect(bar).toHaveAttribute('aria-valuemin', '1');
+    expect(bar).toHaveAttribute('aria-valuemax', '20');
+    expect(bar).toHaveAttribute('aria-valuenow', '13'); // 0-indexed `current` (12) + 1
+    expect(bar).toHaveAttribute('aria-valuetext', '12 of 20 answered');
+    // The paired numeric caption (Hanja.tsx's F-170 bar+readout convention) —
+    // spells out the same real "12 of 20" for sighted users the dots alone
+    // don't always convey.
+    expect(within(topik).getByText('12 of 20 answered')).toBeInTheDocument();
+  });
+
+  it('F-173: falls back to the real `answered` count (never a fabricated total) when a saved attempt predates `totalItems`', () => {
+    loadDefaults();
+    hoisted.attempt.state = { kind: 'data', data: ATTEMPT_NO_TOTAL };
+    renderTodayAt();
+
+    const topik = screen.getByRole('region', { name: 'TOPIK' });
+    const banner = within(topik).getByRole('button', {
+      name: 'Resume exam — Reading mock, 7 of 7 answered',
+    });
+    expect(banner).toBeInTheDocument();
+    const bar = within(topik).getByRole('progressbar', {
+      name: 'Resumed exam progress',
+    });
+    expect(bar).toHaveAttribute('aria-valuemax', '7');
+    expect(within(topik).getByText('7 of 7 answered')).toBeInTheDocument();
+  });
+
+  it('F-173: renders no resumed-progress bar when no attempt is saved', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const topik = screen.getByRole('region', { name: 'TOPIK' });
+    expect(
+      within(topik).queryByRole('progressbar', { name: 'Resumed exam progress' }),
+    ).not.toBeInTheDocument();
   });
 
   // ── F-138 — real per-tile "done today" counts ───────────────

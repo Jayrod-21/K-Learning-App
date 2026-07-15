@@ -221,6 +221,23 @@
   border-top: 1px solid var(--line);
 }
 
+/* F-173 — the resumed-TOPIK-attempt "X of N" progress row. Same rhythm as
+ * `.km-today__tileProgress` (a hairline-separated row under the tile), kept
+ * as its own class since it sits between the tile and the "Review mistakes"
+ * shortcut, not inside `ActivityTile`'s own `extra` slot. */
+.km-today__resumeProgress {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.km-today__resumeProgressCount {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--paper-dim);
+  text-align: right;
+}
+
 /* TOPIK's "Review mistakes" shortcut, folded into the suggested-learning
  * page instead of its own carousel tab (F-135). */
 .km-today__topikExtra {

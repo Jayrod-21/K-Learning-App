@@ -1,14 +1,18 @@
 /**
  * Mistakes page (F-021, reworked P3b: F-044/F-045/F-046/F-024; Wave-2
- * F-128/F-154 — square question-tile grid + Sheet popup) — render
- * behaviour over a mocked `useEndpointOrMock`.
+ * F-128/F-154 — square question-tile grid + Sheet popup; B-017 — the
+ * writing-review section is now real, GET /writing/attempts data instead of
+ * a "coming soon" stub) — render behaviour over a mocked `useEndpointOrMock`.
  *
  * The hook is mocked so we drive the loading / data / empty / error surfaces
  * directly (mirrors Hanja.test.tsx). Fixtures pass through `vi.hoisted` so the
  * hoisted `vi.mock` factory can reference them. The CollapsibleTile / Sheet /
  * FilterSelect / BackButton primitives are REAL — the tests exercise the
  * actual disclosure, popup, filtering, and navigation behaviour, not mocks
- * of it.
+ * of it. `WritingReviewSection` bypasses `useEndpointOrMock` entirely (a
+ * plain abortable AbortController fetch — see Mistakes.tsx's header doc), so
+ * its own `services/writing.fetchWritingAttempts` is mocked separately,
+ * independent of the `hoisted.state` that drives the mistakes feed.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -52,9 +56,15 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
   ),
 }));
 vi.mock('../services/topik', () => ({ fetchMistakes: vi.fn() }));
+// B-017 — WritingReviewSection fetches directly (a plain abortable
+// AbortController effect, NOT the mocked useEndpointOrMock above), so its
+// real service call needs its own mock, independent of `hoisted.state`.
+vi.mock('../services/writing', () => ({ fetchWritingAttempts: vi.fn() }));
 
 import Mistakes from './Mistakes';
 import { fetchMistakes } from '../services/topik';
+import { fetchWritingAttempts } from '../services/writing';
+import type { WritingAttemptDTO } from '../services/writing';
 
 /** Study-mode miss — July 6. */
 const MISTAKE: Mistake = {
@@ -120,6 +130,32 @@ const MISTAKE_MOCK: Mistake = {
   },
 };
 
+/** B-017 fixture — a graded TOPIK-bank Q54 attempt. */
+const WRITING_ATTEMPT_TOPIK: WritingAttemptDTO = {
+  id: 1,
+  promptId: 10,
+  rubric: 'topik_ii_54',
+  promptKr: '다음 자료를 분석하여 글을 쓰십시오.',
+  sample: '이 자료는...',
+  totalScore: 42,
+  maxTotal: 50,
+  estimatedLevel: 'L4',
+  gradedAt: '2026-07-08T09:00:00.000Z',
+};
+
+/** B-017 fixture — a graded Claude-generated free-write attempt. */
+const WRITING_ATTEMPT_GENERATED: WritingAttemptDTO = {
+  id: 2,
+  promptId: null,
+  rubric: 'free_write',
+  promptKr: '가장 기억에 남는 여행에 대해 써 보세요.',
+  sample: '작년 여름에...',
+  totalScore: 18,
+  maxTotal: 20,
+  estimatedLevel: null,
+  gradedAt: '2026-07-05T09:00:00.000Z',
+};
+
 function renderPage(): ReturnType<typeof render> {
   return render(
     <MemoryRouter>
@@ -168,6 +204,16 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     hoisted.state = { kind: 'loading' };
     hoisted.lastOptions = null;
     vi.mocked(fetchMistakes).mockClear();
+    // B-017 — every render mounts WritingReviewSection, which fetches for
+    // real; default to an empty (but successful) history so mistakes-only
+    // tests below never trip over an unmocked/rejected call. Tests that
+    // care about the writing section override this per-case.
+    vi.mocked(fetchWritingAttempts).mockReset();
+    vi.mocked(fetchWritingAttempts).mockResolvedValue({
+      attempts: [],
+      limit: 100,
+      offset: 0,
+    });
   });
 
   // ── F-154: square question-tile grid, divided by session/date ─────────
@@ -492,16 +538,23 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     expect(screen.getByTestId('review-library')).toBeInTheDocument();
   });
 
-  // ── F-046: writing review (stubbed pending F-106) ─────────────────────
+  // ── B-017: writing review — real GET /writing/attempts data ───────────
 
-  it('F-046: the writing-review section renders its two parts as collapsed tiles with honest coming-soon copy', async () => {
+  it('B-017: fetches the real writing history and renders it split into the TOPIK/Generated sub-sections — no fabricated "coming soon" copy', async () => {
     hoisted.state = { kind: 'data', data: [MISTAKE] };
+    vi.mocked(fetchWritingAttempts).mockResolvedValue({
+      attempts: [WRITING_ATTEMPT_TOPIK, WRITING_ATTEMPT_GENERATED],
+      limit: 100,
+      offset: 0,
+    });
     const user = userEvent.setup();
     renderPage();
     expect(
       screen.getByRole('heading', { name: /Writing review/ }),
     ).toBeInTheDocument();
-    const topikTile = screen.getByRole('button', {
+
+    // Tiles render collapsed only once the real fetch settles.
+    const topikTile = await screen.findByRole('button', {
       name: /TOPIK writing responses/,
     });
     const promptsTile = screen.getByRole('button', {
@@ -509,15 +562,75 @@ describe('Mistakes page (F-021 + P3b rework)', () => {
     });
     expect(topikTile).toHaveAttribute('aria-expanded', 'false');
     expect(promptsTile).toHaveAttribute('aria-expanded', 'false');
-    // Expanding shows the HONEST stub — no fabricated history rows.
+
+    await user.click(topikTile);
+    const topikBody = document.getElementById(
+      topikTile.getAttribute('aria-controls') as string,
+    ) as HTMLElement;
+    expect(within(topikBody).queryByText(/coming soon/i)).not.toBeInTheDocument();
+    // Real score + prompt from the fetched attempt, not a fabricated row.
+    expect(within(topikBody).getByText('42/50')).toBeInTheDocument();
+    expect(
+      within(topikBody).getByText(WRITING_ATTEMPT_TOPIK.promptKr),
+    ).toBeInTheDocument();
+    // The free-write attempt must NOT leak into the TOPIK sub-section.
+    expect(
+      within(topikBody).queryByText(WRITING_ATTEMPT_GENERATED.promptKr),
+    ).not.toBeInTheDocument();
+
+    await user.click(promptsTile);
+    const promptsBody = document.getElementById(
+      promptsTile.getAttribute('aria-controls') as string,
+    ) as HTMLElement;
+    expect(within(promptsBody).getByText('18/20')).toBeInTheDocument();
+    expect(
+      within(promptsBody).getByText(WRITING_ATTEMPT_GENERATED.promptKr),
+    ).toBeInTheDocument();
+  });
+
+  it('B-017: renders honest empty-state copy (not the old stub) when the caller has no graded writing yet', async () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    // beforeEach already defaults fetchWritingAttempts to an empty history.
+    const user = userEvent.setup();
+    renderPage();
+
+    const topikTile = await screen.findByRole('button', {
+      name: /TOPIK writing responses/,
+    });
     await user.click(topikTile);
     const body = document.getElementById(
       topikTile.getAttribute('aria-controls') as string,
     ) as HTMLElement;
-    expect(within(body).getByText(/coming soon/i)).toBeInTheDocument();
+    expect(
+      within(body).getByText(/No graded TOPIK writing yet/),
+    ).toBeInTheDocument();
+    expect(within(body).queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 
-  it('F-046: the writing-review section renders even while mistakes are loading or errored', () => {
+  it('B-017: shows an ErrorCard with a working Retry when the writing-history fetch fails', async () => {
+    hoisted.state = { kind: 'data', data: [MISTAKE] };
+    vi.mocked(fetchWritingAttempts)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({
+        attempts: [WRITING_ATTEMPT_TOPIK],
+        limit: 100,
+        offset: 0,
+      });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText('Could not load your writing history.'),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByRole('button', { name: /TOPIK writing responses/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('B-017: the writing-review section renders even while mistakes are loading or errored', () => {
     hoisted.state = { kind: 'error' };
     renderPage();
     expect(

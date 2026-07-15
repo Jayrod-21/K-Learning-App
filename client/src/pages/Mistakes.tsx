@@ -38,17 +38,24 @@
  * session (in the selector labels) and for the visible scope (the live stat
  * line). No fabricated scores.
  *
- * F-046 — writing review, stubbed. `writing_attempts` rows ARE persisted by
- * POST /grade-writing (migration 038), but the only read is the aggregate
- * GET /writing/series — there is no per-response history endpoint yet
- * (ticket F-106, twin of F-074). The section renders its two designed
- * parts (TOPIK writing responses · generated-prompt responses) as collapsed
- * tiles with an honest "coming soon" body. Nothing is fabricated.
+ * F-046/B-017 — writing review, wired to the real per-response history.
+ * `writing_attempts` rows are persisted by POST /grade-writing (migration
+ * 038); F-106 shipped `GET /writing/attempts` (server/src/routes/
+ * writing.ts:329-401), already consumed the same way on Today.tsx
+ * (`today.writingAttempts`). `WritingReviewSection` below fetches the
+ * caller's own graded-writing history once (abortable AbortController
+ * effect — the VocabBrowse/AddToListSheet pattern, not `useEndpointOrMock`:
+ * a single-shot user-scoped history read has no fixture/mock need the way
+ * this page's own mistakes feed does) and splits it into the two ALREADY-
+ * designed sub-sections by the row's own persisted `rubric` — TOPIK bank
+ * prompts (`topik_ii_53`/`topik_ii_54`) vs Claude-generated topics
+ * (`free_write`), a real DB-constrained split (migration 038/056), not a
+ * client-invented category. The former "coming soon" stub is gone.
  *
  * F-024 — this is a nested sub-page of the Review library, so it opens with
  * a `BackButton` pinned to the canonical parent route `/review`.
  */
-import { useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { AskAboutThisButton } from '../components/AskAboutThisButton';
 import { BackButton } from '../components/BackButton';
 import { Bilingual } from '../components/Bilingual';
@@ -65,7 +72,10 @@ import { navItem } from '../lib/nav';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
+import { errorMessageFor } from '../lib/errorCopy';
+import { ApiError } from '../services/api';
 import { fetchMistakes, type Mistake } from '../services/topik';
+import { fetchWritingAttempts, type WritingAttemptDTO } from '../services/writing';
 import { loadMistakesMock } from '../data/mocks/mistakes';
 import { cn } from '../lib/cn';
 import './Mistakes.css';
@@ -339,12 +349,144 @@ function MistakeSheetBody({
 }
 
 /**
- * F-046 — Writing review, two designed parts, both honestly stubbed until a
- * per-response history endpoint exists (ticket F-106; see module note).
- * Static — no fetch happens here, so the section renders regardless of the
- * mistakes load state and can never add an error path of its own.
+ * Server-validated fetch cap for the writing-review section, matching the
+ * `GET /writing/attempts` ceiling (`AttemptsQuerySchema.limit.max(100)`,
+ * server/src/routes/writing.ts) — same convention as the page's own
+ * `MISTAKES_FETCH_LIMIT` above.
+ */
+const WRITING_ATTEMPTS_FETCH_LIMIT = 100;
+
+/** Rubric → short bilingual label for one history row. */
+function writingRubricLabel(
+  rubric: WritingAttemptDTO['rubric'],
+): { en: string; kr: string } {
+  if (rubric === 'topik_ii_53') return { en: 'Q53', kr: '53번' };
+  if (rubric === 'topik_ii_54') return { en: 'Q54', kr: '54번' };
+  return { en: 'Free write', kr: '자유 작문' };
+}
+
+/**
+ * One graded-writing history row — rides the shared `.km-reference__row`
+ * list styling the rest of the Review library uses (ReviewVocab.tsx's
+ * Browse list). Read-only: there is no per-attempt detail route to open, so
+ * unlike the mistakes tiles above, a row is not a button.
+ */
+function WritingAttemptRow({
+  attempt,
+}: {
+  attempt: WritingAttemptDTO;
+}): JSX.Element {
+  const when = whenLabel(attempt.gradedAt);
+  const rubric = writingRubricLabel(attempt.rubric);
+  return (
+    <li className="km-reference__row">
+      <div className="km-mistakes__writingRow">
+        <div className="km-mistakes__writingRow-main">
+          <span className="kr km-mistakes__writingRow-prompt">
+            {attempt.promptKr}
+          </span>
+          <span className="km-mistakes__writingRow-meta">
+            <Bilingual en={rubric.en} kr={rubric.kr} />
+            {when !== '' ? <> · {when}</> : null}
+            {attempt.estimatedLevel !== null ? (
+              <> · {attempt.estimatedLevel}</>
+            ) : null}
+          </span>
+        </div>
+        <span className="km-pill km-pill--default km-mistakes__writingRow-score">
+          {attempt.totalScore}/{attempt.maxTotal}
+        </span>
+      </div>
+    </li>
+  );
+}
+
+/** The list-or-empty-state body for one writing-review sub-section. */
+function WritingAttemptList({
+  attempts,
+  emptyEn,
+  emptyKr,
+}: {
+  attempts: WritingAttemptDTO[];
+  emptyEn: string;
+  emptyKr: string;
+}): JSX.Element {
+  if (attempts.length === 0) {
+    return (
+      <p className="km-reference__empty">
+        <Bilingual en={emptyEn} kr={emptyKr} />
+      </p>
+    );
+  }
+  return (
+    <Card className="km-reference__list" variant="flat">
+      <ul>
+        {attempts.map((a) => (
+          <WritingAttemptRow key={a.id} attempt={a} />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+/**
+ * F-046/B-017 — Writing review: the caller's own graded-writing history via
+ * `GET /writing/attempts` (F-106), replacing the former "coming soon" stub.
+ * One abortable fetch on mount (AbortController — VocabBrowse's pattern, not
+ * `useEndpointOrMock`: a single-shot user-scoped history read has no
+ * fixture/mock need the way the page's own mistakes feed does), then split
+ * client-side into the two ALREADY-designed sub-sections by the row's own
+ * persisted `rubric` (a real DB-constrained taxonomy, migration 038/056 —
+ * never a fabricated category).
  */
 function WritingReviewSection(): JSX.Element {
+  const [attempts, setAttempts] = useState<WritingAttemptDTO[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Monotonic reload trigger so ErrorCard's Retry re-runs the fetch effect
+  // without needing a second piece of state (mirrors VocabBrowse's
+  // `reloadTick`).
+  const [reloadTick, setReloadTick] = useState(0);
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    ctrlRef.current?.abort();
+    ctrlRef.current = ctrl;
+    // Sync-to-external-system (a network fetch) — the same exception
+    // useEndpointOrMock/VocabBrowse document for their kickoff setState.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+
+    fetchWritingAttempts({ limit: WRITING_ATTEMPTS_FETCH_LIMIT }, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setAttempts(res.attempts);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load your writing history.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [reloadTick]);
+
+  const refetch = useCallback(() => {
+    setReloadTick((t) => t + 1);
+  }, []);
+
+  // The DB's own CHECK constraint (migration 038/056) is the ONLY taxonomy
+  // here: `free_write` is a Claude-generated topic; the other two are
+  // TOPIK-bank prompts. No client-invented bucketing.
+  const topikAttempts = attempts.filter((a) => a.rubric !== 'free_write');
+  const generatedAttempts = attempts.filter((a) => a.rubric === 'free_write');
+
   return (
     <section
       className="km-mistakes__writing"
@@ -353,34 +495,50 @@ function WritingReviewSection(): JSX.Element {
       <h2 id="km-mistakes-writing-title" className="km-mistakes__section-title">
         <Bilingual en="Writing review" kr="쓰기 복습" />
       </h2>
-      <CollapsibleTile
-        surface="city"
-        tone="plain"
-        rail
-        defaultCollapsed
-        title={<Bilingual en="TOPIK writing responses" kr="TOPIK 쓰기 응답" />}
-      >
-        <p className="km-mistakes__stub">
-          <Bilingual
-            en="Your graded TOPIK writing (Q53 · Q54) will appear here with each score out of its maximum — coming soon. New attempts are already being saved."
-            kr="채점된 TOPIK 쓰기(53·54번)가 점수와 함께 여기에 표시될 예정이에요. 새 연습은 이미 저장되고 있어요."
-          />
-        </p>
-      </CollapsibleTile>
-      <CollapsibleTile
-        surface="city"
-        tone="plain"
-        rail
-        defaultCollapsed
-        title={<Bilingual en="Generated prompts" kr="생성된 주제" />}
-      >
-        <p className="km-mistakes__stub">
-          <Bilingual
-            en="Responses you wrote against Claude-generated prompts will appear here — coming soon."
-            kr="Claude가 만든 주제에 쓴 글이 여기에 표시될 예정이에요."
-          />
-        </p>
-      </CollapsibleTile>
+
+      {loading ? (
+        <Card className="km-mistakes__state" aria-busy="true">
+          <Eyebrow>
+            <Bilingual
+              en="Loading your writing history"
+              kr="쓰기 기록을 불러오는 중"
+            />
+          </Eyebrow>
+          <div className="km-mistakes__skeleton-line" />
+          <div className="km-mistakes__skeleton-line" />
+        </Card>
+      ) : error !== null ? (
+        <ErrorCard message={error} onRetry={refetch} />
+      ) : (
+        <>
+          <CollapsibleTile
+            surface="city"
+            tone="plain"
+            rail
+            defaultCollapsed
+            title={<Bilingual en="TOPIK writing responses" kr="TOPIK 쓰기 응답" />}
+          >
+            <WritingAttemptList
+              attempts={topikAttempts}
+              emptyEn="No graded TOPIK writing yet — your next Q53/Q54 grade will appear here."
+              emptyKr="아직 채점된 TOPIK 쓰기가 없어요 — 다음 53·54번 채점이 여기에 표시돼요."
+            />
+          </CollapsibleTile>
+          <CollapsibleTile
+            surface="city"
+            tone="plain"
+            rail
+            defaultCollapsed
+            title={<Bilingual en="Generated prompts" kr="생성된 주제" />}
+          >
+            <WritingAttemptList
+              attempts={generatedAttempts}
+              emptyEn="No responses to a generated prompt yet."
+              emptyKr="아직 생성된 주제에 쓴 글이 없어요."
+            />
+          </CollapsibleTile>
+        </>
+      )}
     </section>
   );
 }

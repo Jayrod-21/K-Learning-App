@@ -34,3 +34,24 @@
     transition: none;
   }
 }
+
+/* F-121 — the final-reveal focus-handoff stand-in (see the component's
+ * header doc). Same block/width/padding rhythm as `.km-showmore` so nothing
+ * shifts when the button is replaced by this caption, but styled as inert
+ * text (muted color, solid hairline, no cursor/hover) since it offers no
+ * action — it exists to give the handed-off focus ring somewhere visible
+ * to land, not to invite another click. */
+.km-showmore__done {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  font-family: var(--font-display);
+  color: var(--paper-mute);
+  text-align: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
