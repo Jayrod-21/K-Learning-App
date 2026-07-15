@@ -689,7 +689,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **Notes:** Run before/alongside the new-table work (ticketing F-023, lists F-048/F-061, uploads sub-pages F-053/F-056, writing history F-046/F-074).
 
 ### B-017 · Placeholders shown where real database data should render
-- **Status:** 🟡 partial (backend F-106 live but Mistakes.tsx WritingReviewSection still a "coming soon" stub — not wired into the page; re-verified 2026-07-15) · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P1 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** No placeholders on pages for areas that actually need to show database data. Sweep all pages and wire every such area to real data.
 - **Notes:** Same failure class as the earlier `useEndpointOrMock` fixture-as-real finding — treat as silently-broken, not cosmetic.
 
@@ -1099,12 +1099,12 @@ New tickets from Phase 0:
 - **Notes:** B-026 spinoff. Do not load until the numbering is understood.
 
 ### B-032 · `withRetry` never retries plain connection errors (dead error-name check)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
 - **What:** `server/src/services/claude/retry.ts` gates a retry on `err.name === 'APIConnectionError'`, but the Anthropic SDK reports `.name === 'Error'` on connection failures (verified against both 0.80 and 0.110), so that branch is dead — a transient network drop to Claude isn't retried.
 - **Notes:** Pre-existing (NOT introduced by the dep bump); surfaced by the dep-vuln /fixpass runtime review (SF-2). Fix = duck-type on the SDK's actual connection-error shape (e.g. `status`/cause), add a test.
 
 ### F-085 · Node 22 upgrade consistency sweep (CI + client Dockerfile + compose + engines guard)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** CONFIG · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** CONFIG · **Beta:** —
 - **What:** The server Dockerfile moved to `node:22-alpine` (dep-vuln fix). For consistency + because Node 20 is EOL: bump CI `node-version: 20`→22 (`.github/workflows/*`), move the client Dockerfile(s) node:20→22, update stale `node:20-alpine` mentions in the compose healthcheck comments, and add an `"engines": { "node": ">=20.19" }` guard to `server/package.json` (uuid@14's undeclared ESM floor).
 - **Notes:** Surfaced by the dep-vuln /fixpass re-review. Non-blocking (CI currently runs Node 20.20.2 ≥20.19, so tests pass). Sibling of B-032.
 
@@ -1119,12 +1119,12 @@ New tickets from Phase 0:
 - **Notes:** Surfaced + ruled non-blocking by the Phase-1 /fixpass re-review; the mint 2.99:1 gap predates Phase-1 (in `rebuild`'s own token comments). Do this **before the overhaul mounts Tabs / accent-driven selection at scale**.
 
 ### F-088 · Per-migration explicit destructive marker (vs pattern-sniffing)
-- **Status:** 🟢 done (Phase B2a) · **Priority:** P3 · **Category:** CONFIG (DATABASE) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** CONFIG (DATABASE) · **Beta:** —
 - **What:** `migrate.py`'s destructive gate detects `DROP TABLE`/`TRUNCATE` by SQL-pattern. It does NOT catch mass `DELETE FROM` (046.down) or `DROP COLUMN` (041) — and widening the patterns would force `--allow-destructive` onto legitimate additive migrations (e.g. 045's `DELETE`, 041's `DROP COLUMN`). Cleaner: an explicit per-migration marker (e.g. a header directive `-- migrate: destructive`) the runner reads, so destructiveness is declared, not sniffed.
 - **Notes:** Surfaced by the P2-G1 /fixpass (gate-widening deferred with rationale). Implemented as `-- migrate: destructive|non-destructive` (`MIGRATE_DIRECTIVE_PATTERN`, `explicit_destructiveness`, `db/migrate.py`): an explicit marker wins over the sniff when present; unmarked files (every migration 001-061) fall back to the unchanged legacy sniff (backward-compat preserved). String literals can't forge a marker (`_strip_string_literals_only`); both directives in one file raises `ConflictingDestructiveMarkers`. Unit tests in `db/tests/test_migrations.py`; exercised end-to-end by 062 (non-destructive) and 063/064's down files (destructive — the mass-DELETE/DROP-COLUMN gap this ticket names, now correctly gated). 046.down itself was NOT retrofitted with a marker (out of scope — already-applied migration content is checksum-locked).
 
 ### F-089 · Revoke default TEMP privilege from `km_app`
-- **Status:** 🟢 done (Phase B2a, migration 062) · **Priority:** P3 · **Category:** DATABASE (CONFIG) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** DATABASE (CONFIG) · **Beta:** —
 - **What:** `km_app` (migration 047) is least-privilege for DML but still holds Postgres's default `TEMP` privilege on the database (temp-table creation). Tighten to true least-privilege: `REVOKE TEMP ON DATABASE ... FROM km_app` (+ from PUBLIC). Low risk; completes the B-030 hardening.
 - **Notes:** Surfaced by the P2-G1 /fixpass dbinfra review (NIT, deferred). Sibling of B-030. Verified zero `CREATE TEMP`/`CREATE TEMPORARY`/`pg_temp` usage anywhere in `server/src` or `db/migrations` before writing the REVOKE (repo-wide grep, confirmed clean). `db/migrations/062_revoke_km_app_temp.{up,down}.sql` revokes/restores both km_app's own grant (defensive — never explicitly granted) and PUBLIC's database-level default (the real fix, protects future roles too); marked non-destructive (F-088) since a privilege REVOKE is not data loss. Tests: `db/tests/test_migration_062.py`.
 
@@ -1134,7 +1134,7 @@ New tickets from Phase 0:
 - **Notes:** Surfaced by the P2-G1 /fixpass re-review. Not a bug — a product decision for the F-078 build.
 
 ### B-033 · Tickets PATCH returns 409 instead of 404 when the ticket vanishes mid-update
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
 - **Where:** `server/src/routes/tickets.ts` (~252-273) — PATCH `/tickets/:id`.
 - **Root cause:** If the ticket row disappears between the pre-read and the versioned UPDATE (today only possible via a cascading `DELETE FROM users`), the UPDATE affects 0 rows and the handler throws `ConflictError('stale ticket version')` — telling the client to refetch-and-retry a ticket that no longer exists (the refetch 404s, so the client self-corrects after one wasted round trip).
 - **Fix hint:** When the UPDATE returns no row, re-probe existence (owner-scoped) and throw `NotFoundError` vs `ConflictError` accordingly. Low severity now; **becomes user-visible the day a `DELETE /tickets/:id` endpoint ships — do not build that endpoint without this** (and revisit the comment-moderation question in the same design pass).
@@ -1147,7 +1147,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G2 /fixpass (lists review SF-2). Harmless today — no UI can put a non-vocab item in a list yet.
 
 ### F-092 · notification_deliveries needs a uniqueness-based claim key before a sender ships
-- **Status:** 🟢 done (Phase B2a, migration 063) · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
 - **What:** The 052 deliveries log's idempotency story is probe-newest-then-insert-pending. Without a `UNIQUE (schedule_id, <firing-window>)` there is a probe→insert race in which two workers both claim the same firing and double-send.
 - **Fix hint:** When the F-040 sender phase is built, add a `window_start` (or equivalent firing-window) column + UNIQUE constraint as the real claim — the insert, not the probe, must be the arbiter. Table is trivially alterable until then.
 - **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-2). Copy into the sender-phase spec. `db/migrations/063_notification_deliveries_claim_key.{up,down}.sql` adds `window_start TIMESTAMPTZ NOT NULL` + `uq_notification_deliveries_schedule_window UNIQUE (schedule_id, window_start)`. Claim/settle primitives in `server/src/services/notificationDelivery.ts` (`claimDelivery` = atomic `INSERT ... ON CONFLICT DO NOTHING`; `settleDelivery` = `UPDATE ... WHERE status='pending'`, the "unclaimed" guard) — still no sender/scheduler, just the guard rail per the ticket's own scope. Tests: `server/tests/services/notificationDelivery.test.ts`, including an 8-way `Promise.all` concurrent-claim test proving exactly one winner under real Postgres. Down is marked destructive (F-088) — DROP COLUMN would lose claim history.
@@ -1159,7 +1159,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3). The Settings notification SECTION (the actual UI) had already migrated to `/notifications/schedules` before this batch — the schedule rows are what F-040 shipped. Phase B2a did the EXPAND half: `db/migrations/064_backfill_notification_schedules_from_prefs.{up,down}.sql` backfills `notification_schedules` from any pre-existing blob intent (gated on `channel.email`, `ON CONFLICT DO NOTHING` so real user data always wins, defensive `jsonb_typeof` guards against a malformed blob aborting the migration) — see `db/tests/test_migration_064.py`. Also closed the one live client-side drift vector: `client/src/pages/Settings.tsx`'s outgoing prefs PUT now echoes `lastSyncedPrefsRef.current.notif` (the last value the SERVER reported) instead of `settings.notif` (the localStorage cache "Reset to defaults" can independently revert) — see the F-093 regression test in `Settings.test.tsx`. **NOT done in this batch:** making `GET`/`PUT /settings/prefs` actually SOURCE `notif` from `notification_schedules` server-side. Investigated and deliberately deferred — that wire-contract change (the route stops trusting/persisting the client's `notif` and instead derives+overrides it from the canonical schedules table) breaks ~15 assertions in `server/tests/routes/settings.test.ts` that currently pin "PUT echoes whatever notif you send, verbatim" as the contract, and is a bigger, coordinated client+server redesign than an expand-only batch should carry — exactly the "CONTRACT step, do it as a follow-up" the ticket's own fix hint already anticipated. Recommend its own ticket/batch.
 
 ### F-094 · Migrate the remaining private `mapClaudeError` copies to the shared 4xx-aware helper
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** BACKEND · **Beta:** —
 - **What:** The P2-G3 fix-pass hoisted `mapClaudeError` into `server/src/middleware/errors.ts` with the corrected behavior (proxy-origin client faults keep their status: injection → 400, proxy per-route limiter → 429; everything else flattens to 502) and wired the generation routes (`writing.ts`, `reading.ts`) to it. Four private flatten-to-502 copies remain: `server/src/routes/grammarDrill.ts` (~533), `server/src/routes/diagnostic.ts` (~1596), `server/src/routes/conversation.ts` (~1107), and `server/src/services/imageIngest.ts` (~407). On those surfaces an injection rejection or the proxy's own limiter still reads as a 502 outage.
 - **Fix hint:** Swap each to the shared helper and delete the local copy. This is a wire-contract change per route (400/429 instead of 502) — do each with its route suite run + a status-mapping test, same as `tests/routes/generation.test.ts` now pins for the generation pair. `gradeWriting.ts`/`enrich.ts` already pass status through inline and can adopt the helper for free.
 - **Notes:** Deferred from the P2-G3 /fixpass (generation review SF-1 coordination note + writing/chat review NIT-6: five-plus copies past the rule-of-three).
@@ -1328,7 +1328,7 @@ Backend routes / corpus data the Phase 3C-2 content-surface reworks (Reading · 
 - **What:** F-081 (question-paired images) is a data gap: images live only inside the test-paper PDFs; the DB has only `has_image` + `image_text`. Extract `has_image` items' figures, store + serve the assets, add a DTO image URL; then render alongside `image_text`. The client renders the honest text-description affordance today.
 
 ### F-121 · `ShowMore` final-reveal focus lands on an off-screen node (visible-focus polish)
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (A11Y) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P4 · **Category:** UI (A11Y) · **Beta:** —
 - **What:** The Phase 3C-2 fix for the `components/ShowMore.tsx` focus-drop (button unmounts on final reveal → focus fell to `<body>`) hands focus off to the revealed content region, which fully fixes the focus-loss defect but the target isn't reliably in-viewport, so it doesn't satisfy WCAG 2.4.7 (visible focus) for sighted keyboard users. Strict improvement over the original bug; polish the handoff to land on a visible, scrolled-into-view element. Affects all ShowMore consumers (Progress, ReviewVocab, Listen).
 
 ---
@@ -1356,16 +1356,16 @@ Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/
 - **What:** `ExamChooser`'s completed-checkmark set is keyed by `test_number` only, so a completed TOPIK II paper marks the same-numbered TOPIK I paper done (and vice-versa). Key the completed-set by `(test_number, topik_level)` once F-122 lands the level on attempt history.
 
 ### F-124 · `mapClaudeError` forwards `${code}: ${message}` to the client
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (SECURITY) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P4 · **Category:** BACKEND (SECURITY) · **Beta:** —
 - **What:** The shared `mapClaudeError` forwards `${code}: ${message}` on both 4xx and 5xx paths. Safe today (every proxy error message is a fixed generic string), but a future non-generic message would leak to the client. Pre-existing, surfaced during the F-116 review. Harden to only forward a whitelisted/generic message.
 
 ### F-125 · `POST /conversation/:id/name` not exactly-once under concurrent first calls
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P4 · **Category:** BACKEND · **Beta:** —
 - **What:** `routes/conversation.ts`'s `/name` route reads `title`, calls Claude only if it's `NULL`, then persists via `UPDATE ... WHERE title IS NULL`. Two requests arriving close together on the same never-named conversation (two open tabs, a reloaded component, etc.) can both pass the read-check and both burn a Claude call before either commits the UPDATE — storage never diverges (the UPDATE's `WHERE title IS NULL` guard means only one write wins) and the race can only happen ONCE per conversation (every later call short-circuits with no Claude spend), bounded further by the existing per-user `expensiveLimiter()`. Surfaced independently by both the Phase 3D client and server reviews (`docs/phase3d/REVIEW_chat_server.md` S-1) as a SHOULD-FIX, not a blocker. Pre-existing Phase 2 code; Phase 3D only wired the client to it.
 - **Why deferred (not fixed in Phase 3D):** the two low-risk-looking fixes both carry real cost for a bounded, storage-safe race: (a) a sentinel/claim-first column (`UPDATE ... SET title = 'PENDING' WHERE title IS NULL`) is a schema change, and this repo's own gate requires migration/schema work to run the FULL client+server+db suite, not a targeted slice — out of scope for a fix-pass restricted to targeted verification; (b) a session-scoped Postgres advisory lock held across the Claude network round-trip needs careful client-checkout/release lifecycle management (a pattern with zero existing precedent or test coverage in this codebase) — introducing it under a fix-pass's targeted-test-only gate risks a subtler bug (a leaked/never-released lock or pooled connection) than the race it fixes. Recommend implementing whichever of the two the next full-suite-gated pass picks, with the full suite run per `feedback_fixpass_gates_run_full_suite.md`.
 
 ### F-126 · `set-km-app-password.sh` verification false-fails (aborts every deploy)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DEPLOY (CONFIG) · **Beta:** —
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P2 · **Category:** DEPLOY (CONFIG) · **Beta:** —
 - **What:** `Deploy/set-km-app-password.sh`'s verify step runs `SELECT current_user || chr(58) || (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)` and string-compares the result to `'km_app:f'`. But `||`-concatenating a boolean casts it to text as **`'false'`**, not `'f'` (the `-tA` short form only applies to a bool *column*, not one concatenated into a string), so the check yields `'km_app:false'` and the script `return 1`s — even though km_app is correctly set up and authenticates. Hit live during the Wave-1 deploy (2026-07-11); worked around by continuing the runbook manually after confirming km_app auth by hand. **Fix:** compare against `'km_app:false'`, OR change the query to `... rolsuper::text = 'false'` / select the bool as a column. Every future deploy aborts at this step until fixed.
 
 ### F-127 · Global entry point (FAB) for the beta ticketing page
@@ -1587,7 +1587,7 @@ Filed from the batch-1 /fixpass (Today+Progress). Each is an honest data/infra g
 - **Where / State:** No attempt-history endpoint exists for Reading (`services/reading.ts`) or Listening (`services/ttmik.ts`), so Today's Reading/Listening suggestions (F-136) can't show a real per-day completion count. Add attempt logging + a history endpoint for each.
 
 #### F-173 · Resumed-TOPIK item-count for SubwayProgress
-- **Status:** 🟡 partial (backend totalItems on /topik/attempt shipped; Today.tsx still lacks the resumed-attempt SubwayProgress "X of N") · **Priority:** P3 · **Category:** feature
+- **Status:** ✅ done (beta-hardening push — shipped + deployed + live-DB-audit-verified 2026-07-15) · **Priority:** P3 · **Category:** feature
 - **Where / State:** `AttemptState` carries `answered` but no item-count total, and `sourceTest` alone is ambiguous between TOPIK I/II. A real `SubwayProgress` for a resumed exam on Today needs a total (item count) wired through `/plan/today` or `/topik/attempt`, or a safe `sourceTest`+`topikLevel`→itemCount lookup.
 
 #### F-174 · Shared LineChart trend-line prop for Progress skill carousel
