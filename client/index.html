@@ -30,6 +30,12 @@
       attribute pattern (no inline style) and the lack of dynamic input make
       this script safe under a future `script-src 'self'` CSP — drop a
       `nonce="…"` if a stricter posture demands it.
+
+      'auto' mode (F-132) also gets a no-flash resolution here: it duplicates
+      ThemeProvider's 06:00–18:00 local-hour boundary (`resolveAutoTheme` in
+      `hooks/theme-context.ts`) since this inline script can't import a TS
+      module. If that boundary ever changes, update BOTH places — there is
+      no shared source at build time for a bare pre-mount script.
     -->
     <script>
       (function () {
@@ -38,7 +44,15 @@
           var pref =
             window.matchMedia &&
             window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var theme = (s === 'light' || s === 'dark') ? s : (pref ? 'dark' : 'light');
+          var theme;
+          if (s === 'light' || s === 'dark') {
+            theme = s;
+          } else if (s === 'auto') {
+            var hour = new Date().getHours();
+            theme = (hour >= 6 && hour < 18) ? 'light' : 'dark';
+          } else {
+            theme = pref ? 'dark' : 'light';
+          }
           document.documentElement.dataset.theme = theme;
           /* Accent bootstrap — same no-flash contract as the theme above.
              Reads localStorage["km.accent"] (the key AccentProvider writes)

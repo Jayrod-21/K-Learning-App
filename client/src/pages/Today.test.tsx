@@ -496,6 +496,35 @@ describe('Today', () => {
     expect(order).toEqual([drills, suggested, topik]);
   });
 
+  it('F-177: renders the header via the shared PageHubHeader recipe, not its own inline SkylineHeader+DancheongRail copy', () => {
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    // PageHubHeader's own class names — proof the shared component (not a
+    // hand-rolled duplicate) rendered the header.
+    expect(
+      container.querySelector('.km-hubheader__skyline'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('.km-hubheader__rail-divider'),
+    ).not.toBeNull();
+
+    // The old page-local classes this recipe used to carry (removed from
+    // Today.css alongside the migration) must be gone — never left dangling
+    // as dead-but-harmless markup.
+    expect(container.querySelector('.km-today__skyline')).toBeNull();
+    expect(container.querySelector('.km-today__rail-divider')).toBeNull();
+
+    // Content/semantics unchanged: real <h1>, same id as the page's own
+    // `aria-labelledby`, same bilingual pair.
+    const h1 = screen.getByRole('heading', { level: 1, name: '오늘 · Today' });
+    expect(h1).toHaveAttribute('id', 'today-title');
+    expect(container.querySelector('.screen.km-today')).toHaveAttribute(
+      'aria-labelledby',
+      'today-title',
+    );
+  });
+
   it('Review & drills and Suggested learning are the SAME peek-slider mechanism — same track/item classes, no tabs on either', () => {
     loadDefaults();
     renderTodayAt();
@@ -581,6 +610,24 @@ describe('Today', () => {
     await user.click(screen.getByRole('button', { name: 'Open Hanja study' }));
 
     expect(screen.getByText('HANJA PAGE')).toBeInTheDocument();
+  });
+
+  it('F-178: the Hanja tile uses the shared ochre skill tone, not the pre-ochre plain fallback', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    const hanjaTile = screen
+      .getByRole('button', { name: 'Open Hanja study' })
+      .querySelector('.km-citycard');
+    expect(hanjaTile).toHaveClass('km-tone--ochre');
+    expect(hanjaTile).not.toHaveClass('km-tone--plain');
+
+    // The tile's pill and "done today" SealStamp ride the same tone —
+    // ochre throughout, not a mix of the old plain fallback and the newer
+    // hue on just one element.
+    expect(screen.getByText('연습').closest('.km-pill')).toHaveClass(
+      'km-pill--ochre',
+    );
   });
 
   it('navigates to /learn/grammar from the grammar drills tile (real page not "coming soon")', async () => {

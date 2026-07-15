@@ -183,6 +183,86 @@ describe('LineChart', () => {
     expect(hits.slice(0, -1).every((b) => b.tabIndex === -1)).toBe(true);
   });
 
+  // ── F-174 — opt-in `trend` prop: dashed least-squares line + emphasized
+  // latest-point marker, parity with Progress's own TrendChart (F-142). ─
+
+  it('draws no trend line or latest-point emphasis by default (byte-identical for other consumers)', () => {
+    // Every OTHER consumer of LineChart never passes `trend` — this pins
+    // that the new feature is fully inert unless a caller opts in, even
+    // with a series long enough (n >= 3) that the regression WOULD draw.
+    const { container } = renderChart(POINTS);
+
+    expect(container.querySelector('.km-linechart__trendfit')).toBeNull();
+    expect(container.querySelector('.km-linechart__dot--latest')).toBeNull();
+    expect(
+      container.querySelector('.km-linechart__trendnote'),
+    ).toBeNull();
+  });
+
+  it('draws a dashed least-squares trend line + emphasizes the latest point when trend is on (n >= 3)', () => {
+    // Same 42/53/67 fixture Progress's SF1 test hand-verifies: meanX=1,
+    // meanY=54, Σ(dx·dy)=25, Σ(dx²)=2 → slope=12.5, intercept=41.5.
+    // Score-space endpoints: x=0 → y=41.5, x=2 → y=66.5 (both inside the
+    // chart's fixed 0–100 percent domain, so clamping is a no-op here).
+    const { container } = render(
+      <LineChart
+        points={[
+          { date: '2026-06-08', value: 42 },
+          { date: '2026-06-15', value: 53 },
+          { date: '2026-06-22', value: 67 },
+        ]}
+        unit="%"
+        metricLabel="Accuracy"
+        ariaLabel="Reading trend over the last 30 days"
+        trend
+      />,
+    );
+
+    const line = container.querySelector('.km-linechart__trendfit');
+    expect(line).not.toBeNull();
+    // x-coordinates map index i=0..2 through LineChart's own fixed PAD/
+    // INNER_W geometry (W=320, PAD.left=36, PAD.right=14, n=3) — exact
+    // integers, no floating-point slop.
+    expect(line).toHaveAttribute('x1', '36');
+    expect(line).toHaveAttribute('x2', '306');
+    // y-coordinates additionally pass through the value→pixel mapping
+    // (PAD.top=12, INNER_H=116), which is NOT float-exact.
+    expect(Number(line?.getAttribute('y1'))).toBeCloseTo(79.86, 1);
+    expect(Number(line?.getAttribute('y2'))).toBeCloseTo(50.86, 1);
+
+    expect(
+      container.querySelectorAll('.km-linechart__dot--latest'),
+    ).toHaveLength(1);
+    expect(
+      screen.getByText('Dashed line: trend across the series'),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the trend line under 3 points even with trend on (a 2-point regression would just double the raw line)', () => {
+    const { container } = render(
+      <LineChart
+        points={[
+          { date: '2026-06-08', value: 42 },
+          { date: '2026-06-15', value: 53 },
+        ]}
+        unit="%"
+        metricLabel="Accuracy"
+        ariaLabel="Reading trend over the last 30 days"
+        trend
+      />,
+    );
+
+    expect(container.querySelector('.km-linechart__trendfit')).toBeNull();
+    expect(
+      container.querySelector('.km-linechart__trendnote'),
+    ).toBeNull();
+    // Latest-point emphasis is independent of the regression guard (same as
+    // TrendChart's per-series emphasis) — it still renders at n = 2.
+    expect(
+      container.querySelectorAll('.km-linechart__dot--latest'),
+    ).toHaveLength(1);
+  });
+
   it('moves reading + focus with arrow keys, clamped at the ends, Home/End jump', () => {
     renderChart(POINTS);
     const readout = screen.getByRole('status');

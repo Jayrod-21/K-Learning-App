@@ -1,6 +1,14 @@
 /**
  * WordPopover — vocab vs grammar branch, Esc + backdrop close, Add
  * locks to "Added", drawer toggles.
+ *
+ * F-186 (migrated onto the shared `Sheet`): the dialog chrome (backdrop,
+ * focus trap, Esc, restore-focus, body-scroll lock) is no longer
+ * WordPopover's own — it's rendered by `Sheet`. These tests assert that
+ * migration didn't change any OBSERVABLE behavior (content, Esc, backdrop
+ * dismissal, focus landing on close, scroll-lock lifecycle) even though
+ * the DOM is now `Sheet`'s, and that WordPopover no longer double-wires
+ * its own copy of the same a11y plumbing alongside Sheet's.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -54,7 +62,7 @@ describe('WordPopover', () => {
     ).toBeInTheDocument();
   });
 
-  it('closes on Escape', async () => {
+  it('closes on Escape exactly once (F-186 — proves no duplicate a11y wiring: WordPopover no longer runs its own useModalA11y alongside Sheet\'s, or Escape would fire onClose twice)', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<WordPopover data={VOCAB} onClose={onClose} />);
@@ -66,12 +74,56 @@ describe('WordPopover', () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     render(<WordPopover data={VOCAB} onClose={onClose} />);
-    // Backdrop and close button are deliberately distinct accessible names
-    // so AT can tell them apart. Both paths emit onClose.
-    await user.click(screen.getByLabelText('Close popover'));
+    // The backdrop is now Sheet's own ("Close sheet") rather than a
+    // bespoke WordPopover backdrop — distinct accessible name from the
+    // close button so AT can tell them apart. Both paths emit onClose.
+    await user.click(screen.getByLabelText('Close sheet'));
     expect(onClose).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders its dialog on the shared Sheet, tone="accent" (F-186)', () => {
+    const { container } = render(
+      <WordPopover data={VOCAB} onClose={() => undefined} />,
+    );
+    // Sheet's own chrome classes — proves the migration actually happened,
+    // not just that *a* dialog exists.
+    expect(container.querySelector('.km-sheet')).toBeInTheDocument();
+    expect(container.querySelector('.km-sheet__backdrop')).toBeInTheDocument();
+    const panel = container.querySelector('.km-sheet__panel');
+    expect(panel).toBeInTheDocument();
+    expect(panel).toHaveClass('km-tone--accent');
+    // The bespoke pre-migration wrapper classes are gone.
+    expect(container.querySelector('.km-popover__backdrop')).not.toBeInTheDocument();
+    // Sheet is the role="dialog" host; WordPopover no longer renders its
+    // own separate dialog wrapper.
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBe(panel);
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAttribute('aria-label', VOCAB.kr);
+  });
+
+  it('lands initial focus on the close button on mount (F-186 — Sheet auto-focuses the first focusable descendant, and the close button is deliberately first in DOM order)', () => {
+    render(<WordPopover data={VOCAB} onClose={() => undefined} />);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
+  it('locks body scroll while open and restores the pre-existing value on close, exactly once (F-186 — no double scroll-lock from WordPopover + Sheet each running useModalA11y)', () => {
+    document.body.style.overflow = 'scroll';
+    const { unmount } = render(
+      <WordPopover data={VOCAB} onClose={() => undefined} />,
+    );
+    expect(document.body.style.overflow).toBe('hidden');
+    unmount();
+    // Restored to the true pre-lock baseline ('scroll'), not '' — if
+    // WordPopover still ran its own useModalA11y as well as Sheet's, the
+    // ref-counted lock's baseline capture/consume pairing would still net
+    // out here (both acquire/release on the same mount/unmount edge), so
+    // this test is paired with the Escape-fires-once test above to pin
+    // down single-wiring from two independent angles.
+    expect(document.body.style.overflow).toBe('scroll');
+    document.body.style.overflow = '';
   });
 
   it('locks Add button into "Added" state after one click', async () => {

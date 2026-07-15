@@ -81,10 +81,13 @@
  * fabricating a denominator; tracked in `BUGS_AND_FEATURES.md`.
  *
  * Layout, top to bottom:
- *   1. `SkylineHeader` carrying the real h1 in its `title` slot (date
- *      eyebrow + 오늘 · Today, overlaid on the skyline) + a `DancheongRail`
- *      divider underneath — the same header recipe Progress uses (C-2/C-3
- *      fix, `REVIEW_batch1-fidelity.md`).
+ *   1. Shared `PageHubHeader` (F-177) — `SkylineHeader` carrying the real h1
+ *      in its `title` slot (date eyebrow + 오늘 · Today, overlaid on the
+ *      skyline) + a `DancheongRail` divider underneath. This screen used to
+ *      carry its own byte-for-byte inline copy of that recipe (predating the
+ *      shared component, C-2/C-3 fix, `REVIEW_batch1-fidelity.md`); it now
+ *      renders the same `components/PageHubHeader.tsx` every Library page +
+ *      Progress already adopted, so the recipe lives in exactly one place.
  *   2. Core drills carousel (Vocab / Grammar / Hanja).
  *   3. Suggested learning peek slider (Reading / Listening / Writing).
  *   4. TOPIK carousel.
@@ -133,7 +136,6 @@
 import { useNavigate } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
 import { Bilingual } from '../components/Bilingual';
-import { Eyebrow } from '../components/Eyebrow';
 import { Card } from '../components/Card';
 import { Pill } from '../components/Pill';
 import { Icon } from '../components/Icon';
@@ -141,9 +143,8 @@ import type { IconName } from '../components/Icon';
 import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { SwipeCarousel } from '../components/SwipeCarousel';
-import { SkylineHeader } from '../components/SkylineHeader';
+import { PageHubHeader } from '../components/PageHubHeader';
 import { CityCard, type CityCardTone } from '../components/CityCard';
-import { DancheongRail } from '../components/DancheongRail';
 import { SealStamp } from '../components/SealStamp';
 import { useChatContext } from '../hooks/useChatContext';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
@@ -695,32 +696,18 @@ export function Today(): JSX.Element {
     >
       {isMock ? <MockBadge /> : null}
 
-      {/* F-128 device #4 — the skyline strip carries the real <h1> overlaid
-          on it (C-2 fix, REVIEW_batch1-fidelity.md: Today used to render a
-          bare skyline strip plus a separate `Topbar` heading BELOW it, while
-          Progress overlaid its heading in SkylineHeader's own `title` slot —
-          two different header treatments for the app's two hub pages). Both
-          hubs now share one recipe. */}
-      <SkylineHeader
-        className="km-today__skyline"
-        title={
-          <>
-            <Eyebrow>
-              <Bilingual en={dateEn} kr={dateKr} />
-            </Eyebrow>
-            <h1 id="today-title" className="kr-display km-today__title">
-              <Bilingual kr="오늘" en="Today" />
-            </h1>
-          </>
-        }
+      {/* F-128 devices #4/#2 — the shared hub-header recipe (F-177): a
+          SkylineHeader carrying the real <h1> overlaid on it + a
+          DancheongRail divider underneath, via the same `PageHubHeader` every
+          Library page + Progress already render — Today used to carry its
+          own inline copy of this recipe (it originated it, C-2 fix,
+          REVIEW_batch1-fidelity.md), now migrated so it can't drift from the
+          shared version. */}
+      <PageHubHeader
+        titleId="today-title"
+        eyebrow={<Bilingual en={dateEn} kr={dateKr} />}
+        heading={<Bilingual kr="오늘" en="Today" />}
       />
-
-      {/* C-3 — the same dancheong-rail divider Progress renders under its
-          header (folded into the C-2 header-unification fix), so both hub
-          headers share one consistent stack rather than Today having none. */}
-      <div className="km-today__rail-divider">
-        <DancheongRail tone="accent" />
-      </div>
 
       {/* Carousel 1 — Review & drills: Vocab / Grammar / Hanja, as the SAME
           native-scroll-snap peek slider as Carousel 2 below (direct user

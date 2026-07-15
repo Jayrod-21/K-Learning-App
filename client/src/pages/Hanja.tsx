@@ -721,7 +721,7 @@ function EncounteredBand({
           label="Practicing"
           kr="연습 중"
           count={progress.practicing}
-          tone="vermilion"
+          tone="ochre"
         />
         <StateChip label="New" kr="신규" count={progress.new} tone="mute" />
       </div>
@@ -752,7 +752,11 @@ function StateChip({
   label: string;
   kr: string;
   count: number;
-  tone: 'moss' | 'vermilion' | 'mute';
+  /** F-180 — `ochre` reads the SAME `--km-mastery-practicing` token the
+   *  index grid's `HanjaCell` mastery border reads (F-167), not the
+   *  accent-tracking `--vermilion`. Both "Practicing" reads on this page
+   *  now agree regardless of the user's chosen accent color. */
+  tone: 'moss' | 'ochre' | 'mute';
 }): JSX.Element {
   return (
     <div className={`km-hanja__statechip km-hanja__statechip--${tone}`}>
@@ -2543,12 +2547,16 @@ function DrawView({
     if (current === null) return;
     const next = promoteState(current.state);
     // Already banked — a right answer just confirms it; skip the no-op
-    // write (the character is already at the top of the pool).
+    // write (the character is already at the top of the pool) AND skip the
+    // "mastered" count bump (F-181): the progress label reads "N of M
+    // mastered", and a reconfirmation of an already-mastered character is
+    // not a new mastery event, so it must not inflate that count even
+    // though the character still advances out of the queue below.
     if (next !== current.state) {
       onSetState(current.ch, next);
+      setMasteredCount((n) => n + 1);
     }
     setQueue((q) => (q ? q.slice(1) : q));
-    setMasteredCount((n) => n + 1);
   }, [current, onSetState]);
 
   const judgeWrong = useCallback((): void => {

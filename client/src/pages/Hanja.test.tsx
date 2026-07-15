@@ -20,6 +20,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { ToastProvider } from '../components/ToastProvider';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { ApiError } from '../services/api';
@@ -1145,6 +1148,64 @@ describe('Hanja page', () => {
     ).toHaveAttribute('aria-valuenow', '2');
   });
 
+  // ── F-181/F-182: promoteState no-op guard (already-mastered reconfirm) ─
+
+  it('F-182: a right answer on an already-banked character writes nothing (promoteState no-op guard)', async () => {
+    const user = userEvent.setup();
+    // 生 (h2) starts already `banked`. Queue seeds [生, 學] — 生 is the
+    // requested/start char (always first regardless of state), 學 (the
+    // only OTHER practicing/new char) fills the rest.
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('生')}`);
+    expect(screen.getByText('날')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Right/ }));
+
+    // 學 becomes current — 生 advanced out of the queue exactly like a real
+    // promotion would — but `promoteState('banked')` is a no-op (`banked`
+    // stays `banked`), so the caller must skip the write entirely, not send
+    // a same-state PATCH.
+    expect(await screen.findByText('배울')).toBeInTheDocument();
+    expect(setHanjaStateMock).not.toHaveBeenCalled();
+  });
+
+  it('F-181: a no-op reconfirmation does not bump the "N of M mastered" progress label', async () => {
+    const user = userEvent.setup();
+    // A 3-character session (生 start-banked, 學 + 水 both practicing) so the
+    // progress bar is still on-screen (queue not yet empty) after the real
+    // promotion below — a 2-char session completes on that click and swaps
+    // to the "Drill complete" screen before the bar's new value is
+    // observable.
+    hookOverrides['hanja:list'] = { data: [...FIXTURE_CHARS, EXTRA_CHAR] };
+    setHanjaStateMock.mockResolvedValueOnce({ char: '學', state: 'banked' });
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('生')}`);
+
+    const bar = screen.getByRole('progressbar', { name: 'Draw drill progress' });
+    expect(bar).toHaveAttribute('aria-valuemax', '3');
+    expect(bar).toHaveAttribute('aria-valuenow', '1');
+
+    // Right answer on 生 (already banked) — a no-op reconfirmation. The
+    // underlying write is correctly skipped (F-182); the displayed
+    // "mastered" count must stay honest and NOT bump for it either (F-181).
+    await user.click(screen.getByRole('button', { name: /Right/ }));
+    expect(await screen.findByText('배울')).toBeInTheDocument();
+    expect(setHanjaStateMock).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('progressbar', { name: 'Draw drill progress' }),
+    ).toHaveAttribute('aria-valuenow', '1');
+
+    // A REAL promotion (學: practicing → banked) still writes and still
+    // bumps the count — the guard only swallows the no-op case, not every
+    // right answer for the rest of the session.
+    await user.click(screen.getByRole('button', { name: /Right/ }));
+    await waitFor(() => {
+      expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
+    });
+    expect(await screen.findByText('물')).toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', { name: 'Draw drill progress' }),
+    ).toHaveAttribute('aria-valuenow', '2');
+  });
+
   // ── F-167/F-169: index mastery color + hangul-reading label ─
 
   it('F-167: index tiles carry the real per-state class the mastery-color override keys off', async () => {
@@ -1174,6 +1235,53 @@ describe('Hanja page', () => {
     expect(within(grid as HTMLElement).queryByText('날')).not.toBeInTheDocument();
     expect(within(grid as HTMLElement).getByText('학')).toBeInTheDocument();
     expect(within(grid as HTMLElement).getByText('생')).toBeInTheDocument();
+  });
+
+  // ── F-180: Practicing StateChip color matches the index-grid mastery color ─
+
+  it('F-180: the "Practicing" StateChip carries the fixed mastery tone, not accent-tracking vermilion', () => {
+    renderHanja();
+
+    // 'Practicing' also renders in the Today feature card's state Pill (學
+    // is the featured/practicing character) — scope to the EncounteredBand
+    // (`.km-hanja__band`) so this only ever asserts on the StateChip.
+    const band = document.querySelector('.km-hanja__band');
+    expect(band).not.toBeNull();
+    const chip = within(band as HTMLElement)
+      .getByText('Practicing')
+      .closest('.km-hanja__statechip');
+    expect(chip).not.toBeNull();
+    expect(chip?.className).toContain('km-hanja__statechip--ochre');
+    expect(chip?.className).not.toContain('km-hanja__statechip--vermilion');
+  });
+
+  it('F-180: the chip and the index-grid tile read the SAME fixed mastery token from source', () => {
+    // happy-dom can't resolve custom-property colors from computed style —
+    // pin the CSS mechanism from source instead (same pattern as
+    // Today.test.tsx's peek-slider contract test). Both rules must resolve
+    // to the identical `--km-mastery-practicing` token so "Practicing"
+    // reads ONE color on this page, not two (the pre-fix bug read the
+    // accent-tracking `--vermilion` here instead).
+    const hanjaCss = readFileSync(
+      join(cwd(), 'src', 'pages', 'Hanja.css'),
+      'utf8',
+    );
+    const sharedCss = readFileSync(
+      join(cwd(), 'src', 'styles', 'index.css'),
+      'utf8',
+    );
+
+    const chipRule =
+      /\.km-hanja__statechip--ochre \.km-hanja__statechip-count\s*\{[^}]*\}/.exec(
+        hanjaCss,
+      )?.[0] ?? '';
+    expect(chipRule).not.toBe('');
+    expect(chipRule).toContain('var(--km-mastery-practicing)');
+
+    const gridRule =
+      /\.km-hanjacell--practicing\s*\{[^}]*\}/.exec(sharedCss)?.[0] ?? '';
+    expect(gridRule).not.toBe('');
+    expect(gridRule).toContain('var(--km-mastery-practicing)');
   });
 
   // ── F-168: index "+"-to-list popup + "added to list" toast ─
