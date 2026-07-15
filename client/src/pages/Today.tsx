@@ -25,9 +25,11 @@
  *      alone depends on `today`); Grammar and Hanja are always the same
  *      static tile regardless of the plan's fate. F-189 gives each tile its
  *      own canonical skill color via `CityCard`'s `tone` prop — Vocab=blue
- *      (indigo), Grammar=accent (vermilion), Hanja=ochre (locked) — the SAME
- *      tokens the LEARN honeycomb (`LearnMenu.tsx`) keys its hexagons off,
- *      so a skill reads as one color everywhere, not just here.
+ *      (indigo), Grammar=crimson (fixed, F-189 fix-pass round 4 — see
+ *      `lib/skill-colors.ts`), Hanja=ochre (locked) — the SAME
+ *      `SKILL_COLOR` map the LEARN honeycomb (`LearnMenu.tsx`) keys its
+ *      hexagons off, so a skill reads as one color everywhere, not just
+ *      here.
  *   2. **Suggested learning carousel** — Listening · Reading · Writing, in
  *      that DOM order (F-190 put Reading in the MIDDLE slot so the peek
  *      slider opens centered on it, not on Listening), as a horizontal PEEK
@@ -66,9 +68,9 @@
  *      needed to deep-link to the EXACT item shown, instead of each tile's
  *      bare landing page (`readingHref`/`listeningHref`/`writingHref`
  *      below). F-189: Reading=cyan, Listening=mint (moss), Writing=violet —
- *      the same canonical skill tokens LearnMenu's honeycomb hexagons use,
- *      wired through `CityCard`'s `tone` prop the identical way Carousel 1
- *      is.
+ *      the same canonical `SKILL_COLOR` tokens LearnMenu's honeycomb
+ *      hexagons use, wired through `CityCard`'s `tone` prop the identical
+ *      way Carousel 1 is.
  *   3. **TOPIK carousel** — last, its own `SwipeCarousel` (a single page —
  *      dots/drag naturally no-op below 2 children). Carries the
  *      "Review mistakes" shortcut folded in (not its own page) and NO
@@ -83,6 +85,12 @@
  *      `SwipeCarousel` is now used ONLY here — a
  *      single hard-paged tile with a corner-slot banner is still the right
  *      tool for that shape; it is not a continuous-scroll rail like #1/#2.
+ *      TOPIK's tile reads `SKILL_COLOR.topik.tone` (`stone` — a dedicated
+ *      "assessment" hue, F-189 fix-pass round 4, REVIEW_r4-colors.md
+ *      BLOCKER-2): it used to share the accent/vermilion family with
+ *      Grammar, which fused the two tiles into one shape in LearnMenu's
+ *      honeycomb and could 3-way-collide with another skill's fixed hue
+ *      under the blue/mint accent presets — see `lib/skill-colors.ts`.
  *
  * Everything real stays real: per-tile "done today" counts come from
  * actual attempt-history endpoints, never a fabricated target or a
@@ -180,6 +188,7 @@ import type { ListeningAttemptsPage } from '../services/ttmik';
 import type { DrillAttemptsPage, TodayPlan, TodayTask } from '../types/domain';
 import { cn } from '../lib/cn';
 import { isLocalToday } from '../lib/localDay';
+import { SKILL_COLOR } from '../lib/skill-colors';
 import './Today.css';
 
 /**
@@ -482,10 +491,21 @@ function PlanErrorCard({ onRetry }: { onRetry: () => void }): JSX.Element {
  * `today.data` resolves and at least one task is present — a callback fires
  * whenever React actually attaches that DOM node, on whatever render pass
  * that turns out to be, with no dependency-array bookkeeping or "is it
- * ready yet" flag to keep in sync. `firedRef` guards against re-centering
- * on every future re-render (attempt-history fetches resolving later would
- * otherwise re-run this and yank the view back to center out from under a
- * user who already swiped away) — it fires exactly once per mount.
+ * ready yet" flag to keep in sync. The REAL reason later re-renders
+ * (attempt-history fetches resolving, etc.) never re-invoke this and yank
+ * the view back to center is that `useCallback(..., [])` gives React a
+ * stable callback identity — a ref callback whose identity is unchanged
+ * only re-fires if its host DOM node is unmounted/remounted, so an
+ * unrelated re-render is a no-op here regardless of `firedRef`.
+ * `firedRef` is a defense-in-depth belt only, guarding the case where the
+ * SAME callback instance somehow runs twice for one mounted node (React
+ * does not do this today, but nothing enforces that it never will) — it is
+ * NOT what makes ordinary re-renders safe. Fix-pass note
+ * (REVIEW_r4-today.md): keep this distinction explicit, because a future
+ * "simplification" that removed `firedRef` believing it was merely
+ * redundant with the guarantee described here would be safe TODAY but
+ * would silently stop being safe the moment anyone gives this callback a
+ * non-empty dependency array.
  *
  * `scrollIntoView({ inline: 'center' })` (not hand-rolled pixel math) is the
  * browser's own primitive for this, and it honours `scroll-snap-align:
@@ -642,7 +662,7 @@ export function Today(): JSX.Element {
     peekItems.push(
       <div key="listening" className="km-today__peekItem">
         <ActivityTile
-          tone="mint"
+          tone={SKILL_COLOR.ttmik.tone}
           icon="headphones"
           ariaLabel={`Open listening — ${t.title}`}
           pill={renderTag(t.tag, gapTag)}
@@ -656,7 +676,7 @@ export function Today(): JSX.Element {
           extra={
             <DoneTodayRow
               count={listeningDoneToday}
-              tone="mint"
+              tone={SKILL_COLOR.ttmik.tone}
               labelEn={(n) => (n === 1 ? '1 episode finished today' : `${String(n)} episodes finished today`)}
               labelKr={(n) => `오늘 완료한 듣기 ${String(n)}개`}
             />
@@ -675,7 +695,7 @@ export function Today(): JSX.Element {
     peekItems.push(
       <div key="reading" className="km-today__peekItem" ref={readingCenterRef}>
         <ActivityTile
-          tone="cyan"
+          tone={SKILL_COLOR.reading.tone}
           icon="book"
           ariaLabel={`Open reading — ${t.title}`}
           pill={renderTag(t.tag, gapTag)}
@@ -689,7 +709,7 @@ export function Today(): JSX.Element {
           extra={
             <DoneTodayRow
               count={readingDoneToday}
-              tone="cyan"
+              tone={SKILL_COLOR.reading.tone}
               labelEn={(n) => (n === 1 ? '1 reading finished today' : `${String(n)} readings finished today`)}
               labelKr={(n) => `오늘 완료한 읽기 ${String(n)}개`}
             />
@@ -716,7 +736,7 @@ export function Today(): JSX.Element {
             Reading/Listening. The "done today" count rides in `extra`, same
             convention as Grammar/TOPIK. */}
         <ActivityTile
-          tone="violet"
+          tone={SKILL_COLOR.writing.tone}
           icon="pen"
           ariaLabel={`Open writing — ${t.title}`}
           pill={renderTag(t.tag, gapTag)}
@@ -730,7 +750,7 @@ export function Today(): JSX.Element {
           extra={
             <DoneTodayRow
               count={writingDoneToday}
-              tone="violet"
+              tone={SKILL_COLOR.writing.tone}
               labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
               labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
             />
@@ -799,7 +819,7 @@ export function Today(): JSX.Element {
           <div className="km-today__peekTrack">
             <div className="km-today__peekItem">
               <ActivityTile
-                tone="accent"
+                tone={SKILL_COLOR.grammar.tone}
                 icon="grammar"
                 ariaLabel="Open grammar drills"
                 pill={
@@ -817,7 +837,7 @@ export function Today(): JSX.Element {
                 extra={
                   <DoneTodayRow
                     count={grammarDoneToday}
-                    tone="accent"
+                    tone={SKILL_COLOR.grammar.tone}
                     labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
                     labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
                   />
@@ -832,7 +852,7 @@ export function Today(): JSX.Element {
                 <SkeletonCard />
               ) : today.data ? (
                 <ActivityTile
-                  tone="blue"
+                  tone={SKILL_COLOR.flashcards.tone}
                   icon="cards"
                   ariaLabel={`Open review — ${String(today.data.reviewCount)} ${today.data.reviewCount === 1 ? 'card' : 'cards'} due`}
                   pill={
@@ -869,7 +889,7 @@ export function Today(): JSX.Element {
             </div>
             <div className="km-today__peekItem">
               <ActivityTile
-                tone="ochre"
+                tone={SKILL_COLOR.hanja.tone}
                 icon="hanja"
                 ariaLabel="Open Hanja study"
                 pill={
@@ -887,7 +907,7 @@ export function Today(): JSX.Element {
                 extra={
                   <DoneTodayRow
                     count={hanjaDoneToday}
-                    tone="ochre"
+                    tone={SKILL_COLOR.hanja.tone}
                     labelEn={(n) => (n === 1 ? '1 character reviewed today' : `${String(n)} characters reviewed today`)}
                     labelKr={(n) => `오늘 복습한 한자 ${String(n)}자`}
                   />
@@ -966,7 +986,7 @@ export function Today(): JSX.Element {
             )}
           >
             <ActivityTile
-              tone="accent"
+              tone={SKILL_COLOR.topik.tone}
               feat
               icon="spark"
               ariaLabel="Open TOPIK study practice"
@@ -985,7 +1005,7 @@ export function Today(): JSX.Element {
               extra={
                 <DoneTodayRow
                   count={topikDoneToday}
-                  tone="accent"
+                  tone={SKILL_COLOR.topik.tone}
                   labelEn={(n) => (n === 1 ? '1 mock attempt today' : `${String(n)} mock attempts today`)}
                   labelKr={(n) => `오늘 완료한 모의고사 ${String(n)}회`}
                 />

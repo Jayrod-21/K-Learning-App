@@ -743,12 +743,17 @@ describe('Today', () => {
 
     // Vocab = blue (indigo); Hanja = ochre (locked, unchanged). Grammar
     // moves OFF "blue" (which used to cluster all three of these tiles
-    // together as the same hue) onto "accent" (vermilion) — the F-189
-    // reassignment that also frees up "vermilion" from Writing in
-    // LearnMenu (see LearnMenu.test.tsx).
+    // together as the same hue) onto "crimson" — a dedicated, fixed
+    // (non-accent-tracking) hue added in the F-189 fix-pass round 4
+    // (BLOCKER-2, REVIEW_r4-colors.md), which replaced the old "accent"
+    // assignment: Grammar used to share the literal `--vermilion` token
+    // (and CSS class) with TOPIK, fusing the two honeycomb tiles into one
+    // shape and risking a 3-way collision with another skill's fixed hue
+    // under the blue/mint accent presets. See lib/skill-colors.ts.
     expect(vocabTile).toHaveClass('km-tone--blue');
-    expect(grammarTile).toHaveClass('km-tone--accent');
+    expect(grammarTile).toHaveClass('km-tone--crimson');
     expect(grammarTile).not.toHaveClass('km-tone--blue');
+    expect(grammarTile).not.toHaveClass('km-tone--accent');
     expect(hanjaTile).toHaveClass('km-tone--ochre');
 
     // All three are pairwise distinct tones — no more blue/blue/ochre
@@ -874,16 +879,20 @@ describe('Today', () => {
     expect(listeningTile).toHaveClass('km-tone--mint');
     expect(writingTile).toHaveClass('km-tone--violet');
     // Writing must no longer read "accent" — that's what used to collide
-    // it with the TOPIK tile below.
+    // it with the TOPIK tile below (the F-189 first pass's tradeoff).
     expect(writingTile).not.toHaveClass('km-tone--accent');
 
-    // TOPIK (a separate carousel) is the one tile deliberately KEPT on
-    // "accent" — the F-189 tradeoff (see LearnMenu's module header comment)
-    // — so Writing no longer collides with it now that Writing is violet.
+    // TOPIK (a separate carousel) — F-189 fix-pass round 4 (BLOCKER-2,
+    // REVIEW_r4-colors.md) gave it its OWN dedicated "stone" hue instead of
+    // sharing "accent"/vermilion with Grammar: the shared-token arrangement
+    // rendered Grammar and TOPIK as the identical CSS class (not just a
+    // similar color) and could 3-way-collide with another skill's fixed
+    // hue under the blue/mint accent presets. See lib/skill-colors.ts.
     const topikTile = screen
       .getByRole('button', { name: 'Open TOPIK study practice' })
       .querySelector('.km-citycard');
-    expect(topikTile).toHaveClass('km-tone--accent');
+    expect(topikTile).toHaveClass('km-tone--stone');
+    expect(topikTile).not.toHaveClass('km-tone--accent');
   });
 
   // ── Wave 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6) — deep-link

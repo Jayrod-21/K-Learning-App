@@ -89,7 +89,7 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     for (const wrap of wraps) {
       expect(
         Array.from(wrap.classList).some((c) =>
-          /^km-learnmenu__hexwrap--(indigo|violet|ochre|cyan|moss|vermilion)$/.test(
+          /^km-learnmenu__hexwrap--(indigo|violet|ochre|cyan|moss|crimson|stone)$/.test(
             c,
           ),
         ),
@@ -97,13 +97,13 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     }
   });
 
-  it('F-189: wires the canonical per-skill hue map — the SAME six skill→hue tokens Today\'s tile carousels consume — with Writing no longer colliding with TOPIK', () => {
-    // Regression pin for the F-189 fix: before this batch, `writing` and
-    // `topik` both carried `--hexwrap--vermilion`, the exact bug this
-    // ticket fixes (a "Register drill" tile and the "Recommended" tile
-    // reading as the same color). Grammar now takes over the vermilion/
-    // accent family from Writing (an accepted, non-adjacent tradeoff with
-    // TOPIK — see the module header comment), freeing Writing onto violet.
+  it('F-189 fix-pass round 4 (BLOCKER-2): wires the canonical per-skill hue map from lib/skill-colors.ts — TOPIK has its own dedicated hue, no longer sharing a class with Grammar', () => {
+    // Regression pin: a PRIOR version of this batch had `grammar` and
+    // `topik` both carrying `--hexwrap--vermilion` — the exact bug
+    // REVIEW_r4-colors.md's BLOCKER-2 flags (identical CSS class, not just
+    // a similar color, and geometrically adjacent in the 2-3-2 comb).
+    // TOPIK now gets its own `stone` hue and Grammar its own `crimson` hue
+    // (both fixed, non-accent-tracking — see lib/skill-colors.ts).
     renderMenu();
 
     function hueOf(name: string): string {
@@ -117,18 +117,17 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
     }
 
     expect(hueOf('Vocab flashcards')).toBe('indigo');
-    expect(hueOf('Grammar practice')).toBe('vermilion');
+    expect(hueOf('Grammar practice')).toBe('crimson');
     expect(hueOf('Hanja')).toBe('ochre');
     expect(hueOf('Reading')).toBe('cyan');
     expect(hueOf('Writing')).toBe('violet');
-    expect(hueOf('TOPIK')).toBe('vermilion');
+    expect(hueOf('TOPIK')).toBe('stone');
 
-    // Writing must NOT share a hue with TOPIK anymore (the bug F-189 fixes)…
-    expect(hueOf('Writing')).not.toBe(hueOf('TOPIK'));
-    // …and every one of the SIX canonical skills (excluding TOPIK, which is
-    // deliberately kept on the accent/vermilion family, not one of the 6)
-    // is pairwise distinct from every other one.
-    const sixSkillHues = [
+    // Grammar must NOT share a hue with TOPIK anymore (the BLOCKER-2 bug)…
+    expect(hueOf('Grammar practice')).not.toBe(hueOf('TOPIK'));
+    // …and EVERY one of the 7 tiles (the app's 6 skills + TOPIK) is
+    // pairwise distinct from every other one — no shared family anywhere.
+    const allSevenHues = [
       hueOf('Vocab flashcards'),
       hueOf('Grammar practice'),
       hueOf('Hanja'),
@@ -136,8 +135,9 @@ describe('LearnMenu (P1.1, honeycomb)', () => {
       // Listening's accessible name (nav.ts) — matched loosely below.
       hueOf('Listen'),
       hueOf('Writing'),
+      hueOf('TOPIK'),
     ];
-    expect(new Set(sixSkillHues).size).toBe(sixSkillHues.length);
+    expect(new Set(allSevenHues).size).toBe(allSevenHues.length);
   });
 
   it('navigates to the tile target and closes on activation', async () => {

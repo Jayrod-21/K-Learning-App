@@ -95,6 +95,32 @@
   --on-vermilion:     #FFFFFF;
   --danger:           var(--dan-verm);
   --danger-soft:      var(--dan-verm-soft);
+
+  /* Grammar's skill color — F-189 fix-pass round 4 (BLOCKER-2,
+   * REVIEW_r4-colors.md). Grammar used to read `--vermilion` directly, the
+   * SAME token TOPIK also read (both `HEX_HUE.grammar`/`.topik` = the
+   * literal string `'vermilion'` in the old LearnMenu.tsx) — not merely
+   * similar colors, the identical CSS custom property, so the two honeycomb
+   * tiles rendered as one fused shape (they are geometrically adjacent in
+   * the 2-3-2 comb — see lib/skill-colors.ts). Worse, because `--vermilion`
+   * is the RUNTIME ACCENT-PRESET token (re-pointed by `[data-accent="blue"
+   * /"mint"]` below), Grammar's tile color used to change when the user
+   * picked a different accent — and could land EXACTLY on Vocab's fixed
+   * `--indigo` (both resolve to `--dan-cobalt` under the blue preset) or
+   * Listening's fixed `--moss` (both `--dan-jade` under mint) — a 3-way
+   * collision (SHOULD-FIX-5). `--crimson` fixes both problems the same way
+   * `--ochre` (Hanja) is already "locked": it mirrors the DEFAULT
+   * (coral-accent) vermilion values but does NOT chain through
+   * `--vermilion` and is never touched by the `[data-accent]` blocks, so
+   * Grammar's tile looks identical to before under the default accent yet
+   * can never drift with the picker or collide with another skill's fixed
+   * hue. `--vermilion` itself is untouched and keeps tracking the accent
+   * preset for its own, unrelated job — CTAs, `--danger`, the focus ring,
+   * the legacy `--gold*` aliases. */
+  --crimson:          var(--dan-verm);
+  --crimson-soft:     var(--dan-verm-soft);
+  --crimson-ink:      var(--dan-verm-ink);
+
   /* Focus indicator color (`.focusring` outline). Var-chained so it tracks
    * the active accent + theme — every Day dancheong fill clears the WCAG
    * 1.4.11 3:1 non-text floor against --ink comfortably (verm 4.03:1,
@@ -105,28 +131,53 @@
   /* Category / skill hues — mapped to their nearest dancheong tone
    * (DESIGN_SEOUL_DAY_NIGHT.md §2): Hanja↔ochre (literal — hanja already
    * used ochre), Vocab↔cobalt (blue family), success/correct↔jade (the
-   * doc's "good" semantic IS jade in Day). Grammar and Reading have no
+   * doc's "good" semantic IS jade in Day). Writing and Reading have no
    * spare dancheong hue (jade/verm/cobalt/ochre are claimed by
    * success/accent/vocab/hanja) — they keep their own Seoul-tuned hues,
-   * pulled toward the same muted-jewel-tone saturation. */
+   * pulled toward the same muted-jewel-tone saturation.
+   *
+   * F-189 fix-pass round 4 (BLOCKER-1/SHOULD-FIX-4, REVIEW_r4-colors.md):
+   * `--cyan` (Reading) and `--moss` (Listening) were a near-collision in
+   * Day (ΔE76 ≈ 21.5 — the smallest gap of any pair, and they sit
+   * side-by-side in Today's carousel) — `--moss` is untouched (it is also
+   * the app-wide success/correct + `--km-mastery-mastered` semantic, reused
+   * in dozens of unrelated places; retinting it to fix a Reading/Listening
+   * tile clash would silently recolor "correct answer" everywhere), so
+   * `--cyan` alone was re-tinted bluer + darker to clear a ≥28 ΔE76 floor
+   * against every other skill hue in both themes (verified by script —
+   * see `styles/skillHueDistinctness.test.ts`). `--violet` (Writing) was
+   * separately re-tinted from a muted blue-purple (too close to `--indigo`,
+   * ΔE76 ≈ 22.6 Day / 19.5 Night) toward a true purple/magenta. Two new
+   * fixed (non-accent-tracking) skill hues were added: `--crimson`
+   * (Grammar) and `--stone` (TOPIK) — see the dedicated comment below the
+   * `--vermilion`/accent-preset block for why Grammar/TOPIK no longer share
+   * `--vermilion`. Canonical source of truth for the skill→hue assignment:
+   * `lib/skill-colors.ts` (consumed by both LearnMenu's honeycomb and
+   * Today's tile carousels — see that file's doc comment). */
   --indigo:      var(--dan-cobalt);  --indigo-soft: var(--dan-cobalt-soft);  /* Vocab */
-  --moss:        var(--dan-jade);    --moss-soft:   var(--dan-jade-soft);    /* success/correct */
-  --ochre:       var(--dan-ochre);   --ochre-soft:  var(--dan-ochre-soft);   /* Hanja */
-  --violet:      #6B4E8C;  --violet-soft: #ECE3F1;   /* Grammar (no dancheong counterpart) */
-  --cyan:        #256E7D;  --cyan-soft:   #DCEEF0;   /* Reading (no dancheong counterpart) */
+  --moss:        var(--dan-jade);    --moss-soft:   var(--dan-jade-soft);    /* success/correct + Listening */
+  --ochre:       var(--dan-ochre);   --ochre-soft:  var(--dan-ochre-soft);   /* Hanja (locked) */
+  --violet:      #8A3399;  --violet-soft: #F2E6F4;   /* Writing (no dancheong counterpart) */
+  --cyan:        #254856;  --cyan-soft:   #E3EEF2;   /* Reading (no dancheong counterpart) */
+  /* TOPIK's dedicated "assessment" tone — deliberately NOT a skill color
+   * and deliberately NOT accent-tracking (see the --crimson comment below):
+   * a neutral warm stone/taupe gray, distinct in kind (not just hue) from
+   * the six vivid skill hues, fitting the exam's own separate identity. */
+  --stone:       #69523A;  --stone-soft:  #F0E9E0;   /* TOPIK (assessment, fixed) */
 
   /* On-surface TEXT twins — whenever a category/accent hue is the
    * *foreground* (pill labels, eyebrows, stat counts, icons), read the
    * `-ink` twin instead of the raw hue. Indigo/moss/ochre chain straight
    * onto their dancheong `-ink` (already ≥4.5:1 on their own soft chip —
-   * see contrast note above); violet/cyan's own fill already clears 4.5:1
-   * on its own soft chip, so the twin is a passthrough. */
+   * see contrast note above); violet/cyan/stone's own fill already clears
+   * 4.5:1 on its own soft chip, so the twin is a passthrough. */
   --vermilion-ink: var(--dan-verm-ink);
   --indigo-ink:    var(--dan-cobalt-ink);
   --moss-ink:      var(--dan-jade-ink);
   --ochre-ink:     var(--dan-ochre-ink);
   --violet-ink:    var(--violet);
   --cyan-ink:      var(--cyan);
+  --stone-ink:     var(--stone);
   --danger-ink:    var(--dan-verm-ink);
 
   /* Mastery triad — HanjaCell's index-grid state color (F-167 fix-pass).
@@ -237,26 +288,47 @@
   --vermilion-soft:   var(--neon-coral-soft);
   --on-vermilion:     #0A0C12;
 
+  /* Grammar's skill color, Night — mirrors the Day block's `--crimson`
+   * rationale above: fixed to the default (coral) neon values, never
+   * touched by `[data-theme="dark"][data-accent]`. */
+  --crimson:          var(--neon-coral);
+  --crimson-soft:     var(--neon-coral-soft);
+  --crimson-ink:      var(--neon-coral-bright);
+
   /* Skill hues mapped to their neon counterpart where a direct one exists
    * (Vocab↔neon-blue, Hanja↔neon-amber, success/correct↔neon-mint — the
-   * doc's Night "good" semantic); Grammar/Reading keep their own neon-ish
+   * doc's Night "good" semantic); Writing/Reading keep their own neon-ish
    * hues (already bright enough to read as neon without a dancheong-style
-   * remap). */
+   * remap).
+   *
+   * F-189 fix-pass round 4 (SHOULD-FIX-4, REVIEW_r4-colors.md): `--violet`
+   * was re-tinted from a muted blue-purple (ΔE76 ≈ 19.5 against `--indigo`
+   * in Night — the closest pair system-wide) to a proper magenta-purple,
+   * clearing a ≥28 floor against every other skill hue (see
+   * `styles/skillHueDistinctness.test.ts`). `--cyan` is UNCHANGED here —
+   * Night's cyan/moss pair already cleared the floor (ΔE76 ≈ 46.2), only
+   * Day's needed the re-tint (see the Day block's comment). */
   --indigo: var(--neon-blue);   --indigo-soft: var(--neon-blue-soft);
   --moss:   var(--neon-mint);   --moss-soft:   var(--neon-mint-soft);
   --ochre:  var(--neon-amber);  --ochre-soft:  var(--neon-amber-soft);
-  --violet: #9B7CFF;  --violet-soft: #1D1638;
+  --violet: #C05CEB;  --violet-soft: #180922;
   --cyan:   #33D6EF;  --cyan-soft:   #0C2530;
+  --stone:  #A69FBC;  --stone-soft:  #1E182F;   /* TOPIK (assessment, fixed) */
 
   /* On-surface TEXT twins — dark counterparts. Brightened (or passed
    * through) so each clears ≥4.5:1 on its own soft chip.
-   * moss/ochre/cyan/violet already clear that bar as their raw hue. */
+   * moss/ochre/cyan/violet/stone already clear that bar as their raw hue —
+   * `--violet-ink` used to need a separately brightened twin (`#AE96FF`)
+   * because the OLD `--violet` (`#9B7CFF`) only cleared 4.5:1 with help;
+   * the re-tinted `--violet` clears 5.4:1 directly on its own new
+   * `--violet-soft`, so this simplifies to a passthrough like `--cyan-ink`. */
   --vermilion-ink: var(--neon-coral-bright);
   --indigo-ink:    var(--neon-blue-bright);
   --moss-ink:      var(--moss);
   --ochre-ink:     var(--ochre);
-  --violet-ink:    #AE96FF;
+  --violet-ink:    var(--violet);
   --cyan-ink:      var(--cyan);
+  --stone-ink:     var(--stone);
   --danger:        var(--neon-coral);
   --danger-soft:   var(--neon-coral-soft);
   --danger-ink:    var(--neon-coral-bright);
@@ -321,15 +393,18 @@
     --neon-amber:  #FFB43D;                                  --neon-amber-soft: #2B2110;
     --vermilion: var(--neon-coral); --vermilion-bright: var(--neon-coral-bright);
     --vermilion-soft: var(--neon-coral-soft); --on-vermilion: #0A0C12;
+    --crimson: var(--neon-coral); --crimson-soft: var(--neon-coral-soft); --crimson-ink: var(--neon-coral-bright);
     --indigo: var(--neon-blue); --indigo-soft: var(--neon-blue-soft);
     --moss:   var(--neon-mint); --moss-soft:   var(--neon-mint-soft);
     --ochre:  var(--neon-amber); --ochre-soft: var(--neon-amber-soft);
-    --violet: #9B7CFF; --violet-soft: #1D1638;
+    --violet: #C05CEB; --violet-soft: #180922;
     --cyan:   #33D6EF; --cyan-soft:   #0C2530;
+    --stone:  #A69FBC; --stone-soft:  #1E182F;
     --vermilion-ink: var(--neon-coral-bright);
     --indigo-ink: var(--neon-blue-bright);
     --moss-ink: var(--moss); --ochre-ink: var(--ochre);
-    --violet-ink: #AE96FF; --cyan-ink: var(--cyan);
+    --violet-ink: var(--violet); --cyan-ink: var(--cyan);
+    --stone-ink: var(--stone);
     --danger: var(--neon-coral); --danger-soft: var(--neon-coral-soft); --danger-ink: var(--neon-coral-bright);
     --km-mastery-mastered: var(--moss); --km-mastery-practicing: var(--ochre-ink); --km-mastery-new: var(--paper-mute);
     --line: rgba(255,255,255,0.08); --line-strong: rgba(255,255,255,0.16);
@@ -1310,9 +1385,20 @@ h1, h2 { font-family: var(--font-display); }
 }
 /* Category color coding — tile bg is the -soft chip, TEXT is the AA-safe
  * -ink twin (never the raw hue: it fails 4.5:1 on the chips), the ICON may
- * use the bright hue (non-text graphic). Writing + TOPIK share the accent
- * family (only 6 category hues exist) — and therefore re-tint with the
- * runtime accent choice, like every other --vermilion consumer. */
+ * use the bright hue (non-text graphic).
+ *
+ * F-189 fix-pass round 4 (BLOCKER-2, REVIEW_r4-colors.md): Grammar and
+ * TOPIK used to both key into `--hexwrap--vermilion` (the SAME class,
+ * chained to the runtime accent-preset token, `--vermilion`) — not just a
+ * similar color, the literal same CSS custom property, which is why they
+ * rendered as one fused shape in the honeycomb (they are geometrically
+ * adjacent — see `lib/skill-colors.ts`'s doc comment for the full
+ * tessellation math) and could 3-way-collide with another skill under the
+ * blue/mint accent presets. Grammar now reads `--crimson` (a NEW, fixed,
+ * non-accent-tracking token — see its doc comment in the `:root` block
+ * above) and TOPIK reads `--stone` (its own dedicated "assessment" hue,
+ * also fixed) — seven distinct classes for the seven tiles, none of which
+ * re-tint with the accent picker. */
 .km-learnmenu__hexwrap--indigo {
   --hx-hue: var(--indigo);
   --hx-ink: var(--indigo-ink);
@@ -1338,10 +1424,15 @@ h1, h2 { font-family: var(--font-display); }
   --hx-ink: var(--moss-ink);
   --hx-bg: var(--moss-soft);
 }
-.km-learnmenu__hexwrap--vermilion {
-  --hx-hue: var(--vermilion-bright);
-  --hx-ink: var(--vermilion-ink);
-  --hx-bg: var(--vermilion-soft);
+.km-learnmenu__hexwrap--crimson {
+  --hx-hue: var(--crimson);
+  --hx-ink: var(--crimson-ink);
+  --hx-bg: var(--crimson-soft);
+}
+.km-learnmenu__hexwrap--stone {
+  --hx-hue: var(--stone);
+  --hx-ink: var(--stone-ink);
+  --hx-bg: var(--stone-soft);
 }
 .km-learnmenu__hex {
   width: 100%;

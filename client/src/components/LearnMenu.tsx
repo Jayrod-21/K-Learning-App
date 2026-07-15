@@ -26,26 +26,39 @@
  * exit; the hexagon in BottomNav stays tappable to re-open).
  *
  * Honeycomb geometry / color coding (F-189 fix-pass — canonical per-skill
- * color system, BUGS_AND_FEATURES.md "Phone round 4": Grammar and Writing
- * swap hue families so Writing no longer collides with TOPIK, matching the
- * SAME six skill→hue tokens Today's tile carousels now consume via
- * `CityCard`'s `tone` prop, styles/seoul-devices.css's `.km-tone--*`
- * mapping — one skill reads as one color everywhere, not just here):
- *   - Row 1: Vocab flashcards (indigo) · Grammar (vermilion)
- *   - Row 2: Reading (cyan) · TOPIK (accent) · Listen/TTMIK (moss)
+ * color system, BUGS_AND_FEATURES.md "Phone round 4"; assignment source of
+ * truth: `lib/skill-colors.ts`'s `SKILL_COLOR`, consumed by BOTH this
+ * honeycomb and Today's tile carousels via `CityCard`'s `tone` prop —
+ * one skill reads as one color everywhere, not just here):
+ *   - Row 1: Vocab flashcards (indigo) · Grammar (crimson)
+ *   - Row 2: Reading (cyan) · TOPIK (stone) · Listen/TTMIK (moss)
  *   - Row 3: Writing (violet) · Hanja (ochre)
  *   Each tile's background is the category `*-soft` chip and its TEXT uses
  *   the AA-safe `*-ink` twin; only the (non-text) icon uses the raw bright
- *   hue. Grammar + TOPIK share the vermilion/accent family — only 6 category
- *   hues exist for the app's 6 skills, and TOPIK (the 7th, not one of the 6
- *   F-189 canonicalizes) is deliberately kept on `accent` rather than given
- *   a dedicated hue of its own — but in this true 2-3-2 tessellation they
- *   land non-adjacent (TOPIK row-2-center, Grammar row-1-right), so the
- *   shared family reads as "these two are both accent-flavored" rather than
- *   a deliberately paired block. That's an accepted tradeoff of this layout
- *   (the SAME tradeoff Writing+TOPIK previously made before this swap), not
- *   a bug: the 2-3-2 honeycomb (vs. a mockup 2-2-2-1 with TOPIK alone
- *   nearest the hex) is the truer tessellation for 7 tiles.
+ *   hue.
+ *
+ *   F-189 fix-pass round 4 (BLOCKER-2, REVIEW_r4-colors.md): a PRIOR
+ *   version of this batch had Grammar and TOPIK sharing the vermilion/
+ *   accent family — the doc comment here used to claim that was safe
+ *   because the two tiles "land non-adjacent" in the 2-3-2 tessellation
+ *   (TOPIK row-2-center, Grammar row-1-right). That claim was FALSE: the
+ *   honeycomb's row-centering math (`.km-learnmenu__comb`'s `align-items:
+ *   center` + each row's negative `margin-top`, index.css) makes adjacent
+ *   rows interlock by design, and row-2-center is geometrically adjacent to
+ *   every tile in row 1 and row 3 — Grammar's hexagon literally touched
+ *   TOPIK's. Two touching honeycomb cells in the identical CSS class read
+ *   as one fused shape, undermining "one skill, one color." The fix is not
+ *   a smarter row assignment (row-2-center is adjacent to ALL of its
+ *   row-1/row-3 neighbors in any 2-3-2 layout with 7 tiles — there is no
+ *   non-adjacent slot to move TOPIK to) — it's giving TOPIK its OWN
+ *   dedicated hue (`stone`, a neutral "assessment" tone distinct in KIND
+ *   from the 6 skill hues) and giving Grammar its own fixed hue
+ *   (`crimson`, decoupled from the runtime accent picker — see
+ *   `lib/skill-colors.ts` and index.css's `--crimson` doc comment for why
+ *   the OLD arrangement could also 3-way-collide with Vocab/Listening
+ *   under the blue/mint accent presets). Adjacency is now moot: every one
+ *   of the 7 tiles carries its own distinct, non-accent-tracking hue,
+ *   whether or not it touches a neighbor.
  *
  * Each hex is a real `<button>` that navigates + closes; there is no dead
  * center hub. Because the tiles are clip-path hexagons, a rectangular
@@ -103,7 +116,8 @@ import { useCallback, useId, useRef, type JSX } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useModalA11y } from '../hooks/useModalA11y';
 import { cn } from '../lib/cn';
-import { LEARN_SUBPAGE_IDS, navItem } from '../lib/nav';
+import { navItem } from '../lib/nav';
+import { SKILL_COLOR, type LearnSubpageId } from '../lib/skill-colors';
 import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
 import './LearnMenu.css';
@@ -121,19 +135,22 @@ const EXIT_ROW_STAGGER_MS = 60;
  *  index.css (exits run faster than entrances, standard motion practice). */
 const EXIT_TILE_MS = 240;
 
-type LearnSubpageId = (typeof LEARN_SUBPAGE_IDS)[number];
-
 /**
- * The honeycomb arrangement — 2-3-2 fits the 7 sub-pages exactly.
- * Fix-pass batch-4 (S4, REVIEW_batch4-fidelity.md): this docstring
- * previously described row 2 as "vocab/grammar/listening" and framed the
- * writing+TOPIK accent pair as adjacent "nearest the hexagon" — neither
- * matches the array below. Row 1 is vocab+grammar; row 2 is
- * reading+topik+ttmik (listen); row 3 is writing+hanja — so the two accent
- * (vermilion) tiles, TOPIK and grammar (F-189 moved this pairing off
- * writing — see HEX_HUE below), are NOT adjacent. See the module header
- * comment for the corrected color-coding + the honest tradeoff this implies
- * for the "shared hue reads as intentional" framing.
+ * The honeycomb arrangement — 2-3-2 fits the 7 sub-pages exactly. Row 1 is
+ * vocab+grammar; row 2 is reading+topik+ttmik (listen); row 3 is
+ * writing+hanja.
+ *
+ * F-189 fix-pass round 4 (BLOCKER-2, REVIEW_r4-colors.md): earlier docs
+ * here claimed TOPIK (row-2-center) and Grammar (row-1-right), both once
+ * sharing the vermilion/accent hue, "land non-adjacent" in this
+ * tessellation. That was false — row-2-center interlocks with every
+ * row-1/row-3 neighbor by the comb's own centering math (index.css), so
+ * Grammar's hexagon literally touched TOPIK's. The fix was giving each its
+ * own dedicated hue (`crimson`/`stone` — see `lib/skill-colors.ts`), not a
+ * row reshuffle: there is no row-2-center placement in a 2-3-2 layout that
+ * ISN'T adjacent to all four of its neighbors, so adjacency was never the
+ * lever available here. See the module header comment for the full
+ * geometry + the current color-coding.
  */
 const COMB_ROWS = [
   ['flashcards', 'grammar'],
@@ -149,32 +166,6 @@ const COMB_ROWS = [
  */
 export const LEARN_MENU_EXIT_MS =
   (COMB_ROWS.length - 1) * EXIT_ROW_STAGGER_MS + EXIT_TILE_MS;
-
-/**
- * Category hue per sub-page — keys into the `--<hue>` / `--<hue>-ink` /
- * `--<hue>-soft` token triplets via the `.km-learnmenu__hexwrap--<hue>`
- * CSS modifiers. F-189 (canonical per-skill color system, "Phone round 4"):
- * this map is now the SAME six skill→hue assignment Today's tile carousels
- * consume via `CityCard`'s `tone` prop (`pages/Today.tsx`) — Vocab=indigo,
- * Grammar=vermilion, Hanja=ochre (locked), Reading=cyan, Listening/ttmik=
- * moss, Writing=violet. TOPIK (the 7th sub-page, not one of the 6 canonical
- * skills) stays on the accent family (vermilion) so it no longer collides
- * with Writing — Writing moved to violet, freeing vermilion for Grammar
- * (previously Grammar was violet and Writing was vermilion; this batch
- * swaps the two so Writing no longer doubles up with TOPIK). Grammar and
- * TOPIK now share the vermilion/accent family instead — an accepted
- * tradeoff (see the module header comment), not a new collision, since
- * they land non-adjacent in the 2-3-2 tessellation.
- */
-const HEX_HUE = {
-  topik: 'vermilion',
-  ttmik: 'moss',
-  flashcards: 'indigo',
-  grammar: 'vermilion',
-  writing: 'violet',
-  hanja: 'ochre',
-  reading: 'cyan',
-} as const satisfies Record<LearnSubpageId, string>;
 
 /* Compile-time guarantee (same idiom as nav.ts's bucket checks): every
  * LEARN sub-page appears in the comb — a new 8th page fails tsc here
@@ -321,7 +312,7 @@ export function LearnMenu({
                 return (
                   <div
                     key={navId}
-                    className={`km-learnmenu__hexwrap km-learnmenu__hexwrap--${HEX_HUE[navId]}`}
+                    className={`km-learnmenu__hexwrap km-learnmenu__hexwrap--${SKILL_COLOR[navId].hexHue}`}
                     style={{ animationDelay: `${delayMs}ms` }}
                     onAnimationEnd={
                       isExitSentinel
