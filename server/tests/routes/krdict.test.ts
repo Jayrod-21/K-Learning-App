@@ -218,6 +218,82 @@ describe('GET /krdict/search — browse-all (q absent / empty)', () => {
   });
 });
 
+describe('GET /krdict/search — F-175 grammar-morpheme exclusion', () => {
+  it('excludes 어미/조사 rows and reports an EXACT total (search branch)', async () => {
+    await seedKrdictEntry(pg.pool, {
+      headword: '학교',
+      definitionEn: 'a school',
+      definitionKo: '학생을 가르치는 곳',
+    });
+    // A grammar ending whose definition happens to also contain '학' so a
+    // naive un-parenthesized AND would only catch the LAST OR arm.
+    await seedKrdictEntry(pg.pool, {
+      headword: '-는데',
+      definitionEn: 'a connective ending',
+      definitionKo: '학생들이 쓰는 어미',
+      partOfSpeech: '어미',
+    });
+    await seedKrdictEntry(pg.pool, {
+      headword: '조차',
+      definitionEn: 'even (particle)',
+      definitionKo: '학생도 포함하는 조사',
+      partOfSpeech: '조사',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search?q=학');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    const heads = (res.body.entries as Array<{ headword: string }>).map(
+      (e) => e.headword,
+    );
+    expect(heads).toEqual(['학교']);
+  });
+
+  it('excludes 어미/조사 rows and reports an EXACT total (browse-all branch)', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '가다', definitionKo: '움직이다' });
+    await seedKrdictEntry(pg.pool, { headword: '나다', definitionKo: '생기다' });
+    await seedKrdictEntry(pg.pool, {
+      headword: '-더라도',
+      partOfSpeech: '어미',
+    });
+    await seedKrdictEntry(pg.pool, {
+      headword: '마저',
+      partOfSpeech: '조사',
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    const heads = (res.body.entries as Array<{ headword: string }>).map(
+      (e) => e.headword,
+    );
+    expect(heads).toEqual(expect.arrayContaining(['가다', '나다']));
+    expect(heads).not.toContain('-더라도');
+    expect(heads).not.toContain('마저');
+  });
+
+  it('is NULL-safe: an untagged (part_of_speech IS NULL) row is never excluded', async () => {
+    // Three-valued SQL logic trap: `part_of_speech NOT IN (...)` alone would
+    // evaluate to UNKNOWN (not TRUE) for a NULL row, silently dropping every
+    // untagged headword too — not just grammar morphemes.
+    await seedKrdictEntry(pg.pool, { headword: '사과', definitionKo: '과일' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].headword).toBe('사과');
+  });
+
+  it('other part-of-speech tags (e.g. 명사, 접사) are unaffected', async () => {
+    await seedKrdictEntry(pg.pool, { headword: '학생', partOfSpeech: '명사' });
+    await seedKrdictEntry(pg.pool, { headword: '헛-', partOfSpeech: '접사' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/krdict/search');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+  });
+});
+
 describe('GET /krdict/search — validation rejection', () => {
   it('oversized q → 400', async () => {
     const { agent } = await registerUser(t.app, pg.pool);

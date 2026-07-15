@@ -469,3 +469,152 @@ describe('splitHosts', () => {
     expect(splitHosts(input)).toEqual(expected);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Listening attempts (F-172 — listening_attempts, migration 061)
+// ---------------------------------------------------------------------------
+
+describe('listening attempts — auth required', () => {
+  it('POST /ttmik/attempts unauthenticated → 401', async () => {
+    const res = await request(t.app).post('/ttmik/attempts').send({ level: 1, number: 1 });
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /iyagi/attempts unauthenticated → 401', async () => {
+    const res = await request(t.app).post('/iyagi/attempts').send({ number: 1 });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /ttmik/attempts unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/ttmik/attempts');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /ttmik/attempts — lesson completion', () => {
+  it('logs a lesson attempt with a server-derived title snapshot', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await seedTtmikLesson(pg.pool, { level: 2, number: 7, title: '인사하기' });
+
+    const res = await agent.post('/ttmik/attempts').send({ level: 2, number: 7 });
+    expect(res.status).toBe(201);
+    expect(res.body.attempt).toMatchObject({
+      sourceKind: 'ttmik_lesson',
+      episodeId: null,
+      titleSnapshot: 'Level 2 Lesson 7: 인사하기',
+    });
+    expect(typeof res.body.attempt.lessonId).toBe('number');
+    expect(typeof res.body.attempt.id).toBe('number');
+  });
+
+  it('a non-existent (level, number) pair → 404, no row written', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/ttmik/attempts').send({ level: 9, number: 999 });
+    expect(res.status).toBe(404);
+    const { rows } = await pg.pool.query('SELECT count(*)::int AS n FROM listening_attempts');
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('invalid bodies → 400 (missing fields, non-positive, unknown key)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const post = (body: unknown) => agent.post('/ttmik/attempts').send(body as object);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ level: 1 })).status).toBe(400);
+    expect((await post({ level: 0, number: 1 })).status).toBe(400);
+    expect((await post({ level: 1, number: 1, episodeId: 2 })).status).toBe(400);
+  });
+});
+
+describe('POST /iyagi/attempts — episode completion', () => {
+  it('logs an episode attempt with a server-derived title snapshot', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await seedIyagiEpisode(pg.pool, { number: 42 });
+
+    const res = await agent.post('/iyagi/attempts').send({ number: 42 });
+    expect(res.status).toBe(201);
+    expect(res.body.attempt).toMatchObject({
+      sourceKind: 'iyagi_episode',
+      lessonId: null,
+      titleSnapshot: 'Iyagi #42: mock episode',
+    });
+    expect(typeof res.body.attempt.episodeId).toBe('number');
+  });
+
+  it('a non-existent episode number → 404, no row written', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Within the schema's 100_000 bound but no such episode exists.
+    const res = await agent.post('/iyagi/attempts').send({ number: 99999 });
+    expect(res.status).toBe(404);
+    const { rows } = await pg.pool.query('SELECT count(*)::int AS n FROM listening_attempts');
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('invalid bodies → 400 (missing number, non-positive, unknown key)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const post = (body: unknown) => agent.post('/iyagi/attempts').send(body as object);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ number: 0 })).status).toBe(400);
+    expect((await post({ number: 1, lessonId: 2 })).status).toBe(400);
+  });
+});
+
+describe("GET /ttmik/attempts — the caller's listening-completion history (F-172)", () => {
+  it('no attempts → 200 with an empty array (not an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/ttmik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ attempts: [], total: 0, limit: 20, offset: 0 });
+  });
+
+  it('returns both lesson- and episode-sourced attempts, newest first, with the total', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await seedTtmikLesson(pg.pool, { level: 1, number: 1, title: '레슨' });
+    await seedIyagiEpisode(pg.pool, { number: 5 });
+
+    await agent.post('/ttmik/attempts').send({ level: 1, number: 1 }).expect(201);
+    await agent.post('/iyagi/attempts').send({ number: 5 }).expect(201);
+
+    const res = await agent.get('/ttmik/attempts');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.attempts).toHaveLength(2);
+    // Newest first: the episode attempt (second POST) leads.
+    expect(res.body.attempts[0].sourceKind).toBe('iyagi_episode');
+    expect(res.body.attempts[1].sourceKind).toBe('ttmik_lesson');
+  });
+
+  it("is user-scoped (no IDOR) — another user's attempts never appear", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    await seedTtmikLesson(pg.pool, { level: 3, number: 3, title: 'A의 레슨' });
+    await a.agent.post('/ttmik/attempts').send({ level: 3, number: 3 }).expect(201);
+
+    const b = await registerUser(t.app, pg.pool);
+    await seedIyagiEpisode(pg.pool, { number: 8 });
+    await b.agent.post('/iyagi/attempts').send({ number: 8 }).expect(201);
+
+    const resA = await a.agent.get('/ttmik/attempts');
+    expect(resA.body.attempts).toHaveLength(1);
+    expect(resA.body.attempts[0].sourceKind).toBe('ttmik_lesson');
+
+    const resB = await b.agent.get('/ttmik/attempts');
+    expect(resB.body.attempts).toHaveLength(1);
+    expect(resB.body.attempts[0].sourceKind).toBe('iyagi_episode');
+  });
+
+  it('paginates via limit/offset, total reflects the full count', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    for (let i = 0; i < 3; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await seedIyagiEpisode(pg.pool, { number: 100 + i });
+      // eslint-disable-next-line no-await-in-loop
+      await agent.post('/iyagi/attempts').send({ number: 100 + i }).expect(201);
+    }
+    const page1 = await agent.get('/ttmik/attempts?limit=2&offset=0');
+    expect(page1.body.attempts).toHaveLength(2);
+    expect(page1.body.total).toBe(3);
+
+    const page2 = await agent.get('/ttmik/attempts?limit=2&offset=2');
+    expect(page2.body.attempts).toHaveLength(1);
+    expect(page2.body.total).toBe(3);
+  });
+});

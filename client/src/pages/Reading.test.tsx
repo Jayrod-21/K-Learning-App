@@ -51,6 +51,7 @@ const readingSvc = vi.hoisted(() => ({
   listGeneratedStories: vi.fn(),
   getGeneratedStory: vi.fn(),
   translatePassage: vi.fn(),
+  logReadingAttempt: vi.fn(),
   // Module CONSTANT (not a spy): Reading.tsx maps over it to build the
   // level radiogroup, so the mock must export the real display order.
   GENERATED_STORY_LEVELS: ['L1', 'L2', 'L3', 'L4', 'L5+'] as const,
@@ -158,6 +159,7 @@ beforeEach(() => {
   readingSvc.listGeneratedStories.mockReset();
   readingSvc.getGeneratedStory.mockReset();
   readingSvc.translatePassage.mockReset();
+  readingSvc.logReadingAttempt.mockReset();
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.getUpload.mockReset();
   tapSvc.lemmatize.mockReset();
@@ -313,6 +315,111 @@ describe('Reading — Books tab, typed sections (F-067)', () => {
         name: new RegExp(`Open ${LITERATURE_READY.title}`),
       }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Reading — Today deep link (F-183: ?chapter= with no ?book=)', () => {
+  function renderReadingAt(entry: string): ReturnType<typeof render> {
+    return render(
+      <MemoryRouter initialEntries={[entry]}>
+        <ToastProvider>
+          <Reading />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it('opens the chapter reader directly from a bare ?chapter=ID (no ?book=, no chapter-list/upload fetch)', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+
+    renderReadingAt('/learn/reading?chapter=5');
+
+    expect(
+      await screen.findByRole('button', { name: '소년은' }),
+    ).toBeInTheDocument();
+    expect(readingSvc.getChapter).toHaveBeenCalledWith(
+      5,
+      expect.any(AbortSignal),
+    );
+    // The reader needs only its own chapter id — no book context was ever
+    // fetched (ChapterReader reads `sourceUploadId` off the FETCHED chapter,
+    // not a route param).
+    expect(readingSvc.listChapters).not.toHaveBeenCalled();
+    expect(uploadsSvc.getUpload).not.toHaveBeenCalled();
+
+    // F-024: no book to Back to — the Reading root, not a chapter picker.
+    expect(
+      screen.getByRole('button', { name: 'Back to Reading' }),
+    ).toBeInTheDocument();
+  });
+
+  it('a malformed ?chapter= (non-numeric) falls back to the Books landing, never into a fetch', async () => {
+    renderReadingAt('/learn/reading?chapter=abc');
+
+    expect(
+      await screen.findByRole('button', {
+        name: new RegExp(`Open ${LITERATURE_READY.title}`),
+      }),
+    ).toBeInTheDocument();
+    expect(readingSvc.getChapter).not.toHaveBeenCalled();
+  });
+
+  it('a well-formed but nonexistent ?chapter= surfaces the honest error card — never a crash', async () => {
+    readingSvc.getChapter.mockRejectedValue(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    renderReadingAt('/learn/reading?chapter=999999');
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not load this chapter/i);
+  });
+
+  it('the F-069 position auto-save and F-172 "mark as read" still work from the bare deep link', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '소년은 걸었다.', pageNumber: 1 },
+      ],
+    });
+    readingSvc.logReadingAttempt.mockResolvedValue({
+      id: 9,
+      sourceKind: 'chapter',
+      chapterId: CHAPTER_ONE.id,
+      storyId: null,
+      titleSnapshot: CHAPTER_ONE.title,
+      passageNumber: 1,
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderReadingAt('/learn/reading?chapter=5');
+    await screen.findByRole('button', { name: '소년은' });
+
+    // Position save keys off the FETCHED chapter's own sourceUploadId, not
+    // a route param that doesn't exist on this deep link.
+    await waitFor(() => {
+      expect(readingSvc.saveReadingPosition).toHaveBeenCalledWith(
+        '41',
+        { chapterId: CHAPTER_ONE.id, pageNumber: CHAPTER_ONE.startPage },
+        expect.any(AbortSignal),
+      );
+    });
+
+    await user.click(
+      await screen.findByRole('button', { name: /mark chapter as read/i }),
+    );
+    await waitFor(() => {
+      expect(readingSvc.logReadingAttempt).toHaveBeenCalledWith(
+        { sourceKind: 'chapter', chapterId: CHAPTER_ONE.id, passageNumber: 1 },
+        expect.any(AbortSignal),
+      );
+    });
   });
 });
 
@@ -788,6 +895,104 @@ describe('Reading — chapter reader (tap-to-define)', () => {
   });
 });
 
+describe('Reading — mark chapter as read (F-172)', () => {
+  beforeEach(() => {
+    readingSvc.listChapters.mockResolvedValue([CHAPTER_ONE]);
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [
+        { id: 1, passageNumber: 1, body: '첫 문단.', pageNumber: 1 },
+        { id: 2, passageNumber: 2, body: '둘째 문단.', pageNumber: 2 },
+      ],
+    });
+  });
+
+  it('logs the attempt with the last passage number, then shows a done state', async () => {
+    readingSvc.logReadingAttempt.mockResolvedValue({
+      id: 1,
+      sourceKind: 'chapter',
+      chapterId: CHAPTER_ONE.id,
+      storyId: null,
+      titleSnapshot: CHAPTER_ONE.title,
+      passageNumber: 2,
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    const markButton = await screen.findByRole('button', {
+      name: /mark chapter as read/i,
+    });
+    await user.click(markButton);
+
+    await waitFor(() => {
+      expect(readingSvc.logReadingAttempt).toHaveBeenCalledWith(
+        { sourceKind: 'chapter', chapterId: CHAPTER_ONE.id, passageNumber: 2 },
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /chapter read/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a fixed error message (no server prose) when the log POST fails, and the button stays clickable', async () => {
+    readingSvc.logReadingAttempt.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /mark chapter as read/i }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't save/i);
+    expect(alert).not.toHaveTextContent(/boom/);
+    // The button itself is unaffected by the error — still offers the
+    // original label, not stuck showing "Saving…".
+    expect(
+      screen.getByRole('button', { name: /mark chapter as read/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('a chapter with no passages logs with no passageNumber', async () => {
+    readingSvc.getChapter.mockResolvedValue({
+      chapter: { ...CHAPTER_ONE, sourceUploadId: 41 },
+      passages: [],
+    });
+    readingSvc.logReadingAttempt.mockResolvedValue({
+      id: 2,
+      sourceKind: 'chapter',
+      chapterId: CHAPTER_ONE.id,
+      storyId: null,
+      titleSnapshot: CHAPTER_ONE.title,
+      passageNumber: null,
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openChapterOne(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /mark chapter as read/i }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.logReadingAttempt).toHaveBeenCalledWith(
+        { sourceKind: 'chapter', chapterId: CHAPTER_ONE.id },
+        expect.any(AbortSignal),
+      );
+    });
+  });
+});
+
 /**
  * Route probe standing in for `UploadViewer` — renders the matched `:id`
  * plus the query string verbatim, so the tests below assert the ACTUAL
@@ -1048,6 +1253,65 @@ describe('Reading — AI stories (F-068)', () => {
     expect(
       await screen.findByRole('button', { name: /Open 바닷가 마을/ }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Reading — mark story as finished (F-172)', () => {
+  async function openStory(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    readingSvc.listGeneratedStories.mockResolvedValue([STORY_SUMMARY]);
+    readingSvc.getGeneratedStory.mockResolvedValue(STORY_FULL);
+    await user.click(await screen.findByRole('tab', { name: /AI stories/ }));
+    await user.click(
+      await screen.findByRole('button', { name: /Open 바닷가 마을/ }),
+    );
+  }
+
+  it('logs a story-sourced attempt (no passageNumber — stories have no passage concept)', async () => {
+    readingSvc.logReadingAttempt.mockResolvedValue({
+      id: 3,
+      sourceKind: 'story',
+      chapterId: null,
+      storyId: STORY_SUMMARY.id,
+      titleSnapshot: STORY_SUMMARY.title,
+      passageNumber: null,
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStory(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /mark story as finished/i }),
+    );
+
+    await waitFor(() => {
+      expect(readingSvc.logReadingAttempt).toHaveBeenCalledWith(
+        { sourceKind: 'story', storyId: STORY_SUMMARY.id },
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /story finished/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a fixed error message when the log POST fails', async () => {
+    readingSvc.logReadingAttempt.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderReading();
+    await openStory(user);
+
+    await user.click(
+      await screen.findByRole('button', { name: /mark story as finished/i }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't save/i);
+    expect(alert).not.toHaveTextContent(/boom/);
   });
 });
 

@@ -82,15 +82,16 @@ import './ReviewDictionary.css';
  * '접사' (affix, e.g. 헛-, -질) is deliberately NOT excluded — word-forming
  * affixes are morphology, not the grammar-PATTERN sense this ticket means.
  *
- * KNOWN GAP: this filters the RENDERED rows only. `GET /krdict/search`
- * (server/src/routes/krdict.ts, out of this ticket's edit scope) has no
- * part-of-speech exclusion, so the server's `total`/pager range still counts
- * the ~1.2% of grammar rows this page hides — a page can render slightly
- * fewer than its nominal page size, and the pager's "N–M of T" range can be
- * off by a couple of rows near a grammar-heavy page. The correct full fix is
- * a `WHERE part_of_speech NOT IN ('어미','조사')` clause server-side (that
- * route has no other consumer, so it's a safe, surgical addition) — flagged
- * for a follow-up rather than done here.
+ * F-175 (server-side, done): `GET /krdict/search`'s two query branches
+ * (`server/src/routes/krdict.ts`) now carry the SAME `part_of_speech NOT IN
+ * ('어미', '조사')` exclusion (NULL-safe) in their WHERE clause, so the
+ * `total`/pager range is exact — the "page can render slightly fewer than
+ * its nominal size near a grammar-heavy page" gap this comment used to
+ * document is closed. `isGrammarPos` stays as a client-side belt-and-
+ * suspenders filter (still independently exercised below) rather than being
+ * removed: it's a second, cheap defense if the server exclusion ever
+ * regressed, and it costs nothing now that the server rarely has anything
+ * left for it to filter.
  */
 const GRAMMAR_POS = new Set(['어미', '조사']);
 function isGrammarPos(pos: string | null): boolean {

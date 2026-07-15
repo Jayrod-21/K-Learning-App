@@ -288,6 +288,51 @@ export async function submitHanjaCardReview(
   );
 }
 
+/** One row from `GET /hanja/attempts` (F-171) — a completed hanja card
+ *  review. `cardId` is null once the underlying card has been removed (the
+ *  server's soft-FK ON DELETE SET NULL — the attempt itself still counts). */
+export interface HanjaAttempt {
+  id: number;
+  cardId: number | null;
+  char: string;
+  rating: FsrsRating;
+  correct: boolean;
+  createdAt: string;
+}
+
+/** Envelope returned by `GET /hanja/attempts`. */
+interface HanjaAttemptsEnvelope {
+  attempts: HanjaAttempt[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * GET /hanja/attempts?limit=&offset= — this user's hanja-attempt history,
+ * newest first (F-171). One row per completed `POST /hanja/cards/:cardId
+ * /reviews` call (written inside that same transaction — see
+ * server/src/services/cardReview.ts). No new client trigger was needed: the
+ * Study drill already calls `submitHanjaCardReview` on every rating, which
+ * IS "drilled a hanja today." This wrapper feeds Today.tsx's Hanja "done
+ * today" row (mirrors `fetchWritingAttempts`/`grammarDrill.listAttempts`,
+ * which already feed Today.tsx's writing/grammar tiles the same way).
+ *
+ * `limit` defaults to 20 server-side (1..100); `offset` defaults to 0.
+ * Rejects with `ApiError`: 400 out-of-bounds paging (client bug — never sent
+ * here), 401 session expired, 429 cheap-bucket limit. An empty history
+ * resolves as `{ attempts: [], total: 0, ... }` — never an error.
+ */
+export async function fetchHanjaAttempts(
+  params?: { limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<HanjaAttemptsEnvelope> {
+  return api.get<HanjaAttemptsEnvelope>('/hanja/attempts', {
+    params: { limit: params?.limit, offset: params?.offset },
+    ...(signal !== undefined ? { signal } : {}),
+  });
+}
+
 /**
  * GET /vocab/lists?kind=hanja — this user's hanja-kind lists. Same route
  * family as `services/vocab.listLists`, narrowed server-side to the hanja

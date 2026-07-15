@@ -167,12 +167,27 @@ export async function fetchMockTest(
 export interface AttemptState {
   section: MockSection;
   sourceTest: number;
+  /**
+   * Best-effort re-derivation (F-173) — same posture as
+   * `TopikAttemptHistoryEntry.topikLevel`: null on the rare case the backing
+   * corpus paper is gone (see the route's `resolveServedTotal` doc). Optional
+   * on the client type (not just the wire) so pre-F-173 fixtures/mocks that
+   * predate this field keep typechecking — the real server always sends it.
+   */
+  topikLevel?: TopikLevel | null;
   currentIdx: number;
   /** { "<itemId>": choiceId } — the picks so far. */
   picks: Record<string, ChoiceId>;
   remainingMs: number;
   /** How many items are answered (server-computed, for the resume banner). */
   answered: number;
+  /**
+   * The exam's served item count (F-173), capped at the official mock size.
+   * Falls back to `answered` when the backing paper can't be re-resolved —
+   * a real lower bound, never a fabricated guess above what's known. Optional
+   * on the client type for the same pre-F-173-fixture reason as `topikLevel`.
+   */
+  totalItems?: number;
   updatedAt: string;
 }
 

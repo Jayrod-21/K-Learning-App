@@ -501,12 +501,38 @@ export interface DiagnosticNextResponse {
 // Today plan
 // ─────────────────────────────────────────────────────────────
 
-/** One task card on the Today screen. */
+/** One task card on the Today screen.
+ *
+ * Wave 2 (backend batch, TODAY_NAV_SCOPING.md B4/B5/B6) adds optional
+ * deep-link fields, each populated only for the task whose `tag` names it —
+ * additive so any older cached/mock fixture (with none of these fields) still
+ * type-checks and renders (the tile simply has nothing to deep-link with,
+ * same as before this wave). */
 export interface TodayTask {
   title: string;
   mins: number;
   level: LevelLabel;
   tag: 'Reading' | 'Listening' | 'Writing';
+  /** Reading only: which reading feature this task came from — `/plan.ts`
+   *  now re-sources Reading from the caller's own uploaded-book chapters or
+   *  AI-generated stories (not the old public TTMIK-lesson pick), so the
+   *  Today tile can deep-link to the exact one shown. */
+  sourceKind?: 'chapter' | 'story';
+  /** Reading only, when `sourceKind === 'chapter'`: reading_chapters.id —
+   *  `/learn/reading?chapter=<id>`. */
+  chapterId?: number;
+  /** Reading only, when `sourceKind === 'story'`: generated_stories.id —
+   *  `/learn/reading?story=<id>`. */
+  storyId?: number;
+  /** Listening only: the corpus this episode belongs to — deep-link as
+   *  `/learn/listen?corpus=<corpus>&episode=<episodeNumber>`. */
+  corpus?: 'iyagi';
+  /** Listening only: the episode's natural key (distinct from its internal
+   *  DB id) — the player addresses episodes by this number. */
+  episodeNumber?: number;
+  /** Writing only: writing_prompts.id — lets Today request this EXACT bank
+   *  prompt instead of a fresh random draw. */
+  promptId?: number;
 }
 
 /**

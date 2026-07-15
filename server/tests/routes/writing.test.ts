@@ -255,6 +255,93 @@ describe('GET /writing/prompts/random — one random active prompt per rubric (B
 });
 
 // ---------------------------------------------------------------------------
+// GET /writing/prompts/:id (F-183 — Today's Writing tile deep link)
+// ---------------------------------------------------------------------------
+
+describe('GET /writing/prompts/:id — one specific active bank prompt by id (F-183)', () => {
+  interface PromptDTO {
+    id: number;
+    promptKr: string;
+    promptEn: string | null;
+    level: string;
+    rubric: 'topik_ii_53' | 'topik_ii_54';
+    estMinutes: number | null;
+  }
+
+  it('unauthenticated → 401', async () => {
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `SELECT id FROM writing_prompts WHERE rubric = 'topik_ii_53' AND is_active LIMIT 1`,
+    );
+    const res = await request(t.app).get(`/writing/prompts/${rows[0]!.id}`);
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('a real seeded id → 200 with that EXACT row (not a random/list draw)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const seed = await pg.pool.query<{ id: string; prompt_kr: string }>(
+      `SELECT id, prompt_kr FROM writing_prompts
+        WHERE source_id = 'wp-topik53-01' AND is_active`,
+    );
+    const id = Number(seed.rows[0]!.id);
+    const promptKr = seed.rows[0]!.prompt_kr;
+
+    const res = await agent.get(`/writing/prompts/${String(id)}`);
+    expect(res.status).toBe(200);
+    const prompt = (res.body as { prompt: PromptDTO }).prompt;
+    expect(prompt.id).toBe(id);
+    expect(prompt.promptKr).toBe(promptKr);
+    expect(prompt.rubric).toBe('topik_ii_53');
+  });
+
+  it('a retired (is_active = false) prompt id → 404, not a leak of retired content', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `UPDATE writing_prompts SET is_active = FALSE
+        WHERE source_id = 'wp-topik53-01' RETURNING id`,
+    );
+    const id = rows[0]!.id;
+    try {
+      const res = await agent.get(`/writing/prompts/${id}`);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('not_found');
+    } finally {
+      await pg.pool.query(
+        `UPDATE writing_prompts SET is_active = TRUE WHERE source_id = 'wp-topik53-01'`,
+      );
+    }
+  });
+
+  it('an untagged pre-F-014 legacy prompt id (rubric IS NULL) → 404', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `SELECT id FROM writing_prompts WHERE rubric IS NULL LIMIT 1`,
+    );
+    expect(rows.length).toBeGreaterThan(0); // the 038 legacy rows must exist
+    const res = await agent.get(`/writing/prompts/${rows[0]!.id}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+  });
+
+  it('an id that has never existed → 404 (never a crash)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/writing/prompts/999999999');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+  });
+
+  it.each([['0'], ['-1'], ['abc'], ['1.5']])(
+    'malformed id %s → 400 (never reaches the query)',
+    async (id) => {
+      const { agent } = await registerUser(t.app, pg.pool);
+      const res = await agent.get(`/writing/prompts/${id}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // GET /writing/series
 // ---------------------------------------------------------------------------
 

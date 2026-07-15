@@ -30,6 +30,7 @@ import type { ServerVocabList, VocabEntry } from '../../types/domain';
 
 const vocabSvc = vi.hoisted(() => ({
   searchEntriesPage: vi.fn(),
+  fetchVocabThemes: vi.fn(),
   bankEntry: vi.fn(),
   listLists: vi.fn(),
   createList: vi.fn(),
@@ -132,6 +133,10 @@ beforeEach(() => {
     limit: 30,
     offset: 0,
   });
+  vocabSvc.fetchVocabThemes.mockResolvedValue([
+    '01 인간 / People',
+    '02 행동 / Actions',
+  ]);
   vocabSvc.bankEntry.mockResolvedValue({ card: { id: 1, version: 1 } });
   vocabSvc.listLists.mockResolvedValue([SERVER_LIST]);
   vocabSvc.createList.mockResolvedValue({ list: SERVER_LIST, appended: 0 });
@@ -551,6 +556,63 @@ describe('ReviewVocab — Browse (search + F-049 dropdown filters)', () => {
       .getAllByRole('option')
       .map((o) => o.textContent);
     expect(labels).toEqual(['All', 'Beginner', 'Intermediate', 'Advanced']);
+  });
+});
+
+describe('ReviewVocab — Theme filter (F-176)', () => {
+  it('populates the Theme dropdown from GET /vocab/themes, not a hardcoded list', async () => {
+    renderPage();
+    await screen.findByText('영향');
+    await waitFor(() => {
+      expect(vocabSvc.fetchVocabThemes).toHaveBeenCalled();
+    });
+    const themeSelect = await screen.findByRole('combobox', { name: 'Theme' });
+    const labels = within(themeSelect)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(labels).toEqual(['All themes', '01 인간 / People', '02 행동 / Actions']);
+  });
+
+  it('refetches with the matching theme param and resets paging, independent of the Genre facet', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('영향');
+    await screen.findByRole('option', { name: '01 인간 / People' });
+
+    vocabSvc.searchEntriesPage.mockClear();
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: 'Theme' }),
+      '01 인간 / People',
+    );
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalledWith(
+        expect.objectContaining({ theme: '01 인간 / People', offset: 0 }),
+        expect.anything(),
+      );
+    });
+    // Never conflated with the (separate, 3-value) Genre/content_domain filter.
+    const lastArgs: unknown = vocabSvc.searchEntriesPage.mock.lastCall?.[0];
+    expect(lastArgs).not.toHaveProperty('domain');
+
+    // Clearing back to "All themes" omits the param again.
+    vocabSvc.searchEntriesPage.mockClear();
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Theme' }), '');
+    await waitFor(() => {
+      expect(vocabSvc.searchEntriesPage).toHaveBeenCalled();
+      const args: unknown = vocabSvc.searchEntriesPage.mock.lastCall?.[0];
+      expect(args).not.toHaveProperty('theme');
+    });
+  });
+
+  it('degrades to "All themes only" when the values fetch fails, without breaking the rest of Browse', async () => {
+    vocabSvc.fetchVocabThemes.mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+    await screen.findByText('영향');
+    const themeSelect = await screen.findByRole('combobox', { name: 'Theme' });
+    const labels = within(themeSelect)
+      .getAllByRole('option')
+      .map((o) => o.textContent);
+    expect(labels).toEqual(['All themes']);
   });
 });
 

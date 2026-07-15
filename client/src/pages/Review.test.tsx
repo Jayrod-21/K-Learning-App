@@ -2,7 +2,8 @@
  * Review — Phase 3C-1 lists-first flashcards page.
  *
  * The page pipes two useEndpointOrMock feeds through the vocab service:
- *   - 'review:due'   → vocab.getDueCards  (StudyCard[] adapter + grammar split)
+ *   - 'review:due'   → vocab.getDueCardsPage (StudyCard[] adapter + grammar
+ *                       split + the real due `total`, count reconciliation)
  *   - 'review:lists' → vocab.listLists    (ServerVocabList[])
  * plus direct abortable fetches for list detail (getListDetail) and the
  * study-session persistence pair (bankEntry → submitReview).
@@ -101,6 +102,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
 // ── Service mocks ────────────────────────────────────────────────────
 vi.mock('../services/vocab', () => ({
   getDueCards: vi.fn(),
+  getDueCardsPage: vi.fn(),
   submitReview: vi.fn(),
   bankEntry: vi.fn(),
   listLists: vi.fn(),
@@ -1180,7 +1182,10 @@ describe('Review — completion (F-062)', () => {
 
 describe('Review — grammar production + seeding', () => {
   it('partitions due grammar production cards into their own landing section', async () => {
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    vi.mocked(vocabService.getDueCardsPage).mockResolvedValue({
+      cards: GRAMMAR_DUE,
+      total: 1,
+    });
     settleLanding({ due: [] });
     renderReview();
 
@@ -1195,7 +1200,10 @@ describe('Review — grammar production + seeding', () => {
   });
 
   it('deep-links a grammar card into the Grammar Drill tab with the pattern key', async () => {
-    vi.mocked(vocabService.getDueCards).mockResolvedValue(GRAMMAR_DUE);
+    vi.mocked(vocabService.getDueCardsPage).mockResolvedValue({
+      cards: GRAMMAR_DUE,
+      total: 1,
+    });
     settleLanding({ due: [] });
     const user = userEvent.setup();
     renderReview();
@@ -1277,6 +1285,66 @@ describe('Review — grammar production + seeding', () => {
     });
     expect(screen.getByRole('alert')).not.toHaveTextContent('rate limited');
     expect(vocabService.initCards).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Count reconciliation — the "665 due" vs "0 cards due" bug
+// (TODAY_NAV_SCOPING Part A)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — due-count reconciliation (real server total, not page length)', () => {
+  it('shows the server-computed total, not the capped page length, when the real backlog exceeds one page', async () => {
+    // The server's default page is capped at 20 rows; here it serves back
+    // only ONE row (as it legitimately would once graduated/grammar rows are
+    // partitioned out) while the real due backlog is 665 — the exact "665 vs
+    // 0-ish" shape the bug report described. `dueCount` must read the real
+    // `total`, never `.length` of whatever page happened to come back.
+    vi.mocked(vocabService.getDueCardsPage).mockResolvedValue({
+      cards: [DUE_RAW],
+      total: 665,
+    });
+    settleLanding({ due: [] });
+    renderReview();
+
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+
+    expect(await screen.findByText('665 cards due')).toBeInTheDocument();
+    expect(screen.queryByText('1 card due')).not.toBeInTheDocument();
+  });
+
+  it('shows a real due count even when the served page is ALL grammar-production cards (page length would read 0)', async () => {
+    // The exact proximate cause TODAY_NAV_SCOPING flags: if the oldest
+    // overdue rows all happen to be grammar-production cards, the vocab
+    // `ui` array partitioned out of the page is empty (`.length === 0`)
+    // even though the real vocab backlog is large. The server `total`
+    // reflects the SAME due predicate regardless of what a client-side
+    // partition later does with the rows, so it must not collapse to 0 here.
+    vi.mocked(vocabService.getDueCardsPage).mockResolvedValue({
+      cards: GRAMMAR_DUE,
+      total: 42,
+    });
+    settleLanding({ due: [] });
+    renderReview();
+
+    await act(async () => {
+      await hoisted.capturedRealFns.due?.();
+    });
+
+    expect(await screen.findByText('42 cards due')).toBeInTheDocument();
+  });
+
+  it('falls back to the page length when the mock/dev fallback path never populated a real total', () => {
+    // `settleLanding` mimics data injected directly into the hook (as most of
+    // this suite's tests do) — `dueRealFn` never actually ran, so no real
+    // `total` was ever captured. `dueCount` must still degrade to the
+    // existing `.length`-based behavior every pre-existing test in this file
+    // relies on, not silently show nothing/zero.
+    settleLanding({ due: DUE_STUDY });
+    renderReview();
+    expect(screen.getByText('1 card due')).toBeInTheDocument();
   });
 });
 

@@ -25,7 +25,7 @@
  * matching the real DOM shape the hook's `closest()` call depends on.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
@@ -38,6 +38,8 @@ import {
   getIyagiEpisodes,
   getTtmikLesson,
   getTtmikLessons,
+  logIyagiAttempt,
+  logTtmikAttempt,
 } from '../services/ttmik';
 import { mineWord } from '../services/vocab';
 import type {
@@ -55,6 +57,8 @@ vi.mock('../services/ttmik', async (importOriginal) => {
     getTtmikLesson: vi.fn(),
     getIyagiEpisodes: vi.fn(),
     getIyagiEpisode: vi.fn(),
+    logTtmikAttempt: vi.fn(),
+    logIyagiAttempt: vi.fn(),
   };
 });
 vi.mock('../services/lemmatize', () => ({ lemmatize: vi.fn() }));
@@ -212,6 +216,8 @@ beforeEach(() => {
   vi.mocked(defineEntry).mockReset();
   vi.mocked(enrich).mockReset();
   vi.mocked(mineWord).mockReset();
+  vi.mocked(logTtmikAttempt).mockReset();
+  vi.mocked(logIyagiAttempt).mockReset();
   // F-162: each test gets a clean scroll-restore slate — a saved position
   // from one test must never leak into the next.
   window.sessionStorage.clear();
@@ -477,6 +483,39 @@ describe('Ttmik page — URL addressing (untrusted search params)', () => {
 
     expect(await screen.findByText('Showing 3 of 3')).toBeInTheDocument();
     expect(vi.mocked(getTtmikLesson)).not.toHaveBeenCalled();
+  });
+
+  it('F-183: deep-links straight into an Iyagi episode detail (Today Listening tile: corpus=iyagi&episode=N)', async () => {
+    renderPage('/learn/listen?corpus=iyagi&episode=143');
+
+    expect(await screen.findByText('Iyagi · Episode 143')).toBeInTheDocument();
+    expect(vi.mocked(getIyagiEpisode)).toHaveBeenCalledWith(
+      143,
+      expect.any(AbortSignal),
+    );
+    expect(vi.mocked(getIyagiEpisodes)).not.toHaveBeenCalled();
+  });
+
+  it('F-183: a malformed ?episode= falls back to the Iyagi listing, never into a fetch', async () => {
+    renderPage('/learn/listen?corpus=iyagi&episode=abc');
+
+    expect(await screen.findByText('Showing 2 of 2')).toBeInTheDocument();
+    expect(vi.mocked(getIyagiEpisode)).not.toHaveBeenCalled();
+  });
+
+  it('F-183: a well-formed but nonexistent ?episode= surfaces the honest error card — never a crash', async () => {
+    vi.mocked(getIyagiEpisode).mockRejectedValue(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    // 4 digits — within `parsePositiveInt`'s deliberate ordinal-length cap
+    // (Ttmik.tsx's own parser rejects 5+ digit corpus ordinals as malformed
+    // outright, which is the PRECEDING test's case; this one exercises a
+    // well-formed id that simply doesn't resolve server-side).
+    renderPage('/learn/listen?corpus=iyagi&episode=9999');
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not load the transcript/i);
   });
 });
 
@@ -823,6 +862,118 @@ describe('Ttmik page — lesson detail (persistent player + sub-tabs)', () => {
     // tab-scoped, it describes the persistent player above the tabs.
     await user.click(screen.getByRole('tab', { name: '대본 · Transcript' }));
     expect(screen.getByRole('alert')).toBeInTheDocument();
+  });
+});
+
+describe('Ttmik page — mark as listened (F-172)', () => {
+  it('the <audio> `ended` event auto-logs a TTMIK lesson attempt', async () => {
+    vi.mocked(logTtmikAttempt).mockResolvedValue({
+      id: 1,
+      sourceKind: 'ttmik_lesson',
+      lessonId: 1,
+      episodeId: null,
+      titleSnapshot: 'Level 1 Lesson 1: Hello / Thank you',
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    const audio = document.querySelector('audio');
+    expect(audio).not.toBeNull();
+    fireEvent.ended(audio as HTMLAudioElement);
+
+    await waitFor(() => {
+      expect(vi.mocked(logTtmikAttempt)).toHaveBeenCalledWith(
+        1,
+        1,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /marked as listened/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('the `ended` event never double-logs on replay (button already in its done state)', async () => {
+    vi.mocked(logTtmikAttempt).mockResolvedValue({
+      id: 1,
+      sourceKind: 'ttmik_lesson',
+      lessonId: 1,
+      episodeId: null,
+      titleSnapshot: 'Level 1 Lesson 1: Hello / Thank you',
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await openLessonOne(user);
+
+    const audio = document.querySelector('audio') as HTMLAudioElement;
+    fireEvent.ended(audio);
+    await screen.findByRole('button', { name: /marked as listened/i });
+    fireEvent.ended(audio); // a replay reaching the end again
+
+    expect(vi.mocked(logTtmikAttempt)).toHaveBeenCalledTimes(1);
+  });
+
+  it('the explicit "Mark as listened" button covers a unit with no mapped audio (Iyagi 143)', async () => {
+    vi.mocked(logIyagiAttempt).mockResolvedValue({
+      id: 2,
+      sourceKind: 'iyagi_episode',
+      lessonId: null,
+      episodeId: 143,
+      titleSnapshot: 'Iyagi #143: 한국의 카페 문화',
+      completedAt: '2026-07-14T00:00:00Z',
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Open episode 143: 한국의 카페 문화 (no audio)',
+      }),
+    );
+
+    // No audio element at all — the button is the ONLY completion trigger.
+    expect(document.querySelector('audio')).toBeNull();
+    await user.click(
+      screen.getByRole('button', { name: /mark as listened/i }),
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(logIyagiAttempt)).toHaveBeenCalledWith(
+        143,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(
+      await screen.findByRole('button', { name: /marked as listened/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a fixed error message (no server prose) when the log POST fails', async () => {
+    vi.mocked(logIyagiAttempt).mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('button', { name: /Iyagi Episodes/ }));
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Open episode 143: 한국의 카페 문화 (no audio)',
+      }),
+    );
+    await user.click(
+      screen.getByRole('button', { name: /mark as listened/i }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't save/i);
+    expect(alert).not.toHaveTextContent(/boom/);
   });
 });
 

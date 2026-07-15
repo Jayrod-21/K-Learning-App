@@ -319,6 +319,113 @@ describe('GET /vocab/entries — domain + book_level filters (F-003)', () => {
   });
 });
 
+describe('GET /vocab/entries — theme filter (F-176)', () => {
+  // vocab_entries is reference data the file-level beforeEach does NOT
+  // truncate; these tests assert exact totals, so isolate the corpus
+  // (mirrors the domain/book_level describe block above).
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('theme filter narrows to an exact match only (not a substring/prefix)', async () => {
+    const peopleId = await seedVocabEntry(pg.pool, { korean: '사람', english: 'person' });
+    await pg.pool.query(`UPDATE vocab_entries SET theme = '01 인간 / People' WHERE id = $1`, [
+      peopleId,
+    ]);
+    const actionId = await seedVocabEntry(pg.pool, { korean: '행동', english: 'action' });
+    await pg.pool.query(`UPDATE vocab_entries SET theme = '02 행동 / Actions' WHERE id = $1`, [
+      actionId,
+    ]);
+    await seedVocabEntry(pg.pool, { korean: '무관' }); // theme stays NULL
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(
+      `/vocab/entries?theme=${encodeURIComponent('01 인간 / People')}`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('사람');
+
+    // Unfiltered still returns all three — the param narrows, never re-shapes.
+    const all = await agent.get('/vocab/entries').expect(200);
+    expect(all.body.total).toBe(3);
+  });
+
+  it('theme + domain compose (AND semantics)', async () => {
+    const hit = await seedVocabEntry(pg.pool, { korean: '연구주제', english: 'research topic' });
+    await pg.pool.query(
+      `UPDATE vocab_entries SET theme = '03 성질 / Quality', domain = 'research'::content_domain WHERE id = $1`,
+      [hit],
+    );
+    // Same theme, but general domain — must be excluded when domain=research.
+    const sameTheme = await seedVocabEntry(pg.pool, { korean: '일반단어' });
+    await pg.pool.query(`UPDATE vocab_entries SET theme = '03 성질 / Quality' WHERE id = $1`, [
+      sameTheme,
+    ]);
+    const { agent } = await registerUser(t.app, pg.pool);
+
+    const res = await agent.get(
+      `/vocab/entries?theme=${encodeURIComponent('03 성질 / Quality')}&domain=research`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.entries[0].korean).toBe('연구주제');
+  });
+
+  it('an unknown theme string returns an honest empty page, never a 400/500', async () => {
+    await seedVocabEntry(pg.pool, { korean: '아무거나' });
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/entries?theme=존재하지않는테마');
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([]);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('oversized theme (> 200 chars) → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/vocab/entries?theme=${'가'.repeat(201)}`);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /vocab/themes — distinct theme values (F-176)', () => {
+  beforeEach(async () => {
+    await pg.pool.query('TRUNCATE TABLE vocab_entries RESTART IDENTITY CASCADE');
+  });
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/vocab/themes');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the distinct non-null themes, alphabetically, with no duplicates', async () => {
+    const a1 = await seedVocabEntry(pg.pool, { korean: '가1' });
+    const a2 = await seedVocabEntry(pg.pool, { korean: '가2' });
+    const b1 = await seedVocabEntry(pg.pool, { korean: '나1' });
+    await seedVocabEntry(pg.pool, { korean: '테마없음' }); // theme stays NULL
+    await pg.pool.query(
+      `UPDATE vocab_entries SET theme = '02 행동 / Actions' WHERE id IN ($1, $2)`,
+      [a1, a2],
+    );
+    await pg.pool.query(`UPDATE vocab_entries SET theme = '01 인간 / People' WHERE id = $1`, [
+      b1,
+    ]);
+
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/themes');
+    expect(res.status).toBe(200);
+    // Alphabetical (COLLATE "C"), deduplicated, no NULL entry.
+    expect(res.body.themes).toEqual(['01 인간 / People', '02 행동 / Actions']);
+  });
+
+  it('empty corpus → 200 with an empty array, not an error', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/vocab/themes');
+    expect(res.status).toBe(200);
+    expect(res.body.themes).toEqual([]);
+  });
+});
+
 describe('GET /vocab/suggestions/weekly', () => {
   // Isolate from accumulated reference rows so the "excludes carded" and
   // capped-at-15 assertions are deterministic.
@@ -651,6 +758,91 @@ describe('GET /vocab/cards/due', () => {
     expect(cards.some((c) => c.grammar_entry_id === Number(graduatedId))).toBe(false);
     expect(cards.some((c) => c.grammar_entry_id === Number(activeId))).toBe(true);
     expect(cards.some((c) => c.vocab_entry_id === vocabEntryId)).toBe(true);
+  });
+
+  // Count reconciliation (TODAY_NAV_SCOPING Part A / the "665 due" vs "0
+  // cards due" bug): this route previously had NO total at all — only
+  // `cards.length`, capped at `limit` (default 20). `total` must be the
+  // REAL, unbounded due count, independent of how small a page the caller
+  // asked for.
+  describe('total (count reconciliation)', () => {
+    it('reports the real unbounded total even when it exceeds the requested limit', async () => {
+      const { agent, userId } = await registerUser(t.app, pg.pool);
+      for (let i = 0; i < 7; i += 1) {
+        const entryId = await seedVocabEntry(pg.pool, { korean: `단어${String(i)}` });
+        await pg.pool.query(
+          `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+           VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+          [userId, entryId],
+        );
+      }
+      const res = await agent.get('/vocab/cards/due?limit=2').expect(200);
+      // The PAGE stays capped at the requested limit...
+      expect(res.body.cards.length).toBe(2);
+      // ...but `total` reports the true backlog, not the page length.
+      expect(res.body.total).toBe(7);
+    });
+
+    it('total is 0 when nothing is due (no cards, or nothing yet due)', async () => {
+      const { agent, userId } = await registerUser(t.app, pg.pool);
+      const entryId = await seedVocabEntry(pg.pool, { korean: '아직' });
+      await pg.pool.query(
+        `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+         VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now() + interval '1 day')`,
+        [userId, entryId],
+      );
+      const res = await agent.get('/vocab/cards/due').expect(200);
+      expect(res.body.cards).toEqual([]);
+      expect(res.body.total).toBe(0);
+    });
+
+    it('total excludes a graduated grammar production card — the SAME predicate the page obeys', async () => {
+      const { agent, userId } = await registerUser(t.app, pg.pool);
+      const entry = await pg.pool.query<{ id: string }>(
+        `INSERT INTO grammar_entries
+           (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+         VALUES ($1, 'GR-total-grad', '-는지', 'whether', 'L4', 'ending', 'manual')
+         RETURNING id::text AS id`,
+        [userId],
+      );
+      const entryId = entry.rows[0]!.id;
+      await pg.pool.query(
+        `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+         VALUES ($1, 'production'::card_face, $2, 'L4'::proficiency_level, now())`,
+        [userId, entryId],
+      );
+      const vocabEntryId = await seedVocabEntry(pg.pool, { korean: '변함없음' });
+      await pg.pool.query(
+        `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+         VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+        [userId, vocabEntryId],
+      );
+
+      const before = await agent.get('/vocab/cards/due').expect(200);
+      expect(before.body.total).toBe(2);
+
+      await agent.post(`/grammar/bank/${entryId}/graduate`).expect(200);
+      const after = await agent.get('/vocab/cards/due').expect(200);
+      expect(after.body.cards.length).toBe(1); // page shrinks...
+      expect(after.body.total).toBe(1); // ...and total agrees with the page, never drifts
+    });
+
+    it('is user-scoped — one user\'s due backlog never inflates another user\'s total', async () => {
+      const a = await registerUser(t.app, pg.pool);
+      const b = await registerUser(t.app, pg.pool);
+      for (let i = 0; i < 3; i += 1) {
+        const entryId = await seedVocabEntry(pg.pool, { korean: `A어휘${String(i)}` });
+        await pg.pool.query(
+          `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+           VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+          [a.userId, entryId],
+        );
+      }
+      const resA = await a.agent.get('/vocab/cards/due').expect(200);
+      const resB = await b.agent.get('/vocab/cards/due').expect(200);
+      expect(resA.body.total).toBe(3);
+      expect(resB.body.total).toBe(0);
+    });
   });
 });
 

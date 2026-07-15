@@ -42,10 +42,12 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The migration immediately before 058 in the chain. `down --target PRE_058`
-# rolls back 058 alone — its down is DROP COLUMN, which does not trip the
-# destructive gate. Targeting an earlier version would traverse 045's
-# DROP TABLE down and require --allow-destructive.
+# The migration immediately before 058 in the chain. 058's own down is
+# DROP COLUMN, which does not itself trip the destructive gate — but the
+# chain has since grown 059/060/061 above 058 (each a destructive DROP TABLE
+# down), and `down --target` rolls back everything strictly above the
+# target, so this invocation now requires --allow-destructive too (see the
+# down test below).
 PRE_058 = "057"
 
 # A syntactically valid argon2id-shaped hash satisfying
@@ -250,11 +252,23 @@ def test_058_down_drops_column_then_reups(env, dsn: str, full_dir) -> None:
         user = _seed_user(conn, "f127-down@example.com")
         ticket_id = _seed_ticket(conn, user, "058-down-test", "/learn/writing")
 
-    # 058's down is DROP COLUMN — not covered by the destructive gate
-    # (DROP TABLE/SCHEMA/DATABASE/TRUNCATE), so no --allow-destructive needed:
-    # this invocation doubles as a regression probe on that classification.
+    # 058's own down is DROP COLUMN — not covered by the destructive gate
+    # (DROP TABLE/SCHEMA/DATABASE/TRUNCATE) in isolation. But the chain has
+    # since grown 059/060/061 above 058, each a destructive DROP TABLE down,
+    # and `down --target` rolls back everything strictly above the target —
+    # so --allow-destructive is now required for this invocation to reach
+    # 058's own down at all. This no longer doubles as a pure classification
+    # probe on 058's own down body (which is still just DROP COLUMN); it's
+    # now also traversing 059/060/061's destructive downs to get there.
     rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_058, "down"]
+        [
+            "--migrations-dir",
+            str(full_dir),
+            "--target",
+            PRE_058,
+            "--allow-destructive",
+            "down",
+        ]
     )
     assert rc == 0, f"down --target {PRE_058} returned {rc}"
 

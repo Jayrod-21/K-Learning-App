@@ -24,6 +24,14 @@
  *     existence leak).
  *   - Optimistic concurrency: FOR UPDATE serializes concurrent raters; a
  *     stale expected_version surfaces as 409 (FU-NF-8: distinct from 404).
+ *
+ * F-171 (migration 059): when `logHanjaAttempt` is true (routes/hanja.ts
+ * only), this same transaction ALSO appends a `hanja_attempts` row — one row
+ * per completed hanja card review, powering GET /hanja/attempts and a future
+ * daily-drilled-count/streak surface. Anchored here (not a second route-level
+ * write) so a completed review and its attempt-log row are always atomic:
+ * either both commit or neither does. `routes/vocab.ts`'s calls never set the
+ * flag, so vocab card reviews are byte-for-byte unaffected.
  */
 import { withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError } from '../middleware/errors.js';
@@ -44,6 +52,16 @@ export interface ApplyCardReviewInput {
    * user does not own — same no-existence-leak posture as the user filter.
    */
   requireHanjaTarget?: boolean;
+  /**
+   * F-171 — when true, ALSO append a `hanja_attempts` row inside this SAME
+   * transaction (one write, no separate round-trip). Kept as its own explicit
+   * flag rather than piggy-backed on `requireHanjaTarget`: the two concerns
+   * are different (family enforcement vs. attempt-log analytics) even though
+   * today only the hanja route sets both. Only routes/hanja.ts passes this —
+   * routes/vocab.ts's calls are byte-for-byte unchanged (flag omitted →
+   * default false → no new insert, no new column read by that caller).
+   */
+  logHanjaAttempt?: boolean;
   /** Error-message noun — 'vocab card' | 'hanja card'. Kept caller-supplied so
    *  the vocab route's wire-visible messages are byte-identical pre/post
    *  extraction ("vocab card not found" / "vocab card version is stale"). */
@@ -89,14 +107,21 @@ export async function applyCardReview(input: ApplyCardReviewInput): Promise<Appl
       lapses: number;
       version: number;
       hanja_character_id: string | null;
+      // F-171: the hanja character text, when this card targets one — a
+      // snapshot for hanja_attempts.char (see below). NULL for a vocab/
+      // grammar-target card (the LEFT JOIN simply has no match). The join
+      // costs nothing on the vocab route's own calls (hanja_character_id IS
+      // NULL there, hanja_char resolves to NULL and is never read).
+      hanja_char: string | null;
     }>(
-      `SELECT fsrs_state, stability, difficulty, reps, lapses, version,
-              hanja_character_id
-         FROM vocab_cards
-        WHERE id = $1
-          AND user_id = $2
-          AND deleted_at IS NULL
-        FOR UPDATE`,
+      `SELECT vc.fsrs_state, vc.stability, vc.difficulty, vc.reps, vc.lapses,
+              vc.version, vc.hanja_character_id, hc.char AS hanja_char
+         FROM vocab_cards vc
+         LEFT JOIN hanja_characters hc ON hc.id = vc.hanja_character_id
+        WHERE vc.id = $1
+          AND vc.user_id = $2
+          AND vc.deleted_at IS NULL
+        FOR UPDATE OF vc`,
       [cardId, userId],
     );
     if (existing.rowCount === 0) {
@@ -190,6 +215,24 @@ export async function applyCardReview(input: ApplyCardReviewInput): Promise<Appl
         input.durationMs ?? null,
       ],
     );
+
+    // F-171 — append a hanja_attempts row in this SAME transaction (no
+    // separate round-trip, no separate commit that could log an attempt for
+    // a review that then rolls back, or vice versa). Guarded on
+    // `card.hanja_char` (not just the `logHanjaAttempt` flag) as a defensive
+    // belt-and-suspenders: `requireHanjaTarget` already 404s before this
+    // point whenever `hanja_character_id` is null, so in practice the two
+    // conditions coincide — but this keeps the insert impossible to
+    // mis-fire with a NOT NULL `char` violation even if that invariant ever
+    // drifts.
+    if (input.logHanjaAttempt === true && card.hanja_char !== null) {
+      await client.query(
+        `INSERT INTO hanja_attempts (user_id, card_id, char, rating, correct)
+         VALUES ($1, $2, $3, $4::fsrs_rating, $5)`,
+        [userId, cardId, card.hanja_char, rating, rating !== 'again'],
+      );
+    }
+
     return { version: upd.rows[0]!.version, dueAt, scheduledDays: next.scheduledDays };
   });
 }
