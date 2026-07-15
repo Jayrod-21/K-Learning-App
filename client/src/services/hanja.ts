@@ -314,10 +314,9 @@ interface HanjaAttemptsEnvelope {
  * /reviews` call (written inside that same transaction — see
  * server/src/services/cardReview.ts). No new client trigger was needed: the
  * Study drill already calls `submitHanjaCardReview` on every rating, which
- * IS "drilled a hanja today." This wrapper exists for a future daily-count /
- * streak read (mirrors `fetchWritingAttempts`/`grammarDrill.listAttempts`,
- * which already feed Today.tsx's writing/grammar tiles the same way) — wiring
- * it into Today.tsx itself is out of this ticket's scope.
+ * IS "drilled a hanja today." This wrapper feeds Today.tsx's Hanja "done
+ * today" row (mirrors `fetchWritingAttempts`/`grammarDrill.listAttempts`,
+ * which already feed Today.tsx's writing/grammar tiles the same way).
  *
  * `limit` defaults to 20 server-side (1..100); `offset` defaults to 0.
  * Rejects with `ApiError`: 400 out-of-bounds paging (client bug — never sent

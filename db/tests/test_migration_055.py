@@ -48,9 +48,11 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 )
 
 # The migration immediately before 055 in the merged chain is 054
-# (generated_stories). `down --target PRE_055` rolls back 055 alone — its down
-# is DROP COLUMN, which does not trip the destructive gate. Targeting an earlier
-# version would traverse 054's DROP TABLE down and require --allow-destructive.
+# (generated_stories). 055's own down is DROP COLUMN, which does not itself
+# trip the destructive gate — but the chain has since grown 059/060/061
+# above 055 (each a destructive DROP TABLE down), and `down --target` rolls
+# back everything strictly above the target, so this invocation now requires
+# --allow-destructive too (see the down test below).
 PRE_055 = "054"
 
 # A syntactically valid argon2id-shaped hash satisfying
@@ -281,11 +283,23 @@ def test_055_down_drops_column_keeps_enum_then_reups(env, dsn: str, full_dir) ->
                 ("down-test title", conv),
             )
 
-    # 055's down is DROP COLUMN — not covered by the destructive gate
-    # (DROP TABLE/SCHEMA/DATABASE/TRUNCATE), so no --allow-destructive needed:
-    # this invocation doubles as a regression probe on that classification.
+    # 055's own down is DROP COLUMN — not covered by the destructive gate
+    # (DROP TABLE/SCHEMA/DATABASE/TRUNCATE) in isolation. But the chain has
+    # since grown 059/060/061 above 055, each a destructive DROP TABLE down,
+    # and `down --target` rolls back everything strictly above the target —
+    # so --allow-destructive is now required for this invocation to reach
+    # 055's own down at all. This no longer doubles as a pure classification
+    # probe on 055's own down body (which is still just DROP COLUMN); it's
+    # now also traversing 059/060/061's destructive downs to get there.
     rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_055, "down"]
+        [
+            "--migrations-dir",
+            str(full_dir),
+            "--target",
+            PRE_055,
+            "--allow-destructive",
+            "down",
+        ]
     )
     assert rc == 0, f"down --target {PRE_055} returned {rc}"
 

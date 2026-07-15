@@ -456,10 +456,8 @@ export interface ListReadingAttemptsOptions {
 
 /**
  * GET /reading/attempts — the caller's own reading-completion history, newest
- * first (paged). Not currently rendered by any screen this phase (F-172 wires
- * the write path + the history read for a future Today/streak surface to
- * consume); exported now so that surface doesn't need a service-layer change
- * later.
+ * first (paged). Consumed by Today.tsx's Reading "done today" row (F-172
+ * wires the write path + this history read together, in the same commit).
  */
 export async function listReadingAttempts(
   opts: ListReadingAttemptsOptions = {},

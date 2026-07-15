@@ -391,7 +391,11 @@ type ListenView =
  * Bounded positive-int parser for untrusted search params. Digits only
  * (no signs, exponents, whitespace — `Number()` alone accepts all three),
  * capped at 4 digits: corpus identifiers are small ordinals, and the bound
- * keeps a hostile param from minting absurd path segments.
+ * keeps a hostile param from minting absurd path segments. Shared across
+ * TTMIK lesson numbers (`level`/`lesson`) and Iyagi episode numbers
+ * (`episode`) — the 4-digit cap is intentionally generous for both rather
+ * than tuned to either corpus's current size (~170 Iyagi episodes today);
+ * revisit only if a corpus ever approaches 9999.
  */
 function parsePositiveInt(raw: string | null): number | null {
   if (raw === null || !/^\d{1,4}$/.test(raw)) return null;

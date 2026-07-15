@@ -196,10 +196,9 @@ export interface ListListeningAttemptsOptions {
 
 /**
  * GET /ttmik/attempts — the caller's own listening-completion history, newest
- * first (paged), across BOTH TTMIK lessons and Iyagi episodes. Not currently
- * rendered by any screen this phase (F-172 wires the write path + the history
- * read for a future Today/streak surface to consume); exported now so that
- * surface doesn't need a service-layer change later.
+ * first (paged), across BOTH TTMIK lessons and Iyagi episodes. Consumed by
+ * Today.tsx's Listening "done today" row (F-172 wires the write path + this
+ * history read together, in the same commit).
  */
 export async function listListeningAttempts(
   opts: ListListeningAttemptsOptions = {},
