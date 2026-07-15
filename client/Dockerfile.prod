@@ -20,7 +20,11 @@
 # =============================================================================
 
 # --- Stage 1: build ----------------------------------------------------------
-FROM node:20-alpine AS build
+# node:22-alpine (current LTS): Node 20 reached EOL 2026-04-30. F-085 aligns
+# the client build image with the server (server/Dockerfile), CI
+# (.github/workflows/ci.yml), and the compose healthcheck comments so the
+# whole repo runs one Node major.
+FROM node:22-alpine AS build
 
 WORKDIR /app
 

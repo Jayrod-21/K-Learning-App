@@ -9,7 +9,7 @@
 #
 # Every suite runs in a PINNED container matching CI's toolchain, so the result is
 # reproducible and independent of whatever happens to be installed on the host:
-#   * JS suites  -> node:20-slim   (glibc, same major as CI's setup-node 20)
+#   * JS suites  -> node:22-slim   (glibc, same major as CI's setup-node 22)
 #   * Py suites  -> python:3.12     (project's requires-python; host is 3.14)
 # node_modules is an anonymous volume per run (never the host tree) so deps install
 # fresh against the lockfile, exactly like CI. The suites mount the source tree
@@ -43,7 +43,7 @@ set -Eeuo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/deployment-utils.sh"
 trap _on_err ERR
 
-readonly NODE_IMAGE="node:20-slim"
+readonly NODE_IMAGE="node:22-slim"
 readonly PY_IMAGE="python:3.12"
 
 # Results accumulate here; printed as a table at the end.

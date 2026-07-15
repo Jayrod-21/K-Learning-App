@@ -21,8 +21,8 @@ validate → switch to prod**. A red hard suite blocks the build.
 
 | # | Suite | Command | Runner | Pass criteria |
 |---|-------|---------|--------|---------------|
-| 1 | Client | `npm ci && npm run lint && npx tsc --noEmit && npm run build` (in `client/`) | `node:20-slim` container | Lint clean, no TS type errors, Vite build succeeds |
-| 2 | Server | `npm ci && npm run lint && npm run typecheck && npm test` (in `server/`) | `node:20-slim` container | Lint (incl. no-restricted-imports guardrails) clean, no TS errors, all vitest tests pass |
+| 1 | Client | `npm ci && npm run lint && npx tsc --noEmit && npm run build` (in `client/`) | `node:22-slim` container | Lint clean, no TS type errors, Vite build succeeds |
+| 2 | Server | `npm ci && npm run lint && npm run typecheck && npm test` (in `server/`) | `node:22-slim` container | Lint (incl. no-restricted-imports guardrails) clean, no TS errors, all vitest tests pass |
 | 3 | DB migrations | `python -m pytest db/tests --ignore=db/tests/test_discriminator_coverage.py -q` | `python:3.12` + Docker socket (`--network host`) | testcontainers spins `postgres:16-alpine`; all migration up/down + real-migration tests pass. (Discriminator/enum-coverage runs in the ingest phase — it needs generated ingest output.) |
 | 4 | Kiwi service | `python -m pytest --no-slow -q` (in `services/kiwi/`) | `python:3.12` container | API + lemmatizer tests pass against the fake Kiwi engine (no model download) |
 | 5 | Secret scan | grep for `ANTHROPIC_API_KEY=sk-` / `SUPABASE_SERVICE_KEY=eyJ` in source | host | No API-key literals committed in source (HARD fail if found) |

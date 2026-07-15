@@ -52,7 +52,7 @@
  *
  * TESTING: this module is NOT exercised with a real `pdftoppm` in the unit
  * suite (server/tests/routes/uploads.test.ts) — the test container
- * (`node:20-slim`, per the project's verify command) doesn't have
+ * (`node:22-slim`, per the project's verify command) doesn't have
  * poppler-utils installed, so the PDF-path route test mocks this entire
  * module (`vi.mock('../../src/services/pdfPageRender.js')`) rather than
  * skipping PDF-path coverage. A real, unmocked exercise of `pdftoppm` itself

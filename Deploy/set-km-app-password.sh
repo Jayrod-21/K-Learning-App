@@ -75,16 +75,54 @@ main() {
     # Verify end-to-end: authenticate AS km_app (password auth over the
     # container's host socket — same auth path the app uses) and confirm the
     # session is NOT superuser. Same stdin discipline for the secret.
+    #
+    # F-126 FIX: this used to build the expected value with
+    # `(SELECT rolsuper ...)` concatenated into the string via `||` and compare
+    # the result to the literal 'km_app:f'. That literal is wrong: `-tAc`'s
+    # unaligned 't'/'f' rendering only applies when a boolean is returned
+    # DIRECTLY as an output column. Once a boolean is concatenated (or CAST) into
+    # text inside the query, Postgres uses its bool-to-text conversion, which
+    # renders 'true'/'false' — so the query actually produced 'km_app:false' and
+    # the `!=` check false-failed on every correctly-configured, non-superuser
+    # km_app (confirmed against a throwaway postgres:16-alpine container: a bare
+    # `SELECT rolsuper ...` column prints 't', but
+    # `SELECT ... || (SELECT rolsuper ...)` prints '...true'/'...false').
+    # This aborted the Wave-1 deploy (2026-07-11) even though km_app was fine.
+    #
+    # Fix: sidestep the cast ambiguity entirely with an explicit CASE that
+    # renders its own unambiguous, self-documenting tokens ('super'/'nonsuper')
+    # instead of relying on which of Postgres's several bool->text renderings
+    # applies in a given expression position.
+    #
+    # FAIL-CLOSED CASE (post-review hardening): the CASE below matches
+    # `IS TRUE` / `IS FALSE` explicitly rather than `WHEN <expr> THEN … ELSE
+    # 'nonsuper'`. A bare `ELSE 'nonsuper'` would fail OPEN if the inner
+    # `(SELECT rolsuper FROM pg_roles WHERE rolname = current_user)` scalar
+    # subquery ever returned NULL (zero matching rows — e.g. the role was
+    # dropped mid-check, or got renamed) or anything else non-boolean-true:
+    # `CASE WHEN NULL THEN … ELSE 'nonsuper' END` renders 'nonsuper', which is
+    # the outer check's exact SUCCESS string — a false-PASS. That path is
+    # unreachable today (`current_user` is by definition the role we just
+    # authenticated as, always present in `pg_roles`), but a verification gate
+    # should never rely on "this branch is unreachable" for its safety — the
+    # explicit `IS TRUE` / `IS FALSE` pair with an `ELSE 'unknown'` third state
+    # means only a confirmed-boolean-false rolsuper renders the success token;
+    # NULL, a missing role, or any future surprise all render 'unknown', which
+    # the `!= 'km_app:nonsuper'` check below correctly treats as a failure.
     log_info "verifying km_app can authenticate and is not a superuser"
     local verify
     verify="$(printf '%s\n' "$KM_APP_PASSWORD" | docker exec -i km-db sh -ec '
         IFS= read -r PGPASSWORD
         export PGPASSWORD
         exec psql -h 127.0.0.1 -U km_app -d "$POSTGRES_DB" -tAc \
-            "SELECT current_user || chr(58) || (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)"
+            "SELECT current_user || chr(58) || (CASE
+                WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) IS TRUE THEN '"'"'super'"'"'
+                WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) IS FALSE THEN '"'"'nonsuper'"'"'
+                ELSE '"'"'unknown'"'"'
+            END)"
     ')"
-    if [[ "$verify" != "km_app:f" ]]; then
-        log_err "set-km-app-password: verification failed (got '${verify}', expected 'km_app:f')."
+    if [[ "$verify" != "km_app:nonsuper" ]]; then
+        log_err "set-km-app-password: verification failed (got '${verify}', expected 'km_app:nonsuper')."
         return 1
     fi
 

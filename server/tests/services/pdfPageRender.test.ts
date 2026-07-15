@@ -3,7 +3,7 @@
  *
  * `server/tests/routes/uploads.test.ts` covers the route's PDF path against a
  * MOCK of this module (`renderPdfPagesToJpeg`) — the project's verify
- * container (`node:20-slim`, per the repo's documented verify command) does
+ * container (`node:22-slim`, per the repo's documented verify command) does
  * not have `poppler-utils` installed, so a route-level integration test can't
  * assume a real `pdftoppm` binary is on PATH. This file is the complement:
  * it exercises the REAL binary directly, but SELF-SKIPS (not fails) when
