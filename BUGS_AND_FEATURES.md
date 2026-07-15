@@ -1714,6 +1714,16 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 
 ---
 
+## 🌊 Phase B2a follow-up tickets (filed 2026-07-15)
+
+### F-194 · 064's down-migration can't distinguish "backfilled" from "a real pre-064 row that happens to match the shape"
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATABASE · **Beta:** —
+- **What:** `db/migrations/064_backfill_notification_schedules_from_prefs.down.sql`'s DELETE guards on `created_at = updated_at` (never edited since insert) to avoid removing a user's genuine post-backfill edit, but that guard cannot distinguish "this row was INSERTed by the 064 backfill" from "this row was INSERTed by a real, single `PUT /notifications/schedules` call that happened to land on the exact same kind/channel/blob-intent combination and was never touched again" — the latter is plausible, not hypothetical, since the `/notifications/schedules` route already ships in prod.
+- **Fix hint:** have 064's up-migration tag exactly the rows it inserts (e.g. a transient marker column, or a side-table log of the affected `(user_id, kind)` pairs) so the down can target precisely what it created instead of re-deriving the predicate.
+- **Notes:** Surfaced by the B2a /fixpass re-review (R1 SHOULD-FIX 1). Deliberately NOT implemented in Phase B2a — the down path is rollback-only (gated behind `--allow-destructive`, never part of the forward deploy path), and the imprecision is documented in-file (see the down-migration's own header). A stronger fix is a real but bounded schema change (either an added column or a side-table), out of scope for an expand-only batch. Tracked here so it isn't silently re-forgotten.
+
+---
+
 <!-- Templates — copy when adding items.
 
 ### B-00X · <title>

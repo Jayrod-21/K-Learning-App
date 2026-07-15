@@ -375,3 +375,67 @@ def test_064_down_removes_untouched_backfill_but_preserves_user_edit(
     assert "weekly_report" not in after
     # ...but the user's edited reviews_due row survives, unchanged.
     assert after["reviews_due"]["time_of_day"] == "20:00"
+
+
+# ---------------------------------------------------------------------------
+# 8. ROUND-TRIP — up -> down -> up must re-derive cleanly from the
+#    still-present `users.preferences` blob (SHOULD-FIX R1-2: 062 and 063
+#    each have a round-trip test; 064 didn't). The up-logic is a stateless
+#    re-derivation keyed on `ON CONFLICT DO NOTHING`, not on any "already
+#    ran" flag, so a down followed by a re-up over the SAME still-present
+#    blob must reproduce the identical set of rows, with no error and no
+#    duplicate landing.
+# ---------------------------------------------------------------------------
+
+def test_064_round_trip_up_down_up_rederives_cleanly(env, dsn: str, full_dir) -> None:
+    _up_to(full_dir, target=PRE_064)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(
+            conn,
+            "round-trip@example.com",
+            _blob(daily=True, reviews_due=True, weekly=True),
+        )
+    _up_to(full_dir)  # first up: backfill runs against the freshly-seeded blob
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        first = {r["kind"]: r for r in _schedules(conn, user_id)}
+    assert set(first) == {"daily_reminder", "reviews_due", "weekly_report"}
+
+    rc = migrate.main(
+        ["--migrations-dir", str(full_dir), "--target", PRE_064, "--allow-destructive", "down"]
+    )
+    assert rc == 0, f"down --target {PRE_064} returned {rc}"
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        after_down = _schedules(conn, user_id)
+    assert after_down == [], "down must remove the untouched backfill rows before re-up"
+
+    rc = migrate.main(["--migrations-dir", str(full_dir), "up"])
+    assert rc == 0, (
+        "064 must re-apply cleanly after its own down, re-deriving from the "
+        "still-present users.preferences blob"
+    )
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        second = {r["kind"]: r for r in _schedules(conn, user_id)}
+
+    # Re-derived set is identical in shape to the first backfill: same kinds,
+    # same defaults — no dupes, nothing missing.
+    assert set(second) == {"daily_reminder", "reviews_due", "weekly_report"}
+    for kind in second:
+        assert second[kind]["time_of_day"] == first[kind]["time_of_day"]
+        assert second[kind]["tz"] == first[kind]["tz"]
+        assert second[kind]["weekday"] == first[kind]["weekday"]
+        assert second[kind]["channel"] == "email"
+        assert second[kind]["enabled"] is True
+
+    # And no duplicate rows landed — ON CONFLICT DO NOTHING is idempotent
+    # across a down+re-up cycle, not just a same-state re-up.
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor(
+        row_factory=tuple_row
+    ) as cur:
+        cur.execute(
+            "SELECT count(*) FROM notification_schedules WHERE user_id = %s",
+            (user_id,),
+        )
+        assert cur.fetchone()[0] == 3

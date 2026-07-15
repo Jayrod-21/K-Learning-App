@@ -39,8 +39,17 @@ export interface ClaimDeliveryResult {
   /** True iff THIS call won the claim (the INSERT produced a row). */
   claimed: boolean;
   /** The claimed row's id, or null when another caller already holds the
-   *  claim for this (scheduleId, windowStart) pair. */
-  deliveryId: number | null;
+   *  claim for this (scheduleId, windowStart) pair.
+   *
+   *  `notification_deliveries.id` is `BIGINT GENERATED ALWAYS AS IDENTITY`
+   *  (052) — node-postgres returns BIGINT as a STRING by default (no global
+   *  type-parser override in this repo, see `server/src/db/pool.ts`), and
+   *  every other BIGINT id in this codebase is typed/documented as `string`
+   *  for exactly that reason (e.g. `server/src/routes/grammar.ts`,
+   *  `routes/reading.ts`, `routes/writing.ts`, `auth/sessions.ts`). Typed as
+   *  `string` here to match — NOT `number`, which would silently mismatch
+   *  the runtime value and risk precision loss if a caller ever coerced it. */
+  deliveryId: string | null;
 }
 
 /**
@@ -60,7 +69,11 @@ export async function claimDelivery(
   scheduleId: number,
   windowStart: Date,
 ): Promise<ClaimDeliveryResult> {
-  const { rows } = await query<{ id: number }>(
+  const { rows } = await query<{ id: string }>(
+    // `status` defaults to 'pending' (052) — the explicit value here is
+    // redundant but kept deliberately, so the claimed row's initial state is
+    // self-documenting at the call site (matches the reviewer's NIT: no
+    // functional change either way, this is the "keep + comment why" branch).
     `INSERT INTO notification_deliveries (schedule_id, window_start, status)
      VALUES ($1, $2, 'pending')
      ON CONFLICT (schedule_id, window_start) DO NOTHING
@@ -92,7 +105,7 @@ export type DeliveryOutcome =
  * the only one that supplies it.
  */
 export async function settleDelivery(
-  deliveryId: number,
+  deliveryId: string,
   outcome: DeliveryOutcome,
 ): Promise<{ settled: boolean }> {
   const sentAt = outcome.status === 'sent' ? outcome.sentAt.toISOString() : null;

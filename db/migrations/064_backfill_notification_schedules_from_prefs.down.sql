@@ -23,10 +23,16 @@
 -- prior real PUT, which the F-040 route always leaves in the exact same
 -- untouched-since-creation state until the NEXT PUT bumps updated_at, so this
 -- guard alone cannot perfectly distinguish "backfilled" from "created by a
--- single real PUT that was never edited again". This is the accepted
--- imprecision of a data-migration's down (see db/migrations/README.md's
--- data-vs-schema rollback guidance) — the same posture 046.down documents for
--- its own unmatched DELETEs.
+-- single real PUT that was never edited again". This is the ACCEPTED,
+-- DOCUMENTED imprecision of a data-migration's down (see
+-- db/migrations/README.md's data-vs-schema rollback guidance) — the same
+-- posture 046.down documents for its own unmatched DELETEs. It is
+-- ROLLBACK-ONLY (gated behind `--allow-destructive`, never part of the
+-- forward deploy path) and OUT OF SCOPE for this PR to close: a precise fix
+-- would require the up-migration to tag exactly the rows IT inserted (e.g. a
+-- transient marker column, or a side-table log of the affected
+-- (user_id, kind) pairs) so this down could target only those rows instead
+-- of re-deriving the predicate. Tracked as a follow-up: F-194.
 --
 -- ADR-013: no top-level BEGIN/COMMIT — the runner owns the transaction.
 

@@ -70,6 +70,11 @@ describe('claimDelivery', () => {
     const result = await claimDelivery(scheduleId, windowStart);
     expect(result.claimed).toBe(true);
     expect(result.deliveryId).not.toBeNull();
+    // Pin the BIGINT-as-string contract (R2 NIT): node-postgres returns
+    // `notification_deliveries.id` (BIGINT identity) as a STRING, and
+    // `ClaimDeliveryResult.deliveryId` is typed `string | null` to match —
+    // NOT `number`, which would silently mismatch the runtime shape.
+    expect(typeof result.deliveryId).toBe('string');
 
     const { rows } = await pg.pool.query<{ status: string }>(
       `SELECT status FROM notification_deliveries WHERE id = $1`,
@@ -213,7 +218,9 @@ describe('settleDelivery', () => {
   });
 
   it('settling a nonexistent delivery id is a no-op', async () => {
-    const outcome = await settleDelivery(999_999_999, { status: 'skipped' });
+    // deliveryId is the BIGINT-as-string shape (see the pinned-type test
+    // above) — passed as a string here to match `settleDelivery`'s signature.
+    const outcome = await settleDelivery('999999999999', { status: 'skipped' });
     expect(outcome.settled).toBe(false);
   });
 });
