@@ -34,6 +34,7 @@ import {
   type RegisteredAgent,
 } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
+import { ClaudeRateLimitError } from '../../src/services/claude/errors.js';
 
 let pg: PgHandle;
 let t: TestApp;
@@ -636,6 +637,79 @@ describe('answer/next decoupling (B-006)', () => {
     // points progress at the last ordinal.
     expect(lastAnswer?.done).toBe(true);
     expect(lastAnswer?.progress).toEqual({ ordinal: 16, total: 16 });
+  });
+});
+
+describe('buildGeneratedItem error mapping (B1 fix regression, F-192)', () => {
+  // buildGeneratedItem's .catch (routes/diagnostic.ts) is the B1 fix site: a
+  // RAW (non-ClaudeProxyError) thrown error must never leak its .message to
+  // the client (only a fixed generic UpstreamError message), while a real
+  // ClaudeProxyError's httpStatus must pass through mapClaudeError unmapped
+  // to a flat 502 (mirrors tests/routes/generation.test.ts's status-mapping
+  // pins for the writing/reading pair). No production code changes here —
+  // test-only, per F-192.
+  afterEach(() => {
+    setClaudeProxy(makeStubProxy());
+    resetLimiters();
+  });
+
+  /** Walk a fresh run to the point where /next MUST generate (ordinal 3,
+   *  vocab — mirrors the "answer/next decoupling" describe block above).
+   *  Returns the runId; the CALLER's proxy override decides what ordinal 3's
+   *  generation does. */
+  async function walkToGeneratedOrdinal(
+    agent: RegisteredAgent['agent'],
+  ): Promise<number> {
+    const start = await agent.post('/diagnostic').send({});
+    const runId = start.body.runId;
+    await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: start.body.item.responseId, picked: 'a' });
+    const next2 = await agent.post(`/diagnostic/${runId}/next`).send({});
+    await agent
+      .post(`/diagnostic/${runId}/answer`)
+      .send({ responseId: next2.body.next.responseId, picked: 'a' });
+    return runId;
+  }
+
+  it('a RAW (non-ClaudeProxyError) throw never leaks its message text to the client', async () => {
+    const RAW_MESSAGE = 'ECONNRESET: raw socket detail must never reach the client';
+    setClaudeProxy(
+      makeStubProxy({
+        generateDiagnosticItem: async () => {
+          throw new Error(RAW_MESSAGE);
+        },
+      }),
+    );
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await walkToGeneratedOrdinal(agent);
+
+    const next3 = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(next3.status).toBe(502);
+    expect(next3.body.error.message).not.toContain(RAW_MESSAGE);
+    expect(next3.body.error.message).not.toContain('ECONNRESET');
+    // Only the fixed, generic UpstreamError message reaches the client.
+    expect(typeof next3.body.error.message).toBe('string');
+  });
+
+  it('a ClaudeProxyError with httpStatus reaching the catch passes its 4xx through (not flattened to 502)', async () => {
+    setClaudeProxy(
+      makeStubProxy({
+        generateDiagnosticItem: async () => {
+          throw new ClaudeRateLimitError(
+            'diagnostic vocab/grammar generation rate limit exhausted',
+          );
+        },
+      }),
+    );
+    await seedFullPool();
+    const { agent } = await registerUser(t.app, pg.pool);
+    const runId = await walkToGeneratedOrdinal(agent);
+
+    const next3 = await agent.post(`/diagnostic/${runId}/next`).send({});
+    expect(next3.status).toBe(429);
+    expect(next3.body.error.code).toBe('upstream_error');
   });
 });
 

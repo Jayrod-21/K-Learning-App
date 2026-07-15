@@ -25,10 +25,17 @@ GUARANTEES:
       DOES evaluate the destructive gate on the planned bodies (ADR-010
       amendment, 2026-07-10), so a deploy's dry-run step aborts on a pending
       destructive migration instead of the later apply step.
-    * `--allow-destructive` is required if the migration text mentions
-      `DROP TABLE`, `DROP SCHEMA`, `TRUNCATE`, or `DROP DATABASE`
-      (case-insensitive, comment-stripped; string literals are NOT stripped —
-      see `strip_sql_noise`'s docstring).
+    * `--allow-destructive` is required whenever a migration is classified as
+      destructive. Classification (F-088) first checks for an EXPLICIT
+      per-migration directive comment — `-- migrate: destructive` or
+      `-- migrate: non-destructive`, anywhere in the file — and, only when
+      neither is present, falls back to sniffing the body for `DROP TABLE`,
+      `DROP SCHEMA`, `TRUNCATE`, or `DROP DATABASE` (case-insensitive,
+      comment-stripped; string literals are NOT stripped for the sniff path —
+      see `strip_sql_noise`'s docstring). A declared marker is authoritative:
+      it catches destructive shapes the sniff misses (mass `DELETE FROM`,
+      `DROP COLUMN`) without forcing `--allow-destructive` onto a merely
+      DROP-mentioning additive migration. See `explicit_destructiveness`.
     * Migration sessions run with `statement_timeout = 0` and
       `idle_in_transaction_session_timeout = 0` (large indexes can take a
       while; abandoned migrations are caught by the runner's atomicity
@@ -159,6 +166,13 @@ class MissingPair(MigrationError):
 
 class DestructiveBlocked(MigrationError):
     """Migration contains destructive SQL without --allow-destructive."""
+
+
+class ConflictingDestructiveMarkers(MigrationError):
+    """A migration body declares BOTH `-- migrate: destructive` and
+    `-- migrate: non-destructive` (F-088). There is no safe fallback to
+    resolve a self-contradictory declaration, so the runner refuses to guess.
+    """
 
 
 class TxControlInMigration(MigrationError):
@@ -309,7 +323,84 @@ def strip_sql_noise(sql: str) -> str:
     return _SINGLE_QUOTED.sub("", _DOLLAR_QUOTED.sub("", strip_sql_comments(sql)))
 
 
+def _strip_string_literals_only(sql: str) -> str:
+    """Strip dollar-quoted and single-quoted string literals, but KEEP
+    comments intact (unlike `strip_sql_noise`, which strips both).
+
+    Used by `explicit_destructiveness` to scan for the `-- migrate:
+    destructive|non-destructive` directive without a documentary string
+    literal being able to forge one (e.g. a `COMMENT ON ... IS '... see
+    -- migrate: non-destructive for context ...'`) — the directive itself
+    lives in a real comment, which this deliberately does NOT strip.
+    """
+    return _SINGLE_QUOTED.sub("", _DOLLAR_QUOTED.sub("", sql))
+
+
+# F-088: an explicit per-migration destructive marker, read from a directive
+# comment anywhere in the file:
+#
+#     -- migrate: destructive
+#     -- migrate: non-destructive
+#
+# Case-insensitive, tolerant of surrounding whitespace. This is the PREFERRED
+# way to declare destructiveness — see `explicit_destructiveness` and
+# `contains_destructive` below for how it interacts with the legacy
+# keyword-sniff (DESTRUCTIVE_PATTERNS).
+MIGRATE_DIRECTIVE_PATTERN = re.compile(
+    r"^\s*--\s*migrate:\s*(destructive|non-destructive)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def explicit_destructiveness(sql: str) -> Optional[bool]:
+    """The migration's DECLARED destructiveness, or None if undeclared.
+
+    Reads the `-- migrate: destructive` / `-- migrate: non-destructive`
+    directive (MIGRATE_DIRECTIVE_PATTERN), scanning a copy of `sql` with
+    string literals stripped (`_strip_string_literals_only`) so a documentary
+    literal can never forge a directive that isn't really there — comments
+    ARE kept, since that's exactly where the real directive lives.
+
+    Returns:
+        True   — migration explicitly declares itself destructive.
+        False  — migration explicitly declares itself non-destructive.
+        None   — no directive present; caller falls back to pattern-sniffing.
+
+    Raises:
+        ConflictingDestructiveMarkers — both directives appear in the same
+        file. There is no safe default to fall back to for a
+        self-contradictory declaration.
+    """
+    scanned = _strip_string_literals_only(sql)
+    found = {m.group(1).lower() for m in MIGRATE_DIRECTIVE_PATTERN.finditer(scanned)}
+    if not found:
+        return None
+    if len(found) > 1:
+        raise ConflictingDestructiveMarkers(
+            "migration declares BOTH '-- migrate: destructive' and "
+            "'-- migrate: non-destructive' — remove the contradictory directive."
+        )
+    return found == {"destructive"}
+
+
 def contains_destructive(sql: str) -> bool:
+    """Whether this migration body must be gated behind --allow-destructive.
+
+    F-088: an EXPLICIT `-- migrate: destructive|non-destructive` directive
+    (see `explicit_destructiveness`) is authoritative when present — it is
+    more reliable than sniffing because it also catches destructive shapes
+    DESTRUCTIVE_PATTERNS does not (mass `DELETE FROM`, `DROP COLUMN`)
+    *without* forcing --allow-destructive onto an additive migration that
+    merely mentions a DROP-then-recreate idiom (widening the sniff patterns
+    to catch those would do exactly that — see BUGS_AND_FEATURES.md F-088).
+
+    A migration with NO directive falls back to the legacy keyword-sniff,
+    UNCHANGED — every migration written before this ticket (000-061) has no
+    directive and therefore classifies exactly as it always has.
+    """
+    declared = explicit_destructiveness(sql)
+    if declared is not None:
+        return declared
     return bool(DESTRUCTIVE_PATTERNS.search(strip_sql_comments(sql)))
 
 

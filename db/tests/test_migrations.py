@@ -170,6 +170,62 @@ def test_destructive_ignores_comments() -> None:
 
 
 # ---------------------------------------------------------------------------
+# F-088: explicit per-migration destructive marker (vs pattern-sniffing)
+# ---------------------------------------------------------------------------
+
+def test_explicit_marker_catches_what_sniffing_misses() -> None:
+    # A mass DELETE has no DROP TABLE/TRUNCATE keyword at all — sniffing alone
+    # would call this safe (the exact F-088 motivating gap: 046.down's
+    # history-DELETE). The explicit marker must still gate it.
+    sql = "-- migrate: destructive\nDELETE FROM topik_attempts WHERE true;"
+    assert migrate.contains_destructive(sql)
+    assert migrate.explicit_destructiveness(sql) is True
+
+
+def test_explicit_non_destructive_marker_overrides_pattern_sniff() -> None:
+    # The declaration is authoritative even where sniffing alone would have
+    # blocked (a DROP TABLE the author has reviewed and declared safe in
+    # context — e.g. a scratch table with no user data).
+    sql = "-- migrate: non-destructive\nDROP TABLE IF EXISTS scratch_only;"
+    assert not migrate.contains_destructive(sql)
+    assert migrate.explicit_destructiveness(sql) is False
+
+
+def test_marker_is_case_insensitive_and_whitespace_tolerant() -> None:
+    assert migrate.contains_destructive("--   Migrate:   DESTRUCTIVE  \nSELECT 1;")
+    assert not migrate.contains_destructive("-- MIGRATE: NON-DESTRUCTIVE\nSELECT 1;")
+
+
+def test_unmarked_migration_falls_back_to_pattern_sniff() -> None:
+    # Backward compat (the ticket's hard requirement): every migration
+    # written before F-088 carries no directive and must classify EXACTLY as
+    # it did before this feature existed.
+    assert migrate.explicit_destructiveness("DROP TABLE foo;") is None
+    assert migrate.contains_destructive("DROP TABLE foo;")
+    assert not migrate.contains_destructive("DROP INDEX IF EXISTS ix_foo;")
+
+
+def test_conflicting_markers_raise() -> None:
+    sql = "-- migrate: destructive\n-- migrate: non-destructive\nSELECT 1;"
+    with pytest.raises(migrate.ConflictingDestructiveMarkers):
+        migrate.contains_destructive(sql)
+    with pytest.raises(migrate.ConflictingDestructiveMarkers):
+        migrate.explicit_destructiveness(sql)
+
+
+def test_marker_inside_string_literal_is_not_forged() -> None:
+    # A documentary string literal containing the marker phrase must not
+    # suppress the real DROP TABLE's classification — same "err toward
+    # false-positive" posture `strip_sql_noise` documents.
+    sql = (
+        "DROP TABLE really_gone;\n"
+        "COMMENT ON TABLE foo IS '-- migrate: non-destructive, just kidding';\n"
+    )
+    assert migrate.explicit_destructiveness(sql) is None
+    assert migrate.contains_destructive(sql)
+
+
+# ---------------------------------------------------------------------------
 # Full lifecycle: up → down → up
 # ---------------------------------------------------------------------------
 
