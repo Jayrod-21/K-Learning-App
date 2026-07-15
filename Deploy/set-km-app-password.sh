@@ -93,13 +93,33 @@ main() {
     # renders its own unambiguous, self-documenting tokens ('super'/'nonsuper')
     # instead of relying on which of Postgres's several bool->text renderings
     # applies in a given expression position.
+    #
+    # FAIL-CLOSED CASE (post-review hardening): the CASE below matches
+    # `IS TRUE` / `IS FALSE` explicitly rather than `WHEN <expr> THEN … ELSE
+    # 'nonsuper'`. A bare `ELSE 'nonsuper'` would fail OPEN if the inner
+    # `(SELECT rolsuper FROM pg_roles WHERE rolname = current_user)` scalar
+    # subquery ever returned NULL (zero matching rows — e.g. the role was
+    # dropped mid-check, or got renamed) or anything else non-boolean-true:
+    # `CASE WHEN NULL THEN … ELSE 'nonsuper' END` renders 'nonsuper', which is
+    # the outer check's exact SUCCESS string — a false-PASS. That path is
+    # unreachable today (`current_user` is by definition the role we just
+    # authenticated as, always present in `pg_roles`), but a verification gate
+    # should never rely on "this branch is unreachable" for its safety — the
+    # explicit `IS TRUE` / `IS FALSE` pair with an `ELSE 'unknown'` third state
+    # means only a confirmed-boolean-false rolsuper renders the success token;
+    # NULL, a missing role, or any future surprise all render 'unknown', which
+    # the `!= 'km_app:nonsuper'` check below correctly treats as a failure.
     log_info "verifying km_app can authenticate and is not a superuser"
     local verify
     verify="$(printf '%s\n' "$KM_APP_PASSWORD" | docker exec -i km-db sh -ec '
         IFS= read -r PGPASSWORD
         export PGPASSWORD
         exec psql -h 127.0.0.1 -U km_app -d "$POSTGRES_DB" -tAc \
-            "SELECT current_user || chr(58) || (CASE WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN '"'"'super'"'"' ELSE '"'"'nonsuper'"'"' END)"
+            "SELECT current_user || chr(58) || (CASE
+                WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) IS TRUE THEN '"'"'super'"'"'
+                WHEN (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) IS FALSE THEN '"'"'nonsuper'"'"'
+                ELSE '"'"'unknown'"'"'
+            END)"
     ')"
     if [[ "$verify" != "km_app:nonsuper" ]]; then
         log_err "set-km-app-password: verification failed (got '${verify}', expected 'km_app:nonsuper')."

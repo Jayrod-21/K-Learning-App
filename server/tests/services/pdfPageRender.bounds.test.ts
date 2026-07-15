@@ -8,7 +8,7 @@
  * stub — contrast with tests/routes/uploads.test.ts, which mocks this whole
  * module away for its route-level PDF coverage) but with `node:child_process`
  * and `node:fs/promises` fully mocked, since the verify container
- * (`node:20-slim`) doesn't ship poppler-utils (see
+ * (`node:22-slim`) doesn't ship poppler-utils (see
  * tests/services/pdfPageRender.test.ts's self-skipping real-poppler smoke
  * test for the complementary real-binary coverage). Mocking the two node
  * builtins — rather than the module under test — is what lets us prove the
