@@ -119,6 +119,7 @@ import { splitImageItem } from '../../lib/topikImage';
 import { useExamActive } from '../../hooks/useExamActive';
 import { useModalA11y } from '../../hooks/useModalA11y';
 import { errorMessageFor } from '../../lib/errorCopy';
+import { SKILL_COLOR } from '../../lib/skill-colors';
 import {
   fetchMockTest,
   submitMockTest,
@@ -208,12 +209,22 @@ const SECTIONS: readonly SectionMeta[] = [
 ];
 
 /**
- * F-183 — the `CityCard` tone each section reads as, mirroring Topik's own
- * blue/accent split (Study tally = blue, the live study item = accent).
- * Fixed per section identity (not the user's accent pick) for Listening, so
- * Reading/Listening stay visually distinct from each other regardless of
- * which accent is active; the deferred Writing card gets the quiet `plain`
- * edge (no glow) to read as inert alongside its disabled state.
+ * F-183 — the `CityCard` tone each mock-exam SECTION reads as (Reading /
+ * Listening / the deferred Writing). This is a different axis than "which
+ * skill/page is this" — it differentiates the sections WITHIN the TOPIK
+ * mock exam, not TOPIK's own page identity, so it is deliberately NOT one of
+ * the F-191 sites migrated to `SKILL_COLOR.topik.tone` (see the doc comment
+ * on Topik.tsx's chooser `Sheet` for the full list of what DID migrate).
+ * `blue` is fixed per section identity (not the user's accent pick) for
+ * Listening, so Reading/Listening stay visually distinct from each other
+ * regardless of which accent is active; the deferred Writing card gets the
+ * quiet `plain` edge (no glow) to read as inert alongside its disabled
+ * state. (Historical note: this used to mirror Topik's own page-level
+ * blue/accent split — Study tally = blue, the live study item = accent —
+ * before F-191 unified that split into one `stone` identity; the mirroring
+ * language is retired since there is no longer a blue/accent split on
+ * Topik's own page to mirror, but this function's own reading/listening/
+ * writing differentiation is unaffected.)
  */
 function sectionTone(id: SectionMeta['id']): CityCardTone {
   if (id === 'listening') return 'blue';
@@ -772,7 +783,7 @@ export function MockMode(): JSX.Element {
               <div className="km-mock__milestone">
                 <SealStamp
                   milestone
-                  tone="accent"
+                  tone={SKILL_COLOR.topik.tone}
                   label={<Bilingual en="Test complete" kr="시험 완료" compact />}
                 />
               </div>
@@ -965,8 +976,13 @@ function ExamChooser({
       </Eyebrow>
 
       {/* F-183 device #1/#2 — the recommended entry is the chooser's own
-          hero tile: a feat CityCard signboard/hanji-paper surface. */}
-      <CityCard tone="accent" rail feat className="km-mock__chooser-card">
+          hero tile: a feat CityCard signboard/hanji-paper surface. F-191:
+          reads TOPIK's own dedicated `stone` tone (SKILL_COLOR.topik.tone)
+          rather than the old shared accent-preset token; `feat` (not the
+          tone) is what carries the "this is the hero, the past-papers list
+          below is secondary" visual weight now — see the list card's own
+          comment below. */}
+      <CityCard tone={SKILL_COLOR.topik.tone} rail feat className="km-mock__chooser-card">
         <button
           type="button"
           className="km-mock__section-btn focusring"
@@ -1042,9 +1058,15 @@ function ExamChooser({
             return (
               <li key={`${test.topikLevel}-${String(test.testNumber)}`}>
                 {/* F-183 device #1/#2 — each past paper is its own CityCard
-                    tile (blue tone: past papers are the secondary picker,
-                    distinct from the accent-toned recommended hero above). */}
-                <CityCard tone="blue" rail className="km-mock__chooser-card">
+                    tile. F-191: used to read the fixed `blue` tone (a
+                    leftover collision with Vocab's own dedicated identity —
+                    see `CityCard.tsx`'s doc comment on what `blue` means) to
+                    read as visually distinct from the recommended hero
+                    above; now reads the SAME `SKILL_COLOR.topik.tone` as
+                    that hero (both are TOPIK's own chrome), with the hero's
+                    `feat` prop (not a different hue) carrying the
+                    primary/secondary visual weight instead. */}
+                <CityCard tone={SKILL_COLOR.topik.tone} rail className="km-mock__chooser-card">
                   <button
                     type="button"
                     className="km-mock__section-btn focusring"
@@ -1169,8 +1191,10 @@ function StartPage({
       />
 
       {/* F-183 device #1/#2 — the exam's identity card is a CityCard
-          signboard/hanji-paper hero, mirroring Topik's own meta treatment. */}
-      <CityCard tone="accent" rail className="km-mock__start-meta">
+          signboard/hanji-paper hero, mirroring Topik's own meta treatment.
+          F-191: reads TOPIK's own dedicated `stone` tone rather than the
+          old shared accent-preset token. */}
+      <CityCard tone={SKILL_COLOR.topik.tone} rail className="km-mock__start-meta">
         <Eyebrow>
           <Bilingual
             en={
@@ -1212,11 +1236,17 @@ function StartPage({
 
       {/* F-104: previous attempts on THIS exam — wired when a specific paper
           is known; an honest note otherwise (see the doc above). F-183
-          device #1/#2: a blue-tone CityCard (secondary info, distinct from
-          the accent hero above); devices #3/#6 (giwa + watermark) mark it as
-          genuinely empty rather than pending, only when it truly is. */}
+          device #1/#2: a CityCard for the secondary info below the exam-meta
+          hero above; devices #3/#6 (giwa + watermark) mark it as genuinely
+          empty rather than pending, only when it truly is. F-191: used to
+          read the fixed `blue` tone (a leftover collision with Vocab's own
+          dedicated identity) specifically to look distinct from the accent
+          hero above; now reads the SAME `SKILL_COLOR.topik.tone` as that
+          hero (both are TOPIK's own chrome) — the two cards' stacked
+          position and distinct headings/content already carry the
+          hero/secondary read, not the hue. */}
       <CityCard
-        tone="blue"
+        tone={SKILL_COLOR.topik.tone}
         rail
         className={cn(
           'km-mock__pending',
@@ -2186,8 +2216,10 @@ export function TopikResults({
       {/* F-183 device #1/#2 — the score panel is a feat CityCard hero
           (the milestone/completion surface), replacing the plain flat
           Card, shared by both Mock's server-graded and Study's
-          client-tallied results screens. */}
-      <CityCard tone="accent" rail feat className="km-mock__score">
+          client-tallied results screens. F-191: reads TOPIK's own
+          dedicated `stone` tone rather than the old shared accent-preset
+          token. */}
+      <CityCard tone={SKILL_COLOR.topik.tone} rail feat className="km-mock__score">
         <Eyebrow>{summary.band}</Eyebrow>
         <div className="km-mock__score-pct">
           {String(summary.percentage)}

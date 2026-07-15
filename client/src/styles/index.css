@@ -307,13 +307,33 @@
    * clearing a ≥28 floor against every other skill hue (see
    * `styles/skillHueDistinctness.test.ts`). `--cyan` is UNCHANGED here —
    * Night's cyan/moss pair already cleared the floor (ΔE76 ≈ 46.2), only
-   * Day's needed the re-tint (see the Day block's comment). */
+   * Day's needed the re-tint (see the Day block's comment).
+   *
+   * F-191 (design polish): `--stone` was re-tinted from a muted
+   * lavender-gray (`#A69FBC`) to a brighter, cooler near-white
+   * (`#DAD6ED`) — the old value read dim next to the other six
+   * fully-saturated Night neons, breaking the "Seoul neon signage"
+   * aesthetic (every other skill glows; TOPIK looked flat by comparison).
+   * The new value keeps the SAME hue angle (~250-254°, still cool/violet,
+   * still reads as "exam ≠ skill" — deliberately achromatic-leaning, not a
+   * 7th saturated color) but pushes lightness from 68% to 88% and
+   * saturation from 18% to 39%, landing it in the "white/silver neon tube"
+   * family the ticket asked for. Distinctness only IMPROVES: the old value
+   * cleared a 43.2 min ΔE76 against the other 6 skill hues, the new one
+   * clears 40.6 (still far above the 28 floor — see
+   * `styles/skillHueDistinctness.test.ts`, updated for this value). AA:
+   * `--stone-ink` is (and was) a passthrough of `--stone` itself onto
+   * `--stone-soft` (unchanged, `#1E182F`) — brightening the ink-twin only
+   * widens that gap (6.77:1 -> 12.08:1, both comfortably over the 4.5:1
+   * floor; see `tokensContrast.test.ts`). Day's `--stone` (`#69523A`,
+   * `index.css`'s `:root` block above) is UNCHANGED — it fits the
+   * hanji-daytime Day theme as-is and this ticket only retunes Night. */
   --indigo: var(--neon-blue);   --indigo-soft: var(--neon-blue-soft);
   --moss:   var(--neon-mint);   --moss-soft:   var(--neon-mint-soft);
   --ochre:  var(--neon-amber);  --ochre-soft:  var(--neon-amber-soft);
   --violet: #C05CEB;  --violet-soft: #180922;
   --cyan:   #33D6EF;  --cyan-soft:   #0C2530;
-  --stone:  #A69FBC;  --stone-soft:  #1E182F;   /* TOPIK (assessment, fixed) */
+  --stone:  #DAD6ED;  --stone-soft:  #1E182F;   /* TOPIK (assessment, fixed) */
 
   /* On-surface TEXT twins — dark counterparts. Brightened (or passed
    * through) so each clears ≥4.5:1 on its own soft chip.
@@ -399,7 +419,7 @@
     --ochre:  var(--neon-amber); --ochre-soft: var(--neon-amber-soft);
     --violet: #C05CEB; --violet-soft: #180922;
     --cyan:   #33D6EF; --cyan-soft:   #0C2530;
-    --stone:  #A69FBC; --stone-soft:  #1E182F;
+    --stone:  #DAD6ED; --stone-soft:  #1E182F;
     --vermilion-ink: var(--neon-coral-bright);
     --indigo-ink: var(--neon-blue-bright);
     --moss-ink: var(--moss); --ochre-ink: var(--ochre);
