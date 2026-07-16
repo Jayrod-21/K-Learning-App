@@ -6,13 +6,16 @@
  * that STARTS COLLAPSED — the page is a stack of four folded tiles
  * (Profile / 2FA / Notifications / Appearance) the user opens on demand.
  *
- * Device-adaptive epic, Phase D2: at desktop (`useDeviceClass() ===
- * 'desktop'`, ≥1024px) the group stack becomes a TWO-COLUMN arrangement
- * using the width (Profile+2FA left, Notifications+Appearance+Beta feedback
- * right — column-major, so reading/tab order matches mobile exactly).
- * Mobile AND tablet render the pre-D2 single-column stack byte-identically.
- * Layout only — see the `isTwoColumnLayout` block in the component for the
- * full rationale and Settings.css for the width arithmetic.
+ * Device-adaptive epic, Phase D2 (fix-pass revision): at desktop (≥1024px)
+ * the group stack becomes a TWO-COLUMN grid driven entirely by CSS. The
+ * five groups render inside ONE always-mounted `.km-settings__grid`
+ * wrapper at every width; Settings.css turns that wrapper into a row-major
+ * two-column grid at ≥1024px and leaves it styleless below. There is no
+ * device-class render branch, so a live resize across the breakpoint (iPad
+ * rotation) can never unmount a group — the first D2 cut's branch swap
+ * destroyed TwoFactorSection's shown-once recovery codes mid-setup. See
+ * the layout comment in the component body for the full rationale and
+ * Settings.css for the width arithmetic.
  *
  * Split substrate:
  *   - **Profile (name / email / phone)** persists to the server via
@@ -125,7 +128,6 @@ import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
-import { useDeviceClass } from '../hooks/useDeviceClass';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { useTheme } from '../hooks/useTheme';
@@ -1063,32 +1065,36 @@ export default function Settings(): JSX.Element {
     [schedulesHydrated, flushSchedules],
   );
 
-  // ───── Device-adaptive two-column layout (Phase D2) ─────
+  // ───── Device-adaptive two-column layout (Phase D2, fix-pass revision) ─
   //
-  // Desktop (`'desktop'`, ≥1024px) lays the five settings groups out in TWO
-  // columns using the width; mobile AND tablet render the exact pre-D2
-  // single-column stack (the non-desktop branch in the JSX below is a bare
-  // fragment — no wrapper node — so their DOM is byte-identical to before
-  // this phase). Tablet (768–1023px) deliberately stays single-column: its
-  // content column is only ~520px at 768px (viewport − 248px sidebar rail —
-  // the D1 arithmetic in Today.css), which a two-column split would carve
-  // into ~230px control stacks, well below the ~295px of control width even
-  // a 375px phone gives these forms. The desktop readability arithmetic
-  // lives with the CSS (Settings.css, `.km-settings__cols`).
+  // The five settings groups render inside ONE always-mounted wrapper
+  // (`.km-settings__grid`) at every width; Settings.css lays that wrapper
+  // out as a row-major two-column grid at ≥1024px and leaves it a plain,
+  // styleless <div> below — visually identical to the pre-D2 stack.
+  // Desktop-only because tablet's content column is only ~520px at 768px
+  // (viewport − 248px sidebar rail — the D1 arithmetic in Today.css),
+  // which a two-column split would carve into ~230px control stacks, well
+  // below the ~295px of control width even a 375px phone gives these
+  // forms. The desktop readability arithmetic lives with the CSS
+  // (Settings.css, `.km-settings__grid`).
   //
-  // Column assignment is COLUMN-MAJOR in the original order — column 1:
-  // Profile + Two-Factor (the identity/security pair), column 2:
-  // Notifications + Appearance + Beta feedback (the preferences pile) — so
-  // DOM/tab/screen-reader order at desktop is EXACTLY the mobile order
-  // (Profile → 2FA → Notifications → Appearance → Beta feedback), just
-  // wrapped. Layout only: each group element is built ONCE below and
-  // rendered by whichever branch is live, so no group's props/handlers can
-  // differ between layouts. (A live resize across 1024px remounts the
-  // groups — the same tradeoff D1 accepted for Today's TileRail — which
-  // re-collapses the tiles to their F-038 default; every durable value
-  // lives in this component's state or on the server, so nothing
-  // user-entered is lost.)
-  const isTwoColumnLayout = useDeviceClass() === 'desktop';
+  // Deliberately CSS-ONLY — no `useDeviceClass` render branch. The first
+  // D2 cut swapped a two-column tree for a bare fragment at the 1024px
+  // boundary; React reconciles by type, so a live crossing (iPad rotation)
+  // REMOUNTED all five groups — and TwoFactorSection's freshly regenerated
+  // recovery codes are held in its own state, shown once, never persisted,
+  // so the remount destroyed their display AFTER the old codes were
+  // already invalidated server-side (fix-pass SHOULD-FIX 1). With one
+  // mounted tree the breakpoint switch is pure style recalculation:
+  // component instances, their state (one-shot 2FA codes, open tiles,
+  // in-flight flows), and the DOM all survive. Pinned by the
+  // resize-crossing test in Settings.test.tsx.
+  //
+  // Row-major auto-placement keeps DOM = tab = screen-reader = VISUAL
+  // reading order EXACTLY the mobile order (Profile → 2FA → Notifications
+  // → Appearance → Beta feedback) in every layout. Each group element is
+  // built ONCE below and rendered by the one tree, so no group's
+  // props/handlers can differ between layouts.
 
   // ───── Profile (server-backed) ─────
   const profileGroup = (
@@ -1340,32 +1346,19 @@ export default function Settings(): JSX.Element {
         heading={<Bilingual en="Settings" kr="설정" />}
       />
 
-      {isTwoColumnLayout ? (
-        /* D2 — desktop only: two independent group stacks, laid out as grid
-           columns by Settings.css. Independent COLUMN wrappers (not one
-           auto-flowing grid of groups) so expanding a CollapsibleTile in
-           one column can never stretch a shared grid row and open a gap
-           under its neighbor in the other column. */
-        <div className="km-settings__cols">
-          <div className="km-settings__col">
-            {profileGroup}
-            {twoFactorGroup}
-          </div>
-          <div className="km-settings__col">
-            {notificationsGroup}
-            {appearanceGroup}
-            {feedbackGroup}
-          </div>
-        </div>
-      ) : (
-        <>
-          {profileGroup}
-          {twoFactorGroup}
-          {notificationsGroup}
-          {appearanceGroup}
-          {feedbackGroup}
-        </>
-      )}
+      {/* D2 (fix-pass revision) — ONE tree at every width. The wrapper is
+          styleless below 1024px (the groups stack exactly as pre-D2) and a
+          row-major two-column grid at ≥1024px (Settings.css). Never
+          branch-swap this on a device class: crossing the breakpoint would
+          remount the groups and wipe TwoFactorSection's shown-once
+          recovery codes — see the layout comment above. */}
+      <div className="km-settings__grid">
+        {profileGroup}
+        {twoFactorGroup}
+        {notificationsGroup}
+        {appearanceGroup}
+        {feedbackGroup}
+      </div>
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>
     </section>

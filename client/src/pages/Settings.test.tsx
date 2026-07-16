@@ -38,8 +38,10 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import type { JSX } from 'react';
 import { ApiError } from '../services/api';
 import type { User } from '../hooks/auth-context';
+import { mockViewportWidth } from '../test/viewport';
 
 // ─── Mocks ────────────────────────────────────────────────────
 //
@@ -143,8 +145,8 @@ import { ToastProvider } from '../components/ToastProvider';
  * probe alongside the real `Settings` route — mirrors Uploads.test.tsx's
  * ViewerProbe pattern for asserting a real navigation happened.
  */
-function renderSettings(): ReturnType<typeof render> {
-  return render(
+function settingsUi(): JSX.Element {
+  return (
     <MemoryRouter initialEntries={['/settings']}>
       <ThemeProvider>
         <AccentProvider>
@@ -163,8 +165,12 @@ function renderSettings(): ReturnType<typeof render> {
           </TextSizeProvider>
         </AccentProvider>
       </ThemeProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderSettings(): ReturnType<typeof render> {
+  return render(settingsUi());
 }
 
 /**
@@ -2268,46 +2274,28 @@ function meOk(): void {
 }
 
 /**
- * Device-adaptive epic, Phase D2 — the five settings groups as a two-column
- * arrangement at DESKTOP only.
+ * Device-adaptive epic, Phase D2 (fix-pass revision) — the five settings
+ * groups as a desktop two-column grid, driven entirely by CSS.
  *
- * `useDeviceClass` reads `window.matchMedia`; `src/test/setup.ts` installs a
- * `matches: false` default before every test (mobile-first baseline), so
- * every test ABOVE this block already exercises the single-column mobile
- * branch without explicit stubbing. This block stubs `matchMedia` to report
- * tablet/desktop widths (the same `mockViewportWidth` idiom as
- * Today.test.tsx's D1 block / `useDeviceClass.test.tsx`).
+ * The groups render inside ONE always-mounted `.km-settings__grid` wrapper
+ * at EVERY width; Settings.css turns that wrapper into a row-major
+ * 2-column grid at ≥1024px and leaves it styleless below. There is no
+ * device-class render branch — the original D2 branch swap remounted the
+ * groups on a live 1024px crossing (iPad rotation) and wiped
+ * TwoFactorSection's shown-once recovery codes (fix-pass SHOULD-FIX 1) —
+ * so the DOM is IDENTICAL across mobile / tablet / desktop (pinned below),
+ * the no-remount property is pinned by the resize-crossing test, and the
+ * layout gate itself is pinned at the CSS-source level (jsdom does no
+ * layout).
  *
- * The D2 contract pinned here:
- *   - mobile AND tablet: no `.km-settings__cols` wrapper at all — the five
- *     groups stack exactly as pre-D2 (tablet's ~520px content column is too
- *     narrow to split; see the `isTwoColumnLayout` comment in Settings.tsx).
- *   - desktop (≥1024px): two `.km-settings__col` stacks — Profile + 2FA in
- *     the first, Notifications + Appearance + Beta feedback in the second —
- *     preserving the exact mobile DOM/tab order (column-major).
- *   - layout only: the groups' disclosure/controls behave identically.
+ * `src/test/setup.ts` installs a `matches: false` matchMedia before every
+ * test (mobile-first baseline), so every test ABOVE this block already
+ * exercises the same single tree at mobile. Width-specific tests stub
+ * matchMedia via the SHARED `mockViewportWidth` helper
+ * (src/test/viewport.ts — one canonical copy of the D1/D2 idiom, and its
+ * non-width queries stay `false`, matching setup.ts's baseline).
  */
 describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
-  function mockViewportWidth(width: number): void {
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn((query: string) => {
-        const m = /min-width:\s*(\d+)px/.exec(query);
-        const threshold = m ? Number(m[1]) : 0;
-        return {
-          matches: width >= threshold,
-          media: query,
-          onchange: null,
-          addEventListener: vi.fn(),
-          removeEventListener: vi.fn(),
-          addListener: vi.fn(),
-          removeListener: vi.fn(),
-          dispatchEvent: vi.fn(),
-        } as unknown as MediaQueryList;
-      }),
-    );
-  }
-
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -2336,56 +2324,52 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     });
   }
 
-  it('mobile (default test matchMedia): no columns wrapper — the five groups stack in order, byte-identical to pre-D2', () => {
+  /**
+   * The single-tree contract: exactly one `.km-settings__grid` wrapper
+   * whose DIRECT children are the five groups (they are the grid items —
+   * row-major auto-placement depends on nothing else sneaking in between),
+   * in the canonical mobile document order. Because the tree is the same
+   * at every width, every width test asserts this same shape.
+   */
+  function expectSingleGridTree(container: HTMLElement): void {
+    const grids = container.querySelectorAll('.km-settings__grid');
+    expect(grids).toHaveLength(1);
+    const children = Array.from(grids[0].children);
+    expect(children).toHaveLength(5);
+    children.forEach((child) => {
+      expect(child.classList.contains('km-settings__group')).toBe(true);
+    });
+    expectGroupOrder();
+  }
+
+  it('mobile (default test matchMedia): the five groups are direct children of the one styleless grid wrapper, in order', () => {
     meOk();
     const { container } = renderSettings();
-    expect(container.querySelector('.km-settings__cols')).toBeNull();
-    expect(container.querySelector('.km-settings__col')).toBeNull();
-    expect(container.querySelectorAll('.km-settings__group')).toHaveLength(5);
-    expectGroupOrder();
+    expectSingleGridTree(container);
   });
 
-  it('tablet (768px): STILL single-column — the two-column layout is desktop-only, not the shared ≥768px sidebar breakpoint', () => {
+  it('tablet (768px): IDENTICAL tree — the two-column layout is pure CSS, gated at 1024px, so the DOM never changes', () => {
     mockViewportWidth(768);
     meOk();
     const { container } = renderSettings();
-    expect(container.querySelector('.km-settings__cols')).toBeNull();
-    expect(container.querySelectorAll('.km-settings__group')).toHaveLength(5);
-    expectGroupOrder();
+    expectSingleGridTree(container);
   });
 
-  it('desktop (1024px): two columns — Profile+2FA left, Notifications+Appearance+Beta feedback right, mobile order preserved', () => {
+  it('desktop (1024px): IDENTICAL tree again — row-major grid placement preserves the mobile document/tab/SR order', () => {
     mockViewportWidth(1024);
     meOk();
     const { container } = renderSettings();
-
-    const cols = container.querySelectorAll('.km-settings__cols');
-    expect(cols).toHaveLength(1);
-    const colEls = container.querySelectorAll('.km-settings__col');
-    expect(colEls).toHaveLength(2);
-
-    const col1 = colEls[0] as HTMLElement;
-    const col2 = colEls[1] as HTMLElement;
-    expect(col1.querySelectorAll('.km-settings__group')).toHaveLength(2);
-    expect(col2.querySelectorAll('.km-settings__group')).toHaveLength(3);
-    expect(within(col1).getByRole('button', { name: /Profile/ })).toBeInTheDocument();
-    expect(within(col1).getByRole('button', { name: /Two-Factor/ })).toBeInTheDocument();
-    expect(within(col2).getByRole('button', { name: /Notifications/ })).toBeInTheDocument();
-    expect(within(col2).getByRole('button', { name: /Appearance/ })).toBeInTheDocument();
-    expect(within(col2).getByRole('button', { name: /Beta feedback/ })).toBeInTheDocument();
-
-    // Column-major assignment = the document order is EXACTLY mobile's.
-    expectGroupOrder();
+    expectSingleGridTree(container);
   });
 
-  it('desktop (1440px, above the shell cap): same two-column arrangement', () => {
+  it('desktop (1440px, above the shell cap): same tree', () => {
     mockViewportWidth(1440);
     meOk();
     const { container } = renderSettings();
-    expect(container.querySelectorAll('.km-settings__col')).toHaveLength(2);
+    expectSingleGridTree(container);
   });
 
-  it('layout only: a group in the two-column branch keeps its full disclosure + controls behavior (F-038 contract)', () => {
+  it('layout only: a group in the desktop layout keeps its full disclosure + controls behavior (F-038 contract)', () => {
     mockViewportWidth(1280);
     meOk();
     renderSettings();
@@ -2397,18 +2381,73 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument();
   });
 
-  it('CSS: `.km-settings__cols` is a 2-column grid gated behind the ≥1024px DESKTOP breakpoint (not 768px)', () => {
+  it('resize across 1024px does NOT remount the groups — one-shot 2FA recovery codes survive an iPad rotation (fix-pass SHOULD-FIX 1)', async () => {
+    // The sharpest state this page holds: freshly regenerated recovery
+    // codes are kept in TwoFactorSection's own state, shown once, never
+    // persisted — and the OLD codes are already invalidated server-side by
+    // the time they render. The original D2 branch swap unmounted the
+    // group on a live desktop↔tablet crossing and destroyed this display.
+    const viewport = mockViewportWidth(1024); // desktop
+    meOk();
+    mocks.regenerateRecoveryCodes.mockResolvedValue({
+      recoveryCodes: ['NEW11-NEW22', 'NEW33-NEW44'],
+    });
+    const view = render(settingsUi());
+    await screen.findByText('Two-Factor Authentication');
+    expandGroup(/Two-Factor/);
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Regenerate recovery codes' }),
+    );
+    await user.type(
+      screen.getByLabelText('Confirm your password to continue'),
+      'a-long-passphrase',
+    );
+    await user.click(screen.getByRole('button', { name: 'Regenerate codes' }));
+    const codeEl = await screen.findByText('NEW11-NEW22');
+    const twoFactorHeader = screen.getByRole('button', { name: /Two-Factor/ });
+
+    // Rotate: desktop (1024px) → tablet (768px). `set` fires the matchMedia
+    // change listeners exactly like a real MediaQueryList; the explicit
+    // rerender then forces a top-down pass so even an implementation that
+    // reads the width without subscribing would be exercised.
+    act(() => {
+      viewport.set(768);
+    });
+    view.rerender(settingsUi());
+
+    // SAME DOM nodes ⇒ React never unmounted the group components — the
+    // one-shot codes (and the open tile) survived the crossing. A remount
+    // would render NEW elements, failing the identity checks even if the
+    // text happened to reappear.
+    expect(screen.getByText('NEW11-NEW22')).toBe(codeEl);
+    expect(screen.getByText('NEW33-NEW44')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Two-Factor/ })).toBe(
+      twoFactorHeader,
+    );
+    expect(twoFactorHeader).toHaveAttribute('aria-expanded', 'true');
+
+    // And back up across the boundary (tablet → desktop) for good measure.
+    act(() => {
+      viewport.set(1280);
+    });
+    view.rerender(settingsUi());
+    expect(screen.getByText('NEW11-NEW22')).toBe(codeEl);
+  });
+
+  it('CSS: `.km-settings__grid` is a 2-column grid gated behind the ≥1024px DESKTOP breakpoint (not 768px)', () => {
     // jsdom does no layout — pin the CSS source (same technique as the
     // touch-target test above and Today.test.tsx's D1 geometry tests). The
-    // 1024px gate matters: the render branch and the media query are a
-    // double gate, and this asserts the CSS half wasn't written against the
-    // shared 768px sidebar breakpoint by copy-paste.
+    // 1024px gate matters doubly now: it is the ONLY gate (no render
+    // branch), and this asserts it wasn't written against the shared 768px
+    // sidebar breakpoint by copy-paste.
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'Settings.css'),
       'utf8',
     );
     const mediaBlock =
-      /@media \(min-width: 1024px\) \{\s*\.km-settings__cols \{[\s\S]*?\n\}/.exec(
+      /@media \(min-width: 1024px\) \{\s*\.km-settings__grid \{[\s\S]*?\n\}/.exec(
         stylesheet,
       )?.[0] ?? '';
     expect(mediaBlock).not.toBe('');
@@ -2416,9 +2455,13 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     expect(mediaBlock).toContain(
       'grid-template-columns: repeat(2, minmax(0, 1fr));',
     );
-    // And no 768px-gated rule touches the columns wrapper anywhere.
+    // Orphan guard: with five groups, the trailing odd group spans the full
+    // row instead of stranding at half width beside a blank cell.
+    expect(mediaBlock).toContain(':last-child:nth-child(odd)');
+    expect(mediaBlock).toContain('grid-column: 1 / -1;');
+    // And no 768px-gated rule touches the grid wrapper anywhere.
     expect(stylesheet).not.toMatch(
-      /@media \(min-width: 768px\)[\s\S]{0,400}km-settings__cols/,
+      /@media \(min-width: 768px\)[\s\S]{0,400}km-settings__grid/,
     );
   });
 });

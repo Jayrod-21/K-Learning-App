@@ -17,6 +17,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import ReviewLibrary from './ReviewLibrary';
+import { mockViewportWidth } from '../test/viewport';
 
 function LocationProbe(): JSX.Element {
   const loc = useLocation();
@@ -195,9 +196,11 @@ describe('ReviewLibrary (P3B landing)', () => {
  * `matches: false` default before every test (mobile-first baseline), so
  * every test ABOVE this block already exercises the mobile branch without
  * explicit stubbing. This block stubs `matchMedia` to report tablet/desktop
- * widths (the same `mockViewportWidth` idiom as Today.test.tsx's D1 block /
- * `useDeviceClass.test.tsx`) to pin the grid modifier, and re-confirms the
- * mobile class string is byte-identical at an explicit narrow width too.
+ * widths via the SHARED `mockViewportWidth` helper (src/test/viewport.ts —
+ * the one canonical copy of the D1/D2 idiom; its non-width queries stay
+ * `false`, matching setup.ts's baseline) to pin the grid modifier, and
+ * re-confirms the mobile class string is byte-identical at an explicit
+ * narrow width too.
  *
  * jsdom does no layout, so the grid GEOMETRY (fixed 2 columns, the orphan
  * guard) is pinned at the CSS source level — same technique as Today's D1
@@ -205,26 +208,6 @@ describe('ReviewLibrary (P3B landing)', () => {
  * ReviewLibrary.css's width-arithmetic comment.
  */
 describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
-  function mockViewportWidth(width: number): void {
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn((query: string) => {
-        const m = /min-width:\s*(\d+)px/.exec(query);
-        const threshold = m ? Number(m[1]) : 0;
-        return {
-          matches: width >= threshold,
-          media: query,
-          onchange: null,
-          addEventListener: vi.fn(),
-          removeEventListener: vi.fn(),
-          addListener: vi.fn(),
-          removeListener: vi.fn(),
-          dispatchEvent: vi.fn(),
-        } as unknown as MediaQueryList;
-      }),
-    );
-  }
-
   afterEach(() => {
     vi.unstubAllGlobals();
   });

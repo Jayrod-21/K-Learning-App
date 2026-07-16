@@ -86,15 +86,23 @@
  * 768px, 656px at 948px, 732px at 1024px, 1116px at the ≥1408px cap. Under
  * `auto-fit minmax(220px,1fr)` that means 2 columns from 768px but THREE
  * from ~976px viewport (3·220+2·12=684 ≤ 732…) — and 3 columns × 4 shelves
- * strands the Uploads shelf alone in a half-empty second row at every
- * desktop width: exactly the orphan-tile case D1's fix-pass corrected.
- * `repeat(2, minmax(0, 1fr))` makes that impossible by construction — 4
- * shelves are a clean 2×2 at every ≥768px width, with per-card widths of
- * ~232px (768px viewport) up to ~552px (shell cap), all comfortably inside
- * the range these rows already render at (330px-wide mobile column up to
- * the 1116px full-width desktop row pre-D2). `minmax(0, 1fr)` (not bare
- * `1fr`) overrides the track's implicit min-content floor so a long
- * unbroken label can never force the row past the viewport (F-129's
+ * strands the Uploads shelf alone in a half-empty second row across the
+ * ~976–1207px viewport band. (At ≥1208px the list is ≥916px wide and
+ * auto-fit computes FOUR columns — a single 4-up row, no orphan, but
+ * ~220–270px cards clashing with the 2-up look just below that width.)
+ * The orphan band covers the most common laptop widths (1024/1152/1200):
+ * exactly the orphan-tile case D1's fix-pass corrected. `repeat(2,
+ * minmax(0, 1fr))` makes the orphan impossible by construction — 4 shelves
+ * are a clean 2×2 at every ≥768px width, with per-card widths of ~232px
+ * (768px viewport) up to ~552px (shell cap). NB the low end is NARROWER
+ * than these rows ever rendered pre-D2 (floor ≈276px at a 320px phone,
+ * ≈331px at 375px): acceptable because the row is wrap-safe end to end
+ * (`min-width: 0` chained through wrapper → button → card → rowTop below;
+ * short labels; `__rowdesc` wraps) and CityCard's 14px/16px padding still
+ * leaves ~200px of content at the 768px worst case — but the 768–900px
+ * band is a named target of the post-deploy visual check. `minmax(0, 1fr)`
+ * (not bare `1fr`) overrides the track's implicit min-content floor so a
+ * long unbroken label can never force the row past the viewport (F-129's
  * convention, same reason as the item-level `min-width: 0`). */
 @media (min-width: 768px) {
   .km-library__list--grid {
@@ -117,7 +125,11 @@
     display: flex;
   }
 
-  .km-library__list--grid .km-library__row {
+  /* The extra `.km-library` prefix lifts this to (0,3,0) so `display:
+   * flex` beats the base `.km-library .km-library__row { display: block }`
+   * reset above by SPECIFICITY, not by source order — both were (0,2,0)
+   * before, correct only while this block stayed later in the file. */
+  .km-library .km-library__list--grid .km-library__row {
     flex: 1;
     min-width: 0;
     display: flex;
