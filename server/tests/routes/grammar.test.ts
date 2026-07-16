@@ -383,6 +383,98 @@ describe('POST /grammar/bank — success + validation + upsert', () => {
   });
 });
 
+describe('POST /grammar/bank — upload provenance (F-107)', () => {
+  const validBody = {
+    pattern_key: 'GR-eun-geol',
+    pattern_display: '-은걸',
+    summary_en: 'mild exclamation / realization',
+    proficiency: 'L3' as const,
+    category: 'ending',
+  };
+
+  it('persists source_upload_id when the caller owns the upload', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, {
+      type: 'grammar',
+      status: 'ready',
+    });
+    const res = await agent
+      .post('/grammar/bank')
+      .send({ ...validBody, source_upload_id: uploadId });
+    expect(res.status).toBe(201);
+    const row = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM grammar_entries WHERE id = $1`,
+      [res.body.id],
+    );
+    expect(Number(row.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it('a bank without source_upload_id stays untagged (NULL provenance)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/grammar/bank').send(validBody);
+    expect(res.status).toBe(201);
+    const row = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM grammar_entries WHERE id = $1`,
+      [res.body.id],
+    );
+    expect(row.rows[0]!.source_upload_id).toBeNull();
+  });
+
+  it('a re-bank without source keeps the original tag (first write wins)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const first = await agent
+      .post('/grammar/bank')
+      .send({ ...validBody, source_upload_id: uploadId });
+    expect(first.status).toBe(201);
+    // Upsert path: same (user, pattern_key), no provenance this time.
+    const again = await agent.post('/grammar/bank').send(validBody);
+    expect(again.status).toBe(201);
+    expect(again.body.id).toBe(first.body.id);
+    const row = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM grammar_entries WHERE id = $1`,
+      [first.body.id],
+    );
+    expect(Number(row.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it("cannot tag with another user's upload — 404, and no row persists", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const foreignUpload = await seedBookUpload(pg.pool, owner.userId, {
+      status: 'ready',
+    });
+    const attacker = await registerUser(t.app, pg.pool);
+    const res = await attacker.agent
+      .post('/grammar/bank')
+      .send({ ...validBody, source_upload_id: foreignUpload });
+    expect(res.status).toBe(404);
+    // The transaction rolled back — the attacker banked nothing.
+    const rows = await pg.pool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM grammar_entries WHERE user_id = $1`,
+      [attacker.userId],
+    );
+    expect(Number(rows.rows[0]!.n)).toBe(0);
+  });
+
+  it('a nonexistent upload id → the same 404 as an unowned one (no existence oracle)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/grammar/bank')
+      .send({ ...validBody, source_upload_id: 99_999_999 });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects garbage source_upload_id at the boundary (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    for (const bad of ['abc', -1, 0, 1.5]) {
+      const res = await agent
+        .post('/grammar/bank')
+        .send({ ...validBody, source_upload_id: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
 describe('GET /grammar/bank', () => {
   it('returns the user’s saved patterns', async () => {
     const { agent } = await registerUser(t.app, pg.pool);

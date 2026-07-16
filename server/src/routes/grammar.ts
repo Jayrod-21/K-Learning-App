@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
-import { query } from '../db/pool.js';
+import { query, withTransaction } from '../db/pool.js';
 import { ConflictError, NotFoundError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { FsrsStateName } from '../services/fsrs.js';
@@ -183,44 +183,96 @@ const BankBodySchema = z.object({
     ])
     .default('manual'),
   notes: z.record(z.string(), z.unknown()).default({}),
+  // F-107 (user-saved upload provenance): the `book_uploads.id` the user was
+  // working from when they banked this pattern — the exact mirror of
+  // `POST /vocab/mine`'s field (same int/positive/MAX_ID bound; JSON body,
+  // so no coerce). Optional — a bank outside an upload context sends
+  // nothing. OWNERSHIP is validated in the handler (the upload must belong
+  // to the caller, else 404) BEFORE anything persists — an attacker passing
+  // someone else's upload id must not tag their save to it.
+  source_upload_id: z.number().int().positive().max(MAX_ID).optional(),
 });
 
 router.post('/bank', cheapLimiter(), validateBody(BankBodySchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof BankBodySchema>;
     const userId = getUserId(req);
-    const { rows } = await query<{ id: number }>(
-      `INSERT INTO grammar_entries (
-          user_id, pattern_key, pattern_display, summary_en,
-          proficiency, category, register, notes, discovered_via)
-       VALUES ($1,$2,$3,$4,$5::proficiency_level,$6,$7::register_level,$8::jsonb,$9)
-       ON CONFLICT (user_id, pattern_key)
-         DO UPDATE SET pattern_display = EXCLUDED.pattern_display,
-                       summary_en     = EXCLUDED.summary_en,
-                       proficiency    = EXCLUDED.proficiency,
-                       category       = EXCLUDED.category,
-                       register       = EXCLUDED.register,
-                       notes          = EXCLUDED.notes,
-                       version        = grammar_entries.version + 1
-       RETURNING id`,
-      [
-        userId,
-        body.pattern_key,
-        body.pattern_display,
-        body.summary_en,
-        body.proficiency,
-        body.category,
-        body.register ?? null,
-        JSON.stringify(body.notes),
-        body.discovered_via,
-      ],
-    );
+    // One transaction (F-107): the upload-ownership check and the tagged
+    // upsert commit or roll back together — mirrors POST /vocab/mine.
+    const { rows } = await withTransaction(async (client) => {
+      // 0. Validate the referenced upload BELONGS TO the caller before
+      //    anything persists. One combined id+ownership predicate: a
+      //    nonexistent id and another user's id both 404 identically, so
+      //    the response is not an existence oracle for other users' upload
+      //    ids (same posture as this file's graduate/readmit routes).
+      if (body.source_upload_id !== undefined) {
+        const owned = await client.query(
+          `SELECT 1
+             FROM book_uploads
+            WHERE id = $1
+              AND user_id = $2
+            LIMIT 1`,
+          [body.source_upload_id, userId],
+        );
+        if (owned.rowCount === 0) {
+          throw new NotFoundError('upload not found');
+        }
+      }
+      return client.query<{ id: number }>(
+        // F-107: source_upload_id is first-write-wins on re-bank (COALESCE
+        // keeps the original tag) — provenance records where the pattern was
+        // FIRST saved from, same convention as discovered_via (which the
+        // upsert deliberately never updates). A later re-bank WITH an upload
+        // id only FILLS missing provenance on a row that has none.
+        `INSERT INTO grammar_entries (
+            user_id, pattern_key, pattern_display, summary_en,
+            proficiency, category, register, notes, discovered_via,
+            source_upload_id)
+         VALUES ($1,$2,$3,$4,$5::proficiency_level,$6,$7::register_level,$8::jsonb,$9,$10)
+         ON CONFLICT (user_id, pattern_key)
+           DO UPDATE SET pattern_display = EXCLUDED.pattern_display,
+                         summary_en     = EXCLUDED.summary_en,
+                         proficiency    = EXCLUDED.proficiency,
+                         category       = EXCLUDED.category,
+                         register       = EXCLUDED.register,
+                         notes          = EXCLUDED.notes,
+                         source_upload_id = COALESCE(grammar_entries.source_upload_id,
+                                                     EXCLUDED.source_upload_id),
+                         version        = grammar_entries.version + 1
+         RETURNING id`,
+        [
+          userId,
+          body.pattern_key,
+          body.pattern_display,
+          body.summary_en,
+          body.proficiency,
+          body.category,
+          body.register ?? null,
+          JSON.stringify(body.notes),
+          body.discovered_via,
+          body.source_upload_id ?? null,
+        ],
+      );
+    });
     // pg returns BIGINT as a string; the API contract documents id as a JSON
     // number (grammar_entries.id fits comfortably in Number.MAX_SAFE_INTEGER).
     res.status(201).json({ id: Number(rows[0]!.id) });
   } catch (err) {
     if ((err as { code?: string }).code === '23505') {
       next(new ConflictError('grammar entry conflict'));
+      return;
+    }
+    // F-107 race guard: READ COMMITTED does not stop a concurrent hard-delete
+    // of the upload between the ownership check and the insert — the FK from
+    // migration 068 then rejects the write (23503). Still "this upload does
+    // not exist for you" → the same 404 the check gives, not a 500. Scoped
+    // to THIS FK's constraint name so unrelated integrity errors stay loud.
+    const pgErr = err as { code?: string; constraint?: string };
+    if (
+      pgErr.code === '23503' &&
+      pgErr.constraint === 'fk_grammar_entries_source_upload'
+    ) {
+      next(new NotFoundError('upload not found'));
       return;
     }
     next(err);

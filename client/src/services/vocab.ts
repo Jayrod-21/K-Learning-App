@@ -38,6 +38,8 @@ import type {
   PatchListResponse,
   ReviewResult,
   ReviewSubmission,
+  SavedFromUploadsGroup,
+  SavedFromUploadsResponse,
   ServerProficiency,
   ServerVocabList,
   VocabCorpus,
@@ -351,6 +353,29 @@ export async function mineWord(
     stripUndef({ ...input }),
     signal !== undefined ? { signal } : undefined,
   );
+}
+
+/**
+ * GET /vocab/saved-from-uploads — the user's saved vocab that carries upload
+ * provenance, grouped by source upload (F-107; feeds the F-053 "My Uploads"
+ * section on Review→Vocabulary).
+ *
+ * "Saved" = the user kept the word via either save path (a card bank — e.g.
+ * `mineWord` with `source_upload_id` — or a list add of an upload-tagged
+ * entry); each word appears once with its earliest save time. The server
+ * scopes everything to the session user, so only the caller's own uploads
+ * (and titles) can ever appear. Returns the groups directly — an empty array
+ * is the honest "nothing saved from uploads yet" state the F-053 section
+ * hides itself on.
+ */
+export async function fetchSavedFromUploads(
+  signal?: AbortSignal,
+): Promise<SavedFromUploadsGroup[]> {
+  const res = await api.get<SavedFromUploadsResponse>(
+    '/vocab/saved-from-uploads',
+    signal !== undefined ? { signal } : undefined,
+  );
+  return res.groups;
 }
 
 // ── Vocab lists (migration 012) ────────────────────────────────────────
