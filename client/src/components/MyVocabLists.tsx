@@ -69,6 +69,7 @@ import * as vocabService from '../services/vocab';
 import { ApiError } from '../services/api';
 import { errorMessageFor } from '../lib/errorCopy';
 import type {
+  ListEntryItemType,
   ServerVocabList,
   VocabListEntryRow,
   VocabListKind,
@@ -492,7 +493,16 @@ function ListDetailSheet({
   const [entries, setEntries] = useState<VocabListEntryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [removingId, setRemovingId] = useState<number | null>(null);
+  // F-091 follow-up (SHOULD-FIX): keyed on the (entryId, itemType) PAIR, not
+  // entryId alone — a vocab row and a grammar row in the same list can share
+  // a numeric entry_id (different corpus tables), so a bare entryId key would
+  // spuriously disable the UNRELATED sibling's remove button while this one
+  // is in flight. Mirrors the composite key already used for removeEntry's
+  // optimistic filter (below) and the React `key` on each row.
+  const [removingId, setRemovingId] = useState<{
+    entryId: number;
+    itemType: ListEntryItemType;
+  } | null>(null);
   // Rename state (ported from the old Review.tsx ListDetailSheet so the
   // capability survived the dedup). `displayName` shadows the row prop after
   // a successful rename so the header updates without waiting on the parent
@@ -543,14 +553,23 @@ function ListDetailSheet({
   }, [listId, load]);
 
   const removeEntry = useCallback(
-    async (entryId: number): Promise<void> => {
+    async (entryId: number, itemType: ListEntryItemType): Promise<void> => {
       if (listId === null) return;
-      setRemovingId(entryId);
+      setRemovingId({ entryId, itemType });
       // Optimistic removal — drop the row immediately; restore on failure.
+      // F-091: match on the (item_type, entry_id) PAIR, not entry_id alone —
+      // a grammar and a vocab membership in the same list can carry the
+      // identical numeric target id (rows in different corpus tables), so
+      // filtering on entry_id alone could drop the wrong row out from under
+      // the user.
       const prev = entries;
-      setEntries((cur) => cur.filter((e) => e.entry_id !== entryId));
+      setEntries((cur) =>
+        cur.filter(
+          (e) => !(e.entry_id === entryId && (e.item_type ?? 'vocab') === itemType),
+        ),
+      );
       try {
-        await vocabService.removeListEntry(listId, entryId);
+        await vocabService.removeListEntry(listId, entryId, itemType);
         onChanged();
       } catch (err) {
         setEntries(prev);
@@ -689,26 +708,54 @@ function ListDetailSheet({
         ) : null}
         {entries.length > 0 ? (
           <ul className="km-resources__list-entries">
-            {entries.map((e) => (
-              <li
-                key={`entry:${String(e.entry_id)}`}
-                className="km-resources__list-entry"
-              >
-                <span className="kr km-reference__row-kr">{e.korean ?? ''}</span>
-                <span className="km-reference__row-en">{e.english ?? ''}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    void removeEntry(e.entry_id);
-                  }}
-                  disabled={removingId === e.entry_id}
-                  aria-label={`Remove ${e.korean ?? 'word'} from the list`}
+            {entries.map((e) => {
+              // F-091: default an absent item_type to 'vocab' — the pre-049
+              // shape every such row actually is; the live server always
+              // sends it, this is defensive only (a stale fixture/mock, or a
+              // future response that omits it for a vocab row).
+              const itemType = e.item_type ?? 'vocab';
+              return (
+                <li
+                  key={`${itemType}:${String(e.entry_id)}`}
+                  className="km-resources__list-entry"
                 >
-                  <Icon name="close" size={12} />
-                </Button>
-              </li>
-            ))}
+                  <div className="km-resources__list-entry-main">
+                    <span className="kr km-reference__row-kr">
+                      {e.korean ?? ''}
+                    </span>
+                    <span className="km-reference__row-en">{e.english ?? ''}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        void removeEntry(e.entry_id, itemType);
+                      }}
+                      disabled={
+                        removingId !== null &&
+                        removingId.entryId === e.entry_id &&
+                        removingId.itemType === itemType
+                      }
+                      aria-label={`Remove ${e.korean ?? 'word'} from the list`}
+                    >
+                      <Icon name="close" size={12} />
+                    </Button>
+                  </div>
+                  {/* F-112 — the corpus example sentence, when the entry has
+                      one on file (vocab rows only; absent/null otherwise). */}
+                  {e.example_korean ? (
+                    <div className="km-resources__list-entry-example">
+                      <span className="kr">{e.example_korean}</span>
+                      {e.example_english ? (
+                        <span className="km-resources__list-entry-example-en">
+                          {' '}
+                          · {e.example_english}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
           </ul>
         ) : null}
       </div>

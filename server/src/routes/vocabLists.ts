@@ -324,6 +324,13 @@ router.get(
         korean: string | null;
         english: string | null;
         proficiency: string | null;
+        // F-112: the vocab entry's corpus example sentence, JOINed so a list-
+        // study card back (and this detail view) are complete offline — the
+        // KRDICT drawer was the only way to see an example before, on demand
+        // only. NULL for grammar/hanja rows (v is NULL there) and for a vocab
+        // entry whose corpus row simply has no example on file.
+        example_korean: string | null;
+        example_english: string | null;
         pattern: string | null;
         title_en: string | null;
         hanja_char: string | null;
@@ -341,6 +348,8 @@ router.get(
                 v.korean,
                 v.english,
                 v.proficiency::text AS proficiency,
+                v.example_korean,
+                v.example_english,
                 g.pattern,
                 g.title_en,
                 h.char  AS hanja_char,
@@ -712,6 +721,188 @@ router.delete(
       });
       void out;
       res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- F-113: per-list due-aware study queue + bulk seed ---------- */
+
+const ListDueQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+});
+
+/**
+ * GET /vocab/lists/:id/cards/due — the due-aware twin of `GET /vocab/cards/
+ * due`, scoped to one list. Only the list's VOCAB memberships participate
+ * (`e.entry_id IS NOT NULL`) — grammar/hanja list items have their own
+ * banked-card lifecycle (`POST /grammar/bank`, hanja's card-seed route) that
+ * doesn't share a target id space with `vocab_cards`, so folding them into
+ * this vocab-only queue would require resolving a SEPARATE user-owned bank
+ * row per membership; today's client only ever studies vocab lists (F-091's
+ * own notes: "no UI can put a non-vocab item in a list yet"), so this stays
+ * vocab-scoped rather than speculatively wiring paths nothing calls yet.
+ *
+ * The wire shape is byte-identical to `GET /vocab/cards/due` (same column
+ * names, no grammar_* columns since a vocab-only card can never carry them)
+ * so the client's existing `normalizeDueCard`/`dueCardToStudyCard` adapters
+ * work unmodified — one queue implementation, reused.
+ */
+router.get(
+  '/:id/cards/due',
+  cheapLimiter(),
+  validateParams(ListIdParamsSchema),
+  validateQuery(ListDueQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const listId = (req as typeof req & {
+        validatedParams: z.infer<typeof ListIdParamsSchema>;
+      }).validatedParams.id;
+      const q = (req as typeof req & {
+        validatedQuery: z.infer<typeof ListDueQuerySchema>;
+      }).validatedQuery;
+
+      // Ownership first — 404 whether the list is missing or belongs to
+      // someone else (same posture as every other route in this file).
+      const owner = await query<{ id: number }>(
+        `SELECT id
+           FROM vocab_lists
+          WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+          LIMIT 1`,
+        [listId, userId],
+      );
+      if (owner.rowCount === 0) throw new NotFoundError('vocab list not found');
+
+      const { rows } = await query<{
+        id: number;
+        face: string;
+        due_at: Date;
+        stability: string;
+        difficulty: string;
+        fsrs_state: string;
+        version: number;
+        vocab_entry_id: number | null;
+        grammar_entry_id: number | null;
+        source_sentence_id: number | null;
+        topik_item_id: number | null;
+        vocab_korean: string | null;
+        vocab_english: string | null;
+        vocab_example_korean: string | null;
+        vocab_example_english: string | null;
+        vocab_source_book: string | null;
+        total: string;
+      }>(
+        `SELECT c.id, c.face, c.due_at, c.stability, c.difficulty, c.fsrs_state, c.version,
+                c.vocab_entry_id, c.grammar_entry_id, c.source_sentence_id, c.topik_item_id,
+                ve.korean          AS vocab_korean,
+                ve.english         AS vocab_english,
+                ve.example_korean  AS vocab_example_korean,
+                ve.example_english AS vocab_example_english,
+                ve.source_book     AS vocab_source_book,
+                COUNT(*) OVER ()::text AS total
+           FROM vocab_list_entries le
+           JOIN vocab_cards   c  ON c.vocab_entry_id = le.entry_id
+           JOIN vocab_entries ve ON ve.id = c.vocab_entry_id
+          WHERE le.list_id = $1
+            AND le.entry_id IS NOT NULL
+            AND c.user_id = $2
+            AND c.face = 'recognition'
+            AND c.deleted_at IS NULL
+            AND c.suspended_at IS NULL
+            AND c.due_at <= now()
+          ORDER BY c.due_at
+          LIMIT $3`,
+        [listId, userId, q.limit],
+      );
+      const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+      const cards = rows.map(({ total: _total, ...c }) => ({
+        ...c,
+        id: Number(c.id),
+        vocab_entry_id: c.vocab_entry_id === null ? null : Number(c.vocab_entry_id),
+        grammar_entry_id: c.grammar_entry_id === null ? null : Number(c.grammar_entry_id),
+        source_sentence_id:
+          c.source_sentence_id === null ? null : Number(c.source_sentence_id),
+        topik_item_id: c.topik_item_id === null ? null : Number(c.topik_item_id),
+      }));
+      res.status(200).json({ cards, total });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * POST /vocab/lists/:id/cards/seed — bulk "add all to review": idempotently
+ * seeds a recognition card (`due_at = now()`, immediately studyable) for
+ * every VOCAB entry in the list that doesn't already have one for this user.
+ *
+ * Idempotency (fix-pass follow-up to the original NOT-EXISTS-gated version,
+ * server-review SHOULD-FIX #1): backed by a real DB-level guarantee now —
+ * migration 065's partial UNIQUE index `uq_vocab_cards_user_vocab_recognition`
+ * ON (user_id, vocab_entry_id) WHERE face = 'recognition' AND vocab_entry_id
+ * IS NOT NULL AND deleted_at IS NULL, mirroring the existing
+ * `uq_vocab_cards_user_grammar_production` (020) / `uq_vocab_cards_user_hanja_
+ * face` (050) precedent. `ON CONFLICT ... DO NOTHING` is atomic across
+ * concurrent transactions (unlike a bare NOT-EXISTS-then-INSERT under READ
+ * COMMITTED), so two truly concurrent seed calls for the same
+ * (user_id, vocab_entry_id) — whether same-list double-tap or racing
+ * `POST /vocab/cards/init` / `POST /vocab/entries/:id/bank` for a
+ * list-member entry — can no longer both insert. `POST /vocab/cards/init`
+ * itself is intentionally NOT touched here (out of scope for this PR; still
+ * NOT-EXISTS-gated) — it becomes safe to harden the same way once someone
+ * ports its INSERT to the same ON CONFLICT target, but the index alone
+ * already closes THIS route's exposure and backstops init's races too.
+ * The per-list `FOR UPDATE` lock is kept — it still serializes the realistic
+ * same-list double-tap case before either statement reaches the index.
+ * Scoped to `entry_id IS NOT NULL` (the vocab leg) for the same reason the
+ * due-queue route above is vocab-only.
+ */
+router.post(
+  '/:id/cards/seed',
+  cheapLimiter(),
+  validateParams(ListIdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const listId = (req as typeof req & {
+        validatedParams: z.infer<typeof ListIdParamsSchema>;
+      }).validatedParams.id;
+
+      const inserted = await withTransaction(async (client) => {
+        const owner = await client.query<{ id: number }>(
+          `SELECT id
+             FROM vocab_lists
+            WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+            FOR UPDATE`,
+          [listId, userId],
+        );
+        if (owner.rowCount === 0) throw new NotFoundError('vocab list not found');
+
+        const { rows } = await client.query<{ inserted: number }>(
+          `WITH ins AS (
+              INSERT INTO vocab_cards (
+                  user_id, face, vocab_entry_id, proficiency, due_at)
+              SELECT $2, 'recognition'::card_face, le.entry_id,
+                     COALESCE(v.proficiency, 'L3'::proficiency_level), now()
+                FROM vocab_list_entries le
+                JOIN vocab_entries v ON v.id = le.entry_id
+               WHERE le.list_id = $1
+                 AND le.entry_id IS NOT NULL
+              ON CONFLICT (user_id, vocab_entry_id)
+                  WHERE face = 'recognition'
+                    AND vocab_entry_id IS NOT NULL
+                    AND deleted_at IS NULL
+              DO NOTHING
+              RETURNING 1
+           )
+           SELECT COUNT(*)::int AS inserted FROM ins`,
+          [listId, userId],
+        );
+        return rows[0]!.inserted;
+      });
+      res.status(201).json({ inserted });
     } catch (err) {
       next(err);
     }

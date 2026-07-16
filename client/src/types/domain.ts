@@ -1135,14 +1135,47 @@ export interface PatchListResponse {
   list: ServerVocabList;
 }
 
+/**
+ * Which target a list-membership row points at (migration 049's XOR — vocab /
+ * grammar / hanja). F-091: the client must key rows AND issue deletes on the
+ * `(item_type, entry_id)` PAIR, not `entry_id` alone — a grammar and a vocab
+ * membership in the SAME list can carry the identical numeric target id
+ * (they're rows in different corpus tables), so `entry_id` alone is
+ * ambiguous. Optional on the wire type (not `.strict()`-required) only for
+ * back-compat with a pre-091 fixture/mock that omits it; the live server
+ * always sends it (`server/src/routes/vocabLists.ts`) — a caller that reads
+ * it absent should default to `'vocab'` (the pre-049 shape every such row
+ * actually is).
+ */
+export type ListEntryItemType = 'vocab' | 'grammar' | 'hanja';
+
 /** One joined entry row inside a list's detail (entry id + the vocab columns). */
 export interface VocabListEntryRow {
   entry_id: number;
+  /** See {@link ListEntryItemType}. */
+  item_type?: ListEntryItemType;
   position: number;
   added_at: string;
   korean: string | null;
   english: string | null;
   proficiency: string | null;
+  /**
+   * F-112 — the vocab entry's corpus example sentence, JOINed by the server
+   * so a list-study card back is complete without a separate KRDICT lookup.
+   * `undefined` against a pre-112 fixture/mock; `null` for a real row with no
+   * example on file (or a non-vocab `item_type`). Render defensively against
+   * both.
+   */
+  example_korean?: string | null;
+  example_english?: string | null;
+  /** Grammar-target display fields — populated only when `item_type === 'grammar'`. */
+  pattern?: string | null;
+  title_en?: string | null;
+  /** Hanja-target display fields — populated only when `item_type === 'hanja'`. */
+  hanja_char?: string | null;
+  hanja_sound?: string | null;
+  hanja_gloss_en?: string | null;
+  hanja_level?: string | null;
 }
 
 /** Envelope for `GET /vocab/lists/:id`. */
@@ -1156,6 +1189,10 @@ export interface VocabListDetailResponse {
 /** One appended membership row returned by `POST /vocab/lists/:id/entries`. */
 export interface AddedListEntry {
   entry_id: number;
+  /** See {@link ListEntryItemType}. Always present — the server's INSERT …
+   *  RETURNING always computes it, even for a legacy `entry_ids`-shaped body
+   *  (every id in that shape targets vocab). */
+  item_type: ListEntryItemType;
   position: number;
   added_at: string;
 }

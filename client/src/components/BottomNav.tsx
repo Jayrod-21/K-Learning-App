@@ -26,7 +26,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { JSX } from 'react';
 import { cn } from '../lib/cn';
-import { navItem, PRIMARY_TAB_IDS, type NavItemId } from '../lib/nav';
+import { matchActiveNavId, navItem, PRIMARY_TAB_IDS } from '../lib/nav';
 import { Bilingual } from './Bilingual';
 import { Icon } from './Icon';
 
@@ -142,25 +142,11 @@ function isLearnPath(pathname: string): boolean {
 /**
  * Map the current URL to a primary tab id, or null if we're on a
  * non-primary route. Longest-prefix wins so `/review/mistakes` lights
- * "Review" (the library owns its sub-pages).
+ * "Review" (the library owns its sub-pages). Thin wrapper over the shared
+ * `matchActiveNavId` (lib/nav.ts) — `Sidebar` reuses the same matcher over
+ * its wider flattened id set so both surfaces agree on one "you are here"
+ * rule.
  */
-function matchActiveId(pathname: string): NavItemId | null {
-  let best: { id: NavItemId; len: number } | null = null;
-  for (const id of PRIMARY_TAB_IDS) {
-    const it = navItem(id);
-    // Path-boundary check: a bare `startsWith('/review')` would also light
-    // Review for `/review-history` (a plausible future sibling route). Match
-    // only on exact equality or on a real `/` segment boundary.
-    const matches =
-      it.path === '/'
-        ? pathname === '/'
-        : pathname === it.path || pathname.startsWith(`${it.path}/`);
-    if (matches) {
-      const len = it.path.length;
-      if (!best || len > best.len) {
-        best = { id, len };
-      }
-    }
-  }
-  return best?.id ?? null;
+function matchActiveId(pathname: string): (typeof PRIMARY_TAB_IDS)[number] | null {
+  return matchActiveNavId(pathname, PRIMARY_TAB_IDS);
 }

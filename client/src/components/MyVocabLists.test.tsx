@@ -29,7 +29,7 @@ import {
   vi,
   type Mock,
 } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ServerVocabList } from '../types/domain';
 
@@ -352,7 +352,7 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     await user.click(
       within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
     );
-    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1);
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
     // Optimistic: the row is gone BEFORE the server answers; its sibling stays.
     expect(within(dialog).queryByText('영향')).not.toBeInTheDocument();
     expect(within(dialog).getByText('환경')).toBeInTheDocument();
@@ -458,6 +458,175 @@ describe('MyVocabLists — the canonical dedup’d My-Lists surface', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('F-091: removes an entry by (item_type, entry_id) — passes the type through to the server call', async () => {
+    vocabSvc.getListDetail.mockResolvedValue({
+      list: SERVER_LIST,
+      entries: [
+        {
+          entry_id: 1,
+          item_type: 'vocab',
+          position: 0,
+          added_at: 'x',
+          korean: '영향',
+          english: 'influence',
+          proficiency: 'L3',
+        },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('영향');
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
+    );
+
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
+  });
+
+  it('F-091: defaults a missing item_type to \'vocab\' (back-compat with a pre-091 fixture)', async () => {
+    // LIST_DETAIL's default rows (set in beforeEach) carry no item_type.
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('영향');
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Remove 영향 from the list' }),
+    );
+
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
+  });
+
+  it('F-091 collision: two rows sharing an entry_id but different item_type render, delete, and disable INDEPENDENTLY', async () => {
+    // The literal motivating scenario: a vocab entry and a grammar entry
+    // happen to share the same numeric entry_id (different corpus tables,
+    // no cross-table uniqueness). Pins the SHOULD-FIX for removingId: pre-fix
+    // it keyed on bare entry_id, so removing one row would spuriously
+    // disable the OTHER row's remove button too.
+    let releaseRemove!: () => void;
+    vocabSvc.getListDetail.mockResolvedValue({
+      list: SERVER_LIST,
+      entries: [
+        {
+          entry_id: 9,
+          item_type: 'vocab',
+          position: 0,
+          added_at: 'x',
+          korean: '학교',
+          english: 'school',
+          proficiency: 'L3',
+        },
+        {
+          entry_id: 9,
+          item_type: 'grammar',
+          position: 1,
+          added_at: 'x',
+          korean: '-으면',
+          english: 'if/when',
+        },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+    vocabSvc.removeListEntry.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseRemove = () => {
+            resolve();
+          };
+        }),
+    );
+
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    // Both rows with the colliding entry_id render distinctly — no key
+    // clobbering.
+    await within(dialog).findByText('학교');
+    await within(dialog).findByText('-으면');
+
+    const vocabRemoveBtn = within(dialog).getByRole('button', {
+      name: 'Remove 학교 from the list',
+    });
+    const grammarRemoveBtn = within(dialog).getByRole('button', {
+      name: 'Remove -으면 from the list',
+    });
+    expect(vocabRemoveBtn).not.toBeDisabled();
+    expect(grammarRemoveBtn).not.toBeDisabled();
+
+    // Remove the VOCAB row; its request is left in flight (unresolved). The
+    // row itself vanishes immediately (optimistic removal) — the button
+    // reference above no longer exists in the DOM to assert "disabled" on;
+    // the bug this test pins is about the OTHER (colliding) row's button.
+    await user.click(vocabRemoveBtn);
+
+    await waitFor(() => {
+      expect(within(dialog).queryByText('학교')).not.toBeInTheDocument();
+    });
+    // The sibling grammar row (same entry_id, different item_type) must
+    // stay enabled throughout the vocab row's in-flight removal. Pre-fix,
+    // removingId keyed on bare entry_id, so this button would spuriously
+    // disable too even though it targets an unrelated row.
+    expect(grammarRemoveBtn).not.toBeDisabled();
+    expect(within(dialog).getByText('-으면')).toBeInTheDocument();
+
+    // The correct leg was targeted, not the colliding sibling.
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 9, 'vocab');
+    expect(vocabSvc.removeListEntry).not.toHaveBeenCalledWith(7, 9, 'grammar');
+
+    // Settle the in-flight request — the grammar row survives untouched.
+    await act(async () => {
+      releaseRemove();
+    });
+    expect(within(dialog).getByText('-으면')).toBeInTheDocument();
+    expect(grammarRemoveBtn).not.toBeDisabled();
+  });
+
+  it('F-112: renders the corpus example sentence under a row when the entry has one on file', async () => {
+    vocabSvc.getListDetail.mockResolvedValue({
+      list: SERVER_LIST,
+      entries: [
+        {
+          entry_id: 1,
+          position: 0,
+          added_at: 'x',
+          korean: '영향',
+          english: 'influence',
+          proficiency: 'L3',
+          example_korean: '이것은 큰 영향을 미친다.',
+          example_english: 'This has a big influence.',
+        },
+      ],
+      entry_limit: 100,
+      entry_offset: 0,
+    });
+    const user = userEvent.setup();
+    renderLists();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Open 병원 어휘' }),
+    );
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      await within(dialog).findByText('이것은 큰 영향을 미친다.'),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/This has a big influence\./)).toBeInTheDocument();
   });
 
   it('shows the honest empty invitation when there are no lists yet', async () => {

@@ -198,6 +198,29 @@ describe('GET /vocab/lists/:id', () => {
     const res = await agent.get(`/vocab/lists/${id}`);
     expect(res.status).toBe(404);
   });
+
+  it('F-112: carries the corpus example sentence on each vocab row, null when the entry has none', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const withExample = await seedVocabEntry(pg.pool, {
+      korean: '학교',
+      english: 'school',
+      exampleKorean: '학교에 간다.',
+      exampleEnglish: 'I go to school.',
+    });
+    const withoutExample = await seedVocabEntry(pg.pool, { korean: '가다' });
+    const create = await agent.post('/vocab/lists').send({
+      name_kr: 'L',
+      seed_entry_ids: [withExample, withoutExample],
+    });
+    const id = create.body.list.id;
+    const res = await agent.get(`/vocab/lists/${id}`);
+    expect(res.status).toBe(200);
+    const [e1, e2] = res.body.entries;
+    expect(e1.example_korean).toBe('학교에 간다.');
+    expect(e1.example_english).toBe('I go to school.');
+    expect(e2.example_korean).toBeNull();
+    expect(e2.example_english).toBeNull();
+  });
 });
 
 describe('PATCH /vocab/lists/:id', () => {
@@ -599,6 +622,189 @@ describe('DELETE /vocab/lists/:id/entries/:entryId', () => {
     const id = create.body.list.id;
     const b = await registerUser(t.app, pg.pool);
     const res = await b.agent.delete(`/vocab/lists/${id}/entries/${e1}`);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /vocab/lists/:id/cards/due (F-113)', () => {
+  it('returns a due card for a list entry that already has one', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool, { korean: '학교', english: 'school' });
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1] });
+    const id = create.body.list.id;
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')`,
+      [userId, e1],
+    );
+
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(1);
+    expect(res.body.cards).toHaveLength(1);
+    expect(res.body.cards[0].vocab_korean).toBe('학교');
+    expect(res.body.cards[0].vocab_entry_id).toBe(e1);
+  });
+
+  it('excludes a not-yet-due card for a list entry', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool);
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1] });
+    const id = create.body.list.id;
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() + interval '1 day')`,
+      [userId, e1],
+    );
+
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(200);
+    expect(res.body.cards).toHaveLength(0);
+    expect(res.body.total).toBe(0);
+  });
+
+  it('excludes a due card whose entry is NOT a member of this list', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const inList = await seedVocabEntry(pg.pool, { korean: '학교' });
+    const notInList = await seedVocabEntry(pg.pool, { korean: '가다' });
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [inList] });
+    const id = create.body.list.id;
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')`,
+      [userId, notInList],
+    );
+
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(200);
+    expect(res.body.cards).toHaveLength(0);
+  });
+
+  it('excludes another user\'s due card for the same entry', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool);
+    const create = await a.agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1] });
+    const id = create.body.list.id;
+    const b = await registerUser(t.app, pg.pool);
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, now() - interval '1 minute')`,
+      [b.userId, e1],
+    );
+
+    const res = await a.agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(200);
+    expect(res.body.cards).toHaveLength(0);
+  });
+
+  it('404 on other-user list', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const create = await a.agent.post('/vocab/lists').send({ name_kr: 'A' });
+    const id = create.body.list.id;
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(404);
+  });
+
+  it('404 after the list is soft-deleted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: 'X' });
+    const id = create.body.list.id;
+    await agent.delete(`/vocab/lists/${id}`);
+    const res = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(res.status).toBe(404);
+  });
+
+  it('overflowing id → 400, not a pg 500 (routes sweep #3)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(
+      '/vocab/lists/99999999999999999999/cards/due',
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /vocab/lists/:id/cards/seed (F-113)', () => {
+  it('seeds a recognition card for every vocab entry lacking one → inserted count', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool);
+    const e2 = await seedVocabEntry(pg.pool, { korean: '가다' });
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1, e2] });
+    const id = create.body.list.id;
+
+    const res = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(res.status).toBe(201);
+    expect(res.body.inserted).toBe(2);
+
+    // The seeded cards are immediately due (due_at = now()).
+    const due = await agent.get(`/vocab/lists/${id}/cards/due`);
+    expect(due.body.total).toBe(2);
+  });
+
+  it('is idempotent — re-seeding skips entries that already have a card', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const e1 = await seedVocabEntry(pg.pool);
+    const create = await agent
+      .post('/vocab/lists')
+      .send({ name_kr: 'L', seed_entry_ids: [e1] });
+    const id = create.body.list.id;
+
+    const first = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(first.body.inserted).toBe(1);
+    const second = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(second.status).toBe(201);
+    expect(second.body.inserted).toBe(0);
+
+    const { rows } = await pg.pool.query(
+      `SELECT COUNT(*)::int AS n FROM vocab_cards WHERE vocab_entry_id = $1`,
+      [e1],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('only seeds the VOCAB leg of a mixed list — grammar/hanja memberships are untouched', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const v1 = await seedVocabEntry(pg.pool);
+    const g1 = await seedKgiuEntry(pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: 'M', kind: 'mixed' });
+    const id = create.body.list.id;
+    await agent.post(`/vocab/lists/${id}/entries`).send({
+      items: [
+        { type: 'vocab', id: v1 },
+        { type: 'grammar', id: g1 },
+      ],
+    });
+
+    const res = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(res.status).toBe(201);
+    expect(res.body.inserted).toBe(1);
+  });
+
+  it('404 on other-user list', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const create = await a.agent.post('/vocab/lists').send({ name_kr: 'A' });
+    const id = create.body.list.id;
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.post(`/vocab/lists/${id}/cards/seed`).send({});
+    expect(res.status).toBe(404);
+  });
+
+  it('404 after the list is soft-deleted', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/vocab/lists').send({ name_kr: 'X' });
+    const id = create.body.list.id;
+    await agent.delete(`/vocab/lists/${id}`);
+    const res = await agent.post(`/vocab/lists/${id}/cards/seed`).send({});
     expect(res.status).toBe(404);
   });
 });

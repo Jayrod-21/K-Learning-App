@@ -1,0 +1,32 @@
+-- migrate: non-destructive
+-- =============================================================================
+-- Migration 065 — one recognition card per (user, vocab entry) (DOWN)
+--   Drops the partial unique index only. IF EXISTS so a partial/repeated
+--   rollback is a no-op — mirrors 020's / 050's down migrations exactly.
+--
+-- DOES NOT RESTORE THE SOFT-DELETED DUPLICATES (documented, accepted
+--   imprecision — same posture db/migrations/README.md's data-vs-schema
+--   rollback guidance takes, and the same posture 064's down documents for
+--   its own DELETE): the up-migration's de-dupe step did not tag exactly
+--   which rows IT soft-deleted versus rows that may have already been
+--   soft-deleted for an unrelated reason before 065 ever ran, so there is
+--   no precise "undo" set to restore `deleted_at` on. Rolling back 065 only
+--   removes the forward-looking guarantee (the index); it does not and
+--   cannot un-merge a word's FSRS history back into two cards — that
+--   merge (keep-earliest, soft-delete-the-rest) is a one-way data cleanup,
+--   the same way a de-dupe migration always is. If a genuine restore is
+--   ever needed, it requires reading `card_reviews`/`deleted_at` timestamps
+--   by hand, not an automated down.
+--
+-- This IS still declared non-destructive: DROP INDEX loses no rows (an
+--   index is a derived structure, not data — same rationale as 020's/050's
+--   down migrations, which drop their own partial unique indexes without a
+--   destructive marker).
+--
+-- TRANSACTION OWNERSHIP (ADR-013): no top-level BEGIN/COMMIT — the runner
+--   wraps the down body in a single transaction.
+-- =============================================================================
+
+DROP INDEX IF EXISTS uq_vocab_cards_user_vocab_recognition;
+
+-- End of 065_vocab_recognition_card_uniq.down.sql — runner owns the transaction (ADR-013).

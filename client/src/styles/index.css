@@ -241,6 +241,13 @@
   /* Reusable layout constants — unchanged. */
   --shell-bottomnav-h: 64px;
   --shell-max-width:   480px;
+
+  /* Device-adaptive epic (Phase D0) — tablet/desktop layout tokens.
+   * `--shell-max-width` stays the MOBILE content cap (unchanged, still
+   * what phones render at); these two are additive, read only inside the
+   * `@media (min-width: 768px)` block below (Sidebar section, index.css). */
+  --sidebar-w:               248px;
+  --shell-desktop-max-width: 1160px;
 }
 
 [data-theme="dark"] {
@@ -1091,6 +1098,34 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 50%;
 }
 
+/* App frame (device-adaptive epic, Phase D0) ───────────────────────────
+ * One-time wrapper ABOVE `.km-shell` so `Sidebar` (tablet/desktop, ≥768px)
+ * can sit BESIDE the shell column in a row. `display: contents` makes the
+ * wrapper a no-op in the box tree below that breakpoint — mobile's
+ * rendered layout is byte-identical to before this phase; only ≥768px
+ * turns it into the actual flex row.
+ *
+ * `justify-content` is deliberately `flex-start` (the flex default — kept
+ * explicit here as the row's contract, not left implicit), NOT `center`:
+ * `Sidebar` must be pinned to the true left edge of the viewport. Centering
+ * the row would center the [Sidebar, .km-shell] pair as ONE unit instead,
+ * which pushes Sidebar away from the edge by half of whatever space is left
+ * over once `.km-shell` stops growing at its max-width cap. `.km-shell`'s
+ * own `margin: 0 auto` (below) is what centers ITS content within the
+ * remaining track next to Sidebar — that responsibility must stay on
+ * `.km-shell`, not get pulled back up to this row. */
+.km-appframe {
+  display: contents;
+}
+@media (min-width: 768px) {
+  .km-appframe {
+    display: flex;
+    justify-content: flex-start;
+    min-height: 100dvh;
+    background: var(--ink);
+  }
+}
+
 /* Shell ──────────────────────────────────────────────────────────────── */
 .km-shell {
   position: relative;
@@ -1100,12 +1135,49 @@ h1, h2 { font-family: var(--font-display); }
   max-width: var(--shell-max-width);
   margin: 0 auto;
   background: var(--ink);
-  /* Desktop sees a narrow centered column with hairline edges. */
+  /* Mobile (<768px) sees a narrow centered column with hairline edges —
+   * a phone viewport under 480px removes them below (they'd otherwise sit
+   * flush against the real screen edge). At ≥768px the column instead
+   * sits beside `Sidebar`, which owns its OWN right hairline as the
+   * visual divider — see the `@media (min-width: 768px)` override below. */
   border-left: 1px solid var(--line);
   border-right: 1px solid var(--line);
 }
 @media (max-width: 480px) {
   .km-shell { border-left: none; border-right: none; }
+}
+@media (min-width: 768px) {
+  /* Tablet/desktop: the shell is the flexible content column next to the
+   * Sidebar rail, not a centered "card" — no side hairlines of its own
+   * (Sidebar's `border-right` is the one visible divider), and a wider cap
+   * so pages actually get more room (D1 converts individual page grids to
+   * use it; D0 only raises the ceiling).
+   *
+   * `flex: 1 1 auto` + `min-width: 0` is the actual fix for the BLOCKER
+   * this comment used to hide from: without a flex-grow, a flex item's
+   * `flex-basis: auto` resolves to its own CONTENT size (max-content), not
+   * the row's available space — `.km-shell` was sizing to whatever its
+   * children happened to want, capped above by `max-width` but almost
+   * never reaching it, so the wider desktop cap was a visual no-op. With
+   * `flex-grow: 1`, `.km-shell` is the row's only growable item, so it
+   * claims 100% of the space left over after `Sidebar`'s fixed width, up
+   * to being clamped by its own `max-width` — beyond that cap, the
+   * (already-established) `margin: 0 auto` on the base rule above absorbs
+   * whatever space remains and centers the capped box within the track
+   * next to Sidebar (CSS Flexbox §8.1: positive free space left after
+   * flex-basis resolution is offered to auto margins before
+   * `justify-content` ever sees it). `min-width: 0` overrides the
+   * flex-item default `min-width: auto` (which would otherwise floor the
+   * item at its content's min-content width and could force the row wider
+   * than the viewport / cause horizontal overflow on narrow tablet widths
+   * with wide inline content). */
+  .km-shell {
+    max-width: var(--shell-desktop-max-width);
+    flex: 1 1 auto;
+    min-width: 0;
+    border-left: none;
+    border-right: none;
+  }
 }
 .km-shell__statusbar {
   /* Safe-area allowance ONLY — no decorative floor. A fixed minimum here
@@ -1135,6 +1207,107 @@ h1, h2 { font-family: var(--font-display); }
   position: sticky;
   bottom: 0;
   z-index: 10;
+}
+
+/* Sidebar (device-adaptive epic, Phase D0) ─────────────────────────────
+ * Persistent LEFT rail, mounted instead of `.km-shell__nav`/BottomNav at
+ * ≥768px (React gates the swap — see Shell.tsx; no CSS visibility toggle
+ * needed here since the un-chosen chrome is simply never rendered). Same
+ * "floating glass bar" material as BottomNav (blurred `--ink-1` tint +
+ * the theme shadow) so the two read as one chrome family, just re-oriented
+ * for the wider viewport. `position: sticky` (not `fixed`) keeps it in the
+ * `.km-appframe` flex-row flow while still pinning it through the column's
+ * own scroll. */
+.km-sidebar {
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  width: var(--sidebar-w);
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 12px max(20px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--ink-1) 82%, transparent);
+  border-right: 1px solid var(--line);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+.km-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 16px;
+}
+.km-sidebar__brandtext {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 0.9375rem;
+  color: var(--paper);
+}
+.km-sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 12px;
+}
+.km-sidebar__section + .km-sidebar__section {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.km-sidebar__heading {
+  padding: 4px 8px;
+  margin: 0;
+}
+.km-sidebar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* Every rail entry (routed link or the chat action) shares one look:
+ * full-width row, icon + label, rounded to match the app's pill/card
+ * radius scale. Kept as plain `<button>`s (not `<a>`) — same convention
+ * BottomNav uses — so keyboard reachability + Enter/Space activation come
+ * from the native element for free; `.focusring` gives the visible-focus
+ * ring every other interactive bone uses. */
+.km-sidebar__link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--paper-mute);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+.km-sidebar__link:hover {
+  background: color-mix(in srgb, var(--paper) 8%, transparent);
+  color: var(--paper-dim);
+}
+.km-sidebar__link--active {
+  background: color-mix(in srgb, var(--vermilion) 14%, transparent);
+  color: var(--vermilion-ink);
+}
+[data-theme="dark"] .km-sidebar__link--active {
+  text-shadow: 0 0 8px color-mix(in srgb, var(--vermilion) 45%, transparent);
+}
+.km-sidebar__label {
+  font-family: var(--font-display);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.km-sidebar__chat {
+  margin-top: auto;
 }
 
 /* BottomNav ────────────────────────────────────────────────────────────
@@ -4783,14 +4956,27 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-resources__pick-list > li + li { margin-top: 8px; }
 .km-resources__list-entry {
-  display: grid;
-  grid-template-columns: 1.2fr 2fr auto;
-  gap: 12px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
 }
 .km-resources__list-entry:last-child { border-bottom: none; }
+.km-resources__list-entry-main {
+  display: grid;
+  grid-template-columns: 1.2fr 2fr auto;
+  gap: 12px;
+  align-items: center;
+}
+/* F-112 — the corpus example sentence rendered under a list-entry row. */
+.km-resources__list-entry-example {
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+}
+.km-resources__list-entry-example-en {
+  color: var(--paper-dim);
+}
 
 /* ─── Settings ──────────────────────────────────────────────── */
 .km-settings { padding-bottom: 96px; }
