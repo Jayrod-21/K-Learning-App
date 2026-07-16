@@ -43,6 +43,14 @@
  * 100% of the interaction/a11y, CityCard is nested purely as the visual
  * surface (same split ActivityTile uses on Today, `pages/Today.tsx`).
  *
+ * Device-adaptive epic, Phase D2: at tablet/desktop (`useDeviceClass() !==
+ * 'mobile'`, the same one-render-branch pattern D1 gave Today/Progress), the
+ * four shelves lay out as a two-column card GRID using the width instead of
+ * a single narrow stack — the `--grid` modifier below is the ONLY thing the
+ * branch adds, so the mobile markup (and its class string) stays
+ * byte-identical. The grid geometry/width arithmetic lives with the CSS in
+ * ReviewLibrary.css.
+ *
  * No I/O — pure navigation; no threat model beyond the router's own.
  */
 import type { JSX } from 'react';
@@ -52,6 +60,8 @@ import type { CityCardTone } from '../components/CityCard';
 import { CityCard } from '../components/CityCard';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHubHeader } from '../components/PageHubHeader';
+import { useDeviceClass } from '../hooks/useDeviceClass';
+import { cn } from '../lib/cn';
 import { navItem, type NavItemId } from '../lib/nav';
 import './ReviewLibrary.css';
 
@@ -110,6 +120,13 @@ const SECTIONS: ReadonlyArray<LibrarySection> = [
 
 function ReviewLibrary(): JSX.Element {
   const navigate = useNavigate();
+  // D2 (device-adaptive epic) — the ONE render branch this phase adds to the
+  // Library landing: tablet/desktop tag the section list with a `--grid`
+  // modifier so ReviewLibrary.css can lay the shelves out two-up using the
+  // width. Mobile (`'mobile'`) renders byte-identical to before — `cn`
+  // drops the falsy modifier, so the class string is exactly
+  // 'km-library__list', same as pre-D2.
+  const isGridLayout = useDeviceClass() !== 'mobile';
 
   return (
     <section
@@ -128,7 +145,10 @@ function ReviewLibrary(): JSX.Element {
           the global CSS reset strips list semantics, so the role restores
           them explicitly for AT. */}
       <div
-        className="km-library__list"
+        className={cn(
+          'km-library__list',
+          isGridLayout && 'km-library__list--grid',
+        )}
         role="list"
         aria-label="Library sections"
       >

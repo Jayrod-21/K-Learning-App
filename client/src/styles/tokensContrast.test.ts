@@ -12,7 +12,10 @@
  * Scope: the base light (`:root`) and dark (`[data-theme="dark"]`) blocks.
  * The runtime accent variants (`[data-accent=...]`) re-point --vermilion-*
  * onto translucent softs whose effective color depends on what's underneath,
- * so a flat-ratio check doesn't apply to them.
+ * so a flat-ratio check doesn't apply to them — EXCEPT the opaque
+ * --vermilion / --vermilion-ink twins, which the F-087 accent-as-text and
+ * accent-as-indicator blocks below DO check across every theme x accent
+ * combo (they resolve to flat palette hexes in every preset).
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -238,6 +241,84 @@ describe('km-tone fill contrast (--on-vermilion text on --km-tone fills, WCAG AA
       const fill = resolve(vars, fillToken);
       expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5);
     });
+  }
+});
+
+describe('accent-as-text contrast (--vermilion-ink on surfaces, WCAG AA)', () => {
+  // F-087 — the accent AS TEXT (ghost buttons, active nav labels, link-ish
+  // pills, "due now" counts) never reads --vermilion directly; it reads
+  // --vermilion-ink, which chains onto the palette layer's own `-ink` (Day)
+  // or `-bright` (Night) twin (see the accent-preset doc comment in
+  // index.css). That is REAL text, so it must clear the 4.5:1 AA text bar
+  // on every opaque surface it can sit on, for every theme x accent combo.
+  //
+  // History this guards: the pre-retint light-theme mint accent measured
+  // 2.99:1 (--vermilion vs --ink) and coral 3.01:1 — masked at the time by
+  // redundant cues (underline / --paper promotion). The dan-jade retint
+  // fixed the tokens; these assertions make sure no future accent tweak (or
+  // a component leaning on accent color alone) can silently regress below
+  // AA again. Same cascade-merge pattern as the focus-ring block below.
+  //
+  // The base (:root / dark) blocks' own --vermilion-ink restates the coral
+  // preset's values, so the coral combos also cover the pre-AccentProvider
+  // default state.
+  const accentSel = (a: string): string => String.raw`\[data-accent="${a}"\]`;
+  const darkAccentSel = (a: string): string =>
+    String.raw`\[data-theme="dark"\]${accentSel(a)}`;
+  const ACCENTS = ['coral', 'blue', 'mint'] as const;
+  const SURFACES = ['ink', 'ink-1', 'ink-2', 'ink-3'] as const;
+
+  for (const accent of ACCENTS) {
+    for (const dark of [false, true]) {
+      const label = `${dark ? 'dark' : 'light'} + ${accent}`;
+      const vars = new Map([
+        ...tokenBlock(LIGHT_SEL),
+        ...(dark ? tokenBlock(DARK_SEL) : []),
+        ...tokenBlock(accentSel(accent)),
+        ...(dark ? tokenBlock(darkAccentSel(accent)) : []),
+      ]);
+      for (const surface of SURFACES) {
+        it(`${label}: --vermilion-ink on --${surface} >= 4.5:1`, () => {
+          const text = resolve(vars, 'vermilion-ink');
+          const host = resolve(vars, surface);
+          expect(contrast(text, host)).toBeGreaterThanOrEqual(4.5);
+        });
+      }
+    }
+  }
+});
+
+describe('accent-as-indicator contrast (--vermilion vs surfaces, WCAG 1.4.11)', () => {
+  // F-087 — the raw accent fill is also used as a NON-TEXT selection
+  // indicator (active-tab underlines, selected-state borders, progress
+  // fills, mastery cells). WCAG 1.4.11 requires >= 3:1 against the adjacent
+  // surface for a UI indicator a user must perceive; assert it against
+  // every opaque surface family so an indicator on a card is as safe as one
+  // on the page bg. This is the exact check the old light-mint preset
+  // failed (2.99:1 vs --ink) before its dan-jade retint.
+  const accentSel = (a: string): string => String.raw`\[data-accent="${a}"\]`;
+  const darkAccentSel = (a: string): string =>
+    String.raw`\[data-theme="dark"\]${accentSel(a)}`;
+  const ACCENTS = ['coral', 'blue', 'mint'] as const;
+  const SURFACES = ['ink', 'ink-1', 'ink-2', 'ink-3'] as const;
+
+  for (const accent of ACCENTS) {
+    for (const dark of [false, true]) {
+      const label = `${dark ? 'dark' : 'light'} + ${accent}`;
+      const vars = new Map([
+        ...tokenBlock(LIGHT_SEL),
+        ...(dark ? tokenBlock(DARK_SEL) : []),
+        ...tokenBlock(accentSel(accent)),
+        ...(dark ? tokenBlock(darkAccentSel(accent)) : []),
+      ]);
+      for (const surface of SURFACES) {
+        it(`${label}: --vermilion vs --${surface} >= 3:1`, () => {
+          const fill = resolve(vars, 'vermilion');
+          const host = resolve(vars, surface);
+          expect(contrast(fill, host)).toBeGreaterThanOrEqual(3);
+        });
+      }
+    }
   }
 });
 

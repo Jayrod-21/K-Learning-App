@@ -637,6 +637,11 @@ export interface HanjaCompound {
 /** Hanja character — mirrors `HANJA[]` in data.js. */
 export interface Hanja {
   id: string;
+  /** Numeric `hanja_characters.id` (F-114) — the surrogate PK typed list
+   *  membership (`addHanjaToList`) targets, exposed on the pool DTO so
+   *  features can reference a character by id without the card-seed
+   *  round-trip that used to be the only way to learn it. */
+  characterId: number;
   /** The character itself. */
   ch: string;
   /** Korean reading (sino-Korean). */
@@ -661,6 +666,9 @@ export interface HanjaProgress {
   targetL4: number;
   /** How many of the targetL4 set the user has encountered. */
   encountered: number;
+  /** Server-templated English status line. Still on the wire, but no longer
+   *  rendered — both consumers compose a bilingual line client-side via
+   *  `lib/encounteredBar.hanjaProgressSummary` (F-077). */
   note: string;
 }
 

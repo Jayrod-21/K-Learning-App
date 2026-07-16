@@ -10,6 +10,7 @@ import { mockDelay } from './_delay';
 export const HANJA_FIXTURE: Hanja[] = [
   {
     id: 'h1',
+    characterId: 1,
     ch: '學',
     sound: '학',
     gloss: '배울',
@@ -28,6 +29,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h2',
+    characterId: 2,
     ch: '生',
     sound: '생',
     gloss: '날',
@@ -45,6 +47,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h3',
+    characterId: 3,
     ch: '影',
     sound: '영',
     gloss: '그림자',
@@ -60,6 +63,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h4',
+    characterId: 4,
     ch: '響',
     sound: '향',
     gloss: '울릴',
@@ -75,6 +79,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h5',
+    characterId: 5,
     ch: '環',
     sound: '환',
     gloss: '고리',
@@ -90,6 +95,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h6',
+    characterId: 6,
     ch: '境',
     sound: '경',
     gloss: '지경',
@@ -106,6 +112,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h7',
+    characterId: 7,
     ch: '發',
     sound: '발',
     gloss: '필',
@@ -123,6 +130,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h8',
+    characterId: 8,
     ch: '展',
     sound: '전',
     gloss: '펼',
@@ -139,6 +147,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h9',
+    characterId: 9,
     ch: '結',
     sound: '결',
     gloss: '맺을',
@@ -155,6 +164,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h10',
+    characterId: 10,
     ch: '果',
     sound: '과',
     gloss: '열매',
@@ -171,6 +181,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h11',
+    characterId: 11,
     ch: '人',
     sound: '인',
     gloss: '사람',
@@ -187,6 +198,7 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
   {
     id: 'h12',
+    characterId: 12,
     ch: '國',
     sound: '국',
     gloss: '나라',
@@ -203,10 +215,18 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
 ];
 
+/**
+ * Route-contract invariant (see server/src/routes/hanja.ts GET /progress):
+ * `new` = total − banked − practicing, so banked + practicing + new must
+ * equal the full corpus count — and the client-composed status line (F-077,
+ * `lib/encounteredBar.hanjaProgressSummary`) renders it as the
+ * `encountered/total` denominator. Keep banked + practicing + new >=
+ * encountered or mock mode renders an impossible "142/12 encountered".
+ */
 export const HANJA_PROGRESS_FIXTURE: HanjaProgress = {
   banked: 6,
   practicing: 4,
-  new: 2,
+  new: 990,
   targetL4: 800,
   encountered: 142,
   note: "You've crossed paths with 142 of the ~800 hanja that recur at L4. Six are anchored.",

@@ -157,3 +157,65 @@
     min-width: 0;
   }
 }
+
+/* ── Desktop two-column layout (device-adaptive epic, Phase D2) ─────────
+ * ≥1024px only. Settings.tsx renders the five groups inside ONE
+ * always-mounted `.km-settings__grid` wrapper at EVERY width (fix-pass
+ * SHOULD-FIX 1: the original desktop-only render branch remounted the
+ * groups on a live 1024px crossing — iPad rotation — and wiped
+ * TwoFactorSection's shown-once recovery codes after the old codes were
+ * already invalidated). Below this media query the wrapper carries no
+ * styles at all, so mobile AND tablet render the pre-D2 single-column
+ * stack; the 1024px gate lives HERE alone. Tablet (768–1023px)
+ * deliberately stays single-column — see the layout comment in
+ * Settings.tsx.
+ *
+ * Readability arithmetic (the brief's guard): the content column is
+ * `min(viewport − 248px sidebar rail, 1160px shell cap)` (styles/
+ * index.css) — 776px at a 1024px viewport, 1160px from ≥1408px. Halved,
+ * minus each group's own `margin: 0 18px 16px` (index.css,
+ * `.km-settings__group`) and the tile's 22px+22px content padding
+ * (CollapsibleTile.css), a column's CONTROLS get ~308px at 1024px up to
+ * ~500px at the cap — never narrower than the ~295px a 375px phone (the
+ * layout these forms were designed against) already gives them, and never
+ * wide enough to stretch label/hint prose past a comfortable measure. The
+ * groups' existing margins double up between the columns into a 36px
+ * gutter, so no new gap value is introduced.
+ *
+ * ROW-MAJOR auto-placement (the groups themselves are the grid items):
+ * Profile | 2FA, then Notifications | Appearance, then Beta feedback.
+ * Document order — and therefore tab and screen-reader order — is the
+ * mobile order in every layout, and at desktop the visual reading order
+ * matches it too. Known tradeoff vs. the abandoned per-column wrappers:
+ * expanding a tile grows its whole grid ROW, so its row-mate shows blank
+ * space beneath while the tile is open (`align-items: start` keeps the
+ * mate's card itself at natural height). Bounded by one open tile's
+ * height, and the tiles start collapsed (F-038) — accepted as the price
+ * of the no-remount single tree.
+ *
+ * `minmax(0, 1fr)` columns + `min-width: 0` items (not bare `1fr`):
+ * overrides the implicit min-content track floor so a long unbroken
+ * string inside a tile can never force the row past the viewport (F-129's
+ * convention).
+ *
+ * Orphan guard (same shape as ReviewLibrary.css's): five groups in two
+ * row-major columns leave the LAST group alone in its row — span it
+ * full-width (the exact width every group had at desktop pre-D2) rather
+ * than strand it at half width beside a blank cell. `:last-child:
+ * nth-child(odd)` is precisely "trailing item with no partner", so the
+ * rule turns itself off if a sixth group ever makes the count even. */
+@media (min-width: 1024px) {
+  .km-settings__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .km-settings__grid > .km-settings__group {
+    min-width: 0;
+  }
+
+  .km-settings__grid > .km-settings__group:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}

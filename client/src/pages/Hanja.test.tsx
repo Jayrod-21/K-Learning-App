@@ -40,6 +40,7 @@ const { FIXTURE_CHARS, FIXTURE_PROGRESS } = vi.hoisted(() => {
     FIXTURE_CHARS: [
       {
         id: 'h1',
+        characterId: 1,
         ch: '學',
         sound: '학',
         gloss: '배울',
@@ -52,6 +53,7 @@ const { FIXTURE_CHARS, FIXTURE_PROGRESS } = vi.hoisted(() => {
       },
       {
         id: 'h2',
+        characterId: 2,
         ch: '生',
         sound: '생',
         gloss: '날',
@@ -270,6 +272,7 @@ function renderHanja(path = '/learn/hanja'): void {
  *  real second draw-drill/picker candidate beyond the two-char fixture. */
 const EXTRA_CHAR: HanjaChar = {
   id: 'h3',
+  characterId: 3,
   ch: '水',
   sound: '수',
   gloss: '물',
@@ -310,7 +313,15 @@ describe('Hanja page', () => {
   it('renders the encountered band and the server-featured character by default', () => {
     renderHanja();
     expect(screen.getByRole('heading', { name: /한자/ })).toBeInTheDocument();
-    expect(screen.getByText(/Just getting started/)).toBeInTheDocument();
+    // F-077 — the band's status line is composed client-side from the DTO's
+    // numeric fields (4+2+1 = 7 total); the server's pre-templated English
+    // `note` must NOT reach the DOM (it still says "banked").
+    expect(
+      screen.getByText('4 mastered · 2 practicing · 7/7 encountered'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Just getting started/),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Today's hanja 學/ }),
     ).toBeInTheDocument();
@@ -374,7 +385,7 @@ describe('Hanja page', () => {
       screen.getByRole('button', { name: '전체 · All', pressed: true }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: '담김 · Banked', pressed: false }),
+      screen.getByRole('button', { name: '숙달 · Mastered', pressed: false }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /^學 학/ }),
@@ -384,12 +395,12 @@ describe('Hanja page', () => {
     ).toBeInTheDocument();
   });
 
-  it('filters the grid locally to the Banked chip', async () => {
+  it('filters the grid locally to the Mastered chip', async () => {
     const user = userEvent.setup();
     renderHanja();
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
-    await user.click(screen.getByRole('button', { name: '담김 · Banked' }));
+    await user.click(screen.getByRole('button', { name: '숙달 · Mastered' }));
 
     // 生 is banked → stays; 學 is practicing → filtered out.
     expect(
@@ -420,10 +431,10 @@ describe('Hanja page', () => {
     expect(refetchSpies.progress).not.toHaveBeenCalled();
     expect(refetchSpies.today).not.toHaveBeenCalled();
 
-    // 生 is now practicing → its control flips to "Bank this hanja", proving
+    // 生 is now practicing → its control flips to "Mark as mastered", proving
     // the optimistic state reached the still-open detail sheet.
     expect(
-      await screen.findByRole('button', { name: /Bank this hanja/ }),
+      await screen.findByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
   });
 
@@ -434,7 +445,7 @@ describe('Hanja page', () => {
 
     // Open the featured 學 sheet, then bank it.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     await waitFor(() => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
@@ -447,14 +458,14 @@ describe('Hanja page', () => {
     ).toBeInTheDocument();
   });
 
-  it('banks a new/practicing character via "Bank this hanja"', async () => {
+  it('banks a new/practicing character via "Mark as mastered"', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockResolvedValueOnce({ char: '學', state: 'banked' });
     renderHanja();
 
     // 學 (practicing) is the featured Today card — open it directly.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     await waitFor(() => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
@@ -467,16 +478,16 @@ describe('Hanja page', () => {
     renderHanja();
 
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /couldn.t update that hanja/i,
     );
     // No overlay entry is written on failure, so the control stays on its
-    // pre-write label (學 is still practicing → still offers "Bank this hanja")
+    // pre-write label (學 is still practicing → still offers "Mark as mastered")
     // and no refetch fires either.
     expect(
-      screen.getByRole('button', { name: /Bank this hanja/ }),
+      screen.getByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
     expect(refetchSpies.list).not.toHaveBeenCalled();
     expect(refetchSpies.progress).not.toHaveBeenCalled();
@@ -767,7 +778,7 @@ describe('Hanja page', () => {
     );
     // Still on the sheet — the bank control never left the screen.
     expect(
-      screen.getByRole('button', { name: /Bank this hanja/ }),
+      screen.getByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
   });
 
@@ -1111,6 +1122,10 @@ describe('Hanja page', () => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
     });
     expect(await screen.findByText(/Drill complete/)).toBeInTheDocument();
+    // Recall's graded completion keeps its "Mastered" seal (unlike trace,
+    // which stamps the neutral "Traced" — asserted in the F-115 test below).
+    expect(screen.getByText('Mastered')).toBeInTheDocument();
+    expect(screen.queryByText('Traced')).not.toBeInTheDocument();
   });
 
   it('F-165: a wrong answer re-queues the character WITHOUT writing state', async () => {
@@ -1204,6 +1219,98 @@ describe('Hanja page', () => {
     expect(
       screen.getByRole('progressbar', { name: 'Draw drill progress' }),
     ).toHaveAttribute('aria-valuenow', '2');
+  });
+
+  // ── F-115: guided trace-along mode (NON-graded — no stroke grading) ─
+
+  it('F-115: trace mode shows the faint character guide behind the pad and drops the reveal toggle', async () => {
+    const user = userEvent.setup();
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    // Recall is the default — character hidden, reveal toggle present.
+    expect(screen.queryByText('學')).not.toBeInTheDocument();
+    const traceChip = screen.getByRole('button', { name: /따라 쓰기 · Trace/ });
+    expect(traceChip).toHaveAttribute('aria-pressed', 'false');
+    expect(
+      screen.getByRole('button', { name: /기억해서 쓰기 · Recall/ }),
+    ).toHaveAttribute('aria-pressed', 'true');
+
+    await user.click(traceChip);
+    expect(traceChip).toHaveAttribute('aria-pressed', 'true');
+
+    // The guide glyph renders as aria-hidden decoration in the stage; the
+    // canvas is a later sibling filling the same box, so strokes paint on
+    // top of it (the template sits visually BEHIND the drawing).
+    const guide = screen.getByText('學');
+    expect(guide).toHaveAttribute('aria-hidden', 'true');
+    expect(guide.className).toContain('km-hanja__draw-ghost--guide');
+    expect(guide.nextElementSibling).toBe(
+      screen.getByRole('img', { name: /Tracing pad/ }),
+    );
+
+    // The reveal toggle is redundant (the template is always visible) and
+    // the graded Right/Wrong loop is replaced by a plain Next — non-graded
+    // by product decision.
+    expect(
+      screen.queryByRole('button', { name: /글자 보기 · Show character/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /맞음 · Right/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /틀림 · Wrong/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /다음 글자 · Next character/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('F-115: trace Next advances the queue with NO mastery write, and completion reads "traced"', async () => {
+    const user = userEvent.setup();
+    hookOverrides['hanja:list'] = { data: [...FIXTURE_CHARS, EXTRA_CHAR] };
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    await user.click(screen.getByRole('button', { name: /따라 쓰기 · Trace/ }));
+
+    // Queue seeded [學, 水] (生 is banked and never enters it). The progress
+    // reading counts traced characters, not mastery events.
+    expect(
+      screen.getByRole('progressbar', { name: 'Draw drill progress' }),
+    ).toHaveAttribute('aria-valuetext', '0 of 2 traced');
+
+    await user.click(screen.getByRole('button', { name: /다음 글자 · Next character/ }));
+    expect(await screen.findByText('물')).toBeInTheDocument();
+    expect(
+      screen.getByRole('progressbar', { name: 'Draw drill progress' }),
+    ).toHaveAttribute('aria-valuetext', '1 of 2 traced');
+
+    await user.click(screen.getByRole('button', { name: /다음 글자 · Next character/ }));
+    expect(await screen.findByText(/Drill complete/)).toBeInTheDocument();
+    expect(screen.getByText(/You traced 2 characters\./)).toBeInTheDocument();
+    // The completion seal must not claim mastery — trace is non-graded, so
+    // it stamps the neutral "Traced / 따라 씀" instead of recall's
+    // "Mastered / 마스터".
+    expect(screen.getByText('Traced')).toBeInTheDocument();
+    expect(screen.queryByText('Mastered')).not.toBeInTheDocument();
+    expect(screen.queryByText('마스터')).not.toBeInTheDocument();
+    // Nothing was graded and nothing was written — tracing never feeds the
+    // mastery pool.
+    expect(setHanjaStateMock).not.toHaveBeenCalled();
+  });
+
+  it('F-115: switching back to Recall restores the memory drill untouched', async () => {
+    const user = userEvent.setup();
+    renderHanja(`/learn/hanja?view=draw&char=${encodeURIComponent('學')}`);
+
+    await user.click(screen.getByRole('button', { name: /따라 쓰기 · Trace/ }));
+    expect(screen.getByText('學')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /기억해서 쓰기 · Recall/ }));
+
+    // The guide is gone, the character is hidden again, and the full F-165
+    // loop (reveal toggle + Right/Wrong mastery judgment) is back.
+    expect(screen.queryByText('學')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /글자 보기 · Show character/ }),
+    ).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: /맞음 · Right/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /틀림 · Wrong/ })).toBeInTheDocument();
   });
 
   // ── F-167/F-169: index mastery color + hangul-reading label ─
