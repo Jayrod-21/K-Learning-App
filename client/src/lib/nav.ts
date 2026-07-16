@@ -64,6 +64,7 @@ export type NavItemId =
   | 'reading'
   // Secondary routed screens.
   | 'mistakes'
+  | 'review-exams'
   | 'review-vocab'
   | 'review-dictionary'
   | 'review-grammar'
@@ -211,6 +212,19 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     icon: 'history',
   },
   {
+    // F-103 — the dedicated "Past TOPIK exams" library surface: completed
+    // sittings + scores, re-enter/retake action. Distinct from `mistakes`
+    // (per-item wrong-answer review), which this page links out to.
+    id: 'review-exams',
+    path: '/review/exams',
+    label: 'Past exams',
+    kr: '지난 시험',
+    eyebrow: 'Completed exams · grades',
+    krEyebrow: '완료한 시험 · 성적',
+    headerTitle: '지난 시험 · Past exams',
+    icon: 'spark',
+  },
+  {
     // P1.2 — the old Reference **Vocabulary** tab, now a first-class library
     // page (curated corpus browse + the canonical My-Lists surface).
     id: 'review-vocab',
@@ -326,6 +340,7 @@ export const LEARN_SUBPAGE_IDS = [
 /** Routed screens reachable from tabs/pages, not from the bar. */
 export const SECONDARY_IDS = [
   'mistakes',
+  'review-exams',
   'review-vocab',
   'review-dictionary',
   'review-grammar',

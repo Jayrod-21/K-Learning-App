@@ -2,10 +2,11 @@
  * ReviewLibrary — the /review Library landing (Overhaul P3B, F-042/F-043).
  *
  * Four sections in fixed order — Vocabulary → Grammar → TOPIK exams →
- * Uploads — each navigating to its real route (TOPIK exams lands on
- * Mistakes until a dedicated past-exams surface ships). The P1.2 extras
- * (quick-launch LEARN chips, standalone Mistakes/Dictionary rows, the
- * interim Scan-images row, "coming soon" placeholders) are gone.
+ * Uploads — each navigating to its real route (TOPIK exams lands on the
+ * dedicated past-exams surface, F-103; Mistakes is a link inside THAT page
+ * now, not this shelf's direct target). The P1.2 extras (quick-launch LEARN
+ * chips, standalone Mistakes/Dictionary rows, the interim Scan-images row,
+ * "coming soon" placeholders) are gone.
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -88,7 +89,7 @@ describe('ReviewLibrary (P3B landing)', () => {
   it.each([
     ['Vocabulary', '/review/vocab'],
     ['Grammar', '/review/grammar'],
-    ['TOPIK exams', '/review/mistakes'],
+    ['TOPIK exams', '/review/exams'],
     ['Uploads', '/uploads'],
   ])('navigates the %s section to %s on tap', async (label, target) => {
     const user = userEvent.setup();
@@ -100,17 +101,16 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(screen.getByTestId('location')).toHaveTextContent(target);
   });
 
-  it('the TOPIK exams shelf lands on Mistakes (no dedicated past-exams surface yet)', async () => {
-    // Deliberate stub-wiring (F-042): Mistakes is the one exams surface
-    // that exists; the dedicated past-exams page is ticket F-103. When it
-    // ships, this section's target changes and this test must be updated
-    // with it.
+  it('the TOPIK exams shelf lands on the dedicated past-exams surface (F-103)', async () => {
+    // F-103 shipped: the shelf now targets the real past-exams page instead
+    // of the Mistakes stub-wiring (F-042). Mistakes is reachable as a link
+    // INSIDE that page now (see PastExams.tsx), not this shelf's own target.
     const user = userEvent.setup();
     renderLibrary();
     const row = screen.getByRole('button', { name: /TOPIK exams/ });
     expect(row).toHaveTextContent('기출 시험');
     await user.click(row);
-    expect(screen.getByTestId('location')).toHaveTextContent('/review/mistakes');
+    expect(screen.getByTestId('location')).toHaveTextContent('/review/exams');
   });
 
   it('F-128: reskins with the hub-header recipe — skyline + dancheong rail + a CityCard per row', () => {
@@ -148,7 +148,10 @@ describe('ReviewLibrary (P3B landing)', () => {
     // an sr-only copy carrying the same Korean string.)
     expect(within(list).getAllByText('말뭉치 · 내 단어장')).not.toHaveLength(0);
     expect(within(list).getByText('Corpus · my lists')).toBeInTheDocument();
-    expect(within(list).getAllByText('틀린 문제 · 기출')).not.toHaveLength(0);
+    // F-103: the exams shelf's description now sources from the dedicated
+    // past-exams NavItem's own eyebrow pair, not a hardcoded Mistakes blurb.
+    expect(within(list).getAllByText('완료한 시험 · 성적')).not.toHaveLength(0);
+    expect(within(list).getByText('Completed exams · grades')).toBeInTheDocument();
   });
 
   it('F-042: the removed P1.2 surfaces are gone — chips, extra rows, placeholders', () => {

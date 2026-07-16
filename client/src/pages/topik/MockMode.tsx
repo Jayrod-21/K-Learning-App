@@ -444,6 +444,12 @@ export function MockMode(): JSX.Element {
         {
           section: test.section,
           sourceTest: test.sourceTest,
+          // F-122: `test.topikLevel` is the level the server ALREADY resolved
+          // when this exam was served (`POST /topik/mock`'s response) — never
+          // a value invented client-side. Threading it through lets the
+          // server persist the exact paper this attempt belongs to instead
+          // of re-guessing it later (migration 066).
+          topikLevel: test.topikLevel,
           currentIdx: state.currentIdx,
           picks,
           remainingMs: state.remainingSec * 1000,
@@ -896,6 +902,17 @@ function sectionNames(section: MockSection): { en: string; kr: string } {
 }
 
 /**
+ * F-123 — a stable per-paper identity key: TOPIK I and TOPIK II sittings can
+ * share the SAME `test_number` (D-1, migration 029), so `test_number` alone
+ * is not unique within a section — a completed TOPIK II paper would
+ * previously mark the same-numbered TOPIK I paper (and vice-versa) as done
+ * too. Keying by `(topikLevel, sourceTest)` instead disambiguates the two.
+ */
+function examKey(topikLevel: TopikLevel, sourceTest: number): string {
+  return `${topikLevel}|${String(sourceTest)}`;
+}
+
+/**
  * F-079 — the exam chooser for one section.
  *
  * Wired: the per-paper list is `GET /topik/tests` (F-118), scoped to this
@@ -906,7 +923,19 @@ function sectionNames(section: MockSection): { en: string; kr: string } {
  * file's own resume-banner fetch ("a missing/failed fetch simply means no
  * banner — it never blocks the screen"). NO exam is ever shown as
  * "completed" from fabricated data — the checkmark only appears when F-104
- * genuinely reports a completed attempt for that (section, test_number).
+ * genuinely reports a completed attempt for that EXACT (section,
+ * test_number, topik_level) paper.
+ *
+ * F-123 fix: the done-set used to key purely on `sourceTest` (test_number),
+ * so — because TOPIK I and TOPIK II sittings can share a `test_number` (D-1)
+ * — completing one level's paper spuriously checkmarked the OTHER level's
+ * same-numbered paper too. The set now keys on `examKey(topikLevel,
+ * sourceTest)` (see above), matching the same composite identity F-118's own
+ * list rows and F-104's history rows are keyed by. An attempt whose
+ * `topikLevel` is `null` (a pre-F-122 completed row with no persisted level
+ * — see migration 066) is skipped rather than guessed at: a false checkmark
+ * is worse than a missing one, and the guess would just resurrect the exact
+ * cross-level bug this fix closes.
  */
 function ExamChooser({
   section,
@@ -927,8 +956,9 @@ function ExamChooser({
   const [testsErrorMsg, setTestsErrorMsg] = useState<string | null>(null);
   const [testsTick, setTestsTick] = useState(0);
   // Best-effort annotation set — see the doc above. Starts empty (no
-  // checkmarks) and stays that way if the history fetch fails.
-  const [doneTestNumbers, setDoneTestNumbers] = useState<ReadonlySet<number>>(
+  // checkmarks) and stays that way if the history fetch fails. Keyed by
+  // `examKey(topikLevel, sourceTest)` (F-123), not sourceTest alone.
+  const [doneExamKeys, setDoneExamKeys] = useState<ReadonlySet<string>>(
     new Set(),
   );
 
@@ -950,11 +980,16 @@ function ExamChooser({
     fetchAttemptHistory({ limit: 100 }, ctrl.signal)
       .then((res) => {
         if (ctrl.signal.aborted) return;
-        const done = new Set<number>();
+        const done = new Set<string>();
         for (const a of res.attempts) {
-          if (a.section === names.kr) done.add(a.sourceTest);
+          // F-123: skip a null topikLevel (a pre-F-122 completed row with no
+          // persisted level, migration 066) rather than guessing — a false
+          // checkmark is worse than a missing one.
+          if (a.section === names.kr && a.topikLevel !== null) {
+            done.add(examKey(a.topikLevel, a.sourceTest));
+          }
         }
-        setDoneTestNumbers(done);
+        setDoneExamKeys(done);
       })
       .catch(() => {
         /* best-effort annotation only — no checkmarks, never an error UI */
@@ -1054,7 +1089,7 @@ function ExamChooser({
       {testsNet === 'ready' && tests.length > 0 ? (
         <ul className="km-mock__exam-list">
           {tests.map((test) => {
-            const done = doneTestNumbers.has(test.testNumber);
+            const done = doneExamKeys.has(examKey(test.topikLevel, test.testNumber));
             return (
               <li key={`${test.topikLevel}-${String(test.testNumber)}`}>
                 {/* F-183 device #1/#2 — each past paper is its own CityCard

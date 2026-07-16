@@ -538,10 +538,15 @@ describe('MockMode (Mock test)', () => {
     });
     const lastSave = svc.saveAttempt.mock.calls.at(-1)?.[0] as {
       sourceTest: number;
+      topikLevel?: string;
       picks: Record<string, string>;
     };
     expect(lastSave.sourceTest).toBe(7);
     expect(lastSave.picks).toMatchObject({ '1001': 'b', '1002': 'a' });
+    // F-122: the resolved level (from POST /topik/mock's own response, TEST
+    // fixture above) rides along on every progress save so the server can
+    // persist the EXACT paper this attempt belongs to.
+    expect(lastSave.topikLevel).toBe('TOPIK II');
 
     // Submit → confirm.
     await user.click(screen.getByRole('button', { name: /Submit test/i }));
@@ -1237,6 +1242,90 @@ describe('MockMode (Mock test)', () => {
         91,
         'TOPIK II',
       );
+    });
+
+    // F-123: before the fix, the done-set was keyed on sourceTest ALONE, so
+    // a completed TOPIK II paper's checkmark bled onto the same-numbered
+    // TOPIK I row (and vice-versa) — the exact D-1 "one test_number, two
+    // papers" collision the level-threading tests above exist for, but for
+    // the CHECKMARK annotation rather than which paper gets served.
+    it('F-123: a completed TOPIK II attempt checkmarks ONLY the TOPIK II row, never the same-numbered TOPIK I row', async () => {
+      svc.fetchAvailableTests.mockResolvedValue({
+        tests: [
+          { testNumber: 91, topikLevel: 'TOPIK I', section: '읽기', itemCount: 50 },
+          { testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 },
+        ],
+        total: 2,
+      });
+      svc.fetchAttemptHistory.mockResolvedValue({
+        attempts: [
+          {
+            attemptId: '1',
+            section: '읽기',
+            sourceTest: 91,
+            topikLevel: 'TOPIK II',
+            correct: 40,
+            totalItems: 50,
+            completedAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+      });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      const topikII = await screen.findByRole('button', {
+        name: /TOPIK II test 91, 50 items, completed/i,
+      });
+      expect(topikII).toBeInTheDocument();
+      // The TOPIK I row shares the SAME test_number but must NOT inherit the
+      // checkmark — exact-string name so "TOPIK I" can't substring-match
+      // inside "TOPIK II"'s accessible name.
+      expect(
+        screen.getByRole('button', { name: 'TOPIK I test 91, 50 items' }),
+      ).not.toHaveAccessibleName(/completed/i);
+    });
+
+    // F-122: a completed attempt with NO persisted topikLevel (a pre-066
+    // legacy row) must never checkmark EITHER same-numbered row by guessing
+    // — a false checkmark is worse than a missing one.
+    it('F-123: a legacy attempt with topikLevel null checkmarks neither same-numbered row', async () => {
+      svc.fetchAvailableTests.mockResolvedValue({
+        tests: [
+          { testNumber: 91, topikLevel: 'TOPIK I', section: '읽기', itemCount: 50 },
+          { testNumber: 91, topikLevel: 'TOPIK II', section: '읽기', itemCount: 50 },
+        ],
+        total: 2,
+      });
+      svc.fetchAttemptHistory.mockResolvedValue({
+        attempts: [
+          {
+            attemptId: '1',
+            section: '읽기',
+            sourceTest: 91,
+            topikLevel: null,
+            correct: 40,
+            totalItems: 50,
+            completedAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+      });
+      const user = userEvent.setup();
+      render(<MockMode />, { wrapper: MemoryRouter });
+      await user.click(
+        screen.getByRole('button', { name: /Reading mock exams/i }),
+      );
+
+      expect(
+        await screen.findByRole('button', { name: 'TOPIK I test 91, 50 items' }),
+      ).not.toHaveAccessibleName(/completed/i);
+      expect(
+        screen.getByRole('button', { name: 'TOPIK II test 91, 50 items' }),
+      ).not.toHaveAccessibleName(/completed/i);
     });
 
     it("the exam chooser's checkmarks degrade silently when attempt history fails (the list itself still renders)", async () => {

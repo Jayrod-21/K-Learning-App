@@ -5,9 +5,9 @@
  *
  *   - Vocabulary   → /review/vocab     (corpus browse + My Lists)
  *   - Grammar      → /review/grammar   (single KGIU browse, D3)
- *   - TOPIK exams  → /review/mistakes  (the exams shelf: Mistakes today;
- *                     the dedicated past-exams surface — ticket F-103 —
- *                     takes over this row when it lands)
+ *   - TOPIK exams  → /review/exams     (F-103: dedicated past-exams surface —
+ *                     completed sittings + scores + re-enter; Mistakes is a
+ *                     link inside it, not the shelf's direct target anymore)
  *   - Uploads      → /uploads          (book PDFs, U1b)
  *
  * F-043 renamed the page (and the bottom-nav tab, via lib/nav.ts) from
@@ -92,18 +92,17 @@ const SECTIONS: ReadonlyArray<LibrarySection> = [
   sectionFor('review-vocab', 'accent'),
   sectionFor('review-grammar', 'blue'),
   {
-    // The exams shelf (F-042): Mistakes and past TOPIK exams share this
-    // section. No dedicated past-exams surface is wired yet, so the row
-    // lands on Mistakes — the one exams surface that exists today. When
-    // the past-exams page ships (ticket F-103) it takes over `to` (and
-    // Mistakes becomes a link inside it).
+    // The exams shelf (F-042) now lands on the dedicated past-exams surface
+    // (F-103) — completed sittings + scores, re-enter/retake action.
+    // Mistakes (per-item wrong-answer review) is a link INSIDE that page,
+    // not this shelf's direct target anymore.
     key: 'exams',
     label: 'TOPIK exams',
     kr: '기출 시험',
-    desc: 'Mistakes · past exams',
-    krDesc: '틀린 문제 · 기출',
+    desc: navItem('review-exams').eyebrow,
+    krDesc: navItem('review-exams').krEyebrow,
     icon: 'spark',
-    to: navItem('mistakes').path,
+    to: navItem('review-exams').path,
     tone: 'mint',
   },
   sectionFor('uploads', 'plain'),

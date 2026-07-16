@@ -428,6 +428,54 @@ describe('GET /topik/mistakes — recent wrong answers for review (F-021)', () =
     const resWide = await a.agent.get('/topik/mistakes?days=90');
     expect(resWide.body.mistakes.length).toBe(2);
   });
+
+  // F-105: attempt_id in the DTO, so the client can link a mistake back to
+  // its exam attempt.
+  it('F-105: a mock-mode miss carries its attemptId; a study-mode miss carries null', async () => {
+    const studyId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 5000,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2, // correct 'b'
+    });
+    const mockId = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 5001,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 2, // correct 'b'
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+
+    // Study-mode miss — no attempt.
+    await agent.post(`/topik/${studyId}/answer`).send({ picked: 'a', mode: 'study' });
+
+    // Mock-mode miss — grouped under a completed attempt.
+    const submit = await agent.post('/topik/mock/submit').send({
+      sourceTest: 5001,
+      section: 'reading',
+      answers: [{ itemId: mockId, picked: 'a' }], // wrong — 'b' is correct
+    });
+    expect(submit.status).toBe(200);
+    const { rows: attemptRows } = await pg.pool.query<{ id: string }>(
+      `SELECT id FROM topik_attempts WHERE user_id = $1 AND status = 'completed'`,
+      [userId],
+    );
+    expect(attemptRows).toHaveLength(1);
+    const attemptId = attemptRows[0]!.id;
+
+    const res = await agent.get('/topik/mistakes?days=90');
+    expect(res.status).toBe(200);
+    expect(res.body.mistakes.length).toBe(2);
+    const byMode = Object.fromEntries(
+      (res.body.mistakes as { mode: string; attemptId: string | null }[]).map(
+        (m) => [m.mode, m.attemptId],
+      ),
+    );
+    expect(byMode.study).toBeNull();
+    expect(byMode.mock).toBe(attemptId);
+  });
 });
 
 describe('GET /topik/series — per-skill daily accuracy time-series (F-017)', () => {
@@ -809,6 +857,129 @@ describe('GET /topik/attempt — F-173 resumed-exam totalItems/topikLevel', () =
     const res = await agent.get('/topik/attempt');
     expect(res.status).toBe(200);
     expect(res.body.attempt.totalItems).toBe(50); // OFFICIAL_MOCK_SECTION_SIZE
+  });
+});
+
+describe('F-122 (migration 066) — persisted topik_level on topik_attempts', () => {
+  it('PUT with an explicit topikLevel persists it; GET reports it WITHOUT re-deriving via resolveServedTotal', async () => {
+    // Two papers sharing test_number 4100 (TOPIK I + TOPIK II) — the D-1
+    // "one test_number, two papers" collision. Without a persisted level,
+    // resolveServedTotal's tie-break would report TOPIK II regardless of
+    // which paper the client actually saved progress against.
+    await seedTopikItemAtLevel('TOPIK I', {
+      section: 'reading',
+      testNumber: 4100,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    await seedTopikItemAtLevel('TOPIK II', {
+      section: 'reading',
+      testNumber: 4100,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4100,
+      topikLevel: 'TOPIK I',
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 1000,
+    });
+
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt).toMatchObject({
+      sourceTest: 4100,
+      topikLevel: 'TOPIK I', // the persisted fact, never the TOPIK II tie-break guess
+      totalItems: 1,
+    });
+  });
+
+  it('PUT with no topikLevel (pre-F-122 client) leaves it NULL — GET falls back to the legacy guess, unchanged from before F-122', async () => {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4101,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4101,
+      currentIdx: 0,
+      picks: { [String(id)]: 'a' },
+      remainingMs: 1000,
+    });
+    const { rows } = await pg.pool.query<{ topik_level: string | null }>(
+      `SELECT topik_level FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toEqual([{ topik_level: null }]);
+
+    const res = await agent.get('/topik/attempt');
+    expect(res.body.attempt).toMatchObject({
+      sourceTest: 4101,
+      topikLevel: 'TOPIK II', // seedTopikItem's default level — the legacy re-derivation
+    });
+  });
+
+  it('/mock/submit ALWAYS stamps the authoritative resolved level, overwriting whatever the in-progress save had (or omitted)', async () => {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4102,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Progress save omits topikLevel entirely (an old-client shape).
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4102,
+      currentIdx: 0,
+      picks: { [String(id)]: 'a' },
+      remainingMs: 1000,
+    });
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 4102,
+      section: 'reading',
+      answers: [{ itemId: id, picked: 'a' }],
+    });
+
+    const { rows } = await pg.pool.query<{ topik_level: string | null; status: string }>(
+      `SELECT topik_level, status FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toEqual([{ topik_level: 'TOPIK II', status: 'completed' }]);
+  });
+
+  it('/mock/submit stamps the level even with NO prior progress save (the direct-INSERT branch)', async () => {
+    const id = await seedTopikItem(pg.pool, {
+      section: 'reading',
+      testNumber: 4103,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Straight to submit — no PUT /topik/attempt ever fired, so the
+    // completed row is INSERTed fresh inside /mock/submit.
+    await agent.post('/topik/mock/submit').send({
+      sourceTest: 4103,
+      section: 'reading',
+      answers: [{ itemId: id, picked: 'a' }],
+    });
+
+    const { rows } = await pg.pool.query<{ topik_level: string | null }>(
+      `SELECT topik_level FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toEqual([{ topik_level: 'TOPIK II' }]);
   });
 });
 
@@ -2361,15 +2532,19 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
     },
   );
 
-  // Fix-pass S-2 (REVIEW_topik.md): `resolveServedTotal`'s null-fallback
-  // branch (the backing corpus paper is gone by the time history is read)
-  // had zero test coverage. Seed a completed attempt, then delete the
-  // backing topik_items so `resolveMockTest` — and therefore
-  // `resolveServedTotal` — can no longer resolve a paper, and assert the
-  // honest fallback: `topikLevel: null` (never a guessed level) and
-  // `totalItems` equal to the attempt's own answered count (a real lower
-  // bound, never a fabricated total above what is actually known).
-  it('resolveServedTotal null-fallback: corpus rows removed post-completion → topikLevel null, totalItems falls back to the answered count', async () => {
+  // F-122 update: before migration 066, a completed attempt carried NO
+  // persisted topik_level, so this scenario (the backing corpus edited away
+  // post-completion) exercised `resolveServedTotal`'s null-fallback and
+  // reported `topikLevel: null`. Since 066, `/mock/submit` stamps the REAL
+  // resolved level on the attempt AT GRADING TIME — before this test's later
+  // corpus edit — so the level is a verified fact, not a guess, and SURVIVES
+  // the edit (reported as 'TOPIK II', never null). `totalItems` still falls
+  // back to the answered count: the live item-count lookup is re-run against
+  // the (now-edited) corpus every time and legitimately finds 0 answerable
+  // items for that known level, so `Math.max` with the real answered count
+  // is what keeps this a non-fabricated lower bound rather than reporting an
+  // impossible 0-item completed exam.
+  it('F-122: a persisted topik_level survives a later corpus edit; totalItems still falls back to the answered count', async () => {
     const [id1] = await seedThreeItemReadingMockAt(2050);
     const { agent } = await registerUser(t.app, pg.pool);
 
@@ -2381,10 +2556,8 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
     expect(submit.status).toBe(200);
 
     // Corpus edit: the backing items no longer satisfy ANSWERABLE_ITEM_SQL by
-    // the time GET /topik/attempts runs, so resolveMockTest (and
-    // resolveServedTotal) can no longer find a matching paper — the same
-    // "resolveMockTest -> null" outcome the doc calls out for "the items
-    // were since removed". Nulling `answer` (rather than DELETE) avoids
+    // the time GET /topik/attempts runs — AFTER the level was already
+    // stamped at submit time. Nulling `answer` (rather than DELETE) avoids
     // tripping fk_topik_responses_topik_item (topik_responses still
     // references these item ids for its own correct/answered aggregates,
     // which must stay intact and untouched by this edit).
@@ -2400,13 +2573,52 @@ describe('GET /topik/attempts — completed-attempt history (F-104 / A1)', () =>
     expect(res.body.attempts.length).toBe(1);
     expect(res.body.attempts[0]).toMatchObject({
       sourceTest: 2050,
-      topikLevel: null,
+      topikLevel: 'TOPIK II', // a verified fact, stamped before the edit — never re-guessed to null
       correct: 1,
       // Only 1 answer was submitted (the other 2 items were skipped and
       // never logged to topik_responses — "only ANSWERED items are
       // logged"), so the honest fallback total is 1, never the original
-      // 3-item exam size the (now-deleted) corpus can no longer confirm.
+      // 3-item exam size the (now-edited) corpus can no longer confirm.
       totalItems: 1,
+    });
+  });
+
+  // Coverage for the GENUINE legacy fallback path: a pre-066 completed
+  // attempt with NO persisted topik_level at all (simulated via a direct
+  // row insert, since every route-created attempt from here on always gets
+  // one). This is the scenario `resolveServedTotal`'s null-fallback exists
+  // for today — the case above no longer exercises it.
+  it('a pre-066 attempt with no persisted topik_level falls back to resolveServedTotal\'s guess (topikLevel + totalItems both re-derived)', async () => {
+    const [id1] = await seedThreeItemReadingMockAt(2051);
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Simulate a legacy (pre-066) completed row: no topik_level, inserted
+    // directly rather than through the route (every route path now stamps
+    // one). attempt_id stamps the response so /topik/attempts' correct/
+    // answered aggregate is non-zero, matching a real completed sitting.
+    const { rows } = await pg.pool.query<{ id: string }>(
+      `INSERT INTO topik_attempts
+         (user_id, section, source_test, current_idx, picks, remaining_ms, status, topik_level)
+       VALUES ($1, 'reading'::topik_section, 2051, 0, '{}'::jsonb, 0, 'completed', NULL)
+       RETURNING id`,
+      [userId],
+    );
+    const attemptId = rows[0]!.id;
+    await pg.pool.query(
+      `INSERT INTO topik_responses (user_id, topik_item_id, picked, is_correct, mode, attempt_id)
+       VALUES ($1, $2, 'b', true, 'mock', $3)`,
+      [userId, id1, attemptId],
+    );
+
+    const res = await agent.get('/topik/attempts');
+    expect(res.status).toBe(200);
+    const entry = (res.body.attempts as { sourceTest: number }[]).find(
+      (a) => a.sourceTest === 2051,
+    );
+    expect(entry).toMatchObject({
+      sourceTest: 2051,
+      topikLevel: 'TOPIK II', // re-derived by resolveServedTotal's tie-break guess
+      correct: 1,
+      totalItems: 3, // the 3-item mock's served total, re-resolved from the intact corpus
     });
   });
 });
