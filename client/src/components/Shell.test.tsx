@@ -15,6 +15,17 @@
  * block below — it's rendered as a Shell-level sibling of ChatFab/Outlet,
  * same as ChatFab itself, so it's exercised the same way: render the real
  * Shell + a routed probe, no mocks.
+ *
+ * Device-adaptive epic (Phase D0) coupling: `Shell` now calls
+ * `useDeviceClass()` to decide BottomNav-vs-Sidebar, so every `hexButton()`
+ * assertion below implicitly depends on `src/test/setup.ts`'s global
+ * `matchMedia` default (`matches: false`) resolving `deviceClass` to
+ * `'mobile'` — before D0 this file had no dependency on `matchMedia` at
+ * all. `mockReducedMotion()` (below) overrides `matchMedia` for its own
+ * tests but still returns `matches: false` for the two `(min-width: …)`
+ * device-class queries (only `prefers-reduced-motion` matches), so it stays
+ * 'mobile' too. See `Shell.deviceAdaptive.test.tsx` for the Sidebar-chrome
+ * coverage this file intentionally does not duplicate.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
