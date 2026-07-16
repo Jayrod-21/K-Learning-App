@@ -2656,8 +2656,11 @@ function DrawView({
     );
   }
   if (queue.length === 0) {
-    // F-165/F-170 — session complete: every character in the queue was
-    // marked right at least once (mastery band advanced or reconfirmed).
+    // F-165/F-170 — session complete. In recall mode every character was
+    // marked right at least once (mastery band advanced or reconfirmed);
+    // in trace mode (F-115) nothing was graded, so the seal must not claim
+    // "Mastered" — it stamps the neutral fact ("Traced") instead, matching
+    // the non-graded completion line below.
     return (
       <Card className="km-hanja__empty km-giwa km-hangul-watermark" data-glyph="한">
         <span className="km-hanja__complete-seal">
@@ -2665,7 +2668,13 @@ function DrawView({
             milestone
             size="md"
             tone="accent"
-            label={<Bilingual en="Mastered" kr="마스터" compact />}
+            label={
+              mode === 'trace' ? (
+                <Bilingual en="Traced" kr="따라 씀" compact />
+              ) : (
+                <Bilingual en="Mastered" kr="마스터" compact />
+              )
+            }
             className="km-najeon"
           />
         </span>
@@ -2757,8 +2766,11 @@ function DrawView({
         </p>
       </CityCard>
 
-      {/* F-115 — Recall vs Trace. Same chip pattern as the index filter
-          toolbar: plain buttons, toggled state on aria-pressed. */}
+      {/* F-115 — Recall vs Trace. Same chip VISUALS as the index filter
+          toolbar (plain buttons, toggled state on aria-pressed), but
+          role="group" rather than role="toolbar" — toolbar conventionally
+          implies roving-tabindex arrow-key nav, which these two chips
+          don't (and needn't) implement. */}
       <div className="km-hanja__draw-mode" role="group" aria-label="Drill mode">
         {DRAW_MODE_OPTIONS.map((m) => {
           const active = mode === m.id;
@@ -2904,7 +2916,11 @@ function DrawView({
           </p>
         </>
       )}
-      {stateError !== null ? (
+      {/* A state-write error can only come from the recall loop (trace never
+          writes), so don't let a stale recall failure linger into trace mode;
+          the state itself is kept, so switching back to recall — where the
+          retry is actionable — shows it again. */}
+      {mode === 'recall' && stateError !== null ? (
         <p role="alert" className="km-hanja__study-error">
           {stateError}
         </p>

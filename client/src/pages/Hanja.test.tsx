@@ -1114,6 +1114,10 @@ describe('Hanja page', () => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
     });
     expect(await screen.findByText(/Drill complete/)).toBeInTheDocument();
+    // Recall's graded completion keeps its "Mastered" seal (unlike trace,
+    // which stamps the neutral "Traced" — asserted in the F-115 test below).
+    expect(screen.getByText('Mastered')).toBeInTheDocument();
+    expect(screen.queryByText('Traced')).not.toBeInTheDocument();
   });
 
   it('F-165: a wrong answer re-queues the character WITHOUT writing state', async () => {
@@ -1271,6 +1275,12 @@ describe('Hanja page', () => {
     await user.click(screen.getByRole('button', { name: /다음 글자 · Next character/ }));
     expect(await screen.findByText(/Drill complete/)).toBeInTheDocument();
     expect(screen.getByText(/You traced 2 characters\./)).toBeInTheDocument();
+    // The completion seal must not claim mastery — trace is non-graded, so
+    // it stamps the neutral "Traced / 따라 씀" instead of recall's
+    // "Mastered / 마스터".
+    expect(screen.getByText('Traced')).toBeInTheDocument();
+    expect(screen.queryByText('Mastered')).not.toBeInTheDocument();
+    expect(screen.queryByText('마스터')).not.toBeInTheDocument();
     // Nothing was graded and nothing was written — tracing never feeds the
     // mastery pool.
     expect(setHanjaStateMock).not.toHaveBeenCalled();
