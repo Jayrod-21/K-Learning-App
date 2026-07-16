@@ -59,7 +59,7 @@
  *     advisory xact lock (so concurrent triggers on DIFFERENT uploads of one
  *     user can't both read a pre-spend total), and counts failed runs (cost
  *     control, not usage metering); (3) the cap's ledger rows SURVIVE upload
- *     deletion (fk SET NULL, migration 068) — deleting and re-uploading a
+ *     deletion (fk SET NULL, migration 069) — deleting and re-uploading a
  *     book never refunds budget; (4) the one-live-run-per-upload unique claim
  *     stops concurrent double-spends, and a crashed run is reaped as stale at
  *     the next claim (STALE_RUN_MINUTES) instead of 409-bricking the upload;
@@ -136,7 +136,7 @@ export type ExtractionStatus = 'pending' | 'running' | 'done' | 'failed';
 export interface ExtractionRunDTO {
   readonly id: number;
   /** null = the upload was hard-deleted after this run (the row survives as
-   *  the user's daily Vision-page cost record — fk SET NULL, migration 068).
+   *  the user's daily Vision-page cost record — fk SET NULL, migration 069).
    *  Unreachable via GET /uploads/:id/extract (the parent 404s first); kept
    *  honest in the type because the settle path can observe it. */
   readonly upload_id: number | null;
@@ -350,7 +350,7 @@ export interface PersistCounts {
  * Column choices (both mirror POST /vocab/mine's user_mined insert, the
  * established route-populated pattern — see routes/vocab.ts):
  *   - corpus 'user_mined' + book_level 'beginner' sentinel + proficiency
- *     'L3' sentinel (migration 022's convention; 068 extends it to kgiu).
+ *     'L3' sentinel (migration 022's convention; 069 extends it to kgiu).
  *   - source_pages = the real page numbers the word appeared on (INTEGER[]),
  *     genuine provenance the viewer can deep-link.
  *   - kgiu rows: pattern = the headword (satisfies the pattern-required
@@ -559,7 +559,7 @@ export async function runExtraction(
     ]);
     // Sums pages_requested over ALL of today's runs (failed included — cost
     // control; a failed run spent money too), by user_id alone — rows whose
-    // upload was deleted (upload_id SET NULL, migration 068) still count, so
+    // upload was deleted (upload_id SET NULL, migration 069) still count, so
     // extract→delete→re-upload can never reset the budget.
     const cap = await client.query<{ n: string }>(
       `SELECT COALESCE(SUM(pages_requested), 0)::text AS n
@@ -710,7 +710,7 @@ export async function runExtraction(
       );
       const row = upd.rows[0];
       if (!row) {
-        // The run row is gone or no longer 'running'. Since migration 068's
+        // The run row is gone or no longer 'running'. Since migration 069's
         // fk is SET NULL (the run row survives an upload deletion as the cap
         // ledger), the row only vanishes when the USER was deleted mid-OCR
         // (user fk still CASCADEs) — or a reaper settled it as stale. Abort

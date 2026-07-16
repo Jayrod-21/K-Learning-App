@@ -65,7 +65,7 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
 
 # The migration immediately before 069. `down --target PRE_069` rolls back
 # ONLY 069 (its DROP TABLE down is what requires --allow-destructive).
-PRE_069 = "067"
+PRE_069 = "068"
 
 # A syntactically valid argon2id-shaped hash satisfying
 # ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).

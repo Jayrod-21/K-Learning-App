@@ -19,7 +19,7 @@
  *   - idempotent re-trigger: same range twice → zero duplicate rows
  *   - daily Vision-page cap → 429 BEFORE any proxy call, nothing claimed;
  *     scoped per USER (not per upload); the ledger SURVIVES upload deletion
- *     (fk SET NULL, migration 068 — extract→delete→re-upload never refunds
+ *     (fk SET NULL, migration 069 — extract→delete→re-upload never refunds
  *     budget, fixpass b8 BLOCKER-1)
  *   - one-live-run-per-upload claim → 409; a crashed (stale) run is reaped
  *     as failed at the next claim instead of 409-bricking the upload (SF-2)
@@ -411,7 +411,7 @@ describe('daily Vision-page cap (cost control)', () => {
     const del = await agent.delete(`/uploads/${uploadA}`);
     expect(del.status).toBe(204);
 
-    // The ledger row SURVIVED the deletion (fk SET NULL, migration 068) —
+    // The ledger row SURVIVED the deletion (fk SET NULL, migration 069) —
     // under the old ON DELETE CASCADE it would be gone and the cap reset.
     const { rows: ledger } = await pg.pool.query<{ upload_id: string | null; n: number }>(
       `SELECT upload_id, pages_requested AS n FROM upload_extractions WHERE user_id = $1`,

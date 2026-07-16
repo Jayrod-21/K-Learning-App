@@ -607,7 +607,7 @@ router.delete(
       // content U2 has tagged via source_upload_id is un-tagged, not deleted
       // (ON DELETE SET NULL, migration 040), and the upload's extraction-run
       // rows likewise survive with upload_id nulled (ON DELETE SET NULL,
-      // migration 068): they are the daily Vision-page cost ledger, and
+      // migration 069): they are the daily Vision-page cost ledger, and
       // deleting a book must never refund its budget (fixpass b8 BLOCKER-1).
       const blobRefs = await withTransaction(async (client) => {
         const owner = await client.query<{ id: string }>(
