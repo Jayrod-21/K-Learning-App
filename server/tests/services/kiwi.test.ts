@@ -90,3 +90,43 @@ describe('lemmatize — upstream error labeling', () => {
     expect(requestCount).toBe(1);
   });
 });
+
+describe('lemmatize — F-195: no raw upstream detail on thrown errors', () => {
+  // The generic errorHandler forwards `AppError.details` to the client
+  // verbatim, so ANY upstream-derived text attached here becomes a wire leak.
+  // Every error thrown by kiwi.ts must carry NO details; the raw body/cause
+  // is server-side log-only.
+
+  it('a 5xx error carries no details and none of the upstream body text', async () => {
+    responses = [{ status: 500, body: '{"error":"secret upstream detail"}' }];
+    const err = await lemmatize({ text: '안녕' }, 'cid-4').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect((err as UpstreamError).details).toBeUndefined();
+    expect(JSON.stringify(err)).not.toContain('secret upstream detail');
+  });
+
+  it('a 400 ValidationError carries no details and none of the upstream body text', async () => {
+    responses = [{ status: 400, body: '{"error":"reflected user input 먹었어요"}' }];
+    const err = await lemmatize({ text: '먹었어요' }, 'cid-5').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect((err as ValidationError).details).toBeUndefined();
+    expect(JSON.stringify(err)).not.toContain('reflected user input');
+  });
+
+  it('a malformed-payload error carries no details (no Zod issues on the wire)', async () => {
+    responses = [{ status: 200, body: '{"tokens":"not an array"}' }];
+    const err = await lemmatize({ text: '안녕' }, 'cid-6').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect((err as UpstreamError).details).toBeUndefined();
+  });
+
+  it('an upstream body carrying a numeric `status` key can no longer override our 502', async () => {
+    // Regression for the latent status-override hole: UpstreamError honors a
+    // numeric `details.status` — an upstream body `{"status": 200}` used to
+    // be passed as details and would have rewritten the wire status.
+    responses = [{ status: 500, body: '{"status": 200, "error":"boom"}' }];
+    const err = await lemmatize({ text: '안녕' }, 'cid-7').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect((err as UpstreamError).status).toBe(502);
+  });
+});

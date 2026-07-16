@@ -120,6 +120,8 @@ describe('POST /lemmatize — downstream error', () => {
     const res = await agent.post('/lemmatize').send({ text: '먹었어요' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('validation_error');
+    // F-195: the upstream 400 body ('bad input') is server-side log-only.
+    expect(res.text).not.toContain('bad input');
   });
 
   it('Kiwi 500 → 502 upstream_error (after internal retry)', async () => {
@@ -128,6 +130,20 @@ describe('POST /lemmatize — downstream error', () => {
     const res = await agent.post('/lemmatize').send({ text: '먹었어요' });
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('upstream_error');
+  });
+
+  it('F-195: the raw upstream error body never reaches the client', async () => {
+    // Pre-fix, kiwi.ts attached the upstream response body (and, for network
+    // failures, a serialized {name, message}) to the error's `details`, which
+    // the generic errorHandler forwards verbatim — the fake upstream's 'boom'
+    // text appeared in the 502 response. The wire must carry only the fixed
+    // server-minted message.
+    kiwiMode = '500';
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.post('/lemmatize').send({ text: '먹었어요' });
+    expect(res.status).toBe(502);
+    expect(res.text).not.toContain('boom');
+    expect(res.body.error.details).toBeUndefined();
   });
 
   it('Kiwi unreachable → 502 upstream_error', async () => {
@@ -142,6 +158,10 @@ describe('POST /lemmatize — downstream error', () => {
       const res = await agent.post('/lemmatize').send({ text: '먹었어요' });
       expect(res.status).toBe(502);
       expect(res.body.error.code).toBe('upstream_error');
+      // F-195: the network-error cause ({name, message} naming host/port) is
+      // server-side log-only — never forwarded as details.
+      expect(res.text).not.toContain('ECONNREFUSED');
+      expect(res.body.error.details).toBeUndefined();
     } finally {
       await teardownTestApp(dead);
       // Restore the shared app — buildTestApp swaps module-scoped state.

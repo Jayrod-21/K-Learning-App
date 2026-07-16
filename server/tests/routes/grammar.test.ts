@@ -807,6 +807,45 @@ describe('POST /grammar/identify — downstream (B4)', () => {
     }
     expect(got429).toBe(true);
   });
+
+  // F-193: /identify now routes proxy failures through the shared
+  // mapClaudeError (errors.ts) instead of a bare next(err) — a proxy-origin
+  // client fault keeps its status; a 5xx-class proxy error flattens to a
+  // whitelisted-message 502. Neither ever carries the raw proxy message.
+  it.each([
+    [429, 'ClaudeRateLimitError', 429],
+    [400, 'PromptInjectionRejectedError', 400],
+    [503, 'ClaudeUnavailableError', 502],
+  ])(
+    'proxy httpStatus %s (%s) → %s upstream_error with no raw proxy text (F-193)',
+    async (httpStatus, code, wireStatus) => {
+      const broken = buildTestApp({
+        connectionString: pg.connectionString,
+        claudeProxy: {
+          recognizeGrammarPattern: async () => {
+            const e = new Error('raw proxy failure detail') as Error & {
+              httpStatus: number;
+              code: string;
+            };
+            e.httpStatus = httpStatus;
+            e.code = code;
+            throw e;
+          },
+        },
+      });
+      try {
+        const { agent } = await registerUser(broken.app, pg.pool);
+        const res = await agent
+          .post('/grammar/identify')
+          .send({ highlightSpan: '-아', fullSentence: '안녕하세요' });
+        expect(res.status).toBe(wireStatus);
+        expect(res.body.error.code).toBe('upstream_error');
+        expect(JSON.stringify(res.body)).not.toContain('raw proxy failure detail');
+      } finally {
+        await teardownTestApp(broken);
+      }
+    },
+  );
 });
 
 describe('grammar — DB error', () => {

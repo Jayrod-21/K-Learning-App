@@ -64,9 +64,15 @@ export interface ClaimDeliveryResult {
  * be identical across every worker racing the same firing, which is exactly
  * what the UNIQUE constraint keys on (see migration 063's header for why
  * this can't just be `created_at`).
+ *
+ * `scheduleId` is `string`, not `number`: `notification_schedules.id` is
+ * BIGINT (052), which node-postgres returns as a STRING (same rationale as
+ * `ClaimDeliveryResult.deliveryId` above) — a sender reading schedule ids
+ * from the DB holds strings, and a `number` here would force a lossy
+ * coercion at every call site.
  */
 export async function claimDelivery(
-  scheduleId: number,
+  scheduleId: string,
   windowStart: Date,
 ): Promise<ClaimDeliveryResult> {
   const { rows } = await query<{ id: string }>(
