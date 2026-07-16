@@ -215,10 +215,18 @@ export const HANJA_FIXTURE: Hanja[] = [
   },
 ];
 
+/**
+ * Route-contract invariant (see server/src/routes/hanja.ts GET /progress):
+ * `new` = total − banked − practicing, so banked + practicing + new must
+ * equal the full corpus count — and the client-composed status line (F-077,
+ * `lib/encounteredBar.hanjaProgressSummary`) renders it as the
+ * `encountered/total` denominator. Keep banked + practicing + new >=
+ * encountered or mock mode renders an impossible "142/12 encountered".
+ */
 export const HANJA_PROGRESS_FIXTURE: HanjaProgress = {
   banked: 6,
   practicing: 4,
-  new: 2,
+  new: 990,
   targetL4: 800,
   encountered: 142,
   note: "You've crossed paths with 142 of the ~800 hanja that recur at L4. Six are anchored.",

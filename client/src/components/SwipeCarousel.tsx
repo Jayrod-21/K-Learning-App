@@ -52,6 +52,13 @@
  *     banner). It stays fixed while pages slide underneath; it is sized to
  *     its content, so it only intercepts pointers where it actually paints —
  *     swipes on the rest of the viewport are unaffected.
+ *   - **Settled-index callback (F-179, opt-in).** `onChange` fires with the
+ *     new page index whenever the settled page CHANGES — a swipe that snaps
+ *     to a neighbor, a dot click, or dot keyboard navigation. It does not
+ *     fire mid-drag, on a spring-back (the index didn't change), on a click
+ *     of the already-active dot, or for the render-time clamp when
+ *     `children` shrinks (the parent drove that change and already knows).
+ *     Default undefined — zero behavior change for existing consumers.
  *
  * Accessibility: the container is a labeled `<section>` (implicit `region`)
  * with `aria-roledescription="carousel"`; each page is a `tabpanel` wired to
@@ -86,6 +93,14 @@ export interface SwipeCarouselProps {
    * above the slides (e.g. a resume banner). Omitted → nothing renders.
    */
   cornerSlot?: ReactNode;
+  /**
+   * Called with the new settled page index whenever the page changes via a
+   * user gesture (swipe snap, dot click, dot arrow/Home/End). Not called
+   * mid-drag, on a spring-back, or when a shrinking `children` array clamps
+   * the index at render time. Optional (F-179) — omitted, the carousel
+   * behaves exactly as before.
+   */
+  onChange?: (index: number) => void;
 }
 
 /** Movement (px) before a gesture commits to an axis. */
@@ -116,6 +131,7 @@ export function SwipeCarousel({
   initialIndex = 0,
   loop = false,
   cornerSlot,
+  onChange,
 }: SwipeCarouselProps): JSX.Element {
   const count = children.length;
   const maxIndex = Math.max(0, count - 1);
@@ -143,6 +159,11 @@ export function SwipeCarousel({
         ? ((next % count) + count) % count
         : clamp(next, 0, maxIndex);
     setRawIndex(target);
+    // F-179: report only real settles — `goTo` is only ever called from user
+    // gestures (swipe snap, dot click, dot keys), and a no-op target (e.g.
+    // clicking the already-active dot, or an edge swipe clamped back onto
+    // the same page) is not a page change.
+    if (target !== index) onChange?.(target);
     if (focusDot) tabRefs.current[target]?.focus();
   };
 

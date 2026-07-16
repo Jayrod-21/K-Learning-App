@@ -643,10 +643,9 @@ h1, h2 { font-family: var(--font-display); }
 .kr-display .km-bilingual__sub { color: var(--paper-mute); }
 /* P3b Batch A — components whose pre-P3b hand-composed Korean tag was
  * paper-mute keep that muted look for the 'both'-mode sub segment
- * (TaskCard skill eyebrow, SkillBar label row, Today coming-soon title). */
+ * (TaskCard skill eyebrow, SkillBar label row). */
 .km-taskcard__skill .km-bilingual__sub,
-.km-skillbar__label .km-bilingual__sub,
-.km-today__soonTitle .km-bilingual__sub { color: var(--paper-mute); }
+.km-skillbar__label .km-bilingual__sub { color: var(--paper-mute); }
 /* P3b Batch B — Diagnostic page chrome (its styles live in this sheet, not a
  * page css). The intro section rows keep the old prominent-Korean look on
  * whichever language leads; the results card titles mute their sub. */
@@ -1752,26 +1751,6 @@ h1, h2 { font-family: var(--font-display); }
 
 /* Review library index ────────────────────────────────────────────────── */
 .km-library { padding: 0 22px 32px; }
-/* Quick-launch hot-buttons into the LEARN flow (P1.2; fuller look = P4). */
-.km-library__quick {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.km-library__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  background: var(--ink-1);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  cursor: pointer;
-  color: var(--paper);
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
 .km-library__list {
   display: flex;
   flex-direction: column;
@@ -1790,11 +1769,6 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper);
   font-family: inherit;
   text-align: left;
-}
-.km-library__row--soon {
-  cursor: default;
-  color: var(--paper-mute);
-  background: transparent;
 }
 .km-library__rowmeta {
   flex: 1;
@@ -2243,10 +2217,6 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: -0.005em;
 }
 .km-skillbar--compact .km-skillbar__label { font-size: 0.875rem; }
-.km-skillbar__kr {
-  font-size: 0.75rem;
-  color: var(--paper-mute);
-}
 .km-skillbar__score {
   font-family: 'Inter', sans-serif;
   font-variant-numeric: tabular-nums;
@@ -2382,7 +2352,6 @@ h1, h2 { font-family: var(--font-display); }
   background: color-mix(in srgb, var(--paper) 14%, transparent);
   border: 1px solid var(--line-strong);
 }
-.km-skillscompare__legendkr { color: var(--paper-faint); }
 
 /* TaskCard ───────────────────────────────────────────────────────────── */
 .km-taskcard {
@@ -2432,11 +2401,6 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-taskcard--gold .km-taskcard__skill { color: var(--vermilion-ink); }
 .km-taskcard--red  .km-taskcard__skill { color: var(--indigo-ink); }
-.km-taskcard__krtag {
-  font-size: 0.8125rem;
-  color: var(--paper-mute);
-  margin-top: 6px;
-}
 .km-taskcard__title {
   font-size: 1.0625rem;
   font-weight: 500;
@@ -2529,53 +2493,6 @@ h1, h2 { font-family: var(--font-display); }
 .km-tapword--mined {
   color: var(--vermilion-ink);
   border-bottom: 1px dotted var(--vermilion);
-}
-
-/* Grammar drag highlight — used inline by KoreanPassage's spanning run. */
-.gram-span {
-  background: linear-gradient(180deg, transparent 64%, var(--indigo-soft) 64%);
-  border-bottom: 1px solid var(--indigo);
-  cursor: pointer;
-  padding: 0 1px;
-}
-.gram-span:hover {
-  background: linear-gradient(180deg, transparent 64%, rgba(46, 79, 112, 0.22) 64%);
-}
-
-/* KoreanPassage ─────────────────────────────────────────────────────── */
-.km-passage {
-  /* ~12pt normal reading size (was 21px / line-height 2.0, which rendered each
-     clickable word huge + so widely spaced the passage read as a word list
-     rather than prose). 16px + 1.8 keeps tap targets comfortable while reading
-     as a paragraph. */
-  font-size: 1rem;
-  line-height: 1.8;
-  color: var(--paper);
-  user-select: text;
-}
-.km-passage__sentence { margin: 0 0 14px; }
-.km-passage__en-toggle {
-  margin-left: 8px;
-  vertical-align: middle;
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--paper-mute);
-  border-radius: 6px;
-  padding: 1px 6px;
-  font-size: 0.625rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  cursor: pointer;
-  font-family: 'Inter', sans-serif;
-}
-.km-passage__en {
-  display: block;
-  margin-top: 6px;
-  font-size: 0.8125rem;
-  color: var(--paper-mute);
-  font-family: 'Inter', sans-serif;
-  line-height: 1.5;
-  letter-spacing: 0;
 }
 
 /* WordPopover (F-186 — outer chrome now lives in Sheet's `.km-sheet` /
@@ -3077,34 +2994,6 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: 0.06em;
 }
 
-/* TOPIK mode toggle (FU-NF-39) — Study / Mock segmented radiogroup. Mirrors
-   the Settings theme-mode control's segmented language. */
-.km-topik__modes {
-  display: inline-flex;
-  gap: 6px;
-  padding: 4px;
-  margin: 4px 0 20px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--ink-2);
-}
-.km-topik__mode {
-  padding: 8px 18px;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--paper-mute);
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: color 140ms, background 140ms, border-color 140ms;
-}
-.km-topik__mode--active {
-  border-color: var(--line-strong);
-  background: var(--ink-1);
-  color: var(--paper);
-}
 .km-topik__substate { margin-bottom: 12px; }
 
 /* TOPIK Mock-Test (FU-NF-39) ─────────────────────────────────────────── */
@@ -3309,8 +3198,6 @@ h1, h2 { font-family: var(--font-display); }
   min-width: 18px;
 }
 .km-diagnostic__section-label { display: inline-flex; align-items: baseline; gap: 8px; }
-.km-diagnostic__section-kr { font-size: 1.0625rem; font-weight: 600; color: var(--paper); }
-.km-diagnostic__section-en { font-size: 0.8125rem; color: var(--paper-mute); }
 .km-diagnostic__section-count {
   font-size: 0.75rem;
   color: var(--paper-mute);
@@ -3449,7 +3336,6 @@ h1, h2 { font-family: var(--font-display); }
   min-height: 540px;
   text-align: center;
 }
-.km-diagnostic__done-eyebrow { margin-top: 20px; }
 .km-diagnostic__done-title {
   margin: 10px 0 16px;
   font-size: 2.125rem;
@@ -3491,10 +3377,6 @@ h1, h2 { font-family: var(--font-display); }
   color: var(--paper-mute);
   line-height: 1.5;
 }
-.km-grammar__state--error {
-  border-color: var(--danger);
-  color: var(--danger-ink);
-}
 .km-grammar__card { padding: 22px 24px; }
 .km-grammar__header {
   display: flex;
@@ -3508,11 +3390,6 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 1.625rem;
   font-weight: 600;
   color: var(--paper);
-}
-.km-grammar__title {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--paper-dim);
 }
 .km-grammar__rule { margin: 18px 0; }
 .km-grammar__context {
@@ -3569,15 +3446,6 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 0.75rem;
   color: var(--paper-mute);
 }
-.km-grammar__tutor-note {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--paper-dim);
-  line-height: 1.5;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-}
-.km-grammar__tutor-label { color: var(--vermilion-ink); font-weight: 500; }
 
 /* FU-NF-42 B2: production schedule line inside the drill reveal. Subtle,
    hanji-toned, sits below the model answer. */
@@ -3672,16 +3540,6 @@ h1, h2 { font-family: var(--font-display); }
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
-}
-
-/* Reading ─────────────────────────────────────────────────────────────── */
-.km-reading__title {
-  margin: 0 0 16px;
-  font-size: clamp(1.625rem, 4vw, 2.125rem);
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
-  color: var(--paper);
 }
 
 /* Review ──────────────────────────────────────────────────────────────── */
@@ -3779,7 +3637,6 @@ h1, h2 { font-family: var(--font-display); }
   margin: 0;
 }
 .km-review__en { font-size: 1.0625rem; color: var(--vermilion-ink); font-weight: 500; }
-.km-review__source { font-size: 0.8125rem; color: var(--paper-dim); font-style: italic; }
 .km-review__ex { font-size: 1rem; color: var(--paper); line-height: 1.55; }
 .km-review__exEn { font-size: 0.75rem; color: var(--paper-mute); margin-top: 4px; }
 .km-review__drawerBtn {
@@ -3845,15 +3702,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 
 /* Review · Lists tab */
-.km-review__lists { display: flex; flex-direction: column; gap: 22px; }
-.km-review__listsHead {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
 .km-review__sectionTitle { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; }
-.km-review__sourcesMeta { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-review__listsCol { display: flex; flex-direction: column; gap: 8px; }
 
 /* FU-NF-42 B3: grammar production review section. Mirrors the list-row idiom
@@ -3897,187 +3746,6 @@ h1, h2 { font-family: var(--font-display); }
   gap: 14px;
   font-family: inherit;
 }
-.km-review__listRow--active {
-  background: var(--ink-2);
-  border-color: var(--vermilion);
-}
-.km-review__thumb {
-  width: 38px;
-  height: 44px;
-  flex-shrink: 0;
-  background: var(--ink-2);
-  color: var(--paper-mute);
-  border-radius: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: 'Noto Serif KR', serif;
-  font-size: 1.375rem;
-  font-weight: 600;
-  border: 1px solid var(--line-strong);
-}
-.km-review__thumb--active {
-  background: var(--vermilion);
-  color: var(--on-vermilion);
-  border-color: var(--vermilion);
-}
-.km-review__listBody { flex: 1; min-width: 0; }
-.km-review__listHead { display: flex; align-items: center; gap: 8px; }
-.km-review__listName { font-size: 0.9375rem; font-weight: 500; color: var(--paper); }
-.km-review__listMeta { font-size: 0.75rem; color: var(--paper-mute); margin-top: 2px; }
-.km-review__listStats {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  font-size: 0.6875rem;
-  color: var(--paper-mute);
-  letter-spacing: 0.05em;
-  font-variant-numeric: tabular-nums;
-}
-.km-review__due { color: var(--vermilion-ink); }
-.km-review__maturityBar {
-  flex: 1;
-  max-width: 100px;
-  height: 3px;
-  background: var(--ink-2);
-  border-radius: 2px;
-}
-.km-review__maturityFill {
-  height: 100%;
-  background: var(--moss);
-  border-radius: 2px;
-}
-.km-review__pct { font-size: 0.625rem; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
-
-.km-review__source {
-  background: var(--ink-1);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.km-review__sourceHead {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--line);
-}
-.km-review__cover {
-  width: 36px;
-  height: 44px;
-  background: var(--ink-2);
-  border: 1px solid var(--line-strong);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: 'Noto Serif KR', serif;
-  font-size: 1.375rem;
-  font-weight: 700;
-  border-radius: 2px;
-  color: var(--vermilion-ink);
-}
-.km-review__cover--grammar { color: var(--indigo-ink); }
-.km-review__cover--mixed   { color: var(--ochre-ink); }
-.km-review__sourceMeta { flex: 1; min-width: 0; }
-.km-review__sourceName { font-size: 0.875rem; font-weight: 500; color: var(--paper); }
-.km-review__sourcePub  { font-size: 0.6875rem; color: var(--paper-mute); margin-top: 1px; }
-
-.km-review__sourceRow {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  padding: 12px 16px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-family: inherit;
-}
-.km-review__sourceRow--last { border-bottom: none; }
-.km-review__sourceRow:hover { background: var(--ink-2); }
-.km-review__sourceRowBody { flex: 1; min-width: 0; }
-.km-review__sourceListName { font-size: 0.875rem; color: var(--paper); font-weight: 500; }
-.km-review__sourceListEn { font-size: 0.6875rem; color: var(--paper-mute); }
-.km-review__sourceListMeta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-  font-size: 0.625rem;
-  color: var(--paper-mute);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  font-variant-numeric: tabular-nums;
-}
-.km-review__sourceStatus--complete { color: var(--moss-ink); }
-.km-review__sourceStatus--partial  { color: var(--vermilion-ink); }
-.km-review__sourceStatus--none     { color: var(--paper-faint); }
-.km-review__sourcePctBar {
-  width: 50px;
-  height: 3px;
-  background: var(--ink-2);
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-.km-review__sourcePctFill {
-  height: 100%;
-  background: var(--vermilion);
-  border-radius: 2px;
-}
-.km-review__sourcePctFill--complete { background: var(--moss); }
-
-/* Review · All cards tab */
-.km-review__all { display: flex; flex-direction: column; gap: 14px; }
-.km-review__searchRow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-}
-.km-review__searchInput {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--paper);
-  font-family: 'Noto Sans KR', sans-serif;
-  font-size: 1rem;
-}
-.km-review__allCount { letter-spacing: 0.1em; text-transform: uppercase; }
-.km-review__allList { overflow: hidden; padding: 0; }
-.km-review__allHead {
-  display: grid;
-  grid-template-columns: 1.4fr 1.6fr 1fr;
-  padding: 10px 16px;
-  font-size: 0.6875rem;
-  color: var(--paper-mute);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--line);
-}
-.km-review__allMat { text-align: right; }
-.km-review__allRow {
-  display: grid;
-  grid-template-columns: 1.4fr 1.6fr 1fr;
-  padding: 14px 16px;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-}
-.km-review__allRow--last { border-bottom: none; }
-.km-review__allWord { font-size: 1.0625rem; font-weight: 500; }
-.km-review__allPos { font-size: 0.6875rem; color: var(--paper-mute); margin-left: 10px; }
-.km-review__allEn { font-size: 0.8125rem; color: var(--paper-dim); }
-.km-review__matBar { display: inline-flex; gap: 3px; justify-content: flex-end; }
-.km-review__matCell {
-  width: 14px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--ink-3);
-}
-.km-review__matCell--on { background: var(--vermilion); }
 
 /* Review · sheets */
 .km-review__sheetBody { padding: 0 4px; }
@@ -4091,29 +3759,8 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__sheetMeta { font-size: 0.8125rem; color: var(--paper-mute); margin-top: 2px; }
 .km-review__sheetActions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
 .km-review__sheetRule { margin: 20px 0 16px; }
-.km-review__previewHead { margin-bottom: 10px; }
-.km-review__previewCol { display: flex; flex-direction: column; }
-.km-review__previewRow {
-  display: grid;
-  grid-template-columns: 1.4fr auto;
-  gap: 12px;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-}
-.km-review__previewRow--last { border-bottom: none; }
-.km-review__previewWord { font-size: 1rem; font-weight: 500; }
-.km-review__previewMore {
-  padding: 14px 0 0;
-  font-size: 0.75rem;
-  color: var(--paper-mute);
-  text-align: center;
-}
 
-.km-review__formCol { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; }
-.km-review__field { display: flex; flex-direction: column; gap: 6px; border: none; padding: 0; margin: 0; }
-.km-review__input,
-.km-review__textarea {
+.km-review__input {
   padding: 10px 12px;
   border-radius: 3px;
   background: var(--ink-1);
@@ -4124,13 +3771,7 @@ h1, h2 { font-family: var(--font-display); }
   width: 100%;
   font-family: inherit;
 }
-.km-review__textarea {
-  min-height: 84px;
-  resize: vertical;
-  font-family: 'Noto Sans KR', sans-serif;
-}
-.km-review__input:focus-visible,
-.km-review__textarea:focus-visible {
+.km-review__input:focus-visible {
   border-color: var(--vermilion);
   background: var(--ink-3);
 }
@@ -4152,12 +3793,6 @@ h1, h2 { font-family: var(--font-display); }
   border-color: var(--vermilion);
   background: var(--vermilion-soft);
   color: var(--vermilion-ink);
-}
-.km-review__sheetFoot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 18px;
 }
 
 /* Chat — moved to the co-located `pages/Chat.css` (Phase 3D / F-033). */
@@ -4727,16 +4362,6 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 1.0625rem;
   outline: none;
 }
-.km-reference__filters {
-  display: flex;
-  gap: 8px;
-  margin: 0 18px;
-  flex-wrap: wrap;
-}
-.km-reference__filter {
-  cursor: pointer;
-  font-family: inherit;
-}
 .km-reference__count {
   margin: 0 18px;
   font-size: 0.75rem;
@@ -4758,23 +4383,8 @@ h1, h2 { font-family: var(--font-display); }
   border-bottom: 1px solid var(--line);
 }
 .km-reference__row:last-child { border-bottom: none; }
-.km-reference__row-btn {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 1.4fr 2fr auto auto;
-  gap: 16px;
-  align-items: center;
-  padding: 14px 18px;
-  background: transparent;
-  border: none;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  color: var(--paper);
-}
 .km-reference__row-kr { font-size: 1.125rem; font-weight: 500; color: var(--paper); }
 .km-reference__row-en { font-size: 0.8125rem; color: var(--paper-dim); }
-.km-reference__row-kind { text-transform: none; letter-spacing: 0; }
 .km-reference__row-level { min-width: 38px; justify-content: center; }
 .km-reference__empty {
   padding: 40px 20px;
@@ -4783,24 +4393,8 @@ h1, h2 { font-family: var(--font-display); }
   font-size: 0.875rem;
   margin: 0;
 }
-.km-reference__skeleton,
-.km-reference__error {
-  margin: 0 18px;
-  padding: 20px 22px;
-}
-.km-reference__skeleton-line {
-  height: 10px;
-  border-radius: 2px;
-  background: var(--ink-2);
-  margin-top: 10px;
-}
 
 /* ─── Resources (tabbed browse + This Week + lists) ─────────── */
-.km-resources__tabs {
-  margin: 0 18px;
-  display: flex;
-  flex-wrap: wrap;
-}
 .km-resources__panel { margin-top: 14px; }
 .km-resources__panel > * + * { margin-top: 14px; }
 
@@ -5149,7 +4743,6 @@ h1, h2 { font-family: var(--font-display); }
 .km-mock-badge {
   /* Marker class — see MockBadge.tsx STYLE for the actual paint. */
 }
-
 
 /* PWA "new version — reload" banner (registerType: 'prompt'). Fixed above the
    bottom nav; renders only when a waiting service worker is detected. */

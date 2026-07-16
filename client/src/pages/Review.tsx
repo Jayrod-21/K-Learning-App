@@ -1626,6 +1626,11 @@ interface StudySessionProps {
   doneTo: string;
 }
 
+// F-179 note: the study card deliberately does NOT swipe-advance — a card
+// leaves the session only via an FSRS rating (never a skip gesture), and
+// F-130's real targets were the carousels + PDF, not this deck. If
+// swipe-advance is ever wanted, SwipeCarousel now exposes a settled-index
+// `onChange` prop to build it on.
 function StudySession({
   deck,
   deckNameKr,

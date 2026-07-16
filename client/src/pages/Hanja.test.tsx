@@ -313,7 +313,15 @@ describe('Hanja page', () => {
   it('renders the encountered band and the server-featured character by default', () => {
     renderHanja();
     expect(screen.getByRole('heading', { name: /한자/ })).toBeInTheDocument();
-    expect(screen.getByText(/Just getting started/)).toBeInTheDocument();
+    // F-077 — the band's status line is composed client-side from the DTO's
+    // numeric fields (4+2+1 = 7 total); the server's pre-templated English
+    // `note` must NOT reach the DOM (it still says "banked").
+    expect(
+      screen.getByText('4 mastered · 2 practicing · 7/7 encountered'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Just getting started/),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /Today's hanja 學/ }),
     ).toBeInTheDocument();
@@ -377,7 +385,7 @@ describe('Hanja page', () => {
       screen.getByRole('button', { name: '전체 · All', pressed: true }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: '담김 · Banked', pressed: false }),
+      screen.getByRole('button', { name: '숙달 · Mastered', pressed: false }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /^學 학/ }),
@@ -387,12 +395,12 @@ describe('Hanja page', () => {
     ).toBeInTheDocument();
   });
 
-  it('filters the grid locally to the Banked chip', async () => {
+  it('filters the grid locally to the Mastered chip', async () => {
     const user = userEvent.setup();
     renderHanja();
 
     await user.click(screen.getByRole('tab', { name: /Index/ }));
-    await user.click(screen.getByRole('button', { name: '담김 · Banked' }));
+    await user.click(screen.getByRole('button', { name: '숙달 · Mastered' }));
 
     // 生 is banked → stays; 學 is practicing → filtered out.
     expect(
@@ -423,10 +431,10 @@ describe('Hanja page', () => {
     expect(refetchSpies.progress).not.toHaveBeenCalled();
     expect(refetchSpies.today).not.toHaveBeenCalled();
 
-    // 生 is now practicing → its control flips to "Bank this hanja", proving
+    // 生 is now practicing → its control flips to "Mark as mastered", proving
     // the optimistic state reached the still-open detail sheet.
     expect(
-      await screen.findByRole('button', { name: /Bank this hanja/ }),
+      await screen.findByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
   });
 
@@ -437,7 +445,7 @@ describe('Hanja page', () => {
 
     // Open the featured 學 sheet, then bank it.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     await waitFor(() => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
@@ -450,14 +458,14 @@ describe('Hanja page', () => {
     ).toBeInTheDocument();
   });
 
-  it('banks a new/practicing character via "Bank this hanja"', async () => {
+  it('banks a new/practicing character via "Mark as mastered"', async () => {
     const user = userEvent.setup();
     setHanjaStateMock.mockResolvedValueOnce({ char: '學', state: 'banked' });
     renderHanja();
 
     // 學 (practicing) is the featured Today card — open it directly.
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     await waitFor(() => {
       expect(setHanjaStateMock).toHaveBeenCalledWith('學', 'banked');
@@ -470,16 +478,16 @@ describe('Hanja page', () => {
     renderHanja();
 
     await user.click(screen.getByRole('button', { name: /Today's hanja 學/ }));
-    await user.click(screen.getByRole('button', { name: /Bank this hanja/ }));
+    await user.click(screen.getByRole('button', { name: /Mark as mastered/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /couldn.t update that hanja/i,
     );
     // No overlay entry is written on failure, so the control stays on its
-    // pre-write label (學 is still practicing → still offers "Bank this hanja")
+    // pre-write label (學 is still practicing → still offers "Mark as mastered")
     // and no refetch fires either.
     expect(
-      screen.getByRole('button', { name: /Bank this hanja/ }),
+      screen.getByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
     expect(refetchSpies.list).not.toHaveBeenCalled();
     expect(refetchSpies.progress).not.toHaveBeenCalled();
@@ -770,7 +778,7 @@ describe('Hanja page', () => {
     );
     // Still on the sheet — the bank control never left the screen.
     expect(
-      screen.getByRole('button', { name: /Bank this hanja/ }),
+      screen.getByRole('button', { name: /Mark as mastered/ }),
     ).toBeInTheDocument();
   });
 
