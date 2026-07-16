@@ -374,6 +374,140 @@ router.get('/bank', cheapLimiter(), async (req, res, next) => {
   }
 });
 
+/* ---------- Saved-from-uploads (F-056 — the F-053/F-107 grammar mirror) ---------- */
+
+/**
+ * GET /grammar/saved-from-uploads — the user's saved (banked) grammar that
+ * carries upload provenance, grouped by source upload (F-056; feeds the
+ * Review→Grammar "Uploads" view's saved section — the exact grammar mirror
+ * of `GET /vocab/saved-from-uploads`, F-053/F-107).
+ *
+ * "Saved" means the user deliberately banked the pattern via
+ * `POST /grammar/bank` with a `source_upload_id` (the migration-068 column,
+ * ownership-validated at write time). Simpler than the vocab twin on
+ * purpose: `grammar_entries` is USER-scoped (one row per (user, pattern) —
+ * no shared corpus rows, no second list-membership save path), so one
+ * predicate covers the whole read and `savedAt` is simply the bank row's
+ * `created_at`. Distinct from the same view's EXTRACTED content
+ * (`GET /grammar/kgiu?source_upload_id=`, F-108): this is only what the
+ * user chose to keep.
+ *
+ * SECURITY (mirrors the vocab twin):
+ *   - User-scoped on BOTH legs: `g.user_id = $1` (only the caller's bank
+ *     rows) AND `bu.user_id = $1` ON the join (an upload title can never
+ *     leak across users — a row tagged to an unowned upload, which only a
+ *     direct DB write could produce, simply yields no row, never an error).
+ *   - Fully parameterized; read-only; soft-deleted bank rows excluded.
+ *   - No query params → no client-controlled paging; the response is bounded
+ *     server-side by the row cap below.
+ *
+ * Response: `{ groups, total, truncated }` — `total` is the FULL
+ * saved-with-provenance pattern count (window COUNT, unaffected by the
+ * cap); `truncated: true` says the row cap trimmed the response. Every
+ * returned group is guaranteed WHOLE — a group the cap would split
+ * mid-group is dropped entirely (same contract, and the same sentinel
+ * over-fetch technique, as the vocab twin).
+ */
+/** Defensive row cap — same value and rationale as vocab.ts's
+ *  SAVED_FROM_UPLOADS_ROW_CAP (500 saved patterns is far beyond a personal
+ *  bank; newest uploads/saves win when it is ever hit). */
+const SAVED_FROM_UPLOADS_ROW_CAP = 500;
+
+router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{
+      upload_id: string;
+      upload_title: string;
+      entry_id: string;
+      pattern_display: string;
+      summary_en: string;
+      saved_at: Date;
+      total: string;
+    }>(
+      `SELECT bu.id              AS upload_id,
+              bu.title           AS upload_title,
+              g.id               AS entry_id,
+              g.pattern_display,
+              g.summary_en,
+              g.created_at       AS saved_at,
+              -- Full matching-row count alongside the capped page (window
+              -- runs before LIMIT — same idiom as the vocab twin) so the
+              -- client can see how much the cap hid.
+              COUNT(*) OVER ()::text AS total
+         FROM grammar_entries g
+         -- The ownership predicate lives ON the join: a row tagged to an
+         -- upload the caller does NOT own simply produces no row (never a
+         -- leaked title, never an error).
+         JOIN book_uploads bu
+           ON bu.id = g.source_upload_id
+          AND bu.user_id = $1
+        WHERE g.user_id = $1
+          AND g.deleted_at IS NULL
+        ORDER BY bu.created_at DESC, bu.id DESC, g.created_at DESC, g.id
+        LIMIT $2`,
+      // Over-fetch ONE row past the cap: its presence proves truncation, and
+      // its upload id tells whether the cap fell mid-group (see below).
+      [userId, SAVED_FROM_UPLOADS_ROW_CAP + 1],
+    );
+
+    // Truncation handling — identical contract to the vocab twin:
+    //   1. `truncated`/`total` say when (and how much) the cap hid.
+    //   2. Every returned group is WHOLE: if the over-fetched sentinel row
+    //      belongs to the same upload as the last kept row, the cap split
+    //      that group — drop the whole group (its rows are the ordered
+    //      tail). If the sentinel starts a NEW group, every kept group is
+    //      whole. Degenerate case: one group larger than the cap yields
+    //      zero groups with truncated=true — honest, and the client's
+    //      truncated note still renders (batch-5 NIT-A).
+    const truncated = rows.length > SAVED_FROM_UPLOADS_ROW_CAP;
+    const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    let visible = rows;
+    if (truncated) {
+      const lastKept = rows[SAVED_FROM_UPLOADS_ROW_CAP - 1]!;
+      const sentinel = rows[SAVED_FROM_UPLOADS_ROW_CAP]!;
+      visible = rows.slice(0, SAVED_FROM_UPLOADS_ROW_CAP);
+      if (sentinel.upload_id === lastKept.upload_id) {
+        visible = visible.filter((r) => r.upload_id !== lastKept.upload_id);
+      }
+    }
+
+    // Fold the flat rows into per-upload groups, preserving SQL order. pg
+    // returns BIGINTs as strings; the API contract documents ids as JSON
+    // numbers (both fit in Number.MAX_SAFE_INTEGER — same convention as
+    // every other route in this file).
+    interface SavedGroup {
+      upload: { id: number; title: string };
+      entries: Array<{
+        id: number;
+        pattern: string;
+        summary: string;
+        savedAt: string;
+      }>;
+    }
+    const groups: SavedGroup[] = [];
+    const byUpload = new Map<number, SavedGroup>();
+    for (const r of visible) {
+      const uploadId = Number(r.upload_id);
+      let group = byUpload.get(uploadId);
+      if (group === undefined) {
+        group = { upload: { id: uploadId, title: r.upload_title }, entries: [] };
+        byUpload.set(uploadId, group);
+        groups.push(group);
+      }
+      group.entries.push({
+        id: Number(r.entry_id),
+        pattern: r.pattern_display,
+        summary: r.summary_en,
+        savedAt: r.saved_at.toISOString(),
+      });
+    }
+    res.status(200).json({ groups, total, truncated });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* ---------- Graduate / re-admit a banked pattern (migration 033) ---------- */
 
 const BankIdParamsSchema = z.object({

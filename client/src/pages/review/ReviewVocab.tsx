@@ -395,7 +395,12 @@ export default function ReviewVocab(): JSX.Element {
  * "only shown if such saved items exist", so no groups (and, best-effort,
  * a failed fetch — this is a supplementary shelf, not the page's core
  * surface, same posture as the theme-filter fetch above) yields null
- * rather than an empty shell or an error card.
+ * rather than an empty shell or an error card — with one deliberate
+ * exception (batch-5 re-review NIT-A): a `truncated: true` response with
+ * ZERO groups (one group bigger than the server's whole-groups row cap was
+ * dropped entirely) still renders the tile so the truncation note is
+ * reachable — returning null there would silently hide the only signal
+ * that saves exist at all.
  *
  * Threat model: upload titles and saved words are the caller's OWN data
  * (server-scoped to the session user); both render through React text
@@ -426,7 +431,9 @@ function SavedFromUploads(): JSX.Element | null {
     };
   }, []);
 
-  if (groups.length === 0) return null;
+  // NIT-A: null ONLY when there is genuinely nothing to say — an empty
+  // TRUNCATED response still has the note to show (doc comment above).
+  if (groups.length === 0 && !truncated) return null;
 
   return (
     <CollapsibleTile

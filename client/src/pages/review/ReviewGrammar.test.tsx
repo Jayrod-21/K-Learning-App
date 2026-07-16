@@ -33,6 +33,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../../services/api';
 import type {
   BankGrammarBody,
+  GrammarSavedFromUploadsGroup,
   KgiuEntryDetail,
   KgiuEntrySummary,
 } from '../../types/domain';
@@ -42,6 +43,7 @@ const grammarSvc = vi.hoisted(() => ({
   listBanked: vi.fn(),
   bankPattern: vi.fn(),
   getPattern: vi.fn(),
+  fetchGrammarSavedFromUploads: vi.fn(),
 }));
 
 // Uploads service — feeds BOTH the U1 sort-by-source filter row (browse
@@ -138,6 +140,13 @@ beforeEach(() => {
   grammarSvc.listBanked.mockResolvedValue({ entries: [] });
   grammarSvc.bankPattern.mockResolvedValue({ id: 1 });
   grammarSvc.getPattern.mockResolvedValue(DETAIL);
+  // F-056 saved-from-uploads — default: nothing saved, so the saved tile
+  // stays hidden for every test that knows nothing about it.
+  grammarSvc.fetchGrammarSavedFromUploads.mockResolvedValue({
+    groups: [],
+    total: 0,
+    truncated: false,
+  });
   uploadsSvc.listUploads.mockReset();
   uploadsSvc.listUploads.mockResolvedValue([]);
 });
@@ -772,6 +781,119 @@ describe('ReviewGrammar — Uploads view (F-056)', () => {
     expect(
       await screen.findByRole('button', { name: 'Added' }),
     ).toBeInTheDocument();
+  });
+});
+
+describe('ReviewGrammar — saved-from-uploads section (F-056, the F-053 mirror)', () => {
+  const SAVED_GROUPS: GrammarSavedFromUploadsGroup[] = [
+    {
+      upload: { id: 3, title: '새 문법책' },
+      entries: [
+        { id: 41, pattern: '-는 반면에', summary: 'whereas', savedAt: '2026-07-10T00:00:00Z' },
+        { id: 42, pattern: '-느라고', summary: 'because of doing X', savedAt: '2026-07-09T00:00:00Z' },
+      ],
+    },
+    {
+      upload: { id: 2, title: '옛 문법책' },
+      entries: [
+        { id: 43, pattern: '-지만', summary: 'but', savedAt: '2026-07-08T00:00:00Z' },
+      ],
+    },
+  ];
+
+  /** Switch from the default Browse view to the Uploads view. */
+  async function openUploadsView(
+    user: ReturnType<typeof userEvent.setup>,
+  ): Promise<void> {
+    await screen.findByText(/1 pattern/); // browse settled first
+    await user.click(screen.getByRole('tab', { name: /Uploads/ }));
+  }
+
+  it('stays hidden while nothing was saved from uploads (honest empty state)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+    await screen.findByText(/No grammar from your uploads yet/);
+    expect(screen.queryByText(/My saved patterns/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('내 저장 문형')).not.toBeInTheDocument();
+  });
+
+  it('renders the saved patterns grouped under their upload titles when groups exist', async () => {
+    grammarSvc.fetchGrammarSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 3,
+      truncated: false,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    // The section title (a CollapsibleTile disclosure, like the vocab twin).
+    expect(
+      await screen.findByRole('button', { name: '내 저장 문형 · My saved patterns' }),
+    ).toBeInTheDocument();
+    // Each upload is its own labelled group carrying ITS patterns only.
+    const newerGroup = screen.getByRole('region', { name: '새 문법책' });
+    expect(within(newerGroup).getByText('-는 반면에')).toBeInTheDocument();
+    expect(within(newerGroup).getByText('whereas')).toBeInTheDocument();
+    expect(within(newerGroup).getByText('-느라고')).toBeInTheDocument();
+    expect(within(newerGroup).queryByText('-지만')).not.toBeInTheDocument();
+    const olderGroup = screen.getByRole('region', { name: '옛 문법책' });
+    expect(within(olderGroup).getByText('-지만')).toBeInTheDocument();
+    expect(within(olderGroup).getByText('but')).toBeInTheDocument();
+    // Untruncated response → no "most recent saves only" note.
+    expect(
+      screen.queryByText(/most recent saves only/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('surfaces the truncation note when the server row cap trimmed the response', async () => {
+    grammarSvc.fetchGrammarSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 505,
+      truncated: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    await screen.findByRole('button', { name: '내 저장 문형 · My saved patterns' });
+    // The note renders alongside the (whole) groups the server did return.
+    expect(screen.getByText(/most recent saves only/i)).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '새 문법책' })).toBeInTheDocument();
+  });
+
+  it('renders the tile with the truncation note even when groups is EMPTY (truncated degenerate — batch-5 NIT-A)', async () => {
+    // One group bigger than the server's whole-groups row cap drops
+    // entirely → zero groups but truncated=true; the note must still be
+    // reachable (it is the only signal that saves exist at all).
+    grammarSvc.fetchGrammarSavedFromUploads.mockResolvedValue({
+      groups: [],
+      total: 505,
+      truncated: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+
+    expect(
+      await screen.findByRole('button', { name: '내 저장 문형 · My saved patterns' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/most recent saves only/i)).toBeInTheDocument();
+  });
+
+  it('stays hidden (no error surface) when the fetch fails — best-effort shelf', async () => {
+    grammarSvc.fetchGrammarSavedFromUploads.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await openUploadsView(user);
+    // The view's own (extracted) empty state still renders — the failed
+    // side fetch never surfaces an error card of its own.
+    await screen.findByText(/No grammar from your uploads yet/);
+    expect(screen.queryByText(/My saved patterns/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
   });
 });
 

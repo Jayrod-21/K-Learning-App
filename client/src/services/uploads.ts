@@ -3,8 +3,10 @@
  * `db/docs/PDF_UPLOAD_DESIGN.md` §"REVISION" — authoritative). Talks to
  * U1a's reworked server routes: list, single-meta (incl. `page_count`),
  * multipart upload (zip-of-images OR PDF, normalized server-side into
- * ordered page images), delete, and the per-page image URL the viewer's
- * `<img>` pulls from. The old single-blob `GET /uploads/:id/file` (and this
+ * ordered page images), delete, the per-page image URL the viewer's
+ * `<img>` pulls from, and the F-059 OCR-extraction trigger + status reads
+ * (`startExtraction`/`listExtractions` below — the F-108/U2 pipeline's
+ * client wiring). The old single-blob `GET /uploads/:id/file` (and this
  * module's `pdfFileUrl`) is REMOVED — a book is no longer one PDF blob, it's
  * an ordered sequence of page images (`book_pages`, migration 041).
  *
@@ -63,7 +65,14 @@
 import type { AxiosProgressEvent } from 'axios';
 import { api, getApiBaseUrl } from './api';
 import { buildMultipartConfig } from './images';
-import type { BookUpload, BookUploadType, Page } from '../types/domain';
+import type {
+  BookUpload,
+  BookUploadType,
+  ExtractionRun,
+  ExtractionRunStatus,
+  ExtractionRuns,
+  Page,
+} from '../types/domain';
 
 /**
  * Max upload size the client pre-checks before ever touching the network —
@@ -270,6 +279,116 @@ export async function uploadBook(
 
   const res = await api.post<UploadEnvelope>('/uploads', form, config);
   return toBookUpload(res.upload);
+}
+
+/** Wire shape of one extraction run — `ExtractionRunDTO` in
+ *  server/src/services/uploadExtract.ts. `upload_id` and `error` exist on
+ *  the wire but are deliberately dropped by `toExtractionRun` (see the
+ *  `ExtractionRun` domain type's doc for why). */
+interface ExtractionRunWire {
+  id: number;
+  upload_id: number | null;
+  status: ExtractionRunStatus;
+  page_from: number;
+  page_to: number;
+  pages_requested: number;
+  pages_ocred: number;
+  pages_failed: number;
+  vocab_inserted: number;
+  grammar_inserted: number;
+  words_skipped: number;
+  error: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+/** Envelope returned by `POST /uploads/:id/extract` (the settled run). */
+interface ExtractRunEnvelope {
+  run: ExtractionRunWire;
+}
+
+/** Envelope returned by `GET /uploads/:id/extract` (history, newest first). */
+interface ExtractRunsEnvelope {
+  runs: ExtractionRunWire[];
+  max_pages_per_run: number;
+}
+
+function toExtractionRun(wire: ExtractionRunWire): ExtractionRun {
+  return {
+    id: wire.id,
+    status: wire.status,
+    pageFrom: wire.page_from,
+    pageTo: wire.page_to,
+    pagesRequested: wire.pages_requested,
+    pagesOcred: wire.pages_ocred,
+    pagesFailed: wire.pages_failed,
+    vocabInserted: wire.vocab_inserted,
+    grammarInserted: wire.grammar_inserted,
+    wordsSkipped: wire.words_skipped,
+    startedAt: wire.started_at,
+    finishedAt: wire.finished_at,
+    createdAt: wire.created_at,
+  };
+}
+
+/**
+ * The extract POST is SYNCHRONOUS server-side — the response IS the settled
+ * run, after up to `max_pages_per_run` (20) Vision calls at seconds each, so
+ * a legitimate run can take a couple of minutes. The app-wide axios default
+ * (services/api.ts, 10 s, sized for synchronous JSON endpoints) would misfire
+ * as `code: 'timeout'` long before a real run settles — same per-call
+ * override pattern as `UPLOAD_TIMEOUT_MS` above.
+ */
+const EXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * POST /uploads/:id/extract — trigger one OCR extraction run (F-059, the
+ * F-108/U2 pipeline's manual trigger). Resolves with the SETTLED run
+ * (done/failed with counts) — the server runs the pipeline synchronously.
+ *
+ * The body is deliberately EMPTY: omitting the optional page range asks the
+ * server for its own "resume after the last done run" default slice (a
+ * bounded 10-page bite — half the 20-page per-run ceiling), which is the
+ * sensible zero-config behaviour the button wants; the server clamps and
+ * validates any range regardless, so the client never computes one. Server
+ * errors the caller must map to fixed copy (never echo prose):
+ *   400 — invalid page range for this book,
+ *   404 — not the caller's upload,
+ *   409 — a run is already live for this upload,
+ *   429 — the per-user daily Vision-page cap is spent.
+ */
+export async function startExtraction(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ExtractionRun> {
+  const res = await api.post<ExtractRunEnvelope>(
+    `/uploads/${encodeURIComponent(id)}/extract`,
+    {},
+    { timeout: EXTRACT_TIMEOUT_MS, ...(signal !== undefined ? { signal } : {}) },
+  );
+  return toExtractionRun(res.run);
+}
+
+/**
+ * GET /uploads/:id/extract — this upload's extraction runs, newest first
+ * (server-bounded history), plus the server's per-run page ceiling. The
+ * F-059 status surface: the viewer reads `runs[0]` for the latest state and
+ * disables its trigger while that run is still live. 404s (as `ApiError`)
+ * if the upload isn't the caller's.
+ */
+export async function listExtractions(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ExtractionRuns> {
+  const res = await api.get<ExtractRunsEnvelope>(
+    `/uploads/${encodeURIComponent(id)}/extract`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  return {
+    runs: res.runs.map(toExtractionRun),
+    maxPagesPerRun: res.max_pages_per_run,
+  };
 }
 
 /** DELETE /uploads/:id — removes the row + every page's blob (server: 204, best-effort blob cleanup). */

@@ -1697,6 +1697,35 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
     expect(res.body.groups[0].upload.title).toBe('경계 책');
     expect(res.body.groups[0].entries).toHaveLength(500);
   });
+
+  it('exactly AT the row cap: truncated=false and every group returns whole (boundary pin — `>` not `>=`)', async () => {
+    // Batch-5 re-review NIT-B: nothing pinned the exact-cap-total UNtruncated
+    // boundary (total exactly 500, nothing hidden), so a `>=` regression in
+    // the truncation comparison would have slipped every prior test — the
+    // over/under cases both still pass under `>=`.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 아래 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 정확 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedTaggedBulk(userId, newerUpload, 490, `atcap-new-${Date.now()}`);
+    await seedSavedTaggedBulk(userId, olderUpload, 10, `atcap-old-${Date.now()}`);
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.total).toBe(500);
+    expect(res.body.groups).toHaveLength(2);
+    expect(res.body.groups[0].upload.title).toBe('경계 정확 책');
+    expect(res.body.groups[0].entries).toHaveLength(490);
+    expect(res.body.groups[1].entries).toHaveLength(10);
+  });
 });
 
 // MIGRATION ROUND-TRIP NOTE (021 → 022, Docker-gated by the test harness):

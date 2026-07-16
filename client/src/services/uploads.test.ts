@@ -11,10 +11,12 @@ import {
   checkBookFile,
   deleteUpload,
   getUpload,
+  listExtractions,
   listPages,
   listUploads,
   pageUrl,
   reorderPages,
+  startExtraction,
   uploadBook,
 } from './uploads';
 import { api, ApiError } from './api';
@@ -417,5 +419,113 @@ describe('checkBookFile', () => {
       type: 'application/pdf',
     });
     expect(checkBookFile(bigFile)).toMatch(/too large/);
+  });
+});
+
+// ── F-059 — OCR extraction trigger + status reads ──────────────────────────
+
+const RUN_WIRE = {
+  id: 7,
+  upload_id: 9,
+  status: 'done' as const,
+  page_from: 1,
+  page_to: 10,
+  pages_requested: 10,
+  pages_ocred: 10,
+  pages_failed: 0,
+  vocab_inserted: 42,
+  grammar_inserted: 3,
+  words_skipped: 5,
+  error: 'server prose that must never surface',
+  started_at: '2026-07-16T00:00:00Z',
+  finished_at: '2026-07-16T00:01:00Z',
+  created_at: '2026-07-16T00:00:00Z',
+};
+
+const RUN_DOMAIN = {
+  id: 7,
+  status: 'done',
+  pageFrom: 1,
+  pageTo: 10,
+  pagesRequested: 10,
+  pagesOcred: 10,
+  pagesFailed: 0,
+  vocabInserted: 42,
+  grammarInserted: 3,
+  wordsSkipped: 5,
+  startedAt: '2026-07-16T00:00:00Z',
+  finishedAt: '2026-07-16T00:01:00Z',
+  createdAt: '2026-07-16T00:00:00Z',
+};
+
+describe('startExtraction (F-059)', () => {
+  it('POSTs /uploads/:id/extract (encoded) with an EMPTY body — the server owns the default page range', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ run: RUN_WIRE });
+
+    await startExtraction('9/../1');
+
+    const [url, body] = spy.mock.calls[0];
+    expect(url).toBe('/uploads/9%2F..%2F1/extract');
+    expect(body).toEqual({});
+  });
+
+  it('maps the settled run wire → domain (snake→camel) and DROPS upload_id + the server error prose', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({ run: RUN_WIRE });
+
+    const out = await startExtraction('9');
+
+    expect(out).toEqual(RUN_DOMAIN);
+    expect(out).not.toHaveProperty('error');
+    expect(out).not.toHaveProperty('upload_id');
+  });
+
+  it('overrides the app-wide 10s timeout (a synchronous 10-page Vision run legitimately takes minutes) and threads the signal', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ run: RUN_WIRE });
+    const ctrl = new AbortController();
+
+    await startExtraction('9', ctrl.signal);
+
+    const [, , config] = spy.mock.calls[0];
+    expect(config?.timeout).toBeGreaterThan(10_000);
+    expect(config?.signal).toBe(ctrl.signal);
+  });
+
+  it('rethrows ApiError (409 live-run / 429 daily cap) untouched for the caller to map to fixed copy', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('daily cap', { status: 429, code: 'rate_limited' }),
+    );
+    await expect(startExtraction('9')).rejects.toMatchObject({ status: 429 });
+  });
+});
+
+describe('listExtractions (F-059)', () => {
+  it('GETs /uploads/:id/extract (encoded, signal threaded) and maps runs + max_pages_per_run', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      runs: [RUN_WIRE],
+      max_pages_per_run: 20,
+    });
+    const ctrl = new AbortController();
+
+    const out = await listExtractions('9', ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/uploads/9/extract', { signal: ctrl.signal });
+    expect(out.maxPagesPerRun).toBe(20);
+    expect(out.runs).toEqual([RUN_DOMAIN]);
+  });
+
+  it('empty history: passes { runs: [] } through with the ceiling intact', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ runs: [], max_pages_per_run: 20 });
+
+    const out = await listExtractions('9');
+
+    expect(out.runs).toEqual([]);
+    expect(out.maxPagesPerRun).toBe(20);
+  });
+
+  it('rethrows ApiError on a not-found (other-user) upload', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+    await expect(listExtractions('9')).rejects.toMatchObject({ status: 404 });
   });
 });

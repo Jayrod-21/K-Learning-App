@@ -1043,6 +1043,38 @@ export interface SavedFromUploadsResponse {
   truncated: boolean;
 }
 
+/** One saved grammar pattern inside a `GrammarSavedFromUploadsGroup`
+ *  (F-056 — the grammar mirror of `SavedFromUploadEntry`). */
+export interface GrammarSavedFromUploadEntry {
+  id: number;
+  /** Hangul display form (`grammar_entries.pattern_display`). */
+  pattern: string;
+  /** One-line English gloss (`grammar_entries.summary_en`). */
+  summary: string;
+  /** ISO timestamp of the save (the bank row's `created_at`). */
+  savedAt: string;
+}
+
+/**
+ * One upload's worth of saved grammar from `GET /grammar/saved-from-uploads`
+ * (F-056) — the read behind the Review→Grammar Uploads view's saved
+ * section. Groups arrive newest-upload-first, entries newest-saved-first;
+ * only uploads the caller owns can ever appear (server-enforced).
+ */
+export interface GrammarSavedFromUploadsGroup {
+  upload: { id: number; title: string };
+  entries: GrammarSavedFromUploadEntry[];
+}
+
+/** Envelope for `GET /grammar/saved-from-uploads` (F-056) — same
+ *  `total`/`truncated` whole-groups contract as `SavedFromUploadsResponse`
+ *  (see those field docs; the grammar route mirrors the vocab one). */
+export interface GrammarSavedFromUploadsResponse {
+  groups: GrammarSavedFromUploadsGroup[];
+  total: number;
+  truncated: boolean;
+}
+
 /**
  * Envelope returned by `POST /vocab/mine`. Mirrors the server builder shape:
  * the upserted shared `vocab_entries.id` plus the user-scoped recognition
@@ -2361,6 +2393,52 @@ export interface BookUpload {
 export interface Page {
   id: string;
   pageNumber: number;
+}
+
+/**
+ * One OCR extraction run's lifecycle state (F-059/F-108). `pending` is
+ * reserved server-side for a future async runner — the current synchronous
+ * pipeline claims straight into `running` and settles `done`/`failed`, but a
+ * client can still OBSERVE `running` (a run triggered from another tab, or
+ * one orphaned by a server restart until the stale-reap claims it).
+ */
+export type ExtractionRunStatus = 'pending' | 'running' | 'done' | 'failed';
+
+/**
+ * One OCR extraction run over an upload's page range, as `startExtraction` /
+ * `listExtractions` (services/uploads.ts) resolve it — the in-app shape for
+ * `POST /uploads/:id/extract` (the settled run) and `GET
+ * /uploads/:id/extract` (the run history, newest first). Wire (`routes/
+ * uploads.ts` → `services/uploadExtract.ts`'s `ExtractionRunDTO`) is
+ * snake_case; the service maps it here. Two wire fields are deliberately
+ * NOT carried across: `upload_id` (always the id the caller asked about —
+ * the parent route 404s any other) and `error` (server-generated prose; the
+ * app's fixed-copy rule forbids echoing it, so the client renders its own
+ * copy off `status === 'failed'` instead).
+ */
+export interface ExtractionRun {
+  id: number;
+  status: ExtractionRunStatus;
+  /** 1-based inclusive page range this run covered. */
+  pageFrom: number;
+  pageTo: number;
+  pagesRequested: number;
+  pagesOcred: number;
+  pagesFailed: number;
+  vocabInserted: number;
+  grammarInserted: number;
+  wordsSkipped: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
+/** `GET /uploads/:id/extract`'s resolved envelope — the run history (newest
+ *  first, server-bounded) plus the server's per-run page ceiling (the F-059
+ *  button surfaces it as a "scans up to N pages at a time" hint). */
+export interface ExtractionRuns {
+  runs: ExtractionRun[];
+  maxPagesPerRun: number;
 }
 
 // ─────────────────────────────────────────────────────────────

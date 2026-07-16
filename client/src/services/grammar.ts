@@ -18,6 +18,7 @@ import type {
   BookLevel,
   ContentDomain,
   GrammarMasteryPage,
+  GrammarSavedFromUploadsResponse,
   IdentifyPatternBody,
   KgiuEntryDetail,
   KgiuEntrySummary,
@@ -104,6 +105,32 @@ export async function listBanked(
   // Same BIGINT-as-string wire leak as `listPatterns` — coerce `id` so it
   // matches the numeric ids the graduate/readmit envelopes carry.
   return { ...res, entries: res.entries.map((e) => ({ ...e, id: Number(e.id) })) };
+}
+
+/**
+ * GET /grammar/saved-from-uploads — the user's banked grammar that carries
+ * upload provenance, grouped by source upload (F-056; feeds the saved
+ * section of Review→Grammar's Uploads view — the exact grammar mirror of
+ * `services/vocab.ts`'s `fetchSavedFromUploads`, F-053/F-107).
+ *
+ * "Saved" = the user banked the pattern via `POST /grammar/bank` with a
+ * `source_upload_id` (ownership-validated server-side). Distinct from the
+ * same view's EXTRACTED content (`listPatterns({ source_upload_id })`,
+ * F-108): this is only what the user chose to keep. The server scopes
+ * everything to the session user, so only the caller's own uploads (and
+ * titles) can ever appear. Returns the full envelope: `groups` (empty = the
+ * honest "nothing saved from uploads yet" state) plus `total`/`truncated`,
+ * which say when the server's 500-row cap trimmed the response — the server
+ * drops (never splits) a group the cap would cut mid-group, so the flag is
+ * the only sign more saves exist.
+ */
+export async function fetchGrammarSavedFromUploads(
+  signal?: AbortSignal,
+): Promise<GrammarSavedFromUploadsResponse> {
+  return api.get<GrammarSavedFromUploadsResponse>(
+    '/grammar/saved-from-uploads',
+    signal !== undefined ? { signal } : undefined,
+  );
 }
 
 /**

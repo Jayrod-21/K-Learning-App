@@ -293,6 +293,23 @@ describe('ReviewVocab — SavedFromUploads (F-053, wired by F-107)', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders the tile with the truncation note even when groups is EMPTY (truncated degenerate — batch-5 NIT-A)', async () => {
+    // One group bigger than the server's whole-groups row cap drops
+    // entirely → zero groups but truncated=true. The old early-return on
+    // `groups.length === 0` made the note unreachable — the only signal
+    // that saves exist at all was silently swallowed.
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: [],
+      total: 505,
+      truncated: true,
+    });
+    renderPage();
+    expect(
+      await screen.findByRole('button', { name: '내 업로드 · My uploads' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/most recent saves only/i)).toBeInTheDocument();
+  });
+
   it('renders nothing at all when the fetch resolves empty (honest F-053 empty state)', async () => {
     vocabSvc.fetchSavedFromUploads.mockResolvedValue({
       groups: [],

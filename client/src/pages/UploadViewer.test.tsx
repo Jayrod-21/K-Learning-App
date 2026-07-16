@@ -35,6 +35,8 @@ const uploadsSvc = vi.hoisted(() => ({
   getUpload: vi.fn(),
   listPages: vi.fn(),
   reorderPages: vi.fn(),
+  startExtraction: vi.fn(),
+  listExtractions: vi.fn(),
   // Mirrors the real `pageUrl`'s cache-bust contract (services/uploads.ts):
   // a positive 4th arg appends `?r=<token>`, omitted/0 stays a bare path —
   // needed so tests below can assert Retry actually changes the requested
@@ -49,6 +51,27 @@ vi.mock('../services/uploads', () => uploadsSvc);
 
 // Imported AFTER the mock so the module under test binds the mocked service.
 import UploadViewer from './UploadViewer';
+import type { ExtractionRun } from '../types/domain';
+
+/** A settled extraction run (F-059) — override per test. */
+function extractionRun(overrides: Partial<ExtractionRun> = {}): ExtractionRun {
+  return {
+    id: 1,
+    status: 'done',
+    pageFrom: 1,
+    pageTo: 10,
+    pagesRequested: 10,
+    pagesOcred: 10,
+    pagesFailed: 0,
+    vocabInserted: 42,
+    grammarInserted: 3,
+    wordsSkipped: 5,
+    startedAt: '2026-07-16T00:00:00Z',
+    finishedAt: '2026-07-16T00:01:00Z',
+    createdAt: '2026-07-16T00:00:00Z',
+    ...overrides,
+  };
+}
 
 const READY: BookUpload = {
   id: '9',
@@ -206,7 +229,12 @@ beforeEach(() => {
   uploadsSvc.getUpload.mockReset();
   uploadsSvc.listPages.mockReset();
   uploadsSvc.reorderPages.mockReset();
+  uploadsSvc.startExtraction.mockReset();
+  uploadsSvc.listExtractions.mockReset();
   uploadsSvc.getUpload.mockResolvedValue(READY);
+  // F-059 default: no prior runs, so the status strip stays hidden and the
+  // Extract button is enabled for every test that knows nothing about OCR.
+  uploadsSvc.listExtractions.mockResolvedValue({ runs: [], maxPagesPerRun: 20 });
 });
 
 afterEach(() => {
@@ -534,20 +562,201 @@ describe('UploadViewer — F-057 rotation', () => {
   });
 });
 
-// F-059 — no OCR backend exists yet (U2 is a later, separate phase — see
-// server/src/routes/uploads.ts). The control is rendered honestly disabled
-// with VISIBLE coming-soon copy, never wired to a nonexistent endpoint.
-describe('UploadViewer — F-059 OCR control (not yet available)', () => {
-  it('renders Extract text disabled with visible coming-soon copy', async () => {
-    renderViewer();
+// F-059 — the OCR trigger, wired to the F-108/U2 backend (module header
+// §"OCR"): POST with no body (server default slice), busy while in flight,
+// the settled run in the status strip, fixed copy for every documented
+// error (409/429/400/404), and honest disabling while a run observed via
+// GET is still live.
+describe('UploadViewer — F-059 OCR trigger (wired to F-108)', () => {
+  it('renders the Extract text button enabled once the book is viewable, and reads the run history', async () => {
+    renderViewer('9');
     await screen.findByText('1 / 5');
 
-    const btn = screen.getByRole('button', {
-      name: 'Extract text (OCR) — coming soon',
+    const btn = screen.getByRole('button', { name: 'Extract text from this book' });
+    expect(btn).toBeEnabled();
+    await waitFor(() => {
+      expect(uploadsSvc.listExtractions).toHaveBeenCalledWith('9', expect.anything());
     });
-    expect(btn).toBeDisabled();
-    // The "coming soon" lives in the visible label — not a hover tooltip.
-    expect(screen.getByText('Extract text (coming soon)')).toBeInTheDocument();
+    // No prior runs → no status strip yet.
+    expect(screen.queryByRole('status', { name: 'Extraction status' })).not.toBeInTheDocument();
+    // The retired coming-soon copy must stay gone.
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+  });
+
+  it('POSTs the trigger on click, shows a busy/disabled state in flight, then renders the settled run with counts', async () => {
+    let settle!: (run: ExtractionRun) => void;
+    uploadsSvc.startExtraction.mockReturnValue(
+      new Promise<ExtractionRun>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+    expect(uploadsSvc.startExtraction).toHaveBeenCalledTimes(1);
+    expect(uploadsSvc.startExtraction).toHaveBeenCalledWith('9', expect.anything());
+
+    // In flight: disabled + busy label.
+    const busy = screen.getByRole('button', { name: 'Extract text from this book' });
+    expect(busy).toBeDisabled();
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByText('Extracting…')).toBeInTheDocument();
+
+    settle(extractionRun({ pageFrom: 1, pageTo: 10, vocabInserted: 42, grammarInserted: 3 }));
+    // Settled: the status strip announces the run's real counts and the
+    // button is usable again.
+    expect(
+      await screen.findByText(/Extracted pages 1–10: 42 words and 3 grammar patterns saved\./),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Extract text from this book' }),
+    ).toBeEnabled();
+    // The per-run ceiling hint (from the GET) rides along.
+    expect(screen.getByText(/up to 20 pages/)).toBeInTheDocument();
+  });
+
+  it('mentions unreadable pages when a done run has pages_failed > 0', async () => {
+    uploadsSvc.startExtraction.mockResolvedValue(
+      extractionRun({ pagesOcred: 8, pagesFailed: 2 }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+    expect(
+      await screen.findByText(/2 pages could not be read/),
+    ).toBeInTheDocument();
+  });
+
+  it('a run that settles FAILED shows fixed copy — never the run row’s server error prose', async () => {
+    uploadsSvc.startExtraction.mockResolvedValue(
+      extractionRun({ status: 'failed', pagesOcred: 0, vocabInserted: 0, grammarInserted: 0 }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+    expect(
+      await screen.findByText(/The last extraction failed\. Try again\./),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    [409, undefined, /already running for this book/],
+    [429, undefined, /Daily extraction limit reached — try again tomorrow/],
+    [400, undefined, /page range isn.t valid/],
+    [404, undefined, /could not be found/],
+  ] as const)(
+    'a %s from the trigger surfaces its own fixed copy',
+    async (status, retryAfter, expected) => {
+      uploadsSvc.startExtraction.mockRejectedValue(
+        new ApiError('server prose that must never render', {
+          status,
+          code: 'x',
+          ...(retryAfter !== undefined ? { retryAfter } : {}),
+        }),
+      );
+      const user = userEvent.setup();
+      renderViewer('9');
+      await screen.findByText('1 / 5');
+
+      await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+      expect(await screen.findByText(expected)).toBeInTheDocument();
+      // Fixed copy only — the server's message text never renders.
+      expect(
+        screen.queryByText(/server prose that must never render/),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it('a 429 with a structured retry hint surfaces the numeric hint', async () => {
+    uploadsSvc.startExtraction.mockRejectedValue(
+      new ApiError('cap', { status: 429, code: 'rate_limited', retryAfter: 3600 }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+    expect(
+      await screen.findByText(/Try again in about 3600 seconds/),
+    ).toBeInTheDocument();
+  });
+
+  it('a 409 also refreshes the run history so the live run it implies becomes visible', async () => {
+    uploadsSvc.startExtraction.mockRejectedValue(
+      new ApiError('conflict', { status: 409, code: 'conflict' }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+    await waitFor(() => {
+      expect(uploadsSvc.listExtractions).toHaveBeenCalledTimes(1);
+    });
+
+    // The re-read reveals the run another tab started.
+    uploadsSvc.listExtractions.mockResolvedValue({
+      runs: [extractionRun({ status: 'running' })],
+      maxPagesPerRun: 20,
+    });
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+
+    expect(await screen.findByText(/already running for this book/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(uploadsSvc.listExtractions).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findByText(/An extraction is running \(pages 1–10\)/)).toBeInTheDocument();
+    // And the trigger is now honestly disabled against the live run.
+    expect(
+      screen.getByRole('button', { name: 'Extract text (an extraction is already running)' }),
+    ).toBeDisabled();
+  });
+
+  it('a live run already in the GET history disables the trigger, and Refresh status re-reads it', async () => {
+    uploadsSvc.listExtractions.mockResolvedValue({
+      runs: [extractionRun({ status: 'running', pageFrom: 11, pageTo: 20 })],
+      maxPagesPerRun: 20,
+    });
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    expect(
+      await screen.findByText(/An extraction is running \(pages 11–20\)/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Extract text (an extraction is already running)' }),
+    ).toBeDisabled();
+    expect(uploadsSvc.startExtraction).not.toHaveBeenCalled();
+
+    // The manual refresh (no poll loop — module header §"OCR") re-reads the
+    // history; a settled run re-enables the trigger.
+    uploadsSvc.listExtractions.mockResolvedValue({
+      runs: [extractionRun({ status: 'done', pageFrom: 11, pageTo: 20 })],
+      maxPagesPerRun: 20,
+    });
+    await user.click(screen.getByRole('button', { name: 'Refresh extraction status' }));
+    expect(await screen.findByText(/Extracted pages 11–20/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Extract text from this book' }),
+    ).toBeEnabled();
+  });
+
+  it('a failed history read stays silent and leaves the trigger usable (best-effort status surface)', async () => {
+    uploadsSvc.listExtractions.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    expect(
+      screen.getByRole('button', { name: 'Extract text from this book' }),
+    ).toBeEnabled();
+    expect(screen.queryByText('boom')).not.toBeInTheDocument();
   });
 });
 
