@@ -60,13 +60,28 @@
  * are known (image still loading) a plain in-place rotation renders as a
  * best-effort fallback and self-corrects on `load`.
  *
- * OCR / "Extract text" (F-059): the control is rendered DISABLED with
- * explicit "coming soon" copy — no OCR backend exists yet (the U2
- * extraction pipeline is ticket F-108; `server/src/routes/uploads.ts`
- * header is authoritative: "NO extraction/OCR happens here"). Deliberately
- * honest: a live-looking button POSTing to a nonexistent endpoint would be
- * a fabricated feature. When F-108 lands, wire this button to its trigger
- * route and drop `disabled`.
+ * OCR / "Extract text" (F-059, wired to the F-108/U2 backend): the toolbar
+ * button POSTs `/uploads/:id/extract` with NO body — omitting the optional
+ * page range asks the server for its own "resume after the last done run"
+ * default slice (a bounded 10-page bite, half the 20-page per-run ceiling),
+ * so the zero-config tap never scans the whole book and never spends the
+ * daily Vision budget in one go. The POST is SYNCHRONOUS server-side (the
+ * response IS the settled run, done/failed with counts), so the button's
+ * own lifecycle is: disabled + "Extracting…" while the POST is in flight →
+ * the settled run prepends the local history and renders in the status
+ * strip below the toolbar. `GET /uploads/:id/extract` (fetched when the
+ * viewer becomes viewable, best-effort) seeds that history: if ITS latest
+ * run is still live (a run triggered from another tab, or one orphaned by a
+ * server restart until the stale-reap settles it), the button is disabled
+ * with an honest "already running" state and a manual "Refresh status"
+ * re-reads the GET — a poll loop was deliberately NOT added: runs settle
+ * within the triggering request in this synchronous design, so the only
+ * observable-live case is the cross-tab/orphan one above, which a manual
+ * refresh covers without a background timer to leak or test around.
+ * Every documented error maps to FIXED copy (never echoed server prose,
+ * including the run row's own `error` column): 409 → already running,
+ * 429 → daily limit (surfacing the structured numeric retry hint when the
+ * server provides one), 400 → bad page range, 404 → not found.
  *
  * Reorder tool (Jared: vFlat retakes can land out of order — design doc
  * REVISION): a "Reorder pages" mode with a numeric "move page N to position"
@@ -218,8 +233,15 @@ import { PageHubHeader } from '../components/PageHubHeader';
 import { useToast } from '../components/useToast';
 import { errorMessageFor } from '../lib/errorCopy';
 import { ApiError } from '../services/api';
-import { getUpload, listPages, pageUrl, reorderPages } from '../services/uploads';
-import type { BookUpload, Page } from '../types/domain';
+import {
+  getUpload,
+  listExtractions,
+  listPages,
+  pageUrl,
+  reorderPages,
+  startExtraction,
+} from '../services/uploads';
+import type { BookUpload, ExtractionRun, Page } from '../types/domain';
 import './UploadViewer.css';
 
 /** Zoom is a multiplier of the container width — 1 = exact fit-width. */
@@ -297,6 +319,61 @@ function touchById(list: TouchList, id: number): Touch | null {
     if (t && t.identifier === id) return t;
   }
   return null;
+}
+
+/**
+ * F-059 — fixed user-facing copy for a failed extract trigger, keyed on the
+ * STRUCTURED `ApiError` status only (lib/errorCopy.ts's contract: server
+ * prose — including the run row's own `error` column — is never echoed into
+ * the UI). Every error the extract route documents gets its own honest
+ * message; the 429 branch interpolates the structured NUMERIC retry hint
+ * when the server provides one — a number, not prose.
+ */
+function extractErrorCopy(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 409) {
+      return 'An extraction is already running for this book — give it a minute, then refresh the status below.';
+    }
+    if (err.status === 429) {
+      return err.retryAfter !== undefined
+        ? `Daily extraction limit reached. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : 'Daily extraction limit reached — try again tomorrow.';
+    }
+    if (err.status === 400 && err.code === 'validation_error') {
+      // The trigger always POSTs an EMPTY body (services/uploads.ts), so the
+      // route's range validations (inverted/oversized range) can't fire —
+      // the only validation_error left is the server's "no pages in the
+      // resume-default range" (uploadExtract.ts), i.e. nothing unscanned
+      // remains. A 400 with any OTHER code is an upstream Vision rejection
+      // passed through by mapClaudeError, which is NOT a "fully scanned"
+      // situation — it falls through to the generic fixed fallback below.
+      return 'Nothing left to extract — this book may already be fully scanned.';
+    }
+    if (err.status === 404) {
+      return 'This book could not be found — it may have been deleted.';
+    }
+  }
+  return errorMessageFor(err, 'Could not extract text. Try again.');
+}
+
+/**
+ * F-059 — bilingual copy for a DONE run's status line: the page range it
+ * covered, the real persisted counts, and (only when non-zero) how many
+ * pages the OCR couldn't read. Pure string building — pulled out of the JSX
+ * so the nesting stays readable.
+ */
+function doneRunCopy(run: ExtractionRun): { en: string; kr: string } {
+  const range = `${String(run.pageFrom)}–${String(run.pageTo)}`;
+  const failedEn =
+    run.pagesFailed > 0
+      ? ` (${String(run.pagesFailed)} page${run.pagesFailed === 1 ? '' : 's'} could not be read)`
+      : '';
+  const failedKr =
+    run.pagesFailed > 0 ? ` (읽지 못한 페이지 ${String(run.pagesFailed)}개)` : '';
+  return {
+    en: `Extracted pages ${range}: ${String(run.vocabInserted)} words and ${String(run.grammarInserted)} grammar patterns saved${failedEn}.`,
+    kr: `${range}쪽 추출 완료: 단어 ${String(run.vocabInserted)}개 · 문형 ${String(run.grammarInserted)}개 저장${failedKr}.`,
+  };
 }
 
 /** Clockwise page rotation, degrees. Only quarter turns make sense for scans. */
@@ -619,24 +696,20 @@ export default function UploadViewer(): JSX.Element {
     // fetch from an effect keyed on `id` is the correct place, not something
     // to hoist out of an effect.
     //
-    // `eslint-plugin-react-hooks`'s `set-state-in-effect` rule fires here
-    // (confirmed real, not stale, via `--report-unused-disable-directives`)
-    // on the SYNCHRONOUS `setMetaState('loading')` + seed `setPageNum` that
-    // `loadMeta` runs BEFORE its `await` (plus the no-`id` early
-    // `setMetaState('error')` branch) — NOT on anything after the await,
-    // which is a separate concern already covered by the `ctrl.signal.
-    // aborted` guards below. Those synchronous writes are safe: on first
-    // mount they're redundant no-ops (state is already at those initial
-    // values, so React bails without a re-render); on an `id` change
-    // without unmount (navigating from one book straight to another via the
-    // same route) they're an intentional, correct "reset prop-derived state
-    // when the identity prop changes," and nothing downstream can race
-    // because `loadMeta`'s only dep is `id` and every write after its await
-    // is itself guarded. The rule does not trip on the
-    // structurally-identical `load()` effect in Uploads.tsx — a same-file
-    // quirk of the rule's heuristic (confirmed by lint), not evidence the
-    // hazard differs there.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    // `eslint-plugin-react-hooks`'s `set-state-in-effect` rule USED to fire
+    // here (on the SYNCHRONOUS `setMetaState('loading')` + seed `setPageNum`
+    // that `loadMeta` runs BEFORE its `await`, plus the no-`id` early
+    // `setMetaState('error')` branch) and carried a suppression with a long
+    // safety argument; after the F-059 additions elsewhere in this component
+    // the rule's per-file heuristic no longer reports it (flagged as an
+    // unused directive by `--report-unused-disable-directives`), so the
+    // suppression is gone. The safety reasoning still holds and is kept for
+    // the day the heuristic swings back: those synchronous writes are
+    // no-ops on first mount (state already at initial values — React bails
+    // without a re-render), and on an `id` change without unmount they're
+    // the intentional "reset prop-derived state when the identity prop
+    // changes"; every write after the await is guarded by
+    // `ctrl.signal.aborted`.
     loadMeta();
     return () => {
       metaCtrlRef.current?.abort();
@@ -1042,6 +1115,100 @@ export default function UploadViewer(): JSX.Element {
   const title = meta?.title ?? 'Book';
   const canView = metaState === 'ready' && meta?.status === 'ready' && !!pageCount && pageCount > 0;
 
+  // ── F-059 — OCR extraction trigger + status (module header §"OCR") ──
+  // `extractRuns` is the local mirror of the GET's newest-first history:
+  // null = never loaded (best-effort — a failed read leaves the trigger
+  // usable; the server re-fences every POST anyway), [] = loaded, no runs.
+  const [extractRuns, setExtractRuns] = useState<ExtractionRun[] | null>(null);
+  const [maxPagesPerRun, setMaxPagesPerRun] = useState<number | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const extractCtrlRef = useRef<AbortController | null>(null);
+  const runsCtrlRef = useRef<AbortController | null>(null);
+
+  // Returns a promise (never rejects — best-effort) so `extract()` can AWAIT
+  // the re-read on a timeout failure before its `finally` re-enables the
+  // trigger; fire-and-forget callers just `void` it.
+  const loadRuns = useCallback(async (): Promise<void> => {
+    if (!id) return;
+    const ctrl = new AbortController();
+    runsCtrlRef.current?.abort();
+    runsCtrlRef.current = ctrl;
+    try {
+      const res = await listExtractions(id, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      setExtractRuns(res.runs);
+      setMaxPagesPerRun(res.maxPagesPerRun);
+    } catch {
+      // Best-effort — see the state comment above. The status strip is a
+      // supplementary surface; a failed history read must not error the
+      // whole viewer or brick the trigger.
+    }
+  }, [id]);
+
+  // Seed the run history once the book is actually viewable (same gate as
+  // the page <img> itself — a processing/failed upload can't be extracted,
+  // and the GET 404s a foreign id anyway).
+  useEffect(() => {
+    if (!canView) return;
+    void loadRuns();
+    return () => {
+      runsCtrlRef.current?.abort();
+    };
+  }, [canView, loadRuns]);
+
+  // Abort a still-pending extract POST on unmount (the server-side run
+  // continues and settles regardless — aborting only drops OUR wait on it;
+  // the next visit's history read shows the settled result).
+  useEffect(() => {
+    return () => {
+      extractCtrlRef.current?.abort();
+    };
+  }, []);
+
+  const latestRun = extractRuns?.[0] ?? null;
+  // A live run observed via GET (another tab / an orphan the stale-reap
+  // hasn't settled yet) — the trigger must stay disabled, honestly.
+  const runLive =
+    latestRun !== null &&
+    (latestRun.status === 'pending' || latestRun.status === 'running');
+
+  const extract = useCallback(async (): Promise<void> => {
+    if (!id || extracting) return;
+    const ctrl = new AbortController();
+    extractCtrlRef.current?.abort();
+    extractCtrlRef.current = ctrl;
+    setExtracting(true);
+    setExtractError(null);
+    try {
+      // Body deliberately empty — the server's bounded resume-default slice
+      // (module header §"OCR"); the response is the SETTLED run.
+      const run = await startExtraction(id, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      // Prepend — keeps the local history in the GET's newest-first order.
+      setExtractRuns((prev) => [run, ...(prev ?? [])]);
+    } catch (err) {
+      if (ctrl.signal.aborted) return;
+      if (err instanceof ApiError && err.code === 'canceled') return;
+      setExtractError(extractErrorCopy(err));
+      // A 409 means a run IS live server-side; a client TIMEOUT means one
+      // MAY still be — the synchronous run keeps going after our 5-minute
+      // wait expires (see EXTRACT_TIMEOUT_MS, services/uploads.ts). In both
+      // cases re-read the history and AWAIT it, so a still-live run lands in
+      // state BEFORE the `finally` clears `extracting` — `runLive` then
+      // keeps the trigger honestly disabled (with the live strip + Refresh
+      // visible) instead of offering a retry that's doomed to a 409.
+      if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.code === 'timeout')
+      ) {
+        await loadRuns();
+      }
+    } finally {
+      if (!ctrl.signal.aborted) setExtracting(false);
+    }
+  }, [id, extracting, loadRuns]);
+
   return (
     <section
       className="screen km-upload-viewer km-rain-sheen"
@@ -1169,23 +1336,100 @@ export default function UploadViewer(): JSX.Element {
               />
             </Button>
 
-            {/* F-059 — honestly disabled until the U2 OCR pipeline (ticket
-                F-108) exists server-side (module header §"OCR"). The
-                "coming soon" is in the VISIBLE label, not a hover-only
-                tooltip, so keyboard and touch users get the same
-                information. */}
+            {/* F-059 — the live OCR trigger (module header §"OCR"). Zero-
+                config: the POST omits the page range, so the server's own
+                bounded resume-default slice runs — never the whole book.
+                Disabled while OUR POST is in flight (busy label) or while
+                the latest known run is still live (cross-tab/orphan case —
+                the server would 409 the tap anyway; disabling is the honest
+                surface for the same fact). */}
             <Button
               variant="ghost"
               size="sm"
-              disabled
-              aria-label="Extract text (OCR) — coming soon"
+              onClick={() => {
+                void extract();
+              }}
+              disabled={extracting || runLive}
+              aria-busy={extracting}
+              aria-label={
+                runLive && !extracting
+                  ? 'Extract text (an extraction is already running)'
+                  : 'Extract text from this book'
+              }
             >
-              <Bilingual
-                en="Extract text (coming soon)"
-                kr="텍스트 추출 (준비 중)"
-                compact
-              />
+              {extracting ? (
+                <Bilingual en="Extracting…" kr="추출 중…" compact />
+              ) : (
+                <Bilingual en="Extract text" kr="텍스트 추출" compact />
+              )}
             </Button>
+          </div>
+
+          {/* F-059 — extraction feedback: fixed-copy errors above, the
+              latest run's status below. The status message lives in a
+              `role="status"` live region that is ALWAYS rendered — empty
+              until a run exists — because most SR/browser pairs only
+              announce changes made INSIDE a pre-existing live region;
+              mounting the region together with its first message would
+              leave the first settled run of a session silent. Only the
+              message text sits inside the region — the Refresh control and
+              the page-ceiling hint are siblings, so region updates announce
+              the status alone. */}
+          {extractError !== null ? <ErrorCard message={extractError} /> : null}
+          <div
+            className={
+              latestRun !== null
+                ? 'km-upload-viewer__extract'
+                : 'km-upload-viewer__extract km-upload-viewer__extract--idle'
+            }
+          >
+            <span role="status" aria-label="Extraction status">
+              {latestRun === null ? null : latestRun.status === 'done' ? (
+                <Bilingual
+                  en={doneRunCopy(latestRun).en}
+                  kr={doneRunCopy(latestRun).kr}
+                  compact
+                />
+              ) : latestRun.status === 'failed' ? (
+                // Fixed copy — the run row carries a server-side `error`
+                // string, but prose is never echoed (lib/errorCopy contract).
+                <Bilingual
+                  en="The last extraction failed. Try again."
+                  kr="마지막 추출이 실패했어요. 다시 시도해 주세요."
+                  compact
+                />
+              ) : (
+                <Bilingual
+                  en={`An extraction is running (pages ${String(latestRun.pageFrom)}–${String(latestRun.pageTo)})…`}
+                  kr={`추출 진행 중 (${String(latestRun.pageFrom)}–${String(latestRun.pageTo)}쪽)…`}
+                  compact
+                />
+              )}
+            </span>
+            {runLive ? (
+              // Manual refresh instead of a poll loop — module header §"OCR"
+              // has the rationale (runs settle inside the triggering request;
+              // only cross-tab/orphan runs are ever observable here).
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void loadRuns();
+                }}
+                aria-label="Refresh extraction status"
+              >
+                <Bilingual en="Refresh status" kr="상태 새로 고침" compact />
+              </Button>
+            ) : null}
+            {latestRun !== null && maxPagesPerRun !== null ? (
+              <span className="km-upload-viewer__extract-hint">
+                <Bilingual
+                  en={`Each run scans up to ${String(maxPagesPerRun)} pages, continuing where the last one stopped.`}
+                  kr={`한 번에 최대 ${String(maxPagesPerRun)}쪽씩, 지난 지점부터 이어서 스캔해요.`}
+                  compact
+                />
+              </span>
+            ) : null}
           </div>
 
           {reorderOpen ? (

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   bankPattern,
   fetchGrammarMastery,
+  fetchGrammarSavedFromUploads,
   getPattern,
   identifyPattern,
   listBanked,
@@ -202,5 +203,53 @@ describe('fetchGrammarMastery (F-099)', () => {
       params: {},
       signal: ctrl.signal,
     });
+  });
+});
+
+describe('fetchGrammarSavedFromUploads (F-056)', () => {
+  it('GETs /grammar/saved-from-uploads (signal threaded) and returns the full envelope', async () => {
+    const envelope = {
+      groups: [
+        {
+          upload: { id: 3, title: '새 문법책' },
+          entries: [
+            { id: 41, pattern: '-는 반면에', summary: 'whereas', savedAt: '2026-07-10T00:00:00Z' },
+          ],
+        },
+      ],
+      total: 1,
+      truncated: false,
+    };
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(envelope);
+    const ctrl = new AbortController();
+
+    const out = await fetchGrammarSavedFromUploads(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/grammar/saved-from-uploads', {
+      signal: ctrl.signal,
+    });
+    expect(out).toEqual(envelope);
+  });
+
+  it('empty case: passes { groups: [], total: 0, truncated: false } through untouched (no signal → no options)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      groups: [],
+      total: 0,
+      truncated: false,
+    });
+
+    const out = await fetchGrammarSavedFromUploads();
+
+    expect(spy).toHaveBeenCalledWith('/grammar/saved-from-uploads', undefined);
+    expect(out.groups).toEqual([]);
+    expect(out.total).toBe(0);
+    expect(out.truncated).toBe(false);
+  });
+
+  it('rethrows ApiError on failure', async () => {
+    vi.spyOn(api, 'get').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    await expect(fetchGrammarSavedFromUploads()).rejects.toBeInstanceOf(ApiError);
   });
 });

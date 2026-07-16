@@ -51,6 +51,7 @@ describe('grammar — auth required', () => {
     ['GET', '/grammar/series'],
     ['POST', '/grammar/bank'],
     ['GET', '/grammar/bank'],
+    ['GET', '/grammar/saved-from-uploads'],
     ['POST', '/grammar/bank/1/graduate'],
     ['POST', '/grammar/bank/1/readmit'],
     ['POST', '/grammar/identify'],
@@ -624,6 +625,256 @@ describe('GET /grammar/bank — production-card schedule (F-111)', () => {
     // ...and its schedule is still null: no PRODUCTION card exists for this
     // pattern, so the recognition card must never surface as "practiced".
     expect(res.body.entries[0].schedule).toBeNull();
+  });
+});
+
+describe('GET /grammar/saved-from-uploads (F-056 — the F-053/F-107 grammar mirror)', () => {
+  /** A schema-valid bank body factory — unique pattern_key per call. */
+  let keySeq = 0;
+  function bankBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    keySeq += 1;
+    return {
+      pattern_key: `GR-saved-${String(Date.now())}-${String(keySeq)}`,
+      pattern_display: '-는 바람에',
+      summary_en: 'because of (unexpected cause)',
+      proficiency: 'L3',
+      category: 'reason',
+      ...overrides,
+    };
+  }
+
+  /**
+   * Bulk-seed `count` upload-tagged banked patterns for `userId` — one
+   * set-based INSERT (generate_series), so cap-scale fixtures (500+) stay
+   * milliseconds instead of 500 round trips. pattern_key satisfies the
+   * `^GR-[a-z0-9_-]{1,64}$` CHECK; category 'ending' is in the DB whitelist.
+   */
+  async function seedSavedGrammarBulk(
+    userId: number,
+    uploadId: number,
+    count: number,
+    keyPrefix: string,
+  ): Promise<void> {
+    await pg.pool.query(
+      `INSERT INTO grammar_entries (
+          user_id, pattern_key, pattern_display, summary_en,
+          proficiency, category, source_upload_id)
+       SELECT $1, 'GR-' || $2::text || '-' || g::text, '-문형' || g::text,
+              'pattern ' || g::text, 'L3'::proficiency_level, 'ending', $3
+         FROM generate_series(1, $4::int) AS g`,
+      [userId, keyPrefix, uploadId, count],
+    );
+  }
+
+  it('returns an empty groups array when nothing was banked with upload provenance', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // An untagged banked pattern must NOT appear — saved, but no provenance.
+    await agent.post('/grammar/bank').send(bankBody()).expect(201);
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toEqual([]);
+    expect(res.body.total).toBe(0);
+    expect(res.body.truncated).toBe(false);
+  });
+
+  it('groups saved patterns by upload (newest upload first, title carried), untagged rows excluded', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '옛 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '새 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+
+    const fromNewer = await agent
+      .post('/grammar/bank')
+      .send(
+        bankBody({
+          pattern_display: '-는 반면에',
+          summary_en: 'whereas',
+          source_upload_id: newerUpload,
+        }),
+      );
+    expect(fromNewer.status).toBe(201);
+    const fromOlder = await agent
+      .post('/grammar/bank')
+      .send(
+        bankBody({
+          pattern_display: '-느라고',
+          summary_en: 'because of doing X',
+          source_upload_id: olderUpload,
+        }),
+      );
+    expect(fromOlder.status).toBe(201);
+    // A save with NO provenance must not appear in any group.
+    await agent.post('/grammar/bank').send(bankBody()).expect(201);
+
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toHaveLength(2);
+    expect(res.body.total).toBe(2);
+    expect(res.body.truncated).toBe(false);
+    const [first, second] = res.body.groups as Array<{
+      upload: { id: number; title: string };
+      entries: Array<{ id: number; pattern: string; summary: string; savedAt: string }>;
+    }>;
+    // Newest upload leads.
+    expect(first!.upload).toEqual({ id: newerUpload, title: '새 문법책' });
+    expect(first!.entries).toHaveLength(1);
+    expect(first!.entries[0]!.id).toBe(fromNewer.body.id);
+    expect(first!.entries[0]!.pattern).toBe('-는 반면에');
+    expect(first!.entries[0]!.summary).toBe('whereas');
+    expect(typeof first!.entries[0]!.savedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(first!.entries[0]!.savedAt))).toBe(false);
+    expect(second!.upload).toEqual({ id: olderUpload, title: '옛 문법책' });
+    expect(second!.entries.map((e) => e.pattern)).toEqual(['-느라고']);
+  });
+
+  it('excludes a soft-deleted bank row', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const banked = await agent
+      .post('/grammar/bank')
+      .send(bankBody({ source_upload_id: uploadId }));
+    expect(banked.status).toBe(201);
+    await pg.pool.query(
+      `UPDATE grammar_entries SET deleted_at = now() WHERE id = $1`,
+      [banked.body.id],
+    );
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toEqual([]);
+    expect(res.body.total).toBe(0);
+  });
+
+  it("user-scoped: another user's saves — and rows tagged to another user's upload — never appear (no title leak)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, a.userId, {
+      title: 'A의 문법책',
+      status: 'ready',
+    });
+    await a.agent
+      .post('/grammar/bank')
+      .send(bankBody({ source_upload_id: uploadA }))
+      .expect(201);
+
+    // Direct DB write: a bank row for B tagged to A's upload. The ROUTE
+    // forbids this (ownership 404 at write time) — this simulates any
+    // out-of-band write so the READ's own join predicate (`bu.user_id`)
+    // is positively shown to hide A's title from B, not just rely on the
+    // write-side check.
+    await pg.pool.query(
+      `INSERT INTO grammar_entries (
+          user_id, pattern_key, pattern_display, summary_en,
+          proficiency, category, source_upload_id)
+       VALUES ($1, 'GR-cross-tag', '-지만', 'but', 'L3'::proficiency_level,
+               'connective', $2)`,
+      [b.userId, uploadA],
+    );
+
+    const resA = await a.agent.get('/grammar/saved-from-uploads');
+    expect(resA.status).toBe(200);
+    expect(resA.body.groups).toHaveLength(1);
+    expect(resA.body.groups[0].upload.title).toBe('A의 문법책');
+    // A sees only A's OWN save — never B's cross-tagged row.
+    expect(resA.body.groups[0].entries).toHaveLength(1);
+
+    const resB = await b.agent.get('/grammar/saved-from-uploads');
+    expect(resB.status).toBe(200);
+    // B's cross-tagged row yields NO group (and A's title never leaks).
+    expect(resB.body.groups).toEqual([]);
+    expect(resB.body.total).toBe(0);
+  });
+
+  it('exactly AT the row cap: truncated=false and every group returns whole (boundary pin — `>` not `>=`)', async () => {
+    // Batch-5 re-review NIT-B: nothing pinned the exact-cap-total UNtruncated
+    // boundary, so a `>=` regression in the truncation comparison would slip.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 아래 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 위 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedGrammarBulk(userId, newerUpload, 490, `cap-new-${String(Date.now())}`);
+    await seedSavedGrammarBulk(userId, olderUpload, 10, `cap-old-${String(Date.now())}`);
+
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(false);
+    expect(res.body.total).toBe(500);
+    expect(res.body.groups).toHaveLength(2);
+    expect(res.body.groups[0].entries).toHaveLength(490);
+    expect(res.body.groups[1].entries).toHaveLength(10);
+  });
+
+  it('over the row cap: truncated=true, total is the FULL count, and NO partial group is returned', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // The newest upload's 10 rows lead; the older upload's 495 straddle the
+    // 500-row cap, so the cap lands MID-group — the whole split group must
+    // drop rather than render complete-looking-but-short.
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '큰 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '작은 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedGrammarBulk(userId, newerUpload, 10, `trunc-new-${String(Date.now())}`);
+    await seedSavedGrammarBulk(userId, olderUpload, 495, `trunc-old-${String(Date.now())}`);
+
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('작은 문법책');
+    expect(res.body.groups[0].entries).toHaveLength(10);
+  });
+
+  it('over the row cap with the cut exactly on a group boundary: the last kept group stays (whole), later groups drop, truncated=true', async () => {
+    // B9 fix-pass (server review NIT-1) — the third truncation shape vocab
+    // already pins (vocab.test.ts "cut exactly on a group boundary"):
+    // truncated=true but the sentinel row STARTS a new group, so the
+    // whole-group cap must keep ALL 500 fetched rows rather than dropping
+    // the trailing group. Exercises the `sentinel !== lastKept` branch; a
+    // regression that drops the last kept group whenever truncated (or
+    // returns it split) fails the group/entry-count assertions below.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 뒤 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    // Newest upload fills the cap EXACTLY (500 rows); the older upload's 5
+    // rows are entirely past it — only the flag says that group exists.
+    await seedSavedGrammarBulk(userId, newerUpload, 500, `edge-new-${String(Date.now())}`);
+    await seedSavedGrammarBulk(userId, olderUpload, 5, `edge-old-${String(Date.now())}`);
+
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('경계 문법책');
+    expect(res.body.groups[0].entries).toHaveLength(500);
   });
 });
 

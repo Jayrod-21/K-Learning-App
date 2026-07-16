@@ -12,14 +12,21 @@
  *     labelled `FilterSelect` dropdown (native `<select>` a11y contract).
  *   - F-024: a `BackButton` to `/review` replaces the removed section strip
  *     as the way back up to the library index.
- *   - F-056: an "Uploads" view lists the user's grammar-from-uploads,
- *     grouped by source book. Wired to REAL endpoints (`GET /uploads` +
- *     `GET /grammar/kgiu?source_upload_id=` — the U3a ownership-guarded
- *     filter), but the U2 extraction pipeline (ticket F-108) does not yet
- *     populate `kgiu_entries.source_upload_id`, so every group is empty
- *     today and the view renders its honest empty state until F-108 lands.
- *     (USER-SAVED grammar provenance — the F-053 twin — is the separate
- *     ticket F-107.)
+ *   - F-056: an "Uploads" view with TWO distinct, honestly-separate
+ *     surfaces:
+ *       (a) the user's SAVED grammar grouped by the upload it was saved
+ *           from (`GrammarSavedFromUploads` below — wired to
+ *           `GET /grammar/saved-from-uploads`, reading the F-107
+ *           `grammar_entries.source_upload_id` provenance `POST
+ *           /grammar/bank` records; the exact mirror of Review→Vocabulary's
+ *           F-053 "My uploads" section), and
+ *       (b) the EXTRACTED patterns each book's OCR runs digitised
+ *           (`GET /uploads` + `GET /grammar/kgiu?source_upload_id=` — the
+ *           U3a ownership-guarded filter over F-108's
+ *           `kgiu_entries.source_upload_id`).
+ *     Saved-vs-extracted is a real semantic split (what the user chose to
+ *     keep vs everything a book yielded), so the two never merge into one
+ *     list.
  *
  * Mastery semantics (F-152 — batch-2 fix-pass rewrite, see
  * `docs/redesign/REVIEW_batch2-grammar-mistakes.md`'s "F-152 deep dive" for
@@ -84,7 +91,9 @@ import {
 import { BackButton } from '../../components/BackButton';
 import { Bilingual } from '../../components/Bilingual';
 import { Button } from '../../components/Button';
+import { Card } from '../../components/Card';
 import { CityCard } from '../../components/CityCard';
+import { CollapsibleTile } from '../../components/CollapsibleTile';
 import { ErrorCard } from '../../components/ErrorCard';
 import { Eyebrow } from '../../components/Eyebrow';
 import { FilterSelect } from '../../components/FilterSelect';
@@ -111,6 +120,7 @@ import { listUploads } from '../../services/uploads';
 import { ApiError } from '../../services/api';
 import type {
   BookUpload,
+  GrammarSavedFromUploadsGroup,
   KgiuEntryDetail,
   KgiuEntrySummary,
 } from '../../types/domain';
@@ -638,10 +648,112 @@ function GrammarBrowse({
 }
 
 // ─────────────────────────────────────────────────────────────
-// Uploads (F-056) — the user's grammar-from-uploads, grouped by
-// source book. Real endpoints; empty until the U2 extraction
-// pipeline (F-108) tags kgiu_entries.source_upload_id (see the
-// file header).
+// Saved from uploads (F-056) — the user's SAVED (banked) grammar
+// grouped by the upload it was saved from. The exact grammar
+// mirror of ReviewVocab's `SavedFromUploads` (F-053/F-107);
+// distinct from the EXTRACTED groups below (see the file header's
+// saved-vs-extracted note).
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * F-056 saved-section contract (mirrors ReviewVocab's `SavedFromUploads`):
+ * show grammar the user BANKED while working from a book upload
+ * (`POST /grammar/bank` with `source_upload_id` — F-107, migration 068),
+ * grouped by source upload, and render ONLY when such saves exist.
+ *
+ * Honest empty state = NOTHING renders — with one deliberate exception
+ * (batch-5 re-review NIT-A, fixed here AND back-ported to ReviewVocab): a
+ * `truncated: true` response with ZERO groups (one group bigger than the
+ * server's whole-groups row cap was dropped entirely) still renders the
+ * tile so the truncation note is reachable — returning null there would
+ * silently hide the only signal that saves exist at all. A failed fetch
+ * stays best-effort null (supplementary shelf, same posture as the vocab
+ * twin).
+ *
+ * Threat model: upload titles and saved patterns are the caller's OWN data
+ * (server-scoped to the session user on both legs of the join); strings
+ * render through React text children, so a hostile title cannot escape
+ * into markup.
+ */
+function GrammarSavedFromUploads(): JSX.Element | null {
+  const [groups, setGroups] = useState<GrammarSavedFromUploadsGroup[]>([]);
+  // Truncation signal — the server caps the response at 500 rows and only
+  // ever returns WHOLE groups, so this flag (not any visible gap) is the
+  // sole sign that more saves exist beyond what renders.
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    grammarService
+      .fetchGrammarSavedFromUploads(ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setGroups(res.groups);
+        setTruncated(res.truncated);
+      })
+      .catch(() => {
+        // Best-effort — see the component doc comment above.
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, []);
+
+  // NIT-A: null ONLY when there is genuinely nothing to say — an empty
+  // TRUNCATED response still has the note to show (doc comment above).
+  if (groups.length === 0 && !truncated) return null;
+
+  return (
+    <CollapsibleTile
+      className="km-review-grammar__saved"
+      surface="city"
+      rail
+      title={<Bilingual en="My saved patterns" kr="내 저장 문형" />}
+    >
+      {groups.map((group) => (
+        <section
+          key={`saved-upload:${String(group.upload.id)}`}
+          className="km-review-grammar__savedGroup"
+          aria-label={group.upload.title}
+        >
+          <Eyebrow>{group.upload.title}</Eyebrow>
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {group.entries.map((entry) => (
+                <li
+                  key={`saved:${String(group.upload.id)}:${String(entry.id)}`}
+                  className="km-reference__row"
+                >
+                  <div className="km-resources__entry-row">
+                    <span className="kr km-reference__row-kr">
+                      {entry.pattern}
+                    </span>
+                    <span className="km-reference__row-en">
+                      {entry.summary}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </section>
+      ))}
+      {truncated ? (
+        <p className="km-review-grammar__savedTruncated">
+          <Bilingual
+            en="Showing your most recent saves only"
+            kr="최근 저장 항목만 표시됩니다"
+          />
+        </p>
+      ) : null}
+    </CollapsibleTile>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Uploads (F-056) — the extracted-content half of the view: the
+// user's grammar-from-uploads, grouped by source book (the U2
+// extraction pipeline, F-108, tags kgiu_entries.source_upload_id).
 // ─────────────────────────────────────────────────────────────
 
 interface UploadGrammarGroup {
@@ -713,6 +825,10 @@ function GrammarUploads({
 
   return (
     <div className="km-resources__panel">
+      {/* F-056 — the SAVED half leads the view (what the user chose to
+          keep), independent of the extracted fan-out's own load/error
+          lifecycle below. */}
+      <GrammarSavedFromUploads />
       {loading ? (
         <div className="km-grammar__state" role="status">
           <Bilingual en="Loading your uploads…" kr="업로드를 불러오는 중…" />

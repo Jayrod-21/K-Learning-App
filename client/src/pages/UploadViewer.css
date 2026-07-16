@@ -82,6 +82,37 @@
   flex-wrap: wrap;
 }
 
+/* F-059 — the extraction status strip under the toolbar: one quiet line
+ * (latest run's outcome / progress, plus the per-run page-ceiling hint on
+ * its own row), sized and toned like the page's other secondary state text
+ * (`.km-upload-viewer__hint` below). */
+.km-upload-viewer__extract {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0 8px;
+  font-size: 0.8125rem;
+  color: var(--paper-mute);
+  line-height: 1.5;
+}
+
+/* The strip (and the `role="status"` live region inside it) stays in the
+ * DOM even with no runs — a live region must pre-exist its first content
+ * change to be announced (see the component's F-059 comment). When idle its
+ * only child is an empty span (zero height), so dropping the margins is all
+ * it takes to make the empty strip occupy nothing. NOT `display: none` —
+ * that would defeat the pre-existing-region point. */
+.km-upload-viewer__extract--idle {
+  margin: 0;
+}
+
+.km-upload-viewer__extract-hint {
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: var(--paper-dim);
+}
+
 .km-upload-viewer__card {
   /* Mobile-first (F-129 spirit): the card itself never forces width past
    * its container — it's a block box that fills whatever `.screen` gives

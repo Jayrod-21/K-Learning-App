@@ -18,7 +18,32 @@
   max-width: 240px;
 }
 
-/* F-056 — one group per grammar-bearing upload. */
+/* F-056 — the saved-from-uploads tile (the F-053 vocab mirror): one upload
+ * title (Eyebrow) + its saved-pattern list per group. Spacing mirrors
+ * ReviewVocab.css's `.km-vocab__savedUploadGroup` rules. */
+.km-review-grammar__saved {
+  margin-bottom: 18px;
+}
+
+.km-review-grammar__savedGroup + .km-review-grammar__savedGroup {
+  margin-top: 14px;
+}
+
+.km-review-grammar__savedGroup .km-reference__list {
+  margin-top: 6px;
+}
+
+/* Quiet truncation note under the saved groups — only rendered when the
+ * server's whole-groups row cap trimmed the response (mirrors
+ * `.km-vocab__savedUploadsTruncated`). */
+.km-review-grammar__savedTruncated {
+  margin: 10px 0 0;
+  font-size: 0.8125rem;
+  color: var(--paper-mute);
+  line-height: 1.5;
+}
+
+/* F-056 — one group per grammar-bearing (extracted) upload. */
 .km-review-grammar__group {
   display: grid;
   gap: 8px;
