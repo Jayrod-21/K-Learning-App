@@ -339,8 +339,15 @@ function extractErrorCopy(err: unknown): string {
         ? `Daily extraction limit reached. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
         : 'Daily extraction limit reached — try again tomorrow.';
     }
-    if (err.status === 400) {
-      return 'That page range isn’t valid for this book.';
+    if (err.status === 400 && err.code === 'validation_error') {
+      // The trigger always POSTs an EMPTY body (services/uploads.ts), so the
+      // route's range validations (inverted/oversized range) can't fire —
+      // the only validation_error left is the server's "no pages in the
+      // resume-default range" (uploadExtract.ts), i.e. nothing unscanned
+      // remains. A 400 with any OTHER code is an upstream Vision rejection
+      // passed through by mapClaudeError, which is NOT a "fully scanned"
+      // situation — it falls through to the generic fixed fallback below.
+      return 'Nothing left to extract — this book may already be fully scanned.';
     }
     if (err.status === 404) {
       return 'This book could not be found — it may have been deleted.';
@@ -1119,22 +1126,24 @@ export default function UploadViewer(): JSX.Element {
   const extractCtrlRef = useRef<AbortController | null>(null);
   const runsCtrlRef = useRef<AbortController | null>(null);
 
-  const loadRuns = useCallback((): void => {
+  // Returns a promise (never rejects — best-effort) so `extract()` can AWAIT
+  // the re-read on a timeout failure before its `finally` re-enables the
+  // trigger; fire-and-forget callers just `void` it.
+  const loadRuns = useCallback(async (): Promise<void> => {
     if (!id) return;
     const ctrl = new AbortController();
     runsCtrlRef.current?.abort();
     runsCtrlRef.current = ctrl;
-    listExtractions(id, ctrl.signal)
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setExtractRuns(res.runs);
-        setMaxPagesPerRun(res.maxPagesPerRun);
-      })
-      .catch(() => {
-        // Best-effort — see the state comment above. The status strip is a
-        // supplementary surface; a failed history read must not error the
-        // whole viewer or brick the trigger.
-      });
+    try {
+      const res = await listExtractions(id, ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      setExtractRuns(res.runs);
+      setMaxPagesPerRun(res.maxPagesPerRun);
+    } catch {
+      // Best-effort — see the state comment above. The status strip is a
+      // supplementary surface; a failed history read must not error the
+      // whole viewer or brick the trigger.
+    }
   }, [id]);
 
   // Seed the run history once the book is actually viewable (same gate as
@@ -1142,7 +1151,7 @@ export default function UploadViewer(): JSX.Element {
   // and the GET 404s a foreign id anyway).
   useEffect(() => {
     if (!canView) return;
-    loadRuns();
+    void loadRuns();
     return () => {
       runsCtrlRef.current?.abort();
     };
@@ -1182,9 +1191,19 @@ export default function UploadViewer(): JSX.Element {
       if (ctrl.signal.aborted) return;
       if (err instanceof ApiError && err.code === 'canceled') return;
       setExtractError(extractErrorCopy(err));
-      // A 409 means a run IS live server-side — re-read the history so the
-      // status strip shows the run this tab didn't know about.
-      if (err instanceof ApiError && err.status === 409) loadRuns();
+      // A 409 means a run IS live server-side; a client TIMEOUT means one
+      // MAY still be — the synchronous run keeps going after our 5-minute
+      // wait expires (see EXTRACT_TIMEOUT_MS, services/uploads.ts). In both
+      // cases re-read the history and AWAIT it, so a still-live run lands in
+      // state BEFORE the `finally` clears `extracting` — `runLive` then
+      // keeps the trigger honestly disabled (with the live strip + Refresh
+      // visible) instead of offering a retry that's doomed to a 409.
+      if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.code === 'timeout')
+      ) {
+        await loadRuns();
+      }
     } finally {
       if (!ctrl.signal.aborted) setExtracting(false);
     }
@@ -1347,17 +1366,25 @@ export default function UploadViewer(): JSX.Element {
           </div>
 
           {/* F-059 — extraction feedback: fixed-copy errors above, the
-              latest run's status below. `role="status"` so the settled
-              result of a just-triggered run is announced without stealing
-              focus. */}
+              latest run's status below. The status message lives in a
+              `role="status"` live region that is ALWAYS rendered — empty
+              until a run exists — because most SR/browser pairs only
+              announce changes made INSIDE a pre-existing live region;
+              mounting the region together with its first message would
+              leave the first settled run of a session silent. Only the
+              message text sits inside the region — the Refresh control and
+              the page-ceiling hint are siblings, so region updates announce
+              the status alone. */}
           {extractError !== null ? <ErrorCard message={extractError} /> : null}
-          {latestRun !== null ? (
-            <div
-              className="km-upload-viewer__extract"
-              role="status"
-              aria-label="Extraction status"
-            >
-              {latestRun.status === 'done' ? (
+          <div
+            className={
+              latestRun !== null
+                ? 'km-upload-viewer__extract'
+                : 'km-upload-viewer__extract km-upload-viewer__extract--idle'
+            }
+          >
+            <span role="status" aria-label="Extraction status">
+              {latestRun === null ? null : latestRun.status === 'done' ? (
                 <Bilingual
                   en={doneRunCopy(latestRun).en}
                   kr={doneRunCopy(latestRun).kr}
@@ -1372,37 +1399,38 @@ export default function UploadViewer(): JSX.Element {
                   compact
                 />
               ) : (
-                <>
-                  <Bilingual
-                    en={`An extraction is running (pages ${String(latestRun.pageFrom)}–${String(latestRun.pageTo)})…`}
-                    kr={`추출 진행 중 (${String(latestRun.pageFrom)}–${String(latestRun.pageTo)}쪽)…`}
-                    compact
-                  />
-                  {/* Manual refresh instead of a poll loop — module header
-                      §"OCR" has the rationale (runs settle inside the
-                      triggering request; only cross-tab/orphan runs are
-                      ever observable here). */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={loadRuns}
-                    aria-label="Refresh extraction status"
-                  >
-                    <Bilingual en="Refresh status" kr="상태 새로 고침" compact />
-                  </Button>
-                </>
+                <Bilingual
+                  en={`An extraction is running (pages ${String(latestRun.pageFrom)}–${String(latestRun.pageTo)})…`}
+                  kr={`추출 진행 중 (${String(latestRun.pageFrom)}–${String(latestRun.pageTo)}쪽)…`}
+                  compact
+                />
               )}
-              {maxPagesPerRun !== null ? (
-                <span className="km-upload-viewer__extract-hint">
-                  <Bilingual
-                    en={`Each run scans up to ${String(maxPagesPerRun)} pages, continuing where the last one stopped.`}
-                    kr={`한 번에 최대 ${String(maxPagesPerRun)}쪽씩, 지난 지점부터 이어서 스캔해요.`}
-                    compact
-                  />
-                </span>
-              ) : null}
-            </div>
-          ) : null}
+            </span>
+            {runLive ? (
+              // Manual refresh instead of a poll loop — module header §"OCR"
+              // has the rationale (runs settle inside the triggering request;
+              // only cross-tab/orphan runs are ever observable here).
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  void loadRuns();
+                }}
+                aria-label="Refresh extraction status"
+              >
+                <Bilingual en="Refresh status" kr="상태 새로 고침" compact />
+              </Button>
+            ) : null}
+            {latestRun !== null && maxPagesPerRun !== null ? (
+              <span className="km-upload-viewer__extract-hint">
+                <Bilingual
+                  en={`Each run scans up to ${String(maxPagesPerRun)} pages, continuing where the last one stopped.`}
+                  kr={`한 번에 최대 ${String(maxPagesPerRun)}쪽씩, 지난 지점부터 이어서 스캔해요.`}
+                  compact
+                />
+              </span>
+            ) : null}
+          </div>
 
           {reorderOpen ? (
             <div

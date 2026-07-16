@@ -353,7 +353,10 @@ const EXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
  * sensible zero-config behaviour the button wants; the server clamps and
  * validates any range regardless, so the client never computes one. Server
  * errors the caller must map to fixed copy (never echo prose):
- *   400 — invalid page range for this book,
+ *   400 — `validation_error`: no pages left in the resume-default range
+ *         (the book is already fully extracted — the empty body means the
+ *         range validations can't fire); any other code is an upstream
+ *         Vision rejection passed through by the server's mapClaudeError,
  *   404 — not the caller's upload,
  *   409 — a run is already live for this upload,
  *   429 — the per-user daily Vision-page cap is spent.

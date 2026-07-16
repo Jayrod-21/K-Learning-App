@@ -577,8 +577,14 @@ describe('UploadViewer — F-059 OCR trigger (wired to F-108)', () => {
     await waitFor(() => {
       expect(uploadsSvc.listExtractions).toHaveBeenCalledWith('9', expect.anything());
     });
-    // No prior runs → no status strip yet.
-    expect(screen.queryByRole('status', { name: 'Extraction status' })).not.toBeInTheDocument();
+    // No prior runs → the live region is ALREADY in the DOM, but empty: a
+    // `role="status"` region must pre-exist its first content change or the
+    // first settled run of a session is never announced (fix-pass SF-3).
+    const region = screen.getByRole('status', { name: 'Extraction status' });
+    expect(region).toBeEmptyDOMElement();
+    // And the empty strip must not paint any of the run-time chrome.
+    expect(screen.queryByRole('button', { name: 'Refresh extraction status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/up to 20 pages/)).not.toBeInTheDocument();
     // The retired coming-soon copy must stay gone.
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
@@ -645,20 +651,21 @@ describe('UploadViewer — F-059 OCR trigger (wired to F-108)', () => {
     ).toBeInTheDocument();
   });
 
+  // The `code` column is load-bearing for the 400 row only (fix-pass SF-1:
+  // 400 + validation_error = "nothing left to extract"; any other 400 code
+  // is an upstream passthrough with different copy — its own test below).
+  // The other rows use the codes the server really sends, but their copy is
+  // keyed on status alone.
   it.each([
-    [409, undefined, /already running for this book/],
-    [429, undefined, /Daily extraction limit reached — try again tomorrow/],
-    [400, undefined, /page range isn.t valid/],
-    [404, undefined, /could not be found/],
+    [409, 'conflict', /already running for this book/],
+    [429, 'rate_limited', /Daily extraction limit reached — try again tomorrow/],
+    [400, 'validation_error', /Nothing left to extract/],
+    [404, 'not_found', /could not be found/],
   ] as const)(
     'a %s from the trigger surfaces its own fixed copy',
-    async (status, retryAfter, expected) => {
+    async (status, code, expected) => {
       uploadsSvc.startExtraction.mockRejectedValue(
-        new ApiError('server prose that must never render', {
-          status,
-          code: 'x',
-          ...(retryAfter !== undefined ? { retryAfter } : {}),
-        }),
+        new ApiError('server prose that must never render', { status, code }),
       );
       const user = userEvent.setup();
       renderViewer('9');
@@ -672,6 +679,30 @@ describe('UploadViewer — F-059 OCR trigger (wired to F-108)', () => {
       ).not.toBeInTheDocument();
     },
   );
+
+  it('a 400 whose code is NOT validation_error (upstream OCR rejection passthrough) gets the generic copy — never the fully-scanned claim', async () => {
+    // The server's mapClaudeError passes an upstream 4xx through with
+    // `code: 'upstream_error'` — status 400, but nothing to do with the
+    // book being fully extracted, so the SF-1 copy must not fire.
+    uploadsSvc.startExtraction.mockRejectedValue(
+      new ApiError('server prose that must never render', {
+        status: 400,
+        code: 'upstream_error',
+      }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+    expect(
+      await screen.findByText('Could not extract text. Try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing left to extract/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/server prose that must never render/),
+    ).not.toBeInTheDocument();
+  });
 
   it('a 429 with a structured retry hint surfaces the numeric hint', async () => {
     uploadsSvc.startExtraction.mockRejectedValue(
@@ -714,6 +745,44 @@ describe('UploadViewer — F-059 OCR trigger (wired to F-108)', () => {
     expect(
       screen.getByRole('button', { name: 'Extract text (an extraction is already running)' }),
     ).toBeDisabled();
+  });
+
+  it('a client timeout re-reads the run history BEFORE re-enabling — a still-live run keeps the trigger honestly disabled', async () => {
+    // Fix-pass SF-2: the synchronous server run keeps going after the
+    // client's wait expires, so a timeout must not silently re-offer a
+    // retry that is doomed to 409 — the history re-read has to land first.
+    uploadsSvc.startExtraction.mockRejectedValue(
+      new ApiError('request timed out', { status: 0, code: 'timeout' }),
+    );
+    const user = userEvent.setup();
+    renderViewer('9');
+    await screen.findByText('1 / 5');
+    await waitFor(() => {
+      expect(uploadsSvc.listExtractions).toHaveBeenCalledTimes(1);
+    });
+
+    // The re-read reveals the run our wait expired on, still going.
+    uploadsSvc.listExtractions.mockResolvedValue({
+      runs: [extractionRun({ status: 'running' })],
+      maxPagesPerRun: 20,
+    });
+    await user.click(screen.getByRole('button', { name: 'Extract text from this book' }));
+
+    expect(await screen.findByText(/The request timed out/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(uploadsSvc.listExtractions).toHaveBeenCalledTimes(2);
+    });
+    expect(
+      await screen.findByText(/An extraction is running \(pages 1–10\)/),
+    ).toBeInTheDocument();
+    // The trigger stays disabled against the still-live run instead of
+    // falsely re-enabling; Refresh status is the offered affordance.
+    expect(
+      screen.getByRole('button', { name: 'Extract text (an extraction is already running)' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Refresh extraction status' }),
+    ).toBeInTheDocument();
   });
 
   it('a live run already in the GET history disables the trigger, and Refresh status re-reads it', async () => {

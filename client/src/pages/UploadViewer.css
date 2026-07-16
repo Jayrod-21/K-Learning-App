@@ -97,6 +97,16 @@
   line-height: 1.5;
 }
 
+/* The strip (and the `role="status"` live region inside it) stays in the
+ * DOM even with no runs — a live region must pre-exist its first content
+ * change to be announced (see the component's F-059 comment). When idle its
+ * only child is an empty span (zero height), so dropping the margins is all
+ * it takes to make the empty strip occupy nothing. NOT `display: none` —
+ * that would defeat the pre-existing-region point. */
+.km-upload-viewer__extract--idle {
+  margin: 0;
+}
+
 .km-upload-viewer__extract-hint {
   flex-basis: 100%;
   font-size: 0.75rem;

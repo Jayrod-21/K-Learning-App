@@ -843,6 +843,39 @@ describe('GET /grammar/saved-from-uploads (F-056 — the F-053/F-107 grammar mir
     expect(res.body.groups[0].upload.title).toBe('작은 문법책');
     expect(res.body.groups[0].entries).toHaveLength(10);
   });
+
+  it('over the row cap with the cut exactly on a group boundary: the last kept group stays (whole), later groups drop, truncated=true', async () => {
+    // B9 fix-pass (server review NIT-1) — the third truncation shape vocab
+    // already pins (vocab.test.ts "cut exactly on a group boundary"):
+    // truncated=true but the sentinel row STARTS a new group, so the
+    // whole-group cap must keep ALL 500 fetched rows rather than dropping
+    // the trailing group. Exercises the `sentinel !== lastKept` branch; a
+    // regression that drops the last kept group whenever truncated (or
+    // returns it split) fails the group/entry-count assertions below.
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 뒤 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 문법책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    // Newest upload fills the cap EXACTLY (500 rows); the older upload's 5
+    // rows are entirely past it — only the flag says that group exists.
+    await seedSavedGrammarBulk(userId, newerUpload, 500, `edge-new-${String(Date.now())}`);
+    await seedSavedGrammarBulk(userId, olderUpload, 5, `edge-old-${String(Date.now())}`);
+
+    const res = await agent.get('/grammar/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('경계 문법책');
+    expect(res.body.groups[0].entries).toHaveLength(500);
+  });
 });
 
 describe('POST /grammar/bank/:id/graduate + /readmit (migration 033)', () => {
