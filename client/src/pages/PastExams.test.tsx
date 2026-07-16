@@ -190,13 +190,16 @@ describe('PastExams (F-103)', () => {
     expect(loc).not.toContain('level=');
   });
 
-  it('fails loudly rather than silently mislabeling a writing (쓰기) attempt as reading', () => {
-    // Batch-2 fix-pass SHOULD-FIX 1: `mockSectionFromKr` used to fall
-    // through anything but '듣기' to 'reading'. This is unreachable via the
-    // real server today (AttemptSectionSchema rejects 'writing' at the PUT
-    // boundary) but the entry's declared type is the full TopikSection
-    // union, so a skewed/mocked entry like this one must still throw rather
-    // than silently re-entering the wrong paper.
+  it('renders a writing (쓰기) attempt read-only — visible result, no re-enter link, no crash (F-196)', () => {
+    // F-196: `mockSectionFromKr` used to enforce the "no writing rows"
+    // server invariant with a bare throw, called unguarded from
+    // PastExamRow's render — and the only ErrorBoundary is at the app
+    // root, so one unexpected row blanked the WHOLE app. Unreachable via
+    // the real server today (AttemptSectionSchema rejects 'writing' at the
+    // PUT boundary), but the entry's declared type is the full
+    // TopikSection union, so a skewed entry must degrade to a link-less
+    // row — never throw through render, and never (Batch-2 SHOULD-FIX 1)
+    // silently re-enter the wrong paper.
     hoisted.state = {
       kind: 'data',
       data: {
@@ -204,10 +207,42 @@ describe('PastExams (F-103)', () => {
         total: 1,
       },
     };
-    // Suppress React's console.error noise for the expected render throw.
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    expect(() => renderPage()).toThrow(/mockSectionFromKr/);
-    spy.mockRestore();
+    // The anomaly is still fail-loud in dev/tests via console.warn.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(() => renderPage()).not.toThrow();
+    // The row's result is still visible…
+    expect(screen.getByText(/TOPIK II · 쓰기 91회/)).toBeInTheDocument();
+    expect(screen.getByText('45/50 · 90%')).toBeInTheDocument();
+    // …but it carries no re-enter link (the only link left on the page is
+    // the Mistakes CTA) and no play-action glyph.
+    expect(
+      screen.queryByRole('link', { name: /tap to re-enter/ }),
+    ).not.toBeInTheDocument();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('쓰기'));
+    warn.mockRestore();
+  });
+
+  it('a writing row does not break its siblings — reading in the same list keeps its exact re-enter link (F-196)', () => {
+    hoisted.state = {
+      kind: 'data',
+      data: {
+        attempts: [
+          { ...READING_ATTEMPT, attemptId: 'a5', section: '쓰기' },
+          READING_ATTEMPT,
+        ],
+        total: 2,
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    renderPage();
+    const row = screen.getByRole('link', {
+      name: /TOPIK II test 91, 읽기, 45\/50 · 90%/,
+    });
+    expect(row).toHaveAttribute(
+      'href',
+      '/learn/topik?mode=mock&section=reading&exam=91&level=TOPIK+II',
+    );
+    warn.mockRestore();
   });
 
   it('links out to Mistakes for per-item wrong-answer review', () => {
