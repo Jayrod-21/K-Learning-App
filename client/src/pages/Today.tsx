@@ -92,6 +92,17 @@
  *      honeycomb and could 3-way-collide with another skill's fixed hue
  *      under the blue/mint accent presets — see `lib/skill-colors.ts`.
  *
+ * Device-adaptive epic, Phase D1: at tablet/desktop (`useDeviceClass() !==
+ * 'mobile'`), Carousels 1 and 2 above render as a plain CSS grid instead of
+ * the mobile peek slider — every tile visible side by side, no scroll-snap,
+ * no partial "peek" tile — via the shared `TileRail` helper below. Mobile's
+ * peek-slider markup/behavior is completely untouched (same classes, same
+ * `useCenterOnMountRef` centering). Carousel 3 (TOPIK) keeps its
+ * `SwipeCarousel` unchanged at every width — it's a single featured tile,
+ * not a repeated list — but gets a `max-width` cap at ≥768px (Today.css,
+ * via the `--topik` section modifier) so it doesn't stretch edge-to-edge of
+ * the much wider desktop shell column.
+ *
  * Everything real stays real: per-tile "done today" counts come from
  * actual attempt-history endpoints, never a fabricated target or a
  * landing-page-visit counter. `SubwayProgress` (device #5) rides the TOPIK
@@ -178,6 +189,7 @@ import { CityCard, type CityCardTone } from '../components/CityCard';
 import { SealStamp } from '../components/SealStamp';
 import { SubwayProgress } from '../components/SubwayProgress';
 import { useChatContext } from '../hooks/useChatContext';
+import { useDeviceClass } from '../hooks/useDeviceClass';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { loadTodayMock } from '../data/mocks/today';
 import { mockDelay } from '../data/mocks/_delay';
@@ -530,6 +542,65 @@ function useCenterOnMountRef(): (el: HTMLDivElement | null) => void {
   }, []);
 }
 
+/**
+ * D1 (device-adaptive epic) — one rail of tiles, rendered as EITHER the
+ * mobile peek slider (unchanged markup/classes — `.km-today__peek{Outer,
+ * Track,Item}`, same native scroll-snap mechanism as before this phase) OR,
+ * at tablet/desktop (`useDeviceClass() !== 'mobile'`), a plain CSS grid
+ * (`.km-today__grid`/`.km-today__gridItem`, Today.css) that lays every tile
+ * out side by side — no scroll-snap, no partial "peek" tile, every tile
+ * visible and focusable at once. Carousel 1 ("Review & drills") and
+ * Carousel 2 ("Suggested learning") share this ONE component instead of
+ * duplicating the branch, so the two rails can never drift apart on how
+ * they respond to the breakpoint.
+ *
+ * `centerRef` (F-190's `useCenterOnMountRef`) is a MOBILE-ONLY concern: it
+ * exists to land the peek slider's initial scroll position on a specific
+ * tile, which has no meaning once every tile is already on-screen in a
+ * grid — the grid branch below simply never attaches it, so the callback
+ * never fires at desktop widths (harmless: `useCenterOnMountRef`'s own
+ * `firedRef` guard means it fires at most once per `Today` mount regardless
+ * of how many times the underlying DOM node is created/destroyed across a
+ * live breakpoint resize).
+ */
+interface RailTile {
+  key: string;
+  node: ReactNode;
+  /** Mobile peek-slider only — see the component doc above. */
+  centerRef?: (el: HTMLDivElement | null) => void;
+}
+
+function TileRail({
+  tiles,
+  isGridLayout,
+}: {
+  tiles: readonly RailTile[];
+  isGridLayout: boolean;
+}): JSX.Element {
+  if (isGridLayout) {
+    return (
+      <div className="km-today__grid">
+        {tiles.map((t) => (
+          <div key={t.key} className="km-today__gridItem">
+            {t.node}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="km-today__peekOuter">
+      <div className="km-today__peekTrack">
+        {tiles.map((t) => (
+          <div key={t.key} className="km-today__peekItem" ref={t.centerRef}>
+            {t.node}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Today(): JSX.Element {
   const navigate = useNavigate();
   // F-190 — Review & drills opens centered on Vocab; Suggested learning
@@ -537,6 +608,12 @@ export function Today(): JSX.Element {
   // below). See `useCenterOnMountRef`'s doc comment for the mechanism.
   const vocabCenterRef = useCenterOnMountRef();
   const readingCenterRef = useCenterOnMountRef();
+  // D1 (device-adaptive epic) — the ONE render branch this phase adds to
+  // Today: tablet/desktop swap the peek-slider carousels for a plain CSS
+  // grid (TileRail above) so every tile is visible side by side instead of
+  // one-at-a-time. Mobile (`'mobile'`) renders byte-identical to before.
+  const deviceClass = useDeviceClass();
+  const isGridLayout = deviceClass !== 'mobile';
 
   const today = useEndpointOrMock<TodayPlan>('today', loadTodayMock, {
     realFn: () => fetchToday(),
@@ -683,17 +760,20 @@ export function Today(): JSX.Element {
       </button>
     ) : undefined;
 
-  // ── Suggested-learning peek-slider items (Listening / Reading / Writing —
-  // F-190 reorders Reading into the MIDDLE slot so it's the one the peek
-  // slider opens centered on; see `readingCenterRef` below). A null server
-  // task is simply omitted — never a faked card (empty-corpus contract,
-  // unchanged from before the redesign).
-  const peekItems: ReactNode[] = [];
+  // ── Suggested-learning rail tiles (Listening / Reading / Writing —
+  // F-190 reorders Reading into the MIDDLE slot so it's the one the mobile
+  // peek slider opens centered on; see `readingCenterRef`/`TileRail` above).
+  // A null server task is simply omitted — never a faked card (empty-corpus
+  // contract, unchanged from before the redesign). D1: these are now plain
+  // tile nodes (no peek-item wrapper baked in) — `TileRail` supplies the
+  // mobile peek-slider wrapper OR the ≥768px grid wrapper around them.
+  const suggestedTiles: RailTile[] = [];
 
   if (today.data?.listening) {
     const t = today.data.listening;
-    peekItems.push(
-      <div key="listening" className="km-today__peekItem">
+    suggestedTiles.push({
+      key: 'listening',
+      node: (
         <ActivityTile
           tone={SKILL_COLOR.ttmik.tone}
           icon="headphones"
@@ -719,14 +799,16 @@ export function Today(): JSX.Element {
             navigate(listeningHref(t));
           }}
         />
-      </div>,
-    );
+      ),
+    });
   }
 
   if (today.data?.reading) {
     const t = today.data.reading;
-    peekItems.push(
-      <div key="reading" className="km-today__peekItem" ref={readingCenterRef}>
+    suggestedTiles.push({
+      key: 'reading',
+      centerRef: readingCenterRef,
+      node: (
         <ActivityTile
           tone={SKILL_COLOR.reading.tone}
           icon="book"
@@ -754,20 +836,21 @@ export function Today(): JSX.Element {
             navigate(readingHref(t));
           }}
         />
-      </div>,
-    );
+      ),
+    });
   }
 
   if (today.data?.writing) {
     const t = today.data.writing;
-    peekItems.push(
-      <div key="writing" className="km-today__peekItem">
-        {/* F-134's inline CollapsibleTile expand does not fit the peek
-            slider's fixed-width, center-snap layout (see the module header
-            comment) — Writing is a plain ActivityTile that deep-links to
-            /learn/writing?promptId=<id> (Wave 2, B6), same shape as
-            Reading/Listening. The "done today" count rides in `extra`, same
-            convention as Grammar/TOPIK. */}
+    suggestedTiles.push({
+      key: 'writing',
+      // F-134's inline CollapsibleTile expand does not fit the peek
+      // slider's fixed-width, center-snap layout (see the module header
+      // comment) — Writing is a plain ActivityTile that deep-links to
+      // /learn/writing?promptId=<id> (Wave 2, B6), same shape as
+      // Reading/Listening. The "done today" count rides in `extra`, same
+      // convention as Grammar/TOPIK.
+      node: (
         <ActivityTile
           tone={SKILL_COLOR.writing.tone}
           icon="pen"
@@ -793,8 +876,8 @@ export function Today(): JSX.Element {
             navigate(writingHref(t));
           }}
         />
-      </div>,
-    );
+      ),
+    });
   }
 
   // A real plan failure (never loading, never mock-fallback data) empties
@@ -848,40 +931,46 @@ export function Today(): JSX.Element {
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </h2>
       <section className="km-today__section" aria-label="Review and drills">
-        <div className="km-today__peekOuter">
-          <div className="km-today__peekTrack">
-            <div className="km-today__peekItem">
-              <ActivityTile
-                tone={SKILL_COLOR.grammar.tone}
-                icon="grammar"
-                ariaLabel="Open grammar drills"
-                pill={
-                  <Pill tone="red">
-                    <Bilingual en="Drill" kr="드릴" />
-                  </Pill>
-                }
-                headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
-                meta={
-                  <Bilingual
-                    en="Production practice on banked patterns"
-                    kr="저장한 문형으로 생산 연습"
-                  />
-                }
-                extra={
-                  <DoneTodayRow
-                    count={grammarDoneToday}
-                    tone={SKILL_COLOR.grammar.tone}
-                    labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
-                    labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
-                  />
-                }
-                onClick={() => {
-                  navigate('/learn/grammar');
-                }}
-              />
-            </div>
-            <div className="km-today__peekItem" ref={vocabCenterRef}>
-              {today.loading ? (
+        <TileRail
+          isGridLayout={isGridLayout}
+          tiles={[
+            {
+              key: 'grammar',
+              node: (
+                <ActivityTile
+                  tone={SKILL_COLOR.grammar.tone}
+                  icon="grammar"
+                  ariaLabel="Open grammar drills"
+                  pill={
+                    <Pill tone="red">
+                      <Bilingual en="Drill" kr="드릴" />
+                    </Pill>
+                  }
+                  headline={<Bilingual en="Grammar drills" kr="문법 드릴" />}
+                  meta={
+                    <Bilingual
+                      en="Production practice on banked patterns"
+                      kr="저장한 문형으로 생산 연습"
+                    />
+                  }
+                  extra={
+                    <DoneTodayRow
+                      count={grammarDoneToday}
+                      tone={SKILL_COLOR.grammar.tone}
+                      labelEn={(n) => (n === 1 ? '1 drill today' : `${String(n)} drills today`)}
+                      labelKr={(n) => `오늘 완료한 드릴 ${String(n)}개`}
+                    />
+                  }
+                  onClick={() => {
+                    navigate('/learn/grammar');
+                  }}
+                />
+              ),
+            },
+            {
+              key: 'vocab',
+              centerRef: vocabCenterRef,
+              node: today.loading ? (
                 <SkeletonCard />
               ) : today.data ? (
                 <ActivityTile
@@ -918,53 +1007,58 @@ export function Today(): JSX.Element {
                 />
               ) : (
                 <PlanErrorCard onRetry={retryToday} />
-              )}
-            </div>
-            <div className="km-today__peekItem">
-              <ActivityTile
-                tone={SKILL_COLOR.hanja.tone}
-                icon="hanja"
-                ariaLabel="Open Hanja study"
-                pill={
-                  <Pill tone="ochre">
-                    <Bilingual en="Practice" kr="연습" />
-                  </Pill>
-                }
-                headline={<Bilingual en="Hanja study" kr="한자 학습" />}
-                meta={
-                  <Bilingual
-                    en="Character drills & compounds"
-                    kr="한자 드릴과 단어"
-                  />
-                }
-                extra={
-                  <DoneTodayRow
-                    count={hanjaDoneToday}
-                    tone={SKILL_COLOR.hanja.tone}
-                    labelEn={(n) => (n === 1 ? '1 character reviewed today' : `${String(n)} characters reviewed today`)}
-                    labelKr={(n) => `오늘 복습한 한자 ${String(n)}자`}
-                  />
-                }
-                onClick={() => {
-                  navigate('/learn/hanja');
-                }}
-              />
-            </div>
-          </div>
-        </div>
+              ),
+            },
+            {
+              key: 'hanja',
+              node: (
+                <ActivityTile
+                  tone={SKILL_COLOR.hanja.tone}
+                  icon="hanja"
+                  ariaLabel="Open Hanja study"
+                  pill={
+                    <Pill tone="ochre">
+                      <Bilingual en="Practice" kr="연습" />
+                    </Pill>
+                  }
+                  headline={<Bilingual en="Hanja study" kr="한자 학습" />}
+                  meta={
+                    <Bilingual
+                      en="Character drills & compounds"
+                      kr="한자 드릴과 단어"
+                    />
+                  }
+                  extra={
+                    <DoneTodayRow
+                      count={hanjaDoneToday}
+                      tone={SKILL_COLOR.hanja.tone}
+                      labelEn={(n) => (n === 1 ? '1 character reviewed today' : `${String(n)} characters reviewed today`)}
+                      labelKr={(n) => `오늘 복습한 한자 ${String(n)}자`}
+                    />
+                  }
+                  onClick={() => {
+                    navigate('/learn/hanja');
+                  }}
+                />
+              ),
+            },
+          ]}
+        />
       </section>
 
       {/* Carousel 2 — Suggested learning: Listening / Reading / Writing as
-          a native-scroll-snap PEEK SLIDER (see the module header comment
-          for why this is not a SwipeCarousel — Carousel 1 above now shares
-          this exact mechanism/classes too). F-190 reorders Reading into the
-          MIDDLE slot (was first) so the peek slider opens centered on it —
-          `readingCenterRef` (attached to the Reading `peekItems` entry
-          above) lands the initial scroll position there on mount.
+          a native-scroll-snap PEEK SLIDER on mobile (see the module header
+          comment for why this is not a SwipeCarousel — Carousel 1 above now
+          shares this exact mechanism/classes too), or a plain CSS grid at
+          ≥768px (D1, `TileRail`). F-190 reorders Reading into the MIDDLE
+          slot (was first) so the mobile peek slider opens centered on it —
+          `readingCenterRef` (attached to the Reading entry in
+          `suggestedTiles` above) lands the initial scroll position there on
+          mount; it is a no-op on the grid branch (see `TileRail`'s doc).
           Deliberately a plain labeled <section> (implicit `region`), not
           `aria-roledescription="carousel"` — every tile is simultaneously
           real and focusable (no aria-hidden/inert paging), which is the
-          honest a11y shape for a continuous scroll rail. */}
+          honest a11y shape for a continuous scroll rail / grid alike. */}
       <h2 className="km-today__sectionTitle km-hangul-watermark" data-glyph="배">
         <Bilingual en="Suggested learning" kr="추천 학습" />
       </h2>
@@ -973,10 +1067,8 @@ export function Today(): JSX.Element {
           <SkeletonCard />
         ) : planFailed ? (
           <PlanErrorCard onRetry={retryToday} />
-        ) : peekItems.length > 0 ? (
-          <div className="km-today__peekOuter">
-            <div className="km-today__peekTrack">{peekItems}</div>
-          </div>
+        ) : suggestedTiles.length > 0 ? (
+          <TileRail isGridLayout={isGridLayout} tiles={suggestedTiles} />
         ) : (
           <p className="km-today__peekEmpty">
             <Bilingual
@@ -1004,7 +1096,12 @@ export function Today(): JSX.Element {
       <h2 className="km-today__sectionTitle km-today__sectionTitle--topik">
         <Bilingual en="TOPIK" kr="토픽" />
       </h2>
-      <section className="km-today__section">
+      {/* D1 — the `--topik` modifier lets Today.css cap+center this single
+          featured tile at ≥768px instead of letting it stretch edge-to-edge
+          of the much wider desktop shell column, where a lone tile reads as
+          sparse rather than featured. Scoped to this section only — no
+          other `.km-today__section` gets this treatment. */}
+      <section className="km-today__section km-today__section--topik">
         {/* `SwipeCarousel.children` is typed `ReactNode[]` (multiple pages
             by contract) — this carousel genuinely has only one page, so the
             single child is wrapped in an explicit array literal to satisfy

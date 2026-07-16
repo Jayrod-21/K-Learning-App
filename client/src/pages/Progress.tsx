@@ -21,11 +21,13 @@
  *      two pickers + a signed delta table (≥ 2 attempts only), and
  *      (c) **All attempts** — the chart's accessible twin table.
  *   2. **Progress by skill** (F-017, moved from Today; `defaultCollapsed`) —
- *      a `SwipeCarousel` of five `SkillTrendPanel` pages (Reading /
+ *      on mobile, a `SwipeCarousel` of five `SkillTrendPanel` pages (Reading /
  *      Listening / Vocab / Grammar / Writing), each a `LineChart` of that
- *      skill's 30-day series. Independent of the diagnostic history — it
- *      renders (or errors) on its own fetch, so a user with practice
- *      activity but no diagnostic still sees their trends.
+ *      skill's 30-day series; at tablet/desktop (device-adaptive epic Phase
+ *      D1, `isGridLayout`), all five panels render at once in a CSS grid
+ *      instead — see `SkillTrendsBody`. Independent of the diagnostic
+ *      history — it renders (or errors) on its own fetch, so a user with
+ *      practice activity but no diagnostic still sees their trends.
  *   3. **Mastery** (F-032; `defaultCollapsed`) — ONE tabbed area (`Tabs`
  *      primitive) with three panels sharing the same space instead of
  *      stacked cards: Words (F-013, per-word FSRS buckets, F-031 windowed
@@ -115,6 +117,7 @@ import { SwipeCarousel } from '../components/SwipeCarousel';
 import { Tabs } from '../components/Tabs';
 import type { TabItem } from '../components/Tabs';
 import { useChatContext } from '../hooks/useChatContext';
+import { useDeviceClass } from '../hooks/useDeviceClass';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
@@ -337,14 +340,21 @@ function SkillTrendPanel({
 }
 
 /**
- * The "Progress by skill" card — carousel of per-skill 30-day trends.
- * Renders independently of the diagnostic history (its own fetch), so a
- * user with practice activity but zero diagnostic runs still sees trends.
+ * The "Progress by skill" card — per-skill 30-day trends. Mobile keeps the
+ * looping `SwipeCarousel` (one panel at a time); tablet/desktop
+ * (`isGridLayout`, device-adaptive epic Phase D1) renders every panel at
+ * once in a CSS grid instead — five independent `LineChart`s side by side
+ * make far better use of the wide desktop shell column than paging through
+ * them one at a time. Renders independently of the diagnostic history (its
+ * own fetch), so a user with practice activity but zero diagnostic runs
+ * still sees trends.
  */
 function SkillTrendsBody({
   series,
+  isGridLayout,
 }: {
   series: UseEndpointOrMockResult<AllSkillSeries>;
+  isGridLayout: boolean;
 }): JSX.Element | null {
   const seriesData = series.data;
 
@@ -374,6 +384,20 @@ function SkillTrendsBody({
       />
     );
   }
+  // Fix-pass NIT (REVIEW_d1-adaptive.md #2): map `SERIES_PANELS` ONCE and
+  // hand the same nodes to whichever wrapper the breakpoint picks, instead
+  // of two call sites independently re-mapping the array — the same "map
+  // once, wrap conditionally" shape as Today.tsx's `TileRail`, so the grid
+  // and carousel paths cannot drift apart on which panels/props they render.
+  const skillPanels = SERIES_PANELS.map((p) => (
+    <SkillTrendPanel
+      key={p.key}
+      skillKey={p.key}
+      label={p.label}
+      kr={p.kr}
+      series={seriesData[p.key]}
+    />
+  ));
   return (
     <>
       {/* F-141 — the section's own CollapsibleTile header now carries the
@@ -385,17 +409,14 @@ function SkillTrendsBody({
           kr={`최근 ${String(TREND_WINDOW_DAYS)}일`}
         />
       </Eyebrow>
-      <SwipeCarousel ariaLabel="Progress by skill">
-        {SERIES_PANELS.map((p) => (
-          <SkillTrendPanel
-            key={p.key}
-            skillKey={p.key}
-            label={p.label}
-            kr={p.kr}
-            series={seriesData[p.key]}
-          />
-        ))}
-      </SwipeCarousel>
+      {isGridLayout ? (
+        // D1 — every skill panel visible at once, no paging. `LineChart`'s
+        // own SVG is `width: 100%; height: auto` (LineChart.css), so each
+        // panel's chart scales to whatever the grid cell gives it.
+        <div className="km-progress__trendGrid">{skillPanels}</div>
+      ) : (
+        <SwipeCarousel ariaLabel="Progress by skill">{skillPanels}</SwipeCarousel>
+      )}
     </>
   );
 }
@@ -503,6 +524,13 @@ function regressionTrend(
 // ─────────────────────────────────────────────────────────────
 
 function Progress(): JSX.Element {
+  // Device-adaptive epic, Phase D1 — the ONE render branch this phase adds
+  // to Progress: tablet/desktop render every "Progress by skill" panel at
+  // once in a grid (SkillTrendsBody) instead of paging through a carousel.
+  // Mobile (`'mobile'`) renders byte-identical to before.
+  const deviceClass = useDeviceClass();
+  const isGridLayout = deviceClass !== 'mobile';
+
   const hist = useEndpointOrMock<DiagnosticHistoryResponse>(
     'diagnostic.history',
     loadProgressHistoryMock,
@@ -620,7 +648,7 @@ function Progress(): JSX.Element {
         rail
         title={<Bilingual en="Progress by skill" kr="실력 추이" />}
       >
-        <SkillTrendsBody series={series} />
+        <SkillTrendsBody series={series} isGridLayout={isGridLayout} />
       </CollapsibleTile>
 
       <CollapsibleTile

@@ -389,6 +389,97 @@
   color: var(--paper-dim);
 }
 
+/* Tablet/desktop grid (device-adaptive epic, Phase D1) ─────────────────
+ * ≥768px: Today.tsx's `TileRail` swaps the peek-slider markup above for
+ * this plain CSS grid — every tile in Carousel 1 ("Review & drills") and
+ * Carousel 2 ("Suggested learning") lays out side by side, no scroll-snap,
+ * no partial "peek" tile. Dedicated classes, not overrides of
+ * `.km-today__peek*` above — the two markups are mutually exclusive
+ * (`TileRail` renders one or the other), so there is no cascade conflict to
+ * manage; mobile's peek-slider rules above are completely untouched.
+ *
+ * `repeat(auto-fit, minmax(220px, 1fr))` (not a fixed 2-/3-column count):
+ * Carousel 1 always has exactly 3 tiles, Carousel 2 can have 1–3 depending
+ * on which plan tasks resolved (empty-corpus contract — see Today.tsx).
+ * `auto-fit` collapses a repeated track to 0 width ONLY if that track is
+ * unused in EVERY row of the grid (it is a per-GRID decision, not a
+ * per-row/masonry reflow) — so it correctly stretches a 1- or 2-tile grid
+ * to fill the row (no unused track anywhere → both/all collapse to the one
+ * or two that ARE used), but a 3RD tile that wraps into a second, otherwise
+ * -empty row does NOT get this treatment: the row-1 tiles already "use"
+ * every track that fits, so none of them are eligible to collapse, and the
+ * lone 3rd tile is left at partial width with a genuinely dead cell beside
+ * it. FIX-PASS CORRECTION (REVIEW_d1-adaptive.md BLOCKER): the original
+ * version of this comment claimed 220px was chosen specifically so this
+ * could not happen at 768px — that arithmetic was wrong. At 768px the
+ * available content width is 520px (768 − 248px sidebar rail, no other
+ * horizontal padding in this chain), so `repeat(auto-fit, minmax(220px,
+ * 1fr))` fits only 2 columns there (2·220+14=454 ≤ 520; 3·220+28=688 > 520)
+ * — 3 columns don't fit until the content column reaches 688px, i.e.
+ * viewport ≥ 936px. Between 768–935px, EVERY 3-tile row (which is every
+ * single render of Carousel 1, and the common case for Carousel 2) landed
+ * exactly in the "3rd tile stranded in its own half-empty row" case above.
+ * Rather than shrinking the min-width until 3 columns force-fit at 768px
+ * (which would make a 2-tile row cramped for no benefit, since 2 tiles are
+ * legible at 220px already), the fix keeps 220px and instead makes the
+ * specific stranding case impossible: in the narrow 768–935px band where
+ * only 2 columns fit, a lone trailing tile (1st tile alone, or 3rd of 3)
+ * spans the full row instead of sitting at half width — see the scoped
+ * rule below. Once the row is wide enough for 3 real columns (≥936px) the
+ * override never applies (media-scoped to 768–935px only) and a genuine
+ * 3-tile row lays out as 3 even columns, same as before this fix. */
+@media (min-width: 768px) {
+  .km-today__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
+
+  .km-today__gridItem {
+    /* A grid item's default min-width is its content's min-content size —
+       guard against that forcing a track wider than the row (F-129's
+       established convention across this codebase). */
+    min-width: 0;
+  }
+
+  /* TOPIK (Carousel 3) keeps its `SwipeCarousel` at every width — it is one
+   * featured tile, not a repeated list, so it never becomes a grid — but a
+   * lone tile stretched to the full (now much wider) desktop shell column
+   * reads as sparse rather than featured. Capped + centered instead.
+   * Scoped to `.km-today__section--topik` only (Today.tsx's `--topik`
+   * section modifier) so no other `SwipeCarousel` on this page (there is
+   * none besides TOPIK) or on Progress is affected. */
+  .km-today__section--topik .km-carousel {
+    max-width: 640px;
+    margin: 0 auto;
+  }
+}
+
+/* BLOCKER FIX (REVIEW_d1-adaptive.md, fix-pass) — the 768–935px "only 2
+ * columns fit" band. `.km-today__grid` above only computes 2 columns in
+ * this range (see the arithmetic in that rule's header comment), so a
+ * trailing lone tile — the 1st and only tile of a 1-tile grid, or the 3rd
+ * of a 3-tile grid (Carousel 1 is ALWAYS 3 tiles; Carousel 2 commonly is)
+ * — would otherwise land alone in row 2 with a genuinely dead, unfilled
+ * cell beside it (row 1 already "uses" both computed tracks, so `auto-fit`
+ * has no eligible empty track left to collapse). `:nth-child(odd):last-
+ * child` matches exactly a trailing tile that does NOT have a sibling to
+ * its right in the final row — true for 1-of-1 (harmless/redundant: a lone
+ * tile already spans full width via auto-fit's per-grid collapse) and for
+ * 3-of-3 (the actual bug), but NOT for 2-of-2 (nth-child(2) is even — a
+ * full 2-tile row is already even and correct, and must NOT be spanned).
+ * Scoped to exactly the 768–935px band where 2 columns is the computed
+ * count: below 936px there is nothing to fix (2×2 max content, see D1
+ * "always/typically 3 tiles" carousels never render only 2), and at
+ * ≥936px 3 real columns fit so the 3rd tile already sits normally in row 1
+ * — applying this override there would wrongly break an already-even
+ * 3-column row into a 2-then-full-width-3rd layout. */
+@media (min-width: 768px) and (max-width: 935px) {
+  .km-today__grid > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Resume-exam corner banner — rides SwipeCarousel's cornerSlot, pinned
  * top-left over every page. Chrome-sized: a shortcut, not a page-level CTA. */
 .km-today__resume {
