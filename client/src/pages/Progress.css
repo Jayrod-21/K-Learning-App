@@ -545,16 +545,10 @@
   min-width: 0;
 }
 
-.km-progress__trendKr {
-  color: var(--paper-mute);
-  font-weight: 400;
-  margin-left: 2px;
-}
-
 /* P3b Batch B — mute the secondary language of bilingual chrome on this
    page (card titles + trend-panel skill heads + F-030 history-page titles).
-   .km-progress__trendKr above is orphaned by the <Bilingual/> rewiring; left
-   for the dead-rule sweep. */
+   (.km-progress__trendKr, orphaned by the <Bilingual/> rewiring, was removed
+   by the F-097 dead-rule sweep.) */
 .km-progress__card-title .km-bilingual__sub,
 .km-progress__historyTitle .km-bilingual__sub,
 .km-progress__trendSkill .km-bilingual__sub {

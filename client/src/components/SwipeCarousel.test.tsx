@@ -9,8 +9,11 @@
  * F-029 additions: `loop` wrap in both directions (swipe + dot state) with
  * the non-loop edge behavior preserved by default, and the `cornerSlot`
  * overlay (renders above the slides; absent when omitted).
+ * F-179 additions: the optional settled-index `onChange` callback — fires
+ * on swipe snap / dot click / dot keys with the new index, and stays silent
+ * on spring-backs, active-dot clicks, and clamped edge swipes.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -21,6 +24,7 @@ function renderCarousel(
     initialIndex: number;
     loop: boolean;
     cornerSlot: ReactNode;
+    onChange: (index: number) => void;
   }> = {},
 ): ReturnType<typeof render> {
   return render(
@@ -561,5 +565,98 @@ describe('SwipeCarousel', () => {
       pointerId: 4, isPrimary: true, pointerType: 'touch',
       clientX: 140, clientY: 53,
     });
+  });
+
+  // ── Settled-index callback (F-179) ──────────────────────────
+
+  it('fires onChange with the settled index when a swipe snaps to the next page', () => {
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange });
+    const viewport = viewportOf(container);
+
+    swipeLeft(viewport, 1);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(1);
+  });
+
+  it('fires onChange on a dot click, with the clicked page index', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderCarousel({ onChange });
+
+    await user.click(screen.getByRole('tab', { name: 'Page 3 of 3' }));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(2);
+  });
+
+  it('fires onChange on dot keyboard navigation', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderCarousel({ onChange });
+
+    await user.click(screen.getByRole('tab', { name: 'Page 1 of 3' }));
+    onChange.mockClear(); // the click on the already-active dot fired nothing anyway
+    await user.keyboard('{ArrowRight}');
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(1);
+  });
+
+  it('does not fire onChange when the already-active dot is clicked', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderCarousel({ onChange });
+
+    await user.click(screen.getByRole('tab', { name: 'Page 1 of 3' }));
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('does not fire onChange on a short drag that springs back', () => {
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange });
+    const viewport = viewportOf(container);
+
+    fireEvent.pointerDown(viewport, {
+      pointerId: 1, isPrimary: true, clientX: 200, clientY: 50,
+    });
+    fireEvent.pointerMove(viewport, {
+      pointerId: 1, isPrimary: true, clientX: 180, clientY: 50,
+    });
+    fireEvent.pointerUp(viewport, {
+      pointerId: 1, isPrimary: true, clientX: 180, clientY: 50,
+    });
+
+    expectSelectedPage(1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('does not fire onChange on an edge swipe past the end (non-loop clamp)', () => {
+    const onChange = vi.fn();
+    const { container } = renderCarousel({ onChange, initialIndex: 2 });
+    const viewport = viewportOf(container);
+
+    swipeLeft(viewport, 1);
+
+    expectSelectedPage(3);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('fires onChange with the wrapped index on a loop wrap (last→first)', () => {
+    const onChange = vi.fn();
+    const { container } = renderCarousel({
+      onChange,
+      loop: true,
+      initialIndex: 2,
+    });
+    const viewport = viewportOf(container);
+
+    swipeLeft(viewport, 1);
+
+    expectSelectedPage(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(0);
   });
 });

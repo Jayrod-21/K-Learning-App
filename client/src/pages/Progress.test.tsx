@@ -1275,14 +1275,14 @@ describe('Progress page — mastery tabs (F-032)', () => {
 });
 
 describe('Progress page — hanja mastery tab (F-041)', () => {
-  it('renders the banked/practicing/new bands + the L4 encountered bar from /hanja/progress', async () => {
+  it('renders the mastered/practicing/new bands + the L4 encountered bar from /hanja/progress', async () => {
     const user = userEvent.setup();
     renderPage();
 
     await user.click(screen.getByRole('tab', { name: /Hanja/ }));
     expect(
       await screen.findByRole('img', {
-        name: '12 banked, 8 practicing, 80 new',
+        name: '12 mastered, 8 practicing, 80 new',
       }),
     ).toBeInTheDocument();
     expect(hanjaSvc.fetchHanjaProgress).toHaveBeenCalledWith(
@@ -1300,10 +1300,18 @@ describe('Progress page — hanja mastery tab (F-041)', () => {
     });
     expect(bar).toHaveAttribute('aria-valuenow', '25');
     expect(bar).toHaveAttribute('aria-valuemax', '100');
-    // The server-templated status line renders as literal text.
+    // F-077 — the status line is composed CLIENT-side (bilingual, reword-
+    // consistent) from the DTO's numeric fields; the server's pre-templated
+    // English `note` (which still says "banked") must NOT reach the DOM.
     expect(
-      within(panel).getByText('12 banked · 8 practicing · 25/100 encountered'),
+      within(panel).getByText('12 mastered · 8 practicing · 25/100 encountered'),
     ).toBeInTheDocument();
+    expect(
+      within(panel).getByText('숙달 12 · 연습 중 8 · 접한 한자 25/100'),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).queryByText(HANJA_DEFAULT.note),
+    ).not.toBeInTheDocument();
   });
 
   it('invites a user with zero hanja activity instead of an all-new bar', async () => {
@@ -1359,7 +1367,14 @@ describe('Progress page — hanja mastery tab (F-041)', () => {
 
     await user.click(screen.getByRole('tab', { name: /Hanja/ }));
     const panel = screen.getByRole('tabpanel', { name: /Hanja/ });
-    await within(panel).findByText('zero L4 target');
+    // The composed status line (F-077) marks the panel as settled — the
+    // wire `note` ('zero L4 target') is deliberately not rendered.
+    await within(panel).findByText(
+      '3 mastered · 1 practicing · 4/4 encountered',
+    );
+    expect(
+      within(panel).queryByText('zero L4 target'),
+    ).not.toBeInTheDocument();
     expect(
       within(panel).queryByRole('progressbar'),
     ).not.toBeInTheDocument();
@@ -1382,7 +1397,7 @@ describe('Progress page — hanja mastery tab (F-041)', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(
       await screen.findByRole('img', {
-        name: '12 banked, 8 practicing, 80 new',
+        name: '12 mastered, 8 practicing, 80 new',
       }),
     ).toBeInTheDocument();
   });

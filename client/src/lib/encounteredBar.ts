@@ -44,3 +44,33 @@ export function encounteredBarAria(
     'aria-label': 'Hanja encountered out of L4 target',
   };
 }
+
+/**
+ * hanjaProgressSummary (F-077) — the bilingual status line under the
+ * aggregate hanja progress card, composed on the CLIENT from the
+ * `/hanja/progress` DTO's numeric fields.
+ *
+ * The server DTO also ships a pre-templated English `note`, but it predates
+ * the F-077 state reword (it still says "banked") and is single-language —
+ * so both consumers (the Hanja screen's EncounteredBand and the Progress
+ * page's Hanja mastery tab) render THIS line instead of the wire prose.
+ * Information content is identical: the note's total-corpus denominator is
+ * reconstructed as banked + practicing + new, which the route contract
+ * defines as exactly the total character count (`new` = total − banked −
+ * practicing; see server/src/routes/hanja.ts GET /progress).
+ */
+export function hanjaProgressSummary(progress: {
+  banked: number;
+  practicing: number;
+  new: number;
+  encountered: number;
+}): { en: string; kr: string } {
+  const total = progress.banked + progress.practicing + progress.new;
+  const b = String(progress.banked);
+  const p = String(progress.practicing);
+  const enc = `${String(progress.encountered)}/${String(total)}`;
+  return {
+    en: `${b} mastered · ${p} practicing · ${enc} encountered`,
+    kr: `숙달 ${b} · 연습 중 ${p} · 접한 한자 ${enc}`,
+  };
+}

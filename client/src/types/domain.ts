@@ -657,6 +657,9 @@ export interface HanjaProgress {
   targetL4: number;
   /** How many of the targetL4 set the user has encountered. */
   encountered: number;
+  /** Server-templated English status line. Still on the wire, but no longer
+   *  rendered — both consumers compose a bilingual line client-side via
+   *  `lib/encounteredBar.hanjaProgressSummary` (F-077). */
   note: string;
 }
 

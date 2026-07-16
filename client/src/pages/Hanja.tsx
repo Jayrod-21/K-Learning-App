@@ -5,7 +5,7 @@
  *   - `today` — `HanjaFeature` card for the day's featured character,
  *               vermilion 田 grid backdrop, 96px serif glyph, compound
  *               word chips beneath a `GoldRule`.
- *   - `index` — filter chips (All / Banked / Practicing / New) over a
+ *   - `index` — filter chips (All / Mastered / Practicing / New) over a
  *               grid of `<HanjaCell>`s, windowed by `usePagination` +
  *               `<ShowMore>` so a large corpus doesn't render at once.
  *
@@ -191,7 +191,10 @@ import {
 } from '../data/mocks/hanja';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
-import { encounteredBarAria } from '../lib/encounteredBar';
+import {
+  encounteredBarAria,
+  hanjaProgressSummary,
+} from '../lib/encounteredBar';
 import { errorMessageFor } from '../lib/errorCopy';
 import { isInteractiveElement } from '../lib/interactiveElement';
 import { navItem } from '../lib/nav';
@@ -262,22 +265,27 @@ const FILTER_OPTIONS: ReadonlyArray<{
   kr: string;
 }> = [
   { id: 'all', label: 'All', kr: '전체' },
-  { id: 'banked', label: 'Banked', kr: '담김' },
+  { id: 'banked', label: 'Mastered', kr: '숙달' },
   { id: 'practicing', label: 'Practicing', kr: '연습 중' },
   { id: 'new', label: 'New', kr: '신규' },
 ];
 
+/** F-077 reword — the `banked` STATE ID is wire/API vocabulary and never
+ *  changes, but its display label is now "Mastered"/"숙달": the old
+ *  "Banked"/"담김" (a vocab-mining metaphor) collided with the app's decided
+ *  mastery vocabulary (Progress's word-mastery bucket is already
+ *  Mastered/숙달, and the index grid styles this state with
+ *  `--km-mastery-mastered`). One concept, one word, on every surface. */
 const STATE_PILL_LABEL: Record<HanjaState, string> = {
-  banked: 'Banked',
+  banked: 'Mastered',
   practicing: 'Practicing',
   new: 'New',
 };
 
-/** Korean chrome labels for the three hanja states (P3b). `banked` uses the
- *  담기/담김 family (glossary): bare 모음 as a status chip was ambiguous next
- *  to Hanja content (모음 also = "vowel"). */
+/** Korean chrome labels for the three hanja states. `banked` reads 숙달 to
+ *  match Progress's mastery buckets (F-077 — replaced the P3b-era 담김). */
 const STATE_PILL_KR: Record<HanjaState, string> = {
-  banked: '담김',
+  banked: '숙달',
   practicing: '연습 중',
   new: '신규',
 };
@@ -422,7 +430,7 @@ export default function Hanja(): JSX.Element {
     });
   }, [charsResult.data, stateOverrides]);
 
-  // Recompute the progress band from the overlay deltas so the Banked /
+  // Recompute the progress band from the overlay deltas so the Mastered /
   // Practicing / New counts move in lockstep with the optimistic list. Only
   // characters present in the fetched pool contribute a delta (the counts are
   // pool-derived), so an overlay for an off-pool char is a no-op here.
@@ -702,6 +710,7 @@ function EncounteredBand({
     progress.targetL4 > 0
       ? Math.min(100, (progress.encountered / progress.targetL4) * 100)
       : 0;
+  const summary = hanjaProgressSummary(progress);
   return (
     // F-128 device #1/#2 — a CityCard signboard/hanji-paper surface with a
     // leading-edge DancheongRail, replacing the plain `Card`. `km-hanja__band`
@@ -716,7 +725,8 @@ function EncounteredBand({
         />
       </Eyebrow>
       <div className="km-hanja__chips">
-        <StateChip label="Banked" kr="담김" count={progress.banked} tone="moss" />
+        {/* F-077 — display copy only; the wire state stays `banked`. */}
+        <StateChip label="Mastered" kr="숙달" count={progress.banked} tone="moss" />
         <StateChip
           label="Practicing"
           kr="연습 중"
@@ -738,7 +748,12 @@ function EncounteredBand({
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>
-      <p className="km-hanja__note">{progress.note}</p>
+      {/* F-077 — composed client-side (bilingual + reword-consistent) via
+          the shared lib/encounteredBar helper; the server's pre-templated
+          English `note` still says "banked", so it is no longer rendered. */}
+      <p className="km-hanja__note">
+        <Bilingual en={summary.en} kr={summary.kr} />
+      </p>
     </CityCard>
   );
 }
@@ -2995,9 +3010,10 @@ function HanjaDetail({
   /** Close the sheet + route (drill / draw CTAs leave this page). */
   onNavigate: (to: string) => void;
 }): JSX.Element {
-  // The single bank/practice control toggles the character between the SRS
-  // ("practicing") and mastered ("banked") states. A banked character offers
-  // "Practice again"; anything else offers "Bank this hanja".
+  // The single mastery control toggles the character between the SRS
+  // ("practicing") and mastered ("banked" on the wire) states. A mastered
+  // character offers "Practice again"; anything else offers "Mark as
+  // mastered" (F-077 reword — was "Bank this hanja").
   const nextState: HanjaState = h.state === 'banked' ? 'practicing' : 'banked';
 
   // B-028: the Drill CTA seeds this character's recognition card (idempotent
@@ -3125,7 +3141,7 @@ function HanjaDetail({
             ) : h.state === 'banked' ? (
               <Bilingual en="Practice again" kr="다시 연습" />
             ) : (
-              <Bilingual en="Bank this hanja" kr="이 한자 담기" />
+              <Bilingual en="Mark as mastered" kr="숙달로 표시" />
             )}
           </span>
         </button>
