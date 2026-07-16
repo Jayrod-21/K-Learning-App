@@ -18,11 +18,17 @@
 -- provenance belongs there, exactly as migration 068 concluded for the
 -- grammar side (`grammar_entries` is user-scoped, so 068 needed no move).
 --
--- `vocab_entries.source_upload_id` is NOT touched: from 070 on it carries
--- ONLY F-108 extracted-corpus provenance ("U2 digitised this row from that
+-- `vocab_entries.source_upload_id` is NOT touched: from 070 on it RECEIVES
+-- only F-108 extracted-corpus writes ("U2 digitised this row from that
 -- upload"), read by the `GET /vocab/entries?source_upload_id=` browse and
 -- guarded everywhere by the corpusFences ownership fence. The user-saved
 -- write path (`POST /vocab/mine`) stops writing it in the same change.
+-- HONEST LIMIT: tags PRE-070 mines already wrote onto shared rows are
+-- deliberately LEFT IN PLACE — they are still load-bearing (leg 2 of
+-- GET /vocab/saved-from-uploads resolves pre-070 LIST-ONLY saves through
+-- them; no card exists for this backfill to fill), owner-fenced everywhere,
+-- and never cross users. Clearing them safely requires first moving
+-- list-only-save provenance to a user-scoped store — deferred to F-200.
 --
 -- SEMANTICS (mirror 068/040 exactly):
 --   * Nullable — every pre-existing card, and every save made outside an
@@ -57,8 +63,9 @@ COMMENT ON COLUMN vocab_cards.source_upload_id IS
     'deleting the upload un-tags the card rather than deleting it. The route '
     'validates ownership (upload belongs to the saving user) before '
     'persisting. Replaces the shared-row vocab_entries.source_upload_id as '
-    'the user-saved provenance store — that column is F-108 extracted-corpus '
-    'provenance only from 070 on.';
+    'the user-saved provenance store — that column receives only F-108 '
+    'extracted-corpus writes from 070 on (legacy pre-070 mine-written tags '
+    'remain on shared rows; cleanup tracked as F-200).';
 
 -- "This user's saved-from-uploads words, grouped by upload" reads. Partial —
 -- the overwhelming majority of card rows carry no upload provenance (mirrors

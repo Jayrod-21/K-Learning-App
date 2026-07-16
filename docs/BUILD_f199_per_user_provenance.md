@@ -96,13 +96,26 @@ gone — B's tag lands on B's card, so nothing about A is even inferable.
 
 ## What stayed for F-108
 
-`vocab_entries.source_upload_id` (migration 040) **survives untouched** as
-extracted-corpus provenance only: written by
-`server/src/services/uploadExtract.ts` at U2 curation, read by
+`vocab_entries.source_upload_id` (migration 040) **survives untouched**:
+from 070 on it receives **only** F-108 extracted-corpus writes
+(`server/src/services/uploadExtract.ts` at U2 curation), read by
 `GET /vocab/entries?source_upload_id=` (U3a browse) and by leg 2 above,
 guarded by `sourceUploadFenceSql` everywhere. The only change is that the
 user-saved write path (mine) no longer touches it. Same for
 `kgiu_entries.source_upload_id`.
+
+**Honest limit (legacy rows):** tags that pre-070 mines wrote onto shared
+`user_mined` rows are deliberately **retained**, so "F-108 provenance only"
+holds for new writes, not for all stored values. Retention is load-bearing:
+leg 2 of `saved-from-uploads` resolves pre-070 **list-only** saves of mined
+words through the entry tag (no card existed for 070's backfill to fill), so
+clearing those tags would silently drop such words from the owner's
+saved-from-uploads. The cost of retention is cosmetic and owner-only: the
+U3a browse keeps showing pre-070-mined words for their tag's owner while
+post-070 mines never appear there, and corpusFences keeps privatizing those
+legacy shared rows (a pre-existing quirk). No tag ever crosses users either
+way. A safe cleanup must first move list-only-save provenance to a
+user-scoped store — deferred to **F-200** (`BUGS_AND_FEATURES.md`).
 
 ## Security notes
 
@@ -117,12 +130,15 @@ user-saved write path (mine) no longer touches it. Same for
 
 ## Tests
 
-- `db/tests/test_migration_070.py` (9 tests): F-088 marker classification,
+- `db/tests/test_migration_070.py` (10 tests): F-088 marker classification,
   up without `--allow-destructive`, FK shape (NULL / owned id / dangling id
   / ON DELETE SET NULL), **backfill ownership rule** (owner-matched tag
   copied; cross-user tag dropped; untagged stays NULL; `vocab_entries`
-  untouched; soft-deleted cards included; multi-owner no cross-talk), down
-  gate + DROP COLUMN, down→up round trip re-running the backfill.
+  untouched; soft-deleted cards included; multi-owner no cross-talk), the
+  **fill-only/no-overwrite guard proven non-vacuously** (direct re-execution
+  of the up body over a card already carrying a route-written tag — the tag
+  survives while an untagged control card still gets filled), down gate +
+  DROP COLUMN, down→up round trip re-running the backfill.
 - `server/tests/routes/vocab.test.ts`: mine-provenance suite rewritten to
   assert the tag on the card and the shared entry staying NULL; new
   tagged-re-mine fill + keep-first tests; **the F-199 headline test** (A

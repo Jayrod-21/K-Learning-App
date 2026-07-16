@@ -773,10 +773,14 @@ router.post(
                -- F-199: source_upload_id is deliberately ABSENT here. This
                -- row is shared reference data; user-saved upload provenance
                -- now lives on the caller's vocab_cards row (step 3 /
-               -- migration 070). vocab_entries.source_upload_id is F-108
-               -- extracted-corpus provenance only, and this route never
-               -- touches it (INSERT omits it → NULL; the UPDATE arm leaves
-               -- any U2-written value exactly as it was).
+               -- migration 070). vocab_entries.source_upload_id receives
+               -- only F-108 extracted-corpus WRITES from 070 on, and this
+               -- route never touches it (INSERT omits it → NULL; the UPDATE
+               -- arm leaves any existing value exactly as it was). Legacy
+               -- rows tagged by pre-070 mines still CARRY their stale tag:
+               -- harmless (owner-fenced everywhere, never crosses users) and
+               -- load-bearing for pre-070 list-only saves in
+               -- saved-from-uploads leg 2 — cleanup deferred to F-200.
                SET english = COALESCE(vocab_entries.english, EXCLUDED.english),
                    version = vocab_entries.version + 1
             RETURNING id`,
@@ -880,12 +884,14 @@ router.post(
  * EARLIEST save. Provenance per saved word (F-199 — genuinely PER-USER):
  *   1. the caller's OWN `vocab_cards.source_upload_id` tag when set (written
  *      by POST /vocab/mine on the user-scoped card, migration 070), else
- *   2. the entry's F-108 extracted-corpus tag
- *      (`vocab_entries.source_upload_id`) — but ONLY when the caller owns
- *      that upload (the `bu.user_id = $1` join predicate). Extracted rows
- *      are only visible/savable by their upload's owner (corpusFences), so
- *      this leg covers list-adds and plain banks of the user's own
- *      digitised words.
+ *   2. the entry's shared tag (`vocab_entries.source_upload_id`) — but ONLY
+ *      when the caller owns that upload (the `bu.user_id = $1` join
+ *      predicate). Extracted rows are only visible/savable by their upload's
+ *      owner (corpusFences), so this leg covers list-adds and plain banks of
+ *      the user's own digitised (F-108) words — plus tags PRE-070 mines
+ *      wrote onto shared rows, which is what keeps pre-070 LIST-ONLY saves
+ *      of mined words resolvable (no card existed for 070's backfill to
+ *      fill). Those legacy tags are deliberately retained — see F-200.
  * Because leg 1 reads the caller's own cards, a 2nd user mining the same
  * lemma from their own upload now sees THEIR tag here — the pre-070
  * shared-row first-write-wins loss (and the "someone tagged this first"

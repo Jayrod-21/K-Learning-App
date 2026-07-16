@@ -26,7 +26,10 @@ SCOPE:
       user's upload stays NULL (the mis-attributed shared-row tags are
       dropped, never copied — the exact F-199 bug); untagged entries stay
       NULL; `vocab_entries.source_upload_id` itself is untouched (it remains
-      F-108 extracted-corpus provenance).
+      F-108 extracted-corpus provenance); a DIRECT re-run of the up body over
+      a table that already carries a route-written card tag never overwrites
+      it (the fill-only guard, proven non-vacuously — the down/up round trip
+      cannot prove this because down drops the column).
     - down: DROP COLUMN removes source_upload_id (+ FK + partial index); the
       down file classifies as destructive via the F-088 marker (the
       DROP COLUMN shape the legacy sniff would NOT catch — same shape as
@@ -405,6 +408,64 @@ def test_070_backfill_respects_soft_deleted_cards_and_multiple_owners(
         assert _card_tag(conn, card_b) == upload_b
         assert _card_tag(conn, soft_deleted) is None, (
             "A's card on B's-upload-tagged entry must stay NULL"
+        )
+
+
+def test_070_backfill_rerun_never_overwrites_an_existing_card_tag(
+    env, dsn: str, provenance_dir: pathlib.Path
+) -> None:
+    """The fill-only guard (`c.source_upload_id IS NULL`, the up file's last
+    predicate) is what makes a re-run of the backfill unable to clobber a tag
+    the route has written since — the up header claims exactly this. The
+    down/up round-trip tests CANNOT exercise it: down drops the column, so
+    every re-up backfills an all-NULL column and the guard is vacuously true.
+    Execute the REAL up file's body directly (psycopg, not the runner — the
+    runner never re-runs an applied version) over a table that already
+    carries a route-written card tag DIFFERENT from the entry-derivable one:
+      - the pre-existing tag (upload X) must survive even though the entry
+        points at same-owner upload Y, which a guard-less backfill would copy
+      - an untagged control card on a Y-tagged entry must still be FILLED —
+        proving the UPDATE genuinely executed and only the guard protected
+        the tag (not a skipped or failed statement).
+    """
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
+
+    up_sql = (
+        provenance_dir / "070_vocab_cards_source_upload.up.sql"
+    ).read_text(encoding="utf-8")
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(conn, "f199-no-overwrite@example.com")
+        upload_x = _seed_upload(conn, user_id, "카드가 이미 가리키는 책")
+        upload_y = _seed_upload(conn, user_id, "엔트리가 가리키는 책")
+
+        # The dangerous state: entry tagged to Y (same owner), card already
+        # route-tagged to X. A broken/absent guard would flip X -> Y.
+        entry_tagged = _seed_vocab_entry(conn, "no-overwrite-kept", upload_y)
+        tagged_card = _seed_card(
+            conn, user_id, entry_tagged, upload_x, with_tag_column=True
+        )
+
+        # Fill control: same shape, but the card has no tag yet.
+        entry_fill = _seed_vocab_entry(conn, "no-overwrite-fill", upload_y)
+        control_card = _seed_card(
+            conn, user_id, entry_fill, None, with_tag_column=True
+        )
+
+        # Re-run the whole up body (idempotent by design: IF NOT EXISTS DDL
+        # + the fill-only backfill). ADR-013: the file holds no BEGIN/COMMIT,
+        # so a plain execute runs it exactly as the runner would.
+        with conn.cursor() as cur:
+            cur.execute(up_sql)
+
+        assert _card_tag(conn, tagged_card) == upload_x, (
+            "fill-only guard: a backfill re-run must NOT overwrite a card "
+            "tag the route has already written"
+        )
+        assert _card_tag(conn, control_card) == upload_y, (
+            "control: the re-run backfill must still fill untagged cards — "
+            "the guard, not a skipped UPDATE, is what protected the tag"
         )
 
 
