@@ -899,6 +899,48 @@ describe('F-122 (migration 066) — persisted topik_level on topik_attempts', ()
     });
   });
 
+  it('PUT with a MISMATCHED topikLevel (batch-2 fix-pass SF-3) is dropped to NULL, never persisted or reported as the wrong level', async () => {
+    // Only a TOPIK II paper exists at test_number 4110's reading section — no
+    // TOPIK I paper shares that number. A client claiming 'TOPIK I' for this
+    // (sourceTest, section) is sending a value that cannot possibly be
+    // correct; the route must not take it on faith.
+    await seedTopikItemAtLevel('TOPIK II', {
+      section: 'reading',
+      testNumber: 4110,
+      itemNumber: 1,
+      options: ['가', '나', '다', '라'],
+      answer: 1,
+    });
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/topik/attempt').send({
+      section: 'reading',
+      sourceTest: 4110,
+      topikLevel: 'TOPIK I', // mismatched — no such paper exists
+      currentIdx: 0,
+      picks: {},
+      remainingMs: 1000,
+    });
+
+    // The mismatched value must not land in the row at all.
+    const { rows } = await pg.pool.query<{ topik_level: string | null }>(
+      `SELECT topik_level FROM topik_attempts WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows).toEqual([{ topik_level: null }]);
+
+    // GET must never echo the client's fabricated 'TOPIK I' either — with
+    // topik_level NULL in the row, it falls back to the legacy
+    // resolveServedTotal re-derivation, which correctly finds the REAL
+    // TOPIK II paper (the only one that actually exists for this test
+    // number/section).
+    const res = await agent.get('/topik/attempt');
+    expect(res.status).toBe(200);
+    expect(res.body.attempt).toMatchObject({
+      sourceTest: 4110,
+      topikLevel: 'TOPIK II',
+    });
+  });
+
   it('PUT with no topikLevel (pre-F-122 client) leaves it NULL — GET falls back to the legacy guess, unchanged from before F-122', async () => {
     const id = await seedTopikItem(pg.pool, {
       section: 'reading',

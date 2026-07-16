@@ -26,21 +26,26 @@
 -- against, and store it directly.
 --
 -- WRITE PATH (routes-only change, no migration needed there — see the route
--- diff): `PUT /topik/attempt` accepts an optional `topikLevel` mirroring the
--- SAME trust posture `POST /topik/mock/submit`'s `MockSubmitBodySchema`
--- already has for its own optional `topikLevel` field — the client only ever
--- echoes back a level the SERVER resolved and returned from a prior
--- `POST /topik/mock` call (never a value the client invents), so accepting
--- it here is consistent with the rest of this route file's existing trust
--- model, not a new IDOR/tamper surface (it is a 2-value enum with no
+-- diff): `PUT /topik/attempt` accepts an optional `topikLevel`. The intended
+-- caller only ever echoes back a level the SERVER resolved and returned from
+-- a prior `POST /topik/mock` call (never a value the client invents), but
+-- unlike `POST /topik/mock/submit` (whose `resolveMockTest` call always
+-- verifies the level against the corpus before grading), the PUT route on
+-- its own had NO server-side check that a supplied `topikLevel` actually
+-- paired with the given `(sourceTest, section)` — batch-2 fix-pass SF-3
+-- closed that gap: the route now re-runs `resolveMockTest(section,
+-- sourceTest, topikLevel)` and drops the value to NULL, rather than
+-- persisting it verbatim, whenever it doesn't resolve to a real gradeable
+-- paper. This was never a new IDOR/tamper surface (a 2-value enum with no
 -- authorization implication — it only affects which paper a later re-fetch
 -- resolves to, and every mock-content read is already public reference
--- data). `POST /topik/mock/submit` is the AUTHORITATIVE writer: it always
+-- data), so the risk closed here is data-hygiene, not access control.
+-- `POST /topik/mock/submit` remains the sole AUTHORITATIVE writer: it always
 -- knows the resolved level for certain (the exact paper it just graded
 -- against) and stamps it on the attempt row it closes/creates, regardless of
 -- whatever the in-progress row's own `topik_level` said — so a completed
 -- attempt's level can never be stale or wrong, even if progress-saves never
--- sent one.
+-- sent one (or sent a now-rejected mismatched one).
 --
 -- WHY NULLABLE, NOT BACKFILLED: existing (pre-066) `topik_attempts` rows
 -- carry NO record of which level they were actually served from — the
@@ -83,10 +88,10 @@ COMMENT ON COLUMN topik_attempts.topik_level IS
     'is NOT backfilled (a tie-break guess is not a verified fact; see the up '
     'file header). POST /topik/mock/submit is the authoritative writer (it '
     'always knows the resolved level for certain); PUT /topik/attempt '
-    'accepts it optionally as a client echo of a value the server itself '
-    'resolved and returned earlier, same trust posture as '
-    'MockSubmitBodySchema.topikLevel. Readers fall back to the pre-066 '
-    'best-effort re-derivation (resolveServedTotal) only when this column is '
-    'NULL.';
+    'accepts it optionally and cross-checks it against the corpus '
+    '(resolveMockTest) before persisting, dropping an unresolvable/mismatched '
+    'value to NULL rather than trusting it verbatim (batch-2 fix-pass SF-3). '
+    'Readers fall back to the pre-066 best-effort re-derivation '
+    '(resolveServedTotal) only when this column is NULL.';
 
 -- End of 066_topik_attempts_level.up.sql — runner owns the transaction (ADR-013).

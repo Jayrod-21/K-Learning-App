@@ -150,8 +150,13 @@ describe('ReviewLibrary (P3B landing)', () => {
     expect(within(list).getByText('Corpus · my lists')).toBeInTheDocument();
     // F-103: the exams shelf's description now sources from the dedicated
     // past-exams NavItem's own eyebrow pair, not a hardcoded Mistakes blurb.
-    expect(within(list).getAllByText('완료한 시험 · 성적')).not.toHaveLength(0);
-    expect(within(list).getByText('Completed exams · grades')).toBeInTheDocument();
+    // Batch-2 fix-pass SHOULD-FIX 2: this eyebrow was reworded off of
+    // `AttemptsReview`'s verbatim-identical text — see `nav.ts`'s
+    // `review-exams` entry for the full rationale.
+    expect(within(list).getAllByText('기출 자료실 · 재응시')).not.toHaveLength(0);
+    expect(
+      within(list).getByText('Exam library · re-enter & retake'),
+    ).toBeInTheDocument();
   });
 
   it('F-042: the removed P1.2 surfaces are gone — chips, extra rows, placeholders', () => {

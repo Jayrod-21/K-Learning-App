@@ -68,3 +68,79 @@ All 4 gate commands were run from `client/` after every file edit was in place, 
 - `npx vite build --outDir /tmp/km-fix-batch2` → **exit 0** (one pre-existing, unrelated chunk-size-warning notice, not an error)
 
 I'm confident in the BLOCKER fixes specifically because both were exercised by NEW, real assertions (not just "renders without throwing"): the F-144 fix has a negative test that would fail if a "Grammar" kind option reappeared anywhere in the create Sheet, and the F-152 fix has paired tests asserting "Added" for a bank row with `graduated_at: null` AND "Mastered" for one with `graduated_at` set, from the SAME fixture shape — a regression that stopped checking `graduated_at` would fail one of those two immediately.
+
+---
+
+# FIX REPORT — TOPIK batch-2 fix-pass (F-103 past-exams / F-105 attemptId / F-122 persisted level)
+
+**NOTE:** this is a SEPARATE fix-pass round from the "Batch 2 (Library)"
+report above (unrelated scope, unrelated branch — the "batch 2" numbering is
+reused across different feature waves in this project's docs). Appended
+rather than overwriting to preserve the Library fix-pass history.
+
+**Branch:** `worktree-agent-ace5c3eb73f48dcb9` @ `bc62eb7` (base `rebuild`).
+**Scope:** the 3 SHOULD-FIX findings across `REVIEW_batch2-client.md` (2
+SHOULD-FIX) and `REVIEW_batch2-server.md` (SF-1/SF-2, treated as one combined
+finding per the fix-pass brief). Both reviews returned **PASS, 0 BLOCKER**;
+no PRAISE items were touched.
+
+## Findings
+
+| ID | Finding | Disposition | Files touched |
+|---|---|---|---|
+| **Client SF-1 (copy collision)** | `PastExams.tsx` (Review-library re-enter list) and `AttemptsReview` (`Topik.tsx`, inert LEARN-side quick check) shipped verbatim-identical bilingual eyebrow ("Completed exams · grades" / "완료한 시험 · 성적") and identical Korean heading ("지난 시험"), blurring the LEARN(doing)/Review(browsing) distinction the two screens are supposed to encode | **FIXED** | `client/src/lib/nav.ts`: reworded the `review-exams` NavItem's `kr`/`eyebrow`/`krEyebrow`/`headerTitle` — `kr` is now `기출 시험` (matching `ReviewLibrary`'s own hardcoded shelf label instead of colliding with `AttemptsReview`'s "지난 시험"), eyebrow is now "Exam library · re-enter & retake" / "기출 자료실 · 재응시" (names the re-enter action, unlike `AttemptsReview`'s static "grades" framing). `AttemptsReview`/`Topik.tsx` is untouched per the brief. `client/src/pages/ReviewLibrary.test.tsx`: updated the one assertion that pinned the old eyebrow text (`ReviewLibrary`'s shelf description sources from the same NavItem) |
+| **Client SF-2 (`mockSectionFromKr` exhaustiveness)** | The function silently defaulted any section that wasn't `'듣기'` — including the real `'쓰기'` (writing) `TopikSection` member — to `'reading'`, an unannounced mis-route were a writing attempt ever to reach it | **FIXED** | `client/src/pages/PastExams.tsx`: rewrote as an exhaustive `switch` over all 3 `TopikSection` values (`'읽기'`→`reading`, `'듣기'`→`listening`, `'쓰기'`→ throws — Mock-Test has no writing paper to re-enter), plus a `never`-typed `default` guard against a future union member, matching the same idiom already used by `Mistakes.tsx`'s `writingRubricBucket`/`writingRubricLabel`. Doc comment cites the server-side guarantee (`AttemptSectionSchema`) this was previously relying on implicitly. `client/src/pages/PastExams.test.tsx`: new test renders a `'쓰기'` attempt entry and asserts the page throws rather than silently rendering a reading re-enter link |
+| **Server SF-1/SF-2 (`PUT /topik/attempt` unchecked `topikLevel`)** | An optional client-supplied `topikLevel` was persisted with no server-side check that it actually paired with `(sourceTest, section)` in the corpus — a client could claim `'TOPIK I'` for a paper that only exists as `'TOPIK II'`. Low blast radius (graceful `GET` fallback, always overwritten by `/mock/submit`'s authoritative stamp) but genuinely unverified input, and the migration/route doc comments overstated the writer's trustworthiness | **FIXED** | `server/src/routes/topik.ts`: the `PUT /topik/attempt` handler now calls `resolveMockTest(section, sourceTest, topikLevel)` — the SAME resolver `/mock` and `/mock/submit` use — before persisting; a level that doesn't resolve to a real gradeable paper is dropped to `NULL` rather than written verbatim. Doc comments on the route and on `AttemptBodySchema.topikLevel` rewritten to state the cross-check explicitly instead of "same trust posture as MockSubmitBodySchema" (which was the overstatement SF-1 flagged). `db/migrations/066_topik_attempts_level.up.sql`: both the up-file header prose and the `COMMENT ON COLUMN` doc string rewritten to describe the cross-check + NULL-on-mismatch behavior instead of "client echo... same trust posture." `server/tests/routes/topik.test.ts`: new test seeds a TOPIK-II-only paper, PUTs with a mismatched `topikLevel: 'TOPIK I'`, and asserts (a) the DB row's `topik_level` is `NULL`, not `'TOPIK I'`, and (b) `GET /topik/attempt` reports the REAL `'TOPIK II'` level via the legacy fallback, never the client's fabricated value |
+
+## Design choice on the server fix
+
+The review offered two options: (a) re-resolve the level from `(sourceTest,
+section)` alone and ignore the client value, or (b) validate the client
+value against the resolved one and reject/correct a mismatch. Option (a)
+doesn't actually work here: `resolveMockTest` without a `requestedLevel` runs
+its TOPIK-II-over-TOPIK-I tie-break — exactly the D-1 ambiguity this whole
+migration exists to remove — so re-deriving from `(sourceTest, section)`
+alone would silently reintroduce the same guess migration 066 was built to
+kill. Went with (b): call `resolveMockTest` WITH the client's claimed level
+as a real-row existence check (does a gradeable `(sourceTest, section,
+topikLevel)` triple actually exist?), and drop to `NULL` on a miss rather
+than a hard 400 — consistent with the codebase's existing "NULL is always
+safe, never fabricate above what's known" posture for this same column
+(pre-F-122 clients already produce NULL here, and reads already have a
+tested fallback for it).
+
+## Gate results
+
+Client (`client/`):
+- `npm run lint` — clean, 0 problems.
+- `npx tsc -p tsconfig.app.json --noEmit --incremental false` — clean, 0 errors.
+- `npx vitest run src/pages/PastExams.test.tsx src/pages/topik/MockMode.test.tsx src/pages/ReviewLibrary.test.tsx src/lib/nav.test.ts` — **4 files, 87/87 passed** (86 baseline + 1 new exhaustiveness test; `ReviewLibrary.test.tsx` included since its eyebrow-text assertion needed updating for the copy fix).
+- `npx vite build --outDir /tmp/km-b2fix` — succeeds (pre-existing >500kB single-chunk warning, unrelated to this diff).
+
+Server (`server/`):
+- `npm run typecheck` — clean, 0 errors.
+- `npx vitest run tests/routes/topik.test.ts` — **112 passed** (111 baseline + 1 new mismatched-`topikLevel` test).
+
+Full testcontainer/DB suites intentionally NOT run here per the fix-pass brief (box contention) — deferred to re-review.
+
+## Self-assessment
+
+All 3 SHOULD-FIX items are atomic, each with its own regression test proving
+the specific failure mode the reviewer described no longer occurs. No PRAISE
+item was touched: `PastExams`'s re-enter correctness, F-123's checkmark
+keying, the honest loading/empty/error states, F-105's `attemptId` addition,
+migration 066's live-table safety, and `/mock/submit`'s authoritative stamp
+are all unchanged. `AttemptsReview`/`Topik.tsx` was not edited, per the
+brief — the copy-collision fix lives entirely on the `PastExams` side (via
+`nav.ts`). The two NIT items and the roadmap note in `REVIEW_batch2-client.md`
+were left alone (out of scope for a SHOULD-FIX-only pass), as were N-1/N-2 in
+`REVIEW_batch2-server.md`.
+
+One judgment call worth flagging for re-review: the client exhaustiveness
+fix throws (crashes the `PastExams` page render) rather than returning a
+typed sentinel, matching the codebase's existing `writingRubricBucket`
+precedent in `Mistakes.tsx`. This is defensible because the throw path is
+provably unreachable today (server-enforced), but a reviewer preferring
+graceful degradation over a hard crash for this specific user-facing page
+might want a sentinel-based alternative instead — flagging the trade-off
+rather than silently picking one.

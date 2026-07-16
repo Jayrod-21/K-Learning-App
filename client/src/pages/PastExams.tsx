@@ -66,10 +66,47 @@ const LIBRARY_NAV = navItem('review');
  *  fits under the server's own paging max (`AttemptsQuerySchema.limit.max(100)`). */
 const PAST_EXAMS_FETCH_LIMIT = 100;
 
-/** `TopikAttemptHistoryEntry.section` is the Korean wire label — map back to
- *  the English `MockSection` the Mock-Test flow's URL params expect. */
+/**
+ * `TopikAttemptHistoryEntry.section` is the Korean wire label — map back to
+ * the English `MockSection` the Mock-Test flow's URL params expect.
+ *
+ * Batch-2 fix-pass SHOULD-FIX 1: this used to fall through anything that
+ * wasn't `'듣기'` to `'reading'`, which would have silently mis-routed a
+ * `'쓰기'` (writing) attempt into a reading re-enter link had one ever
+ * reached this page. `section`'s declared type is the FULL `TopikSection`
+ * union (`'읽기' | '듣기' | '쓰기'`, `types/domain.ts`), not the narrower
+ * `MockSection` this function returns — today a writing row can never
+ * actually reach here (the server's `AttemptSectionSchema` rejects
+ * `'writing'` at the `PUT /topik/attempt` boundary, so every
+ * `GET /topik/attempts` row is reading/listening only — see
+ * `server/src/routes/topik.ts` around the `AttemptSectionSchema`
+ * definition), but that guarantee lives in a different file/service. This
+ * switch is exhaustive over all three real `TopikSection` values so a typo,
+ * a loosened server guarantee, or reuse of this helper elsewhere fails
+ * LOUDLY (a thrown error) instead of quietly mislabeling the exam — the same
+ * "never mis-route to the wrong paper" property `reEnterHref` exists for.
+ * Same exhaustive-switch-with-`never`-default idiom as
+ * `Mistakes.tsx`'s `writingRubricBucket`/`writingRubricLabel`.
+ */
 function mockSectionFromKr(section: TopikAttemptHistoryEntry['section']): MockSection {
-  return section === '듣기' ? 'listening' : 'reading';
+  switch (section) {
+    case '읽기':
+      return 'reading';
+    case '듣기':
+      return 'listening';
+    case '쓰기':
+      // Real TopikSection value, but Mock-Test has no writing paper to
+      // re-enter — see the doc comment above for why this is unreachable
+      // today and why it must fail loudly rather than default to 'reading'.
+      throw new Error(
+        "mockSectionFromKr: cannot re-enter a '쓰기' (writing) attempt as a Mock-Test paper — no MockSection exists for writing",
+      );
+    default: {
+      // Exhaustiveness guard — a new TopikSection member must update this switch.
+      const exhausted: never = section;
+      throw new Error(`mockSectionFromKr: unhandled TOPIK section ${String(exhausted)}`);
+    }
+  }
 }
 
 /**

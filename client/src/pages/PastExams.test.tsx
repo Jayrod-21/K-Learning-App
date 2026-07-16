@@ -190,6 +190,26 @@ describe('PastExams (F-103)', () => {
     expect(loc).not.toContain('level=');
   });
 
+  it('fails loudly rather than silently mislabeling a writing (쓰기) attempt as reading', () => {
+    // Batch-2 fix-pass SHOULD-FIX 1: `mockSectionFromKr` used to fall
+    // through anything but '듣기' to 'reading'. This is unreachable via the
+    // real server today (AttemptSectionSchema rejects 'writing' at the PUT
+    // boundary) but the entry's declared type is the full TopikSection
+    // union, so a skewed/mocked entry like this one must still throw rather
+    // than silently re-entering the wrong paper.
+    hoisted.state = {
+      kind: 'data',
+      data: {
+        attempts: [{ ...READING_ATTEMPT, attemptId: 'a4', section: '쓰기' }],
+        total: 1,
+      },
+    };
+    // Suppress React's console.error noise for the expected render throw.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(() => renderPage()).toThrow(/mockSectionFromKr/);
+    spy.mockRestore();
+  });
+
   it('links out to Mistakes for per-item wrong-answer review', () => {
     hoisted.state = { kind: 'data', data: { attempts: [], total: 0 } };
     renderPage();

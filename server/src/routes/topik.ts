@@ -909,12 +909,18 @@ const AttemptBodySchema = z
     // item-id strings; values are choice ids.
     picks: z.record(z.string().regex(/^\d+$/), z.enum(['a', 'b', 'c', 'd'])),
     remainingMs: z.number().int().nonnegative().max(INT4_MAX),
-    // OPTIONAL exam-paper discriminator (F-122 / migration 066). Same trust
-    // posture as MockSubmitBodySchema.topikLevel: the client only ever echoes
-    // a level the SERVER already resolved and returned from a prior
-    // POST /topik/mock call — never a client-invented value. Omitted by
-    // pre-F-122 clients; the row's persisted topik_level then stays NULL and
-    // reads fall back to the pre-066 best-effort re-derivation.
+    // OPTIONAL exam-paper discriminator (F-122 / migration 066). The intended
+    // caller only ever echoes a level the SERVER already resolved and
+    // returned from a prior POST /topik/mock call — but unlike
+    // MockSubmitBodySchema.topikLevel (which is always cross-checked against
+    // the corpus by resolveMockTest before grading), this schema alone
+    // cannot verify that; the ROUTE HANDLER re-validates it against
+    // (sourceTest, section) via resolveMockTest before persisting (batch-2
+    // fix-pass SHOULD-FIX 3) rather than trusting this shape-only check.
+    // Omitted by pre-F-122 clients (or dropped to NULL by that re-validation
+    // when it doesn't match a real paper); the row's persisted topik_level
+    // then stays NULL and reads fall back to the pre-066 best-effort
+    // re-derivation.
     topikLevel: TopikLevelSchema.optional(),
   })
   // A mock section is <= 50 items (F-UP-007); cap the picks map so a malformed
@@ -1048,19 +1054,47 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
  * the new sitting. If history surfaces need the displaced sitting, switch to
  * abandon-then-insert here (or have the client abandon first).
  *
- * F-122 (migration 066): body carries an OPTIONAL `topikLevel`, persisted
- * verbatim (`topik_level = EXCLUDED.topik_level`, unconditionally — no
- * COALESCE-preserve-if-omitted). This is deliberate, not an oversight: a save
- * that repurposes the active row for a DIFFERENT (source_test, section) — the
+ * F-122 (migration 066): body carries an OPTIONAL `topikLevel`, cross-checked
+ * against the corpus (`resolveMockTest`, the SAME resolver `/mock` and
+ * `/mock/submit` use) before it is persisted, then written verbatim
+ * (`topik_level = EXCLUDED.topik_level`, unconditionally — no
+ * COALESCE-preserve-if-omitted).
+ *
+ * Batch-2 fix-pass SHOULD-FIX 3: prior to this cross-check, a client-supplied
+ * `topikLevel` was persisted with NO server-side verification that it
+ * actually paired with the given `(sourceTest, section)` in the corpus — a
+ * client could send e.g. `{ sourceTest: 91, section: 'reading', topikLevel:
+ * 'TOPIK I' }` even if test 91's reading section only exists for `'TOPIK
+ * II'`. Low blast radius (a mismatched level just makes
+ * `resolveTotalItemsForLevel` find 0 rows on a later `GET /topik/attempt`,
+ * which gracefully falls back to `Math.max(0, answered) = answered`, and is
+ * fully overwritten by `/mock/submit`'s authoritative stamp at completion
+ * regardless), but unverified input persisted as if authoritative all the
+ * same. `resolveMockTest(section, sourceTest, topikLevel)` returns null when
+ * no gradeable paper matches that exact triple; a mismatch is dropped to
+ * `NULL` rather than written — NULL is always safe here (the same fallback a
+ * pre-F-122/omitted-`topikLevel` client already produces, re-derived at read
+ * time by `resolveServedTotal`), so degrading to it on a bad client value has
+ * no worse an outcome than the client never having sent one.
+ *
+ * `resolveMockTest`'s tie-break behavior is otherwise unaffected: this is a
+ * verification call (client supplies BOTH `sourceTest` and `topikLevel`, so
+ * there's nothing to tie-break — a matching row either exists or it
+ * doesn't), not a re-guess.
+ *
+ * This is deliberate, not an oversight, that the (now-validated) level is
+ * persisted unconditionally rather than COALESCE-preserved: a save that
+ * repurposes the active row for a DIFFERENT (source_test, section) — the
  * KNOWN DATA GAP above — must never inherit the DISPLACED attempt's level, so
- * "omitted → NULL" is the only safe default across that repurposing case.
- * The single client call site (`MockMode.tsx`'s `handleSaveProgress`) always
- * has the resolved level in hand (from the `POST /topik/mock` response that
- * started the exam) and always sends it, so this only ever degrades to NULL
- * for a client that predates F-122 — identical to the pre-066 behavior (GET
- * falls back to `resolveServedTotal`'s guess). The one authoritative,
- * NEVER-guessed writer is `/mock/submit`, which stamps the resolved level on
- * the COMPLETED row regardless of what this route last saved.
+ * "omitted/invalid → NULL" is the only safe default across that repurposing
+ * case. The single client call site (`MockMode.tsx`'s `handleSaveProgress`)
+ * always has the resolved level in hand (from the `POST /topik/mock`
+ * response that started the exam) and always sends a value that matches, so
+ * this cross-check is a defense-in-depth measure against a skewed/malicious
+ * client, not something the normal flow is expected to ever trip. The one
+ * authoritative, NEVER-guessed writer remains `/mock/submit`, which stamps
+ * the resolved level on the COMPLETED row regardless of what this route last
+ * saved (or validated).
  */
 router.put(
   '/attempt',
@@ -1070,6 +1104,21 @@ router.put(
     try {
       const userId = getUserId(req);
       const b = req.body as z.infer<typeof AttemptBodySchema>;
+
+      // Batch-2 fix-pass SHOULD-FIX 3 — re-validate the optional client
+      // topikLevel against the corpus before persisting it; see the route
+      // doc comment above. A mismatch (or a triple with no gradeable items
+      // at all) degrades to NULL rather than being written verbatim.
+      let topikLevel: TopikLevel | null = null;
+      if (b.topikLevel !== undefined) {
+        const resolved = await resolveMockTest(b.section, b.sourceTest, b.topikLevel);
+        // resolveMockTest filters on BOTH sourceTest and topikLevel when both
+        // are supplied, so a non-null result's fields are guaranteed to echo
+        // the request's own (sourceTest, topikLevel) — this is a real-row
+        // existence check, not a re-guess.
+        topikLevel = resolved?.topikLevel ?? null;
+      }
+
       await withTransaction(async (client) => {
         await client.query(ATTEMPT_LOCK_SQL, [userId]);
         await client.query(
@@ -1100,7 +1149,7 @@ router.put(
             JSON.stringify(b.picks),
             b.remainingMs,
             ATTEMPT_COMPLETED_GRACE_SECONDS,
-            b.topikLevel ?? null,
+            topikLevel,
           ],
         );
       });

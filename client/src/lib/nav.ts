@@ -215,13 +215,27 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
     // F-103 — the dedicated "Past TOPIK exams" library surface: completed
     // sittings + scores, re-enter/retake action. Distinct from `mistakes`
     // (per-item wrong-answer review), which this page links out to.
+    //
+    // Batch-2 fix-pass SHOULD-FIX 2: this copy previously matched
+    // `AttemptsReview`'s (`Topik.tsx`) eyebrow/Korean-heading VERBATIM, even
+    // though the two screens behave very differently — `AttemptsReview` is
+    // an inert LEARN-side quick check with no navigation, while this page's
+    // rows are full Review-library re-enter/retake links. `kr`/`eyebrow`/
+    // `krEyebrow` are deliberately reworded here (English "Past exams"
+    // heading was already distinct) so a Korean-reading user, or anyone
+    // skimming the eyebrow, gets a textual signal these are different
+    // screens. `kr` now matches `ReviewLibrary`'s own hardcoded shelf label
+    // ("기출 시험", `ReviewLibrary.tsx`'s `SECTIONS` entry) instead of
+    // colliding with `AttemptsReview`'s "지난 시험" — reinforcing "this page
+    // IS the shelf you tapped" rather than reusing the LEARN-side phrase.
+    // `AttemptsReview` itself is intentionally untouched (out of scope).
     id: 'review-exams',
     path: '/review/exams',
     label: 'Past exams',
-    kr: '지난 시험',
-    eyebrow: 'Completed exams · grades',
-    krEyebrow: '완료한 시험 · 성적',
-    headerTitle: '지난 시험 · Past exams',
+    kr: '기출 시험',
+    eyebrow: 'Exam library · re-enter & retake',
+    krEyebrow: '기출 자료실 · 재응시',
+    headerTitle: '기출 시험 · Past exams',
     icon: 'spark',
   },
   {
