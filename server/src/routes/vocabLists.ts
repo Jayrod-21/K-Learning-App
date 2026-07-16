@@ -70,6 +70,7 @@ import {
   validateQuery,
 } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
+import { sourceUploadFenceSql } from '../db/corpusFences.js';
 import { ConflictError, NotFoundError } from '../middleware/errors.js';
 
 const router = Router();
@@ -238,8 +239,15 @@ router.post(
                   FROM unnest($2::bigint[]) WITH ORDINALITY AS s(entry_id, ord)
                   -- Skip ids that don't exist or are already in the list.
                   -- This is what makes the seed step idempotent.
+                  -- F-108 fence (fixpass b8 B-3): an id pointing at a row
+                  -- EXTRACTED from someone else's book upload is skipped
+                  -- exactly like a nonexistent id — otherwise seeding it here
+                  -- exfiltrates the row's content through this user's own
+                  -- list detail. Shared fragment: db/corpusFences.ts.
                  WHERE EXISTS (
-                          SELECT 1 FROM vocab_entries v WHERE v.id = s.entry_id
+                          SELECT 1 FROM vocab_entries v
+                           WHERE v.id = s.entry_id
+                             AND ${sourceUploadFenceSql('v.source_upload_id', '$3')}
                        )
                    AND NOT EXISTS (
                           SELECT 1 FROM vocab_list_entries x
@@ -248,7 +256,7 @@ router.post(
                 RETURNING 1
              )
              SELECT COUNT(*)::text AS count FROM ins`,
-            [list.id, uniqueSeeds],
+            [list.id, uniqueSeeds, userId],
           );
           appendedCount = Number(result.rows[0]?.count ?? '0');
         }
@@ -557,9 +565,22 @@ router.post(
           if (ids.length === 0) continue;
           // TARGET_TABLE is a server-owned closed map keyed by the Zod enum —
           // not client input (see threat model §type confusion).
+          // F-108 fence (fixpass b8 B-3): vocab_entries AND kgiu_entries can
+          // carry rows EXTRACTED from a private book upload — an id pointing
+          // at another user's extracted row must validate exactly like a
+          // nonexistent id (404), or this check is an existence oracle and
+          // the list detail an exfiltration path (this was the only route
+          // leaking extracted KGIU content). hanja_characters has no
+          // source_upload_id column — nothing extracted ever lands there.
+          // Shared fragment: db/corpusFences.ts.
+          const fenced = t !== 'hanja';
           const valid = await client.query<{ id: string }>(
-            `SELECT id FROM ${TARGET_TABLE[t]} WHERE id = ANY($1::bigint[])`,
-            [ids],
+            fenced
+              ? `SELECT id FROM ${TARGET_TABLE[t]}
+                  WHERE id = ANY($1::bigint[])
+                    AND ${sourceUploadFenceSql('source_upload_id', '$2')}`
+              : `SELECT id FROM ${TARGET_TABLE[t]} WHERE id = ANY($1::bigint[])`,
+            fenced ? [ids, userId] : [ids],
           );
           const validSet = new Set<number>(valid.rows.map((r) => Number(r.id)));
           const invalidIds = ids.filter((id) => !validSet.has(id));

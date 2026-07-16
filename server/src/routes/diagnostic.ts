@@ -386,13 +386,21 @@ function seedProficiencyForTarget(target: DiagnosticTargetLevel): ProficiencyLev
 }
 
 /** Pick a vocab_entries seed near the target band (via
- *  `seedProficiencyForTarget`). Falls back to any band. */
-async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
+ *  `seedProficiencyForTarget`). Falls back to any band.
+ *  Exported for direct fence coverage (tests/routes/uploadExtract.test.ts). */
+export async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
   for (const proficiency of [seedProficiencyForTarget(target), null] as const) {
     const params: unknown[] = [];
+    // F-108 fence: seeds draw from the shared curated corpus only. Rows
+    // EXTRACTED from a book upload (source_upload_id tagged) are private to
+    // the upload's owner AND uncurated OCR candidates — this helper has no
+    // user context, so they are excluded outright (mirrors pickGrammarSeed;
+    // extracted rows are written proficiency='L3', so without this they'd
+    // match the FIRST, proficiency-targeted pass for any user's diagnostic).
     let sql = `SELECT id::text AS id, korean, english
                  FROM vocab_entries
-                WHERE korean IS NOT NULL AND length(korean) >= 1`;
+                WHERE korean IS NOT NULL AND length(korean) >= 1
+                  AND source_upload_id IS NULL`;
     if (proficiency !== null) {
       params.push(proficiency);
       sql += ` AND proficiency = $${params.length}::proficiency_level`;
@@ -412,13 +420,19 @@ async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | n
 }
 
 /** Pick a kgiu_entries grammar seed near the target band (via
- *  `seedProficiencyForTarget`). Falls back to any. */
-async function pickGrammarSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
+ *  `seedProficiencyForTarget`). Falls back to any.
+ *  Exported for direct fence coverage (tests/routes/uploadExtract.test.ts). */
+export async function pickGrammarSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
   for (const proficiency of [seedProficiencyForTarget(target), null] as const) {
     const params: unknown[] = [];
+    // F-108 fence: seeds draw from the shared curated KGIU corpus only. Rows
+    // EXTRACTED from a book upload (source_upload_id tagged) are private to
+    // the upload's owner AND uncurated OCR candidates — this helper has no
+    // user context, so they are excluded outright.
     let sql = `SELECT id::text AS id, pattern, title_en, explanation
                  FROM kgiu_entries
-                WHERE pattern IS NOT NULL AND length(pattern) >= 1`;
+                WHERE pattern IS NOT NULL AND length(pattern) >= 1
+                  AND source_upload_id IS NULL`;
     if (proficiency !== null) {
       params.push(proficiency);
       sql += ` AND proficiency = $${params.length}::proficiency_level`;
