@@ -1439,8 +1439,8 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 #### F-133 · Tighten layout / reduce white space
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
 
-#### F-134 · Writing tile expands inline (not separate page)
-- **Status:** 🔴 open (Writing inline-expand was reverted to a deep-link to /learn/writing — sole criterion unmet; re-verified 2026-07-15) · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile should open its content in-place, not navigate away.
+#### F-134 · Writing tile: prompt PREVIEW on home → carry that prompt into the practice page
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile. **CORRECTED SCOPE (user, 2026-07-16) — NOT inline-expand.** (1) Show the actual writing prompt as a **preview** on the Today tile (the user can read the real prompt on the home page). (2) **Start/Practice** navigates to the Writing practice page with **that exact prompt pre-loaded** — not a fresh/random one. The earlier "expands inline" framing was wrong (that's why it kept re-opening as unmet). Two pieces: surface the real prompt text on the tile + thread that specific prompt through the navigation.
 
 #### F-135 · Tasks-title IA cleanup
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
@@ -1495,7 +1495,7 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** bug · **Where:** All-Words dictionary must exclude grammar entries.
 
 #### F-151 · More genres
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** expand the genre set in Vocab.
+- **Status:** ✅ done — SUPERSEDED by F-176 (2026-07-16). F-176 shipped the richer, data-driven genre/theme facet (`vocab_entries.theme`, ~31 per-book values, `GET /vocab/themes`, dynamic client dropdown) and was explicitly filed "was F-151"; the vocab batch builder confirmed no separate work is needed. · **Priority:** P2 · **Category:** feature · **Where:** expand the genre set in Vocab.
 
 ### Library — Grammar
 
@@ -1721,6 +1721,27 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 - **What:** `db/migrations/064_backfill_notification_schedules_from_prefs.down.sql`'s DELETE guards on `created_at = updated_at` (never edited since insert) to avoid removing a user's genuine post-backfill edit, but that guard cannot distinguish "this row was INSERTed by the 064 backfill" from "this row was INSERTed by a real, single `PUT /notifications/schedules` call that happened to land on the exact same kind/channel/blob-intent combination and was never touched again" — the latter is plausible, not hypothetical, since the `/notifications/schedules` route already ships in prod.
 - **Fix hint:** have 064's up-migration tag exactly the rows it inserts (e.g. a transient marker column, or a side-table log of the affected `(user_id, kind)` pairs) so the down can target precisely what it created instead of re-deriving the predicate.
 - **Notes:** Surfaced by the B2a /fixpass re-review (R1 SHOULD-FIX 1). Deliberately NOT implemented in Phase B2a — the down path is rollback-only (gated behind `--allow-destructive`, never part of the forward deploy path), and the imprecision is documented in-file (see the down-migration's own header). A stronger fix is a real but bounded schema change (either an added column or a side-table), out of scope for an expand-only batch. Tracked here so it isn't silently re-forgotten.
+
+---
+
+## 🌊 Follow-ups + new scope (filed 2026-07-16)
+
+### F-195 · `services/kiwi.ts` forwards raw upstream error `{name,message}` to the client
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** error-hygiene · **Where:** `server/src/services/kiwi.ts` puts a raw `{name, message}` into an `UpstreamError.details` that the generic `errorHandler` forwards to the client — same *class* as the F-124 Claude-error leak, but on the (non-Claude) kiwi lemmatizer upstream, which the F-094 consolidation didn't cover. Surfaced by the beta-hardening code audit (`docs/redesign/AUDIT_code.md`).
+- **Fix hint:** route kiwi upstream failures through a safe generic client message (log the raw detail server-side only), mirroring `mapClaudeError`'s whitelist posture.
+
+### F-196 · Replace the PastExams exhaustiveness `throw` with a page-scoped guard
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** resilience · **Where:** `client/src/pages/PastExams.tsx` `mockSectionFromKr` throws on a `'쓰기'` (writing) section. The invariant (`topik_attempts` never stores writing rows) is SOLID (Zod enum + DB CHECK `ck_topik_attempts_section` + only two writers, both exclude writing), so it's unreachable today. BUT the only `ErrorBoundary` is at the app root above the router, so if the invariant were ever loosened the throw would blank the WHOLE app, not just the page. Surfaced by the TOPIK batch re-review.
+- **Fix hint:** degrade one level up — skip/omit an unmappable row from the rendered list (or render it without a re-enter link) + log the anomaly, keeping fail-loud in dev/tests. Correct the `FIX_REPORT_batch2.md` "crashes the PastExams page" wording to "crashes the whole app."
+
+### F-197 · Ingest the Downloads audio corpus (map Track N → app slot)
+- **Status:** 🔴 open (deferred — user: "later, not now") · **Priority:** P2 · **Category:** content · **Where:** `~/Downloads/` on M holds ~1,200 audio files staged for ingest (see [[km-content-corpus-downloads]]): TTMIK Grammar Textbook audio L1–L10, TOPIK 1 & 2 Final-Step Listening, folktales, News In Korean, Real-Life Conversations, Easy Reading. NO transcripts, NO PDFs yet (user scanning ~12 books; transcripts deferred).
+- **Fix hint:** the hard part is mapping each `Track N.mp3` to the app's exact lesson/episode/TOPIK-question slot — same failure class as the F-185 season-numbering mis-map. Needs a careful per-source mapping + a loader run, NOT a blind ingest. Unblocks B-026/F-160 (TTMIK audio) + F-119 (TOPIK listening audio). Do WITH the PDFs when they arrive (coordinated content batch).
+
+### F-198 · EPIC · Device-adaptive layouts (responsive desktop/tablet/mobile)
+- **Status:** 🟡 in progress · **Priority:** P2 · **Category:** design-system · epic · **Where:** whole app. Recognize the viewport/device class and optimize layout + interaction per class (like a real responsive site + app), reusing the Seoul design system. Approved nav model: **left sidebar** replacing the bottom-bar at ≥768px (Option A). Design doc: `docs/redesign/DESIGN_device_adaptive.md`; desktop mockup: `docs/redesign/mockups/device-adaptive-today-desktop.html`.
+- **Phases:** **D0 = foundation** (breakpoints + `useDeviceClass` + sidebar shell + raised content max-width) — DONE (PR #117, staged). **D1 = Today + Progress use the width** (carousels→grids, wider charts) — DONE (PR #119). **D2 (stretch):** Review-library grid + Settings two-column. **Deliberately NOT adapted:** TOPIK timed-exam UI + flashcard study sessions stay narrow/single-focus. Bespoke desktop-native LEARN redesign = future follow-up.
+- **Note:** device-adaptive layout can't be verified in jsdom (no layout engine) — every phase needs a real desktop-browser visual check post-deploy.
 
 ---
 

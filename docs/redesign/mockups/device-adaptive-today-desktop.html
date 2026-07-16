@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Korean Master — Today (Desktop, Night) — Device-Adaptive Mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ============================================================
+     Korean Master — "Seoul, Day & Night" — Night world only.
+     Device-adaptive DESKTOP mockup of the Today page, Option A
+     (persistent left sidebar nav rail) from DESIGN_device_adaptive.md.
+
+     Hex values below are copied verbatim from client/src/styles/index.css's
+     Night (`@media (prefers-color-scheme: dark)`) token block — not
+     invented — so this reads as the real design system, not a reskin:
+       --ink #07080F   --ink-1(paper) #12172a   --ink-2 #1a2038
+       --paper #EAEEFB --paper-dim #CBD2ED --paper-mute #8B96C8
+       neon-coral #FF3E6C / bright #FF6B8A / soft #2C1420   (Grammar, default accent)
+       neon-blue  #5C87FF / bright #8FB0FF / soft #16213D   (Vocab)
+       neon-mint  #12C08A / bright #5BF0C0 / soft #0C2B22   (Listening)
+       neon-amber #FFB43D / soft #2B2110                    (Hanja)
+       violet     #C05CEB / soft #180922                    (Writing)
+       cyan       #33D6EF / soft #0C2530                    (Reading)
+       stone      #DAD6ED / soft #1E182F                    (TOPIK, assessment-neutral)
+       line rgba(255,255,255,.08)
+     ============================================================ */
+  :root {
+    --ink: #07080F;
+    --ink-1: #12172a;
+    --ink-2: #1a2038;
+    --paper: #EAEEFB;
+    --paper-dim: #CBD2ED;
+    --paper-mute: #8B96C8;
+    --paper-faint: #5C6690;
+    --line: rgba(255,255,255,.08);
+    --line-strong: rgba(255,255,255,.16);
+
+    --coral: #FF3E6C; --coral-bright: #FF6B8A; --coral-soft: #2C1420;
+    --blue:  #5C87FF; --blue-bright:  #8FB0FF; --blue-soft:  #16213D;
+    --mint:  #12C08A; --mint-bright:  #5BF0C0; --mint-soft:  #0C2B22;
+    --amber: #FFB43D; --amber-soft: #2B2110;
+    --violet:#C05CEB; --violet-soft:#180922;
+    --cyan:  #33D6EF; --cyan-soft:  #0C2530;
+    --stone: #DAD6ED; --stone-soft: #1E182F;
+
+    --sidebar-w: 264px;
+    --content-max: 1180px;
+    --radius: 18px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--ink);
+    color: var(--paper);
+    font-family: 'Inter', 'Noto Sans KR', system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    overflow-x: auto;
+  }
+  h1, h2, h3, .display {
+    font-family: 'Nunito', 'Noto Sans KR', system-ui, sans-serif;
+    font-weight: 800;
+  }
+  .kr { font-family: 'Noto Sans KR', system-ui, sans-serif; }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; }
+
+  /* Faint city-grid texture (device #3, Night variant) on the whole app bg */
+  .grid-texture {
+    position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, black 0%, transparent 70%);
+  }
+
+  /* ============================================================
+     Sidebar — Option A nav rail (recommended model)
+     ============================================================ */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: var(--sidebar-w);
+    background: linear-gradient(180deg, #10142a 0%, #0c0f20 100%);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    padding: 22px 16px 18px;
+    z-index: 10;
+    overflow-y: auto;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 10px 20px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand__mark {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--coral), var(--blue));
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Noto Serif KR', serif; font-weight: 700; font-size: 15px;
+    color: #0A0C12;
+    box-shadow: 0 0 18px -2px rgba(255,62,108,.55);
+  }
+  .brand__text { line-height: 1.15; }
+  .brand__text .en { font-weight: 800; font-size: 13.5px; letter-spacing: .01em; }
+  .brand__text .kr { font-size: 11px; color: var(--paper-mute); }
+
+  .nav-section-label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--paper-faint);
+    padding: 18px 12px 8px;
+  }
+
+  .nav-row {
+    display: flex; align-items: center; gap: 12px;
+    width: 100%; padding: 10px 12px; border-radius: 12px;
+    background: none; border: none; cursor: pointer;
+    color: var(--paper-dim);
+    font-size: 14.5px; font-weight: 600;
+    position: relative;
+    text-align: left;
+  }
+  .nav-row .icon {
+    width: 20px; height: 20px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; opacity: .85;
+  }
+  .nav-row .kr-sub { font-size: 11px; color: var(--paper-faint); font-weight: 500; margin-left: auto; }
+  .nav-row:hover { background: rgba(255,255,255,.045); color: var(--paper); }
+
+  .nav-row.active {
+    background: rgba(255,62,108,.10);
+    color: var(--paper);
+  }
+  .nav-row.active::before {
+    content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+    border-radius: 3px;
+    background: var(--coral);
+    box-shadow: 0 0 10px 1px rgba(255,62,108,.7);
+  }
+  .nav-row.active .icon { color: var(--coral-bright); opacity: 1; }
+
+  .learn-item {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px 12px 8px 16px; border-radius: 10px;
+    font-size: 13.5px; font-weight: 600; color: var(--paper-dim);
+    cursor: pointer;
+  }
+  .learn-item:hover { background: rgba(255,255,255,.045); color: var(--paper); }
+  .learn-item .dot {
+    width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+    box-shadow: 0 0 8px 0 currentColor;
+  }
+  .learn-item .kr-sub { margin-left: auto; font-size: 10.5px; color: var(--paper-faint); }
+
+  .sidebar__spacer { flex: 1; }
+
+  .sidebar__profile {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; margin-top: 8px;
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+  }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--mint), var(--blue));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 13px; color: #0A0C12;
+  }
+  .streak {
+    font-size: 12px; color: var(--amber); font-weight: 700;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .profile-name { font-size: 13px; font-weight: 700; }
+
+  /* ============================================================
+     Main content
+     ============================================================ */
+  .main {
+    margin-left: var(--sidebar-w);
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+  }
+
+  .hub {
+    position: relative;
+    padding: 40px 48px 26px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 900px 260px at 20% -10%, rgba(255,62,108,.10), transparent 60%),
+      radial-gradient(ellipse 700px 240px at 85% -20%, rgba(92,135,255,.10), transparent 60%),
+      linear-gradient(180deg, #0d1024 0%, var(--ink) 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  /* Hangul watermark — device #6, decorative only */
+  .hub::before {
+    content: '오';
+    position: absolute;
+    right: 4%; top: -6%;
+    font-family: 'Noto Serif KR', serif;
+    font-size: 260px; font-weight: 700;
+    color: rgba(255,255,255,.028);
+    pointer-events: none;
+    line-height: 1;
+  }
+  /* Skyline silhouette strip — device #4, Night variant */
+  .skyline {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 64px;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, transparent 0%, rgba(7,8,15,.7) 100%);
+  }
+  .skyline svg { position: absolute; bottom: -1px; left: 0; width: 100%; height: 64px; opacity: .5; }
+  /* Rain-sheen — device #8, faint diagonal wet-street reflection */
+  .rain-sheen {
+    position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(
+      115deg,
+      rgba(255,255,255,.018) 0px, rgba(255,255,255,.018) 1px,
+      transparent 1px, transparent 46px
+    );
+    mix-blend-mode: screen;
+  }
+
+  .hub__eyebrow {
+    font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--paper-mute);
+    position: relative; z-index: 1;
+  }
+  .hub__title {
+    font-size: 34px; margin: 6px 0 0;
+    color: var(--paper);
+    text-shadow: 0 0 22px rgba(255,62,108,.35), 0 0 60px rgba(255,62,108,.12);
+    position: relative; z-index: 1;
+  }
+  .hub__title .kr { font-size: 22px; color: var(--paper-dim); margin-right: 10px; font-weight: 700; }
+
+  .rail-divider {
+    height: 3px; margin: 18px 0 0;
+    background: linear-gradient(90deg, var(--coral), var(--blue), var(--mint), var(--amber));
+    border-radius: 3px;
+    box-shadow: 0 0 14px -2px rgba(255,62,108,.5);
+    position: relative; z-index: 1;
+    max-width: 220px;
+  }
+
+  .content {
+    max-width: var(--content-max);
+    margin: 0 auto;
+    padding: 34px 48px 80px;
+  }
+
+  .section-title {
+    font-size: 20px; margin: 0 0 4px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-title .kr { font-size: 14px; color: var(--paper-mute); font-weight: 600; }
+  .section-sub {
+    font-size: 13px; color: var(--paper-mute); margin: 0 0 18px;
+  }
+  section + section { margin-top: 44px; }
+
+  /* Desktop win #1: carousel -> static grid, all tiles visible, no scroll-snap */
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+
+  /* CityCard — device #1, neon signboard */
+  .card {
+    background: linear-gradient(160deg, var(--ink-2) 0%, var(--ink-1) 70%);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    box-shadow: 0 0 0 1px rgba(150,180,255,.08), 0 20px 40px -20px rgba(0,0,0,.7);
+    padding: 20px 20px 18px;
+    position: relative;
+    transition: transform .18s ease, box-shadow .18s ease;
+    cursor: pointer;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+  }
+  .card::before {
+    content: '';
+    position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
+    border-radius: 3px;
+    background: var(--tone, var(--coral));
+    box-shadow: 0 0 12px 1px var(--tone-glow, rgba(255,62,108,.6));
+  }
+  .card:hover {
+    box-shadow: 0 0 0 1px var(--tone-glow, rgba(255,62,108,.35)),
+                0 24px 48px -18px rgba(0,0,0,.8),
+                0 0 30px -8px var(--tone-glow, rgba(255,62,108,.45));
+  }
+  .card--coral  { --tone: var(--coral);  --tone-glow: rgba(255,62,108,.55); }
+  .card--blue   { --tone: var(--blue);   --tone-glow: rgba(92,135,255,.55); }
+  .card--amber  { --tone: var(--amber);  --tone-glow: rgba(255,180,61,.5); }
+  .card--mint   { --tone: var(--mint);   --tone-glow: rgba(18,192,138,.55); }
+  .card--cyan   { --tone: var(--cyan);   --tone-glow: rgba(51,214,239,.5); }
+  .card--violet { --tone: var(--violet); --tone-glow: rgba(192,92,235,.5); }
+  .card--stone  { --tone: var(--stone);  --tone-glow: rgba(218,214,237,.4); }
+
+  .card__icon {
+    width: 38px; height: 38px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    background: color-mix(in srgb, var(--tone) 16%, transparent);
+    color: var(--tone);
+    margin-bottom: 12px;
+  }
+  .card__title { font-size: 15.5px; font-weight: 700; margin: 0 0 2px; }
+  .card__title .kr { font-size: 12.5px; color: var(--paper-mute); font-weight: 500; margin-left: 6px; }
+  .card__meta { font-size: 12.5px; color: var(--paper-mute); margin: 6px 0 0; }
+  .card__body { font-size: 13px; color: var(--paper-dim); line-height: 1.45; margin: 8px 0 0; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .03em;
+    padding: 3px 9px; border-radius: 999px;
+    margin-top: 10px;
+  }
+  .pill--gold { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(255,180,61,.3); }
+  .pill--red  { background: var(--coral-soft); color: var(--coral-bright); border: 1px solid rgba(255,62,108,.3); }
+
+  .due-count {
+    font-size: 28px; font-weight: 800; margin: 6px 0 0;
+    color: var(--blue-bright);
+  }
+  .due-count .unit { font-size: 12px; font-weight: 600; color: var(--paper-mute); margin-left: 6px; }
+
+  .card__cta {
+    margin-top: 14px; display: flex; align-items: center; gap: 6px;
+    font-size: 12.5px; font-weight: 700; color: var(--tone);
+  }
+
+  /* Desktop win #2: TOPIK gets a wide dedicated panel + a companion
+     weekly-streak column, instead of being one more full-width mobile carousel page */
+  .grid-topik {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 18px;
+    align-items: stretch;
+  }
+
+  .topik-card {
+    padding: 26px 28px;
+  }
+  .topik-card__top {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 20px;
+  }
+  .resume-banner {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 700; color: var(--stone);
+    background: var(--stone-soft);
+    border: 1px solid rgba(218,214,237,.25);
+    padding: 5px 12px; border-radius: 999px;
+    margin-bottom: 14px;
+  }
+  .topik-card h3 { font-size: 19px; margin: 0 0 2px; }
+  .topik-card h3 .kr { font-size: 13px; color: var(--paper-mute); font-weight: 600; margin-left: 8px; }
+
+  /* Subway progress — device #5 */
+  .subway {
+    display: flex; align-items: center; margin: 22px 0 6px;
+    position: relative;
+  }
+  .subway__line {
+    position: absolute; left: 6px; right: 6px; top: 50%; height: 2px;
+    background: rgba(255,255,255,.14);
+    transform: translateY(-50%);
+    z-index: 0;
+  }
+  .subway__fill {
+    position: absolute; left: 6px; top: 50%; height: 2px;
+    background: var(--stone);
+    box-shadow: 0 0 8px 0 rgba(218,214,237,.6);
+    transform: translateY(-50%);
+    z-index: 0;
+  }
+  .subway__dots { display: flex; justify-content: space-between; width: 100%; z-index: 1; position: relative; }
+  .st-dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--stone);
+    box-shadow: 0 0 8px 0 rgba(218,214,237,.55);
+  }
+  .st-dot.ahead { background: var(--ink-2); border: 2px solid rgba(255,255,255,.18); box-shadow: none; }
+  .st-dot.current {
+    background: var(--ink);
+    border: 2px solid var(--stone);
+    box-shadow: 0 0 0 4px rgba(218,214,237,.15);
+    width: 13px; height: 13px;
+  }
+  .subway-label { font-size: 12px; color: var(--paper-mute); margin-top: 8px; }
+
+  .cta-btn {
+    margin-top: 18px;
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--stone); color: #12172a;
+    font-weight: 800; font-size: 13.5px;
+    padding: 10px 20px; border-radius: 12px;
+    border: none; cursor: pointer;
+    box-shadow: 0 0 18px -4px rgba(218,214,237,.5);
+  }
+
+  /* Seal stamp — device #7, milestone mark */
+  .seal {
+    width: 54px; height: 54px; border-radius: 10px;
+    border: 2.5px solid var(--coral);
+    color: var(--coral);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Noto Serif KR', serif; font-size: 22px; font-weight: 700;
+    transform: rotate(-8deg);
+    box-shadow: 0 0 16px -2px rgba(255,62,108,.55);
+    flex-shrink: 0;
+  }
+
+  .streak-card { padding: 22px 22px; display: flex; flex-direction: column; }
+  .streak-card h4 { font-size: 14.5px; margin: 0 0 2px; }
+  .streak-card .kr-sub { font-size: 11.5px; color: var(--paper-mute); }
+  .streak-flame { font-size: 26px; margin: 10px 0 2px; }
+  .streak-num { font-size: 30px; font-weight: 800; color: var(--amber); }
+  .streak-num .unit { font-size: 12px; color: var(--paper-mute); font-weight: 600; margin-left: 4px; }
+  .week-dots { display: flex; gap: 8px; margin-top: 16px; }
+  .week-dot {
+    flex: 1; text-align: center;
+  }
+  .week-dot .d {
+    width: 100%; aspect-ratio: 1; border-radius: 8px;
+    background: var(--mint-soft); border: 1px solid rgba(18,192,138,.3);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--mint-bright); font-size: 12px; font-weight: 700;
+    margin-bottom: 5px;
+  }
+  .week-dot.today .d {
+    background: var(--mint); color: #06140f;
+    box-shadow: 0 0 12px -2px rgba(18,192,138,.7);
+  }
+  .week-dot.future .d {
+    background: transparent; border: 1px dashed rgba(255,255,255,.15); color: var(--paper-faint);
+  }
+  .week-dot .lbl { font-size: 10px; color: var(--paper-faint); }
+
+  /* Floating chat FAB — unchanged from mobile, still an independent
+     floating element per the design doc's nav-model recommendation */
+  .chat-fab {
+    position: fixed; right: 26px; top: 22%;
+    width: 52px; height: 52px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--coral), #ff6b9a);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 0 24px -4px rgba(255,62,108,.7), 0 10px 24px -8px rgba(0,0,0,.6);
+    cursor: pointer;
+    z-index: 20;
+  }
+
+  .annot {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font-size: 11.5px; color: var(--paper-faint);
+    background: rgba(18,23,42,.9); border: 1px solid var(--line);
+    padding: 6px 14px; border-radius: 999px;
+    z-index: 30;
+  }
+</style>
+</head>
+<body>
+<div class="grid-texture"></div>
+
+<!-- ============ Option A sidebar nav rail ============ -->
+<nav class="sidebar" aria-label="Primary navigation">
+  <div class="brand">
+    <div class="brand__mark">한</div>
+    <div class="brand__text">
+      <div class="en">Korean Master</div>
+      <div class="kr">코리안 마스터</div>
+    </div>
+  </div>
+
+  <button class="nav-row active"><span class="icon">◆</span> Today <span class="kr-sub">오늘</span></button>
+  <button class="nav-row"><span class="icon">▤</span> Progress <span class="kr-sub">성장</span></button>
+  <button class="nav-row"><span class="icon">▥</span> Library <span class="kr-sub">자료실</span></button>
+  <button class="nav-row"><span class="icon">⚙</span> Settings <span class="kr-sub">설정</span></button>
+
+  <div class="nav-section-label">Learn · 배움</div>
+  <div class="learn-item" style="color:var(--blue-bright)"><span class="dot" style="background:var(--blue)"></span> Vocabulary <span class="kr-sub">단어</span></div>
+  <div class="learn-item" style="color:var(--coral-bright)"><span class="dot" style="background:var(--coral)"></span> Grammar <span class="kr-sub">문법</span></div>
+  <div class="learn-item" style="color:var(--cyan)"><span class="dot" style="background:var(--cyan)"></span> Reading <span class="kr-sub">읽기</span></div>
+  <div class="learn-item" style="color:var(--stone)"><span class="dot" style="background:var(--stone)"></span> TOPIK <span class="kr-sub">토픽</span></div>
+  <div class="learn-item" style="color:var(--mint-bright)"><span class="dot" style="background:var(--mint)"></span> Listening <span class="kr-sub">듣기</span></div>
+  <div class="learn-item" style="color:var(--violet)"><span class="dot" style="background:var(--violet)"></span> Writing <span class="kr-sub">쓰기</span></div>
+  <div class="learn-item" style="color:var(--amber)"><span class="dot" style="background:var(--amber)"></span> Hanja <span class="kr-sub">한자</span></div>
+
+  <div class="sidebar__spacer"></div>
+
+  <div class="sidebar__profile">
+    <div class="avatar">J</div>
+    <div style="flex:1;">
+      <div class="profile-name">Jared</div>
+      <div class="streak">🔥 7-day streak</div>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ Main content ============ -->
+<div class="main">
+  <header class="hub">
+    <div class="rain-sheen"></div>
+    <div class="hub__eyebrow">Monday, July 13 · 7월 13일 월요일</div>
+    <h1 class="hub__title"><span class="kr">오늘</span>· Today</h1>
+    <div class="rail-divider"></div>
+    <div class="skyline">
+      <svg viewBox="0 0 1200 64" preserveAspectRatio="none">
+        <rect x="0" y="20" width="60" height="44" fill="#1a2038"/>
+        <rect x="70" y="8" width="34" height="56" fill="#161d34"/>
+        <rect x="112" y="28" width="46" height="36" fill="#1a2038"/>
+        <rect x="560" y="0" width="18" height="64" fill="#1a2038"/>
+        <circle cx="569" cy="10" r="4" fill="#FF6B8A"/>
+        <rect x="900" y="14" width="50" height="50" fill="#161d34"/>
+        <rect x="960" y="30" width="40" height="34" fill="#1a2038"/>
+        <rect x="1080" y="4" width="30" height="60" fill="#161d34"/>
+      </svg>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <!-- Carousel 1 -> static 3-col grid: Review & drills -->
+    <section>
+      <h2 class="section-title">Review &amp; drills <span class="kr">복습 · 드릴</span></h2>
+      <p class="section-sub">All three tiles visible at once — no scroll-snap needed at this width (mobile: horizontal peek slider).</p>
+      <div class="grid-3">
+        <div class="card card--coral">
+          <div class="card__icon">文</div>
+          <div class="card__title">Grammar Drill <span class="kr">문법 드릴</span></div>
+          <div class="card__body">10 targeted sentence-pattern questions, mixed L3–L4.</div>
+          <div class="card__cta">Start drill →</div>
+        </div>
+        <div class="card card--blue">
+          <div class="card__icon">가</div>
+          <div class="card__title">Vocabulary <span class="kr">단어</span></div>
+          <div class="due-count">24 <span class="unit">cards due</span></div>
+          <div class="card__cta">Review now →</div>
+        </div>
+        <div class="card card--amber">
+          <div class="card__icon">漢</div>
+          <div class="card__title">Hanja <span class="kr">한자</span></div>
+          <div class="card__body">Level 4 characters — 6 practicing, 12 new this week.</div>
+          <div class="card__cta">Study Hanja →</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Carousel 2 -> static 3-col grid: Suggested learning -->
+    <section>
+      <h2 class="section-title">Suggested learning <span class="kr">추천 학습</span></h2>
+      <div class="grid-3">
+        <div class="card card--mint">
+          <div class="card__icon">🎧</div>
+          <div class="card__title">Listening <span class="kr">듣기</span></div>
+          <div class="card__body">KBS — 재택근무 확산</div>
+          <div class="card__meta">4 min · L3→L4</div>
+          <span class="pill pill--gold">Largest gap</span>
+        </div>
+        <div class="card card--cyan">
+          <div class="card__icon">읽</div>
+          <div class="card__title">Reading <span class="kr">읽기</span></div>
+          <div class="card__body">도시화와 환경</div>
+          <div class="card__meta">3 min · L4</div>
+        </div>
+        <div class="card card--violet">
+          <div class="card__icon">✎</div>
+          <div class="card__title">Writing <span class="kr">쓰기</span></div>
+          <div class="card__body">Paragraph in 합쇼체 — defend remote work</div>
+          <div class="card__meta">8 min · L4</div>
+          <span class="pill pill--red">Register drill</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Carousel 3 -> dedicated wide TOPIK panel + weekly-streak companion column -->
+    <section>
+      <h2 class="section-title">TOPIK <span class="kr">토픽</span></h2>
+      <p class="section-sub">Desktop gives TOPIK its own dedicated panel (was one more full-width mobile carousel page) plus a companion weekly-streak card — using the freed side width instead of stacking everything vertically.</p>
+      <div class="grid-topik">
+        <div class="card card--stone topik-card">
+          <div class="topik-card__top">
+            <div>
+              <span class="resume-banner">▶ Resume in progress</span>
+              <h3>TOPIK Mock Exam <span class="kr">모의고사</span></h3>
+            </div>
+            <div class="seal">印</div>
+          </div>
+          <div class="card__meta" style="margin-top:2px;">Reading section · Question 14 of 50</div>
+          <div class="subway">
+            <div class="subway__line"></div>
+            <div class="subway__fill" style="width:26%;"></div>
+            <div class="subway__dots">
+              <span class="st-dot"></span>
+              <span class="st-dot"></span>
+              <span class="st-dot"></span>
+              <span class="st-dot current"></span>
+              <span class="st-dot ahead"></span>
+              <span class="st-dot ahead"></span>
+              <span class="st-dot ahead"></span>
+              <span class="st-dot ahead"></span>
+            </div>
+          </div>
+          <div class="subway-label">Station 14 of 50 · new personal best pace this attempt</div>
+          <button class="cta-btn">Resume exam →</button>
+        </div>
+
+        <div class="card card--mint streak-card">
+          <h4>This week <span class="kr-sub">이번 주</span></h4>
+          <div class="streak-flame">🔥</div>
+          <div class="streak-num">7 <span class="unit">day streak</span></div>
+          <div class="week-dots">
+            <div class="week-dot"><div class="d">M</div><div class="lbl">Mon</div></div>
+            <div class="week-dot"><div class="d">T</div><div class="lbl">Tue</div></div>
+            <div class="week-dot"><div class="d">W</div><div class="lbl">Wed</div></div>
+            <div class="week-dot"><div class="d">T</div><div class="lbl">Thu</div></div>
+            <div class="week-dot"><div class="d">F</div><div class="lbl">Fri</div></div>
+            <div class="week-dot today"><div class="d">S</div><div class="lbl">Sat</div></div>
+            <div class="week-dot future"><div class="d">S</div><div class="lbl">Sun</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<div class="chat-fab" title="Ask about this page">💬</div>
+<div class="annot">Mockup — Today, desktop ≥1100px, Night theme, Option A sidebar nav (see DESIGN_device_adaptive.md)</div>
+
+</body>
+</html>
