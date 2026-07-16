@@ -668,9 +668,11 @@ const MineBodySchema = z
  *      F-199: this step deliberately does NOT write `source_upload_id` — the
  *      shared row is REFERENCE data, and user-saved provenance on it was
  *      first-write-wins across users (a 2nd user's tag silently vanished).
- *      `vocab_entries.source_upload_id` remains F-108 extracted-corpus
- *      provenance only (written by services/uploadExtract.ts, read by the
- *      U3a browse) — untouched here.
+ *      For NEW writes `vocab_entries.source_upload_id` is F-108
+ *      extracted-corpus provenance only (written by services/uploadExtract.ts,
+ *      read by the U3a browse) — untouched here. Legacy pre-070 user-mined
+ *      rows may still carry a stale tag there; it is harmless and load-bearing
+ *      (the only provenance for pre-070 list-only saves) — see F-200.
  *   3. Bank a recognition card for THIS user, idempotent on
  *      (user_id, vocab_entry_id, face='recognition', deleted_at IS NULL) —
  *      identical to POST /vocab/entries/:entryId/bank, so a double-tap returns
