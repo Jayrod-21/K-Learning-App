@@ -95,6 +95,23 @@ const PAST_EXAMS_FETCH_LIMIT = 100;
  * shown); it never falls back to a guessed section, preserving the
  * "never mis-route to the wrong paper" property `reEnterHref` exists for.
  */
+/**
+ * Warn once per distinct anomaly message. `mockSectionFromKr` runs during
+ * render (via `reEnterHref` from `PastExamRow`), and the app mounts under
+ * `<StrictMode>` (`main.tsx`), whose dev double-render — plus ordinary
+ * re-renders (e.g. a refetch) and repeated anomalous rows — would emit the
+ * same invariant warning over and over. Deduplicating on the message keeps
+ * the anomaly fail-loud in dev/tests (the F-196 requirement) without the
+ * per-render console noise; a genuinely different anomaly (a different
+ * unknown section value) still gets its own line.
+ */
+const warnedAnomalies = new Set<string>();
+function warnOnce(message: string): void {
+  if (warnedAnomalies.has(message)) return;
+  warnedAnomalies.add(message);
+  console.warn(message);
+}
+
 function mockSectionFromKr(
   section: TopikAttemptHistoryEntry['section'],
 ): MockSection | null {
@@ -108,7 +125,7 @@ function mockSectionFromKr(
       // re-enter — and the server never stores writing attempt rows (see
       // the doc comment above), so one reaching this page means an
       // upstream invariant moved. Log it; the row degrades to link-less.
-      console.warn(
+      warnOnce(
         "PastExams: a '쓰기' (writing) attempt reached the past-exams list — no Mock-Test paper exists for writing; rendering the row without a re-enter link",
       );
       return null;
@@ -117,7 +134,7 @@ function mockSectionFromKr(
       // switch (compile error via `never`), but at RUNTIME an unexpected
       // wire value degrades gracefully instead of crashing the render.
       const exhausted: never = section;
-      console.warn(
+      warnOnce(
         `PastExams: unhandled TOPIK section ${String(exhausted)} — rendering the row without a re-enter link`,
       );
       return null;

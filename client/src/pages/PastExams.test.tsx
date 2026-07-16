@@ -173,7 +173,9 @@ describe('PastExams (F-103)', () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(screen.getByRole('link', { name: /TOPIK II test 91/ }));
-    expect(screen.getByTestId('location')).toHaveTextContent('section=listening');
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/learn/topik?mode=mock&section=listening&exam=91&level=TOPIK+II',
+    );
   });
 
   it('omits the level param for a legacy attempt with no persisted topikLevel (never guesses)', async () => {
@@ -207,7 +209,11 @@ describe('PastExams (F-103)', () => {
         total: 1,
       },
     };
-    // The anomaly is still fail-loud in dev/tests via console.warn.
+    // The anomaly is still fail-loud in dev/tests via console.warn. The
+    // warn is deduplicated at module level (warn-once — see `warnOnce` in
+    // PastExams.tsx), so the assertion below relies on this being the FIRST
+    // test in this file that renders a '쓰기' row; a test added ABOVE this
+    // one that renders '쓰기' would consume the one allowed call.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(() => renderPage()).not.toThrow();
     // The row's result is still visible…
@@ -242,6 +248,38 @@ describe('PastExams (F-103)', () => {
       'href',
       '/learn/topik?mode=mock&section=reading&exam=91&level=TOPIK+II',
     );
+    // …and the anomalous writing row itself is still visible in the same
+    // list (read-only), so "siblings unaffected" doesn't hide "row dropped".
+    expect(screen.getByText(/TOPIK II · 쓰기 91회/)).toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it('dedupes the anomaly warn — repeated anomalous rows (and StrictMode dev double-render) log at most once (F-196)', () => {
+    // The warn-once guard (`warnOnce` in PastExams.tsx) is module-level, so
+    // earlier tests in this file may already have consumed the '쓰기'
+    // message. Assert the dedup PROPERTY — at most one call — which holds
+    // both in isolation (exactly 1) and in a full-file run (0), and fails
+    // if the guard is removed (two rows below → two identical warns). That
+    // the warn fires at all is pinned by the read-only test above.
+    hoisted.state = {
+      kind: 'data',
+      data: {
+        attempts: [
+          { ...READING_ATTEMPT, attemptId: 'a6', section: '쓰기' },
+          { ...READING_ATTEMPT, attemptId: 'a7', section: '쓰기' },
+        ],
+        total: 2,
+      },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    renderPage();
+    // Both anomalous rows still degrade gracefully…
+    expect(screen.getAllByText(/TOPIK II · 쓰기 91회/)).toHaveLength(2);
+    expect(
+      screen.queryByRole('link', { name: /tap to re-enter/ }),
+    ).not.toBeInTheDocument();
+    // …and the identical anomaly message is not emitted once per row.
+    expect(warn.mock.calls.length).toBeLessThanOrEqual(1);
     warn.mockRestore();
   });
 
