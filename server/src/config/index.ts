@@ -56,6 +56,15 @@ const EnvSchema = z.object({
   // creates a new row that counts toward this cap.
   BOOK_UPLOAD_DAILY_CAP: z.coerce.number().int().positive().default(10),
 
+  // Per-user DAILY cap on extraction-OCR PAGES (F-108 — U2 extraction). Each
+  // page in an extraction run is one Claude Vision call, so this — not a
+  // per-run count — is the cost lever. Exceeding it returns 429 BEFORE any
+  // upstream call (mirrors IMAGE_OCR_DAILY_CAP's posture; separate knob
+  // because a book-extraction session legitimately burns more Vision calls
+  // than casual photo mining). Failed runs still count: the cap is a COST
+  // control and a failed run spent money too.
+  UPLOAD_EXTRACT_DAILY_PAGE_CAP: z.coerce.number().int().positive().default(50),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this

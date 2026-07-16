@@ -100,6 +100,14 @@ router.get(
                      AND EXISTS (SELECT 1 FROM book_uploads bu
                                   WHERE bu.id = $6::bigint
                                     AND bu.user_id = $7)))
+            -- F-108 fence: rows EXTRACTED from a book upload are derived from
+            -- a user's PRIVATE upload — they must never surface in another
+            -- user's Reference list. Untagged rows (the whole curated KGIU
+            -- corpus, source_upload_id IS NULL) stay shared reference data.
+            AND (source_upload_id IS NULL
+                 OR EXISTS (SELECT 1 FROM book_uploads bo
+                             WHERE bo.id = source_upload_id
+                               AND bo.user_id = $7))
           ORDER BY id
           LIMIT $8 OFFSET $9`,
         [
@@ -134,6 +142,7 @@ router.get(
       const id = (req as typeof req & {
         validatedParams: z.infer<typeof KgiuIdParamsSchema>;
       }).validatedParams.id;
+      const userId = getUserId(req);
       const { rows } = await query(
         // `unit` must ride along: the client's KgiuEntryDetail extends
         // KgiuEntrySummary (which declares `unit`) and the detail Sheet footer
@@ -141,14 +150,22 @@ router.get(
         // REVIEW_F018 SHOULD-FIX-1 — every real row footer showed "Unit · —"
         // while client tests passed on mocks that included it. Pinned by a
         // route test so the wire-vs-mock gap can't recur.
+        //
+        // F-108 fence: an entry EXTRACTED from a book upload is derived from a
+        // user's PRIVATE upload — another user probing sequential ids must get
+        // the same 404 as a missing id. Untagged rows stay shared reference.
         `SELECT id, corpus, source_id, pattern, title_en, category, proficiency,
                 unit, explanation, formation_rules, examples, dialogues,
                 vocabulary, tips, compare_with, exercises, cultural_notes,
                 source_pages
            FROM kgiu_entries
           WHERE id = $1
+            AND (source_upload_id IS NULL
+                 OR EXISTS (SELECT 1 FROM book_uploads bo
+                             WHERE bo.id = source_upload_id
+                               AND bo.user_id = $2))
           LIMIT 1`,
-        [id],
+        [id, userId],
       );
       if (rows.length === 0) throw new NotFoundError('kgiu entry not found');
       // pg returns BIGINT (id) as a string; the API contract documents id as a
@@ -428,6 +445,11 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
          FROM kgiu_entries k
         WHERE k.entry_type = 'grammar'
           AND btrim(coalesce(k.pattern, '')) <> ''
+          -- F-108 fence: suggestions draw from the shared curated corpus only.
+          -- Rows EXTRACTED from a book upload (source_upload_id tagged) are
+          -- private to the upload's owner AND uncurated OCR candidates — wrong
+          -- for the weekly picks on both counts.
+          AND k.source_upload_id IS NULL
           AND NOT EXISTS (
                 SELECT 1
                   FROM grammar_entries g

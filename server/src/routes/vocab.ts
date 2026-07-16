@@ -150,6 +150,14 @@ router.get(
                      AND EXISTS (SELECT 1 FROM book_uploads bu
                                   WHERE bu.id = $7::bigint
                                     AND bu.user_id = $8)))
+            -- F-108 fence: rows EXTRACTED from a book upload are derived from
+            -- a user's PRIVATE upload — they must never surface in another
+            -- user's browse. Untagged rows (all curated corpora + tap-mined
+            -- lemmas, source_upload_id IS NULL) stay shared reference data.
+            AND (source_upload_id IS NULL
+                 OR EXISTS (SELECT 1 FROM book_uploads bo
+                             WHERE bo.id = source_upload_id
+                               AND bo.user_id = $8))
           ORDER BY id
           LIMIT $9 OFFSET $10`,
         [
@@ -504,14 +512,22 @@ router.get(
       const id = (req as typeof req & {
         validatedParams: z.infer<typeof VocabIdParamsSchema>;
       }).validatedParams.entryId;
+      const userId = getUserId(req);
       const { rows } = await query(
+        // F-108 fence: an entry EXTRACTED from a book upload is derived from a
+        // user's PRIVATE upload — another user probing sequential ids must get
+        // the same 404 as a missing id. Untagged rows stay shared reference.
         `SELECT id, corpus, source_id, korean, english, pronunciation, hanja,
                 part_of_speech, theme, subsection, proficiency,
                 example_korean, example_english, tips, cross_refs, notes
            FROM vocab_entries
           WHERE id = $1
+            AND (source_upload_id IS NULL
+                 OR EXISTS (SELECT 1 FROM book_uploads bo
+                             WHERE bo.id = source_upload_id
+                               AND bo.user_id = $2))
           LIMIT 1`,
-        [id],
+        [id, userId],
       );
       if (rows.length === 0) throw new NotFoundError('vocab entry not found');
       // pg returns BIGINT (id) as a string; the API contract documents id as a

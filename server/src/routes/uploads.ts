@@ -27,6 +27,15 @@
  *                                       ids that route validates against)
  *   PATCH  /uploads/:id/pages/order  → reorder pages (vFlat retakes can land
  *                                       out of order — see migration 041)
+ *   POST   /uploads/:id/extract      → F-108 (U2): run OCR extraction over a
+ *                                       bounded page range (default: resume
+ *                                       after the last done run) — see
+ *                                       services/uploadExtract.ts for the
+ *                                       claim/OCR/curate/persist shape, the
+ *                                       daily Vision-page cap (429), and the
+ *                                       one-live-run-per-upload claim (409)
+ *   GET    /uploads/:id/extract      → this upload's extraction runs, newest
+ *                                       first (the status surface)
  *   DELETE /uploads/:id              → remove the row + all its pages' blobs
  *
  * SECURITY (mirrors routes/images.ts + services/imageIngest.ts's posture,
@@ -86,6 +95,13 @@ import {
   persistUpload,
   type BookUploadDTO,
 } from '../services/bookUploadIngest.js';
+import {
+  MAX_EXTRACT_PAGES_PER_RUN,
+  RUN_COLUMNS,
+  runExtraction,
+  toExtractionRunDTO,
+  type ExtractionRunRow,
+} from '../services/uploadExtract.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -137,6 +153,21 @@ const UploadBodySchema = z
 const PageOrderBodySchema = z
   .object({
     page_ids: z.array(z.coerce.number().int().positive().max(MAX_ID)).min(1).max(3000),
+  })
+  .strict();
+
+/**
+ * `POST /uploads/:id/extract` body — an OPTIONAL 1-based inclusive page range.
+ * Both fields omitted = "resume": start after the last done run's page_to,
+ * covering the default slice (services/uploadExtract.ts owns the defaulting +
+ * the span ceiling — the range logic needs the DB's view of prior runs, so it
+ * lives in the claim transaction, not here). `.strict()` rejects any extra
+ * field (mass-assignment defense — counts/status/user_id can't be smuggled).
+ */
+const ExtractBodySchema = z
+  .object({
+    page_from: z.coerce.number().int().positive().max(MAX_ID).optional(),
+    page_to: z.coerce.number().int().positive().max(MAX_ID).optional(),
   })
   .strict();
 
@@ -473,6 +504,81 @@ router.patch(
 
       res.status(200).json({
         pages: pages.map((r) => ({ id: r.id, page_number: r.page_number })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /uploads/:id/extract — F-108 (U2): run OCR extraction over a bounded
+// page range. Synchronous: the response IS the settled run (done/failed with
+// counts). Everything security-load-bearing (ownership 404, range validation,
+// daily Vision-page cap 429 BEFORE upstream, one-live-run claim 409, the
+// OCR-outside-tx / persist-inside-tx split, per-word injection screening)
+// lives in services/uploadExtract.ts — see its header.
+// ---------------------------------------------------------------------------
+
+router.post(
+  '/:id/extract',
+  expensiveLimiter(),
+  validateParams(IdParamsSchema),
+  validateBody(ExtractBodySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
+        .validatedParams;
+      const body = (req as Request & { body: z.infer<typeof ExtractBodySchema> }).body;
+
+      const run = await runExtraction(id, userId, body, req.log, req.correlationId);
+      res.status(201).json({ run });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /uploads/:id/extract — this upload's extraction runs, newest first
+// (the status surface for F-059's button + progress view). User-scoped: an
+// unowned/missing :id → 404 before any run row is read.
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/:id/extract',
+  cheapLimiter(),
+  validateParams(IdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (req as Request & { validatedParams: z.infer<typeof IdParamsSchema> })
+        .validatedParams;
+
+      const owner = await query<{ id: string }>(
+        `SELECT id FROM book_uploads WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+      if (!owner.rows[0]) {
+        // Not theirs / missing → 404 (don't confirm existence).
+        throw new NotFoundError('upload not found');
+      }
+
+      // Newest first; bounded — the status view wants recent history, not an
+      // unbounded scroll (a book at 20 pages/run tops out around 25 runs; 50
+      // covers retries without an unbounded payload).
+      const { rows } = await query<ExtractionRunRow>(
+        `SELECT ${RUN_COLUMNS}
+           FROM upload_extractions
+          WHERE upload_id = $1
+          ORDER BY created_at DESC, id DESC
+          LIMIT 50`,
+        [id],
+      );
+      res.status(200).json({
+        runs: rows.map(toExtractionRunDTO),
+        max_pages_per_run: MAX_EXTRACT_PAGES_PER_RUN,
       });
     } catch (err) {
       next(err);

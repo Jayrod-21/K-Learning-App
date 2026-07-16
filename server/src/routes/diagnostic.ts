@@ -416,9 +416,14 @@ async function pickVocabSeed(target: DiagnosticTargetLevel): Promise<GenSeed | n
 async function pickGrammarSeed(target: DiagnosticTargetLevel): Promise<GenSeed | null> {
   for (const proficiency of [seedProficiencyForTarget(target), null] as const) {
     const params: unknown[] = [];
+    // F-108 fence: seeds draw from the shared curated KGIU corpus only. Rows
+    // EXTRACTED from a book upload (source_upload_id tagged) are private to
+    // the upload's owner AND uncurated OCR candidates — this helper has no
+    // user context, so they are excluded outright.
     let sql = `SELECT id::text AS id, pattern, title_en, explanation
                  FROM kgiu_entries
-                WHERE pattern IS NOT NULL AND length(pattern) >= 1`;
+                WHERE pattern IS NOT NULL AND length(pattern) >= 1
+                  AND source_upload_id IS NULL`;
     if (proficiency !== null) {
       params.push(proficiency);
       sql += ` AND proficiency = $${params.length}::proficiency_level`;
