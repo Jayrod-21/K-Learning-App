@@ -7,10 +7,23 @@
  *
  * Resilience: 5s timeout, single retry on connect-error (NOT on 4xx), JSON
  * body validation via Zod before returning to the caller.
+ *
+ * F-195 (error hygiene): every error thrown here carries NO `details` payload.
+ * The generic errorHandler forwards `AppError.details` verbatim to the client,
+ * so attaching the upstream response body (or a serialized `{name, message}`
+ * of a network error) leaked raw upstream/internal text to the wire — the same
+ * class of leak F-124 closed for the Claude proxy. The raw detail (status,
+ * truncated body, network-error cause) is logged server-side via
+ * `logUpstreamDetail` below, mirroring `mapClaudeError`'s whitelist posture:
+ * the wire only ever sees the fixed, server-minted message strings in this
+ * file. Dropping `details` also closes a latent status-override hole — an
+ * upstream body carrying a numeric `status` key would previously have
+ * overridden OUR response status via UpstreamError's `{ status }` detail hook.
  */
 import { request } from 'undici';
 import { z } from 'zod';
 import { loadConfig } from '../config/index.js';
+import { getLogger } from '../logging.js';
 import { UpstreamError, ValidationError } from '../middleware/errors.js';
 
 const TIMEOUT_MS = 5_000;
@@ -56,18 +69,28 @@ export async function lemmatize(
       });
       const text = await res.body.text();
       if (res.statusCode === 400) {
-        throw new ValidationError('kiwi rejected input', safeParseJson(text));
+        // Upstream judged the INPUT bad → our 400. The upstream body may echo
+        // the input or expose analyzer internals — log it, never forward it.
+        logUpstreamDetail(correlationId, res.statusCode, text);
+        throw new ValidationError('kiwi rejected input');
       }
       if (res.statusCode >= 500) {
-        lastErr = new UpstreamError(`kiwi ${res.statusCode}`, safeParseJson(text));
+        logUpstreamDetail(correlationId, res.statusCode, text);
+        lastErr = new UpstreamError(`kiwi ${res.statusCode}`);
         continue;
       }
       if (res.statusCode >= 300) {
-        throw new UpstreamError(`kiwi ${res.statusCode}`, safeParseJson(text));
+        logUpstreamDetail(correlationId, res.statusCode, text);
+        throw new UpstreamError(`kiwi ${res.statusCode}`);
       }
       const parsed = KiwiResponseSchema.safeParse(safeParseJson(text));
       if (!parsed.success) {
-        throw new UpstreamError('kiwi returned malformed payload', parsed.error.issues);
+        // Zod issues describe the UPSTREAM payload — server-side only (F-195).
+        getLogger().warn(
+          { correlationId, issues: parsed.error.issues },
+          'kiwi returned malformed payload (raw detail server-side only)',
+        );
+        throw new UpstreamError('kiwi returned malformed payload');
       }
       return parsed.data;
     } catch (err) {
@@ -82,13 +105,39 @@ export async function lemmatize(
   // rethrow it as-is. Labeling it 'unreachable' would misdirect debugging
   // toward the network when the service is up and failing.
   if (lastErr instanceof UpstreamError) throw lastErr;
-  throw new UpstreamError('kiwi unreachable', serializeErr(lastErr));
+  // Network-level failure: the cause's {name, message} (e.g. an undici connect
+  // error naming host/port) is logged here, never forwarded (F-195).
+  getLogger().warn(
+    { correlationId, cause: serializeErr(lastErr) },
+    'kiwi unreachable (raw detail server-side only)',
+  );
+  throw new UpstreamError('kiwi unreachable');
+}
+
+/**
+ * Server-side-only record of an upstream error response (F-195). Body is
+ * truncated to bound log volume; the wire never sees any of this.
+ */
+function logUpstreamDetail(correlationId: string, statusCode: number, body: string): void {
+  getLogger().warn(
+    { correlationId, kiwiStatus: statusCode, kiwiBody: body.slice(0, 500) },
+    'kiwi upstream error (raw detail server-side only)',
+  );
 }
 
 function isTransient(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as NodeJS.ErrnoException).code ?? '';
-  return ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(code);
+  // UND_ERR_BODY_TIMEOUT: the body stalled after headers arrived (thrown by
+  // `res.body.text()`) — the same transient class as a headers timeout. Retry,
+  // then surface the fixed 'kiwi unreachable' 502 instead of an opaque 500.
+  return [
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+  ].includes(code);
 }
 
 function safeParseJson(text: string): unknown {

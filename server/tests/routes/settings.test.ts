@@ -1,5 +1,6 @@
 /**
- * Integration tests for /settings/prefs (Pass 9 — preferences server-sync).
+ * Integration tests for /settings/prefs (Pass 9 — preferences server-sync;
+ * F-093 CONTRACT — notif single-sourced from notification_schedules).
  *
  * Routes:
  *   GET /settings/prefs
@@ -10,11 +11,14 @@
  *
  * Coverage:
  *   - auth required on both routes (401 unauthenticated)
- *   - GET returns DEFAULT_PREFS when the stored blob is empty `{}` (fresh user)
- *   - PUT persists + echoes the stored object; GET then echoes the same
- *   - GET falls back to DEFAULT_PREFS on a corrupt stored blob (never 500)
- *   - PUT rejects a bad palette enum → 400
- *   - PUT rejects an unknown key (strict) → 400
+ *   - GET returns stored defaults + derived notif for a fresh user
+ *   - PUT persists the stored slices + echoes them with the CANONICAL notif
+ *   - F-093 contract: notif reads come from notification_schedules, never the
+ *     blob; PUT never writes notif into the blob (no dual-write); a client-sent
+ *     notif is validated but ignored; a body without notif is accepted
+ *   - GET falls back to stored defaults on a corrupt stored blob (never 500),
+ *     and a malformed LEGACY notif key alone cannot wipe the stored palette
+ *   - PUT rejects a bad palette enum / unknown key / malformed notif → 400
  *   - IDOR is structurally impossible (no :id) — each user reads only their own
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -29,19 +33,69 @@ let t: TestApp;
 
 const DEFAULT_LANGUAGE_DISPLAY = { mode: 'both', primary: 'ko', subScale: 0.7 };
 
-const DEFAULT_PREFS = {
-  notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
+/**
+ * The derived notif for a user with NO notification_schedules rows — F-040's
+ * "nothing is implicitly on" model. This is what BOTH routes report unless
+ * schedule rows exist, regardless of anything a blob or a PUT body says.
+ */
+const NOTIF_NONE = {
+  channel: { email: false, sms: false },
+  reviewsDue: false,
+  daily: false,
+  weekly: false,
+};
+
+/** The blob-persisted defaults (palette/languageDisplay/textSize — no notif). */
+const DEFAULT_STORED = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
 };
 
-const CUSTOM_PREFS = {
-  notif: { channel: { email: false, sms: true }, reviewsDue: false, daily: true, weekly: false },
+/** What GET serves a fresh user: stored defaults + derived (empty) notif. */
+const DEFAULT_VIEW = { ...DEFAULT_STORED, notif: NOTIF_NONE };
+
+const CUSTOM_STORED = {
   palette: { paper: 'sumi', accent: 'mint', correct: 'pine', wrong: 'amber' },
   languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
   textSize: 'lg',
 };
+
+/**
+ * A pre-contract client's full PUT body — carries a notif slice the server
+ * now validates but IGNORES (the echoed notif is derived, never this).
+ */
+const CUSTOM_PREFS = {
+  notif: { channel: { email: false, sms: true }, reviewsDue: false, daily: true, weekly: false },
+  ...CUSTOM_STORED,
+};
+
+/** The response view for CUSTOM_STORED with no schedule rows present. */
+const CUSTOM_VIEW = { ...CUSTOM_STORED, notif: NOTIF_NONE };
+
+/** Legacy full-default body a pre-contract client would send. */
+const DEFAULT_PREFS_BODY = {
+  notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: false, weekly: true },
+  ...DEFAULT_STORED,
+};
+
+interface SeedScheduleRow {
+  kind: 'daily_reminder' | 'reviews_due' | 'weekly_report';
+  channel: 'push' | 'email' | 'sms';
+  enabled: boolean;
+}
+
+/** Insert canonical notification_schedules rows directly (parameterized). */
+async function seedSchedules(userId: number, rows: SeedScheduleRow[]): Promise<void> {
+  for (const r of rows) {
+    await pg.pool.query(
+      `INSERT INTO notification_schedules
+              (user_id, kind, channel, time_of_day, tz, weekday, enabled)
+       VALUES ($1, $2, $3, '08:00', 'UTC', $4, $5)`,
+      [userId, r.kind, r.channel, r.kind === 'weekly_report' ? 0 : null, r.enabled],
+    );
+  }
+}
 
 beforeAll(async () => {
   pg = await startPostgres();
@@ -54,6 +108,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  // users CASCADE also clears notification_schedules (FK ON DELETE CASCADE).
   await pg.pool.query('TRUNCATE TABLE sessions, users RESTART IDENTITY CASCADE');
   resetLimiters();
 });
@@ -66,52 +121,167 @@ describe('settings — auth required', () => {
     const res =
       method === 'GET'
         ? await request(t.app).get(p)
-        : await request(t.app).put(p).send(DEFAULT_PREFS);
+        : await request(t.app).put(p).send(DEFAULT_PREFS_BODY);
     expect(res.status).toBe(401);
   });
 });
 
 describe('GET /settings/prefs', () => {
-  it('returns DEFAULT_PREFS for a fresh user (empty blob)', async () => {
+  it('returns stored defaults + all-off derived notif for a fresh user (empty blob, no schedules)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(DEFAULT_PREFS);
+    expect(res.body).toEqual(DEFAULT_VIEW);
   });
 
-  it('echoes a stored blob after a PUT', async () => {
+  it('echoes the stored slices after a PUT, with derived (not echoed) notif', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(CUSTOM_PREFS);
+    expect(res.body).toEqual(CUSTOM_VIEW);
   });
 
-  it('falls back to DEFAULT_PREFS on a corrupt stored blob (never 500)', async () => {
+  it('falls back to stored defaults on a corrupt stored blob (never 500)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
-    // Poison the column directly with a shape that fails PrefsSchema.
+    // Poison the column directly with a shape that fails StoredPrefsSchema.
     await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
       JSON.stringify({ notif: 'not an object', palette: { paper: 'neon' } }),
       userId,
     ]);
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(DEFAULT_PREFS);
+    expect(res.body).toEqual(DEFAULT_VIEW);
+  });
+
+  it('a malformed LEGACY notif key alone cannot wipe the stored palette (stripped before parse)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Pre-contract row: valid stored slices + garbage where notif used to live.
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify({ notif: 'garbage', ...CUSTOM_STORED }),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // The user's palette survives; notif is derived, not read from the blob.
+    expect(res.body).toEqual(CUSTOM_VIEW);
+  });
+});
+
+describe('F-093 — notif is single-sourced from notification_schedules', () => {
+  it('GET derives notif from schedule rows (enabled email kinds → true; disabled → false)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedSchedules(userId, [
+      { kind: 'daily_reminder', channel: 'email', enabled: true },
+      { kind: 'reviews_due', channel: 'email', enabled: true },
+      { kind: 'weekly_report', channel: 'email', enabled: false },
+      { kind: 'daily_reminder', channel: 'sms', enabled: true },
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    expect(res.body.notif).toEqual({
+      channel: { email: true, sms: true },
+      daily: true,
+      reviewsDue: true,
+      weekly: false,
+    });
+  });
+
+  it('a disabled-only email schedule derives channel.email=false', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedSchedules(userId, [{ kind: 'daily_reminder', channel: 'email', enabled: false }]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.body.notif).toEqual(NOTIF_NONE);
+  });
+
+  it('GET ignores notif values stored in the blob — reads come from the canonical table', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // A pre-contract blob claiming everything is ON — but no schedule rows.
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify({
+        notif: { channel: { email: true, sms: true }, reviewsDue: true, daily: true, weekly: true },
+        ...CUSTOM_STORED,
+      }),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    expect(res.body.notif).toEqual(NOTIF_NONE);
+  });
+
+  it('PUT does NOT write notif into the blob (no dual-write remains)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
+    const { rows } = await pg.pool.query<{ preferences: Record<string, unknown> }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    // The persisted blob is EXACTLY the stored slices — no notif key at all.
+    expect(rows[0]!.preferences).toEqual(CUSTOM_STORED);
+    expect(Object.keys(rows[0]!.preferences)).not.toContain('notif');
+  });
+
+  it('PUT ignores the client-sent notif and echoes the canonical derived value', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await seedSchedules(userId, [{ kind: 'weekly_report', channel: 'email', enabled: true }]);
+    // The client claims daily=true / weekly=false — the schedules say otherwise.
+    const res = await agent.put('/settings/prefs').send(CUSTOM_PREFS);
+    expect(res.status).toBe(200);
+    expect(res.body.notif).toEqual({
+      channel: { email: true, sms: false },
+      daily: false,
+      reviewsDue: false,
+      weekly: true,
+    });
+    // Everything else echoes what persisted.
+    expect(res.body.palette).toEqual(CUSTOM_STORED.palette);
+    expect(res.body.textSize).toBe(CUSTOM_STORED.textSize);
+  });
+
+  it('PUT dropping a stale blob notif also purges it: a pre-contract row loses its notif keys on the next save', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify({
+        notif: { channel: { email: true, sms: false }, reviewsDue: true, daily: true, weekly: true },
+        ...DEFAULT_STORED,
+      }),
+      userId,
+    ]);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
+    const { rows } = await pg.pool.query<{ preferences: Record<string, unknown> }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences).toEqual(CUSTOM_STORED);
+  });
+
+  it('PUT accepts a body WITHOUT notif (the forward contract shape)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.put('/settings/prefs').send(CUSTOM_STORED);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(CUSTOM_VIEW);
+  });
+
+  it('PUT still rejects a MALFORMED notif → 400 (strict posture retained)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bad = { ...CUSTOM_PREFS, notif: { channel: { email: 'yes', sms: false } } };
+    const res = await agent.put('/settings/prefs').send(bad);
+    expect(res.status).toBe(400);
   });
 });
 
 describe('PUT /settings/prefs', () => {
-  it('persists + echoes the stored object', async () => {
+  it('persists + echoes the stored slices (with derived notif)', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const res = await agent.put('/settings/prefs').send(CUSTOM_PREFS);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(CUSTOM_PREFS);
-    // Confirm it actually landed in the column.
+    expect(res.body).toEqual(CUSTOM_VIEW);
+    // Confirm it actually landed in the column — stored slices only.
     const { rows } = await pg.pool.query<{ preferences: unknown }>(
       `SELECT preferences FROM users WHERE id = $1`,
       [userId],
     );
-    expect(rows[0]!.preferences).toEqual(CUSTOM_PREFS);
+    expect(rows[0]!.preferences).toEqual(CUSTOM_STORED);
   });
 
   it('rejects a bad palette enum → 400', async () => {
@@ -131,9 +301,9 @@ describe('PUT /settings/prefs', () => {
   it('last-writer-wins on a second PUT', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
-    await agent.put('/settings/prefs').send(DEFAULT_PREFS).expect(200);
+    await agent.put('/settings/prefs').send(DEFAULT_PREFS_BODY).expect(200);
     const res = await agent.get('/settings/prefs');
-    expect(res.body).toEqual(DEFAULT_PREFS);
+    expect(res.body).toEqual(DEFAULT_VIEW);
   });
 });
 
@@ -142,8 +312,8 @@ describe('accent (Seoul-neon cross-device sync)', () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     // A pre-redesign stored blob: legacy accent id, everything else custom.
     const legacyBlob = {
-      ...CUSTOM_PREFS,
-      palette: { ...CUSTOM_PREFS.palette, accent: 'ochre' },
+      ...CUSTOM_STORED,
+      palette: { ...CUSTOM_STORED.palette, accent: 'ochre' },
     };
     await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
       JSON.stringify(legacyBlob),
@@ -152,21 +322,24 @@ describe('accent (Seoul-neon cross-device sync)', () => {
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
     // The legacy accent coerces to the default; the user's OTHER stored
-    // choices survive (this must NOT be the DEFAULT_PREFS fallback).
+    // choices survive (this must NOT be the defaults fallback).
     expect(res.body).toEqual({
-      ...CUSTOM_PREFS,
-      palette: { ...CUSTOM_PREFS.palette, accent: 'coral' },
+      ...CUSTOM_VIEW,
+      palette: { ...CUSTOM_STORED.palette, accent: 'coral' },
     });
   });
 
   it("PUT round-trips a valid new accent ('mint') via echo + GET", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const body = { ...DEFAULT_PREFS, palette: { ...DEFAULT_PREFS.palette, accent: 'mint' } };
+    const body = { ...DEFAULT_PREFS_BODY, palette: { ...DEFAULT_STORED.palette, accent: 'mint' } };
     const put = await agent.put('/settings/prefs').send(body);
     expect(put.status).toBe(200);
     expect(put.body.palette.accent).toBe('mint');
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual(body);
+    expect(get.body).toEqual({
+      ...DEFAULT_VIEW,
+      palette: { ...DEFAULT_STORED.palette, accent: 'mint' },
+    });
   });
 
   it("PUT from a stale client carrying a LEGACY accent ('indigo') is accepted, coerced to 'coral' (not a 400)", async () => {
@@ -178,14 +351,18 @@ describe('accent (Seoul-neon cross-device sync)', () => {
     // The coerced value is what persisted — the next GET serves a valid id.
     const get = await agent.get('/settings/prefs');
     expect(get.body.palette.accent).toBe('coral');
-    // ...and the rest of the PUT body persisted untouched.
-    expect(get.body.notif).toEqual(CUSTOM_PREFS.notif);
+    // ...and the rest of the PUT body persisted untouched (notif is derived,
+    // not the body's — F-093).
+    expect(get.body.notif).toEqual(NOTIF_NONE);
     expect(get.body.palette.paper).toBe('sumi');
   });
 
   it("a totally unknown accent value also coerces to 'coral' (catch posture, never 400/500)", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const body = { ...DEFAULT_PREFS, palette: { ...DEFAULT_PREFS.palette, accent: 'neon-zebra' } };
+    const body = {
+      ...DEFAULT_PREFS_BODY,
+      palette: { ...DEFAULT_STORED.palette, accent: 'neon-zebra' },
+    };
     const res = await agent.put('/settings/prefs').send(body);
     expect(res.status).toBe(200);
     expect(res.body.palette.accent).toBe('coral');
@@ -195,18 +372,18 @@ describe('accent (Seoul-neon cross-device sync)', () => {
 describe('languageDisplay (Overhaul P3a)', () => {
   it('GET fills the default languageDisplay into a pre-P3a stored blob WITHOUT clobbering the stored palette', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
-    // A blob written before the field existed — notif + palette only.
+    // A blob written before the field existed — legacy notif + palette only.
     await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
-      JSON.stringify({ notif: CUSTOM_PREFS.notif, palette: CUSTOM_PREFS.palette }),
+      JSON.stringify({ notif: CUSTOM_PREFS.notif, palette: CUSTOM_STORED.palette }),
       userId,
     ]);
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
     // The user's stored choices survive; only the missing fields default
-    // (textSize catches to 'md' the same way — F-025).
+    // (textSize catches to 'md' the same way — F-025). notif is derived.
     expect(res.body).toEqual({
-      notif: CUSTOM_PREFS.notif,
-      palette: CUSTOM_PREFS.palette,
+      notif: NOTIF_NONE,
+      palette: CUSTOM_STORED.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
     });
@@ -214,21 +391,29 @@ describe('languageDisplay (Overhaul P3a)', () => {
 
   it('PUT round-trips a custom languageDisplay (echo + GET)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const custom = { ...DEFAULT_PREFS, languageDisplay: { mode: 'ko', primary: 'ko', subScale: 0.4 } };
+    const custom = {
+      ...DEFAULT_PREFS_BODY,
+      languageDisplay: { mode: 'ko', primary: 'ko', subScale: 0.4 },
+    };
+    const expected = {
+      ...DEFAULT_VIEW,
+      languageDisplay: { mode: 'ko', primary: 'ko', subScale: 0.4 },
+    };
     const put = await agent.put('/settings/prefs').send(custom);
     expect(put.status).toBe(200);
-    expect(put.body).toEqual(custom);
+    expect(put.body).toEqual(expected);
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual(custom);
+    expect(get.body).toEqual(expected);
   });
 
   it('PUT from a pre-P3a client (no languageDisplay) is accepted and stores the defaults', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const legacyBody = { notif: CUSTOM_PREFS.notif, palette: CUSTOM_PREFS.palette };
+    const legacyBody = { notif: CUSTOM_PREFS.notif, palette: CUSTOM_STORED.palette };
     const res = await agent.put('/settings/prefs').send(legacyBody);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      ...legacyBody,
+      notif: NOTIF_NONE,
+      palette: CUSTOM_STORED.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
     });
@@ -240,7 +425,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .put('/settings/prefs')
-      .send({ ...DEFAULT_PREFS, languageDisplay: { mode: 'en' } });
+      .send({ ...DEFAULT_PREFS_BODY, languageDisplay: { mode: 'en' } });
     expect(res.status).toBe(200);
     expect(res.body.languageDisplay).toEqual({ mode: 'en', primary: 'ko', subScale: 0.7 });
   });
@@ -249,7 +434,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .put('/settings/prefs')
-      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, mode: 'fr' } });
+      .send({ ...DEFAULT_PREFS_BODY, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, mode: 'fr' } });
     expect(res.status).toBe(400);
   });
 
@@ -257,7 +442,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .put('/settings/prefs')
-      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, subScale } });
+      .send({ ...DEFAULT_PREFS_BODY, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, subScale } });
     expect(res.status).toBe(400);
   });
 
@@ -265,7 +450,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent
       .put('/settings/prefs')
-      .send({ ...DEFAULT_PREFS, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, extra: true } });
+      .send({ ...DEFAULT_PREFS_BODY, languageDisplay: { ...DEFAULT_LANGUAGE_DISPLAY, extra: true } });
     expect(res.status).toBe(400);
   });
 });
@@ -273,7 +458,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
 describe('textSize (F-025 app-wide text size)', () => {
   it("GET coerces a stored bad textSize to 'md' WITHOUT wiping the rest of the blob", async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
-    const poisoned = { ...CUSTOM_PREFS, textSize: 'gigantic' };
+    const poisoned = { ...CUSTOM_STORED, textSize: 'gigantic' };
     await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
       JSON.stringify(poisoned),
       userId,
@@ -281,38 +466,38 @@ describe('textSize (F-025 app-wide text size)', () => {
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
     // The bad size coerces to the default; the user's OTHER stored choices
-    // survive (this must NOT be the DEFAULT_PREFS fallback).
-    expect(res.body).toEqual({ ...CUSTOM_PREFS, textSize: 'md' });
+    // survive (this must NOT be the defaults fallback).
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, textSize: 'md' });
   });
 
   it("PUT round-trips a valid new textSize ('sm') via echo + GET", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const body = { ...DEFAULT_PREFS, textSize: 'sm' };
+    const body = { ...DEFAULT_PREFS_BODY, textSize: 'sm' };
     const put = await agent.put('/settings/prefs').send(body);
     expect(put.status).toBe(200);
     expect(put.body.textSize).toBe('sm');
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual(body);
+    expect(get.body).toEqual({ ...DEFAULT_VIEW, textSize: 'sm' });
   });
 
   it("PUT from a pre-F-025 client (no textSize) is accepted and stores 'md' (not a 400)", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const body = {
       notif: CUSTOM_PREFS.notif,
-      palette: CUSTOM_PREFS.palette,
-      languageDisplay: CUSTOM_PREFS.languageDisplay,
+      palette: CUSTOM_STORED.palette,
+      languageDisplay: CUSTOM_STORED.languageDisplay,
     };
     const res = await agent.put('/settings/prefs').send(body);
     expect(res.status).toBe(200);
     expect(res.body.textSize).toBe('md');
-    // ...and the rest of the PUT body persisted untouched.
+    // ...and the rest of the PUT body persisted untouched (derived notif).
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual({ ...body, textSize: 'md' });
+    expect(get.body).toEqual({ ...CUSTOM_VIEW, textSize: 'md' });
   });
 
   it("a totally unknown textSize value also coerces to 'md' (catch posture, never 400/500)", async () => {
     const { agent } = await registerUser(t.app, pg.pool);
-    const body = { ...DEFAULT_PREFS, textSize: 'xl' };
+    const body = { ...DEFAULT_PREFS_BODY, textSize: 'xl' };
     const res = await agent.put('/settings/prefs').send(body);
     expect(res.status).toBe(200);
     expect(res.body.textSize).toBe('md');
@@ -326,6 +511,14 @@ describe('settings — per-user isolation', () => {
     await a.agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
     // b never wrote anything → still defaults.
     const res = await b.agent.get('/settings/prefs');
-    expect(res.body).toEqual(DEFAULT_PREFS);
+    expect(res.body).toEqual(DEFAULT_VIEW);
+  });
+
+  it("a user's schedule rows never influence another user's derived notif", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await seedSchedules(a.userId, [{ kind: 'daily_reminder', channel: 'email', enabled: true }]);
+    const res = await b.agent.get('/settings/prefs');
+    expect(res.body.notif).toEqual(NOTIF_NONE);
   });
 });

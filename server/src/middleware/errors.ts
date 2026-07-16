@@ -148,8 +148,9 @@ const DEFAULT_UPSTREAM_MESSAGE =
  * the response body.
  *
  * F-094: the SINGLE shared mapper for every Claude-touching route
- * (writing.ts / reading.ts / grammarDrill.ts / diagnostic.ts / conversation.ts /
- * imageIngest.ts / enrich.ts / gradeWriting.ts). Those routes used to carry
+ * (writing.ts / reading.ts / grammar.ts (/identify — F-193) / grammarDrill.ts /
+ * diagnostic.ts / conversation.ts / imageIngest.ts / enrich.ts /
+ * gradeWriting.ts). Those routes used to carry
  * private flatten-always-to-502 copies (several of them forwarding the raw
  * `${code}: ${message}` straight to the client — the exact leak F-124 exists
  * to close) that predated the 4xx passthrough above — all migrated onto this

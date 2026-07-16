@@ -8,7 +8,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
-import { ConflictError, NotFoundError } from '../middleware/errors.js';
+import { ConflictError, NotFoundError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { FsrsStateName } from '../services/fsrs.js';
 
@@ -535,7 +535,11 @@ router.post(
       });
       res.status(200).json(out);
     } catch (err) {
-      next(err);
+      // F-193: shared Claude-error mapper (see errors.ts) — a proxy-origin
+      // client fault keeps its 400/429, everything upstream flattens to a
+      // whitelisted-message 502; non-proxy errors pass through unchanged
+      // (preserving the pre-existing generic-500-no-leak behavior).
+      next(mapClaudeError(err));
     }
   },
 );

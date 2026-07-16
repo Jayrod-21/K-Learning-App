@@ -21,10 +21,13 @@
  *     (`lastSyncedPrefsRef.current.notif`), never `settings.notif` (the
  *     localStorage-cached copy that "Reset to defaults" can independently
  *     revert) — so this screen can no longer originate a diverging write
- *     into the 018 blob's notif keys. Full retirement of that blob slice in
- *     favor of `notification_schedules` (052) as the sole source of truth
- *     is a follow-up (see F-093's notes) once the server's `/settings/prefs`
- *     GET/PUT contract migrates too.
+ *     into the 018 blob's notif keys. The server's F-093 CONTRACT step has
+ *     since landed: `/settings/prefs` now DERIVES `notif` from
+ *     `notification_schedules` (052) on both GET and PUT responses and
+ *     ignores (never persists) whatever `notif` this client sends — so the
+ *     echoed slice we keep in `lastSyncedPrefsRef` is always the canonical
+ *     schedule-derived view. Dropping `notif` from the outgoing PUT payload
+ *     entirely is the remaining (client-side) contract step.
  *   - **Appearance** persists to `localStorage` via `useSettings()` /
  *     the theme+accent+text-size providers, with a debounced
  *     `/settings/prefs` PUT for cross-device sync.
