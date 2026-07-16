@@ -46,12 +46,13 @@
  *      it, so the two carousels feel identical to the user. See Today.css
  *      for the full rationale and the progressive-enhancement
  *      center-emphasis animation.
- *      F-134's Writing inline-expand (`CollapsibleTile` + embedded
+ *      F-134's ORIGINAL inline-expand framing (`CollapsibleTile` + embedded
  *      `WritingTopicGenerator`) does NOT fit this model: a tile that grows
  *      on tap would blow out its neighbors' fixed scroll-snap widths and
- *      fight the centered-peek layout mid-scroll. Per this restructure's
- *      brief, the user's new carousel shape wins — Writing is now a plain
- *      peek tile that NAVIGATES to `/learn/writing` (same as
+ *      fight the centered-peek layout mid-scroll. F-134's corrected scope
+ *      is met WITHIN the peek tile instead: the Writing tile PREVIEWS the
+ *      real prompt body (`promptKr` from `/plan/today`) and NAVIGATES to
+ *      `/learn/writing?promptId=<id>` (same as
  *      Reading/Listening), where the exact same F-027
  *      `WritingTopicGenerator` already lives (`Writing.tsx` mounts its own
  *      copy and accepts the identical `location.state.generatedTopic`
@@ -842,19 +843,37 @@ export function Today(): JSX.Element {
 
   if (today.data?.writing) {
     const t = today.data.writing;
+    // F-134: the preview only exists when the plan actually carried a
+    // non-empty prompt body — an older envelope (no promptKr) or a
+    // defensive empty string renders no preview node and leaves the
+    // accessible name untouched.
+    const promptPreview =
+      t.promptKr !== undefined && t.promptKr !== '' ? t.promptKr : undefined;
     suggestedTiles.push({
       key: 'writing',
-      // F-134's inline CollapsibleTile expand does not fit the peek
-      // slider's fixed-width, center-snap layout (see the module header
-      // comment) — Writing is a plain ActivityTile that deep-links to
-      // /learn/writing?promptId=<id> (Wave 2, B6), same shape as
-      // Reading/Listening. The "done today" count rides in `extra`, same
-      // convention as Grammar/TOPIK.
+      // F-134 (corrected scope — NOT inline-expand): the tile PREVIEWS the
+      // real prompt body (`promptKr`, the same `writing_prompts` row that
+      // `promptId` names) so the user can read the actual task on the home
+      // page, and tapping the tile deep-links to /learn/writing
+      // ?promptId=<id> (Wave 2, B6 + F-183) where the Writing screen loads
+      // EXACTLY that prompt — never a fresh random draw. Writing stays a
+      // plain ActivityTile (an inline CollapsibleTile expand does not fit
+      // the peek slider's fixed-width, center-snap layout — see the module
+      // header comment); the preview + "done today" count ride in `extra`,
+      // same convention as Grammar/TOPIK.
       node: (
         <ActivityTile
           tone={SKILL_COLOR.writing.tone}
           icon="pen"
-          ariaLabel={`Open writing — ${t.title}`}
+          // aria-label REPLACES the button's accessible name (and
+          // role=button subtrees are presentational to AT), so the prompt
+          // preview must be folded into the label itself — otherwise screen
+          // readers would announce only the title and never the prompt.
+          ariaLabel={
+            promptPreview !== undefined
+              ? `Open writing — ${t.title}. ${promptPreview}`
+              : `Open writing — ${t.title}`
+          }
           pill={renderTag(t.tag, gapTag)}
           headline={<span className="kr">{t.title}</span>}
           meta={
@@ -864,15 +883,27 @@ export function Today(): JSX.Element {
             />
           }
           extra={
-            <DoneTodayRow
-              count={writingDoneToday}
-              tone={SKILL_COLOR.writing.tone}
-              labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
-              labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
-            />
+            <>
+              {promptPreview !== undefined ? (
+                // The preview is the REAL prompt text (content, not chrome)
+                // — rendered only when the plan actually carried it, never
+                // a fabricated stand-in. CSS clamps the visual overflow for
+                // sighted users; screen readers get the FULL text via the
+                // tile's aria-label above (this subtree is presentational
+                // inside the button).
+                <span className="km-today__tilePrompt kr">{promptPreview}</span>
+              ) : null}
+              <DoneTodayRow
+                count={writingDoneToday}
+                tone={SKILL_COLOR.writing.tone}
+                labelEn={(n) => (n === 1 ? '1 essay graded today' : `${String(n)} essays graded today`)}
+                labelKr={(n) => `오늘 채점된 작문 ${String(n)}개`}
+              />
+            </>
           }
           onClick={() => {
-            // Wave 2 (B6): deep-links to this exact bank prompt by id.
+            // Wave 2 (B6): deep-links to this exact bank prompt by id —
+            // the Writing screen pre-loads the previewed prompt (F-134).
             navigate(writingHref(t));
           }}
         />

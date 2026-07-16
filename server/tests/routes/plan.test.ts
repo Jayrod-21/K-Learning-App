@@ -126,6 +126,9 @@ describe('GET /plan/today — shape + content', () => {
         level: string;
         tag: string;
         promptId: number;
+        // Optional in the wire contract (older envelopes omit it) — this
+        // test still asserts it is PRESENT and matches the bank row.
+        promptKr?: string;
       } | null;
       largestGap: string | null;
     };
@@ -155,6 +158,13 @@ describe('GET /plan/today — shape + content', () => {
     expect(body.writing?.tag).toBe('Writing');
     expect(['L3', 'L4', 'L5+']).toContain(body.writing?.level);
     expect(typeof body.writing?.promptId).toBe('number');
+    // F-134: the tile preview carries the FULL prompt body of the SAME bank
+    // row promptId names — never a different row's text.
+    const promptRow = await pg.pool.query<{ prompt_kr: string }>(
+      'SELECT prompt_kr FROM writing_prompts WHERE id = $1',
+      [body.writing!.promptId],
+    );
+    expect(body.writing?.promptKr).toBe(promptRow.rows[0]!.prompt_kr);
 
     // No diagnostic snapshot yet → no gap highlight.
     expect(body.largestGap).toBeNull();

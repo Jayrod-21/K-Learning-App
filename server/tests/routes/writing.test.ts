@@ -6,9 +6,10 @@
  *   GET /writing/prompts/random?rubric= — one random active prompt (B-027)
  *   GET /writing/series?days=           — daily normalized grade series (F-017)
  *
- * The prompt bank under test is the REAL migration-038 seed (the six TOPIK II
- * prompts ported from the client's WRITING_TASKS) — no mocked reference data,
- * per the project's real-corpus-data testing rule. writing_attempts rows are
+ * The prompt bank under test is the REAL migration seed — 038's six TOPIK II
+ * prompts (ported from the client's WRITING_TASKS) plus 067's 24 content-depth
+ * prompts (F-096), 15 active per rubric — no mocked reference data, per the
+ * project's real-corpus-data testing rule. writing_attempts rows are
  * user-owned and cleared by the users CASCADE in beforeEach.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -34,7 +35,7 @@ afterAll(async () => {
 beforeEach(async () => {
   // users CASCADE clears writing_attempts (user FK). writing_prompts is
   // migration reference data and is intentionally NOT truncated — the prompts
-  // tests assert against the real 038 seed.
+  // tests assert against the real 038 + 067 seed.
   await pg.pool.query('TRUNCATE TABLE sessions, users RESTART IDENTITY CASCADE');
   resetLimiters();
 });
@@ -61,15 +62,15 @@ describe('GET /writing/prompts — rubric-filtered active bank', () => {
     estMinutes: number | null;
   }
 
-  it('rubric=topik_ii_53 → exactly the three 038-seeded Q53 prompts, ascending by id', async () => {
+  it('rubric=topik_ii_53 → exactly the fifteen seeded Q53 prompts (038 + 067), ascending by id', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/writing/prompts?rubric=topik_ii_53');
     expect(res.status).toBe(200);
     const prompts = (res.body as { prompts: PromptDTO[] }).prompts;
 
     // The 8 legacy register-drill rows are inactive + untagged after 038 —
-    // only the three seeded Q53 prompts qualify.
-    expect(prompts).toHaveLength(3);
+    // only the seeded Q53 prompts qualify: 3 from 038 + 12 from 067 (F-096).
+    expect(prompts).toHaveLength(15);
     for (const p of prompts) {
       expect(p.rubric).toBe('topik_ii_53');
       expect(typeof p.id).toBe('number');
@@ -88,12 +89,12 @@ describe('GET /writing/prompts — rubric-filtered active bank', () => {
     );
   });
 
-  it('rubric=topik_ii_54 → exactly the three 038-seeded Q54 prompts', async () => {
+  it('rubric=topik_ii_54 → exactly the fifteen seeded Q54 prompts (038 + 067)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/writing/prompts?rubric=topik_ii_54');
     expect(res.status).toBe(200);
     const prompts = (res.body as { prompts: PromptDTO[] }).prompts;
-    expect(prompts).toHaveLength(3);
+    expect(prompts).toHaveLength(15);
     for (const p of prompts) {
       expect(p.rubric).toBe('topik_ii_54');
     }
@@ -102,18 +103,18 @@ describe('GET /writing/prompts — rubric-filtered active bank', () => {
     );
   });
 
-  it('absent rubric → the whole active tagged bank (both rubrics, 6 prompts)', async () => {
+  it('absent rubric → the whole active tagged bank (both rubrics, 30 prompts)', async () => {
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/writing/prompts');
     expect(res.status).toBe(200);
     const prompts = (res.body as { prompts: PromptDTO[] }).prompts;
-    expect(prompts).toHaveLength(6);
+    expect(prompts).toHaveLength(30);
     const byRubric = new Map<string, number>();
     for (const p of prompts) {
       byRubric.set(p.rubric, (byRubric.get(p.rubric) ?? 0) + 1);
     }
-    expect(byRubric.get('topik_ii_53')).toBe(3);
-    expect(byRubric.get('topik_ii_54')).toBe(3);
+    expect(byRubric.get('topik_ii_53')).toBe(15);
+    expect(byRubric.get('topik_ii_54')).toBe(15);
   });
 
   it('invalid rubric → 400 (never a silent empty list)', async () => {
@@ -133,7 +134,7 @@ describe('GET /writing/prompts — rubric-filtered active bank', () => {
     try {
       const res = await agent.get('/writing/prompts?rubric=topik_ii_53');
       expect(res.status).toBe(200);
-      expect((res.body as { prompts: PromptDTO[] }).prompts).toHaveLength(2);
+      expect((res.body as { prompts: PromptDTO[] }).prompts).toHaveLength(14);
     } finally {
       await pg.pool.query(
         `UPDATE writing_prompts SET is_active = TRUE WHERE source_id = 'wp-topik53-01'`,
@@ -169,7 +170,7 @@ describe('GET /writing/prompts/random — one random active prompt per rubric (B
       // The legitimate pool is whatever the deterministic list endpoint serves.
       const bank = await agent.get(`/writing/prompts?rubric=${rubric}`);
       const poolIds = (bank.body as { prompts: PromptDTO[] }).prompts.map((p) => p.id);
-      expect(poolIds).toHaveLength(3); // real 038 seed
+      expect(poolIds).toHaveLength(15); // real 038 + 067 seed
 
       const res = await agent.get(`/writing/prompts/random?rubric=${rubric}`);
       expect(res.status).toBe(200);
@@ -185,9 +186,9 @@ describe('GET /writing/prompts/random — one random active prompt per rubric (B
 
   it('is genuinely randomized — repeated calls are not pinned to one prompt', async () => {
     // B-027's symptom: the client always landed on the lowest-id prompt of
-    // each rubric. With a 3-prompt pool and 40 uniform draws, P(all 40
-    // identical) = 3 * (1/3)^40 ≈ 8e-19 — a flake would mean the RNG is
-    // broken, which is exactly what this test exists to catch.
+    // each rubric. With a 15-prompt pool (038 + 067) and 40 uniform draws,
+    // P(all 40 identical) = 15 * (1/15)^40 ≈ 1e-45 — a flake would mean the
+    // RNG is broken, which is exactly what this test exists to catch.
     const { agent } = await registerUser(t.app, pg.pool);
     for (const rubric of ['topik_ii_53', 'topik_ii_54'] as const) {
       const seen = new Set<number>();

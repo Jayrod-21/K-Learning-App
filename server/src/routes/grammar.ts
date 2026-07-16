@@ -1,5 +1,6 @@
 /**
- * /grammar routes — user grammar bank + KGIU corpus search.
+ * /grammar routes — user grammar bank + KGIU corpus search + per-pattern
+ * mastery (F-099, the Progress "Grammar" tab's read).
  */
 import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
@@ -447,6 +448,155 @@ router.get('/suggestions/weekly', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
+
+/* ---------- F-099: per-pattern grammar mastery (Progress "Grammar" tab) ---------- */
+
+// "Mastered" mirrors /vocab/mastery's SRS "mature" convention: a review-state
+// card whose memory stability is at least ~3 weeks. Same constant, same
+// semantics — the Words and Grammar tabs on Progress must agree on what the
+// "Mastered" bucket means.
+const MASTERY_MATURE_DAYS = 21;
+
+const GrammarMasteryQuerySchema = z.object({
+  bucket: z.enum(['new', 'learning', 'reviewing', 'mastered']).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  offset: z.coerce.number().int().nonnegative().max(MAX_ID).default(0),
+});
+
+/**
+ * Banked pattern → mastery bucket, computed over the pattern's grammar
+ * PRODUCTION card (the same LEFT JOIN GET /grammar/bank uses — see its F-111
+ * comment for why the join can never fan out: `uq_vocab_cards_user_grammar_
+ * production` caps it at one card per entry). Kept as ONE fixed SQL fragment
+ * shared by the summary counts and the per-pattern list so the two can never
+ * disagree. No user input is interpolated — MASTERY_MATURE_DAYS is a
+ * server-side numeric constant.
+ *
+ * Two deliberate divergences from the vocab BUCKET_CASE:
+ *   - `graduated_at IS NOT NULL` → 'mastered' unconditionally: a graduated
+ *     pattern is one the user explicitly marked as KNOWN (migration 033) and
+ *     is excluded from the whole learning loop — reporting it as 'new'
+ *     because its card was never drilled would be a lie.
+ *   - `vc.id IS NULL` → 'new': a banked-but-never-drilled pattern has no
+ *     production card at all (FU-NF-42 creates one lazily on the first drill
+ *     submit) — honest "not started", same bucket a fresh card would get.
+ */
+const GRAMMAR_BUCKET_CASE = `CASE
+    WHEN g.graduated_at IS NOT NULL THEN 'mastered'
+    WHEN vc.id IS NULL OR vc.fsrs_state = 'new' THEN 'new'
+    WHEN vc.fsrs_state IN ('learning', 'relearning') THEN 'learning'
+    WHEN vc.fsrs_state = 'review' AND vc.stability >= ${MASTERY_MATURE_DAYS} THEN 'mastered'
+    ELSE 'reviewing'
+  END`;
+
+/** The user-scoped bucketed derived table both /mastery queries select from. */
+const GRAMMAR_MASTERY_SOURCE = `SELECT g.id, g.pattern_display, g.summary_en,
+           ${GRAMMAR_BUCKET_CASE} AS bucket,
+           vc.stability, vc.due_at
+      FROM grammar_entries g
+      LEFT JOIN vocab_cards vc
+             ON vc.grammar_entry_id = g.id
+            AND vc.face = 'production'
+            AND vc.user_id = g.user_id
+            AND vc.deleted_at IS NULL
+     WHERE g.user_id = $1 AND g.deleted_at IS NULL`;
+
+type GrammarMasteryBucket = 'new' | 'learning' | 'reviewing' | 'mastered';
+
+/**
+ * GET /grammar/mastery — per-pattern FSRS mastery for the signed-in user
+ * (F-099; the Progress "Grammar" tab's backing read). Returns a bucket
+ * summary (New / Learning / Reviewing / Mastered) plus a paginated,
+ * optionally bucket-filtered list of the user's banked patterns — the
+ * grammar sibling of GET /vocab/mastery, same query params, same envelope
+ * shape (`patterns` instead of `words`).
+ *
+ * User-isolated via g.user_id = session user (never a client-supplied id);
+ * the production-card join carries the same belt-and-suspenders
+ * `vc.user_id = g.user_id` guard as GET /grammar/bank. Every query is
+ * parameterized; `bucket` is a closed zod enum compared against the
+ * derived bucket column as a bind parameter (no SQL fragment selection).
+ */
+router.get(
+  '/mastery',
+  cheapLimiter(),
+  validateQuery(GrammarMasteryQuerySchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const q = (
+        req as typeof req & {
+          validatedQuery: z.infer<typeof GrammarMasteryQuerySchema>;
+        }
+      ).validatedQuery;
+
+      const { rows: summaryRows } = await query<{
+        new: string;
+        learning: string;
+        reviewing: string;
+        mastered: string;
+        total: string;
+      }>(
+        `SELECT
+           count(*) FILTER (WHERE bucket = 'new')::text AS new,
+           count(*) FILTER (WHERE bucket = 'learning')::text AS learning,
+           count(*) FILTER (WHERE bucket = 'reviewing')::text AS reviewing,
+           count(*) FILTER (WHERE bucket = 'mastered')::text AS mastered,
+           count(*)::text AS total
+         FROM (${GRAMMAR_MASTERY_SOURCE}) b`,
+        [userId],
+      );
+      const s = summaryRows[0];
+      const summary = {
+        new: Number(s?.new ?? 0),
+        learning: Number(s?.learning ?? 0),
+        reviewing: Number(s?.reviewing ?? 0),
+        mastered: Number(s?.mastered ?? 0),
+        total: Number(s?.total ?? 0),
+      };
+
+      const { rows: patternRows } = await query<{
+        id: string; // BIGINT arrives as string from pg
+        pattern_display: string;
+        summary_en: string;
+        bucket: GrammarMasteryBucket;
+        stability: string | null; // NUMERIC arrives as string; null = no card
+        due_at: Date | null;
+        total: string;
+      }>(
+        // Same ordering family as /vocab/mastery (most-stable first), with
+        // NULLS LAST so never-drilled patterns sink below every real card.
+        // COLLATE "C" pins the Hangul tiebreak byte-wise (locale-independent),
+        // and id is the final total-order tiebreak.
+        `SELECT p.id, p.pattern_display, p.summary_en, p.bucket,
+                p.stability::text AS stability, p.due_at,
+                count(*) OVER ()::text AS total
+           FROM (${GRAMMAR_MASTERY_SOURCE}) p
+          WHERE ($2::text IS NULL OR p.bucket = $2)
+          ORDER BY p.stability DESC NULLS LAST,
+                   p.pattern_display COLLATE "C", p.id
+          LIMIT $3 OFFSET $4`,
+        [userId, q.bucket ?? null, q.limit, q.offset],
+      );
+
+      const patterns = patternRows.map((r) => ({
+        id: Number(r.id),
+        pattern: r.pattern_display,
+        summaryEn: r.summary_en,
+        bucket: r.bucket,
+        // null (not 0) for a never-drilled pattern — the client renders "—",
+        // never a fabricated zero-stability.
+        stability: r.stability !== null ? Number(r.stability) : null,
+        dueAt: r.due_at !== null ? r.due_at.toISOString() : null,
+      }));
+      const total = patternRows.length > 0 ? Number(patternRows[0]?.total) : 0;
+
+      res.status(200).json({ summary, patterns, total });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 /* ---------- Per-skill stats time-series (F-017) ---------- */
 

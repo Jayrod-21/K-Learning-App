@@ -8,6 +8,7 @@
  *   GET  /grammar/bank
  *   POST /grammar/bank/:id/graduate   (migration 033)
  *   POST /grammar/bank/:id/readmit    (migration 033)
+ *   GET  /grammar/mastery             (F-099 — Progress "Grammar" tab)
  *   POST /grammar/identify   (B4 downstream)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -1003,5 +1004,264 @@ describe('GET /grammar/series — daily drill-score time-series (F-017)', () => 
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get(`/grammar/series?${qs}`);
     expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /grammar/mastery (F-099 — Progress "Grammar" tab)
+// ---------------------------------------------------------------------------
+
+describe('GET /grammar/mastery — per-pattern FSRS mastery (F-099)', () => {
+  interface MasteryPatternDTO {
+    id: number;
+    pattern: string;
+    summaryEn: string;
+    bucket: 'new' | 'learning' | 'reviewing' | 'mastered';
+    stability: number | null;
+    dueAt: string | null;
+  }
+  interface MasteryEnvelope {
+    summary: {
+      new: number;
+      learning: number;
+      reviewing: number;
+      mastered: number;
+      total: number;
+    };
+    patterns: MasteryPatternDTO[];
+    total: number;
+  }
+
+  /** Bank one pattern via the real add-to-bank path; returns the entry id. */
+  async function bank(
+    agent: ReturnType<typeof request.agent>,
+    key: string,
+    display: string,
+  ): Promise<number> {
+    const res = await agent.post('/grammar/bank').send({
+      pattern_key: key,
+      pattern_display: display,
+      summary_en: `summary of ${display}`,
+      proficiency: 'L3',
+      category: 'aspect',
+    });
+    expect(res.status).toBe(201);
+    return res.body.id as number;
+  }
+
+  /** Give a banked pattern a PRODUCTION card in a controlled FSRS state —
+   *  the same row shape FU-NF-42's lazy card-create produces. */
+  async function setProductionCard(
+    userId: number,
+    entryId: number,
+    state: 'new' | 'learning' | 'relearning' | 'review',
+    stability: number,
+  ): Promise<void> {
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, fsrs_state, stability)
+       VALUES ($1, 'production'::card_face, $2, $3::fsrs_state, $4)`,
+      [userId, entryId, state, stability],
+    );
+  }
+
+  it('unauthenticated → 401', async () => {
+    const res = await request(t.app).get('/grammar/mastery');
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('empty bank → 200 with an all-zero summary and no patterns (never an error)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary).toEqual({
+      new: 0,
+      learning: 0,
+      reviewing: 0,
+      mastered: 0,
+      total: 0,
+    });
+    expect(body.patterns).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+
+  it('buckets patterns off the production card: no-card → new, learning, review<21d → reviewing, review≥21d → mastered; order is stability DESC NULLS LAST', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const neverDrilled = await bank(agent, 'GR-never-drilled', '-아/어 보이다');
+    const learning = await bank(agent, 'GR-learning', '-(으)면');
+    const reviewing = await bank(agent, 'GR-reviewing', '-(으)ㄹ 수 있다');
+    const mastered = await bank(agent, 'GR-mastered', '-아/어 버리다');
+    await setProductionCard(userId, learning, 'learning', 1);
+    // 21 days is the mature threshold (mirrors /vocab/mastery): strictly
+    // below stays 'reviewing', at/above flips to 'mastered'.
+    await setProductionCard(userId, reviewing, 'review', 20.9999);
+    await setProductionCard(userId, mastered, 'review', 21);
+
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary).toEqual({
+      new: 1,
+      learning: 1,
+      reviewing: 1,
+      mastered: 1,
+      total: 4,
+    });
+    expect(body.total).toBe(4);
+
+    const byId = new Map(body.patterns.map((p) => [p.id, p]));
+    expect(byId.get(neverDrilled)?.bucket).toBe('new');
+    expect(byId.get(learning)?.bucket).toBe('learning');
+    expect(byId.get(reviewing)?.bucket).toBe('reviewing');
+    expect(byId.get(mastered)?.bucket).toBe('mastered');
+
+    // A never-drilled pattern reports stability null (no card) — never a
+    // fabricated 0 — and sinks below every real card (NULLS LAST).
+    expect(byId.get(neverDrilled)?.stability).toBeNull();
+    expect(byId.get(neverDrilled)?.dueAt).toBeNull();
+    expect(body.patterns[body.patterns.length - 1]?.id).toBe(neverDrilled);
+    // Most-stable first.
+    expect(body.patterns[0]?.id).toBe(mastered);
+    expect(body.patterns[0]?.stability).toBe(21);
+
+    // Wire shape: pattern text + summary ride along for the list rows.
+    expect(byId.get(learning)?.pattern).toBe('-(으)면');
+    expect(byId.get(learning)?.summaryEn).toBe('summary of -(으)면');
+  });
+
+  it('a GRADUATED pattern counts as mastered even with no card (user marked it known)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const id = await bank(agent, 'GR-known', '-잖아요');
+    await agent.post(`/grammar/bank/${String(id)}/graduate`).expect(200);
+
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary).toEqual({
+      new: 0,
+      learning: 0,
+      reviewing: 0,
+      mastered: 1,
+      total: 1,
+    });
+    expect(body.patterns[0]?.bucket).toBe('mastered');
+  });
+
+  it('bucket filter narrows the list but never the summary; the summary and filtered counts agree', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await bank(agent, 'GR-fresh-a', '-네요');
+    await bank(agent, 'GR-fresh-b', '-군요');
+    const drilled = await bank(agent, 'GR-drilled', '-거든요');
+    await setProductionCard(userId, drilled, 'learning', 2);
+
+    const res = await agent.get('/grammar/mastery?bucket=new');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    // Summary stays whole-bank…
+    expect(body.summary).toEqual({
+      new: 2,
+      learning: 1,
+      reviewing: 0,
+      mastered: 0,
+      total: 3,
+    });
+    // …while the page and its total describe only the filtered bucket.
+    expect(body.patterns).toHaveLength(2);
+    expect(body.total).toBe(2);
+    for (const p of body.patterns) expect(p.bucket).toBe('new');
+  });
+
+  it('invalid bucket → 400 (never a silent empty list)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/grammar/mastery?bucket=nope');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('paginates with limit/offset over the stable ordering', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const a = await bank(agent, 'GR-page-a', '-패턴가');
+    const b = await bank(agent, 'GR-page-b', '-패턴나');
+    const c = await bank(agent, 'GR-page-c', '-패턴다');
+    await setProductionCard(userId, a, 'review', 30);
+    await setProductionCard(userId, b, 'review', 10);
+    await setProductionCard(userId, c, 'review', 5);
+
+    const page1 = await agent.get('/grammar/mastery?limit=2&offset=0');
+    expect(page1.status).toBe(200);
+    const body1 = page1.body as MasteryEnvelope;
+    expect(body1.patterns.map((p) => p.id)).toEqual([a, b]);
+    expect(body1.total).toBe(3);
+
+    const page2 = await agent.get('/grammar/mastery?limit=2&offset=2');
+    expect(page2.status).toBe(200);
+    const body2 = page2.body as MasteryEnvelope;
+    expect(body2.patterns.map((p) => p.id)).toEqual([c]);
+    expect(body2.total).toBe(3);
+  });
+
+  it('is user-isolated: another user’s bank and cards never appear', async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const drilled = await bank(a.agent, 'GR-a-only', '-아/어 보이다');
+    await setProductionCard(a.userId, drilled, 'review', 30);
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary.total).toBe(0);
+    expect(body.patterns).toEqual([]);
+  });
+
+  it('a recognition-face card on the same entry neither buckets the pattern nor fans the row out', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const id = await bank(agent, 'GR-recognition-only', '-지 않다');
+    // Legal per the schema (the partial unique index only covers
+    // face='production'): a recognition card in review state. Only a
+    // PRODUCTION card may drive the mastery bucket — mirrors the F-111
+    // join-safety property GET /grammar/bank pins.
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, fsrs_state, stability)
+       VALUES ($1, 'recognition'::card_face, $2, 'review'::fsrs_state, 99)`,
+      [userId, id],
+    );
+
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.patterns).toHaveLength(1); // no fan-out
+    expect(body.patterns[0]?.bucket).toBe('new'); // honest "not started"
+    expect(body.patterns[0]?.stability).toBeNull();
+  });
+
+  it('a soft-deleted production card is ignored — the pattern buckets new again', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const id = await bank(agent, 'GR-soft-deleted-card', '-고 말다');
+    // A MATURE production card that was since soft-deleted. The join's
+    // `vc.deleted_at IS NULL` predicate must exclude it — dropping that
+    // predicate would wrongly report this pattern as mastered (stability
+    // 99). Legal per the schema: the partial unique index only covers
+    // deleted_at IS NULL rows, so a deleted card coexists with none live.
+    await pg.pool.query(
+      `INSERT INTO vocab_cards
+         (user_id, face, grammar_entry_id, fsrs_state, stability, deleted_at)
+       VALUES ($1, 'production'::card_face, $2, 'review'::fsrs_state, 99, now())`,
+      [userId, id],
+    );
+
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary).toEqual({
+      new: 1,
+      learning: 0,
+      reviewing: 0,
+      mastered: 0,
+      total: 1,
+    });
+    expect(body.patterns).toHaveLength(1);
+    expect(body.patterns[0]?.bucket).toBe('new'); // honest "not started"
+    expect(body.patterns[0]?.stability).toBeNull(); // never the dead card's 99
   });
 });

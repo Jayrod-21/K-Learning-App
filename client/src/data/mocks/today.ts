@@ -26,6 +26,11 @@ export const TODAY_FIXTURE: TodayPlan = {
     mins: 8,
     level: 'L4',
     tag: 'Writing',
+    // Wave 2 (B6) + F-134: the live endpoint always sends the exact bank
+    // row's id AND its full prompt body (the tile previews the real text).
+    promptId: 42,
+    promptKr:
+      '재택근무가 우리 생활에 주는 장점과 단점에 대해 200~300자로 쓰십시오.',
   },
   // Listening is the design's default emphasis; the live endpoint overrides
   // this with the user's weakest modality from their diagnostic snapshot.

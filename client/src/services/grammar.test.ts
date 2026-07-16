@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   bankPattern,
+  fetchGrammarMastery,
   getPattern,
   identifyPattern,
   listBanked,
@@ -149,5 +150,57 @@ describe('identifyPattern', () => {
     await expect(
       identifyPattern({ highlightSpan: 'x', fullSentence: 'y' }),
     ).rejects.toMatchObject({ code: 'network' });
+  });
+});
+
+describe('fetchGrammarMastery (F-099)', () => {
+  const PAGE = {
+    summary: { new: 1, learning: 0, reviewing: 0, mastered: 1, total: 2 },
+    patterns: [
+      {
+        id: 7,
+        pattern: '-아/어 버리다',
+        summaryEn: 'completion / regret',
+        bucket: 'mastered',
+        stability: 28,
+        dueAt: null,
+      },
+    ],
+    total: 2,
+  };
+
+  it('GETs /grammar/mastery with bucket/limit/offset params', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(PAGE);
+
+    const out = await fetchGrammarMastery({
+      bucket: 'mastered',
+      limit: 30,
+      offset: 0,
+    });
+
+    expect(spy).toHaveBeenCalledWith('/grammar/mastery', {
+      params: { bucket: 'mastered', limit: 30, offset: 0 },
+    });
+    expect(out).toEqual(PAGE);
+  });
+
+  it('omits undefined opts entirely (no bucket key riding along)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(PAGE);
+
+    await fetchGrammarMastery();
+
+    expect(spy).toHaveBeenCalledWith('/grammar/mastery', { params: {} });
+  });
+
+  it('threads the AbortSignal through', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(PAGE);
+    const ctrl = new AbortController();
+
+    await fetchGrammarMastery({}, ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/grammar/mastery', {
+      params: {},
+      signal: ctrl.signal,
+    });
   });
 });

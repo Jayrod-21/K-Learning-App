@@ -631,34 +631,7 @@
   text-align: center;
 }
 
-/* ── Grammar-mastery placeholder (real route lands in P4) ───────────────── */
-/* F-032 — the placeholder now lives in the Grammar tab; the head row holds
-   only the coming-soon pill (the tab itself carries the section name). */
-.km-progress__soonhead {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.km-progress__soonbody {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.km-progress__soonbody .km-progress__note {
-  margin: 0;
-}
-
-.km-progress__soonicon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border: 1px dashed var(--line-strong);
-  border-radius: 8px;
-  color: var(--paper-mute);
-}
+/* The former grammar-mastery coming-soon placeholder styles
+   (.km-progress__soonhead/soonbody/soonicon) were removed with the
+   placeholder itself — F-099 filled the Grammar tab with the real
+   per-pattern panel, which reuses the shared .km-mastery__* family. */

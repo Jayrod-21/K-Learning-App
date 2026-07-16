@@ -210,6 +210,41 @@ const { MASTERY_DEFAULT } = vi.hoisted(() => ({
   },
 }));
 
+// F-099 — the Grammar mastery tab fetches directly (not via useEndpointOrMock).
+const grammarSvc = vi.hoisted(() => ({ fetchGrammarMastery: vi.fn() }));
+const { GRAMMAR_MASTERY_DEFAULT } = vi.hoisted(() => ({
+  GRAMMAR_MASTERY_DEFAULT: {
+    summary: { new: 2, learning: 1, reviewing: 1, mastered: 1, total: 5 },
+    patterns: [
+      {
+        id: 11,
+        pattern: '-아/어 버리다',
+        summaryEn: 'completion / regret aspectual',
+        bucket: 'mastered',
+        stability: 28,
+        dueAt: null,
+      },
+      {
+        id: 12,
+        pattern: '-(으)면',
+        summaryEn: 'conditional "if/when"',
+        bucket: 'learning',
+        stability: 2,
+        dueAt: null,
+      },
+      {
+        id: 13,
+        pattern: '-잖아요',
+        summaryEn: 'shared-knowledge "you know"',
+        bucket: 'new',
+        stability: null,
+        dueAt: null,
+      },
+    ],
+    total: 5,
+  },
+}));
+
 // F-041 — the Hanja mastery tab fetches directly (not via useEndpointOrMock).
 const hanjaSvc = vi.hoisted(() => ({ fetchHanjaProgress: vi.fn() }));
 const { HANJA_DEFAULT, HANJA_EMPTY } = vi.hoisted(() => ({
@@ -266,6 +301,7 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
   ),
 }));
 vi.mock('../services/vocab', () => masterySvc);
+vi.mock('../services/grammar', () => grammarSvc);
 vi.mock('../services/hanja', () => hanjaSvc);
 // The page imports `fetchSkillSeries` for its realFn; with the hook mocked
 // it is never invoked, but mock the module anyway so no test path can reach
@@ -327,6 +363,8 @@ beforeEach(() => {
   seriesOverride.current = {};
   masterySvc.fetchMastery.mockReset();
   masterySvc.fetchMastery.mockResolvedValue(MASTERY_DEFAULT);
+  grammarSvc.fetchGrammarMastery.mockReset();
+  grammarSvc.fetchGrammarMastery.mockResolvedValue(GRAMMAR_MASTERY_DEFAULT);
   hanjaSvc.fetchHanjaProgress.mockReset();
   hanjaSvc.fetchHanjaProgress.mockResolvedValue(HANJA_DEFAULT);
 });
@@ -1240,24 +1278,96 @@ describe('Progress page — mastery tabs (F-032)', () => {
 
     // One shared area: only the active panel is in the DOM.
     expect(screen.getByRole('tabpanel', { name: /Words/ })).toBeInTheDocument();
+    expect(screen.queryByText('-아/어 버리다')).not.toBeInTheDocument();
+  });
+
+  it('F-099: the Grammar tab renders per-pattern mastery from GET /grammar/mastery (no more coming-soon)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Grammar/ }));
+
+    // Real per-pattern rows: pattern text, summary, bucket badge…
+    expect(await screen.findByText('-아/어 버리다')).toBeInTheDocument();
+    expect(
+      screen.getByText('completion / regret aspectual'),
+    ).toBeInTheDocument();
+    expect(grammarSvc.fetchGrammarMastery).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 30, offset: 0 }),
+      expect.any(AbortSignal),
+    );
+
+    // …the shared summary bar with real counts…
+    expect(
+      screen.getByRole('img', {
+        name: '1 mastered, 1 reviewing, 1 learning, 2 new',
+      }),
+    ).toBeInTheDocument();
+
+    // …a never-drilled pattern reports "—", never a fabricated 0d…
+    const panel = screen.getByRole('tabpanel', { name: /Grammar/ });
+    const rows = within(panel).getAllByRole('listitem');
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toHaveTextContent('-잖아요');
+    expect(rows[2]).toHaveTextContent('—');
+
+    // …and the placeholder is gone for good.
+    expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
     expect(
       screen.queryByText('Per-pattern grammar mastery will chart here.'),
     ).not.toBeInTheDocument();
   });
 
-  it('shows the designed grammar coming-soon panel on the Grammar tab (P4 fills it)', async () => {
+  it('F-099: bucket chips filter the pattern list (refetch with bucket param)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(screen.getByRole('tab', { name: /Grammar/ }));
+    await screen.findByText('-아/어 버리다');
+
+    grammarSvc.fetchGrammarMastery.mockClear();
+    const panel = screen.getByRole('tabpanel', { name: /Grammar/ });
+    await user.click(within(panel).getByRole('button', { name: /Mastered/ }));
+
+    await waitFor(() => {
+      expect(grammarSvc.fetchGrammarMastery).toHaveBeenCalledWith(
+        expect.objectContaining({ bucket: 'mastered', offset: 0 }),
+        expect.any(AbortSignal),
+      );
+    });
+  });
+
+  it('F-099: an empty grammar bank renders the invitation, not an error or a zero bar', async () => {
+    grammarSvc.fetchGrammarMastery.mockResolvedValue({
+      summary: { new: 0, learning: 0, reviewing: 0, mastered: 0, total: 0 },
+      patterns: [],
+      total: 0,
+    });
     const user = userEvent.setup();
     renderPage();
 
     await user.click(screen.getByRole('tab', { name: /Grammar/ }));
-    expect(screen.getByText('Coming soon')).toBeInTheDocument();
-    // P3b verbage trim — one terse bilingual line, never a blank panel.
     expect(
-      screen.getByText('Per-pattern grammar mastery will chart here.'),
+      await screen.findByText(
+        'No grammar patterns banked yet — bank patterns from Grammar and their mastery shows here.',
+      ),
     ).toBeInTheDocument();
+  });
+
+  it('F-099: a failed grammar-mastery fetch renders an ErrorCard with a working retry', async () => {
+    grammarSvc.fetchGrammarMastery.mockRejectedValueOnce(
+      new Error('network down'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(screen.getByRole('tab', { name: /Grammar/ }));
     expect(
-      screen.getByText('문형별 숙달도가 여기에 표시될 거예요.'),
+      await screen.findByText('Could not load grammar mastery.'),
     ).toBeInTheDocument();
+
+    // Retry (the mock's default resolves) recovers to the real panel.
+    await user.click(screen.getByRole('button', { name: /Retry/ }));
+    expect(await screen.findByText('-아/어 버리다')).toBeInTheDocument();
   });
 
   it('keeps tab switching non-destructive: Words → Grammar → Words refetches cleanly', async () => {
