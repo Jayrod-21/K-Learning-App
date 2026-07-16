@@ -632,15 +632,17 @@ const MineBodySchema = z
     // The /define entries[0].id — gives a stable dedup key so homographs stay
     // distinct (krdict-<id>) rather than colliding on the surface form.
     krdictEntryId: z.number().int().positive().max(MAX_ID).optional(),
-    // F-107 (user-saved upload provenance): the `book_uploads.id` the user
-    // was working from when they saved this word. Optional — a tap outside
-    // an upload context sends nothing. int/positive/MAX_ID-bounded like the
-    // U3a query filter above (binds to a BIGINT FK; no coerce — this is a
-    // JSON body, not a query string). OWNERSHIP is validated in the handler
-    // (the upload must belong to the caller, else 404) BEFORE anything
-    // persists — an attacker passing someone else's upload id must not tag
-    // their save to it. Named snake_case to match the wire name this concept
-    // already has everywhere else (query params, DB column).
+    // F-107/F-199 (user-saved upload provenance): the `book_uploads.id` the
+    // user was working from when they saved this word. Recorded on the
+    // caller's own vocab_cards row (USER-scoped — F-199), never the shared
+    // vocab_entries row. Optional — a tap outside an upload context sends
+    // nothing. int/positive/MAX_ID-bounded like the U3a query filter above
+    // (binds to a BIGINT FK; no coerce — this is a JSON body, not a query
+    // string). OWNERSHIP is validated in the handler (the upload must belong
+    // to the caller, else 404) BEFORE anything persists — an attacker
+    // passing someone else's upload id must not tag their save to it. Named
+    // snake_case to match the wire name this concept already has everywhere
+    // else (query params, DB column).
     source_upload_id: z.number().int().positive().max(MAX_ID).optional(),
   })
   .strict();
@@ -663,10 +665,21 @@ const MineBodySchema = z
  *      public dictionary lemma + gloss, carrying no user data). Dedup key is
  *      `krdict-<id>` when a KRDICT id is supplied, else `lemma-<lemma>`. On
  *      conflict we coalesce a newly-supplied gloss and bump the version.
+ *      F-199: this step deliberately does NOT write `source_upload_id` — the
+ *      shared row is REFERENCE data, and user-saved provenance on it was
+ *      first-write-wins across users (a 2nd user's tag silently vanished).
+ *      `vocab_entries.source_upload_id` remains F-108 extracted-corpus
+ *      provenance only (written by services/uploadExtract.ts, read by the
+ *      U3a browse) — untouched here.
  *   3. Bank a recognition card for THIS user, idempotent on
  *      (user_id, vocab_entry_id, face='recognition', deleted_at IS NULL) —
  *      identical to POST /vocab/entries/:entryId/bank, so a double-tap returns
- *      the same card instead of minting a duplicate.
+ *      the same card instead of minting a duplicate. F-199: user-saved upload
+ *      provenance lands HERE, on the user-scoped card (migration 070) —
+ *      keep-first PER USER: a new card is inserted with the tag; a re-mine
+ *      fills the tag only if the existing card has none (a same-upload
+ *      re-mine is a no-op; a different-upload re-mine keeps the first tag —
+ *      both correct now that the tag never crosses users).
  *
  * Returns `201 { entryId, card: { id, version } }`. `card.version` is what the
  * client threads into the first review's `expected_version`.
@@ -674,7 +687,10 @@ const MineBodySchema = z
  * Threat model (see db/migrations/SECURITY.md addendum, migrations 021/022):
  *   - The vocab_entries upsert is SHARED and holds no user data — two users
  *     mining 사과 reuse one public entry; their cards stay private (user_id-
- *     scoped). So there is no cross-user data leak in the shared row.
+ *     scoped). So there is no cross-user data leak in the shared row. With
+ *     F-199 the upload tag also stays on the private card, so a 2nd user
+ *     can no longer even INFER that someone tagged the entry first (the old
+ *     weak inference oracle is gone along with the shared-row write).
  *   - `lemma` / `english` / `pos` are length-bounded, trimmed text stored as
  *     data via parameterized queries (no injection — values are never
  *     interpolated into SQL, and they are rendered as text, not executed).
@@ -743,11 +759,10 @@ router.post(
         const entry = await client.query<{ id: number }>(
           `INSERT INTO vocab_entries (
               corpus_source_id, corpus, source_id, book_level, entry_type,
-              source_book, korean, english, proficiency, domain,
-              source_upload_id)
+              source_book, korean, english, proficiency, domain)
             VALUES ($1, 'user_mined'::corpus, $2, 'beginner'::book_level,
                     'word'::vocab_entry_type, 'user-mined', $3, $4,
-                    'L3'::proficiency_level, 'general'::content_domain, $5)
+                    'L3'::proficiency_level, 'general'::content_domain)
             ON CONFLICT (corpus, source_id) DO UPDATE
                -- Existing gloss WINS: vocab_entries rows are SHARED across
                -- users (keyed by corpus/source_id, not user), so letting a
@@ -755,41 +770,30 @@ router.post(
                -- clobber the gloss everyone else's cards display (routes
                -- sweep #6). A re-mine only FILLS a missing gloss.
                --
-               -- F-107: source_upload_id follows the SAME first-write-wins
-               -- rule, for the same shared-row reason — a later re-mine
-               -- (by anyone) only FILLS missing provenance, never re-tags
-               -- an entry to a different upload. The ownership check in
-               -- step 0 already guaranteed EXCLUDED.source_upload_id is an
-               -- upload the CALLER owns, so a NULL->value fill can only tag
-               -- the entry with the tagging user's own upload.
-               --
-               -- ACCEPTED TRADEOFF (single-user scope, tracked as F-199): a
-               -- SECOND user genuinely mining this lemma from THEIR OWN
-               -- upload gets a 201 while their tag is silently discarded —
-               -- the word will never appear in that user's
-               -- GET /vocab/saved-from-uploads. True per-user provenance
-               -- needs the tag on the user-scoped save artifact
-               -- (vocab_cards) instead of this shared row; deliberately NOT
-               -- built while the deployment is single-user.
+               -- F-199: source_upload_id is deliberately ABSENT here. This
+               -- row is shared reference data; user-saved upload provenance
+               -- now lives on the caller's vocab_cards row (step 3 /
+               -- migration 070). vocab_entries.source_upload_id is F-108
+               -- extracted-corpus provenance only, and this route never
+               -- touches it (INSERT omits it → NULL; the UPDATE arm leaves
+               -- any U2-written value exactly as it was).
                SET english = COALESCE(vocab_entries.english, EXCLUDED.english),
-                   source_upload_id = COALESCE(vocab_entries.source_upload_id,
-                                               EXCLUDED.source_upload_id),
                    version = vocab_entries.version + 1
             RETURNING id`,
-          [
-            corpusSourceId,
-            sourceId,
-            body.lemma,
-            body.english ?? null,
-            body.source_upload_id ?? null,
-          ],
+          [corpusSourceId, sourceId, body.lemma, body.english ?? null],
         );
         const entryId = entry.rows[0]!.id;
 
         // 3. Bank a recognition card, idempotent — mirrors
-        //    POST /vocab/entries/:entryId/bank exactly.
-        const existing = await client.query<{ id: number; version: number }>(
-          `SELECT id, version
+        //    POST /vocab/entries/:entryId/bank exactly. F-199: the card is
+        //    the USER-scoped save artifact, so upload provenance is recorded
+        //    here (step 0 already proved the caller owns the upload).
+        const existing = await client.query<{
+          id: number;
+          version: number;
+          source_upload_id: string | null;
+        }>(
+          `SELECT id, version, source_upload_id
              FROM vocab_cards
             WHERE user_id = $1
               AND vocab_entry_id = $2
@@ -799,15 +803,37 @@ router.post(
           [userId, entryId],
         );
         if (existing.rowCount && existing.rowCount > 0) {
-          return { entryId, card: existing.rows[0]! };
+          const card = existing.rows[0]!;
+          // Keep-first PER USER: fill the tag only when the card has none.
+          // A re-mine with the SAME upload is a genuine no-op (no UPDATE →
+          // no updated_at/version churn on the FSRS row); a re-mine from a
+          // DIFFERENT upload keeps the first tag — an arbitrary-but-stable
+          // policy that is now harmless either way, because the tag is this
+          // user's own (documented in docs/BUILD_f199_per_user_provenance.md).
+          // The `source_upload_id IS NULL` predicate re-checks under the
+          // row lock, so two concurrent re-mines cannot double-fill.
+          if (
+            body.source_upload_id !== undefined &&
+            card.source_upload_id === null
+          ) {
+            await client.query(
+              `UPDATE vocab_cards
+                  SET source_upload_id = $2
+                WHERE id = $1
+                  AND source_upload_id IS NULL`,
+              [card.id, body.source_upload_id],
+            );
+          }
+          return { entryId, card: { id: card.id, version: card.version } };
         }
         const ins = await client.query<{ id: number; version: number }>(
           `INSERT INTO vocab_cards (
-              user_id, face, vocab_entry_id, proficiency, due_at)
+              user_id, face, vocab_entry_id, proficiency, due_at,
+              source_upload_id)
             VALUES ($1, 'recognition'::card_face, $2,
-                    'L3'::proficiency_level, now())
+                    'L3'::proficiency_level, now(), $3)
             RETURNING id, version`,
-          [userId, entryId],
+          [userId, entryId, body.source_upload_id ?? null],
         );
         return { entryId, card: ins.rows[0]! };
       });
@@ -818,17 +844,19 @@ router.post(
         card: { ...out.card, id: Number(out.card.id) },
       });
     } catch (err) {
-      // F-107 race guard: the step-0 ownership check and the tagged upsert
-      // run in one transaction, but READ COMMITTED does not stop a concurrent
-      // hard-delete of the upload between the two statements — the FK from
-      // migration 040 then rejects the insert (23503). That is still "this
-      // upload does not exist for you", so it maps to the same 404 the
-      // ownership check gives, not a 500. Scoped to THIS FK's constraint
-      // name so unrelated integrity errors keep surfacing loudly.
+      // F-107/F-199 race guard: the step-0 ownership check and the tagged
+      // card write run in one transaction, but READ COMMITTED does not stop
+      // a concurrent hard-delete of the upload between the two statements —
+      // the FK from migration 070 then rejects the card INSERT/UPDATE
+      // (23503). That is still "this upload does not exist for you", so it
+      // maps to the same 404 the ownership check gives, not a 500. Scoped to
+      // THIS FK's constraint name so unrelated integrity errors keep
+      // surfacing loudly. (The pre-F-199 vocab_entries constraint no longer
+      // applies — this route stopped writing the shared row's tag.)
       const pgErr = err as { code?: string; constraint?: string };
       if (
         pgErr.code === '23503' &&
-        pgErr.constraint === 'vocab_entries_source_upload_id_fkey'
+        pgErr.constraint === 'fk_vocab_cards_source_upload'
       ) {
         next(new NotFoundError('upload not found'));
         return;
@@ -849,12 +877,22 @@ router.post(
  *   - membership in one of the user's live lists (`vocab_list_entries`).
  *
  * A word counts once no matter how many ways it was saved; `savedAt` is the
- * EARLIEST save. Only entries whose `vocab_entries.source_upload_id` points
- * at an upload THE CALLER OWNS appear — provenance tagged to another user's
- * upload is invisible here (the `bu.user_id = $1` join predicate), so upload
- * titles can never leak across users. Distinct from the U3a
- * `GET /vocab/entries?source_upload_id=` browse (everything a book tagged):
- * this is only what the user chose to keep.
+ * EARLIEST save. Provenance per saved word (F-199 — genuinely PER-USER):
+ *   1. the caller's OWN `vocab_cards.source_upload_id` tag when set (written
+ *      by POST /vocab/mine on the user-scoped card, migration 070), else
+ *   2. the entry's F-108 extracted-corpus tag
+ *      (`vocab_entries.source_upload_id`) — but ONLY when the caller owns
+ *      that upload (the `bu.user_id = $1` join predicate). Extracted rows
+ *      are only visible/savable by their upload's owner (corpusFences), so
+ *      this leg covers list-adds and plain banks of the user's own
+ *      digitised words.
+ * Because leg 1 reads the caller's own cards, a 2nd user mining the same
+ * lemma from their own upload now sees THEIR tag here — the pre-070
+ * shared-row first-write-wins loss (and the "someone tagged this first"
+ * inference oracle that came with it) is gone. Provenance tagged to another
+ * user's upload is invisible (never a leaked title, never an error).
+ * Distinct from the U3a `GET /vocab/entries?source_upload_id=` browse
+ * (everything a book tagged): this is only what the user chose to keep.
  *
  * User-scoped on every leg (cards by `c.user_id`, lists by `vl.user_id`,
  * uploads by `bu.user_id` — all bound to the session user, never a client
@@ -890,8 +928,14 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
       total: string;
     }>(
       `WITH saves AS (
-          -- Save path 1: a live card on the entry (mined or banked).
-          SELECT c.vocab_entry_id AS entry_id, MIN(c.created_at) AS saved_at
+          -- Save path 1: a live card on the entry (mined or banked). The
+          -- card carries the per-user F-199 provenance tag (migration 070).
+          -- MIN over the tag: mine only ever tags the single recognition
+          -- card, so at most one card per (user, entry) carries a tag —
+          -- MIN just folds the untagged faces' NULLs away deterministically.
+          SELECT c.vocab_entry_id AS entry_id,
+                 MIN(c.created_at) AS saved_at,
+                 MIN(c.source_upload_id) AS card_upload_id
             FROM vocab_cards c
            WHERE c.user_id = $1
              AND c.deleted_at IS NULL
@@ -900,8 +944,10 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
           UNION ALL
           -- Save path 2: membership in one of the user's live lists.
           -- entry_id IS NOT NULL: 049's multitype rows (grammar/hanja
-          -- memberships) carry a NULL vocab entry_id and are not vocab saves.
-          SELECT le.entry_id, MIN(le.added_at)
+          -- memberships) carry a NULL vocab entry_id and are not vocab
+          -- saves. Lists carry no per-save tag — NULL keeps the UNION shape;
+          -- list-only saves fall through to the entry's F-108 tag below.
+          SELECT le.entry_id, MIN(le.added_at), NULL::bigint
             FROM vocab_list_entries le
             JOIN vocab_lists vl
               ON vl.id = le.list_id
@@ -911,8 +957,11 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
            GROUP BY le.entry_id
        ),
        first_saves AS (
-          -- One row per saved entry, earliest save wins.
-          SELECT entry_id, MIN(saved_at) AS saved_at
+          -- One row per saved entry, earliest save wins; the card tag (if
+          -- any) survives the fold (MIN ignores the list leg's NULL).
+          SELECT entry_id,
+                 MIN(saved_at) AS saved_at,
+                 MIN(card_upload_id) AS card_upload_id
             FROM saves
            GROUP BY entry_id
        )
@@ -929,11 +978,16 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
          FROM first_saves fs
          JOIN vocab_entries ve
            ON ve.id = fs.entry_id
-         -- The ownership predicate lives ON the join: an entry tagged to an
-         -- upload the caller does NOT own simply produces no row (never a
-         -- leaked title, never an error).
+         -- Provenance resolution (F-199): the caller's OWN card tag wins;
+         -- an untagged save falls back to the entry's F-108 extracted-corpus
+         -- tag. The ownership predicate lives ON the join: card tags are
+         -- invariantly the caller's own uploads (route + 070 backfill both
+         -- enforce ownership before writing) so for leg 1 it is defense in
+         -- depth, and for the fallback leg it is the actual fence — an entry
+         -- tagged to an upload the caller does NOT own simply produces no
+         -- row (never a leaked title, never an error).
          JOIN book_uploads bu
-           ON bu.id = ve.source_upload_id
+           ON bu.id = COALESCE(fs.card_upload_id, ve.source_upload_id)
           AND bu.user_id = $1
         ORDER BY bu.created_at DESC, bu.id DESC, fs.saved_at DESC, ve.id
         LIMIT $2`,

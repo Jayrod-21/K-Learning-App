@@ -1371,36 +1371,44 @@ describe('POST /vocab/mine — tap anything → bank it (FU-NF-33)', () => {
   });
 });
 
-describe('POST /vocab/mine — upload provenance (F-107)', () => {
+describe('POST /vocab/mine — upload provenance (F-107/F-199)', () => {
   const uniqueLemma = (): string => `출처${Date.now()}${Math.floor(Math.random() * 1e6)}`;
 
-  it('persists source_upload_id on the mined entry when the caller owns the upload', async () => {
+  it('persists source_upload_id on the CALLER\'S CARD (not the shared entry) when the caller owns the upload', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
     const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
     const res = await agent
       .post('/vocab/mine')
       .send({ lemma: uniqueLemma(), english: 'from my book', source_upload_id: uploadId });
     expect(res.status).toBe(201);
-    const tagged = await pg.pool.query<{ source_upload_id: string | null }>(
+    // F-199: the tag lives on the user-scoped card…
+    const card = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_cards WHERE id = $1`,
+      [res.body.card.id],
+    );
+    expect(Number(card.rows[0]!.source_upload_id)).toBe(uploadId);
+    // …and the SHARED entry stays clean (vocab_entries.source_upload_id is
+    // F-108 extracted-corpus provenance only — the mine path never writes it).
+    const entry = await pg.pool.query<{ source_upload_id: string | null }>(
       `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
       [res.body.entryId],
     );
-    expect(Number(tagged.rows[0]!.source_upload_id)).toBe(uploadId);
+    expect(entry.rows[0]!.source_upload_id).toBeNull();
   });
 
-  it('a mine without source_upload_id stays untagged, and a later untagged re-mine keeps an existing tag', async () => {
+  it('a mine without source_upload_id stays untagged, and a later untagged re-mine keeps an existing card tag', async () => {
     const { agent, userId } = await registerUser(t.app, pg.pool);
-    // Untagged mine → NULL provenance.
+    // Untagged mine → NULL provenance on the card.
     const plain = await agent.post('/vocab/mine').send({ lemma: uniqueLemma() });
     expect(plain.status).toBe(201);
     const untagged = await pg.pool.query<{ source_upload_id: string | null }>(
-      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
-      [plain.body.entryId],
+      `SELECT source_upload_id FROM vocab_cards WHERE id = $1`,
+      [plain.body.card.id],
     );
     expect(untagged.rows[0]!.source_upload_id).toBeNull();
 
-    // Tagged mine, then an untagged re-mine of the SAME lemma: the tag must
-    // survive (ON CONFLICT COALESCE keeps the existing provenance).
+    // Tagged mine, then an untagged re-mine of the SAME lemma: the card tag
+    // must survive (re-mine only FILLS a missing tag, never clears one).
     const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
     const lemma = uniqueLemma();
     const first = await agent
@@ -1410,11 +1418,51 @@ describe('POST /vocab/mine — upload provenance (F-107)', () => {
     const again = await agent.post('/vocab/mine').send({ lemma });
     expect(again.status).toBe(201);
     expect(again.body.entryId).toBe(first.body.entryId);
+    expect(again.body.card.id).toBe(first.body.card.id);
     const kept = await pg.pool.query<{ source_upload_id: string | null }>(
-      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
-      [first.body.entryId],
+      `SELECT source_upload_id FROM vocab_cards WHERE id = $1`,
+      [first.body.card.id],
     );
     expect(Number(kept.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it('a TAGGED re-mine of an untagged existing card FILLS the tag (idempotent card, no duplicate)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const plain = await agent.post('/vocab/mine').send({ lemma });
+    expect(plain.status).toBe(201);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const tagged = await agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadId });
+    expect(tagged.status).toBe(201);
+    expect(tagged.body.card.id).toBe(plain.body.card.id);
+    const card = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_cards WHERE id = $1`,
+      [plain.body.card.id],
+    );
+    expect(Number(card.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it('a re-mine from a DIFFERENT owned upload keeps the first tag (keep-first, per-user)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const uploadB = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const lemma = uniqueLemma();
+    const first = await agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadA });
+    expect(first.status).toBe(201);
+    const second = await agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadB });
+    expect(second.status).toBe(201);
+    expect(second.body.card.id).toBe(first.body.card.id);
+    const kept = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_cards WHERE id = $1`,
+      [first.body.card.id],
+    );
+    expect(Number(kept.rows[0]!.source_upload_id)).toBe(uploadA);
   });
 
   it("cannot tag with another user's upload — 404, and nothing persists", async () => {
@@ -1447,15 +1495,22 @@ describe('POST /vocab/mine — upload provenance (F-107)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('a shared entry already tagged by another user is NOT re-tagged (first write wins)', async () => {
-    // vocab_entries rows are SHARED — a second user re-mining the same lemma
-    // with their OWN upload must not re-point provenance someone else set
-    // (same posture as the gloss no-clobber rule).
+  it('F-199 HEADLINE: two users mining the SAME lemma from their OWN uploads each keep their own tag — and each sees it in saved-from-uploads', async () => {
+    // THE regression this ticket exists for. Pre-070 the tag was written
+    // first-write-wins onto the SHARED vocab_entries row, so user B's tag
+    // was silently discarded and B's word never appeared in B's
+    // GET /vocab/saved-from-uploads. Per-user card tags fix both halves.
     const lemma = uniqueLemma();
     const a = await registerUser(t.app, pg.pool);
     const b = await registerUser(t.app, pg.pool);
-    const uploadA = await seedBookUpload(pg.pool, a.userId, { status: 'ready' });
-    const uploadB = await seedBookUpload(pg.pool, b.userId, { status: 'ready' });
+    const uploadA = await seedBookUpload(pg.pool, a.userId, {
+      title: 'A의 책',
+      status: 'ready',
+    });
+    const uploadB = await seedBookUpload(pg.pool, b.userId, {
+      title: 'B의 책',
+      status: 'ready',
+    });
     const ra = await a.agent
       .post('/vocab/mine')
       .send({ lemma, source_upload_id: uploadA });
@@ -1464,12 +1519,39 @@ describe('POST /vocab/mine — upload provenance (F-107)', () => {
       .post('/vocab/mine')
       .send({ lemma, source_upload_id: uploadB });
     expect(rb.status).toBe(201);
+    // One shared entry, two private cards…
     expect(rb.body.entryId).toBe(ra.body.entryId);
-    const kept = await pg.pool.query<{ source_upload_id: string | null }>(
+    expect(rb.body.card.id).not.toBe(ra.body.card.id);
+    // …each carrying its OWNER's tag (B's is no longer discarded).
+    const tags = await pg.pool.query<{ id: string; source_upload_id: string | null }>(
+      `SELECT id, source_upload_id FROM vocab_cards WHERE id IN ($1, $2)`,
+      [ra.body.card.id, rb.body.card.id],
+    );
+    const byCard = new Map(tags.rows.map((r) => [Number(r.id), r.source_upload_id]));
+    expect(Number(byCard.get(ra.body.card.id))).toBe(uploadA);
+    expect(Number(byCard.get(rb.body.card.id))).toBe(uploadB);
+    // The shared entry carries NO user-saved tag at all.
+    const entry = await pg.pool.query<{ source_upload_id: string | null }>(
       `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
       [ra.body.entryId],
     );
-    expect(Number(kept.rows[0]!.source_upload_id)).toBe(uploadA);
+    expect(entry.rows[0]!.source_upload_id).toBeNull();
+
+    // And the user-visible fix: BOTH users see the word under THEIR upload.
+    const resA = await a.agent.get('/vocab/saved-from-uploads');
+    expect(resA.status).toBe(200);
+    expect(resA.body.groups).toHaveLength(1);
+    expect(resA.body.groups[0].upload).toEqual({ id: uploadA, title: 'A의 책' });
+    expect(resA.body.groups[0].entries.map((e: { id: number }) => e.id)).toEqual([
+      ra.body.entryId,
+    ]);
+    const resB = await b.agent.get('/vocab/saved-from-uploads');
+    expect(resB.status).toBe(200);
+    expect(resB.body.groups).toHaveLength(1);
+    expect(resB.body.groups[0].upload).toEqual({ id: uploadB, title: 'B의 책' });
+    expect(resB.body.groups[0].entries.map((e: { id: number }) => e.id)).toEqual([
+      rb.body.entryId,
+    ]);
   });
 
   it('rejects garbage source_upload_id at the boundary (400)', async () => {
@@ -1578,7 +1660,7 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
     expect(res.body.groups[0].entries).toHaveLength(1);
   });
 
-  it("user-scoped: another user's saves — and saves tagged to another user's upload — never appear", async () => {
+  it("user-scoped: another user's saves — and entry tags pointing at another user's upload — never appear", async () => {
     const lemma = `공유${Date.now()}`;
     const a = await registerUser(t.app, pg.pool);
     const b = await registerUser(t.app, pg.pool);
@@ -1586,19 +1668,34 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
       title: 'A의 책',
       status: 'ready',
     });
-    // A saves with provenance.
+    // A saves with provenance (F-199: the tag lands on A's own card).
     const ra = await a.agent
       .post('/vocab/mine')
       .send({ lemma, source_upload_id: uploadA });
     expect(ra.status).toBe(201);
-    // B saves the SAME shared entry (no upload context) — B holds a card on
-    // an entry whose provenance points at A's upload.
+    // B saves the SAME shared entry (no upload context).
     const rb = await b.agent.post('/vocab/mine').send({ lemma });
     expect(rb.status).toBe(201);
     expect(rb.body.entryId).toBe(ra.body.entryId);
 
+    // And the fallback leg's fence: an entry carrying an F-108 extracted-
+    // corpus tag pointing at A's upload, with a card held by B (seeded
+    // directly — the corpus fence blocks B from banking it through the
+    // route; this pins the READ side's defense in depth).
+    const extracted = await seedVocabEntry(pg.pool, {
+      korean: '추출단어',
+      english: 'extracted word',
+      sourceUploadId: uploadA,
+    });
+    await pg.pool.query(
+      `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level, now())`,
+      [b.userId, extracted],
+    );
+
     // A sees their group; B sees NOTHING (neither A's saves nor A's upload
-    // title leaks through the shared entry's tag).
+    // title leaks — B's untagged card falls back to the entry tag, which the
+    // bu.user_id predicate rejects).
     const resA = await a.agent.get('/vocab/saved-from-uploads');
     expect(resA.status).toBe(200);
     expect(resA.body.groups).toHaveLength(1);
