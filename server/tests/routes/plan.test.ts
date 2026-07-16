@@ -126,7 +126,9 @@ describe('GET /plan/today — shape + content', () => {
         level: string;
         tag: string;
         promptId: number;
-        promptKr: string;
+        // Optional in the wire contract (older envelopes omit it) — this
+        // test still asserts it is PRESENT and matches the bank row.
+        promptKr?: string;
       } | null;
       largestGap: string | null;
     };

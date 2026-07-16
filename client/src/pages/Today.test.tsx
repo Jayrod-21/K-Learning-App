@@ -1046,6 +1046,13 @@ describe('Today', () => {
         '재택근무의 장점과 단점에 대해 200~300자로 쓰십시오.',
       ),
     ).toBeInTheDocument();
+    // aria-label REPLACES the button's accessible name (its subtree is
+    // presentational to AT), so the FULL prompt body must be folded into
+    // the label — otherwise screen readers announce only the title and the
+    // preview is invisible to the users who can't see the clamped text.
+    expect(writingTile).toHaveAccessibleName(
+      'Open writing — Paragraph in 합쇼체. 재택근무의 장점과 단점에 대해 200~300자로 쓰십시오.',
+    );
   });
 
   it('F-134: no preview line renders when the plan carries no promptKr (older envelope)', () => {
@@ -1070,6 +1077,42 @@ describe('Today', () => {
     expect(
       writingTile.querySelector('.km-today__tilePrompt'),
     ).not.toBeInTheDocument();
+    // …and the accessible name stays the plain title — no dangling period
+    // or phantom preview folded into the label.
+    expect(writingTile).toHaveAccessibleName(
+      'Open writing — Paragraph in 합쇼체',
+    );
+  });
+
+  it('F-134: an empty-string promptKr renders no preview stub and adds nothing to the accessible name', () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        writing: {
+          title: 'Paragraph in 합쇼체',
+          mins: 8,
+          level: 'L4',
+          tag: 'Writing',
+          promptId: 77,
+          promptKr: '',
+        },
+      },
+    };
+    renderTodayAt();
+
+    // Unreachable from the live server (prompt_kr is NOT NULL with a
+    // length >= 1 CHECK) but the client type can't express the non-empty
+    // invariant — an empty string must not paint an empty hairline-topped
+    // stub or pollute the label.
+    const writingTile = screen.getByRole('button', { name: /Paragraph in/ });
+    expect(
+      writingTile.querySelector('.km-today__tilePrompt'),
+    ).not.toBeInTheDocument();
+    expect(writingTile).toHaveAccessibleName(
+      'Open writing — Paragraph in 합쇼체',
+    );
   });
 
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {

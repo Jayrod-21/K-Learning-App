@@ -1192,4 +1192,34 @@ describe('GET /grammar/mastery — per-pattern FSRS mastery (F-099)', () => {
     expect(body.patterns[0]?.bucket).toBe('new'); // honest "not started"
     expect(body.patterns[0]?.stability).toBeNull();
   });
+
+  it('a soft-deleted production card is ignored — the pattern buckets new again', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const id = await bank(agent, 'GR-soft-deleted-card', '-고 말다');
+    // A MATURE production card that was since soft-deleted. The join's
+    // `vc.deleted_at IS NULL` predicate must exclude it — dropping that
+    // predicate would wrongly report this pattern as mastered (stability
+    // 99). Legal per the schema: the partial unique index only covers
+    // deleted_at IS NULL rows, so a deleted card coexists with none live.
+    await pg.pool.query(
+      `INSERT INTO vocab_cards
+         (user_id, face, grammar_entry_id, fsrs_state, stability, deleted_at)
+       VALUES ($1, 'production'::card_face, $2, 'review'::fsrs_state, 99, now())`,
+      [userId, id],
+    );
+
+    const res = await agent.get('/grammar/mastery');
+    expect(res.status).toBe(200);
+    const body = res.body as MasteryEnvelope;
+    expect(body.summary).toEqual({
+      new: 1,
+      learning: 0,
+      reviewing: 0,
+      mastered: 0,
+      total: 1,
+    });
+    expect(body.patterns).toHaveLength(1);
+    expect(body.patterns[0]?.bucket).toBe('new'); // honest "not started"
+    expect(body.patterns[0]?.stability).toBeNull(); // never the dead card's 99
+  });
 });

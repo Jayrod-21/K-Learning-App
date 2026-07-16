@@ -843,6 +843,12 @@ export function Today(): JSX.Element {
 
   if (today.data?.writing) {
     const t = today.data.writing;
+    // F-134: the preview only exists when the plan actually carried a
+    // non-empty prompt body — an older envelope (no promptKr) or a
+    // defensive empty string renders no preview node and leaves the
+    // accessible name untouched.
+    const promptPreview =
+      t.promptKr !== undefined && t.promptKr !== '' ? t.promptKr : undefined;
     suggestedTiles.push({
       key: 'writing',
       // F-134 (corrected scope — NOT inline-expand): the tile PREVIEWS the
@@ -859,7 +865,15 @@ export function Today(): JSX.Element {
         <ActivityTile
           tone={SKILL_COLOR.writing.tone}
           icon="pen"
-          ariaLabel={`Open writing — ${t.title}`}
+          // aria-label REPLACES the button's accessible name (and
+          // role=button subtrees are presentational to AT), so the prompt
+          // preview must be folded into the label itself — otherwise screen
+          // readers would announce only the title and never the prompt.
+          ariaLabel={
+            promptPreview !== undefined
+              ? `Open writing — ${t.title}. ${promptPreview}`
+              : `Open writing — ${t.title}`
+          }
           pill={renderTag(t.tag, gapTag)}
           headline={<span className="kr">{t.title}</span>}
           meta={
@@ -870,12 +884,14 @@ export function Today(): JSX.Element {
           }
           extra={
             <>
-              {t.promptKr !== undefined ? (
+              {promptPreview !== undefined ? (
                 // The preview is the REAL prompt text (content, not chrome)
                 // — rendered only when the plan actually carried it, never
-                // a fabricated stand-in. CSS clamps the visual overflow;
-                // the full text stays in the accessibility tree.
-                <span className="km-today__tilePrompt kr">{t.promptKr}</span>
+                // a fabricated stand-in. CSS clamps the visual overflow for
+                // sighted users; screen readers get the FULL text via the
+                // tile's aria-label above (this subtree is presentational
+                // inside the button).
+                <span className="km-today__tilePrompt kr">{promptPreview}</span>
               ) : null}
               <DoneTodayRow
                 count={writingDoneToday}
