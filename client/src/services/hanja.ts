@@ -13,8 +13,9 @@
  *   POST /hanja/:char/state    → upsert this user's state for one character.
  *
  * Shape note: the server emits a DTO that matches the client `Hanja` domain
- * type field-for-field (id/ch/sound/gloss/en/level/strokes/state/note/
- * compounds[]), so `fetchHanjaList`/`fetchHanjaToday` are typed pass-throughs
+ * type field-for-field (id/characterId/ch/sound/gloss/en/level/strokes/state/
+ * note/compounds[] — `characterId` is the numeric `hanja_characters.id`,
+ * F-114), so `fetchHanjaList`/`fetchHanjaToday` are typed pass-throughs
  * that only unwrap the envelope — there is no per-field mapping. `HanjaProgress`
  * matches `GET /hanja/progress` verbatim, so that helper returns the body as-is.
  *

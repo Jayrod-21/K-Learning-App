@@ -22,9 +22,13 @@
  *                                     paged (F-171)
  *
  * DTO — matches the client `Hanja` shape (see client domain types):
- *   { id, ch, sound, gloss, en, level, strokes, state, note, compounds }
+ *   { id, characterId, ch, sound, gloss, en, level, strokes, state, note,
+ *     compounds }
  *   where compounds = { kr, han, en, with }[]. Field mapping:
  *     id    = char (stable, unique)        ch   = char
+ *     characterId = hanja_characters.id (numeric surrogate PK — F-114; the
+ *                   id typed list membership targets, so list-add no longer
+ *                   needs the card-seed round-trip to learn it)
  *     sound = sound                        gloss= gloss_kr ?? ''   (훈; v1 empty)
  *     en    = gloss_en                     level= level (L2..L5 string)
  *     strokes = strokes                    state= per-user progress.state ?? 'new'
@@ -89,6 +93,9 @@ interface HanjaCompoundDTO {
 /** Client `Hanja`. */
 interface HanjaDTO {
   readonly id: string;
+  /** Numeric `hanja_characters.id` (F-114) — the surrogate PK typed list
+   *  membership (`POST /vocab/lists/:id/entries`, migration 049) targets. */
+  readonly characterId: number;
   readonly ch: string;
   readonly sound: string;
   readonly gloss: string;
@@ -107,6 +114,8 @@ interface HanjaDTO {
  * is a json_agg array (never null — COALESCE'd to '[]' in SQL).
  */
 interface HanjaRow {
+  /** BIGINT PK — node-postgres serialises int8 as a string. */
+  id: string;
   char: string;
   sound: string;
   gloss_kr: string | null;
@@ -138,6 +147,10 @@ function mapRowToDTO(row: HanjaRow): HanjaDTO {
   }));
   return {
     id: row.char,
+    // BIGINT → JSON number. hanja_characters ids are sequence-assigned and
+    // nowhere near 2^53, so Number() is lossless (same conversion the card
+    // routes already apply to `hanja_character_id`).
+    characterId: Number(row.id),
     ch: row.char,
     sound: row.sound,
     gloss: row.gloss_kr ?? '',
@@ -161,7 +174,8 @@ function mapRowToDTO(row: HanjaRow): HanjaDTO {
  * dropped row). `ORDER BY id` inside the agg gives a stable compound order.
  */
 const HANJA_SELECT = `
-  SELECT hc.char,
+  SELECT hc.id,
+         hc.char,
          hc.sound,
          hc.gloss_kr,
          hc.gloss_en,

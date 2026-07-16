@@ -24,7 +24,15 @@
  *                              wrong loop over a small session queue that
  *                              feeds the SAME real mastery pool the index
  *                              (F-167) and the drill's own progress bar
- *                              (F-170) read.
+ *                              (F-170) read. F-115 adds a second, NON-GRADED
+ *                              Trace mode (product decision: no stroke
+ *                              dataset, no automated grading): the target
+ *                              character renders as a faint template BEHIND
+ *                              the same drawing canvas so the user traces
+ *                              over it; a plain Next advances the queue and
+ *                              nothing is judged or written. A Recall/Trace
+ *                              toggle switches modes; the Recall loop is
+ *                              untouched.
  *
  * Tapping any cell or the feature card opens a `<Sheet>` with the
  * etymology + compound network + drill / bank / draw / add-to-list CTAs.
@@ -128,7 +136,11 @@
  *     flashcard drill, which exercises the same recall. Reveal/undo/clear
  *     are real buttons; the reveal toggle carries `aria-pressed`. The new
  *     Right/Wrong judgment is a `role="group"` of real buttons too — no
- *     drag/swipe gesture required to advance the drill.
+ *     drag/swipe gesture required to advance the drill. The F-115
+ *     Recall/Trace mode toggle follows the filter-chip pattern (plain
+ *     buttons in a `role="group"`, toggled state on `aria-pressed`); the
+ *     trace template glyph is `aria-hidden` decoration behind the canvas
+ *     (same treatment as the recall reveal ghost).
  *   - Nested views carry a `BackButton` with an explicit `to` (F-024) so
  *     deep links can never strand the user.
  *   - Mastery color (F-167) is never the ONLY carrier of state: every
@@ -225,6 +237,12 @@ type ViewMode = 'today' | 'index';
 type FilterMode = 'all' | HanjaState;
 /** Nested sub-view, parsed off the `view` search param. */
 type SubView = 'study' | 'lists' | 'list' | 'draw';
+/** F-115 — the draw drill's two modes. `recall` is the F-165 Anki loop
+ *  (draw from memory → self-judge Right/Wrong → mastery write). `trace` is
+ *  the guided trace-along: the character shows as a faint template behind
+ *  the canvas, a plain Next advances the queue, and NOTHING is graded or
+ *  written (product decision — no stroke dataset, no automated grading). */
+type DrawMode = 'recall' | 'trace';
 
 /** Page eyebrow source — nav.ts owns the en/kr pair (P3b Batch A). */
 const HANJA_NAV = navItem('hanja');
@@ -305,6 +323,17 @@ const HANJA_RATINGS: ReadonlyArray<{
   { id: 'hard', label: 'Hard', kr: '어려움', sub: '6m', className: 'km-hanja__rating--hard' },
   { id: 'good', label: 'Good', kr: '좋음', sub: '1d', className: 'km-hanja__rating--good' },
   { id: 'easy', label: 'Easy', kr: '쉬움', sub: '4d', className: 'km-hanja__rating--easy' },
+];
+
+/** F-115 — the draw drill's Recall/Trace mode chips. Same chip pattern as
+ *  `FILTER_OPTIONS` (plain buttons, `aria-pressed`), rendered by `DrawView`. */
+const DRAW_MODE_OPTIONS: ReadonlyArray<{
+  id: DrawMode;
+  label: string;
+  kr: string;
+}> = [
+  { id: 'recall', label: 'Recall', kr: '기억해서 쓰기' },
+  { id: 'trace', label: 'Trace', kr: '따라 쓰기' },
 ];
 
 /** Route builder for the drawing drill (char URL-encoded — single glyph). */
@@ -2512,6 +2541,11 @@ function DrawView({
   const [queue, setQueue] = useState<string[] | null>(null);
   const [totalInSession, setTotalInSession] = useState(0);
   const [masteredCount, setMasteredCount] = useState(0);
+  // F-115 — Recall (default, the F-165 mastery loop) vs Trace (guided,
+  // non-graded). Local UI state, deliberately NOT a search param: the mode
+  // is a per-session practice preference, and keeping it out of the URL
+  // means a deep link always opens on the canonical recall drill.
+  const [mode, setMode] = useState<DrawMode>('recall');
   // Which character the CURRENT queue was seeded for — not just "seeded at
   // all". No UI today re-navigates to a DIFFERENT `?char=` while staying on
   // `?view=draw` (every entry point changes `sub` too, which remounts this
@@ -2567,6 +2601,13 @@ function DrawView({
       const [head, ...rest] = q;
       return head === undefined ? q : [...rest, head];
     });
+  }, []);
+
+  // F-115 — trace mode's only advance: pop the head, write nothing. Tracing
+  // is guided practice, not recall — it must never feed the mastery pool
+  // (that's what promoteState/onSetState in the recall loop are for).
+  const traceNext = useCallback((): void => {
+    setQueue((q) => (q ? q.slice(1) : q));
   }, []);
 
   if (char === null || char === '') {
@@ -2632,10 +2673,19 @@ function DrawView({
           <Bilingual en="Drill complete" kr="연습 완료" />
         </Eyebrow>
         <p>
-          <Bilingual
-            en={`You drew ${String(totalInSession)} character${totalInSession === 1 ? '' : 's'} correctly.`}
-            kr={`${String(totalInSession)}자를 맞혔어요.`}
-          />
+          {mode === 'trace' ? (
+            // F-115 — trace sessions are practice, not judged recall; the
+            // completion line must not claim correctness.
+            <Bilingual
+              en={`You traced ${String(totalInSession)} character${totalInSession === 1 ? '' : 's'}.`}
+              kr={`${String(totalInSession)}자를 따라 썼어요.`}
+            />
+          ) : (
+            <Bilingual
+              en={`You drew ${String(totalInSession)} character${totalInSession === 1 ? '' : 's'} correctly.`}
+              kr={`${String(totalInSession)}자를 맞혔어요.`}
+            />
+          )}
         </p>
         <div className="km-hanja__row">
           <button
@@ -2666,6 +2716,10 @@ function DrawView({
   }
 
   const judging = pendingChar === current.ch;
+  // F-115 — how far the trace session has advanced (characters popped off
+  // the queue). Recall keeps its own masteredCount (F-181 semantics — a
+  // banked reconfirmation advances the queue without counting).
+  const completed = totalInSession - queue.length;
 
   return (
     <>
@@ -2689,22 +2743,59 @@ function DrawView({
           <Pill>{current.level}</Pill>
         </div>
         <p className="km-hanja__draw-note">
-          <Bilingual
-            en="Draw the character from memory, then reveal it to compare."
-            kr="기억을 떠올려 한자를 쓴 다음, 글자를 확인해 보세요."
-          />
+          {mode === 'trace' ? (
+            <Bilingual
+              en="Trace over the faint character on the pad to learn its shape."
+              kr="패드의 흐린 글자를 따라 쓰며 모양을 익혀 보세요."
+            />
+          ) : (
+            <Bilingual
+              en="Draw the character from memory, then reveal it to compare."
+              kr="기억을 떠올려 한자를 쓴 다음, 글자를 확인해 보세요."
+            />
+          )}
         </p>
       </CityCard>
 
-      {/* F-170 — live progress across the Anki session: stations "done" are
-          characters already mastered/re-confirmed this session. */}
+      {/* F-115 — Recall vs Trace. Same chip pattern as the index filter
+          toolbar: plain buttons, toggled state on aria-pressed. */}
+      <div className="km-hanja__draw-mode" role="group" aria-label="Drill mode">
+        {DRAW_MODE_OPTIONS.map((m) => {
+          const active = mode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => {
+                setMode(m.id);
+              }}
+              className={
+                'km-pill focusring km-hanja__draw-mode-chip' +
+                (active ? ' km-pill--gold' : ' km-pill--default')
+              }
+            >
+              <Bilingual en={m.label} kr={m.kr} compact />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* F-170 — live progress across the session: in recall mode, stations
+          "done" are characters mastered/re-confirmed this session (F-181);
+          in trace mode (F-115, nothing judged) they are simply the
+          characters traced so far. */}
       <div className="km-hanja__draw-subway">
         <SubwayProgress
           steps={totalInSession}
-          current={masteredCount}
+          current={mode === 'trace' ? completed : masteredCount}
           tone="accent"
           label="Draw drill progress"
-          valueText={`${String(masteredCount)} of ${String(totalInSession)} mastered`}
+          valueText={
+            mode === 'trace'
+              ? `${String(completed)} of ${String(totalInSession)} traced`
+              : `${String(masteredCount)} of ${String(totalInSession)} mastered`
+          }
         />
       </div>
 
@@ -2717,15 +2808,17 @@ function DrawView({
       >
         <p>
           Freehand practice only — nothing is graded or saved about HOW you
-          draw. Stroke-order guidance isn&apos;t available yet: the corpus
+          draw. Recall hides the character so you draw from memory; Trace
+          shows it as a faint guide behind the pad so you can draw over it.
+          Numbered stroke-order guidance isn&apos;t available: the corpus
           doesn&apos;t carry per-character stroke data.
         </p>
         <p>
-          Marking Right/Wrong below IS real, though — it writes to your
-          hanja mastery pool the same way banking a character does. Drawing
-          needs a pointer (finger, pen, or mouse). If you use a keyboard or
-          screen reader, the flashcard drill covers the same recall
-          practice:
+          In Recall mode, marking Right/Wrong IS real, though — it writes to
+          your hanja mastery pool the same way banking a character does.
+          Trace mode writes nothing. Drawing needs a pointer (finger, pen,
+          or mouse). If you use a keyboard or screen reader, the flashcard
+          drill covers the same recall practice:
         </p>
         <button
           type="button"
@@ -2739,42 +2832,78 @@ function DrawView({
         </button>
       </CollapsibleTile>
 
-      <DrawingPad key={current.ch} ch={current.ch} />
+      {/* key includes the mode (F-115): switching Recall ↔ Trace is a
+          different exercise over the same character, so the pad resets
+          (fresh strokes, reveal state cleared) exactly like advancing to
+          the next character does. */}
+      <DrawingPad
+        key={`${mode}:${current.ch}`}
+        ch={current.ch}
+        guide={mode === 'trace'}
+      />
 
-      <div className="km-hanja__draw-judge" role="group" aria-label="Rate your drawing">
-        <button
-          type="button"
-          className="km-hanja__draw-right focusring"
-          disabled={judging}
-          aria-busy={judging}
-          onClick={judgeRight}
-        >
-          <Icon name="check" size={16} />
-          <span>
-            {judging ? (
-              <Bilingual en="Saving…" kr="저장 중…" compact />
-            ) : (
-              <Bilingual en="Right" kr="맞음" compact />
-            )}
-          </span>
-        </button>
-        <button
-          type="button"
-          className="km-hanja__draw-wrong focusring"
-          onClick={judgeWrong}
-        >
-          <Icon name="close" size={16} />
-          <span>
-            <Bilingual en="Wrong" kr="틀림" compact />
-          </span>
-        </button>
-      </div>
-      <p className="km-hanja__draw-mastery-note">
-        <Bilingual
-          en="Right or wrong feeds your hanja mastery pool — wrong re-queues the character, right advances it toward mastery."
-          kr="맞고 틀림이 한자 숙련도 풀에 반영돼요 — 틀리면 다시 나오고, 맞으면 숙련도가 올라가요."
-        />
-      </p>
+      {mode === 'trace' ? (
+        <>
+          {/* F-115 — non-graded: no judgment, no writes; Next just advances
+              the session queue. Reuses the judge row's button styling so the
+              primary action sits in the same place in both modes. */}
+          <div className="km-hanja__draw-judge km-hanja__draw-judge--trace">
+            <button
+              type="button"
+              className="km-hanja__draw-right focusring"
+              onClick={traceNext}
+            >
+              <Icon name="arrow-right" size={16} />
+              <span>
+                <Bilingual en="Next character" kr="다음 글자" compact />
+              </span>
+            </button>
+          </div>
+          <p className="km-hanja__draw-mastery-note">
+            <Bilingual
+              en="Trace mode is guided practice only — nothing is graded and nothing is written to your mastery pool."
+              kr="따라 쓰기는 연습용이에요 — 채점되지 않고 숙련도에도 반영되지 않아요."
+            />
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="km-hanja__draw-judge" role="group" aria-label="Rate your drawing">
+            <button
+              type="button"
+              className="km-hanja__draw-right focusring"
+              disabled={judging}
+              aria-busy={judging}
+              onClick={judgeRight}
+            >
+              <Icon name="check" size={16} />
+              <span>
+                {judging ? (
+                  <Bilingual en="Saving…" kr="저장 중…" compact />
+                ) : (
+                  <Bilingual en="Right" kr="맞음" compact />
+                )}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="km-hanja__draw-wrong focusring"
+              onClick={judgeWrong}
+            >
+              <Icon name="close" size={16} />
+              <span>
+                <Bilingual en="Wrong" kr="틀림" compact />
+              </span>
+            </button>
+          </div>
+          <p className="km-hanja__draw-mastery-note">
+            <Bilingual
+              en="Right or wrong feeds your hanja mastery pool — wrong re-queues the character, right advances it toward mastery."
+              kr="맞고 틀림이 한자 숙련도 풀에 반영돼요 — 틀리면 다시 나오고, 맞으면 숙련도가 올라가요."
+            />
+          </p>
+        </>
+      )}
       {stateError !== null ? (
         <p role="alert" className="km-hanja__study-error">
           {stateError}
@@ -2801,12 +2930,26 @@ const PAD_FALLBACK_PX = 300;
  * capture support is spotty in test/embedded environments); pointerdown/
  * move/up/leave/cancel covers mouse, touch, and pen alike.
  *
- * Rendered with `key={ch}` by its caller (F-165) — a fresh key per queued
- * character remounts the whole component, which is exactly the reset
- * strokes/reveal state need between drill rounds; no imperative reset API
- * needed.
+ * Rendered with `key={mode:ch}` by its caller (F-165/F-115) — a fresh key
+ * per queued character (or mode switch) remounts the whole component, which
+ * is exactly the reset strokes/reveal state need between drill rounds; no
+ * imperative reset API needed.
+ *
+ * F-115 `guide`: when true (trace mode) the target character renders as a
+ * faint template BEHIND the canvas — the same `aria-hidden` ghost glyph the
+ * recall reveal uses (the canvas bitmap is transparent, so committed strokes
+ * paint over it) — and the Show/Hide reveal toggle is dropped as redundant.
+ * Nothing about the strokes is compared against the template: the guide is
+ * a visual aid, not a grader (product decision — no stroke dataset).
  */
-function DrawingPad({ ch }: { ch: string }): JSX.Element {
+function DrawingPad({
+  ch,
+  guide = false,
+}: {
+  ch: string;
+  /** F-115 — always show the character as a faint trace template. */
+  guide?: boolean;
+}): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const dprRef = useRef(1);
   const activeRef = useRef<DrawPoint[] | null>(null);
@@ -2919,8 +3062,18 @@ function DrawingPad({ ch }: { ch: string }): JSX.Element {
     <>
       <div className="km-hanja__draw-stage">
         <TianGrid />
-        {revealed ? (
-          <span className="hanja km-hanja__draw-ghost" aria-hidden="true">
+        {guide || revealed ? (
+          // Behind the canvas in paint order (the canvas is a later sibling
+          // filling the same stage), so strokes always land ON TOP of the
+          // template/ghost. `--guide` (F-115) is the slightly stronger trace
+          // template; the bare ghost is the recall reveal.
+          <span
+            className={
+              'hanja km-hanja__draw-ghost' +
+              (guide ? ' km-hanja__draw-ghost--guide' : '')
+            }
+            aria-hidden="true"
+          >
             {ch}
           </span>
         ) : null}
@@ -2931,7 +3084,11 @@ function DrawingPad({ ch }: { ch: string }): JSX.Element {
           // AT alternative (flashcard drill). role="img" keeps AT from
           // presenting an operable-but-unusable widget.
           role="img"
-          aria-label={`Drawing pad for the character ${ch}. Draw with a finger, pen, or mouse.`}
+          aria-label={
+            guide
+              ? `Tracing pad for the character ${ch}. Trace the faint guide with a finger, pen, or mouse.`
+              : `Drawing pad for the character ${ch}. Draw with a finger, pen, or mouse.`
+          }
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endStroke}
@@ -2956,20 +3113,24 @@ function DrawingPad({ ch }: { ch: string }): JSX.Element {
         >
           <Bilingual en="Clear" kr="지우기" compact />
         </button>
-        <button
-          type="button"
-          className="km-btn km-btn--ghost km-btn--sm focusring"
-          aria-pressed={revealed}
-          onClick={() => {
-            setRevealed((r) => !r);
-          }}
-        >
-          {revealed ? (
-            <Bilingual en="Hide character" kr="글자 숨기기" compact />
-          ) : (
-            <Bilingual en="Show character" kr="글자 보기" compact />
-          )}
-        </button>
+        {guide ? null : (
+          // Trace mode (F-115) drops the reveal toggle — the template is
+          // already permanently visible, so Show/Hide would be a no-op lie.
+          <button
+            type="button"
+            className="km-btn km-btn--ghost km-btn--sm focusring"
+            aria-pressed={revealed}
+            onClick={() => {
+              setRevealed((r) => !r);
+            }}
+          >
+            {revealed ? (
+              <Bilingual en="Hide character" kr="글자 숨기기" compact />
+            ) : (
+              <Bilingual en="Show character" kr="글자 보기" compact />
+            )}
+          </button>
+        )}
       </div>
     </>
   );

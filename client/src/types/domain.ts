@@ -633,6 +633,11 @@ export interface HanjaCompound {
 /** Hanja character — mirrors `HANJA[]` in data.js. */
 export interface Hanja {
   id: string;
+  /** Numeric `hanja_characters.id` (F-114) — the surrogate PK typed list
+   *  membership (`addHanjaToList`) targets, exposed on the pool DTO so
+   *  features can reference a character by id without the card-seed
+   *  round-trip that used to be the only way to learn it. */
+  characterId: number;
   /** The character itself. */
   ch: string;
   /** Korean reading (sino-Korean). */

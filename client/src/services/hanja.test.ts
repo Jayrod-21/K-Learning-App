@@ -21,6 +21,7 @@ afterEach(() => {
 
 const CHAR: Hanja = {
   id: '學',
+  characterId: 1,
   ch: '學',
   sound: '학',
   gloss: '',
@@ -52,6 +53,7 @@ describe('fetchHanjaList', () => {
     expect(spy).toHaveBeenCalledWith('/hanja', undefined);
     expect(chars).toHaveLength(1);
     expect(chars[0]?.ch).toBe('學');
+    expect(chars[0]?.characterId).toBe(1); // F-114 numeric id pass-through
     expect(chars[0]?.compounds[0]?.han).toBe('學校');
   });
 
