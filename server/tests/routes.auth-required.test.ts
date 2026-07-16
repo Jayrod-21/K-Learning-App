@@ -32,6 +32,7 @@ const PROTECTED_GETS: { path: string; description: string }[] = [
   { path: '/progress', description: 'progress.ts — GET /progress' },
   { path: '/vocab/cards', description: 'vocab.ts — GET /vocab/cards' },
   { path: '/grammar/bank', description: 'grammar.ts — GET /grammar/bank' },
+  { path: '/grammar/mastery', description: 'grammar.ts — GET /grammar/mastery' },
   { path: '/conversation', description: 'conversation.ts — GET /conversation' },
   { path: '/define?word=test', description: 'define.ts — GET /define' },
   { path: '/vocab/lists', description: 'vocabLists.ts — GET /vocab/lists' },

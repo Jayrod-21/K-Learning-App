@@ -533,6 +533,10 @@ export interface TodayTask {
   /** Writing only: writing_prompts.id — lets Today request this EXACT bank
    *  prompt instead of a fresh random draw. */
   promptId?: number;
+  /** Writing only (F-134): the full Korean prompt body of the same bank row
+   *  `promptId` names — the Today tile PREVIEWS the real prompt text, and
+   *  Start opens `/learn/writing?promptId=<id>` with exactly that prompt. */
+  promptKr?: string;
 }
 
 /**
@@ -884,6 +888,35 @@ export interface MasteryPage {
   summary: MasterySummary;
   words: MasteryWord[];
   /** Total matching the current bucket filter (for the word-list pager). */
+  total: number;
+}
+
+// ── Grammar mastery (F-099 — Progress page Grammar tab) ───────────────
+/**
+ * One banked pattern in the grammar-mastery list — the pattern's production
+ * card FSRS state made human (the grammar sibling of `MasteryWord`; buckets
+ * and `MasterySummary` are shared, the same 21-day mature threshold applies).
+ */
+export interface GrammarMasteryPattern {
+  /** grammar_entries.id (the bank row, NOT a KGIU id). */
+  id: number;
+  /** The Hangul display form (`pattern_display`). */
+  pattern: string;
+  /** One-line English summary of the pattern. */
+  summaryEn: string;
+  bucket: MasteryBucket;
+  /** FSRS memory stability in days — null when the pattern has never been
+   *  drilled (no production card yet), an honest "not started". */
+  stability: number | null;
+  /** ISO timestamp of the next review, or null (never drilled / graduated). */
+  dueAt: string | null;
+}
+
+/** Envelope for `GET /grammar/mastery`: summary + a (filtered) page. */
+export interface GrammarMasteryPage {
+  summary: MasterySummary;
+  patterns: GrammarMasteryPattern[];
+  /** Total matching the current bucket filter (for the pattern-list pager). */
   total: number;
 }
 

@@ -27,7 +27,8 @@
  *   2. `listening.corpus`/`episodeNumber` carry the Iyagi episode's natural
  *      key (distinct from its internal DB id) so the tile can navigate to
  *      `?corpus=iyagi&episode=<episodeNumber>` (B5).
- *   3. `writing.promptId` carries the `writing_prompts.id` so the tile can
+ *   3. `writing.promptId` carries the `writing_prompts.id` (and, F-134,
+ *      `writing.promptKr` the full prompt body for the tile's preview) so the tile can
  *      request this EXACT bank prompt instead of a fresh random draw (B6).
  * All three are purely additive JSON fields on the existing nested
  * `reading`/`listening`/`writing` objects — no shape is renamed or removed,
@@ -227,6 +228,12 @@ interface TodayTask {
   episodeNumber?: number;
   /** Writing only: writing_prompts.id. */
   promptId?: number;
+  /** Writing only (F-134): the full Korean prompt body of the advertised
+   *  bank row, so the Today tile can PREVIEW the real prompt text (not just
+   *  its short `title` label) before the user opens `/learn/writing
+   *  ?promptId=<id>`. Same row as `promptId` — the tile shows exactly what
+   *  the Writing screen will serve. */
+  promptKr?: string;
 }
 
 router.get('/today', cheapLimiter(), async (req, res, next) => {
@@ -390,10 +397,11 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
     const writing = await query<{
       id: string;
       title: string;
+      prompt_kr: string;
       level: Proficiency;
       est_minutes: number;
     }>(
-      `SELECT id::text AS id, title, level::text AS level, est_minutes
+      `SELECT id::text AS id, title, prompt_kr, level::text AS level, est_minutes
          FROM writing_prompts
         WHERE is_active
           AND rubric IS NOT NULL
@@ -420,6 +428,9 @@ router.get('/today', cheapLimiter(), async (req, res, next) => {
           // Wave 2 (B6): the exact bank row, so Today's Writing tile can
           // request THIS prompt by id instead of a fresh random draw.
           promptId: Number(writingRow.id),
+          // F-134: the full prompt body of that SAME row — the tile previews
+          // the real text the Writing screen will serve for this promptId.
+          promptKr: writingRow.prompt_kr,
         }
       : null;
 

@@ -31,8 +31,9 @@
  *   3. **Mastery** (F-032; `defaultCollapsed`) — ONE tabbed area (`Tabs`
  *      primitive) with three panels sharing the same space instead of
  *      stacked cards: Words (F-013, per-word FSRS buckets, F-031 windowed
- *      list), Grammar (a designed "coming soon" placeholder — the real
- *      route lands in P4), Hanja (F-041, the aggregate banked/practicing/new
+ *      list), Grammar (F-099, per-pattern FSRS buckets over the user's
+ *      banked patterns from `GET /grammar/mastery` — same bar/list/pager
+ *      family as Words), Hanja (F-041, the aggregate banked/practicing/new
  *      bands + Encountered-vs-L4 from `GET /hanja/progress`).
  *
  * `CollapsibleTile` keeps a collapsed section's body MOUNTED (aria-hidden +
@@ -67,6 +68,7 @@
  *   useEndpointOrMock('diagnostic.history', …, { realFn: getHistory })       → DiagnosticHistoryResponse
  *   useEndpointOrMock('progress.series', …, { realFn: fetchSkillSeries })    → AllSkillSeries (F-017)
  *   fetchMastery (direct, abortable)                                         → MasteryPage (F-013/F-031)
+ *   fetchGrammarMastery (direct, abortable)                                  → GrammarMasteryPage (F-099)
  *   fetchHanjaProgress (direct, abortable)                                   → HanjaProgress (F-041)
  *
  * The series fan-out degrades per skill (`fetchSkillSeries` never rejects on
@@ -107,7 +109,6 @@ import { MockBadge } from '../components/MockBadge';
 import { ErrorCard } from '../components/ErrorCard';
 import { LineChart } from '../components/LineChart';
 import { PageHubHeader } from '../components/PageHubHeader';
-import { Pill } from '../components/Pill';
 import { SealStamp } from '../components/SealStamp';
 import { ShowMore } from '../components/ShowMore';
 import { SkillsCompare } from '../components/SkillsCompare';
@@ -125,6 +126,7 @@ import { cn } from '../lib/cn';
 import { encounteredBarAria } from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
+import { fetchGrammarMastery } from '../services/grammar';
 import { fetchHanjaProgress } from '../services/hanja';
 import { fetchSkillSeries } from '../services/stats';
 import { fetchMastery } from '../services/vocab';
@@ -137,6 +139,7 @@ import type {
   DiagnosticHistoryResponse,
   DiagnosticHistorySnapshot,
   DiagnosticSnapshot,
+  GrammarMasteryPage,
   HanjaProgress,
   MasteryBucket,
   MasteryPage,
@@ -1685,35 +1688,203 @@ function WordMasteryPanel(): JSX.Element {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Grammar mastery — designed placeholder (real route lands in P4)
+// Grammar mastery (F-099) — per-pattern FSRS mastery from GET /grammar/mastery
 // ─────────────────────────────────────────────────────────────
 
+/** Referentially-stable empty list so `usePagination` gets the same array
+ *  every render while the mastery page is still loading. */
+const NO_PATTERNS: readonly GrammarMasteryPage['patterns'][number][] = [];
+
+/** The last successfully-loaded server page + its fetched-at offset — same
+ *  keep-stale-on-failure contract as `LoadedMasteryPage` (words). */
+interface LoadedGrammarMasteryPage {
+  data: GrammarMasteryPage;
+  offset: number;
+}
+
 /**
- * Grammar mastery placeholder — the Grammar tab of the F-032 mastery area.
- * The backing read route (mirroring `/vocab/mastery` over the grammar
- * production-card FSRS state) is a P4 feature; until then this is an
- * intentional coming-soon panel, never a blank or broken one.
+ * Grammar-mastery panel (F-099) — the Grammar tab of the F-032 mastery area.
+ * Per-pattern FSRS mastery over the user's banked grammar patterns
+ * (`GET /grammar/mastery`, the grammar sibling of `/vocab/mastery`): the
+ * shared summary bar + filter chips, a paginated pattern list, and the same
+ * F-031 windowing / keep-stale-on-refetch-failure / stale-offset-clamp
+ * behaviour as `WordMasteryPanel` — the two tabs must feel identical.
+ * Real-data-only on purpose (see WordMasteryPanel's fetch comment: a mock
+ * fallback would misrepresent real progress).
  */
 function GrammarMasteryPanel(): JSX.Element {
+  const [bucket, setBucket] = useState<MasteryBucket | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState<LoadedGrammarMasteryPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  const pager = usePagination(page?.data.patterns ?? NO_PATTERNS);
+  const shownOffset = page?.offset ?? 0;
+
+  function selectBucket(next: MasteryBucket | null): void {
+    setBucket(next);
+    setOffset(0);
+    pager.reset();
+  }
+  function retry(): void {
+    setNonce((n) => n + 1);
+  }
+  function goToOffset(target: number): void {
+    setOffset(target);
+    setNonce((n) => n + 1);
+    pager.reset();
+  }
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setLoading(true);
+    setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    fetchGrammarMastery(
+      { ...(bucket !== null ? { bucket } : {}), limit: MASTERY_PAGE, offset },
+      ctrl.signal,
+    )
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        // Stale-offset clamp — same guard as WordMasteryPanel (see its
+        // comment): never strand the user on an empty page past the end.
+        if (offset > 0 && offset >= res.total) {
+          setOffset(
+            Math.max(0, (Math.ceil(res.total / MASTERY_PAGE) - 1) * MASTERY_PAGE),
+          );
+          return;
+        }
+        setPage({ data: res, offset });
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setError(errorMessageFor(err, 'Could not load grammar mastery.'));
+        setLoading(false);
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [bucket, offset, nonce]);
+
   return (
     <div>
-      <div className="km-progress__soonhead">
-        <Pill>
-          <Bilingual en="Coming soon" kr="준비 중" />
-        </Pill>
-      </div>
-      <div className="km-progress__soonbody">
-        <span className="km-progress__soonicon" aria-hidden="true">
-          <Icon name="grammar" size={18} />
-        </span>
+      {page === null ? (
+        loading ? (
+          <div className="km-progress__state">
+            <Bilingual en="Loading grammar mastery…" kr="불러오는 중…" />
+          </div>
+        ) : error !== null ? (
+          <ErrorCard message={error} onRetry={retry} />
+        ) : null
+      ) : page.data.summary.total === 0 ? (
         <p className="km-progress__note">
-          {/* P3b verbage trim — one terse line, was a three-clause sentence. */}
           <Bilingual
-            en="Per-pattern grammar mastery will chart here."
-            kr="문형별 숙달도가 여기에 표시될 거예요."
+            en="No grammar patterns banked yet — bank patterns from Grammar and their mastery shows here."
+            kr="아직 담은 문형이 없어요 — 문법에서 문형을 담으면 숙달도가 여기에 나와요."
           />
         </p>
-      </div>
+      ) : (
+        <>
+          {error !== null ? (
+            <p className="km-mastery__stale" role="alert">
+              <Bilingual
+                en="Couldn’t refresh — showing the last loaded mastery."
+                kr="새로고침하지 못했어요 — 마지막으로 불러온 내용이에요."
+              />{' '}
+              <button
+                type="button"
+                className="km-mastery__retry"
+                onClick={retry}
+              >
+                <Bilingual en="Retry" kr="다시 시도" compact />
+              </button>
+            </p>
+          ) : null}
+          <MasteryBar
+            summary={page.data.summary}
+            selected={bucket}
+            onSelect={selectBucket}
+          />
+          {page.data.patterns.length === 0 ? (
+            <p className="km-progress__note">
+              <Bilingual
+                en="No patterns in this group."
+                kr="이 그룹에는 문형이 없어요."
+              />
+            </p>
+          ) : (
+            <>
+              <ul className="km-mastery__list">
+                {pager.visible.map((p) => (
+                  <li key={p.id} className="km-mastery__row">
+                    <span className="kr km-mastery__kr">{p.pattern}</span>
+                    <span className="km-mastery__en">{p.summaryEn}</span>
+                    <span
+                      className={`km-mastery__badge ${BUCKET_META[p.bucket].cls}`}
+                    >
+                      <Bilingual
+                        en={BUCKET_META[p.bucket].label}
+                        kr={BUCKET_META[p.bucket].kr}
+                        compact
+                      />
+                    </span>
+                    <span className="km-mastery__stab">
+                      {/* null stability = never drilled (no production card
+                          yet) — an honest "—", never a fabricated 0d. */}
+                      {p.stability === null || p.bucket === 'new'
+                        ? '—'
+                        : `${String(Math.round(p.stability))}d`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <ShowMore
+                canShowMore={pager.canShowMore}
+                onShowMore={pager.showMore}
+                remaining={pager.remaining}
+              />
+            </>
+          )}
+          {page.data.total > MASTERY_PAGE || page.offset > 0 ? (
+            <div className="km-mastery__pager">
+              <Button
+                variant="ghost"
+                disabled={shownOffset === 0}
+                onClick={() => {
+                  goToOffset(Math.max(0, shownOffset - MASTERY_PAGE));
+                }}
+              >
+                <Bilingual en="Prev" kr="이전" compact />
+              </Button>
+              <span className="km-mastery__pageinfo">
+                <Bilingual
+                  en={`${String(shownOffset + 1)}–${String(
+                    shownOffset + pager.visible.length,
+                  )} of ${String(page.data.total)}`}
+                  kr={`${String(page.data.total)}개 중 ${String(
+                    shownOffset + 1,
+                  )}–${String(shownOffset + pager.visible.length)}`}
+                  compact
+                />
+              </span>
+              <Button
+                variant="ghost"
+                disabled={shownOffset + MASTERY_PAGE >= page.data.total}
+                onClick={() => {
+                  goToOffset(shownOffset + MASTERY_PAGE);
+                }}
+              >
+                <Bilingual en="Next" kr="다음" compact />
+              </Button>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

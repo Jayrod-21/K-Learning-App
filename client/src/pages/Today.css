@@ -209,6 +209,27 @@
   font-weight: 400;
 }
 
+/* F-134 — the Writing tile's prompt PREVIEW: the real prompt body from
+ * /plan/today, hairline-separated from the headline/meta block like the
+ * rows below it. Clamped to 3 lines (Q54 essay prompts run ~200 chars) so
+ * a long prompt can't blow out the peek slider's fixed tile widths — the
+ * FULL text stays in the DOM/accessibility tree, only the paint is boxed. */
+.km-today__tilePrompt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--paper-dim);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 /* "Done today" row (F-138) — a plain text line + an honest SealStamp
  * milestone, never a fabricated bar/percentage (F-137's "no highlights"
  * spirit applies here too: this is metadata, not a glowing progress meter). */

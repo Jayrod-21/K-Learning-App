@@ -1,5 +1,6 @@
 /**
- * /grammar — KGIU corpus search + user grammar bank + AI identify.
+ * /grammar — KGIU corpus search + user grammar bank + per-pattern mastery
+ * (F-099) + AI identify.
  *
  * Threat model:
  *   - Auth required; user-scoped queries on the server.
@@ -16,10 +17,12 @@ import type {
   BankedGrammarRow,
   BookLevel,
   ContentDomain,
+  GrammarMasteryPage,
   IdentifyPatternBody,
   KgiuEntryDetail,
   KgiuEntrySummary,
   KgiuListResponse,
+  MasteryBucket,
   PatternMatch,
   ServerProficiency,
 } from '../types/domain';
@@ -133,6 +136,34 @@ export async function readmitPattern(
     {},
     signal !== undefined ? { signal } : undefined,
   );
+}
+
+/** Query options for `GET /grammar/mastery` (mirrors vocab's FetchMasteryOptions). */
+export interface FetchGrammarMasteryOptions {
+  bucket?: MasteryBucket;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * GET /grammar/mastery — per-pattern FSRS mastery for the signed-in user
+ * (F-099; feeds the Progress "Grammar" tab). Returns the bucket summary plus
+ * a paginated, optionally bucket-filtered page of banked patterns — the
+ * grammar sibling of `fetchMastery` (services/vocab.ts), same params, same
+ * envelope shape (`patterns` instead of `words`).
+ */
+export async function fetchGrammarMastery(
+  opts: FetchGrammarMasteryOptions = {},
+  signal?: AbortSignal,
+): Promise<GrammarMasteryPage> {
+  const params: Record<string, string | number> = {};
+  if (opts.bucket !== undefined) params.bucket = opts.bucket;
+  if (opts.limit !== undefined) params.limit = opts.limit;
+  if (opts.offset !== undefined) params.offset = opts.offset;
+  return api.get<GrammarMasteryPage>('/grammar/mastery', {
+    params,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 /**

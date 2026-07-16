@@ -179,6 +179,8 @@ const PLAN: TodayPlan = {
     level: 'L4',
     tag: 'Writing',
     promptId: 77,
+    // F-134: the full prompt body of bank row 77 — the tile previews it.
+    promptKr: '재택근무의 장점과 단점에 대해 200~300자로 쓰십시오.',
   },
   largestGap: 'Listening',
 };
@@ -1029,6 +1031,45 @@ describe('Today', () => {
     await user.click(screen.getByRole('button', { name: /Paragraph in/ }));
 
     expect(screen.getByText('WRITING PAGE /learn/writing')).toBeInTheDocument();
+  });
+
+  it('F-134: the Writing tile PREVIEWS the real prompt body from the plan', () => {
+    loadDefaults();
+    renderTodayAt();
+
+    // The preview is the exact promptKr text of the SAME bank row the tile
+    // deep-links to (promptId 77) — readable on the home page, inside the
+    // tile button itself.
+    const writingTile = screen.getByRole('button', { name: /Paragraph in/ });
+    expect(
+      within(writingTile).getByText(
+        '재택근무의 장점과 단점에 대해 200~300자로 쓰십시오.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('F-134: no preview line renders when the plan carries no promptKr (older envelope)', () => {
+    loadDefaults();
+    hoisted.today.state = {
+      kind: 'data',
+      data: {
+        ...PLAN,
+        writing: {
+          title: 'Paragraph in 합쇼체',
+          mins: 8,
+          level: 'L4',
+          tag: 'Writing',
+          promptId: 77,
+        },
+      },
+    };
+    renderTodayAt();
+
+    const writingTile = screen.getByRole('button', { name: /Paragraph in/ });
+    // No fabricated stand-in text and no empty bordered stub.
+    expect(
+      writingTile.querySelector('.km-today__tilePrompt'),
+    ).not.toBeInTheDocument();
   });
 
   it('moves the "Largest gap" pill onto the modality named by largestGap', () => {
