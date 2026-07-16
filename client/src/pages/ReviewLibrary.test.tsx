@@ -1,11 +1,13 @@
 /**
  * ReviewLibrary — the /review Library landing (Overhaul P3B, F-042/F-043).
  *
- * Four sections in fixed order — Vocabulary → Grammar → TOPIK exams →
- * Uploads — each navigating to its real route (TOPIK exams lands on the
- * dedicated past-exams surface, F-103; Mistakes is a link inside THAT page
- * now, not this shelf's direct target). The P1.2 extras (quick-launch LEARN
- * chips, standalone Mistakes/Dictionary rows, the interim Scan-images row,
+ * Five sections in fixed order — Vocabulary → Grammar → TOPIK exams →
+ * Uploads → Images — each navigating to its real route (TOPIK exams lands
+ * on the dedicated past-exams surface, F-103; Mistakes is a link inside
+ * THAT page now, not this shelf's direct target; Images is the F-102
+ * `/images` re-entry row, restored after F-042 left the OCR page with no
+ * in-app entry point). The P1.2 extras (quick-launch LEARN chips,
+ * standalone Mistakes/Dictionary rows, the interim Scan-images row,
  * "coming soon" placeholders) are gone.
  */
 import { describe, expect, it } from 'vitest';
@@ -72,18 +74,21 @@ describe('ReviewLibrary (P3B landing)', () => {
     ).toBeInTheDocument();
   });
 
-  it('F-042: exactly four sections, in order Vocabulary → Grammar → TOPIK exams → Uploads', () => {
+  it('F-042 + F-102: exactly five sections, in order Vocabulary → Grammar → TOPIK exams → Uploads → Images', () => {
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
     const rowText = within(list)
       .getAllByRole('button')
       .map((b) => b.textContent ?? '');
-    expect(rowText).toHaveLength(4);
+    expect(rowText).toHaveLength(5);
     expect(rowText[0]).toContain('Vocabulary');
     expect(rowText[1]).toContain('Grammar');
     expect(rowText[2]).toContain('TOPIK exams');
     expect(rowText[3]).toContain('Uploads');
+    // F-102 — the /images re-entry row, LAST (grouped with Uploads at the
+    // "your own material" end of the shelf).
+    expect(rowText[4]).toContain('Images');
   });
 
   it.each([
@@ -91,6 +96,8 @@ describe('ReviewLibrary (P3B landing)', () => {
     ['Grammar', '/review/grammar'],
     ['TOPIK exams', '/review/exams'],
     ['Uploads', '/uploads'],
+    // F-102 — the OCR image-mining page's restored in-app entry point.
+    ['Images', '/images'],
   ])('navigates the %s section to %s on tap', async (label, target) => {
     const user = userEvent.setup();
     renderLibrary();
@@ -127,9 +134,10 @@ describe('ReviewLibrary (P3B landing)', () => {
     // Device #2 — the dancheong-rail divider under the skyline.
     expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
     // Device #1 — every section row is now a CityCard-backed signboard, one
-    // per row, carrying the per-section tone (F-042's four sections).
+    // per row, carrying the per-section tone (F-042's four sections + the
+    // F-102 Images re-entry row).
     const cards = container.querySelectorAll('.km-library__row .km-citycard');
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(5);
     expect(container.querySelector('.km-tone--accent')).not.toBeNull();
     expect(container.querySelector('.km-tone--blue')).not.toBeNull();
     expect(container.querySelector('.km-tone--mint')).not.toBeNull();
@@ -178,8 +186,8 @@ describe('ReviewLibrary (P3B landing)', () => {
     // Inert "coming soon" placeholders: removed — every row navigates.
     expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
     expect(screen.queryByText('준비 중')).not.toBeInTheDocument();
-    // Nothing else is interactive: the four section rows are the ONLY
-    // buttons on the page.
-    expect(screen.getAllByRole('button')).toHaveLength(4);
+    // Nothing else is interactive: the five section rows (four F-042
+    // shelves + the F-102 Images re-entry) are the ONLY buttons on the page.
+    expect(screen.getAllByRole('button')).toHaveLength(5);
   });
 });
