@@ -1743,6 +1743,14 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 - **Phases:** **D0 = foundation** (breakpoints + `useDeviceClass` + sidebar shell + raised content max-width) — DONE (PR #117, staged). **D1 = Today + Progress use the width** (carousels→grids, wider charts) — DONE (PR #119). **D2 (stretch):** Review-library grid + Settings two-column. **Deliberately NOT adapted:** TOPIK timed-exam UI + flashcard study sessions stay narrow/single-focus. Bespoke desktop-native LEARN redesign = future follow-up.
 - **Note:** device-adaptive layout can't be verified in jsdom (no layout engine) — every phase needs a real desktop-browser visual check post-deploy.
 
+## 🔎 Batch 5 follow-up — surfaced by the uploads-provenance fix-pass (filed 2026-07-16)
+
+### F-199 · Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag
+- **Status:** 🔴 open · **Priority:** P4 · **Category:** multi-user correctness
+- **Where / State:** `vocab_entries.source_upload_id` (F-107) lives on a SHARED row keyed `(corpus, source_id)`, written first-write-wins by `POST /vocab/mine`'s `ON CONFLICT … COALESCE` upsert. If user A mines a lemma tagged to A's upload and user B later genuinely mines the SAME lemma from B's own upload, B gets a 201 but B's tag is silently discarded — the word never appears in B's `GET /vocab/saved-from-uploads`. Also a weak inference oracle: B can detect that *someone* tagged the entry first (never whose upload or its title). No cross-user tagging attack and no title leak (ownership is checked before any write; the read joins on `bu.user_id`) — this is a deliberate, documented single-user-scope tradeoff (see the ACCEPTED TRADEOFF comment at the upsert). Grammar is unaffected: `grammar_entries` is user-scoped. Surfaced by the Batch 5 server review (SF-1).
+- **Key files:** `server/src/routes/vocab.ts` (mine upsert + saved-from-uploads read), `db/migrations/040_book_uploads.up.sql` (the shared-row column)
+- **Fix hint:** move provenance to the user-scoped save artifact — `source_upload_id` on `vocab_cards` (exactly as migration 068 did for user-scoped `grammar_entries`), or a `(user, entry, upload)` association table — and point the saved-from-uploads read at the user's own tag. Only worth building if the app ever gains real multi-user use; do NOT bolt more semantics onto the shared column.
+
 ---
 
 <!-- Templates — copy when adding items.

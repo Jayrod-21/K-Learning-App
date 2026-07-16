@@ -989,12 +989,58 @@ export interface GrammarSuggestionsResponse {
  *                       (homographs stay distinct by KRDICT id). Omitted for
  *                       OCR words with no `/define` lookup → the server keys
  *                       the shared entry on the lemma instead.
+ *   - `source_upload_id` — F-107 upload provenance: the `book_uploads.id`
+ *                       the user was working from when they tapped the word
+ *                       (snake_case: the wire name this concept carries
+ *                       everywhere — query params, DB column). Optional; the
+ *                       server 404s unless the upload belongs to the caller,
+ *                       so only pass ids from the user's own uploads.
  */
 export interface MineWordInput {
   lemma: string;
   english?: string;
   pos?: string;
   krdictEntryId?: number;
+  source_upload_id?: number;
+}
+
+/** One saved word inside a `SavedFromUploadsGroup` (F-107/F-053). */
+export interface SavedFromUploadEntry {
+  id: number;
+  korean: string | null;
+  english: string | null;
+  /** ISO timestamp of the EARLIEST save (card bank or list add). */
+  savedAt: string;
+}
+
+/**
+ * One upload's worth of saved vocab from `GET /vocab/saved-from-uploads`
+ * (F-107) — the read behind the Review→Vocabulary "My Uploads" section
+ * (F-053). Groups arrive newest-upload-first, entries newest-saved-first;
+ * only uploads the caller owns can ever appear (server-enforced).
+ */
+export interface SavedFromUploadsGroup {
+  upload: { id: number; title: string };
+  entries: SavedFromUploadEntry[];
+}
+
+/** Envelope for `GET /vocab/saved-from-uploads` (F-107). */
+export interface SavedFromUploadsResponse {
+  groups: SavedFromUploadsGroup[];
+  /**
+   * The caller's FULL saved-with-provenance word count — a window count the
+   * server computes BEFORE its defensive row cap, so it can exceed the sum
+   * of `entries` across `groups` when `truncated` is true.
+   */
+  total: number;
+  /**
+   * True when the server's row cap (500) trimmed the response. The server
+   * guarantees every group in `groups` is WHOLE — a group the cap would have
+   * split mid-group is dropped entirely rather than returned looking
+   * complete — so `truncated` (plus `total`) is the only signal that more
+   * saves exist beyond what is shown.
+   */
+  truncated: boolean;
 }
 
 /**

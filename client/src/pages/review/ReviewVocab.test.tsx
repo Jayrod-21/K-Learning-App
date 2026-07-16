@@ -5,8 +5,8 @@
  * vocab-only "This Week" strip (F-047 — grammar content removed), the
  * browse with genre/difficulty DROPDOWN filters (F-049), the 15/+15/30
  * client window (F-051), the create-a-list-from-the-picker flow (F-048),
- * the conditional My-Uploads section (F-053 — empty until the backend
- * exists), and the BackButton (F-024).
+ * the conditional My-Uploads section (F-053 — wired to
+ * `GET /vocab/saved-from-uploads`, F-107), and the BackButton (F-024).
  *
  * Services are module-mocked; the component's own state/effects run for
  * real so debounce, pagination windowing, optimistic flips, and
@@ -26,11 +26,16 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ToastProvider } from '../../components/ToastProvider';
 import { ApiError } from '../../services/api';
-import type { ServerVocabList, VocabEntry } from '../../types/domain';
+import type {
+  SavedFromUploadsGroup,
+  ServerVocabList,
+  VocabEntry,
+} from '../../types/domain';
 
 const vocabSvc = vi.hoisted(() => ({
   searchEntriesPage: vi.fn(),
   fetchVocabThemes: vi.fn(),
+  fetchSavedFromUploads: vi.fn(),
   bankEntry: vi.fn(),
   listLists: vi.fn(),
   createList: vi.fn(),
@@ -137,6 +142,13 @@ beforeEach(() => {
     '01 인간 / People',
     '02 행동 / Actions',
   ]);
+  // F-053/F-107 — default: nothing saved from uploads, so the My-Uploads
+  // section stays hidden for every test that knows nothing about it.
+  vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+    groups: [],
+    total: 0,
+    truncated: false,
+  });
   vocabSvc.bankEntry.mockResolvedValue({ card: { id: 1, version: 1 } });
   vocabSvc.listLists.mockResolvedValue([SERVER_LIST]);
   vocabSvc.createList.mockResolvedValue({ list: SERVER_LIST, appended: 0 });
@@ -218,6 +230,90 @@ describe('ReviewVocab — stacked layout (F-052) + chrome', () => {
     renderPage();
     await screen.findByText('영향');
     expect(screen.queryByText(/My uploads/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('ReviewVocab — SavedFromUploads (F-053, wired by F-107)', () => {
+  const SAVED_GROUPS: SavedFromUploadsGroup[] = [
+    {
+      upload: { id: 3, title: '나의 한국어 교재' },
+      entries: [
+        { id: 41, korean: '사과', english: 'apple', savedAt: '2026-07-10T00:00:00Z' },
+        { id: 42, korean: '포도', english: 'grape', savedAt: '2026-07-09T00:00:00Z' },
+      ],
+    },
+    {
+      upload: { id: 2, title: '옛날 이야기' },
+      entries: [
+        { id: 43, korean: '호랑이', english: 'tiger', savedAt: '2026-07-08T00:00:00Z' },
+      ],
+    },
+  ];
+
+  it('renders the saved words grouped under their upload titles when groups exist', async () => {
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 3,
+      truncated: false,
+    });
+    renderPage();
+    // The section title (a CollapsibleTile disclosure, like My Lists).
+    expect(
+      await screen.findByRole('button', { name: '내 업로드 · My uploads' }),
+    ).toBeInTheDocument();
+    // Each upload is its own labelled group carrying ITS words only.
+    const bookGroup = screen.getByRole('region', { name: '나의 한국어 교재' });
+    expect(within(bookGroup).getByText('사과')).toBeInTheDocument();
+    expect(within(bookGroup).getByText('apple')).toBeInTheDocument();
+    expect(within(bookGroup).getByText('포도')).toBeInTheDocument();
+    expect(within(bookGroup).queryByText('호랑이')).not.toBeInTheDocument();
+    const taleGroup = screen.getByRole('region', { name: '옛날 이야기' });
+    expect(within(taleGroup).getByText('호랑이')).toBeInTheDocument();
+    expect(within(taleGroup).getByText('tiger')).toBeInTheDocument();
+    // Untruncated response → no "most recent saves only" note.
+    expect(
+      screen.queryByText(/most recent saves only/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('surfaces the truncation note when the server row cap trimmed the response (F-107)', async () => {
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 505,
+      truncated: true,
+    });
+    renderPage();
+    await screen.findByRole('button', { name: '내 업로드 · My uploads' });
+    // The note renders alongside the (whole) groups the server did return.
+    expect(
+      screen.getByText(/most recent saves only/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: '나의 한국어 교재' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders nothing at all when the fetch resolves empty (honest F-053 empty state)', async () => {
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: [],
+      total: 0,
+      truncated: false,
+    });
+    renderPage();
+    await screen.findByText('영향');
+    expect(screen.queryByText(/My uploads/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('내 업로드')).not.toBeInTheDocument();
+  });
+
+  it('stays hidden (no error surface) when the fetch fails — best-effort shelf', async () => {
+    vocabSvc.fetchSavedFromUploads.mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server' }),
+    );
+    renderPage();
+    await screen.findByText('영향');
+    expect(screen.queryByText(/My uploads/i)).not.toBeInTheDocument();
+    // The page's core surfaces are unaffected by the failed side fetch.
+    expect(screen.getByText('영향')).toBeInTheDocument();
   });
 });
 

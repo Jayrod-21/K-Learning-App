@@ -14,6 +14,7 @@ import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
+  ensureCorpusSource,
   registerUser,
   seedBookUpload,
   seedTopikItem,
@@ -49,6 +50,7 @@ describe('vocab — auth required', () => {
     ['GET', '/vocab/cards/due'],
     ['GET', '/vocab/mastery'],
     ['GET', '/vocab/series'],
+    ['GET', '/vocab/saved-from-uploads'],
     ['POST', '/vocab/cards/init'],
     ['POST', '/vocab/mine'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
@@ -1366,6 +1368,334 @@ describe('POST /vocab/mine — tap anything → bank it (FU-NF-33)', () => {
       .post('/vocab/mine')
       .send({ lemma: uniqueLemma(), surprise: 'nope' });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /vocab/mine — upload provenance (F-107)', () => {
+  const uniqueLemma = (): string => `출처${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+
+  it('persists source_upload_id on the mined entry when the caller owns the upload', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const res = await agent
+      .post('/vocab/mine')
+      .send({ lemma: uniqueLemma(), english: 'from my book', source_upload_id: uploadId });
+    expect(res.status).toBe(201);
+    const tagged = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
+      [res.body.entryId],
+    );
+    expect(Number(tagged.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it('a mine without source_upload_id stays untagged, and a later untagged re-mine keeps an existing tag', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Untagged mine → NULL provenance.
+    const plain = await agent.post('/vocab/mine').send({ lemma: uniqueLemma() });
+    expect(plain.status).toBe(201);
+    const untagged = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
+      [plain.body.entryId],
+    );
+    expect(untagged.rows[0]!.source_upload_id).toBeNull();
+
+    // Tagged mine, then an untagged re-mine of the SAME lemma: the tag must
+    // survive (ON CONFLICT COALESCE keeps the existing provenance).
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const lemma = uniqueLemma();
+    const first = await agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadId });
+    expect(first.status).toBe(201);
+    const again = await agent.post('/vocab/mine').send({ lemma });
+    expect(again.status).toBe(201);
+    expect(again.body.entryId).toBe(first.body.entryId);
+    const kept = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
+      [first.body.entryId],
+    );
+    expect(Number(kept.rows[0]!.source_upload_id)).toBe(uploadId);
+  });
+
+  it("cannot tag with another user's upload — 404, and nothing persists", async () => {
+    const owner = await registerUser(t.app, pg.pool);
+    const foreignUpload = await seedBookUpload(pg.pool, owner.userId, { status: 'ready' });
+    const attacker = await registerUser(t.app, pg.pool);
+    const lemma = uniqueLemma();
+    const res = await attacker.agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: foreignUpload });
+    expect(res.status).toBe(404);
+    // The transaction rolled back: no shared entry, no card.
+    const entries = await pg.pool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM vocab_entries WHERE source_id = $1`,
+      [`lemma-${lemma}`],
+    );
+    expect(Number(entries.rows[0]!.n)).toBe(0);
+    const cards = await pg.pool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM vocab_cards WHERE user_id = $1`,
+      [attacker.userId],
+    );
+    expect(Number(cards.rows[0]!.n)).toBe(0);
+  });
+
+  it('a nonexistent upload id → the same 404 as an unowned one (no existence oracle)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/vocab/mine')
+      .send({ lemma: uniqueLemma(), source_upload_id: 99_999_999 });
+    expect(res.status).toBe(404);
+  });
+
+  it('a shared entry already tagged by another user is NOT re-tagged (first write wins)', async () => {
+    // vocab_entries rows are SHARED — a second user re-mining the same lemma
+    // with their OWN upload must not re-point provenance someone else set
+    // (same posture as the gloss no-clobber rule).
+    const lemma = uniqueLemma();
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, a.userId, { status: 'ready' });
+    const uploadB = await seedBookUpload(pg.pool, b.userId, { status: 'ready' });
+    const ra = await a.agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadA });
+    expect(ra.status).toBe(201);
+    const rb = await b.agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadB });
+    expect(rb.status).toBe(201);
+    expect(rb.body.entryId).toBe(ra.body.entryId);
+    const kept = await pg.pool.query<{ source_upload_id: string | null }>(
+      `SELECT source_upload_id FROM vocab_entries WHERE id = $1`,
+      [ra.body.entryId],
+    );
+    expect(Number(kept.rows[0]!.source_upload_id)).toBe(uploadA);
+  });
+
+  it('rejects garbage source_upload_id at the boundary (400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    for (const bad of ['abc', -1, 0, 1.5]) {
+      const res = await agent
+        .post('/vocab/mine')
+        .send({ lemma: uniqueLemma(), source_upload_id: bad });
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
+describe('GET /vocab/saved-from-uploads (F-107)', () => {
+  it('returns an empty groups array when nothing was saved from uploads', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // An untagged mined word must NOT appear — saved, but no upload provenance.
+    await agent.post('/vocab/mine').send({ lemma: `없음${Date.now()}` });
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toEqual([]);
+    expect(res.body.total).toBe(0);
+    expect(res.body.truncated).toBe(false);
+  });
+
+  it('groups saved words by upload (newest upload first, title carried) across BOTH save paths', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '옛날 이야기',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '나의 한국어 교재',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+
+    // Save path 1 — mined-with-provenance (card).
+    const mined = await agent
+      .post('/vocab/mine')
+      .send({ lemma: `사과${Date.now()}`, english: 'apple', source_upload_id: newerUpload });
+    expect(mined.status).toBe(201);
+
+    // Save path 2 — a LIST add of an upload-tagged entry (no card at all).
+    const listedEntry = await seedVocabEntry(pg.pool, {
+      korean: '호랑이',
+      english: 'tiger',
+      sourceUploadId: olderUpload,
+    });
+    const list = await pg.pool.query<{ id: string }>(
+      `INSERT INTO vocab_lists (user_id, name_kr) VALUES ($1, '업로드 목록') RETURNING id`,
+      [userId],
+    );
+    await pg.pool.query(
+      `INSERT INTO vocab_list_entries (list_id, entry_id, position) VALUES ($1, $2, 0)`,
+      [Number(list.rows[0]!.id), listedEntry],
+    );
+
+    // A tagged entry the user never saved must NOT appear (browse ≠ saved).
+    await seedVocabEntry(pg.pool, {
+      korean: '저장안함',
+      english: 'never saved',
+      sourceUploadId: newerUpload,
+    });
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toHaveLength(2);
+    // Well under the row cap: total counts the saved words, nothing trimmed.
+    expect(res.body.total).toBe(2);
+    expect(res.body.truncated).toBe(false);
+    const [first, second] = res.body.groups as Array<{
+      upload: { id: number; title: string };
+      entries: Array<{ id: number; korean: string | null; english: string | null; savedAt: string }>;
+    }>;
+    // Newest upload leads.
+    expect(first!.upload).toEqual({ id: newerUpload, title: '나의 한국어 교재' });
+    expect(first!.entries).toHaveLength(1);
+    expect(first!.entries[0]!.id).toBe(mined.body.entryId);
+    expect(first!.entries[0]!.english).toBe('apple');
+    expect(typeof first!.entries[0]!.savedAt).toBe('string');
+    // The list-only save shows too, under ITS upload.
+    expect(second!.upload).toEqual({ id: olderUpload, title: '옛날 이야기' });
+    expect(second!.entries.map((e) => e.korean)).toEqual(['호랑이']);
+  });
+
+  it('a word saved through both paths appears once (deduped, earliest save)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedBookUpload(pg.pool, userId, { status: 'ready' });
+    const mined = await agent
+      .post('/vocab/mine')
+      .send({ lemma: `중복${Date.now()}`, source_upload_id: uploadId });
+    expect(mined.status).toBe(201);
+    const list = await pg.pool.query<{ id: string }>(
+      `INSERT INTO vocab_lists (user_id, name_kr) VALUES ($1, '목록') RETURNING id`,
+      [userId],
+    );
+    await pg.pool.query(
+      `INSERT INTO vocab_list_entries (list_id, entry_id, position) VALUES ($1, $2, 0)`,
+      [Number(list.rows[0]!.id), mined.body.entryId],
+    );
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].entries).toHaveLength(1);
+  });
+
+  it("user-scoped: another user's saves — and saves tagged to another user's upload — never appear", async () => {
+    const lemma = `공유${Date.now()}`;
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const uploadA = await seedBookUpload(pg.pool, a.userId, {
+      title: 'A의 책',
+      status: 'ready',
+    });
+    // A saves with provenance.
+    const ra = await a.agent
+      .post('/vocab/mine')
+      .send({ lemma, source_upload_id: uploadA });
+    expect(ra.status).toBe(201);
+    // B saves the SAME shared entry (no upload context) — B holds a card on
+    // an entry whose provenance points at A's upload.
+    const rb = await b.agent.post('/vocab/mine').send({ lemma });
+    expect(rb.status).toBe(201);
+    expect(rb.body.entryId).toBe(ra.body.entryId);
+
+    // A sees their group; B sees NOTHING (neither A's saves nor A's upload
+    // title leaks through the shared entry's tag).
+    const resA = await a.agent.get('/vocab/saved-from-uploads');
+    expect(resA.status).toBe(200);
+    expect(resA.body.groups).toHaveLength(1);
+    expect(resA.body.groups[0].upload.title).toBe('A의 책');
+    const resB = await b.agent.get('/vocab/saved-from-uploads');
+    expect(resB.status).toBe(200);
+    expect(resB.body.groups).toEqual([]);
+  });
+
+  /**
+   * Bulk-seed `count` upload-tagged vocab entries, each saved via a live
+   * card for `userId` — two set-based statements (generate_series), so
+   * cap-scale fixtures (500+) stay milliseconds instead of 500 round trips.
+   */
+  async function seedSavedTaggedBulk(
+    userId: number,
+    uploadId: number,
+    count: number,
+    keyPrefix: string,
+  ): Promise<void> {
+    const corpusSourceId = await ensureCorpusSource(
+      pg.pool,
+      'vocab_2000_intermediate',
+    );
+    await pg.pool.query(
+      `WITH ins AS (
+          INSERT INTO vocab_entries (
+              corpus_source_id, corpus, source_id, book_level, entry_type,
+              source_book, korean, english, proficiency, source_upload_id)
+          SELECT $1, 'vocab_2000_intermediate'::corpus,
+                 $2::text || '-' || g::text,
+                 'intermediate'::book_level, 'word'::vocab_entry_type,
+                 'bulk-test', '단어' || g::text, 'word ' || g::text,
+                 'L3'::proficiency_level, $3
+            FROM generate_series(1, $4::int) AS g
+          RETURNING id)
+       INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       SELECT $5, 'recognition'::card_face, id, 'L3'::proficiency_level, now()
+         FROM ins`,
+      [corpusSourceId, keyPrefix, uploadId, count, userId],
+    );
+  }
+
+  it('over the row cap: truncated=true, total is the FULL count, and NO partial group is returned (a mid-group cut drops the whole group)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Newest upload first in the ORDER BY → its 10 rows lead; the older
+    // upload's 495 rows then straddle the 500-row cap (rows 11..505), so the
+    // cap lands MID-group in the older upload. The whole split group must be
+    // dropped rather than returned looking complete-but-short.
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '큰 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '작은 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedTaggedBulk(userId, newerUpload, 10, `trunc-new-${Date.now()}`);
+    await seedSavedTaggedBulk(userId, olderUpload, 495, `trunc-old-${Date.now()}`);
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    // Only the WHOLE group survives; the split older group is gone entirely.
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('작은 책');
+    expect(res.body.groups[0].entries).toHaveLength(10);
+  });
+
+  it('over the row cap with the cut exactly on a group boundary: the last kept group stays (whole), later groups drop, truncated=true', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Newest upload fills the cap EXACTLY (500 rows); the older upload's 5
+    // rows are entirely past it. The 500-row group is complete, so it must
+    // NOT be dropped — only the flag says the older group exists.
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 뒤 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedTaggedBulk(userId, newerUpload, 500, `edge-new-${Date.now()}`);
+    await seedSavedTaggedBulk(userId, olderUpload, 5, `edge-old-${Date.now()}`);
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('경계 책');
+    expect(res.body.groups[0].entries).toHaveLength(500);
   });
 });
 

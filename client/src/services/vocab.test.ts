@@ -6,6 +6,7 @@ import {
   addListEntries,
   createList,
   deleteList,
+  fetchSavedFromUploads,
   getDueCards,
   getEntry,
   getListDetail,
@@ -365,6 +366,68 @@ describe('mineWord', () => {
     await expect(mineWord({ lemma: '학교' })).rejects.toMatchObject({
       code: 'canceled',
     });
+  });
+});
+
+describe('fetchSavedFromUploads', () => {
+  it('GETs /vocab/saved-from-uploads (signal threaded) and returns the full envelope', async () => {
+    const envelope = {
+      groups: [
+        {
+          upload: { id: 3, title: '나의 한국어 교재' },
+          entries: [
+            { id: 41, korean: '사과', english: 'apple', savedAt: '2026-07-10T00:00:00Z' },
+          ],
+        },
+      ],
+      total: 1,
+      truncated: false,
+    };
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce(envelope);
+    const ctrl = new AbortController();
+
+    const out = await fetchSavedFromUploads(ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/saved-from-uploads', {
+      signal: ctrl.signal,
+    });
+    expect(out).toEqual(envelope);
+  });
+
+  it('empty case: passes { groups: [], total: 0, truncated: false } through untouched (no signal → no options)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      groups: [],
+      total: 0,
+      truncated: false,
+    });
+
+    const out = await fetchSavedFromUploads();
+
+    expect(spy).toHaveBeenCalledWith('/vocab/saved-from-uploads', undefined);
+    expect(out.groups).toEqual([]);
+    expect(out.total).toBe(0);
+    expect(out.truncated).toBe(false);
+  });
+
+  it('surfaces the truncated flag + full total when the server capped the response', async () => {
+    vi.spyOn(api, 'get').mockResolvedValueOnce({
+      groups: [
+        {
+          upload: { id: 9, title: '큰 책' },
+          entries: [
+            { id: 1, korean: '단어', english: 'word', savedAt: '2026-07-10T00:00:00Z' },
+          ],
+        },
+      ],
+      total: 505,
+      truncated: true,
+    });
+
+    const out = await fetchSavedFromUploads();
+
+    expect(out.truncated).toBe(true);
+    expect(out.total).toBe(505);
+    expect(out.groups).toHaveLength(1);
   });
 });
 
