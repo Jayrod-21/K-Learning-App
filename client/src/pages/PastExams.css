@@ -1,0 +1,85 @@
+/* PastExams — dedicated "Past TOPIK exams" library surface (F-103).
+ * Reuses the shared `.km-reference__list`/`.km-reference__row` list chrome
+ * (ReviewVocab/ReviewGrammar/Mistakes' writing-review section); these rules
+ * lay out this page's own row content + the loading/empty/Mistakes-link
+ * cards. */
+
+.km-pastexams__nav {
+  margin-bottom: 4px;
+}
+
+.km-pastexams__state {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  text-align: center;
+  padding: 32px 20px;
+}
+
+/* One completed-exam row — the whole row is the re-enter link (a real
+ * navigation, so it renders as an <a>, not a <button>). Mirrors
+ * Mistakes.css's `.km-mistakes__writingRow` shape (shrinking text column +
+ * fixed-width score pill), plus a trailing re-enter action glyph. */
+.km-pastexams__row-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  color: var(--paper);
+  text-decoration: none;
+}
+
+.km-pastexams__row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.km-pastexams__row-title {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--paper);
+}
+
+.km-pastexams__row-meta {
+  font-size: 0.75rem;
+  color: var(--paper-dim);
+}
+
+.km-pastexams__row-score {
+  flex: none;
+  white-space: nowrap;
+}
+
+.km-pastexams__row-action {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--paper-dim);
+}
+
+.km-pastexams__mistakesLink {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 18px;
+}
+
+.km-pastexams__mistakesCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vermilion);
+  font-weight: 500;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.km-pastexams__mistakesCta:hover {
+  text-decoration: underline;
+}

@@ -654,6 +654,8 @@ interface MistakeRow extends TopikItemRow {
   picked: string;
   answered_at: Date;
   mode: string;
+  /** NULL for a study-mode miss (no attempt) or a pre-046 response. */
+  attempt_id: string | null;
 }
 
 interface MistakeDTO {
@@ -662,6 +664,14 @@ interface MistakeDTO {
   picked: ChoiceId;
   answeredAt: string;
   mode: string;
+  /**
+   * The `topik_attempts` sitting this mistake was graded under (F-105), or
+   * `null` — a study-mode miss belongs to no attempt (mock is the only mode
+   * that stamps `attempt_id`, at submit time — see `/mock/submit`), and a
+   * pre-046 response predates the column entirely. Lets the client link a
+   * mistake back to its exam attempt (F-104's history) — see the route doc.
+   */
+  attemptId: string | null;
   item: TopikItemDTO;
 }
 
@@ -679,6 +689,13 @@ interface MistakeDTO {
  * User-scoped to `getUserId(req)` —
  * never a client-supplied id (no IDOR). Backed by
  * ix_topik_responses_user_answered_at (user_id, answered_at DESC).
+ *
+ * F-105: each row also carries `attemptId` (`topik_responses.attempt_id`,
+ * migration 046) — `null` for a study-mode miss (mistakes are logged for
+ * both modes; only mock stamps an attempt) or a pre-046 response. Lets the
+ * client group/link a mistake back to its true exam sitting instead of the
+ * (local-day, mode) heuristic the Mistakes page's session selector uses
+ * today (see that page's own doc comment).
  */
 router.get(
   '/mistakes',
@@ -692,7 +709,8 @@ router.get(
       ).validatedQuery;
       const { rows } = await query<MistakeRow>(
         `SELECT ${ITEM_COLUMNS},
-                r.id AS response_id, r.picked, r.answered_at, r.mode::text AS mode
+                r.id AS response_id, r.picked, r.answered_at, r.mode::text AS mode,
+                r.attempt_id::text AS attempt_id
            FROM topik_responses r
            JOIN topik_items i ON i.id = r.topik_item_id
            JOIN topik_tests t ON t.id = i.topik_test_id
@@ -713,6 +731,7 @@ router.get(
           picked: row.picked as ChoiceId,
           answeredAt: row.answered_at.toISOString(),
           mode: row.mode,
+          attemptId: row.attempt_id,
           item,
         });
       }
@@ -890,6 +909,19 @@ const AttemptBodySchema = z
     // item-id strings; values are choice ids.
     picks: z.record(z.string().regex(/^\d+$/), z.enum(['a', 'b', 'c', 'd'])),
     remainingMs: z.number().int().nonnegative().max(INT4_MAX),
+    // OPTIONAL exam-paper discriminator (F-122 / migration 066). The intended
+    // caller only ever echoes a level the SERVER already resolved and
+    // returned from a prior POST /topik/mock call — but unlike
+    // MockSubmitBodySchema.topikLevel (which is always cross-checked against
+    // the corpus by resolveMockTest before grading), this schema alone
+    // cannot verify that; the ROUTE HANDLER re-validates it against
+    // (sourceTest, section) via resolveMockTest before persisting (batch-2
+    // fix-pass SHOULD-FIX 3) rather than trusting this shape-only check.
+    // Omitted by pre-F-122 clients (or dropped to NULL by that re-validation
+    // when it doesn't match a real paper); the row's persisted topik_level
+    // then stays NULL and reads fall back to the pre-066 best-effort
+    // re-derivation.
+    topikLevel: TopikLevelSchema.optional(),
   })
   // A mock section is <= 50 items (F-UP-007); cap the picks map so a malformed
   // client cannot stuff an unbounded JSONB blob into the row.
@@ -904,6 +936,9 @@ interface AttemptRow {
   picks: Record<string, string>;
   remaining_ms: number;
   updated_at: Date;
+  /** F-122 (migration 066) — NULL for a pre-066 row or one saved by a client
+   *  that never sent `topikLevel`. */
+  topik_level: TopikLevel | null;
 }
 
 /**
@@ -916,24 +951,25 @@ interface AttemptRow {
  *
  * F-173: also resolves `totalItems`/`topikLevel` for the resumed attempt so a
  * client can show "answered / total" instead of just a bare answered count.
- * Reuses the SAME `resolveServedTotal` helper `GET /topik/attempts` already
- * uses for completed-attempt history — the identical best-effort re-
- * derivation (037 predates the per-level natural key from 029, so an active
- * attempt carries no `topik_level` column either), the identical
- * deterministic resolution (`resolveMockTest` with no requestedLevel — the
- * exact inputs `PUT /topik/attempt` and the resume flow's replayed
- * `POST /topik/mock` already use, so a resumed attempt re-resolves to the
- * SAME paper it was served from), and the identical safe fallback: when the
- * backing corpus paper is gone, `totalItems` falls back to the attempt's own
- * answered count — a real, non-fabricated LOWER BOUND, never a guess above
- * what is actually known.
+ * F-122 (migration 066): when the row itself carries a REAL persisted
+ * `topik_level` (saved via `PUT /topik/attempt`'s optional `topikLevel`, or
+ * stamped by a prior `/mock/submit`), that exact level is used directly —
+ * `totalItems` is then computed against that KNOWN paper
+ * (`resolveTotalItemsForLevel`), never re-guessed. Only a pre-066 row (or one
+ * saved by a client that never sent `topikLevel`) falls back to the ORIGINAL
+ * best-effort re-derivation `GET /topik/attempts` also uses for legacy rows
+ * (`resolveServedTotal`) — the identical deterministic resolution
+ * (`resolveMockTest` with no requestedLevel) and the identical safe fallback:
+ * when the backing corpus paper is gone, `totalItems` falls back to the
+ * attempt's own answered count — a real, non-fabricated LOWER BOUND, never a
+ * guess above what is actually known.
  */
 router.get('/attempt', cheapLimiter(), async (req, res, next) => {
   try {
     const userId = getUserId(req);
     const { rows } = await query<AttemptRow>(
       `SELECT section::text AS section, source_test, current_idx, picks,
-              remaining_ms, updated_at
+              remaining_ms, updated_at, topik_level
          FROM topik_attempts
         WHERE user_id = $1
           AND status = 'active'`,
@@ -948,20 +984,38 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
     // row.section is only ever 'reading' | 'listening' — AttemptSectionSchema
     // (the PUT body's validator) rejects 'writing' at the boundary, so no
     // topik_attempts row can carry it.
-    const served = await resolveServedTotal(
-      row.section as Extract<SectionEnum, 'reading' | 'listening'>,
-      row.source_test,
-    );
+    const section = row.section as Extract<SectionEnum, 'reading' | 'listening'>;
+    let topikLevel: TopikLevel | null;
+    let totalItems: number;
+    if (row.topik_level !== null) {
+      // F-122: the row KNOWS its level for certain — resolve totalItems
+      // against that exact paper, never a re-guessed one. `Math.max` with
+      // `answered` preserves the pre-F-122 "never fabricate BELOW what is
+      // actually known" guarantee: if the backing corpus paper has since
+      // been edited/removed, resolveTotalItemsForLevel can legitimately
+      // return fewer (even 0) answerable items than were actually answered —
+      // the real answered count is always a valid lower bound.
+      topikLevel = row.topik_level;
+      totalItems = Math.max(
+        await resolveTotalItemsForLevel(section, row.source_test, row.topik_level),
+        answered,
+      );
+    } else {
+      // Pre-066 row (or a topikLevel-less save) — the original best-effort guess.
+      const served = await resolveServedTotal(section, row.source_test);
+      topikLevel = served?.topikLevel ?? null;
+      totalItems = served?.totalItems ?? answered;
+    }
     res.status(200).json({
       attempt: {
         section: row.section,
         sourceTest: row.source_test,
-        topikLevel: served?.topikLevel ?? null,
+        topikLevel,
         currentIdx: row.current_idx,
         picks: row.picks,
         remainingMs: row.remaining_ms,
         answered,
-        totalItems: served?.totalItems ?? answered,
+        totalItems,
         updatedAt: row.updated_at.toISOString(),
       },
     });
@@ -999,6 +1053,48 @@ router.get('/attempt', cheapLimiter(), async (req, res, next) => {
  * explicit DELETE /topik/attempt) and the reused row's created_at predates
  * the new sitting. If history surfaces need the displaced sitting, switch to
  * abandon-then-insert here (or have the client abandon first).
+ *
+ * F-122 (migration 066): body carries an OPTIONAL `topikLevel`, cross-checked
+ * against the corpus (`resolveMockTest`, the SAME resolver `/mock` and
+ * `/mock/submit` use) before it is persisted, then written verbatim
+ * (`topik_level = EXCLUDED.topik_level`, unconditionally — no
+ * COALESCE-preserve-if-omitted).
+ *
+ * Batch-2 fix-pass SHOULD-FIX 3: prior to this cross-check, a client-supplied
+ * `topikLevel` was persisted with NO server-side verification that it
+ * actually paired with the given `(sourceTest, section)` in the corpus — a
+ * client could send e.g. `{ sourceTest: 91, section: 'reading', topikLevel:
+ * 'TOPIK I' }` even if test 91's reading section only exists for `'TOPIK
+ * II'`. Low blast radius (a mismatched level just makes
+ * `resolveTotalItemsForLevel` find 0 rows on a later `GET /topik/attempt`,
+ * which gracefully falls back to `Math.max(0, answered) = answered`, and is
+ * fully overwritten by `/mock/submit`'s authoritative stamp at completion
+ * regardless), but unverified input persisted as if authoritative all the
+ * same. `resolveMockTest(section, sourceTest, topikLevel)` returns null when
+ * no gradeable paper matches that exact triple; a mismatch is dropped to
+ * `NULL` rather than written — NULL is always safe here (the same fallback a
+ * pre-F-122/omitted-`topikLevel` client already produces, re-derived at read
+ * time by `resolveServedTotal`), so degrading to it on a bad client value has
+ * no worse an outcome than the client never having sent one.
+ *
+ * `resolveMockTest`'s tie-break behavior is otherwise unaffected: this is a
+ * verification call (client supplies BOTH `sourceTest` and `topikLevel`, so
+ * there's nothing to tie-break — a matching row either exists or it
+ * doesn't), not a re-guess.
+ *
+ * This is deliberate, not an oversight, that the (now-validated) level is
+ * persisted unconditionally rather than COALESCE-preserved: a save that
+ * repurposes the active row for a DIFFERENT (source_test, section) — the
+ * KNOWN DATA GAP above — must never inherit the DISPLACED attempt's level, so
+ * "omitted/invalid → NULL" is the only safe default across that repurposing
+ * case. The single client call site (`MockMode.tsx`'s `handleSaveProgress`)
+ * always has the resolved level in hand (from the `POST /topik/mock`
+ * response that started the exam) and always sends a value that matches, so
+ * this cross-check is a defense-in-depth measure against a skewed/malicious
+ * client, not something the normal flow is expected to ever trip. The one
+ * authoritative, NEVER-guessed writer remains `/mock/submit`, which stamps
+ * the resolved level on the COMPLETED row regardless of what this route last
+ * saved (or validated).
  */
 router.put(
   '/attempt',
@@ -1008,12 +1104,27 @@ router.put(
     try {
       const userId = getUserId(req);
       const b = req.body as z.infer<typeof AttemptBodySchema>;
+
+      // Batch-2 fix-pass SHOULD-FIX 3 — re-validate the optional client
+      // topikLevel against the corpus before persisting it; see the route
+      // doc comment above. A mismatch (or a triple with no gradeable items
+      // at all) degrades to NULL rather than being written verbatim.
+      let topikLevel: TopikLevel | null = null;
+      if (b.topikLevel !== undefined) {
+        const resolved = await resolveMockTest(b.section, b.sourceTest, b.topikLevel);
+        // resolveMockTest filters on BOTH sourceTest and topikLevel when both
+        // are supplied, so a non-null result's fields are guaranteed to echo
+        // the request's own (sourceTest, topikLevel) — this is a real-row
+        // existence check, not a re-guess.
+        topikLevel = resolved?.topikLevel ?? null;
+      }
+
       await withTransaction(async (client) => {
         await client.query(ATTEMPT_LOCK_SQL, [userId]);
         await client.query(
           `INSERT INTO topik_attempts
-             (user_id, section, source_test, current_idx, picks, remaining_ms)
-           SELECT $1, $2::topik_section, $3, $4, $5::jsonb, $6
+             (user_id, section, source_test, current_idx, picks, remaining_ms, topik_level)
+           SELECT $1, $2::topik_section, $3, $4, $5::jsonb, $6, $8
             WHERE NOT EXISTS (
                   SELECT 1
                     FROM topik_attempts
@@ -1028,6 +1139,7 @@ router.put(
              current_idx  = EXCLUDED.current_idx,
              picks        = EXCLUDED.picks,
              remaining_ms = EXCLUDED.remaining_ms,
+             topik_level  = EXCLUDED.topik_level,
              version      = topik_attempts.version + 1`,
           [
             userId,
@@ -1037,6 +1149,7 @@ router.put(
             JSON.stringify(b.picks),
             b.remainingMs,
             ATTEMPT_COMPLETED_GRACE_SECONDS,
+            topikLevel,
           ],
         );
       });
@@ -1107,36 +1220,23 @@ interface AttemptHistoryRow {
   completed_at: Date;
   correct: string;
   answered: string;
+  /** F-122 (migration 066) — NULL for a pre-066 completed attempt. */
+  topik_level: TopikLevel | null;
 }
 
 /**
- * Best-effort re-derivation of the (topik_level, servedTotal) a completed
- * attempt's mock section was assembled from (F-104 / A1).
- *
- * `topik_attempts` does NOT store `topik_level` — migration 037 predates the
- * per-level natural key D-1 introduced (migration 029), and this pass is
- * routes-only (no migration). So this reuses the SAME deterministic resolver
- * `POST /topik/mock` and `/mock/submit` used to pick a paper (`resolveMockTest`,
- * with NO requestedLevel — neither route's client has ever sent one: `PUT
- * /topik/attempt`'s body has no `topikLevel` field, and `MockSubmitBody`
- * carries one only for a client that has never populated it) and then
- * reproduces the IDENTICAL LIMIT-`OFFICIAL_MOCK_SECTION_SIZE`-capped serve
- * query `/mock`/`/mock/submit` use for `totalItems`, so the reported total
- * matches EXACTLY what the exam would serve for that (section, sourceTest)
- * today.
- *
- * Returns null when the corpus row backing this paper is gone
- * (`resolveMockTest` → null — e.g. the items were since removed) — there is
- * nothing left to re-derive. The caller falls back to the attempt's actual
- * `topik_responses` answered-count for `totalItems` in that case: a safe,
- * non-fabricated LOWER BOUND, never a guess above what is actually known.
+ * The served (capped) item count for a KNOWN (section, sourceTest,
+ * topikLevel) paper — the exact query `/mock`/`/mock/submit` use to assemble
+ * a section, reduced to just its count. Split out of `resolveServedTotal`
+ * (F-122) so a caller that already has a REAL, persisted `topik_level` (not
+ * a guess) can compute `totalItems` directly against it, without routing
+ * through `resolveMockTest`'s tie-break guess at all.
  */
-async function resolveServedTotal(
+async function resolveTotalItemsForLevel(
   section: SectionEnum,
   sourceTest: number,
-): Promise<{ topikLevel: TopikLevel; totalItems: number } | null> {
-  const resolved = await resolveMockTest(section, sourceTest, undefined);
-  if (resolved === null) return null;
+  topikLevel: TopikLevel,
+): Promise<number> {
   const { rows } = await query<{ total_items: string }>(
     `SELECT count(*)::text AS total_items
        FROM (
@@ -1150,12 +1250,39 @@ async function resolveServedTotal(
                ORDER BY i.item_number
                LIMIT ${OFFICIAL_MOCK_SECTION_SIZE}
             ) capped`,
-    [sourceTest, resolved.topikLevel, section],
+    [sourceTest, topikLevel, section],
   );
-  return {
-    topikLevel: resolved.topikLevel,
-    totalItems: Number(rows[0]?.total_items ?? '0'),
-  };
+  return Number(rows[0]?.total_items ?? '0');
+}
+
+/**
+ * Best-effort re-derivation of the (topik_level, servedTotal) a completed
+ * attempt's mock section was assembled from, for a row with NO persisted
+ * `topik_level` (F-104 / A1; F-122 narrowed this to the legacy fallback
+ * path — see the callers).
+ *
+ * Every `topik_attempts` row from BEFORE migration 066 (and any row saved by
+ * a pre-F-122 client) carries no real `topik_level` — this reuses the SAME
+ * deterministic resolver `POST /topik/mock` and `/mock/submit` used to pick a
+ * paper (`resolveMockTest`, with NO requestedLevel) and then
+ * `resolveTotalItemsForLevel` for the IDENTICAL LIMIT-`OFFICIAL_MOCK_SECTION_
+ * SIZE`-capped total, so the reported total matches EXACTLY what the exam
+ * would serve for that (section, sourceTest) today.
+ *
+ * Returns null when the corpus row backing this paper is gone
+ * (`resolveMockTest` → null — e.g. the items were since removed) — there is
+ * nothing left to re-derive. The caller falls back to the attempt's actual
+ * `topik_responses` answered-count for `totalItems` in that case: a safe,
+ * non-fabricated LOWER BOUND, never a guess above what is actually known.
+ */
+async function resolveServedTotal(
+  section: SectionEnum,
+  sourceTest: number,
+): Promise<{ topikLevel: TopikLevel; totalItems: number } | null> {
+  const resolved = await resolveMockTest(section, sourceTest, undefined);
+  if (resolved === null) return null;
+  const totalItems = await resolveTotalItemsForLevel(section, sourceTest, resolved.topikLevel);
+  return { topikLevel: resolved.topikLevel, totalItems };
 }
 
 /**
@@ -1211,7 +1338,8 @@ router.get(
                 a.source_test,
                 a.updated_at AS completed_at,
                 coalesce(r.correct, 0)::text AS correct,
-                coalesce(r.answered, 0)::text AS answered
+                coalesce(r.answered, 0)::text AS answered,
+                a.topik_level
            FROM topik_attempts a
            LEFT JOIN LATERAL (
                   SELECT count(*) FILTER (WHERE is_correct) AS correct,
@@ -1226,22 +1354,45 @@ router.get(
         [userId, q.limit, q.offset],
       );
 
-      // Sequential, not Promise.all: resolveServedTotal issues 1-2 small
-      // indexed queries per row and a history page is small (<=100, default
-      // 20) — this is a personal single-user app (see
+      // Sequential, not Promise.all: resolveServedTotal/resolveTotalItemsForLevel
+      // issue 1-2 small indexed queries per row and a history page is small
+      // (<=100, default 20) — this is a personal single-user app (see
       // project_korean_master_personal_scope), so the extra round trips are
       // an acceptable, much simpler alternative to one giant multi-lateral-
       // join query duplicating ANSWERABLE_ITEM_SQL across two aliases.
       const attempts: TopikAttemptHistoryDTO[] = [];
       for (const row of rows) {
-        const served = await resolveServedTotal(row.section, row.source_test);
+        // F-122: a row with a REAL persisted topik_level resolves totalItems
+        // against that EXACT paper — never resolveServedTotal's guess, which
+        // (via resolveMockTest's tie-break) can name the WRONG level when a
+        // test_number hosts both a TOPIK I and a TOPIK II paper. Only a
+        // pre-066 row (topik_level NULL) falls back to the legacy guess.
+        let topikLevel: TopikLevel | null;
+        let totalItems: number;
+        if (row.topik_level !== null) {
+          topikLevel = row.topik_level;
+          // Math.max with the actual answered count: if the backing corpus
+          // paper has since been edited/removed, resolveTotalItemsForLevel
+          // can legitimately return fewer (even 0) answerable items than
+          // were actually answered — the real answered count is always a
+          // valid, non-fabricated lower bound (mirrors the legacy branch's
+          // own fallback below).
+          totalItems = Math.max(
+            await resolveTotalItemsForLevel(row.section, row.source_test, row.topik_level),
+            Number(row.answered),
+          );
+        } else {
+          const served = await resolveServedTotal(row.section, row.source_test);
+          topikLevel = served?.topikLevel ?? null;
+          totalItems = served?.totalItems ?? Number(row.answered);
+        }
         attempts.push({
           attemptId: row.attempt_id,
           section: SECTION_ENUM_TO_KR[row.section],
           sourceTest: row.source_test,
-          topikLevel: served?.topikLevel ?? null,
+          topikLevel,
           correct: Number(row.correct),
-          totalItems: served?.totalItems ?? Number(row.answered),
+          totalItems,
           completedAt: row.completed_at.toISOString(),
         });
       }
@@ -1558,24 +1709,30 @@ router.post('/mock/submit', cheapLimiter(), validateBody(MockSubmitBodySchema), 
       // under. The saved picks/current_idx of a closed attempt are left as the
       // last persisted progress; the authoritative graded answers live in the
       // topik_responses rows stamped below.
+      // F-122: `resolved.topikLevel` is the AUTHORITATIVE level — the exact
+      // paper /mock/submit just graded against (resolveMockTest already ran
+      // above) — so it is stamped here unconditionally, overwriting whatever
+      // (if anything) the in-progress row's own topik_level said. A
+      // completed attempt's level can therefore never be stale, missing, or
+      // guessed, regardless of what PUT /topik/attempt last saved.
       const closed = await client.query<{ id: string }>(
         `UPDATE topik_attempts
-            SET status = 'completed', version = version + 1
+            SET status = 'completed', topik_level = $4, version = version + 1
           WHERE user_id = $1
             AND status = 'active'
             AND source_test = $2
             AND section = $3::topik_section
           RETURNING id`,
-        [userId, resolved.sourceTest, body.section],
+        [userId, resolved.sourceTest, body.section, resolved.topikLevel],
       );
       let attemptId = closed.rows[0]?.id;
       if (attemptId === undefined) {
         const created = await client.query<{ id: string }>(
           `INSERT INTO topik_attempts
-             (user_id, section, source_test, current_idx, picks, remaining_ms, status)
-           VALUES ($1, $2::topik_section, $3, 0, '{}'::jsonb, 0, 'completed')
+             (user_id, section, source_test, current_idx, picks, remaining_ms, status, topik_level)
+           VALUES ($1, $2::topik_section, $3, 0, '{}'::jsonb, 0, 'completed', $4)
            RETURNING id`,
-          [userId, body.section, resolved.sourceTest],
+          [userId, body.section, resolved.sourceTest, resolved.topikLevel],
         );
         attemptId = created.rows[0]!.id;
       }

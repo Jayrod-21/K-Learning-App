@@ -15,6 +15,8 @@ export const MISTAKES_FIXTURE: Mistake[] = [
     picked: 'a',
     answeredAt: '2026-07-06T09:12:00.000Z',
     mode: 'study',
+    // Study-mode miss — belongs to no attempt (only mock stamps attempt_id).
+    attemptId: null,
     item: {
       id: 'i-101',
       section: '읽기',
@@ -37,6 +39,10 @@ export const MISTAKES_FIXTURE: Mistake[] = [
     picked: 'c',
     answeredAt: '2026-07-05T20:40:00.000Z',
     mode: 'mock',
+    // Mock-mode miss — belongs to the fixture attempt (matches the
+    // attemptId ids `buildTopikAttemptHistoryFixture` in data/mocks/topik.ts
+    // uses, so a future consumer joining the two fixtures sees a real match).
+    attemptId: 'mock-attempt-2',
     item: {
       id: 'i-274',
       section: '듣기',

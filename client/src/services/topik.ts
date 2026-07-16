@@ -195,6 +195,15 @@ export interface AttemptState {
 export interface AttemptSaveBody {
   section: MockSection;
   sourceTest: number;
+  /**
+   * OPTIONAL exam-paper discriminator (F-122 / migration 066) — a level the
+   * SERVER already resolved and returned (e.g. `MockTest.topikLevel` from
+   * `POST /topik/mock`), never a client-invented value. Omit only for a
+   * caller with no resolved test in hand; the server then persists no level
+   * for this save (falling back to its pre-066 best-effort re-derivation on
+   * read).
+   */
+  topikLevel?: TopikLevel;
   currentIdx: number;
   picks: Record<string, ChoiceId>;
   remainingMs: number;
@@ -260,6 +269,14 @@ export interface Mistake {
   /** ISO timestamp of when it was answered. */
   answeredAt: string;
   mode: string;
+  /**
+   * The `topik_attempts` sitting this mistake was graded under (F-105), or
+   * `null` — a study-mode miss belongs to no attempt (only mock mode stamps
+   * `attempt_id`, at submit time), and a pre-046 response predates the
+   * column. Lets a consumer link a mistake back to its exam attempt (F-104's
+   * history) instead of the page's own (local-day, mode) grouping heuristic.
+   */
+  attemptId: string | null;
   /** The full item — carries the inline `correct` flag + `explanation` (review). */
   item: TopikItem;
 }

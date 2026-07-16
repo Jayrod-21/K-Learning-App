@@ -13,9 +13,9 @@
  *     else and pushes guests to `/login`.
  *   - Primary tabs: `/` (Today), `/progress`, `/review` (library index),
  *     `/settings`. LEARN sub-pages live under `/learn/*`; the library's
- *     sub-pages live under `/review/*` (mistakes, vocab, dictionary,
+ *     sub-pages live under `/review/*` (mistakes, exams, vocab, dictionary,
  *     grammar — P1.2 dissolved the old Reference page into the latter
- *     three; decisions D2/D3).
+ *     three; decisions D2/D3; `exams` is F-103's dedicated past-exams page).
  *   - `/chat` NEVER moves — hard contract (AskAboutThisButton.CHAT_PATH).
  *   - Legacy paths (`/topik`, `/ttmik`, `/grammar`, `/reference?tab=`, …)
  *     render redirect shims from `lib/redirects.tsx` so old links keep
@@ -60,6 +60,7 @@ import Grammar from './pages/Grammar';
 import Writing from './pages/Writing';
 import Hanja from './pages/Hanja';
 import Mistakes from './pages/Mistakes';
+import PastExams from './pages/PastExams';
 import Images from './pages/Images';
 import Chat from './pages/Chat';
 import Settings from './pages/Settings';
@@ -116,6 +117,9 @@ export default function App(): JSX.Element {
                         Reference tabs (P1.2, D2/D3). */}
                     <Route path="review" element={<ReviewLibrary />} />
                     <Route path="review/mistakes" element={<Mistakes />} />
+                    {/* F-103 — dedicated "Past TOPIK exams" library surface
+                        (completed sittings + scores + re-enter action). */}
+                    <Route path="review/exams" element={<PastExams />} />
                     <Route path="review/vocab" element={<ReviewVocab />} />
                     <Route
                       path="review/dictionary"

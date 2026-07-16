@@ -72,6 +72,7 @@ const MISTAKE: Mistake = {
   picked: 'a', // wrong — 'b' is correct
   answeredAt: '2026-07-06T09:00:00.000Z',
   mode: 'study',
+  attemptId: null, // study-mode miss — no attempt
   item: {
     id: 'i1',
     section: '읽기',
@@ -113,6 +114,7 @@ const MISTAKE_MOCK: Mistake = {
   picked: 'c',
   answeredAt: '2026-07-04T12:00:00.000Z',
   mode: 'mock',
+  attemptId: 'attempt-mock-1',
   item: {
     id: 'i2',
     section: '듣기',

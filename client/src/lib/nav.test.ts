@@ -72,6 +72,8 @@ describe('nav manifest (P1.1)', () => {
     expect(navItem('review').label).toBe('Library');
     // Mistakes lives under the library.
     expect(navItem('mistakes').path).toBe('/review/mistakes');
+    // F-103 — the dedicated past-exams surface also lives under the library.
+    expect(navItem('review-exams').path).toBe('/review/exams');
     // ttmik keeps its id but reads "Listen" at /learn/listen.
     expect(navItem('ttmik').path).toBe('/learn/listen');
     expect(navItem('ttmik').label).toBe('Listen');
