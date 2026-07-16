@@ -8,12 +8,14 @@
  * per-source "View PDF" affordance that opens the viewer for whichever
  * source is currently selected.
  *
- * U1 has no `source_upload_id` on any `vocab_entries`/`kgiu_entries` row yet
- * (U2's extraction populates it) — selecting a source here is FULLY WIRED
- * (the query param + this UI) but returns zero rows until U2 ships. That is
- * intentional scaffolding, not a bug — see the option docs in
- * services/vocab.ts's `SearchEntriesOptions.source_upload_id` and
- * services/grammar.ts's `ListPatternsOptions.source_upload_id`.
+ * Provenance coverage: as of F-107, `vocab_entries` rows mined with upload
+ * provenance (`POST /vocab/mine`) DO carry `source_upload_id`, so the vocab
+ * filter can return real rows; `kgiu_entries` rows still carry none until
+ * U2's extraction ships, so the grammar filter returns zero rows today.
+ * Both paths are FULLY WIRED (the query param + this UI) — an empty result
+ * is data absence, not a bug. See the option docs in services/vocab.ts's
+ * `SearchEntriesOptions.source_upload_id` and services/grammar.ts's
+ * `ListPatternsOptions.source_upload_id`.
  *
  * Best-effort: a failed uploads fetch just leaves the row hidden (there is
  * nothing to filter by) rather than surfacing an error on a page whose

@@ -403,14 +403,20 @@ export default function ReviewVocab(): JSX.Element {
  */
 function SavedFromUploads(): JSX.Element | null {
   const [groups, setGroups] = useState<SavedFromUploadsGroup[]>([]);
+  // F-107 truncation signal: the server caps the response at 500 rows and
+  // only ever returns WHOLE groups (a group the cap would split mid-group is
+  // dropped), so this flag — not any visible gap — is the sole sign that
+  // more saves exist beyond what renders.
+  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     const ctrl = new AbortController();
     vocabService
       .fetchSavedFromUploads(ctrl.signal)
-      .then((gs) => {
+      .then((res) => {
         if (ctrl.signal.aborted) return;
-        setGroups(gs);
+        setGroups(res.groups);
+        setTruncated(res.truncated);
       })
       .catch(() => {
         // Best-effort — see the component doc comment above.
@@ -457,6 +463,14 @@ function SavedFromUploads(): JSX.Element | null {
           </Card>
         </section>
       ))}
+      {truncated ? (
+        <p className="km-vocab__savedUploadsTruncated">
+          <Bilingual
+            en="Showing your most recent saves only"
+            kr="최근 저장 항목만 표시됩니다"
+          />
+        </p>
+      ) : null}
     </CollapsibleTile>
   );
 }

@@ -38,7 +38,6 @@ import type {
   PatchListResponse,
   ReviewResult,
   ReviewSubmission,
-  SavedFromUploadsGroup,
   SavedFromUploadsResponse,
   ServerProficiency,
   ServerVocabList,
@@ -69,11 +68,12 @@ export interface SearchEntriesOptions {
   /**
    * Source-book filter (U1 scaffolding — `db/docs/PDF_UPLOAD_DESIGN.md`
    * §"U1 → sort-by-source filter"). The `book_uploads.id` to filter by.
-   * WIRED but inert until U2 lands: no `vocab_entries` row carries a
-   * `source_upload_id` yet, so this param returns nothing today (the server
-   * schema isn't `.strict()`, so an unrecognised/unused param is a safe
-   * no-op, never a 400) — U2's extraction just has to start populating the
-   * column for this to start returning real rows.
+   * LIVE as of F-107: `POST /vocab/mine` (see `mineWord`) now writes
+   * `vocab_entries.source_upload_id` for saves that carry upload provenance,
+   * so this filter returns those user-mined rows. The server only matches
+   * rows whose upload the CALLER owns (an unowned/unknown id yields zero
+   * rows, never an error). U2's PDF extraction will additionally populate
+   * the column for loader-extracted entries.
    */
   source_upload_id?: string;
   limit?: number;
@@ -364,18 +364,19 @@ export async function mineWord(
  * `mineWord` with `source_upload_id` — or a list add of an upload-tagged
  * entry); each word appears once with its earliest save time. The server
  * scopes everything to the session user, so only the caller's own uploads
- * (and titles) can ever appear. Returns the groups directly — an empty array
- * is the honest "nothing saved from uploads yet" state the F-053 section
- * hides itself on.
+ * (and titles) can ever appear. Returns the full envelope: `groups` (empty =
+ * the honest "nothing saved from uploads yet" state the F-053 section hides
+ * itself on) plus `total`/`truncated`, which say when the server's 500-row
+ * cap trimmed the response — the server drops (never splits) a group the
+ * cap would cut mid-group, so the flag is the only sign more saves exist.
  */
 export async function fetchSavedFromUploads(
   signal?: AbortSignal,
-): Promise<SavedFromUploadsGroup[]> {
-  const res = await api.get<SavedFromUploadsResponse>(
+): Promise<SavedFromUploadsResponse> {
+  return api.get<SavedFromUploadsResponse>(
     '/vocab/saved-from-uploads',
     signal !== undefined ? { signal } : undefined,
   );
-  return res.groups;
 }
 
 // ── Vocab lists (migration 012) ────────────────────────────────────────

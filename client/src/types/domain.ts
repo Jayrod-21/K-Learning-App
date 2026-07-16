@@ -1019,6 +1019,20 @@ export interface SavedFromUploadsGroup {
 /** Envelope for `GET /vocab/saved-from-uploads` (F-107). */
 export interface SavedFromUploadsResponse {
   groups: SavedFromUploadsGroup[];
+  /**
+   * The caller's FULL saved-with-provenance word count — a window count the
+   * server computes BEFORE its defensive row cap, so it can exceed the sum
+   * of `entries` across `groups` when `truncated` is true.
+   */
+  total: number;
+  /**
+   * True when the server's row cap (500) trimmed the response. The server
+   * guarantees every group in `groups` is WHOLE — a group the cap would have
+   * split mid-group is dropped entirely rather than returned looking
+   * complete — so `truncated` (plus `total`) is the only signal that more
+   * saves exist beyond what is shown.
+   */
+  truncated: boolean;
 }
 
 /**

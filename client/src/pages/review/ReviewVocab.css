@@ -47,6 +47,17 @@
   margin-top: 6px;
 }
 
+/* F-107 — quiet truncation note under the saved-from-uploads groups: only
+ * rendered when the server's row cap trimmed the response (every shown group
+ * is still whole, so this line is the sole "there is more" signal). Sized/
+ * colored like the page's other secondary state text (.km-vocab__state). */
+.km-vocab__savedUploadsTruncated {
+  margin: 10px 0 0;
+  font-size: 0.8125rem;
+  color: var(--paper-mute);
+  line-height: 1.5;
+}
+
 /* F-049 — the two dropdown filters sit side by side above the list and
  * stack on narrow screens (each select keeps its own label). */
 .km-vocab__filters {

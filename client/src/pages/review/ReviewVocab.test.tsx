@@ -144,7 +144,11 @@ beforeEach(() => {
   ]);
   // F-053/F-107 — default: nothing saved from uploads, so the My-Uploads
   // section stays hidden for every test that knows nothing about it.
-  vocabSvc.fetchSavedFromUploads.mockResolvedValue([]);
+  vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+    groups: [],
+    total: 0,
+    truncated: false,
+  });
   vocabSvc.bankEntry.mockResolvedValue({ card: { id: 1, version: 1 } });
   vocabSvc.listLists.mockResolvedValue([SERVER_LIST]);
   vocabSvc.createList.mockResolvedValue({ list: SERVER_LIST, appended: 0 });
@@ -247,7 +251,11 @@ describe('ReviewVocab — SavedFromUploads (F-053, wired by F-107)', () => {
   ];
 
   it('renders the saved words grouped under their upload titles when groups exist', async () => {
-    vocabSvc.fetchSavedFromUploads.mockResolvedValue(SAVED_GROUPS);
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 3,
+      truncated: false,
+    });
     renderPage();
     // The section title (a CollapsibleTile disclosure, like My Lists).
     expect(
@@ -262,10 +270,35 @@ describe('ReviewVocab — SavedFromUploads (F-053, wired by F-107)', () => {
     const taleGroup = screen.getByRole('region', { name: '옛날 이야기' });
     expect(within(taleGroup).getByText('호랑이')).toBeInTheDocument();
     expect(within(taleGroup).getByText('tiger')).toBeInTheDocument();
+    // Untruncated response → no "most recent saves only" note.
+    expect(
+      screen.queryByText(/most recent saves only/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('surfaces the truncation note when the server row cap trimmed the response (F-107)', async () => {
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: SAVED_GROUPS,
+      total: 505,
+      truncated: true,
+    });
+    renderPage();
+    await screen.findByRole('button', { name: '내 업로드 · My uploads' });
+    // The note renders alongside the (whole) groups the server did return.
+    expect(
+      screen.getByText(/most recent saves only/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: '나의 한국어 교재' }),
+    ).toBeInTheDocument();
   });
 
   it('renders nothing at all when the fetch resolves empty (honest F-053 empty state)', async () => {
-    vocabSvc.fetchSavedFromUploads.mockResolvedValue([]);
+    vocabSvc.fetchSavedFromUploads.mockResolvedValue({
+      groups: [],
+      total: 0,
+      truncated: false,
+    });
     renderPage();
     await screen.findByText('영향');
     expect(screen.queryByText(/My uploads/i)).not.toBeInTheDocument();

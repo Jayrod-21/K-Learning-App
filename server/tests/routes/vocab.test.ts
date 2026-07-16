@@ -14,6 +14,7 @@ import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import {
+  ensureCorpusSource,
   registerUser,
   seedBookUpload,
   seedTopikItem,
@@ -1490,6 +1491,8 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
     const res = await agent.get('/vocab/saved-from-uploads');
     expect(res.status).toBe(200);
     expect(res.body.groups).toEqual([]);
+    expect(res.body.total).toBe(0);
+    expect(res.body.truncated).toBe(false);
   });
 
   it('groups saved words by upload (newest upload first, title carried) across BOTH save paths', async () => {
@@ -1536,6 +1539,9 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
     const res = await agent.get('/vocab/saved-from-uploads');
     expect(res.status).toBe(200);
     expect(res.body.groups).toHaveLength(2);
+    // Well under the row cap: total counts the saved words, nothing trimmed.
+    expect(res.body.total).toBe(2);
+    expect(res.body.truncated).toBe(false);
     const [first, second] = res.body.groups as Array<{
       upload: { id: number; title: string };
       entries: Array<{ id: number; korean: string | null; english: string | null; savedAt: string }>;
@@ -1600,6 +1606,96 @@ describe('GET /vocab/saved-from-uploads (F-107)', () => {
     const resB = await b.agent.get('/vocab/saved-from-uploads');
     expect(resB.status).toBe(200);
     expect(resB.body.groups).toEqual([]);
+  });
+
+  /**
+   * Bulk-seed `count` upload-tagged vocab entries, each saved via a live
+   * card for `userId` — two set-based statements (generate_series), so
+   * cap-scale fixtures (500+) stay milliseconds instead of 500 round trips.
+   */
+  async function seedSavedTaggedBulk(
+    userId: number,
+    uploadId: number,
+    count: number,
+    keyPrefix: string,
+  ): Promise<void> {
+    const corpusSourceId = await ensureCorpusSource(
+      pg.pool,
+      'vocab_2000_intermediate',
+    );
+    await pg.pool.query(
+      `WITH ins AS (
+          INSERT INTO vocab_entries (
+              corpus_source_id, corpus, source_id, book_level, entry_type,
+              source_book, korean, english, proficiency, source_upload_id)
+          SELECT $1, 'vocab_2000_intermediate'::corpus,
+                 $2::text || '-' || g::text,
+                 'intermediate'::book_level, 'word'::vocab_entry_type,
+                 'bulk-test', '단어' || g::text, 'word ' || g::text,
+                 'L3'::proficiency_level, $3
+            FROM generate_series(1, $4::int) AS g
+          RETURNING id)
+       INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at)
+       SELECT $5, 'recognition'::card_face, id, 'L3'::proficiency_level, now()
+         FROM ins`,
+      [corpusSourceId, keyPrefix, uploadId, count, userId],
+    );
+  }
+
+  it('over the row cap: truncated=true, total is the FULL count, and NO partial group is returned (a mid-group cut drops the whole group)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Newest upload first in the ORDER BY → its 10 rows lead; the older
+    // upload's 495 rows then straddle the 500-row cap (rows 11..505), so the
+    // cap lands MID-group in the older upload. The whole split group must be
+    // dropped rather than returned looking complete-but-short.
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '큰 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '작은 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedTaggedBulk(userId, newerUpload, 10, `trunc-new-${Date.now()}`);
+    await seedSavedTaggedBulk(userId, olderUpload, 495, `trunc-old-${Date.now()}`);
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    // Only the WHOLE group survives; the split older group is gone entirely.
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('작은 책');
+    expect(res.body.groups[0].entries).toHaveLength(10);
+  });
+
+  it('over the row cap with the cut exactly on a group boundary: the last kept group stays (whole), later groups drop, truncated=true', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Newest upload fills the cap EXACTLY (500 rows); the older upload's 5
+    // rows are entirely past it. The 500-row group is complete, so it must
+    // NOT be dropped — only the flag says the older group exists.
+    const olderUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 뒤 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-01T00:00:00Z'),
+    });
+    const newerUpload = await seedBookUpload(pg.pool, userId, {
+      title: '경계 책',
+      status: 'ready',
+      createdAt: new Date('2026-07-08T00:00:00Z'),
+    });
+    await seedSavedTaggedBulk(userId, newerUpload, 500, `edge-new-${Date.now()}`);
+    await seedSavedTaggedBulk(userId, olderUpload, 5, `edge-old-${Date.now()}`);
+
+    const res = await agent.get('/vocab/saved-from-uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.truncated).toBe(true);
+    expect(res.body.total).toBe(505);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.groups[0].upload.title).toBe('경계 책');
+    expect(res.body.groups[0].entries).toHaveLength(500);
   });
 });
 

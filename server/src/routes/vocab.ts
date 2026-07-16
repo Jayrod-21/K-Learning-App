@@ -742,6 +742,15 @@ router.post(
                -- step 0 already guaranteed EXCLUDED.source_upload_id is an
                -- upload the CALLER owns, so a NULL->value fill can only tag
                -- the entry with the tagging user's own upload.
+               --
+               -- ACCEPTED TRADEOFF (single-user scope, tracked as F-199): a
+               -- SECOND user genuinely mining this lemma from THEIR OWN
+               -- upload gets a 201 while their tag is silently discarded —
+               -- the word will never appear in that user's
+               -- GET /vocab/saved-from-uploads. True per-user provenance
+               -- needs the tag on the user-scoped save artifact
+               -- (vocab_cards) instead of this shared row; deliberately NOT
+               -- built while the deployment is single-user.
                SET english = COALESCE(vocab_entries.english, EXCLUDED.english),
                    source_upload_id = COALESCE(vocab_entries.source_upload_id,
                                                EXCLUDED.source_upload_id),
@@ -831,11 +840,21 @@ router.post(
  * uploads by `bu.user_id` — all bound to the session user, never a client
  * id); fully parameterized; read-only. Groups are ordered newest upload
  * first, entries newest-saved first.
+ *
+ * Response: `{ groups, total, truncated }` — `total` is the user's FULL
+ * saved-with-provenance word count (window COUNT, unaffected by the cap);
+ * `truncated: true` says the row cap trimmed the response. Every returned
+ * group is guaranteed WHOLE: rather than let the flat-row LIMIT cut the
+ * last group mid-group (which would render as a complete-looking but
+ * silently short list), a group split by the cap is dropped entirely —
+ * the flag plus `total` tell the client data is missing.
  */
 /** Defensive row cap for the saved-from-uploads read: no query params means
  *  no client-controlled paging, so bound the response server-side. 500 rows
  *  is far beyond a plausible personal saved-words set; if it is ever hit,
- *  the newest uploads/saves win (matches the ORDER BY). */
+ *  the newest uploads/saves win (matches the ORDER BY), the response says so
+ *  via `truncated`/`total`, and only WHOLE groups are returned (the query
+ *  over-fetches one row past the cap to detect a mid-group cut). */
 const SAVED_FROM_UPLOADS_ROW_CAP = 500;
 
 router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
@@ -848,6 +867,7 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
       korean: string | null;
       english: string | null;
       saved_at: Date;
+      total: string;
     }>(
       `WITH saves AS (
           -- Save path 1: a live card on the entry (mined or banked).
@@ -881,7 +901,11 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
               ve.id           AS entry_id,
               ve.korean,
               ve.english,
-              fs.saved_at
+              fs.saved_at,
+              -- Full matching-row count alongside the capped page (window
+              -- runs before LIMIT — same idiom as GET /vocab/entries above)
+              -- so the client can see how much the cap hid.
+              COUNT(*) OVER ()::text AS total
          FROM first_saves fs
          JOIN vocab_entries ve
            ON ve.id = fs.entry_id
@@ -893,8 +917,34 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
           AND bu.user_id = $1
         ORDER BY bu.created_at DESC, bu.id DESC, fs.saved_at DESC, ve.id
         LIMIT $2`,
-      [userId, SAVED_FROM_UPLOADS_ROW_CAP],
+      // Over-fetch ONE row past the cap: its presence proves truncation, and
+      // its upload id tells whether the cap fell mid-group (see below).
+      [userId, SAVED_FROM_UPLOADS_ROW_CAP + 1],
     );
+
+    // Truncation handling — two invariants the wire contract promises:
+    //   1. `truncated`/`total` say when (and how much) the cap hid.
+    //   2. Every returned group is WHOLE. The LIMIT applies to flat rows, so
+    //      the cap can land mid-group; a partially-returned group would look
+    //      complete (worse than absent). If the over-fetched sentinel row
+    //      belongs to the same upload as the last kept row, the cap split
+    //      that group — drop the whole group (its rows are the ordered tail,
+    //      so filtering by upload id removes exactly that trailing run). If
+    //      the sentinel starts a NEW group, the kept groups are all whole.
+    //      Degenerate case: a single group larger than the cap yields zero
+    //      groups with truncated=true — honest, and unreachable at personal
+    //      scale (cap = 500 saved words in ONE upload).
+    const truncated = rows.length > SAVED_FROM_UPLOADS_ROW_CAP;
+    const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    let visible = rows;
+    if (truncated) {
+      const lastKept = rows[SAVED_FROM_UPLOADS_ROW_CAP - 1]!;
+      const sentinel = rows[SAVED_FROM_UPLOADS_ROW_CAP]!;
+      visible = rows.slice(0, SAVED_FROM_UPLOADS_ROW_CAP);
+      if (sentinel.upload_id === lastKept.upload_id) {
+        visible = visible.filter((r) => r.upload_id !== lastKept.upload_id);
+      }
+    }
 
     // Fold the flat rows into per-upload groups, preserving SQL order. pg
     // returns BIGINTs as strings; the DTO documents ids as JSON numbers
@@ -911,7 +961,7 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
     }
     const groups: SavedGroup[] = [];
     const byUpload = new Map<number, SavedGroup>();
-    for (const r of rows) {
+    for (const r of visible) {
       const uploadId = Number(r.upload_id);
       let group = byUpload.get(uploadId);
       if (group === undefined) {
@@ -926,7 +976,7 @@ router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
         savedAt: r.saved_at.toISOString(),
       });
     }
-    res.status(200).json({ groups });
+    res.status(200).json({ groups, total, truncated });
   } catch (err) {
     next(err);
   }
