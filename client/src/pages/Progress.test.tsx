@@ -1770,7 +1770,11 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
     ).toBeInTheDocument();
   });
 
-  it('CSS: `.km-progress__trendGrid` is a real CSS grid, gated behind the ≥768px breakpoint', () => {
+  it('CSS: `.km-progress__trendGrid` is a real CSS grid, gated behind the ≥768px breakpoint, with the exact auto-fit/260px geometry the fix-pass arithmetic depends on', () => {
+    // Fix-pass SHOULD-FIX #2 (REVIEW_d1-adaptive.md): pin the actual
+    // `grid-template-columns` value (not just `display: grid;`) so a future
+    // edit that silently changes the column scheme is caught, matching the
+    // equivalent tightened test in Today.test.tsx.
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'Progress.css'),
       'utf8',
@@ -1781,5 +1785,22 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
       )?.[0] ?? '';
     expect(mediaBlock).not.toBe('');
     expect(mediaBlock).toContain('display: grid;');
+    expect(mediaBlock).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));',
+    );
+  });
+
+  it('CSS SHOULD-FIX #3: the readability-cap note/list is horizontally centered at ≥768px, matching Today.css\'s TOPIK cap', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Progress.css'),
+      'utf8',
+    );
+    const mediaBlock =
+      /@media \(min-width: 768px\) \{\s*\.km-progress__note,\s*\.km-mastery__list \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(mediaBlock).not.toBe('');
+    expect(mediaBlock).toContain('max-width: 640px;');
+    expect(mediaBlock).toContain('margin-inline: auto;');
   });
 });

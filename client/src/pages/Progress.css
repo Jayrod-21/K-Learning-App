@@ -573,10 +573,22 @@
  * ≥768px: `SkillTrendsBody` (Progress.tsx) swaps the looping `SwipeCarousel`
  * above for this plain CSS grid — all five skill panels render at once
  * instead of one page at a time, each panel's own `LineChart` scaling to
- * fill its grid cell (`.km-linechart__svg` is `width: 100%`). Two columns
- * at tablet width (five panels split 2/2/1 — acceptable, not five squeezed
- * columns), three at desktop once the row is wide enough for a third
- * 260px-minimum column. */
+ * fill its grid cell (`.km-linechart__svg` is `width: 100%`).
+ *
+ * FIX-PASS CORRECTION (REVIEW_d1-adaptive.md SHOULD-FIX #1): this used to
+ * claim "two columns at tablet width (768px)" — that was wrong. The actual
+ * available width at 768px is 476px, not 520px like Today: this grid sits
+ * inside `CollapsibleTile`'s `surface="city"` card, whose
+ * `.km-collapsible__content` re-adds 22px of padding each side
+ * (`CollapsibleTile.css`) even though `.km-citycard.km-collapsible` zeroes
+ * its own 20px pad — so 768 − 248px sidebar − 44px content padding = 476px.
+ * `repeat(auto-fit, minmax(260px, 1fr))`, 20px gap: 1×260 ≤ 476, but
+ * 2×260+20=540 > 476 — only 1 column fits at 768px. A single column never
+ * strands a trailing panel (there is no leftover row to strand it in), so
+ * this was never a layout bug, just an inaccurate comment: 2 columns
+ * (five panels split 2/2/1) don't actually start until the content column
+ * reaches 540px, i.e. viewport ≥ 850px; 3 columns (3×260+40=820) start at
+ * viewport ≥ 1088px. */
 @media (min-width: 768px) {
   .km-progress__trendGrid {
     display: grid;
@@ -590,11 +602,17 @@
  * GRIDS/CHARTS above to spread out, but plain prose/list rows stretched
  * that wide become hard to scan. Caps only actual reading content (notes,
  * empty-state copy, the word/hanja mastery lists) at a comfortable measure
- * — never the charts/tables above, which are meant to use the full width. */
+ * — never the charts/tables above, which are meant to use the full width.
+ * Centered (`margin-inline: auto`), matching Today.css's equivalent TOPIK
+ * reading-measure cap (`.km-today__section--topik .km-carousel`) — fix-pass
+ * SHOULD-FIX #3 (REVIEW_d1-adaptive.md): previously left-aligned, which at
+ * desktop widths sat flush-left with a large empty gutter to its right
+ * inside an otherwise-centered card. */
 @media (min-width: 768px) {
   .km-progress__note,
   .km-mastery__list {
     max-width: 640px;
+    margin-inline: auto;
   }
 }
 

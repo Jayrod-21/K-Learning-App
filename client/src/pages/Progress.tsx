@@ -384,6 +384,20 @@ function SkillTrendsBody({
       />
     );
   }
+  // Fix-pass NIT (REVIEW_d1-adaptive.md #2): map `SERIES_PANELS` ONCE and
+  // hand the same nodes to whichever wrapper the breakpoint picks, instead
+  // of two call sites independently re-mapping the array — the same "map
+  // once, wrap conditionally" shape as Today.tsx's `TileRail`, so the grid
+  // and carousel paths cannot drift apart on which panels/props they render.
+  const skillPanels = SERIES_PANELS.map((p) => (
+    <SkillTrendPanel
+      key={p.key}
+      skillKey={p.key}
+      label={p.label}
+      kr={p.kr}
+      series={seriesData[p.key]}
+    />
+  ));
   return (
     <>
       {/* F-141 — the section's own CollapsibleTile header now carries the
@@ -399,29 +413,9 @@ function SkillTrendsBody({
         // D1 — every skill panel visible at once, no paging. `LineChart`'s
         // own SVG is `width: 100%; height: auto` (LineChart.css), so each
         // panel's chart scales to whatever the grid cell gives it.
-        <div className="km-progress__trendGrid">
-          {SERIES_PANELS.map((p) => (
-            <SkillTrendPanel
-              key={p.key}
-              skillKey={p.key}
-              label={p.label}
-              kr={p.kr}
-              series={seriesData[p.key]}
-            />
-          ))}
-        </div>
+        <div className="km-progress__trendGrid">{skillPanels}</div>
       ) : (
-        <SwipeCarousel ariaLabel="Progress by skill">
-          {SERIES_PANELS.map((p) => (
-            <SkillTrendPanel
-              key={p.key}
-              skillKey={p.key}
-              label={p.label}
-              kr={p.kr}
-              series={seriesData[p.key]}
-            />
-          ))}
-        </SwipeCarousel>
+        <SwipeCarousel ariaLabel="Progress by skill">{skillPanels}</SwipeCarousel>
       )}
     </>
   );

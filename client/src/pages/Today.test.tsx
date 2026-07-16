@@ -1652,7 +1652,15 @@ describe('Today — device-adaptive grid layout (Phase D1)', () => {
     expect(container.querySelector('.km-today__grid [aria-busy="true"]')).not.toBeNull();
   });
 
-  it('CSS: `.km-today__grid` is a real CSS grid, gated behind the ≥768px breakpoint', () => {
+  it('CSS: `.km-today__grid` is a real CSS grid, gated behind the ≥768px breakpoint, with the exact auto-fit/220px geometry the fix-pass arithmetic depends on', () => {
+    // Fix-pass SHOULD-FIX #2 (REVIEW_d1-adaptive.md): the pre-fix-pass
+    // version of this test only asserted `display: grid;` — a future edit
+    // that silently swapped in a different column scheme (e.g. a fixed
+    // 2-column grid, which would coincidentally "fix" the BLOCKER below by
+    // accident, or a fixed 5-column grid, which would make the orphan
+    // problem worse) would NOT have been caught. Pin the actual
+    // `grid-template-columns` value the width arithmetic in Today.css's
+    // header comment and the FIX_REPORT are computed against.
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'Today.css'),
       'utf8',
@@ -1663,5 +1671,30 @@ describe('Today — device-adaptive grid layout (Phase D1)', () => {
       )?.[0] ?? '';
     expect(mediaBlock).not.toBe('');
     expect(mediaBlock).toContain('display: grid;');
+    expect(mediaBlock).toContain(
+      'grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));',
+    );
+  });
+
+  it('CSS BLOCKER FIX: the 768–935px band spans a trailing lone tile (1-of-1 or 3-of-3) full width instead of stranding it as a half-width orphan', () => {
+    // Fix-pass BLOCKER (REVIEW_d1-adaptive.md): `.km-today__grid` only
+    // computes 2 columns between 768–935px (see the width arithmetic in
+    // Today.css's header comment above this rule), so Carousel 1's
+    // ALWAYS-3-tile row landed a lone 3rd tile in a half-empty row at every
+    // tablet-portrait viewport before this fix. jsdom cannot render real
+    // grid layout, so this test pins the CSS SOURCE of the fix (the scoped
+    // media query + selector), not the rendered geometry — correctness is
+    // established by construction in the FIX_REPORT's width arithmetic.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+    const scopedBlock =
+      /@media \(min-width: 768px\) and \(max-width: 935px\) \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(scopedBlock).not.toBe('');
+    expect(scopedBlock).toContain('.km-today__grid > :last-child:nth-child(odd)');
+    expect(scopedBlock).toContain('grid-column: 1 / -1;');
   });
 });
