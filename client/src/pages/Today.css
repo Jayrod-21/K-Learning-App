@@ -389,6 +389,52 @@
   color: var(--paper-dim);
 }
 
+/* Tablet/desktop grid (device-adaptive epic, Phase D1) ─────────────────
+ * ≥768px: Today.tsx's `TileRail` swaps the peek-slider markup above for
+ * this plain CSS grid — every tile in Carousel 1 ("Review & drills") and
+ * Carousel 2 ("Suggested learning") lays out side by side, no scroll-snap,
+ * no partial "peek" tile. Dedicated classes, not overrides of
+ * `.km-today__peek*` above — the two markups are mutually exclusive
+ * (`TileRail` renders one or the other), so there is no cascade conflict to
+ * manage; mobile's peek-slider rules above are completely untouched.
+ *
+ * `repeat(auto-fit, minmax(220px, 1fr))` (not a fixed 2-/3-column count):
+ * Carousel 1 always has exactly 3 tiles, but Carousel 2 can have 1–3
+ * depending on which plan tasks resolved (empty-corpus contract — see
+ * Today.tsx). `auto-fit` collapses any unfilled repeated track to 0 width
+ * and hands that space to the tracks that DO hold a tile (each is `1fr`),
+ * so 1–2 tiles stretch to fill the row evenly instead of leaving a dead gap
+ * where a 3rd tile would have gone, and a real 3-tile row still gets 3 even
+ * columns once the track is wide enough. 220px keeps a tile's icon+text
+ * legible at the narrow end of tablet width (768px, minus the 248px
+ * sidebar rail) without forcing a lone 3rd tile onto its own row there. */
+@media (min-width: 768px) {
+  .km-today__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
+
+  .km-today__gridItem {
+    /* A grid item's default min-width is its content's min-content size —
+       guard against that forcing a track wider than the row (F-129's
+       established convention across this codebase). */
+    min-width: 0;
+  }
+
+  /* TOPIK (Carousel 3) keeps its `SwipeCarousel` at every width — it is one
+   * featured tile, not a repeated list, so it never becomes a grid — but a
+   * lone tile stretched to the full (now much wider) desktop shell column
+   * reads as sparse rather than featured. Capped + centered instead.
+   * Scoped to `.km-today__section--topik` only (Today.tsx's `--topik`
+   * section modifier) so no other `SwipeCarousel` on this page (there is
+   * none besides TOPIK) or on Progress is affected. */
+  .km-today__section--topik .km-carousel {
+    max-width: 640px;
+    margin: 0 auto;
+  }
+}
+
 /* Resume-exam corner banner — rides SwipeCarousel's cornerSlot, pinned
  * top-left over every page. Chrome-sized: a shortcut, not a page-level CTA. */
 .km-today__resume {

@@ -54,7 +54,7 @@
  *     scroll/snap behavior can't be measured by rendering.
  *   - NO "coming soon" placeholder survives anywhere.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -1526,5 +1526,142 @@ describe('Today', () => {
       )?.[0] ?? '';
     expect(reducedMotionBlock).not.toBe('');
     expect(reducedMotionBlock).toContain('animation: none;');
+  });
+});
+
+/**
+ * Device-adaptive epic, Phase D1 — Today's tablet/desktop grid layout.
+ *
+ * `useDeviceClass` reads `window.matchMedia`; `src/test/setup.ts` installs a
+ * `matches: false` default before every test (mobile-first baseline — see
+ * that file's header for why), so every test ABOVE this block already
+ * exercises the mobile peek-slider branch without any explicit stubbing.
+ * This block stubs `matchMedia` to report tablet/desktop widths (same
+ * `mockViewportWidth` idiom as `Shell.deviceAdaptive.test.tsx` /
+ * `useDeviceClass.test.tsx`) to pin the grid branch, and re-confirms mobile
+ * is unaffected at an EXPLICIT narrow width too (not just the implicit
+ * default).
+ */
+describe('Today — device-adaptive grid layout (Phase D1)', () => {
+  function mockViewportWidth(width: number): void {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => {
+        const m = /min-width:\s*(\d+)px/.exec(query);
+        const threshold = m ? Number(m[1]) : 0;
+        return {
+          matches: width >= threshold,
+          media: query,
+          onchange: null,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        } as unknown as MediaQueryList;
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the mobile peek slider (not the grid) at the default test matchMedia — unchanged from before D1', () => {
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    expect(container.querySelector('.km-today__peekTrack')).not.toBeNull();
+    expect(
+      container.querySelectorAll('.km-today__peekItem').length,
+    ).toBeGreaterThan(0);
+    expect(container.querySelector('.km-today__grid')).toBeNull();
+  });
+
+  it('renders the mobile peek slider at an explicit narrow viewport too', () => {
+    mockViewportWidth(375);
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    expect(drills.querySelector('.km-today__peekTrack')).not.toBeNull();
+    expect(drills.querySelectorAll('.km-today__peekItem')).toHaveLength(3);
+    expect(container.querySelector('.km-today__grid')).toBeNull();
+  });
+
+  it('renders BOTH carousels as a plain grid — no peek-slider markup — at tablet width (768px)', () => {
+    mockViewportWidth(768);
+    loadDefaults();
+    const { container } = renderTodayAt();
+
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    const suggested = screen.getByRole('region', {
+      name: 'Suggested learning',
+    });
+
+    expect(drills.querySelector('.km-today__grid')).not.toBeNull();
+    expect(drills.querySelectorAll('.km-today__gridItem')).toHaveLength(3);
+    expect(suggested.querySelector('.km-today__grid')).not.toBeNull();
+    expect(suggested.querySelectorAll('.km-today__gridItem')).toHaveLength(3);
+    // No peek-slider markup survives anywhere on the page in the grid
+    // branch — `TileRail` renders one markup or the other, never both.
+    expect(container.querySelector('.km-today__peekTrack')).toBeNull();
+    expect(container.querySelector('.km-today__peekItem')).toBeNull();
+  });
+
+  it('renders the grid at desktop width (1280px) too, with every tile still real and focusable — same DOM order as mobile', () => {
+    mockViewportWidth(1280);
+    loadDefaults();
+    renderTodayAt();
+
+    const drills = screen.getByRole('region', { name: 'Review and drills' });
+    const items = within(drills).getAllByRole('button');
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveAccessibleName('Open grammar drills');
+    expect(items[1]).toHaveAccessibleName('Open review — 24 cards due');
+    expect(items[2]).toHaveAccessibleName('Open Hanja study');
+  });
+
+  it('a tile in the grid branch keeps its exact deep-link navigation (Wave 2 B4) — grid layout never drops onClick behavior', async () => {
+    mockViewportWidth(1024);
+    loadDefaults();
+    const user = userEvent.setup();
+    renderTodayAt();
+
+    await user.click(screen.getByRole('button', { name: /Open reading/ }));
+    expect(
+      screen.getByText('READING PAGE /learn/reading?chapter=501'),
+    ).toBeInTheDocument();
+  });
+
+  it('the Vocab tile keeps its own skeleton/data/error branching inside the grid too (plan loading)', () => {
+    mockViewportWidth(1024);
+    hoisted.today.state = { kind: 'loading' };
+    hoisted.attempt.state = { kind: 'data', data: null };
+    hoisted.grammarAttempts.state = { kind: 'data', data: GRAMMAR_ATTEMPTS_EMPTY };
+    hoisted.writingAttempts.state = { kind: 'data', data: WRITING_ATTEMPTS_EMPTY };
+    hoisted.topikAttempts.state = { kind: 'data', data: TOPIK_ATTEMPTS_EMPTY };
+    hoisted.hanjaAttempts.state = { kind: 'data', data: HANJA_ATTEMPTS_EMPTY };
+    hoisted.readingAttempts.state = { kind: 'data', data: READING_ATTEMPTS_EMPTY };
+    hoisted.listeningAttempts.state = { kind: 'data', data: LISTENING_ATTEMPTS_EMPTY };
+    const { container } = renderTodayAt();
+
+    // Grammar/Hanja have no plan dependency and still render normally in
+    // the grid; Vocab's slot shows the loading skeleton, not a tile.
+    expect(screen.getByRole('button', { name: 'Open grammar drills' })).toBeInTheDocument();
+    expect(container.querySelector('.km-today__grid [aria-busy="true"]')).not.toBeNull();
+  });
+
+  it('CSS: `.km-today__grid` is a real CSS grid, gated behind the ≥768px breakpoint', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Today.css'),
+      'utf8',
+    );
+    const mediaBlock =
+      /@media \(min-width: 768px\) \{\s*\.km-today__grid \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(mediaBlock).not.toBe('');
+    expect(mediaBlock).toContain('display: grid;');
   });
 });

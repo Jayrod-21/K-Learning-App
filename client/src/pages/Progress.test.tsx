@@ -37,7 +37,10 @@
  * Fixtures pass through `vi.hoisted` so the Vitest-hoisted `vi.mock` factory
  * can reference them.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import {
   fireEvent,
   render,
@@ -1668,5 +1671,115 @@ describe('Progress page — F-129 mobile: wide content stays in its own scroll c
 
     const gloss = await screen.findByText(/a very long English gloss/);
     expect(gloss).toHaveClass('km-mastery__en');
+  });
+});
+
+/**
+ * Device-adaptive epic, Phase D1 — "Progress by skill"'s tablet/desktop
+ * grid layout.
+ *
+ * `useDeviceClass` reads `window.matchMedia`; `src/test/setup.ts` installs a
+ * `matches: false` default before every test (mobile-first baseline), so
+ * every test ABOVE this block already exercises the mobile `SwipeCarousel`
+ * branch without any explicit stubbing — that carousel's dots/tabpanel
+ * behavior is unchanged by this phase. This block stubs `matchMedia` to
+ * report tablet/desktop widths (same `mockViewportWidth` idiom as
+ * `Shell.deviceAdaptive.test.tsx` / `Today.test.tsx`'s own D1 block) to pin
+ * the grid branch, and re-confirms mobile is unaffected at an EXPLICIT
+ * narrow width too (not just the implicit default).
+ */
+describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)', () => {
+  function mockViewportWidth(width: number): void {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => {
+        const m = /min-width:\s*(\d+)px/.exec(query);
+        const threshold = m ? Number(m[1]) : 0;
+        return {
+          matches: width >= threshold,
+          media: query,
+          onchange: null,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        } as unknown as MediaQueryList;
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the looping SwipeCarousel (not the grid) at the default test matchMedia — unchanged from before D1', () => {
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(within(region).getAllByRole('tab')).toHaveLength(5);
+    expect(document.querySelector('.km-progress__trendGrid')).toBeNull();
+  });
+
+  it('renders the SwipeCarousel at an explicit narrow viewport too', () => {
+    mockViewportWidth(375);
+    renderPage();
+
+    const region = screen.getByRole('region', { name: 'Progress by skill' });
+    expect(region).toHaveAttribute('aria-roledescription', 'carousel');
+    expect(document.querySelector('.km-progress__trendGrid')).toBeNull();
+  });
+
+  it('renders every skill panel at once in a grid — no carousel/dots — at tablet width (768px)', () => {
+    mockViewportWidth(768);
+    renderPage();
+
+    expect(
+      screen.queryByRole('region', { name: 'Progress by skill' }),
+    ).not.toBeInTheDocument();
+    // No skill-trend carousel dots (the Mastery tab area also renders
+    // role="tab"s — scope to the carousel's own accessible-name pattern so
+    // this can't false-pass/false-fail against that unrelated widget).
+    expect(
+      screen.queryByRole('tab', { name: /^Page \d+ of 5$/ }),
+    ).not.toBeInTheDocument();
+
+    const grid = document.querySelector('.km-progress__trendGrid');
+    expect(grid).not.toBeNull();
+    // All five skill panels render simultaneously — no aria-hidden paging,
+    // no dots to click through (unlike the mobile carousel above).
+    expect(screen.getByText('74%')).toBeInTheDocument(); // Reading's latest value
+    expect(screen.getByText('35 reviews')).toBeInTheDocument(); // Vocab's
+    expect(screen.getByText('52 pts')).toBeInTheDocument(); // Grammar's
+    expect(
+      screen.getByRole('img', { name: 'Reading trend over the last 30 days' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: 'Grammar trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the grid at desktop width (1280px) too', () => {
+    mockViewportWidth(1280);
+    renderPage();
+
+    expect(document.querySelector('.km-progress__trendGrid')).not.toBeNull();
+    expect(
+      screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
+    ).toBeInTheDocument();
+  });
+
+  it('CSS: `.km-progress__trendGrid` is a real CSS grid, gated behind the ≥768px breakpoint', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Progress.css'),
+      'utf8',
+    );
+    const mediaBlock =
+      /@media \(min-width: 768px\) \{\s*\.km-progress__trendGrid \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(mediaBlock).not.toBe('');
+    expect(mediaBlock).toContain('display: grid;');
   });
 });

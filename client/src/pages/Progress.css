@@ -569,6 +569,35 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Tablet/desktop grid (device-adaptive epic, Phase D1) ─────────────────
+ * ≥768px: `SkillTrendsBody` (Progress.tsx) swaps the looping `SwipeCarousel`
+ * above for this plain CSS grid — all five skill panels render at once
+ * instead of one page at a time, each panel's own `LineChart` scaling to
+ * fill its grid cell (`.km-linechart__svg` is `width: 100%`). Two columns
+ * at tablet width (five panels split 2/2/1 — acceptable, not five squeezed
+ * columns), three at desktop once the row is wide enough for a third
+ * 260px-minimum column. */
+@media (min-width: 768px) {
+  .km-progress__trendGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+  }
+}
+
+/* Readability guard (Phase D1) — the desktop shell column is up to 1160px
+ * (styles/index.css's `--shell-desktop-max-width`), plenty of room for the
+ * GRIDS/CHARTS above to spread out, but plain prose/list rows stretched
+ * that wide become hard to scan. Caps only actual reading content (notes,
+ * empty-state copy, the word/hanja mastery lists) at a comfortable measure
+ * — never the charts/tables above, which are meant to use the full width. */
+@media (min-width: 768px) {
+  .km-progress__note,
+  .km-mastery__list {
+    max-width: 640px;
+  }
+}
+
 /* Writing placeholder — mirrors LineChart's empty state so the carousel
    pages read as one family. */
 .km-progress__trendEmpty {
