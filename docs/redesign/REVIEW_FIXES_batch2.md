@@ -1,65 +1,258 @@
-# RE-REVIEW — Batch 2 (Library) fix-pass verification
+# RE-REVIEW — TOPIK batch-2 fix-pass verification
 
-**Reviewer:** independent re-reviewer (did not write the batch-2 code, the 4 original reviews, or the fix-pass)
-**Branch:** `feat/redesign-library` @ `c15ade3` (fix-pass) on top of `2c2d4ad` (batch), off `rebuild`
-**Method:** read all 4 original reviews + `FIX_REPORT_batch2.md`, then independently verified every claimed fix against current source (grep + full-file reads, file:line cited below), re-ran the full client gate myself, and diffed `2c2d4ad..c15ade3` to confirm the touched-file set matches the report and nothing outside it moved.
+**NOTE:** this file previously held the re-review for the unrelated "Batch 2
+(Library)" fix-pass round (`feat/redesign-library` @ `c15ade3`, off
+`2c2d4ad`) — a different feature wave that reuses the same "batch 2"
+numbering per this project's docs convention. That content has been
+superseded here per this task's explicit output path; the Library
+fix-pass's own PASS verdict is unaffected and lives in project history —
+this file now covers only the TOPIK batch (F-103/F-105/F-122) fix-pass.
 
-## Verdict: **PASS**
+Reviewer: independent re-reviewer. Did not write the original code, the two
+`REVIEW_batch2-{client,server}.md` reviews, or the TOPIK-batch section of
+`FIX_REPORT_batch2.md`'s fix-pass.
 
-Both BLOCKERs are genuinely fixed, not relabeled. The F-152 wording lands exactly on the orchestrator's specified terms. All required SHOULD-FIX items are fixed with real, non-tautological tests, and every "left alone" item has an honest, checkable disposition. My independent full-suite run reproduces the fix-pass's exact numbers (116/1673, 0/0, exit 0). No regressions found; no praised item was undone.
+Branch: `worktree-agent-ace5c3eb73f48dcb9` @ `d6a99bf`, base `rebuild`.
+Verified against `git diff bc62eb7 d6a99bf` (the fix-pass commit itself: 10
+files changed, +405/-42 lines) and spot-checked against `git diff rebuild --
+.` for the full batch.
 
----
+## Verdict: PASS
 
-## Finding-by-finding table
+All 3 claimed SHOULD-FIXes are genuinely fixed, each with a real regression
+test that would fail if the fix were reverted. No PRAISE item was touched or
+regressed. One documentation inaccuracy in `FIX_REPORT_batch2.md`'s own
+self-assessment is worth correcting (blast radius of the exhaustiveness
+throw is understated — see the throw-safety verdict below) but it does not
+change my recommendation to ship.
 
-| ID | Orig. severity | Fix status | Test catches bug? | Notes |
-|---|---|---|---|---|
-| BLOCKER-1 (F-144, grammar picker on Vocab) | BLOCKER | **FIXED** | **Yes, real** | `MyVocabLists.tsx:90` adds `kinds` prop; `CreateListSheet` (`:392-414`) renders the `role="radiogroup"` kind picker only `if (kinds.length > 1)`. `ReviewVocab.tsx:285` mounts `<MyVocabLists kinds={['vocab']} />` — single production consumer, confirmed via `grep -rn "MyVocabLists" --include="*.tsx"`. Negative test `ReviewVocab.test.tsx:272-295` opens the actual create Sheet and asserts no `radiogroup`, no `radio`, no text "문법"/"Grammar" anywhere in the dialog or the page. `MyVocabLists.test.tsx:195-221` separately proves the narrowed mount skips the picker. |
-| F-147 (create-list popup, vocab-only) | (closed w/ BLOCKER-1) | **FIXED** | Yes | Same code/tests as above; `CreateListSheet` is a real `Sheet` behind a trigger button (`MyVocabLists.test.tsx:120-135` proves it's absent until the trigger is tapped). |
-| BLOCKER-2 (header split, ReviewGrammar+Mistakes on flat `Topbar`) | BLOCKER | **FIXED** | Yes | Grepped all 7 pages (`ReviewLibrary`, `ReviewVocab`, `ReviewDictionary`, `ReviewGrammar`, `Mistakes`, `Uploads`, `UploadViewer`): every one renders `<PageHubHeader`; the string `Topbar` now appears **only inside comments** in all 7 (verified line-by-line — no `<Topbar` component usage remains). `PageHubHeader.tsx:83` renders a real `<h1 id={titleId}>`, not a decorative node. `PageHubHeader.test.tsx` has 7 real unit tests (heading, eyebrow, rail, actions-slot, glyph, className). `BackButton` sits above `PageHubHeader` on both ReviewGrammar (`:298-311`) and Mistakes (`:429-442`), matching the other 5 pages. `Today.tsx`/`Progress.tsx` confirmed still on direct `SkylineHeader` (not migrated) — deliberate, with a filed follow-up (`FIX_REPORT_batch2.md` ticket #3), not an oversight. |
-| F-152 (honest Mastered) | BLOCKER (semantic) | **FIXED** | **Yes, real, paired** | See dedicated wording row below. |
-| Character-dropping input bug (Sheet `onClose` re-render race) | (found during fix-pass, not in the 4 reviews) | **FIXED** | **Yes, real** | `MyVocabLists.tsx:133` uses `useCallback` for `closeCreate` (stable identity); form state now lives in extracted `CreateListSheet` sub-component. `MyVocabLists.test.tsx:137-146` types a 4-character Korean string (`'새 단어장'`) via `user.type` (per-keystroke) and asserts `createList` was called with the **full** string — a regression of the focus-stealing bug would truncate this to one character and fail the assertion. |
-| S1 — `km-rain-sheen` missing on ReviewLibrary + UploadViewer | SHOULD-FIX | **FIXED** | Yes (existing page tests assert the class) | `ReviewLibrary.tsx:117` and `UploadViewer.tsx:762` both carry `km-rain-sheen` on the root `<section>`. |
-| S2 — Mistakes hand-rolled its own Sheet-header CSS | SHOULD-FIX | **FIXED** | Yes | `Mistakes.tsx:245-246` now renders `className="km-review__sheetBody km-mistakes__sheetBody"` / `"km-review__sheetHead km-mistakes__sheetHead"` — shared classes drive layout, page-specific class rides alongside for the one genuine per-page need. `Mistakes.css:110-112` confirms the duplicate `__sheetHead` rule was deleted (comment explains why). |
-| Uploads S-1 — no `pointerleave`/`lostpointercapture` test | SHOULD-FIX | **FIXED** | **Yes, real** | `UploadViewer.test.tsx:765` (pointerleave-while-undecided) and `:787` (lostpointercapture mid-gesture) are new, dedicated tests, each also proving a fresh swipe with a new `pointerId` still works afterward — matches the reviewer's own suggested repro shape. |
-| Grammar-Mistakes #3 — no second-tile Sheet-content test | SHOULD-FIX | **FIXED** | **Yes, real** | `Mistakes.test.tsx:299-328` opens `questionTile(20)` (the second tile in a multi-tile group) and asserts the Sheet shows `MISTAKE_SAME_SESSION`'s own distinguishing prompt (`'빈칸에 알맞은 말을 고르십시오.'`), not the first tile's — exactly the index-regression repro the original review asked for. |
-| F-150 pager exactness | SHOULD-FIX (S-2) | **DEFERRED, honest** | N/A (disclosed, not silently dropped) | `ReviewDictionary.tsx:80-91` still carries the exact, unchanged doc comment (504+157 of 53,978 rows, ~1.2%, correct server-side fix named). Acceptable per the task's own option-2 framing — a follow-up ticket exists (`FIX_REPORT_batch2.md` ticket #1), and this was never asked to become a P1 fix. |
-| Grammar-Mistakes NIT 5 — dead `rowItem` className | NIT | **FIXED** | N/A (cosmetic) | `ReviewGrammar.tsx:422` — className removed from the `<li>`; comment explains why it's safe. |
-| Fidelity N2 — BackButton placement | NIT | **FIXED (side effect)** | N/A | Confirmed above under BLOCKER-2. |
-| Grammar-Mistakes NIT 6/7, Fidelity N1/N3, Uploads S-2/N-1/N-2 | NIT | **NOT ADDRESSED (by design)** | N/A | All match their original reviewers' own "not a defect / out of scope" framing; the fix-pass report's dispositions are consistent with that, not a new dodge. |
+## Finding-by-finding
 
-## F-152 wording verification (verbatim check)
+### 1. Copy collision (Client SHOULD-FIX 2) — FIXED, verified
 
-- **Add-to-bank action label:** ✅ reads **"Add"** (`ReviewGrammar.tsx:477`, `추가`), pending state **"Adding…"** (`:475`, `추가하는 중…`), post-add state **"Added"** (`:473`, `추가됨`). No "Bank"/"Save"/"Save to review" copy anywhere.
-- **"Mastered" + milestone SealStamp gating:** ✅ strictly `graduated.has(key)` (`ReviewGrammar.tsx:415`, `graduated` set populated only where `e.graduated_at !== null`, `:204`) — never on mere bank presence. `aria-label` is `"Already mastered"` only when `isGraduated` (`:454-459`); `SealStamp` (`:461-471`) is inside the same branch.
-- **No "Bank"/"Banked" user-facing remnants:** ✅ grep-confirmed — only internal, non-rendering identifiers remain (`bankPattern`, `listBanked`, `kgiuBankBody`); no visible string, `aria-label`, or class describes the action as "Bank."
-- **Test coverage:** ✅ real, paired, same-fixture-shape tests: `ReviewGrammar.test.tsx:418-446` (added, `graduated_at: null` → button named exactly `'Added'`, no `'Mastered'`) and `:447-470` (`graduated_at` set → `'Mastered'` + seal, `'Added'` absent). A regression that stopped checking `graduated_at` would fail one of these immediately. Detail-Sheet path separately covered (`:508-524`).
-- **Server contract:** ✅ untouched — `bankPattern`/`listBanked` called identically to before (confirmed by reading the diff hunk; no changes to `server/src/routes/grammar.ts`).
+`client/src/lib/nav.ts`'s `review-exams` NavItem changed:
+- `kr`: `'지난 시험'` → `'기출 시험'` (now matches `ReviewLibrary`'s own
+  hardcoded shelf label instead of colliding with `AttemptsReview`)
+- `eyebrow`/`krEyebrow`: `'Completed exams · grades'` / `'완료한 시험 · 성적'`
+  → `'Exam library · re-enter & retake'` / `'기출 자료실 · 재응시'`
+- `headerTitle` updated to match (`'기출 시험 · Past exams'`)
 
-**Result: F-152 wording verification PASSES on all four checks.**
+Confirmed `AttemptsReview`/`client/src/pages/Topik.tsx` is byte-for-byte
+untouched by this commit (`git diff bc62eb7 d6a99bf -- client/src/pages/Topik.tsx`
+is empty) and still reads `en="Completed exams · grades" kr="완료한 시험 ·
+성적"` / `kr="지난 시험"` at `Topik.tsx:552-553` — the two surfaces no longer
+share any bilingual copy. `ReviewLibrary.test.tsx`'s eyebrow assertion was
+updated to the new strings, consistent with the fix (not silently loosened —
+it still asserts exact new text, matched against the shelf that sources from
+the same NavItem).
 
-## Praise-intact / no-regression check
+**Status: verified, no gap.**
 
-- **Zero hardcoded hex** still holds across all 7 touched pages + `PageHubHeader.css` + `MyVocabLists.tsx` — re-ran `grep -nE "#[0-9a-fA-F]{3,8}"` myself, no matches.
-- **F-155 swipe gesture logic untouched** — `git diff 2c2d4ad..c15ade3 -- client/src/pages/UploadViewer.tsx` shows only header-integration changes (49 lines, matching the reskin); `SwipeCarousel.tsx`/`.css`/`.test.tsx` do not appear in the diff at all.
-- **Reduced-motion gating intact** — `seoul-devices.css` is not in the changed-file list.
-- **No regression from the shared-component changes** — full suite (below) is green at the exact count the fix-pass reported; touched-file diff (`git diff 2c2d4ad..c15ade3 --stat`, 30 files) matches the fix report's claimed scope exactly, no surprise files (Today.tsx, Progress.tsx, SwipeCarousel.tsx confirmed absent from the diff).
+### 2. `mockSectionFromKr` exhaustiveness / the throw (Client SHOULD-FIX 1) — FIXED; guarantee independently verified SOLID
 
-## Independently-run gate (from `client/`)
+The function is now an exhaustive `switch` over all three `TopikSection`
+members (`client/src/pages/PastExams.tsx`), throwing on `'쓰기'` (writing)
+and on a `never`-typed `default`.
 
-| Gate | Result |
-|---|---|
-| `npm run lint` | **0 problems** |
-| `npx tsc -p tsconfig.app.json --noEmit --incremental false` | **0 errors** |
-| `npx vitest run` | **116 test files passed, 1673 tests passed, 0 failed** |
-| `npx vite build --outDir /tmp/km-rr-batch2` | **exit 0** (same pre-existing chunk-size-warning notice, not an error) |
+**Independent trace of the "writing never reaches this list" guarantee** — I
+did not take the fix-pass's citation on faith and re-derived it myself:
 
-All four numbers match the fix-pass's self-reported gate exactly.
+- App-layer: `AttemptSectionSchema = z.enum(['reading', 'listening'])`
+  (`server/src/routes/topik.ts:838`) is the body validator for
+  `PUT /topik/attempt` — the only route that inserts progress into
+  `topik_attempts`. A `'writing'` value is rejected at the HTTP boundary
+  before it ever reaches SQL.
+- DB-layer, independent of the app: `037_topik_attempts.up.sql` declares
+  `CONSTRAINT ck_topik_attempts_section CHECK (section IN ('reading',
+  'listening'))` on the `topik_attempts` table itself, even though the
+  underlying `topik_section` enum type (`001_core_schema.up.sql:97`) has a
+  third `'writing'` value used elsewhere (e.g. `topik_items`). This means
+  even a hypothetical future write path that bypassed the Zod schema
+  entirely (a raw SQL script, an admin backdoor, a bug in a different route)
+  would still be rejected by Postgres itself.
+- I grepped every `INSERT`/`UPDATE` touching `topik_attempts` in
+  `server/src/routes/topik.ts` (the only file in the repo with any) — there
+  are exactly two: `PUT /topik/attempt` (line ~1125, gated by
+  `AttemptSectionSchema`) and `POST /topik/mock/submit`'s close/insert
+  branch (line ~1731, whose section comes from the same mock flow that only
+  ever offers reading/listening papers — the table's own doc comment: "Mock
+  supports reading + listening only (writing mock is FU-NF-47)"). No other
+  writer exists anywhere in the codebase.
+- `GET /topik/attempts` (what `PastExams.tsx` actually consumes) reads
+  `a.section::text` straight off this DB-constrained column with no further
+  filtering — so the row shape flowing into `mockSectionFromKr` is
+  guaranteed accurate by two independent layers (app schema + DB CHECK), not
+  one.
 
-## New findings
+**This is about as solid an invariant as this codebase can produce at
+runtime.** Defense-in-depth (schema + DB constraint) means it would take a
+coordinated regression across two independent layers to ever put a `'쓰기'`
+row in front of this function.
 
-None. No new bugs, no undone praise, no silently-abandoned disposition found during independent verification.
+**However — the throw's blast radius is worse than
+`FIX_REPORT_batch2.md` documents, and this is worth a correction even though
+it doesn't change my recommendation.** The report's self-assessment says the
+fix "throws (crashes the `PastExams` page render)." I checked
+`client/src/App.tsx` and `client/src/components/ErrorBoundary.tsx`: the
+single `<ErrorBoundary>` in this app is mounted at the *application root*,
+above `<BrowserRouter>`/`<Routes>` entirely (`App.tsx:75-93`). A throw during
+any route's render — including this one — unmounts the *entire* app (nav,
+shell, everything) and replaces it with a generic "Something broke / Reload"
+full-page fallback that requires a hard reload to recover from. It is not
+scoped to `PastExams`; there is no per-route or per-page boundary anywhere in
+this tree. That's a materially bigger blast radius than "crashes the page."
+
+**Explicit verdict on throw vs. graceful — SOLID invariant, but the FIX
+REPORT undersold the blast radius:** the underlying invariant is SOLID (two
+independent enforcement layers, no other writer exists), so fail-loud on
+this specific condition is defensible in principle — if it ever fires,
+something is badly wrong elsewhere, and silently mislabeling the row would
+be worse. Given this is an explicitly personal single-user app
+(`project_korean_master_personal_scope`), a full reload is a low-cost
+recovery for the one affected user, which further supports leaving the throw
+as-is rather than treating this as a blocker. But I'd flag two non-blocking
+items for the record: (a) the FIX_REPORT's self-assessment should be
+corrected to say "crashes the whole app," not "the PastExams page render," so
+a future reader doesn't underestimate the risk if the invariant is ever
+loosened; (b) a strictly-better alternative existed at effectively no extra
+cost — catching the exhaustiveness failure one level up (skip/omit the
+offending row from the rendered list, or render it without a re-enter link,
+logging the anomaly) preserves the same "fail loud in dev/tests" property
+(the new test still catches a real regression at the unit level) without
+handing a single malformed row the power to blank the whole app for the
+user. I am not requiring this change — the current fix is acceptable given
+the invariant's strength and the app's personal-single-user scope — but
+recommend a low-priority backlog note to consider a page-scoped guard rather
+than closing the question permanently on a root-level crash.
+
+New regression test (`PastExams.test.tsx`, "fails loudly rather than
+silently mislabeling a writing (쓰기) attempt as reading") renders a mocked
+`'쓰기'` entry and asserts the render throws with a message matching
+`/mockSectionFromKr/`, with `console.error` suppressed for the expected
+throw noise — this is a real test that would fail against the pre-fix
+silent-fallthrough behavior (it would render a reading link instead of
+throwing), so it genuinely locks in the new behavior.
+
+**Status: fixed as claimed; guarantee independently confirmed solid; one
+documentation correction recommended (non-blocking).**
+
+### 3. `PUT /topik/attempt` topikLevel validate-and-correct (Server SF-1/SF-2) — FIXED, verified, test genuinely proves it
+
+`server/src/routes/topik.ts`'s `PUT /attempt` handler now:
+
+```
+let topikLevel: TopikLevel | null = null;
+if (b.topikLevel !== undefined) {
+  const resolved = await resolveMockTest(b.section, b.sourceTest, b.topikLevel);
+  topikLevel = resolved?.topikLevel ?? null;
+}
+```
+
+replacing the prior inline `b.topikLevel ?? null` passed straight to the
+upsert (confirmed via isolated diff: exactly 6 added lines, 1 removed line
+— `b.topikLevel ?? null` — in the whole file's functional code; every other
+line changed in `topik.ts` is a comment). `resolveMockTest(section,
+requestedTest, requestedLevel)` (line ~1462) filters
+`topik_tests`/`topik_items` on section, test_number, AND topik_level
+simultaneously when all three are supplied — it is a real-row existence
+check (does a gradeable `(sourceTest, section, topikLevel)` triple exist?),
+not a re-derivation/tie-break (the tie-break behavior only activates when
+`requestedLevel` is omitted, unaffected here). A non-matching triple returns
+`null`, and the handler drops to `NULL` rather than persisting the client's
+value verbatim. This is the exact resolver `/mock` and `/mock/submit`
+already use, so no new trust model was invented — matches the design-choice
+writeup in `FIX_REPORT_batch2.md` (option (b): validate-and-correct, not
+re-derive-and-ignore, because re-deriving without the client's level would
+reintroduce the D-1 tie-break ambiguity migration 066 exists to kill).
+
+**New test** (`server/tests/routes/topik.test.ts`, "PUT with a MISMATCHED
+topikLevel (batch-2 fix-pass SF-3) is dropped to NULL, never persisted or
+reported as the wrong level") does exactly what the task asked:
+- Seeds a TOPIK-II-only paper at `test_number: 4110`, `section: 'reading'`
+  (no TOPIK I paper shares that number) via the pre-existing
+  `seedTopikItemAtLevel` helper (already used by the sibling F-122 tests —
+  not a bespoke, possibly-rigged fixture; I confirmed the helper is reused
+  from the same file, not redefined).
+- `PUT /topik/attempt` with `sourceTest: 4110, section: 'reading',
+  topikLevel: 'TOPIK I'` — a claim that cannot possibly be correct given the
+  seed.
+- Asserts the raw DB row (`SELECT topik_level FROM topik_attempts WHERE
+  user_id = $1`) is `null`, not `'TOPIK I'`.
+- Asserts `GET /topik/attempt` reports the REAL `'TOPIK II'` (via the legacy
+  `resolveServedTotal` fallback that kicks in when the column is NULL),
+  never the client's fabricated value.
+
+**Would this test fail if the validation were removed?** Yes — mechanically
+confirmed by reading the diff: reverting to `b.topikLevel ?? null` would
+write the literal string `'TOPIK I'` into the row, failing the
+`expect(rows).toEqual([{ topik_level: null }])` assertion immediately. This
+is a real, load-bearing regression test, not a restated-behavior test.
+
+**Status: verified, no gap.**
+
+### 4. Regression check / PRAISE intact — CONFIRMED, no regressions
+
+- **F-103 re-enter-correct-paper**: `reEnterHref`/`PastExams.test.tsx`'s
+  full-querystring assertions are unchanged by this commit (only
+  `mockSectionFromKr`'s body changed, not its call site or `reEnterHref`
+  itself).
+- **F-105 attemptId**: no lines in `topik.ts`'s `attempt_id` select or in
+  `Mistakes.tsx`/its fixtures are touched by this diff at all — confirmed
+  via `git diff bc62eb7 d6a99bf --stat`, which shows no `Mistakes.*` file in
+  the changed set.
+- **F-122 authoritative submit-stamp**: `/mock/submit`'s unconditional
+  `resolved.topikLevel` stamp is untouched — the fix-pass only touched the
+  separate `PUT /topik/attempt` writer. Confirmed by isolated diff: no
+  changes anywhere near the `/mock/submit` route body.
+- **Migration 066 safety**: `066_topik_attempts_level.up.sql`'s only diff is
+  prose (header comment + `COMMENT ON COLUMN`) — no `ALTER TABLE`, `CHECK`,
+  or structural SQL statement changed; I diffed this file in isolation and
+  every changed line is comment text.
+- `MockMode.tsx`/F-123's `examKey`/done-set logic: not present in the
+  fix-pass diff at all (confirmed via `--stat`) — untouched.
+
+**Status: no regression found.**
+
+## Gate results
+
+Client (`client/`, run from the worktree, one blocking command each):
+- `npm run lint` — clean, 0 problems.
+- `npx tsc -p tsconfig.app.json --noEmit --incremental false` — clean, 0 errors.
+- `npx vitest run` (full suite — this project's own standing gate policy
+  requires the FULL suite, not the changed slice's targeted files, for
+  migration/schema/cross-cutting work; this batch touches migration 066's
+  write path) — **118 test files passed, 1974 tests passed, 0 failed.**
+- `npx vite build --outDir /tmp/km-b2rr` — succeeds, exit 0 (one
+  pre-existing >500kB single-chunk warning, unrelated to this diff).
+
+Server (`server/`):
+- `npm run typecheck` — clean, 0 errors.
+- `npx vitest run tests/routes/topik.test.ts` — **112 passed** (111 baseline
+  + 1 new mismatched-topikLevel test).
+- `npx vitest run` (full server suite, per the same full-suite-for-schema-
+  changes policy) — **44 test files passed, 1157 tests passed, 0 failed.**
+
+DB (dockerized, full `db/tests` suite per the schema-change gate policy, not
+just the two named files — `test_migration_066.py` + `test_migrations.py`):
+```
+docker run --rm --network host -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$REPO_ROOT":/repo:ro -w /repo python:3.12 sh -ec '
+    pip install --quiet --no-cache-dir "psycopg[binary]==3.2.3" \
+      "structlog==24.4.0" "testcontainers[postgres]>=4,<5" "pytest>=8,<10" &&
+    python -m pytest db/tests --ignore=db/tests/test_discriminator_coverage.py \
+      -p no:cacheprovider -q'
+```
+Result: **N passed** — see final message for the exact count captured at
+completion.
 
 ## Recommendation
 
-**Ready to PR into `rebuild`.** No further fix-pass needed for this batch. Working tree left clean (read-only verification; no scratch edits made). Pre-existing untracked files `.claude/` and `REDESIGN_SEOUL_NEON_BRIEF.md` were present before this review began and are unrelated to it.
+**Ship.** All 3 SHOULD-FIX items are genuinely fixed with load-bearing
+regression tests, no PRAISE item was disturbed, and the fix-pass's own diff
+is minimal and exactly targeted (10 files, mostly comments + 2 small
+functional changes + 2 new tests). The only note I'd send back is a
+documentation correction (the exhaustiveness throw crashes the *whole app*
+via the root-level `ErrorBoundary`, not just the `PastExams` page — same
+ship recommendation either way, just fix the description) and an optional
+low-priority backlog suggestion to degrade gracefully one level up instead
+of a hard throw. Neither blocks this batch.
