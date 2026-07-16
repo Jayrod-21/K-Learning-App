@@ -17,6 +17,7 @@ import { validateBody, validateQuery, validateParams } from '../middleware/valid
 import { query, withTransaction } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 import { escapeLikePattern } from '../db/like.js';
+import { sourceUploadFenceSql } from '../db/corpusFences.js';
 import { applyCardReview } from '../services/cardReview.js';
 
 const router = Router();
@@ -154,10 +155,8 @@ router.get(
             -- a user's PRIVATE upload — they must never surface in another
             -- user's browse. Untagged rows (all curated corpora + tap-mined
             -- lemmas, source_upload_id IS NULL) stay shared reference data.
-            AND (source_upload_id IS NULL
-                 OR EXISTS (SELECT 1 FROM book_uploads bo
-                             WHERE bo.id = source_upload_id
-                               AND bo.user_id = $8))
+            -- Shared fragment: db/corpusFences.ts (the fence audit surface).
+            AND ${sourceUploadFenceSql('source_upload_id', '$8')}
           ORDER BY id
           LIMIT $9 OFFSET $10`,
         [
@@ -517,15 +516,13 @@ router.get(
         // F-108 fence: an entry EXTRACTED from a book upload is derived from a
         // user's PRIVATE upload — another user probing sequential ids must get
         // the same 404 as a missing id. Untagged rows stay shared reference.
+        // Shared fragment: db/corpusFences.ts (the fence audit surface).
         `SELECT id, corpus, source_id, korean, english, pronunciation, hanja,
                 part_of_speech, theme, subsection, proficiency,
                 example_korean, example_english, tips, cross_refs, notes
            FROM vocab_entries
           WHERE id = $1
-            AND (source_upload_id IS NULL
-                 OR EXISTS (SELECT 1 FROM book_uploads bo
-                             WHERE bo.id = source_upload_id
-                               AND bo.user_id = $2))
+            AND ${sourceUploadFenceSql('source_upload_id', '$2')}
           LIMIT 1`,
         [id, userId],
       );
@@ -568,12 +565,19 @@ router.post(
       }).validatedParams.entryId;
       const out = await withTransaction(async (client) => {
         // Existence check — a missing entry is a 404, not a silent no-op.
+        // F-108 fence (fixpass b8 B-2): without it this check is an existence
+        // ORACLE (201 vs 404 across sequential ids defeats the fenced detail
+        // route) and an exfiltration path — banking a foreign extracted entry
+        // surfaces its full korean/english through the caller's own
+        // GET /vocab/cards/due join. A fenced-out id gets the same 404 as a
+        // missing one. Shared fragment: db/corpusFences.ts.
         const entry = await client.query<{ proficiency: string | null }>(
           `SELECT proficiency
              FROM vocab_entries
             WHERE id = $1
+              AND ${sourceUploadFenceSql('source_upload_id', '$2')}
             LIMIT 1`,
-          [entryId],
+          [entryId, userId],
         );
         if (entry.rowCount === 0) {
           throw new NotFoundError('vocab entry not found');

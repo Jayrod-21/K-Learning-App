@@ -9,6 +9,7 @@ import { getUserId, requireAuth } from '../middleware/auth.js';
 import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate.js';
 import { query } from '../db/pool.js';
+import { sourceUploadFenceSql } from '../db/corpusFences.js';
 import { ConflictError, NotFoundError, mapClaudeError } from '../middleware/errors.js';
 import { getClaudeProxy } from '../services/claudeProxy.js';
 import type { FsrsStateName } from '../services/fsrs.js';
@@ -104,10 +105,8 @@ router.get(
             -- a user's PRIVATE upload — they must never surface in another
             -- user's Reference list. Untagged rows (the whole curated KGIU
             -- corpus, source_upload_id IS NULL) stay shared reference data.
-            AND (source_upload_id IS NULL
-                 OR EXISTS (SELECT 1 FROM book_uploads bo
-                             WHERE bo.id = source_upload_id
-                               AND bo.user_id = $7))
+            -- Shared fragment: db/corpusFences.ts (the fence audit surface).
+            AND ${sourceUploadFenceSql('source_upload_id', '$7')}
           ORDER BY id
           LIMIT $8 OFFSET $9`,
         [
@@ -154,16 +153,14 @@ router.get(
         // F-108 fence: an entry EXTRACTED from a book upload is derived from a
         // user's PRIVATE upload — another user probing sequential ids must get
         // the same 404 as a missing id. Untagged rows stay shared reference.
+        // Shared fragment: db/corpusFences.ts (the fence audit surface).
         `SELECT id, corpus, source_id, pattern, title_en, category, proficiency,
                 unit, explanation, formation_rules, examples, dialogues,
                 vocabulary, tips, compare_with, exercises, cultural_notes,
                 source_pages
            FROM kgiu_entries
           WHERE id = $1
-            AND (source_upload_id IS NULL
-                 OR EXISTS (SELECT 1 FROM book_uploads bo
-                             WHERE bo.id = source_upload_id
-                               AND bo.user_id = $2))
+            AND ${sourceUploadFenceSql('source_upload_id', '$2')}
           LIMIT 1`,
         [id, userId],
       );

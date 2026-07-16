@@ -41,8 +41,18 @@ cols + `set_updated_at()` trigger.
   actually in range at claim time, not the raw span) is what the daily cap
   sums; failed runs still count — a cap is a *cost* control and a failed run
   spent money too (same stance as `image_captures` counting soft-deleted).
+  The ledger **survives upload deletion** (`fk_upload_extractions_upload` is
+  `ON DELETE SET NULL`, `upload_id` nullable — fixpass b8 BLOCKER-1): the cap
+  sums by the denormalized `user_id` alone, so extract→delete→re-upload can
+  never refund budget (a CASCADE here was the original design's cost-bypass
+  hole).
 - `user_id` is denormalized (written from the ownership-checked parent inside
-  the same tx) so the hot-path cap query needs no join.
+  the same tx) so the hot-path cap query needs no join — and so orphaned
+  ledger rows stay chargeable to the user who spent the money.
+- **Crash-recoverable**: a run left `running` by a process death is settled
+  `failed` by the next claim once older than `STALE_RUN_MINUTES` (15) —
+  inside the claim tx, so the partial-unique claim can never be permanently
+  bricked by a restart mid-run (fixpass b8 SF-2).
 
 068 also relaxes `ck_kgiu_entries_corpus_kgiu_only` /
 `ck_kgiu_entries_level_matches_corpus` to admit `'user_mined'` — the exact
@@ -61,9 +71,15 @@ posture: destroying extracted content is a deliberate operator act).
 - **`UPLOAD_EXTRACT_DAILY_PAGE_CAP` (default 50/day/user)**, checked *inside
   the claim transaction, before any upstream call* → 429
   (`ExtractionDailyCapError`), with a structured log line recording what was
-  refused. A separate knob from `IMAGE_OCR_DAILY_CAP` because a deliberate
-  book-extraction session legitimately burns more Vision calls than photo
-  mining, and the two budgets shouldn't starve each other.
+  refused. The claim's `FOR UPDATE` on `book_uploads` only serializes claims
+  for ONE upload, so the cap read additionally takes a **per-user advisory
+  xact lock** (`pg_advisory_xact_lock`, keyed on the user id) before the SUM —
+  without it, concurrent triggers on two different uploads of the same user
+  both read the pre-spend total under READ COMMITTED and can jointly overshoot
+  the cap (fixpass b8 SF-1/S-3; the original doc overclaimed here). A separate
+  knob from `IMAGE_OCR_DAILY_CAP` because a deliberate book-extraction session
+  legitimately burns more Vision calls than photo mining, and the two budgets
+  shouldn't starve each other.
 - Synchronous execution (no job runner exists in this codebase; U1a set the
   precedent with synchronous zip normalization). If bigger ranges are ever
   wanted, the schema already supports an async runner (`pending` status).
@@ -114,17 +130,33 @@ read.
 
 `vocab_entries`/`kgiu_entries` are shared reference tables, but extracted
 rows derive from a user's **private** upload. Without a fence they'd surface
-in every user's browse/detail/suggestions. Added
-`(source_upload_id IS NULL OR EXISTS(owner))` guards to:
+in every user's browse/detail/suggestions. The rule (fixpass b8 hardened it
+into ONE audit surface — `server/src/db/corpusFences.ts`, whose
+`sourceUploadFenceSql` fragment every owner-conditional site composes): any
+query that returns row content **or validates a client-supplied id** carries
+`(source_upload_id IS NULL OR EXISTS(owner))`. Fence sites:
 
 - `GET /vocab/entries` (browse) + `GET /vocab/entries/:entryId` (detail)
 - `GET /grammar/kgiu` (Reference list) + `GET /grammar/kgiu/:id` (detail)
-- `/grammar/suggestions/weekly` and `diagnostic.ts pickGrammarSeed`
-  (`source_upload_id IS NULL` outright — extracted rows are uncurated OCR
-  candidates, wrong for curated suggestion/seed pools regardless of owner)
+- `POST /vocab/entries/:entryId/bank` — the existence check (fixpass b8 B-2:
+  unfenced, it was an existence oracle AND exfiltrated content through the
+  caller's own `GET /vocab/cards/due` join)
+- `POST /vocab/lists` seed validation + `POST /vocab/lists/:id/entries`
+  typed-add validation, for BOTH the vocab and grammar target types (fixpass
+  b8 B-3: the only path that leaked extracted **kgiu** content)
+- `/grammar/suggestions/weekly` and `diagnostic.ts pickGrammarSeed` **and
+  `pickVocabSeed`** (fixpass b8 B-1 — the vocab twin was missed; extracted
+  rows are written `proficiency='L3'`, so they matched the first targeted
+  pass of any user's diagnostic): `source_upload_id IS NULL` outright —
+  extracted rows are uncurated OCR candidates, wrong for curated
+  suggestion/seed pools regardless of owner.
 
-The U3a source-filter branches (already shipped with owner-EXISTS guards)
-are unchanged — the owner sees their rows exactly there.
+Verified safe WITHOUT a fence: `POST /vocab/cards/init` +
+`/vocab/suggestions/weekly` (closed curated-corpus allow-lists), `hanja.ts`
+(joins through the user's own cards). The U3a source-filter branches
+(already shipped with owner-EXISTS guards) are unchanged — the owner sees
+their rows exactly there. Every fence above is pinned by an adversarial
+stranger-probe test (`uploadExtract.test.ts`).
 
 Other enumerated threats + defenses are documented in
 `server/src/services/uploadExtract.ts`'s header (IDOR → uniform 404;

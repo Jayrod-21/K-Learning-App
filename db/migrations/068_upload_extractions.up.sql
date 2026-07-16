@@ -31,13 +31,29 @@
 --       failed run still counts (a cap is a COST control; failures spent
 --       money too — same stance as image_captures counting soft-deleted).
 --
+-- WHY THE LEDGER SURVIVES UPLOAD DELETION (fk upload_id ON DELETE SET NULL)
+--   book_uploads is HARD-deleted (040 — no soft-delete column). If this FK
+--   CASCADEd, `DELETE /uploads/:id` would erase today's charged run rows and
+--   RESET the daily Vision-page cap on demand (extract → delete → re-upload →
+--   extract again ≈ BOOK_UPLOAD_DAILY_CAP × the intended Vision budget). The
+--   cap query sums by the denormalized user_id alone, so a SET-NULL'd
+--   (orphaned) run row keeps charging the user who spent the money — the
+--   image_captures stance ("deleting the artifact must not refund the
+--   budget") actually holds here. upload_id is therefore NULLABLE: NULL means
+--   "the upload this run charged for was deleted after the fact". The partial
+--   UNIQUE claim index below is unaffected: it only covers live
+--   (pending/running) rows, and Postgres never treats two NULLs as equal, so
+--   an orphaned row can neither block nor be blocked by a new claim.
+--
 -- WHY user_id IS DENORMALIZED
 --   The daily cap query ("pages this user requested today") runs on every
 --   trigger. Storing the owner directly avoids a join through book_uploads
 --   on the hot path and keeps the cap intact even mid-transaction while the
 --   parent row is locked. The route writes it from the ownership-checked
 --   book_uploads row inside the same transaction, so it can never disagree
---   with book_uploads.user_id (and both FKs CASCADE from users together).
+--   with book_uploads.user_id. It is also what keeps the ledger chargeable
+--   after upload deletion nulls upload_id (the user FK still CASCADEs — a
+--   deleted USER takes their cost history with them, which is correct).
 --
 -- WHY THE kgiu CHECK RELAXATIONS ARE SAFE
 --   Both CHECKs are made strictly MORE PERMISSIVE — every row that satisfied
@@ -71,7 +87,9 @@ END $$;
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS upload_extractions (
     id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    upload_id        BIGINT                    NOT NULL,
+    -- NULLABLE by design: SET NULL on upload deletion keeps the cost ledger
+    -- intact (see header). Every row is INSERTed with a real upload_id.
+    upload_id        BIGINT,
     user_id          BIGINT                    NOT NULL,
 
     status           upload_extraction_status  NOT NULL DEFAULT 'pending',
@@ -102,9 +120,12 @@ CREATE TABLE IF NOT EXISTS upload_extractions (
     updated_at       TIMESTAMPTZ               NOT NULL DEFAULT now(),
     version          INTEGER                   NOT NULL DEFAULT 1,
 
+    -- SET NULL, NOT CASCADE: the run row is the daily cap's cost ledger — it
+    -- must outlive its upload or deletion refunds spent Vision budget (see
+    -- header "WHY THE LEDGER SURVIVES UPLOAD DELETION").
     CONSTRAINT fk_upload_extractions_upload
         FOREIGN KEY (upload_id) REFERENCES book_uploads(id)
-        ON DELETE CASCADE ON UPDATE RESTRICT,
+        ON DELETE SET NULL ON UPDATE RESTRICT,
     CONSTRAINT fk_upload_extractions_user
         FOREIGN KEY (user_id) REFERENCES users(id)
         ON DELETE CASCADE ON UPDATE RESTRICT,
@@ -129,7 +150,13 @@ COMMENT ON TABLE upload_extractions IS
     'tagged with source_upload_id. The row is the run''s claim (partial UNIQUE '
     'below: one live run per upload), its cost-accounting record (the daily '
     'Vision-page cap sums pages_requested), and its status/result surface for '
-    'the client. CASCADEs with its upload and with its user.';
+    'the client. Survives its upload''s deletion (upload_id SET NULL — the cap '
+    'ledger must not be resettable by DELETE /uploads/:id); CASCADEs with its '
+    'user.';
+COMMENT ON COLUMN upload_extractions.upload_id IS
+    'The book upload this run read. NULL = that upload was hard-deleted after '
+    'the run (ON DELETE SET NULL) — the row survives as the user''s daily '
+    'Vision-page cost record.';
 COMMENT ON COLUMN upload_extractions.user_id IS
     'Denormalized owner (always equals the upload''s user_id — written from '
     'the ownership-checked parent row in the same transaction). Exists so the '

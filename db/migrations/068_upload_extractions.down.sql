@@ -2,9 +2,10 @@
 -- =============================================================================
 -- Migration 068 — upload_extractions (DOWN)
 --   Reverses 068_upload_extractions.up.sql:
---     1. drops the `upload_extractions` table (run history is lost — hence
---        the destructive marker above; `migrate.py` requires
---        --allow-destructive);
+--     1. drops the `upload_extractions` table (run history — INCLUDING the
+--        daily Vision-page cost ledger, which deliberately survives upload
+--        deletion via the up's ON DELETE SET NULL — is lost; hence the
+--        destructive marker above; `migrate.py` requires --allow-destructive);
 --     2. drops the `upload_extraction_status` enum (safe once the only table
 --        using it is gone);
 --     3. restores the two original (pre-F-108) kgiu_entries CHECK

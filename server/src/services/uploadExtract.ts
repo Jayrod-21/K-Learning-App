@@ -55,10 +55,16 @@
  *     part of a filesystem path in this module.
  *   - COST/DoS: (1) range span capped at MAX_EXTRACT_PAGES_PER_RUN; (2) the
  *     per-user DAILY page cap (config UPLOAD_EXTRACT_DAILY_PAGE_CAP) is
- *     enforced inside the claim tx BEFORE any Vision call and counts failed
- *     runs (cost control, not usage metering); (3) the one-live-run-per-upload
- *     unique claim stops concurrent double-spends; (4) per-page images are
- *     bounded by the same 8 MiB limit as the Images screen before base64.
+ *     enforced inside the claim tx BEFORE any Vision call, behind a per-user
+ *     advisory xact lock (so concurrent triggers on DIFFERENT uploads of one
+ *     user can't both read a pre-spend total), and counts failed runs (cost
+ *     control, not usage metering); (3) the cap's ledger rows SURVIVE upload
+ *     deletion (fk SET NULL, migration 068) — deleting and re-uploading a
+ *     book never refunds budget; (4) the one-live-run-per-upload unique claim
+ *     stops concurrent double-spends, and a crashed run is reaped as stale at
+ *     the next claim (STALE_RUN_MINUTES) instead of 409-bricking the upload;
+ *     (5) per-page images are bounded by the same 8 MiB limit as the Images
+ *     screen before base64.
  *   - PROMPT INJECTION: OCR'd text is PERSISTED content that later re-enters
  *     Claude prompts (grammar drills, enrich, diagnostics read these tables).
  *     Every field passes through the shared sanitizeUserInput guard at the
@@ -98,8 +104,24 @@ export const MAX_EXTRACT_PAGES_PER_RUN = 20;
 
 /** Default span when the client omits the range — a sensible slice, half the
  *  ceiling, so the zero-config "Extract text" button does something useful
- *  without maxing the daily budget in two clicks. */
-export const DEFAULT_EXTRACT_PAGES = 10;
+ *  without maxing the daily budget in two clicks. Module-private: the GET
+ *  payload surfaces `max_pages_per_run`; the default is a server-side
+ *  behavior, not a wire contract. */
+const DEFAULT_EXTRACT_PAGES = 10;
+
+/** A run still 'running' after this long is dead — the synchronous pipeline
+ *  settles every run in-process within minutes (≤20 Vision calls, seconds
+ *  each), so only a crash/restart mid-run can leave one live this long. The
+ *  claim tx reaps such a run as 'failed' before inserting the new claim, so a
+ *  crashed run can never 409-brick its upload forever. */
+export const STALE_RUN_MINUTES = 15;
+
+/** The closed part-of-speech vocabulary the OCR result schema promises
+ *  (`ImageWordPosSchema`, services/claude/models.ts). Re-checked at the
+ *  curation boundary so a buggy/mocked proxy can't persist arbitrary text
+ *  into `part_of_speech` (the module-header "every field is guarded"
+ *  invariant — TS types are erased at runtime). Unknown → null. */
+const ALLOWED_POS: ReadonlySet<string> = new Set(['n.', 'v.', 'adj.', 'adv.', 'pn.']);
 
 // ---------------------------------------------------------------------------
 // DTO
@@ -113,7 +135,11 @@ export type ExtractionStatus = 'pending' | 'running' | 'done' | 'failed';
  *  route in this codebase). */
 export interface ExtractionRunDTO {
   readonly id: number;
-  readonly upload_id: number;
+  /** null = the upload was hard-deleted after this run (the row survives as
+   *  the user's daily Vision-page cost record — fk SET NULL, migration 068).
+   *  Unreachable via GET /uploads/:id/extract (the parent 404s first); kept
+   *  honest in the type because the settle path can observe it. */
+  readonly upload_id: number | null;
   readonly status: ExtractionStatus;
   readonly page_from: number;
   readonly page_to: number;
@@ -132,7 +158,7 @@ export interface ExtractionRunDTO {
 /** Raw row shape (pg returns BIGINT as string, TIMESTAMPTZ as Date). */
 export interface ExtractionRunRow {
   id: string;
-  upload_id: string;
+  upload_id: string | null;
   status: ExtractionStatus;
   page_from: number;
   page_to: number;
@@ -151,7 +177,7 @@ export interface ExtractionRunRow {
 export function toExtractionRunDTO(row: ExtractionRunRow): ExtractionRunDTO {
   return {
     id: Number(row.id),
-    upload_id: Number(row.upload_id),
+    upload_id: row.upload_id === null ? null : Number(row.upload_id),
     status: row.status,
     page_from: row.page_from,
     page_to: row.page_to,
@@ -228,8 +254,9 @@ const GRAMMAR_BEARING_TYPES: ReadonlySet<string> = new Set(['grammar', 'both']);
  * Rules (v1 — documented in docs/BUILD_b8_f108_ocr.md):
  *   - SANITIZE: kr/en/gloss each pass through sanitizeUserInput (control-char
  *     strip + injection-marker rejection + NFC + length bound at the OCR
- *     schema's own ceilings). A rejected or blank-after-strip word is skipped
- *     and counted — never persisted, never fatal to the page.
+ *     schema's own ceilings); pos is re-validated against the OCR schema's
+ *     closed enum (unknown → null). A rejected or blank-after-strip word is
+ *     skipped and counted — never persisted, never fatal to the page.
  *   - DEDUP: one curated row per distinct headword per run (first occurrence
  *     wins for glosses; page numbers are merged, sorted, deduped) — matches
  *     the deterministic source_id so re-encounters can't fan out rows.
@@ -278,7 +305,12 @@ export function curateOcrWords(
         if (!existing.word.pages.includes(page)) existing.word.pages.push(page);
         continue;
       }
-      const pos = raw.pos ?? null;
+      // pos is the one field sanitizeUserInput doesn't cover — it is a closed
+      // enum, not free text, so validate it against the schema's own value
+      // set instead (unknown/mocked garbage → null, which classifies the word
+      // as a grammar candidate on grammar-bearing uploads — the conservative
+      // bucket: kgiu rows surface only behind the owner fence).
+      const pos = raw.pos != null && ALLOWED_POS.has(raw.pos) ? raw.pos : null;
       byHeadword.set(kr, {
         word: { kr, en, gloss, pos, pages: [page] },
         grammar: grammarBearing && pos === null,
@@ -492,10 +524,43 @@ export async function runExtraction(
       );
     }
 
-    // Daily Vision-page cap — BEFORE any upstream call, inside the claim tx
-    // so two concurrent triggers can't both read a pre-spend total. Sums
-    // pages_requested over ALL of today's runs (failed included — cost
-    // control; a failed run spent money too).
+    // Stale-run reaper: a crash/restart mid-run (deploy, OOM, SIGKILL) leaves
+    // a 'running' row that nothing in-process will ever settle — without this,
+    // uq_upload_extractions_upload_live 409s every future trigger for the
+    // upload FOREVER. A run past STALE_RUN_MINUTES is provably dead (the
+    // synchronous pipeline settles in minutes), so settle it 'failed' here,
+    // inside the claim tx: the FOR UPDATE on book_uploads above serializes
+    // concurrent claims for this upload, so the reap + the claim INSERT below
+    // commit atomically and can't race another trigger. Its pages_requested
+    // stays in the daily-cap ledger (the money was spent). A GENUINELY live
+    // run is younger than the threshold and still 409s.
+    await client.query(
+      `UPDATE upload_extractions
+          SET status = 'failed'::upload_extraction_status,
+              error = 'stale run reaped: still running after ' || $2 ||
+                      ' minutes (process died mid-run)',
+              finished_at = now()
+        WHERE upload_id = $1
+          AND status IN ('pending', 'running')
+          AND COALESCE(started_at, created_at) < now() - make_interval(mins => $2)`,
+      [uploadId, STALE_RUN_MINUTES],
+    );
+
+    // Daily Vision-page cap — BEFORE any upstream call, inside the claim tx.
+    // The FOR UPDATE above only serializes claims for THIS upload; two
+    // concurrent triggers on two DIFFERENT uploads of the same user would
+    // each read the pre-spend SUM under READ COMMITTED and both pass. The
+    // per-user advisory xact lock closes that: every claim for this user
+    // serializes on it before reading the SUM, released automatically at
+    // commit/rollback. (hashtextextended namespaces the key; the single
+    // BIGINT form avoids any int4 truncation of the user id.)
+    await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('f108_extract_daily_cap:' || $1::text, 0))`, [
+      userId,
+    ]);
+    // Sums pages_requested over ALL of today's runs (failed included — cost
+    // control; a failed run spent money too), by user_id alone — rows whose
+    // upload was deleted (upload_id SET NULL, migration 068) still count, so
+    // extract→delete→re-upload can never reset the budget.
     const cap = await client.query<{ n: string }>(
       `SELECT COALESCE(SUM(pages_requested), 0)::text AS n
          FROM upload_extractions
@@ -645,10 +710,14 @@ export async function runExtraction(
       );
       const row = upd.rows[0];
       if (!row) {
-        // The run row is gone or no longer 'running' — the upload (and via
-        // CASCADE the run) was deleted mid-OCR. Abort the tx so no orphan
-        // content lands (the source_upload_id FK would have rejected the
-        // inserts anyway had the parent vanished first).
+        // The run row is gone or no longer 'running'. Since migration 068's
+        // fk is SET NULL (the run row survives an upload deletion as the cap
+        // ledger), the row only vanishes when the USER was deleted mid-OCR
+        // (user fk still CASCADEs) — or a reaper settled it as stale. Abort
+        // the tx so no orphan content lands. An upload deleted mid-OCR is
+        // caught one step earlier instead: persistExtraction's INSERTs
+        // reference the dead upload id and 23503, rolling this tx back and
+        // settling the surviving run row 'failed' below.
         throw new NotFoundError('upload was deleted while extraction was in flight');
       }
       return row;
@@ -713,9 +782,13 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /** Bounded, log-safe failure summary for the run row. AppErrors carry curated
- *  messages; anything else is stringified defensively. */
-function errorSummary(err: unknown): string {
-  if (err instanceof AppError) return err.message;
-  if (err instanceof Error) return err.message;
-  return String(err);
+ *  messages; anything else is stringified defensively. NEVER returns '' —
+ *  `new Error('')` (and some driver errors) have an empty message, which
+ *  would violate ck_upload_extractions_error_length inside settleFailed's
+ *  swallowed UPDATE and leave the run stuck 'running' (permanent 409).
+ *  Exported for direct unit coverage of that guarantee. */
+export function errorSummary(err: unknown): string {
+  const msg =
+    err instanceof AppError || err instanceof Error ? err.message : String(err);
+  return msg || 'unknown error';
 }
