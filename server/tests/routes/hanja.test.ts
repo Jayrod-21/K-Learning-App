@@ -100,7 +100,7 @@ describe('hanja — auth required', () => {
 
 describe('GET /hanja — list + DTO mapping', () => {
   it('maps the DTO, defaults state to "new", and includes compounds', async () => {
-    await seedHanjaCharacter(pg.pool, {
+    const seededId = await seedHanjaCharacter(pg.pool, {
       char: '學',
       sound: '학',
       glossEn: 'learning, knowledge; school',
@@ -117,6 +117,10 @@ describe('GET /hanja — list + DTO mapping', () => {
 
     const h = res.body.characters[0];
     expect(h.id).toBe('學'); // id = char (stable key)
+    // F-114 — the numeric surrogate PK rides the pool DTO as a JSON number,
+    // so list-add can target typed membership without the card-seed
+    // round-trip it used to need to learn this id.
+    expect(h.characterId).toBe(seededId);
     expect(h.ch).toBe('學');
     expect(h.sound).toBe('학');
     expect(h.en).toBe('learning, knowledge; school');
@@ -192,7 +196,7 @@ describe('GET /hanja/today — weighted featured pick', () => {
     // 學 appears in the user's mined vocab word; 水 is just a higher-frequency
     // corpus char. The mining signal must win over raw frequency.
     await seedHanjaCharacter(pg.pool, { char: '水', frequency: 99 });
-    await seedHanjaCharacter(pg.pool, { char: '學', frequency: 1 });
+    const learnId = await seedHanjaCharacter(pg.pool, { char: '學', frequency: 1 });
     const { agent, userId } = await registerUser(t.app, pg.pool);
     // seedVocabCard creates a backing vocab_entry; set its hanja to contain 學.
     const cardId = await seedVocabCard(pg.pool, userId);
@@ -206,6 +210,8 @@ describe('GET /hanja/today — weighted featured pick', () => {
     expect(res.status).toBe(200);
     expect(res.body.character).not.toBeNull();
     expect(res.body.character.ch).toBe('學'); // mined wins over frequency
+    // F-114 — /today hydrates through the same SELECT/mapper as the pool.
+    expect(res.body.character.characterId).toBe(learnId);
   });
 
   it('falls back to the highest-frequency not-yet-banked character', async () => {

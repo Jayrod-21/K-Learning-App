@@ -624,6 +624,16 @@
 .km-hanja__draw-subway {
   margin: 4px 0;
 }
+/* F-115 -- the Recall/Trace mode chips. The chips themselves are the shared
+ * km-pill classes (same as the index filter toolbar); this row only lays
+ * them out. */
+.km-hanja__draw-mode {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
 /* F-165 — the Anki right/wrong judgment row. Right reads moss (success);
  * Wrong reads danger (vermilion/coral) — FIXED semantics, deliberately not
  * accent-tracking (mirrors the existing FSRS rating buttons' precedent:
@@ -634,6 +644,12 @@
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 12px;
+}
+/* F-115 -- trace mode's single Next action spans the judge row's full width
+ * (one primary action instead of the Right/Wrong pair). Declared after the
+ * base rule so it wins the equal-specificity cascade. */
+.km-hanja__draw-judge--trace {
+  grid-template-columns: 1fr;
 }
 .km-hanja__draw-right,
 .km-hanja__draw-wrong {
@@ -697,6 +713,13 @@
   opacity: 0.16;
   pointer-events: none;
   user-select: none;
+}
+/* F-115 -- the trace template. Same ghost glyph, slightly stronger than the
+ * recall reveal's 0.16 so a learner can actually follow its lines while
+ * tracing, still faint enough that their own ink (full-opacity strokes on
+ * the canvas above) reads clearly on top. */
+.km-hanja__draw-ghost--guide {
+  opacity: 0.28;
 }
 .km-hanja__draw-canvas {
   position: absolute;
