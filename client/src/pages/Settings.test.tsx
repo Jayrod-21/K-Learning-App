@@ -2266,3 +2266,159 @@ function meOk(): void {
     phone: '+15555550100',
   } satisfies User);
 }
+
+/**
+ * Device-adaptive epic, Phase D2 — the five settings groups as a two-column
+ * arrangement at DESKTOP only.
+ *
+ * `useDeviceClass` reads `window.matchMedia`; `src/test/setup.ts` installs a
+ * `matches: false` default before every test (mobile-first baseline), so
+ * every test ABOVE this block already exercises the single-column mobile
+ * branch without explicit stubbing. This block stubs `matchMedia` to report
+ * tablet/desktop widths (the same `mockViewportWidth` idiom as
+ * Today.test.tsx's D1 block / `useDeviceClass.test.tsx`).
+ *
+ * The D2 contract pinned here:
+ *   - mobile AND tablet: no `.km-settings__cols` wrapper at all — the five
+ *     groups stack exactly as pre-D2 (tablet's ~520px content column is too
+ *     narrow to split; see the `isTwoColumnLayout` comment in Settings.tsx).
+ *   - desktop (≥1024px): two `.km-settings__col` stacks — Profile + 2FA in
+ *     the first, Notifications + Appearance + Beta feedback in the second —
+ *     preserving the exact mobile DOM/tab order (column-major).
+ *   - layout only: the groups' disclosure/controls behave identically.
+ */
+describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
+  function mockViewportWidth(width: number): void {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => {
+        const m = /min-width:\s*(\d+)px/.exec(query);
+        const threshold = m ? Number(m[1]) : 0;
+        return {
+          matches: width >= threshold,
+          media: query,
+          onchange: null,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        } as unknown as MediaQueryList;
+      }),
+    );
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** The five group headers, in the canonical (mobile) order. */
+  const GROUP_ORDER: ReadonlyArray<RegExp> = [
+    /Profile/,
+    /Two-Factor/,
+    /Notifications/,
+    /Appearance/,
+    /Beta feedback/,
+  ];
+
+  function expectGroupOrder(): void {
+    // Disclosure headers in DOCUMENT order — `getAllByRole` walks the DOM,
+    // so this pins reading/tab order, not just presence.
+    const headerNames = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent ?? '')
+      .filter((t) =>
+        GROUP_ORDER.some((re) => re.test(t)),
+      );
+    expect(headerNames).toHaveLength(5);
+    GROUP_ORDER.forEach((re, i) => {
+      expect(headerNames[i]).toMatch(re);
+    });
+  }
+
+  it('mobile (default test matchMedia): no columns wrapper — the five groups stack in order, byte-identical to pre-D2', () => {
+    meOk();
+    const { container } = renderSettings();
+    expect(container.querySelector('.km-settings__cols')).toBeNull();
+    expect(container.querySelector('.km-settings__col')).toBeNull();
+    expect(container.querySelectorAll('.km-settings__group')).toHaveLength(5);
+    expectGroupOrder();
+  });
+
+  it('tablet (768px): STILL single-column — the two-column layout is desktop-only, not the shared ≥768px sidebar breakpoint', () => {
+    mockViewportWidth(768);
+    meOk();
+    const { container } = renderSettings();
+    expect(container.querySelector('.km-settings__cols')).toBeNull();
+    expect(container.querySelectorAll('.km-settings__group')).toHaveLength(5);
+    expectGroupOrder();
+  });
+
+  it('desktop (1024px): two columns — Profile+2FA left, Notifications+Appearance+Beta feedback right, mobile order preserved', () => {
+    mockViewportWidth(1024);
+    meOk();
+    const { container } = renderSettings();
+
+    const cols = container.querySelectorAll('.km-settings__cols');
+    expect(cols).toHaveLength(1);
+    const colEls = container.querySelectorAll('.km-settings__col');
+    expect(colEls).toHaveLength(2);
+
+    const col1 = colEls[0] as HTMLElement;
+    const col2 = colEls[1] as HTMLElement;
+    expect(col1.querySelectorAll('.km-settings__group')).toHaveLength(2);
+    expect(col2.querySelectorAll('.km-settings__group')).toHaveLength(3);
+    expect(within(col1).getByRole('button', { name: /Profile/ })).toBeInTheDocument();
+    expect(within(col1).getByRole('button', { name: /Two-Factor/ })).toBeInTheDocument();
+    expect(within(col2).getByRole('button', { name: /Notifications/ })).toBeInTheDocument();
+    expect(within(col2).getByRole('button', { name: /Appearance/ })).toBeInTheDocument();
+    expect(within(col2).getByRole('button', { name: /Beta feedback/ })).toBeInTheDocument();
+
+    // Column-major assignment = the document order is EXACTLY mobile's.
+    expectGroupOrder();
+  });
+
+  it('desktop (1440px, above the shell cap): same two-column arrangement', () => {
+    mockViewportWidth(1440);
+    meOk();
+    const { container } = renderSettings();
+    expect(container.querySelectorAll('.km-settings__col')).toHaveLength(2);
+  });
+
+  it('layout only: a group in the two-column branch keeps its full disclosure + controls behavior (F-038 contract)', () => {
+    mockViewportWidth(1280);
+    meOk();
+    renderSettings();
+
+    const profileHeader = screen.getByRole('button', { name: /Profile/ });
+    expect(profileHeader).toHaveAttribute('aria-expanded', 'false');
+    expandGroup(/Profile/);
+    expect(profileHeader).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument();
+  });
+
+  it('CSS: `.km-settings__cols` is a 2-column grid gated behind the ≥1024px DESKTOP breakpoint (not 768px)', () => {
+    // jsdom does no layout — pin the CSS source (same technique as the
+    // touch-target test above and Today.test.tsx's D1 geometry tests). The
+    // 1024px gate matters: the render branch and the media query are a
+    // double gate, and this asserts the CSS half wasn't written against the
+    // shared 768px sidebar breakpoint by copy-paste.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'Settings.css'),
+      'utf8',
+    );
+    const mediaBlock =
+      /@media \(min-width: 1024px\) \{\s*\.km-settings__cols \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(mediaBlock).not.toBe('');
+    expect(mediaBlock).toContain('display: grid;');
+    expect(mediaBlock).toContain(
+      'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    );
+    // And no 768px-gated rule touches the columns wrapper anywhere.
+    expect(stylesheet).not.toMatch(
+      /@media \(min-width: 768px\)[\s\S]{0,400}km-settings__cols/,
+    );
+  });
+});

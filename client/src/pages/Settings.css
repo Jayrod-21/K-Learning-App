@@ -157,3 +157,43 @@
     min-width: 0;
   }
 }
+
+/* ── Desktop two-column layout (device-adaptive epic, Phase D2) ─────────
+ * ≥1024px only — Settings.tsx mounts the `.km-settings__cols` wrapper
+ * exclusively on the `'desktop'` device class (`useDeviceClass`), and this
+ * media query is the matching CSS gate (same double-gate D1 used for
+ * Today's grid), so neither a stale render nor a cascade accident can
+ * two-column a narrower viewport. Mobile AND tablet render the pre-D2
+ * single-column stack with no wrapper node at all — there is nothing here
+ * for them to match.
+ *
+ * Readability arithmetic (the brief's guard): the content column is
+ * `min(viewport − 248px sidebar rail, 1160px shell cap)` (styles/
+ * index.css) — 776px at a 1024px viewport, 1160px from ≥1408px. Halved,
+ * minus each group's own `margin: 0 18px 16px` (index.css,
+ * `.km-settings__group`) and the tile's 22px+22px content padding
+ * (CollapsibleTile.css), a column's CONTROLS get ~308px at 1024px up to
+ * ~500px at the cap — never narrower than the ~295px a 375px phone (the
+ * layout these forms were designed against) already gives them, and never
+ * wide enough to stretch label/hint prose past a comfortable measure. The
+ * groups' existing margins double up between the columns into a 36px
+ * gutter, so no new gap value is introduced.
+ *
+ * `minmax(0, 1fr)` columns (not bare `1fr`): overrides the implicit
+ * min-content track floor so a long unbroken string inside a tile can
+ * never force the row past the viewport (F-129's convention).
+ * `align-items: start` keeps each column stack its natural height —
+ * expanding a tall tile in one column must not stretch the other column's
+ * wrapper (the wrappers are transparent, so this is belt-and-braces, not
+ * load-bearing). */
+@media (min-width: 1024px) {
+  .km-settings__cols {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  .km-settings__col {
+    min-width: 0;
+  }
+}

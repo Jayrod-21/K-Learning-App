@@ -6,6 +6,14 @@
  * that STARTS COLLAPSED — the page is a stack of four folded tiles
  * (Profile / 2FA / Notifications / Appearance) the user opens on demand.
  *
+ * Device-adaptive epic, Phase D2: at desktop (`useDeviceClass() ===
+ * 'desktop'`, ≥1024px) the group stack becomes a TWO-COLUMN arrangement
+ * using the width (Profile+2FA left, Notifications+Appearance+Beta feedback
+ * right — column-major, so reading/tab order matches mobile exactly).
+ * Mobile AND tablet render the pre-D2 single-column stack byte-identically.
+ * Layout only — see the `isTwoColumnLayout` block in the component for the
+ * full rationale and Settings.css for the width arithmetic.
+ *
  * Split substrate:
  *   - **Profile (name / email / phone)** persists to the server via
  *     `PATCH /auth/me`. Hydrates from `GET /auth/me` on mount through
@@ -117,6 +125,7 @@ import { SwatchPicker } from '../components/SwatchPicker';
 import { Toggle } from '../components/Toggle';
 import { useToast } from '../components/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useDeviceClass } from '../hooks/useDeviceClass';
 import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import { useSettings } from '../hooks/useSettings';
 import { useTheme } from '../hooks/useTheme';
@@ -1054,6 +1063,263 @@ export default function Settings(): JSX.Element {
     [schedulesHydrated, flushSchedules],
   );
 
+  // ───── Device-adaptive two-column layout (Phase D2) ─────
+  //
+  // Desktop (`'desktop'`, ≥1024px) lays the five settings groups out in TWO
+  // columns using the width; mobile AND tablet render the exact pre-D2
+  // single-column stack (the non-desktop branch in the JSX below is a bare
+  // fragment — no wrapper node — so their DOM is byte-identical to before
+  // this phase). Tablet (768–1023px) deliberately stays single-column: its
+  // content column is only ~520px at 768px (viewport − 248px sidebar rail —
+  // the D1 arithmetic in Today.css), which a two-column split would carve
+  // into ~230px control stacks, well below the ~295px of control width even
+  // a 375px phone gives these forms. The desktop readability arithmetic
+  // lives with the CSS (Settings.css, `.km-settings__cols`).
+  //
+  // Column assignment is COLUMN-MAJOR in the original order — column 1:
+  // Profile + Two-Factor (the identity/security pair), column 2:
+  // Notifications + Appearance + Beta feedback (the preferences pile) — so
+  // DOM/tab/screen-reader order at desktop is EXACTLY the mobile order
+  // (Profile → 2FA → Notifications → Appearance → Beta feedback), just
+  // wrapped. Layout only: each group element is built ONCE below and
+  // rendered by whichever branch is live, so no group's props/handlers can
+  // differ between layouts. (A live resize across 1024px remounts the
+  // groups — the same tradeoff D1 accepted for Today's TileRail — which
+  // re-collapses the tiles to their F-038 default; every durable value
+  // lives in this component's state or on the server, so nothing
+  // user-entered is lost.)
+  const isTwoColumnLayout = useDeviceClass() === 'desktop';
+
+  // ───── Profile (server-backed) ─────
+  const profileGroup = (
+    <SettingsGroup icon="user" eyebrow="프로필" title="Profile" tone="accent">
+      <SettingsRow
+        label="Name"
+        hint="Used when the tutor addresses you in chat."
+        inputId="km-settings-name"
+      >
+        <input
+          id="km-settings-name"
+          type="text"
+          value={buffer.display_name}
+          onChange={(e) => {
+            onNameChange(e.target.value);
+          }}
+          placeholder="Your name"
+          className="kr focusring km-settings__input"
+          autoComplete="name"
+          aria-invalid={fieldErrors.display_name ? true : undefined}
+        />
+      </SettingsRow>
+      {fieldErrors.display_name ? (
+        <ErrorCard message={fieldErrors.display_name} />
+      ) : null}
+      <SettingsRow
+        label="Email"
+        hint="Sign-in identifier + digest target."
+        inputId="km-settings-email"
+      >
+        <input
+          id="km-settings-email"
+          type="email"
+          value={buffer.email}
+          onChange={(e) => {
+            onEmailChange(e.target.value);
+          }}
+          placeholder="you@example.com"
+          className="focusring km-settings__input"
+          autoComplete="email"
+          aria-invalid={fieldErrors.email ? true : undefined}
+        />
+      </SettingsRow>
+      {fieldErrors.email ? <ErrorCard message={fieldErrors.email} /> : null}
+      <SettingsRow
+        label="Phone"
+        hint="For SMS reminders."
+        inputId="km-settings-phone"
+      >
+        <input
+          id="km-settings-phone"
+          type="tel"
+          value={buffer.phone}
+          onChange={(e) => {
+            onPhoneChange(e.target.value);
+          }}
+          placeholder="+1 555 0100"
+          className="focusring km-settings__input"
+          autoComplete="tel"
+          aria-invalid={fieldErrors.phone ? true : undefined}
+        />
+      </SettingsRow>
+      {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
+    </SettingsGroup>
+  );
+
+  // ───── Two-Factor Authentication (server-backed) ─────
+  const twoFactorGroup = <TwoFactorSection />;
+
+  // Prefs (appearance) cross-device sync failure is surfaced via a
+  // non-blocking toast (see flushPrefs) — the change is already durable in
+  // localStorage, so it never blanks the screen with an inline ErrorCard.
+
+  // ───── Notifications (F-040 — /notifications/schedules) ─────
+  const notificationsGroup = (
+    <SettingsGroup
+      icon="bell"
+      eyebrow="알림"
+      title="Notifications"
+      mock={schedulesQuery.isMock}
+      tone="mint"
+    >
+      {schedulesQuery.error && schedulesQuery.data === null ? (
+        // Blocking load failure → ErrorCard with a real retry (contract).
+        // A mock settle is a soft state: rows render, but stay disabled.
+        <ErrorCard
+          message="Couldn’t load your notification schedule. Check your connection and retry."
+          onRetry={() => {
+            schedulesQuery.refetch();
+          }}
+        />
+      ) : (
+        <>
+          <p className="km-settings__sched-note">
+            Pick when each notification lands. Times follow your device time
+            zone ({DEVICE_TZ}).
+          </p>
+
+          <Eyebrow className="km-settings__group-eyebrow">
+            <Bilingual en="Email" kr="이메일" />
+          </Eyebrow>
+          {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
+            <ScheduleRow
+              key={kind}
+              kind={kind}
+              label={label}
+              hint={hint}
+              draft={scheduleDrafts[kind]}
+              disabled={!schedulesHydrated}
+              last={i === SCHEDULE_KIND_META.length - 1}
+              onChange={onScheduleChange}
+            />
+          ))}
+
+          {/* SMS placeholder (F-040) — same three types, deliberately
+              inert. The server can store sms rows, but nothing sends them
+              yet, so offering live controls would be a lie; a labelled
+              preview is honest. */}
+          <Eyebrow className="km-settings__group-eyebrow">
+            <Bilingual en="SMS" kr="문자" />{' '}
+            <span className="km-settings__sched-badge">Coming soon</span>
+          </Eyebrow>
+          <p className="km-settings__sched-note">
+            SMS delivery isn’t available yet — this channel is a placeholder
+            and can’t be turned on.
+          </p>
+          {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
+            <ScheduleRow
+              key={kind}
+              kind={kind}
+              label={label}
+              hint={hint}
+              draft={SCHEDULE_DEFAULTS[kind]}
+              disabled
+              placeholder
+              last={i === SCHEDULE_KIND_META.length - 1}
+              onChange={ignoreScheduleChange}
+            />
+          ))}
+        </>
+      )}
+    </SettingsGroup>
+  );
+
+  // ───── Appearance (localStorage cache + server sync) ─────
+  // Glossary reconciliation (P3b): "Appearance" is 화면 표시 app-wide
+  // (nav.ts settings eyebrow agrees) — the old 외관 is retired.
+  const appearanceGroup = (
+    <SettingsGroup
+      icon="palette"
+      eyebrow="화면 표시"
+      title="Appearance"
+      mock={prefsQuery.isMock}
+      tone="ochre"
+    >
+      <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
+      {/* Text size (F-025) — drives TextSizeProvider, which stamps
+          data-text-size on <html> and persists to km.textSize for the
+          instant same-device path; the screen-level prefs sync above ALSO
+          carries the pick to /settings/prefs (textSize) so it follows the
+          user across devices. The :root[data-text-size] blocks in
+          index.css re-point the ROOT font-size — attribute only, never an
+          inline style projection. */}
+      <TextSizeControl value={textSize} onSelect={setTextSize} />
+      <LanguageDisplayControl
+        value={settings.languageDisplay}
+        onChange={(next) => {
+          updateSettings((prev) => ({ ...prev, languageDisplay: next }));
+        }}
+      />
+      {/* Accent (Redesign §14a) — the ONLY color choice (v2 flatten: the
+          paper/correct/wrong palette pickers were removed; surfaces and
+          the success/danger semantics are fixed theme tokens now). Drives
+          AccentProvider, which stamps data-accent on <html> and persists
+          to km.accent for the instant same-device path; the screen-level
+          prefs sync above ALSO carries the pick to /settings/prefs
+          (palette.accent) so it follows the user across devices. The
+          [data-accent] token blocks in index.css re-tint the whole
+          --vermilion family instantly, light AND dark — attribute only,
+          never inline CSS-var projection. */}
+      <SwatchPicker
+        label="Accent"
+        hint="Buttons, highlights, the Learn hexagon."
+        presets={ACCENT_OPTIONS}
+        selectedId={accent}
+        last
+        onSelect={(id) => {
+          if (isAccent(id)) setAccent(id);
+        }}
+      />
+
+      <button
+        type="button"
+        onClick={resetSettings}
+        className="km-btn km-btn--ghost km-btn--sm focusring km-settings__reset"
+      >
+        <Bilingual en="Reset to defaults" kr="기본값으로" />
+      </button>
+    </SettingsGroup>
+  );
+
+  // ───── Beta feedback (F-023 — in-app ticketing) ─────
+  // A more prominent global entry (e.g. a ChatFab-style FAB) is a
+  // follow-up — ticket F-127; this Settings tile is the F-023 entry point
+  // per spec.
+  const feedbackGroup = (
+    <SettingsGroup
+      icon="chat"
+      eyebrow="베타 피드백"
+      title="Beta feedback"
+      tone="plain"
+    >
+      <p className="km-settings__ticket-hint">
+        <Bilingual
+          en="Report a bug, a concern, a suggestion, or a request — and see what other beta testers have filed."
+          kr="버그, 우려사항, 제안, 요청을 알려주세요 — 다른 베타 테스터가 남긴 내용도 볼 수 있어요."
+        />
+      </p>
+      <Button
+        variant="gold"
+        size="md"
+        fullWidth
+        onClick={() => {
+          navigate('/tickets');
+        }}
+      >
+        <Bilingual en="Report a bug or suggestion" kr="버그 또는 제안 보내기" />
+      </Button>
+    </SettingsGroup>
+  );
+
   return (
     <section
       className="screen km-settings km-rain-sheen"
@@ -1074,227 +1340,32 @@ export default function Settings(): JSX.Element {
         heading={<Bilingual en="Settings" kr="설정" />}
       />
 
-      {/* ───── Profile (server-backed) ───── */}
-      <SettingsGroup icon="user" eyebrow="프로필" title="Profile" tone="accent">
-        <SettingsRow
-          label="Name"
-          hint="Used when the tutor addresses you in chat."
-          inputId="km-settings-name"
-        >
-          <input
-            id="km-settings-name"
-            type="text"
-            value={buffer.display_name}
-            onChange={(e) => {
-              onNameChange(e.target.value);
-            }}
-            placeholder="Your name"
-            className="kr focusring km-settings__input"
-            autoComplete="name"
-            aria-invalid={fieldErrors.display_name ? true : undefined}
-          />
-        </SettingsRow>
-        {fieldErrors.display_name ? (
-          <ErrorCard message={fieldErrors.display_name} />
-        ) : null}
-        <SettingsRow
-          label="Email"
-          hint="Sign-in identifier + digest target."
-          inputId="km-settings-email"
-        >
-          <input
-            id="km-settings-email"
-            type="email"
-            value={buffer.email}
-            onChange={(e) => {
-              onEmailChange(e.target.value);
-            }}
-            placeholder="you@example.com"
-            className="focusring km-settings__input"
-            autoComplete="email"
-            aria-invalid={fieldErrors.email ? true : undefined}
-          />
-        </SettingsRow>
-        {fieldErrors.email ? <ErrorCard message={fieldErrors.email} /> : null}
-        <SettingsRow
-          label="Phone"
-          hint="For SMS reminders."
-          inputId="km-settings-phone"
-        >
-          <input
-            id="km-settings-phone"
-            type="tel"
-            value={buffer.phone}
-            onChange={(e) => {
-              onPhoneChange(e.target.value);
-            }}
-            placeholder="+1 555 0100"
-            className="focusring km-settings__input"
-            autoComplete="tel"
-            aria-invalid={fieldErrors.phone ? true : undefined}
-          />
-        </SettingsRow>
-        {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
-      </SettingsGroup>
-
-      {/* ───── Two-Factor Authentication (server-backed) ───── */}
-      <TwoFactorSection />
-
-      {/* Prefs (appearance) cross-device sync failure is surfaced via a
-          non-blocking toast (see flushPrefs) — the change is already durable in
-          localStorage, so it never blanks the screen with an inline ErrorCard. */}
-
-      {/* ───── Notifications (F-040 — /notifications/schedules) ───── */}
-      <SettingsGroup
-        icon="bell"
-        eyebrow="알림"
-        title="Notifications"
-        mock={schedulesQuery.isMock}
-        tone="mint"
-      >
-        {schedulesQuery.error && schedulesQuery.data === null ? (
-          // Blocking load failure → ErrorCard with a real retry (contract).
-          // A mock settle is a soft state: rows render, but stay disabled.
-          <ErrorCard
-            message="Couldn’t load your notification schedule. Check your connection and retry."
-            onRetry={() => {
-              schedulesQuery.refetch();
-            }}
-          />
-        ) : (
-          <>
-            <p className="km-settings__sched-note">
-              Pick when each notification lands. Times follow your device time
-              zone ({DEVICE_TZ}).
-            </p>
-
-            <Eyebrow className="km-settings__group-eyebrow">
-              <Bilingual en="Email" kr="이메일" />
-            </Eyebrow>
-            {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
-              <ScheduleRow
-                key={kind}
-                kind={kind}
-                label={label}
-                hint={hint}
-                draft={scheduleDrafts[kind]}
-                disabled={!schedulesHydrated}
-                last={i === SCHEDULE_KIND_META.length - 1}
-                onChange={onScheduleChange}
-              />
-            ))}
-
-            {/* SMS placeholder (F-040) — same three types, deliberately
-                inert. The server can store sms rows, but nothing sends them
-                yet, so offering live controls would be a lie; a labelled
-                preview is honest. */}
-            <Eyebrow className="km-settings__group-eyebrow">
-              <Bilingual en="SMS" kr="문자" />{' '}
-              <span className="km-settings__sched-badge">Coming soon</span>
-            </Eyebrow>
-            <p className="km-settings__sched-note">
-              SMS delivery isn’t available yet — this channel is a placeholder
-              and can’t be turned on.
-            </p>
-            {SCHEDULE_KIND_META.map(({ kind, label, hint }, i) => (
-              <ScheduleRow
-                key={kind}
-                kind={kind}
-                label={label}
-                hint={hint}
-                draft={SCHEDULE_DEFAULTS[kind]}
-                disabled
-                placeholder
-                last={i === SCHEDULE_KIND_META.length - 1}
-                onChange={ignoreScheduleChange}
-              />
-            ))}
-          </>
-        )}
-      </SettingsGroup>
-
-      {/* ───── Appearance (localStorage cache + server sync) ───── */}
-      {/* Glossary reconciliation (P3b): "Appearance" is 화면 표시 app-wide
-          (nav.ts settings eyebrow agrees) — the old 외관 is retired. */}
-      <SettingsGroup
-        icon="palette"
-        eyebrow="화면 표시"
-        title="Appearance"
-        mock={prefsQuery.isMock}
-        tone="ochre"
-      >
-        <ThemeModeControl mode={themeMode} onSelect={setThemeMode} />
-        {/* Text size (F-025) — drives TextSizeProvider, which stamps
-            data-text-size on <html> and persists to km.textSize for the
-            instant same-device path; the screen-level prefs sync above ALSO
-            carries the pick to /settings/prefs (textSize) so it follows the
-            user across devices. The :root[data-text-size] blocks in
-            index.css re-point the ROOT font-size — attribute only, never an
-            inline style projection. */}
-        <TextSizeControl value={textSize} onSelect={setTextSize} />
-        <LanguageDisplayControl
-          value={settings.languageDisplay}
-          onChange={(next) => {
-            updateSettings((prev) => ({ ...prev, languageDisplay: next }));
-          }}
-        />
-        {/* Accent (Redesign §14a) — the ONLY color choice (v2 flatten: the
-            paper/correct/wrong palette pickers were removed; surfaces and
-            the success/danger semantics are fixed theme tokens now). Drives
-            AccentProvider, which stamps data-accent on <html> and persists
-            to km.accent for the instant same-device path; the screen-level
-            prefs sync above ALSO carries the pick to /settings/prefs
-            (palette.accent) so it follows the user across devices. The
-            [data-accent] token blocks in index.css re-tint the whole
-            --vermilion family instantly, light AND dark — attribute only,
-            never inline CSS-var projection. */}
-        <SwatchPicker
-          label="Accent"
-          hint="Buttons, highlights, the Learn hexagon."
-          presets={ACCENT_OPTIONS}
-          selectedId={accent}
-          last
-          onSelect={(id) => {
-            if (isAccent(id)) setAccent(id);
-          }}
-        />
-
-        <button
-          type="button"
-          onClick={resetSettings}
-          className="km-btn km-btn--ghost km-btn--sm focusring km-settings__reset"
-        >
-          <Bilingual en="Reset to defaults" kr="기본값으로" />
-        </button>
-      </SettingsGroup>
-
-      {/* ───── Beta feedback (F-023 — in-app ticketing) ─────
-          A more prominent global entry (e.g. a ChatFab-style FAB) is a
-          follow-up — ticket F-127; this Settings tile is the F-023 entry
-          point per spec. */}
-      <SettingsGroup
-        icon="chat"
-        eyebrow="베타 피드백"
-        title="Beta feedback"
-        tone="plain"
-      >
-        <p className="km-settings__ticket-hint">
-          <Bilingual
-            en="Report a bug, a concern, a suggestion, or a request — and see what other beta testers have filed."
-            kr="버그, 우려사항, 제안, 요청을 알려주세요 — 다른 베타 테스터가 남긴 내용도 볼 수 있어요."
-          />
-        </p>
-        <Button
-          variant="gold"
-          size="md"
-          fullWidth
-          onClick={() => {
-            navigate('/tickets');
-          }}
-        >
-          <Bilingual en="Report a bug or suggestion" kr="버그 또는 제안 보내기" />
-        </Button>
-      </SettingsGroup>
+      {isTwoColumnLayout ? (
+        /* D2 — desktop only: two independent group stacks, laid out as grid
+           columns by Settings.css. Independent COLUMN wrappers (not one
+           auto-flowing grid of groups) so expanding a CollapsibleTile in
+           one column can never stretch a shared grid row and open a gap
+           under its neighbor in the other column. */
+        <div className="km-settings__cols">
+          <div className="km-settings__col">
+            {profileGroup}
+            {twoFactorGroup}
+          </div>
+          <div className="km-settings__col">
+            {notificationsGroup}
+            {appearanceGroup}
+            {feedbackGroup}
+          </div>
+        </div>
+      ) : (
+        <>
+          {profileGroup}
+          {twoFactorGroup}
+          {notificationsGroup}
+          {appearanceGroup}
+          {feedbackGroup}
+        </>
+      )}
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>
     </section>

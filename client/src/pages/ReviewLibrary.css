@@ -66,3 +66,88 @@
   align-items: center;
   gap: 14px;
 }
+
+/* Tablet/desktop grid (device-adaptive epic, Phase D2) ─────────────────
+ * ≥768px: ReviewLibrary.tsx tags the section list with the `--grid`
+ * modifier (`useDeviceClass() !== 'mobile'`, D1's one-render-branch
+ * pattern) and this block lays the four shelves out two-up using the
+ * width. Mobile keeps the bare `.km-library__list` flex stack
+ * (styles/index.css) untouched — the modifier is simply absent there, so
+ * nothing below can reach it.
+ *
+ * A FIXED 2-column grid, deliberately NOT D1's `repeat(auto-fit,
+ * minmax(220px, 1fr))`. D1's auto-fit existed because Today's rails hold a
+ * VARIABLE 1–3 tiles (plan-dependent) and a collapsed track is the right
+ * behavior for a missing tile; this page renders a COMPILE-TIME-FIXED four
+ * shelves (`SECTIONS`), so the column count can — and should — be chosen so
+ * 4 divides evenly. The D1 fix-pass arithmetic (Today.css) applied here:
+ * the content column is `min(viewport − 248px sidebar, 1160px shell cap)`,
+ * minus `.km-library`'s own 22px+22px padding (index.css) — 476px at
+ * 768px, 656px at 948px, 732px at 1024px, 1116px at the ≥1408px cap. Under
+ * `auto-fit minmax(220px,1fr)` that means 2 columns from 768px but THREE
+ * from ~976px viewport (3·220+2·12=684 ≤ 732…) — and 3 columns × 4 shelves
+ * strands the Uploads shelf alone in a half-empty second row at every
+ * desktop width: exactly the orphan-tile case D1's fix-pass corrected.
+ * `repeat(2, minmax(0, 1fr))` makes that impossible by construction — 4
+ * shelves are a clean 2×2 at every ≥768px width, with per-card widths of
+ * ~232px (768px viewport) up to ~552px (shell cap), all comfortably inside
+ * the range these rows already render at (330px-wide mobile column up to
+ * the 1116px full-width desktop row pre-D2). `minmax(0, 1fr)` (not bare
+ * `1fr`) overrides the track's implicit min-content floor so a long
+ * unbroken label can never force the row past the viewport (F-129's
+ * convention, same reason as the item-level `min-width: 0`). */
+@media (min-width: 768px) {
+  .km-library__list--grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  /* Equal-height rows: the grid cell already stretches the listitem
+   * wrapper; chain flex through wrapper → button → CityCard so the CARD's
+   * painted surface fills the cell too (otherwise the shorter card of a
+   * row pair ends early and the pair reads ragged). `align-items: center`
+   * keeps the row content vertically centered inside the taller card —
+   * the same optical treatment the one-line mobile rows have for free.
+   * The DancheongRail rail inside CityCard is absolutely positioned
+   * (DancheongRail.css) and unaffected by the card becoming a flex
+   * container. */
+  .km-library__list--grid > [role='listitem'] {
+    min-width: 0;
+    display: flex;
+  }
+
+  .km-library__list--grid .km-library__row {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+  }
+
+  .km-library__list--grid .km-library__rowCard.km-citycard {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .km-library__list--grid .km-library__rowTop {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* Orphan guard (mirrors D1's fix-pass rule, Today.css): with the fixed
+ * 2-column grid above, today's four shelves can never strand a lone card —
+ * but `SECTIONS` is edited by hand, and a future FIFTH shelf would land
+ * alone at half width in the last row. A trailing odd item spans the full
+ * row instead ( `:nth-child(odd):last-child` is exactly "last item with no
+ * right-hand partner" in a 2-column grid; it never matches the current
+ * even count, so this rule is inert until someone adds that fifth shelf).
+ * Unlike D1's band-scoped version this needs no max-width ceiling: the
+ * column count here is fixed at 2 at EVERY ≥768px width, so "odd last
+ * child" is the stranded-orphan condition everywhere the grid exists. */
+@media (min-width: 768px) {
+  .km-library__list--grid > [role='listitem']:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
