@@ -4783,14 +4783,27 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-resources__pick-list > li + li { margin-top: 8px; }
 .km-resources__list-entry {
-  display: grid;
-  grid-template-columns: 1.2fr 2fr auto;
-  gap: 12px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
 }
 .km-resources__list-entry:last-child { border-bottom: none; }
+.km-resources__list-entry-main {
+  display: grid;
+  grid-template-columns: 1.2fr 2fr auto;
+  gap: 12px;
+  align-items: center;
+}
+/* F-112 — the corpus example sentence rendered under a list-entry row. */
+.km-resources__list-entry-example {
+  font-size: 0.75rem;
+  color: var(--paper-mute);
+}
+.km-resources__list-entry-example-en {
+  color: var(--paper-dim);
+}
 
 /* ─── Settings ──────────────────────────────────────────────── */
 .km-settings { padding-bottom: 96px; }

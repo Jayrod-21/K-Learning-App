@@ -61,7 +61,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type JSX,
@@ -99,6 +98,7 @@ import type {
   DefineExample,
   DueCard,
   FsrsRating,
+  ListEntryItemType,
   ReviewResult,
   ServerVocabList,
   Vocab,
@@ -118,14 +118,14 @@ const FLASHCARDS_NAV = navItem('flashcards');
 
 /**
  * How a rating on this card persists. `due` cards carry their wire snapshot
- * (id + version for the optimistic-concurrency echo); `entry` cards persist
- * via the idempotent bank-then-review pair; `local` cards are dev fixture
- * data — the rating counts locally and is honestly reported as unsaved.
+ * (id + version for the optimistic-concurrency echo) — this is EVERY real
+ * card today, due-queue AND per-list study alike (F-113: list study now
+ * fetches the list's own due-scoped queue, `GET /vocab/lists/:id/cards/due`,
+ * instead of banking+reviewing every entry unconditionally — see
+ * `useListDue`). `local` cards are dev fixture data — the rating counts
+ * locally and is honestly reported as unsaved.
  */
-export type StudyCardWire =
-  | { kind: 'due'; snapshot: DueCard }
-  | { kind: 'entry'; entryId: number }
-  | { kind: 'local' };
+export type StudyCardWire = { kind: 'due'; snapshot: DueCard } | { kind: 'local' };
 
 /** One flashcard in a study session — UI shape, source-agnostic. */
 export interface StudyCard {
@@ -155,22 +155,6 @@ function dueCardToStudyCard(d: DueCard): StudyCard {
     exEn: d.vocabExampleEnglish ?? '',
     ...(d.vocabSourceBook !== undefined ? { source: d.vocabSourceBook } : {}),
     wire: { kind: 'due', snapshot: d },
-  };
-}
-
-/** VocabListEntryRow → StudyCard. Rows with no Korean headword are skipped —
- *  a blank card front is unstudyable and would just burn a rating. */
-function entryToStudyCard(e: VocabListEntryRow): StudyCard | null {
-  const kr = e.korean?.trim() ?? '';
-  if (kr === '') return null;
-  return {
-    key: `entry:${String(e.entry_id)}`,
-    kr,
-    en: e.english ?? '',
-    exKr: '',
-    exEn: '',
-    ...(e.proficiency !== null ? { proficiency: e.proficiency } : {}),
-    wire: { kind: 'entry', entryId: e.entry_id },
   };
 }
 
@@ -436,6 +420,78 @@ function useListDetail(listId: number | null): UseListDetailResult {
 }
 
 // ─────────────────────────────────────────────────────────────
+// F-113 — per-list due-aware study queue
+// ─────────────────────────────────────────────────────────────
+
+interface UseListDueResult {
+  data: StudyCard[] | null;
+  loading: boolean;
+  error: string | null;
+  refetch: () => void;
+}
+
+/**
+ * `GET /vocab/lists/:id/cards/due` — the list-study twin of the global due
+ * feed. Same settled/loading shape as `useListDetail` above (tagged state +
+ * derived `loading`), and the SAME `dueCardToStudyCard` adapter the global
+ * due queue uses, so rating persistence (`persist()` in `StudySession`) needs
+ * no per-source branch — every real card here goes through
+ * `submitReview(cardId, { rating, expected_version })` exactly like the
+ * global due queue.
+ *
+ * `listId === null` means "not currently studying a list" (the landing and
+ * the plain list-detail view never need this fetch) — the effect no-ops.
+ */
+function useListDue(listId: number | null): UseListDueResult {
+  const [state, setState] = useState<{
+    forId: number | null;
+    data: StudyCard[] | null;
+    error: string | null;
+  }>({ forId: null, data: null, error: null });
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (listId === null) return;
+    const ctrl = new AbortController();
+    vocabService
+      .getListDueCards(listId, undefined, ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setState({
+          forId: listId,
+          data: res.cards.map(dueCardToStudyCard),
+          error: null,
+        });
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        setState({
+          forId: listId,
+          data: null,
+          error: errorMessageFor(err, 'Could not load the review queue.'),
+        });
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, [listId, tick]);
+
+  const refetch = useCallback((): void => {
+    setState((s) => ({ ...s, forId: null }));
+    setTick((t) => t + 1);
+  }, []);
+
+  const settled = state.forId === listId;
+  return {
+    data: listId !== null && settled ? state.data : null,
+    loading: listId !== null && !settled,
+    error: listId !== null && settled ? state.error : null,
+    refetch,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // Review root
 // ─────────────────────────────────────────────────────────────
 
@@ -518,6 +574,9 @@ export function Review(): JSX.Element {
   );
 
   const detail = useListDetail(listId);
+  // F-113 — only fetch the list's due-scoped queue while actually studying
+  // it; the plain list-detail view and the landing never need this call.
+  const listDue = useListDue(study === 'list' ? listId : null);
 
   // B-013 seed state (in-flight guard + last-result banner).
   const [seeding, setSeeding] = useState(false);
@@ -602,17 +661,6 @@ export function Review(): JSX.Element {
     [navigate],
   );
 
-  // List-study deck derives from the detail fetch (one fetch feeds both the
-  // detail view and the session).
-  const listDeck = useMemo<StudyCard[]>(
-    () =>
-      detail.data === null
-        ? []
-        : detail.data.entries
-            .map(entryToStudyCard)
-            .filter((c): c is StudyCard => c !== null),
-    [detail.data],
-  );
   const dueDeck = due.data ?? [];
 
   const isMock = due.isMock || lists.isMock;
@@ -648,20 +696,22 @@ export function Review(): JSX.Element {
   } else if (study === 'list' && listId !== null) {
     const backTo = `/learn/vocab?list=${String(listId)}`;
     back = <BackButton to={backTo} label={detail.data?.list.name_kr ?? 'List'} />;
-    body = detail.loading ? (
+    // F-113: list study is due-aware now — only cards the list's FSRS due
+    // queue actually surfaces, not every word in the list unconditionally.
+    body = listDue.loading ? (
       <SkeletonCard height={360} />
-    ) : detail.error !== null ? (
-      <ErrorCard message={detail.error} onRetry={detail.refetch} />
-    ) : listDeck.length === 0 ? (
+    ) : listDue.error !== null ? (
+      <ErrorCard message={listDue.error} onRetry={listDue.refetch} />
+    ) : (listDue.data ?? []).length === 0 ? (
       <EmptyCard
-        message="This list has no studyable words yet."
-        krMessage="이 목록에는 학습할 단어가 아직 없어요."
-        hint="Open the list and use Edit → Add words first."
+        message="Nothing in this list is due for review right now."
+        krMessage="지금 이 목록에서 복습할 카드가 없어요."
+        hint="Use “Add all to review” on the list to seed cards, or check back later."
       />
     ) : (
       <StudySession
         key={`deck:list:${String(listId)}`}
-        deck={listDeck}
+        deck={listDue.data ?? []}
         deckNameKr={detail.data?.list.name_kr ?? ''}
         deckNameEn={detail.data?.list.name_en ?? ''}
         doneTo={backTo}
@@ -1169,6 +1219,10 @@ function ListDetailView({
   const [saveBusy, setSaveBusy] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<number | null>(null);
+  // F-113 — bulk "add all to review" state (in-flight guard + last-result
+  // banner), mirroring the landing's B-013 corpus-seeding pattern.
+  const [seeding, setSeeding] = useState(false);
+  const [seedStatus, setSeedStatus] = useState<SeedStatus | null>(null);
 
   const data = detail.data;
 
@@ -1218,25 +1272,31 @@ function ListDetailView({
   }, [data, saveBusy, nameKr, nameEn, detail, onListsChanged]);
 
   const removeEntry = useCallback(
-    async (entryId: number): Promise<void> => {
+    async (entryId: number, itemType: ListEntryItemType): Promise<void> => {
       if (data === null) return;
       setRemovingId(entryId);
       setEditError(null);
       // Optimistic removal — drop the row immediately; restore on failure.
       // (Snapshot the COUNT too: entries may be a page of a larger list, so
       // restoring `entries.length` would corrupt the header count.)
+      // F-091: match on the (item_type, entry_id) pair — this page's lists
+      // are vocab-only today, but the filter is defense-in-depth against the
+      // exact ambiguity the ticket names (a grammar/hanja row sharing a
+      // vocab row's numeric id).
       const prevEntries = data.entries;
       const prevCount = data.list.entry_count;
       detail.mutate((prev) => ({
         ...prev,
-        entries: prev.entries.filter((e) => e.entry_id !== entryId),
+        entries: prev.entries.filter(
+          (e) => !(e.entry_id === entryId && (e.item_type ?? 'vocab') === itemType),
+        ),
         list: {
           ...prev.list,
           entry_count: Math.max(0, prev.list.entry_count - 1),
         },
       }));
       try {
-        await vocabService.removeListEntry(data.list.id, entryId);
+        await vocabService.removeListEntry(data.list.id, entryId, itemType);
         onListsChanged();
       } catch (err) {
         detail.mutate((prev) => ({
@@ -1251,6 +1311,37 @@ function ListDetailView({
     },
     [data, detail, onListsChanged],
   );
+
+  // F-113 — bulk-seed a recognition card for every vocab word in this list
+  // that doesn't already have one (idempotent server-side). Independent of
+  // `onStudy`: seeding does not itself navigate into a session — it just
+  // makes the words studyable, since `Study` is now due-only (F-113) and a
+  // never-carded word is never due.
+  const seedAll = useCallback(async (): Promise<void> => {
+    if (data === null || seeding) return;
+    setSeeding(true);
+    setSeedStatus(null);
+    try {
+      const res = await vocabService.seedListCards(data.list.id);
+      setSeedStatus({
+        kind: 'success',
+        text:
+          res.inserted > 0
+            ? `Added ${String(res.inserted)} card${res.inserted === 1 ? '' : 's'} to review.`
+            : "Every word here is already in review.",
+      });
+    } catch (err) {
+      setSeedStatus({
+        kind: 'error',
+        text: errorMessageFor(
+          err,
+          'Could not add these words to review. Try again.',
+        ),
+      });
+    } finally {
+      setSeeding(false);
+    }
+  }, [data, seeding]);
 
   if (detail.loading) return <SkeletonCard height={300} />;
   if (detail.error !== null) {
@@ -1374,7 +1465,38 @@ function ListDetailView({
             <Bilingual en="Add words" kr="단어 추가" />
           </Button>
         ) : null}
+        {/* F-113 — bulk-seed every word in the list into the review deck.
+            Distinct from Study: Study is now due-only, so a freshly-added
+            word (no card yet) needs this before it can ever show up there. */}
+        <Button
+          variant="ghost"
+          size="md"
+          leadingIcon={<Icon name="cards" size={14} />}
+          onClick={() => {
+            void seedAll();
+          }}
+          disabled={seeding || !studyable}
+          title={studyable ? undefined : 'Add words to this list first'}
+        >
+          {seeding ? (
+            <Bilingual en="Adding…" kr="추가 중…" />
+          ) : (
+            <Bilingual en="Add all to review" kr="전체 복습에 추가" />
+          )}
+        </Button>
       </div>
+
+      {seedStatus ? (
+        <div
+          role={seedStatus.kind === 'error' ? 'alert' : 'status'}
+          className={
+            seedStatus.kind === 'error' ? 'km-review__inlineError' : undefined
+          }
+          style={{ marginTop: 4, marginBottom: 8, fontSize: '0.8125rem' }}
+        >
+          {seedStatus.text}
+        </div>
+      ) : null}
 
       {editError ? (
         <div role="alert" className="km-review__inlineError">
@@ -1392,34 +1514,59 @@ function ListDetailView({
         <>
           <Card variant="flat" className="km-review__entries">
             <ul className="km-review__entryList">
-              {visible.map((e) => (
-                <li key={e.entry_id} className="km-review__entryRow">
-                  <span className="kr km-review__entryKr">{e.korean ?? ''}</span>
-                  <span className="km-review__entryEn">{e.english ?? ''}</span>
-                  {e.proficiency !== null ? (
-                    <span className="km-pill km-pill--default">
-                      {e.proficiency}
-                    </span>
-                  ) : null}
-                  {editing ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        void removeEntry(e.entry_id);
-                      }}
-                      // ALL rows disable while any removal is in flight: a
-                      // second concurrent removal's failure rollback would
-                      // restore its own stale entries snapshot and resurrect
-                      // the first (already-deleted) row.
-                      disabled={removingId !== null}
-                      aria-label={`Remove ${e.korean ?? 'word'} from the list`}
-                    >
-                      <Icon name="close" size={12} />
-                    </Button>
-                  ) : null}
-                </li>
-              ))}
+              {visible.map((e) => {
+                // F-091: default an absent item_type to 'vocab' — every row
+                // on THIS page is vocab today, but the fallback matches the
+                // server's own pre-049 shape rather than assuming it.
+                const itemType = e.item_type ?? 'vocab';
+                return (
+                  <li
+                    key={`${itemType}:${String(e.entry_id)}`}
+                    className="km-review__entryRow"
+                  >
+                    <div className="km-review__entryMain">
+                      <span className="kr km-review__entryKr">
+                        {e.korean ?? ''}
+                      </span>
+                      <span className="km-review__entryEn">{e.english ?? ''}</span>
+                      {e.proficiency !== null ? (
+                        <span className="km-pill km-pill--default">
+                          {e.proficiency}
+                        </span>
+                      ) : null}
+                      {editing ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            void removeEntry(e.entry_id, itemType);
+                          }}
+                          // ALL rows disable while any removal is in flight: a
+                          // second concurrent removal's failure rollback would
+                          // restore its own stale entries snapshot and resurrect
+                          // the first (already-deleted) row.
+                          disabled={removingId !== null}
+                          aria-label={`Remove ${e.korean ?? 'word'} from the list`}
+                        >
+                          <Icon name="close" size={12} />
+                        </Button>
+                      ) : null}
+                    </div>
+                    {/* F-112 — the corpus example sentence, when on file. */}
+                    {e.example_korean ? (
+                      <div className="km-review__entryExample">
+                        <span className="kr">{e.example_korean}</span>
+                        {e.example_english ? (
+                          <span className="km-review__entryExampleEn">
+                            {' '}
+                            · {e.example_english}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
             </ul>
           </Card>
           <ShowMore
@@ -1624,22 +1771,14 @@ function StudySession({
     setPendingSaves((p) => p + 1);
     void (async (): Promise<void> => {
       try {
-        let result: ReviewResult;
-        if (wire.kind === 'due') {
-          result = await vocabService.submitReview(
-            wire.snapshot.id,
-            buildReviewSubmission(wire.snapshot, rating),
-          );
-        } else {
-          // List card: resolve-or-create the user's recognition card
-          // (idempotent on user+entry), then review it with the fresh
-          // version snapshot — both existing routes.
-          const banked = await vocabService.bankEntry(wire.entryId);
-          result = await vocabService.submitReview(banked.card.id, {
-            rating,
-            expected_version: banked.card.version,
-          });
-        }
+        // F-113: every real card (global due queue AND per-list study alike)
+        // now carries its wire snapshot directly — the old list-only
+        // bank-then-review path is gone (list study fetches the list's own
+        // due-scoped queue, which already IS a real vocab_cards row).
+        const result = await vocabService.submitReview(
+          wire.snapshot.id,
+          buildReviewSubmission(wire.snapshot, rating),
+        );
         setResults((prev) => [...prev, result]);
       } catch (err) {
         setFailedSaves((prev) => [...prev, { card: target, rating }]);

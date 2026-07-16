@@ -936,7 +936,7 @@ describe('ReviewVocab — My lists (the top-of-page surface)', () => {
     await user.click(
       within(dialog).getByRole('button', { name: /Remove 영향 from the list/ }),
     );
-    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1);
+    expect(vocabSvc.removeListEntry).toHaveBeenCalledWith(7, 1, 'vocab');
   });
 
   it('renames a list from the detail sheet', async () => {

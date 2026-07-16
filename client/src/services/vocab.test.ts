@@ -9,6 +9,7 @@ import {
   getDueCards,
   getEntry,
   getListDetail,
+  getListDueCards,
   initCards,
   listLists,
   mineWord,
@@ -16,6 +17,7 @@ import {
   removeListEntry,
   searchEntries,
   searchEntriesPage,
+  seedListCards,
   submitReview,
 } from './vocab';
 import { api, ApiError } from './api';
@@ -546,12 +548,73 @@ describe('lists CRUD', () => {
     await expect(addListEntries(7, [1])).rejects.toMatchObject({ status: 409 });
   });
 
-  it('removeListEntry DELETEs the nested route', async () => {
+  it('removeListEntry DELETEs the nested route, defaulting ?type= to vocab (F-091 back-compat)', async () => {
     const spy = vi.spyOn(api, 'delete').mockResolvedValueOnce(undefined);
 
     await removeListEntry(7, 99);
 
-    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/entries/99');
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/entries/99', {
+      params: { type: 'vocab' },
+    });
+  });
+
+  it('removeListEntry passes an explicit item_type through as ?type= (F-091)', async () => {
+    const spy = vi.spyOn(api, 'delete').mockResolvedValueOnce(undefined);
+
+    await removeListEntry(7, 99, 'grammar');
+
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/entries/99', {
+      params: { type: 'grammar' },
+    });
+  });
+
+  it('getListDueCards GETs the per-list due queue and normalizes the wire rows (F-113)', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({
+      cards: [
+        {
+          id: 900,
+          face: 'recognition',
+          due_at: 'x',
+          stability: '0',
+          difficulty: '0',
+          fsrs_state: 'new',
+          version: 1,
+          vocab_entry_id: 42,
+          grammar_entry_id: null,
+          source_sentence_id: null,
+          topik_item_id: null,
+          vocab_korean: '학교',
+          vocab_english: 'school',
+        },
+      ],
+      total: 1,
+    });
+
+    const res = await getListDueCards(7);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/cards/due', {});
+    expect(res.total).toBe(1);
+    expect(res.cards[0]?.vocabKorean).toBe('학교');
+    expect(res.cards[0]?.vocabEnglish).toBe('school');
+  });
+
+  it('getListDueCards forwards an explicit limit', async () => {
+    const spy = vi.spyOn(api, 'get').mockResolvedValueOnce({ cards: [], total: 0 });
+
+    await getListDueCards(7, 5);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/cards/due', {
+      params: { limit: 5 },
+    });
+  });
+
+  it('seedListCards POSTs the bulk-seed route and unwraps the inserted count (F-113)', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ inserted: 3 });
+
+    const res = await seedListCards(7);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/lists/7/cards/seed', {}, undefined);
+    expect(res.inserted).toBe(3);
   });
 });
 
