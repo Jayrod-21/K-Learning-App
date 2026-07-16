@@ -35,6 +35,29 @@
   margin: 0 0 10px;
 }
 
+/* F-053/F-107 — "My uploads" saved-from-uploads groups: one upload title
+ * (Eyebrow) + its saved-word list per group. `.km-vocab__savedFromUploads`
+ * itself rides the shared `.km-vocab__section` rhythm (same convention as
+ * `.km-vocab__listsTile` above); only the intra-group spacing needs rules. */
+.km-vocab__savedUploadGroup + .km-vocab__savedUploadGroup {
+  margin-top: 14px;
+}
+
+.km-vocab__savedUploadGroup .km-reference__list {
+  margin-top: 6px;
+}
+
+/* F-107 — quiet truncation note under the saved-from-uploads groups: only
+ * rendered when the server's row cap trimmed the response (every shown group
+ * is still whole, so this line is the sole "there is more" signal). Sized/
+ * colored like the page's other secondary state text (.km-vocab__state). */
+.km-vocab__savedUploadsTruncated {
+  margin: 10px 0 0;
+  font-size: 0.8125rem;
+  color: var(--paper-mute);
+  line-height: 1.5;
+}
+
 /* F-049 — the two dropdown filters sit side by side above the list and
  * stack on narrow screens (each select keeps its own label). */
 .km-vocab__filters {

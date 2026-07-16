@@ -1,13 +1,13 @@
 -- migrate: non-destructive
 -- =============================================================================
--- Migration 068 — upload_extractions (F-108, U2 extraction/OCR pipeline)
+-- Migration 069 — upload_extractions (F-108, U2 extraction/OCR pipeline)
 --   UP — adds `upload_extractions` (one row per extraction RUN over a page
 --        range of a book upload: status lifecycle, page range, result counts,
 --        error) and relaxes the two kgiu_entries CHECKs so the extraction
 --        pipeline can insert grammar-candidate rows under the existing
 --        'user_mined' corpus (mirrors what migration 022 did for
 --        vocab_entries).
---   Reverse: 068_upload_extractions.down.sql
+--   Reverse: 069_upload_extractions.down.sql
 --   Depends on: 040_book_uploads (book_uploads + source_upload_id columns),
 --     041_book_pages (book_pages — the pages a run reads), 021/022 (the
 --     'user_mined' corpus enum value + its corpus_sources row, which the
@@ -223,4 +223,4 @@ ALTER TABLE kgiu_entries
         (corpus = 'user_mined')
     );
 
--- End of 068_upload_extractions.up.sql — runner owns the transaction (ADR-013).
+-- End of 069_upload_extractions.up.sql — runner owns the transaction (ADR-013).

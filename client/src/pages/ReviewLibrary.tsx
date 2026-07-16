@@ -1,7 +1,7 @@
 /**
  * ReviewLibrary — the `/review` LIBRARY landing (Overhaul P3B, F-042/F-043).
  *
- * A four-section directory over the library's real routes, in fixed order:
+ * A five-section directory over the library's real routes, in fixed order:
  *
  *   - Vocabulary   → /review/vocab     (corpus browse + My Lists)
  *   - Grammar      → /review/grammar   (single KGIU browse, D3)
@@ -9,6 +9,7 @@
  *                     completed sittings + scores + re-enter; Mistakes is a
  *                     link inside it, not the shelf's direct target anymore)
  *   - Uploads      → /uploads          (book PDFs, U1b)
+ *   - Images       → /images           (OCR image mining — F-102 re-entry)
  *
  * F-043 renamed the page (and the bottom-nav tab, via lib/nav.ts) from
  * "Review" to "Library"; the `review` NavItemId and the `/review` path are
@@ -16,9 +17,17 @@
  * the quick-launch LEARN chips (flashcards/grammar drill — the hexagon
  * LEARN launcher owns that flow), the standalone Mistakes/Dictionary rows
  * (Dictionary stays reachable via LibrarySubnav on the browse pages), the
- * interim "Scan images" row (leaving `/images` with no in-app entry point —
- * its re-entry home is ticket F-102), and the inert "coming soon"
- * placeholders.
+ * interim "Scan images" row, and the inert "coming soon" placeholders.
+ *
+ * F-102 — that F-042 removal left `/images` (the OCR image-mining page,
+ * still a registered route in App.tsx) reachable only by typing the URL.
+ * This page is its re-entry home again: a standard `sectionFor('images')`
+ * row, LAST in the shelf order, right under its sibling capture surface
+ * Uploads — image mining is a library-of-your-own-material concern, not a
+ * LEARN study loop (and `/images` is not under `/learn/*`, so the hexagon
+ * launcher would break the launcher's route-namespace convention). The row
+ * sources its copy from the `images` NavItem that never left `lib/nav.ts` —
+ * no bespoke row shape, same `sectionFor` recipe as every other shelf.
  *
  * Each row's title AND its one-line contents description come from the nav
  * manifest's en/kr pairs and render through `<Bilingual/>`, so the
@@ -43,6 +52,14 @@
  * 100% of the interaction/a11y, CityCard is nested purely as the visual
  * surface (same split ActivityTile uses on Today, `pages/Today.tsx`).
  *
+ * Device-adaptive epic, Phase D2: at tablet/desktop (`useDeviceClass() !==
+ * 'mobile'`, the same one-render-branch pattern D1 gave Today/Progress), the
+ * four shelves lay out as a two-column card GRID using the width instead of
+ * a single narrow stack — the `--grid` modifier below is the ONLY thing the
+ * branch adds, so the mobile markup (and its class string) stays
+ * byte-identical. The grid geometry/width arithmetic lives with the CSS in
+ * ReviewLibrary.css.
+ *
  * No I/O — pure navigation; no threat model beyond the router's own.
  */
 import type { JSX } from 'react';
@@ -52,6 +69,8 @@ import type { CityCardTone } from '../components/CityCard';
 import { CityCard } from '../components/CityCard';
 import { Icon, type IconName } from '../components/Icon';
 import { PageHubHeader } from '../components/PageHubHeader';
+import { useDeviceClass } from '../hooks/useDeviceClass';
+import { cn } from '../lib/cn';
 import { navItem, type NavItemId } from '../lib/nav';
 import './ReviewLibrary.css';
 
@@ -87,7 +106,8 @@ function sectionFor(id: NavItemId, tone: CityCardTone): LibrarySection {
   };
 }
 
-/** The four library sections, in the F-042 order. */
+/** The library sections — the four F-042 shelves, plus the F-102 Images
+ *  re-entry row (last; see the module doc comment for the placement call). */
 const SECTIONS: ReadonlyArray<LibrarySection> = [
   sectionFor('review-vocab', 'accent'),
   sectionFor('review-grammar', 'blue'),
@@ -106,10 +126,21 @@ const SECTIONS: ReadonlyArray<LibrarySection> = [
     tone: 'mint',
   },
   sectionFor('uploads', 'plain'),
+  // F-102 — `/images` re-entry (OCR image mining), grouped with Uploads as
+  // the "your own material" end of the shelf. Plain tone: a secondary
+  // surface, same visual weight as Uploads.
+  sectionFor('images', 'plain'),
 ];
 
 function ReviewLibrary(): JSX.Element {
   const navigate = useNavigate();
+  // D2 (device-adaptive epic) — the ONE render branch this phase adds to the
+  // Library landing: tablet/desktop tag the section list with a `--grid`
+  // modifier so ReviewLibrary.css can lay the shelves out two-up using the
+  // width. Mobile (`'mobile'`) renders byte-identical to before — `cn`
+  // drops the falsy modifier, so the class string is exactly
+  // 'km-library__list', same as pre-D2.
+  const isGridLayout = useDeviceClass() !== 'mobile';
 
   return (
     <section
@@ -128,7 +159,10 @@ function ReviewLibrary(): JSX.Element {
           the global CSS reset strips list semantics, so the role restores
           them explicitly for AT. */}
       <div
-        className="km-library__list"
+        className={cn(
+          'km-library__list',
+          isGridLayout && 'km-library__list--grid',
+        )}
         role="list"
         aria-label="Library sections"
       >

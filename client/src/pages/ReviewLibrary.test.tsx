@@ -1,19 +1,25 @@
 /**
  * ReviewLibrary — the /review Library landing (Overhaul P3B, F-042/F-043).
  *
- * Four sections in fixed order — Vocabulary → Grammar → TOPIK exams →
- * Uploads — each navigating to its real route (TOPIK exams lands on the
- * dedicated past-exams surface, F-103; Mistakes is a link inside THAT page
- * now, not this shelf's direct target). The P1.2 extras (quick-launch LEARN
- * chips, standalone Mistakes/Dictionary rows, the interim Scan-images row,
+ * Five sections in fixed order — Vocabulary → Grammar → TOPIK exams →
+ * Uploads → Images — each navigating to its real route (TOPIK exams lands
+ * on the dedicated past-exams surface, F-103; Mistakes is a link inside
+ * THAT page now, not this shelf's direct target; Images is the F-102
+ * `/images` re-entry row, restored after F-042 left the OCR page with no
+ * in-app entry point). The P1.2 extras (quick-launch LEARN chips,
+ * standalone Mistakes/Dictionary rows, the interim Scan-images row,
  * "coming soon" placeholders) are gone.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { cwd } from 'node:process';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import ReviewLibrary from './ReviewLibrary';
+import { mockViewportWidth } from '../test/viewport';
 
 function LocationProbe(): JSX.Element {
   const loc = useLocation();
@@ -72,18 +78,21 @@ describe('ReviewLibrary (P3B landing)', () => {
     ).toBeInTheDocument();
   });
 
-  it('F-042: exactly four sections, in order Vocabulary → Grammar → TOPIK exams → Uploads', () => {
+  it('F-042 + F-102: exactly five sections, in order Vocabulary → Grammar → TOPIK exams → Uploads → Images', () => {
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
     const rowText = within(list)
       .getAllByRole('button')
       .map((b) => b.textContent ?? '');
-    expect(rowText).toHaveLength(4);
+    expect(rowText).toHaveLength(5);
     expect(rowText[0]).toContain('Vocabulary');
     expect(rowText[1]).toContain('Grammar');
     expect(rowText[2]).toContain('TOPIK exams');
     expect(rowText[3]).toContain('Uploads');
+    // F-102 — the /images re-entry row, LAST (grouped with Uploads at the
+    // "your own material" end of the shelf).
+    expect(rowText[4]).toContain('Images');
   });
 
   it.each([
@@ -91,6 +100,8 @@ describe('ReviewLibrary (P3B landing)', () => {
     ['Grammar', '/review/grammar'],
     ['TOPIK exams', '/review/exams'],
     ['Uploads', '/uploads'],
+    // F-102 — the OCR image-mining page's restored in-app entry point.
+    ['Images', '/images'],
   ])('navigates the %s section to %s on tap', async (label, target) => {
     const user = userEvent.setup();
     renderLibrary();
@@ -127,9 +138,10 @@ describe('ReviewLibrary (P3B landing)', () => {
     // Device #2 — the dancheong-rail divider under the skyline.
     expect(container.querySelector('.km-dancheong-rail')).not.toBeNull();
     // Device #1 — every section row is now a CityCard-backed signboard, one
-    // per row, carrying the per-section tone (F-042's four sections).
+    // per row, carrying the per-section tone (F-042's four sections + the
+    // F-102 Images re-entry row).
     const cards = container.querySelectorAll('.km-library__row .km-citycard');
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(5);
     expect(container.querySelector('.km-tone--accent')).not.toBeNull();
     expect(container.querySelector('.km-tone--blue')).not.toBeNull();
     expect(container.querySelector('.km-tone--mint')).not.toBeNull();
@@ -178,8 +190,120 @@ describe('ReviewLibrary (P3B landing)', () => {
     // Inert "coming soon" placeholders: removed — every row navigates.
     expect(screen.queryByText('Coming soon')).not.toBeInTheDocument();
     expect(screen.queryByText('준비 중')).not.toBeInTheDocument();
-    // Nothing else is interactive: the four section rows are the ONLY
-    // buttons on the page.
-    expect(screen.getAllByRole('button')).toHaveLength(4);
+    // Nothing else is interactive: the five section rows (four F-042
+    // shelves + the F-102 Images re-entry) are the ONLY buttons on the page.
+    expect(screen.getAllByRole('button')).toHaveLength(5);
+  });
+});
+
+/**
+ * Device-adaptive epic, Phase D2 — the Library shelves as a two-column grid
+ * at tablet/desktop.
+ *
+ * `useDeviceClass` reads `window.matchMedia`; `src/test/setup.ts` installs a
+ * `matches: false` default before every test (mobile-first baseline), so
+ * every test ABOVE this block already exercises the mobile branch without
+ * explicit stubbing. This block stubs `matchMedia` to report tablet/desktop
+ * widths via the SHARED `mockViewportWidth` helper (src/test/viewport.ts —
+ * the one canonical copy of the D1/D2 idiom; its non-width queries stay
+ * `false`, matching setup.ts's baseline) to pin the grid modifier, and
+ * re-confirms the mobile class string is byte-identical at an explicit
+ * narrow width too.
+ *
+ * jsdom does no layout, so the grid GEOMETRY (fixed 2 columns, the orphan
+ * guard) is pinned at the CSS source level — same technique as Today's D1
+ * fix-pass tests — with correctness established by construction in
+ * ReviewLibrary.css's width-arithmetic comment.
+ */
+describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('mobile (default test matchMedia): the list class string is byte-identical to pre-D2 — no grid modifier', () => {
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    // Exact class attribute, not a substring check — the D2 contract is that
+    // the mobile DOM does not change AT ALL, modifier included.
+    expect(list.getAttribute('class')).toBe('km-library__list');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+  });
+
+  it('mobile at an explicit narrow viewport (375px): still no grid modifier', () => {
+    mockViewportWidth(375);
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    expect(list.getAttribute('class')).toBe('km-library__list');
+  });
+
+  it('tablet (768px): the list carries the --grid modifier with all four shelves still present, in order', () => {
+    mockViewportWidth(768);
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    expect(list.getAttribute('class')).toBe(
+      'km-library__list km-library__list--grid',
+    );
+    const rowText = within(list)
+      .getAllByRole('button')
+      .map((b) => b.textContent ?? '');
+    expect(rowText).toHaveLength(4);
+    expect(rowText[0]).toContain('Vocabulary');
+    expect(rowText[1]).toContain('Grammar');
+    expect(rowText[2]).toContain('TOPIK exams');
+    expect(rowText[3]).toContain('Uploads');
+  });
+
+  it('desktop (1280px): same --grid modifier (tablet and desktop share the one 2-column layout)', () => {
+    mockViewportWidth(1280);
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    expect(list.getAttribute('class')).toBe(
+      'km-library__list km-library__list--grid',
+    );
+  });
+
+  it('a shelf in the grid branch keeps its exact navigation — layout never drops onClick behavior', async () => {
+    mockViewportWidth(1024);
+    const user = userEvent.setup();
+    renderLibrary();
+    const list = screen.getByRole('list', { name: 'Library sections' });
+    await user.click(within(list).getByRole('button', { name: /Vocabulary/ }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/review/vocab');
+  });
+
+  it('CSS: the --grid modifier is a FIXED 2-column grid gated behind ≥768px — the geometry the no-orphan arithmetic depends on', () => {
+    // 4 shelves ÷ 2 columns = a clean 2×2 at every ≥768px width. Pin the
+    // exact `grid-template-columns` so a future edit to auto-fit (which
+    // computes 3 columns from ~976px viewport and would strand the fourth
+    // shelf alone in row 2 — see the arithmetic in ReviewLibrary.css) can't
+    // slip through as an innocuous-looking tweak.
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'ReviewLibrary.css'),
+      'utf8',
+    );
+    const mediaBlock =
+      /@media \(min-width: 768px\) \{\s*\.km-library__list--grid \{[\s\S]*?\n\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(mediaBlock).not.toBe('');
+    expect(mediaBlock).toContain('display: grid;');
+    expect(mediaBlock).toContain(
+      'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    );
+  });
+
+  it('CSS: the orphan guard spans a trailing odd shelf full-width (inert at the current even count, mirrors the D1 fix-pass rule)', () => {
+    const stylesheet = readFileSync(
+      join(cwd(), 'src', 'pages', 'ReviewLibrary.css'),
+      'utf8',
+    );
+    expect(stylesheet).toContain(
+      ":last-child:nth-child(odd)",
+    );
+    const guardBlock =
+      /\.km-library__list--grid > \[role='listitem'\]:last-child:nth-child\(odd\) \{[\s\S]*?\}/.exec(
+        stylesheet,
+      )?.[0] ?? '';
+    expect(guardBlock).toContain('grid-column: 1 / -1;');
   });
 });

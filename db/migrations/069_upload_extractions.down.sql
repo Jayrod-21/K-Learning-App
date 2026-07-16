@@ -1,7 +1,7 @@
 -- migrate: destructive
 -- =============================================================================
--- Migration 068 — upload_extractions (DOWN)
---   Reverses 068_upload_extractions.up.sql:
+-- Migration 069 — upload_extractions (DOWN)
+--   Reverses 069_upload_extractions.up.sql:
 --     1. drops the `upload_extractions` table (run history — INCLUDING the
 --        daily Vision-page cost ledger, which deliberately survives upload
 --        deletion via the up's ON DELETE SET NULL — is lost; hence the
@@ -62,4 +62,4 @@ ALTER TABLE kgiu_entries
         (corpus = 'kgiu_advanced'     AND book_level = 'advanced')
     );
 
--- End of 068_upload_extractions.down.sql — runner owns the transaction (ADR-013).
+-- End of 069_upload_extractions.down.sql — runner owns the transaction (ADR-013).

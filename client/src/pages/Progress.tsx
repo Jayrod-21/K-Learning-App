@@ -123,7 +123,10 @@ import { useEndpointOrMock } from '../hooks/useEndpointOrMock';
 import type { UseEndpointOrMockResult } from '../hooks/useEndpointOrMock';
 import { usePagination } from '../hooks/usePagination';
 import { cn } from '../lib/cn';
-import { encounteredBarAria } from '../lib/encounteredBar';
+import {
+  encounteredBarAria,
+  hanjaProgressSummary,
+} from '../lib/encounteredBar';
 import { navItem } from '../lib/nav';
 import { getHistory } from '../services/diagnostic';
 import { fetchGrammarMastery } from '../services/grammar';
@@ -1893,15 +1896,16 @@ function GrammarMasteryPanel(): JSX.Element {
 // Hanja mastery (F-041) — aggregate bands from GET /hanja/progress
 // ─────────────────────────────────────────────────────────────
 
-/** Hanja band chrome — mirrors the Hanja screen's state labels (P3b:
- *  `banked` uses the 담기/담김 family per the glossary). */
+/** Hanja band chrome — mirrors the Hanja screen's state labels (F-077:
+ *  the `banked` wire state now displays as "Mastered"/"숙달", matching the
+ *  word-mastery bucket vocabulary above; the key/class stay `banked`). */
 const HANJA_BAND_META: ReadonlyArray<{
   key: 'banked' | 'practicing' | 'new';
   label: string;
   kr: string;
   cls: string;
 }> = [
-  { key: 'banked', label: 'Banked', kr: '담김', cls: 'is-banked' },
+  { key: 'banked', label: 'Mastered', kr: '숙달', cls: 'is-banked' },
   { key: 'practicing', label: 'Practicing', kr: '연습 중', cls: 'is-practicing' },
   { key: 'new', label: 'New', kr: '신규', cls: 'is-new' },
 ];
@@ -1974,8 +1978,8 @@ function HanjaMasteryPanel(): JSX.Element {
     return (
       <p className="km-progress__note">
         <Bilingual
-          en="No hanja studied yet — mark characters as practicing or banked in Learn → Hanja and your mastery shows here."
-          kr="아직 학습한 한자가 없어요 — 한자 페이지에서 연습 중/담김으로 표시하면 숙달도가 여기에 나와요."
+          en="No hanja studied yet — mark characters as practicing or mastered in Learn → Hanja and your mastery shows here."
+          kr="아직 학습한 한자가 없어요 — 한자 페이지에서 연습 중/숙달로 표시하면 숙달도가 여기에 나와요."
         />
       </p>
     );
@@ -1989,13 +1993,14 @@ function HanjaMasteryPanel(): JSX.Element {
     progress.targetL4 > 0
       ? Math.min(100, (progress.encountered / progress.targetL4) * 100)
       : 0;
+  const summary = hanjaProgressSummary(progress);
 
   return (
     <div className="km-mastery__summary">
       <div
         className="km-mastery__bar"
         role="img"
-        aria-label={`${String(progress.banked)} banked, ${String(
+        aria-label={`${String(progress.banked)} mastered, ${String(
           progress.practicing,
         )} practicing, ${String(progress.new)} new`}
       >
@@ -2037,8 +2042,13 @@ function HanjaMasteryPanel(): JSX.Element {
             style={{ width: `${encounteredPct.toFixed(1)}%` }}
           />
         </div>
-        {/* Server-templated status line — rendered as a React child. */}
-        <p className="km-progress__note">{progress.note}</p>
+        {/* F-077 — status line composed client-side (bilingual +
+            reword-consistent) via the shared lib/encounteredBar helper;
+            the server's pre-templated English `note` still says "banked",
+            so it is no longer rendered. */}
+        <p className="km-progress__note">
+          <Bilingual en={summary.en} kr={summary.kr} />
+        </p>
       </div>
     </div>
   );

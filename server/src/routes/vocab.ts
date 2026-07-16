@@ -632,6 +632,16 @@ const MineBodySchema = z
     // The /define entries[0].id — gives a stable dedup key so homographs stay
     // distinct (krdict-<id>) rather than colliding on the surface form.
     krdictEntryId: z.number().int().positive().max(MAX_ID).optional(),
+    // F-107 (user-saved upload provenance): the `book_uploads.id` the user
+    // was working from when they saved this word. Optional — a tap outside
+    // an upload context sends nothing. int/positive/MAX_ID-bounded like the
+    // U3a query filter above (binds to a BIGINT FK; no coerce — this is a
+    // JSON body, not a query string). OWNERSHIP is validated in the handler
+    // (the upload must belong to the caller, else 404) BEFORE anything
+    // persists — an attacker passing someone else's upload id must not tag
+    // their save to it. Named snake_case to match the wire name this concept
+    // already has everywhere else (query params, DB column).
+    source_upload_id: z.number().int().positive().max(MAX_ID).optional(),
   })
   .strict();
 
@@ -644,6 +654,9 @@ const MineBodySchema = z
  * existing card / FSRS / Review stack — no new card target.
  *
  * One transaction:
+ *   0. F-107: when `source_upload_id` is supplied, verify the upload belongs
+ *      to the CALLER (404 otherwise — identical for nonexistent and unowned
+ *      ids, no existence oracle) before anything persists.
  *   1. Resolve the shared `user_mined` corpus_sources id (seeded by migration
  *      022). Absent → 500 loudly: the migration is a hard dependency.
  *   2. Upsert the vocab_entries row (SHARED, NOT user-scoped — it is just the
@@ -686,6 +699,27 @@ router.post(
           : `lemma-${body.lemma}`;
 
       const out = await withTransaction(async (client) => {
+        // 0. F-107 upload provenance — validate the referenced upload BELONGS
+        //    TO the caller before anything persists. One combined
+        //    id+ownership predicate: a nonexistent id and another user's id
+        //    both 404 identically, so the response is not an existence oracle
+        //    for other users' upload ids (mirrors the grammar-bank graduate
+        //    route's posture). Runs inside the transaction so the ownership
+        //    fact and the tagged insert commit or roll back together.
+        if (body.source_upload_id !== undefined) {
+          const owned = await client.query(
+            `SELECT 1
+               FROM book_uploads
+              WHERE id = $1
+                AND user_id = $2
+              LIMIT 1`,
+            [body.source_upload_id, userId],
+          );
+          if (owned.rowCount === 0) {
+            throw new NotFoundError('upload not found');
+          }
+        }
+
         // 1. Resolve the shared user_mined corpus source (seeded by mig 022).
         const src = await client.query<{ id: number }>(
           `SELECT id
@@ -709,20 +743,46 @@ router.post(
         const entry = await client.query<{ id: number }>(
           `INSERT INTO vocab_entries (
               corpus_source_id, corpus, source_id, book_level, entry_type,
-              source_book, korean, english, proficiency, domain)
+              source_book, korean, english, proficiency, domain,
+              source_upload_id)
             VALUES ($1, 'user_mined'::corpus, $2, 'beginner'::book_level,
                     'word'::vocab_entry_type, 'user-mined', $3, $4,
-                    'L3'::proficiency_level, 'general'::content_domain)
+                    'L3'::proficiency_level, 'general'::content_domain, $5)
             ON CONFLICT (corpus, source_id) DO UPDATE
                -- Existing gloss WINS: vocab_entries rows are SHARED across
                -- users (keyed by corpus/source_id, not user), so letting a
                -- re-mine overwrite a non-null english would let any user
                -- clobber the gloss everyone else's cards display (routes
                -- sweep #6). A re-mine only FILLS a missing gloss.
+               --
+               -- F-107: source_upload_id follows the SAME first-write-wins
+               -- rule, for the same shared-row reason — a later re-mine
+               -- (by anyone) only FILLS missing provenance, never re-tags
+               -- an entry to a different upload. The ownership check in
+               -- step 0 already guaranteed EXCLUDED.source_upload_id is an
+               -- upload the CALLER owns, so a NULL->value fill can only tag
+               -- the entry with the tagging user's own upload.
+               --
+               -- ACCEPTED TRADEOFF (single-user scope, tracked as F-199): a
+               -- SECOND user genuinely mining this lemma from THEIR OWN
+               -- upload gets a 201 while their tag is silently discarded —
+               -- the word will never appear in that user's
+               -- GET /vocab/saved-from-uploads. True per-user provenance
+               -- needs the tag on the user-scoped save artifact
+               -- (vocab_cards) instead of this shared row; deliberately NOT
+               -- built while the deployment is single-user.
                SET english = COALESCE(vocab_entries.english, EXCLUDED.english),
+                   source_upload_id = COALESCE(vocab_entries.source_upload_id,
+                                               EXCLUDED.source_upload_id),
                    version = vocab_entries.version + 1
             RETURNING id`,
-          [corpusSourceId, sourceId, body.lemma, body.english ?? null],
+          [
+            corpusSourceId,
+            sourceId,
+            body.lemma,
+            body.english ?? null,
+            body.source_upload_id ?? null,
+          ],
         );
         const entryId = entry.rows[0]!.id;
 
@@ -758,10 +818,189 @@ router.post(
         card: { ...out.card, id: Number(out.card.id) },
       });
     } catch (err) {
+      // F-107 race guard: the step-0 ownership check and the tagged upsert
+      // run in one transaction, but READ COMMITTED does not stop a concurrent
+      // hard-delete of the upload between the two statements — the FK from
+      // migration 040 then rejects the insert (23503). That is still "this
+      // upload does not exist for you", so it maps to the same 404 the
+      // ownership check gives, not a 500. Scoped to THIS FK's constraint
+      // name so unrelated integrity errors keep surfacing loudly.
+      const pgErr = err as { code?: string; constraint?: string };
+      if (
+        pgErr.code === '23503' &&
+        pgErr.constraint === 'vocab_entries_source_upload_id_fkey'
+      ) {
+        next(new NotFoundError('upload not found'));
+        return;
+      }
       next(err);
     }
   },
 );
+
+/**
+ * GET /vocab/saved-from-uploads — the user's saved vocab that carries upload
+ * provenance, grouped by source upload (F-107; feeds the F-053 "My Uploads"
+ * section on the Review→Vocabulary page).
+ *
+ * "Saved" means the user deliberately kept the word, via EITHER save path:
+ *   - a live recognition/production card (`vocab_cards`, e.g. POST
+ *     /vocab/mine or the bank routes), or
+ *   - membership in one of the user's live lists (`vocab_list_entries`).
+ *
+ * A word counts once no matter how many ways it was saved; `savedAt` is the
+ * EARLIEST save. Only entries whose `vocab_entries.source_upload_id` points
+ * at an upload THE CALLER OWNS appear — provenance tagged to another user's
+ * upload is invisible here (the `bu.user_id = $1` join predicate), so upload
+ * titles can never leak across users. Distinct from the U3a
+ * `GET /vocab/entries?source_upload_id=` browse (everything a book tagged):
+ * this is only what the user chose to keep.
+ *
+ * User-scoped on every leg (cards by `c.user_id`, lists by `vl.user_id`,
+ * uploads by `bu.user_id` — all bound to the session user, never a client
+ * id); fully parameterized; read-only. Groups are ordered newest upload
+ * first, entries newest-saved first.
+ *
+ * Response: `{ groups, total, truncated }` — `total` is the user's FULL
+ * saved-with-provenance word count (window COUNT, unaffected by the cap);
+ * `truncated: true` says the row cap trimmed the response. Every returned
+ * group is guaranteed WHOLE: rather than let the flat-row LIMIT cut the
+ * last group mid-group (which would render as a complete-looking but
+ * silently short list), a group split by the cap is dropped entirely —
+ * the flag plus `total` tell the client data is missing.
+ */
+/** Defensive row cap for the saved-from-uploads read: no query params means
+ *  no client-controlled paging, so bound the response server-side. 500 rows
+ *  is far beyond a plausible personal saved-words set; if it is ever hit,
+ *  the newest uploads/saves win (matches the ORDER BY), the response says so
+ *  via `truncated`/`total`, and only WHOLE groups are returned (the query
+ *  over-fetches one row past the cap to detect a mid-group cut). */
+const SAVED_FROM_UPLOADS_ROW_CAP = 500;
+
+router.get('/saved-from-uploads', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{
+      upload_id: string;
+      upload_title: string;
+      entry_id: string;
+      korean: string | null;
+      english: string | null;
+      saved_at: Date;
+      total: string;
+    }>(
+      `WITH saves AS (
+          -- Save path 1: a live card on the entry (mined or banked).
+          SELECT c.vocab_entry_id AS entry_id, MIN(c.created_at) AS saved_at
+            FROM vocab_cards c
+           WHERE c.user_id = $1
+             AND c.deleted_at IS NULL
+             AND c.vocab_entry_id IS NOT NULL
+           GROUP BY c.vocab_entry_id
+          UNION ALL
+          -- Save path 2: membership in one of the user's live lists.
+          -- entry_id IS NOT NULL: 049's multitype rows (grammar/hanja
+          -- memberships) carry a NULL vocab entry_id and are not vocab saves.
+          SELECT le.entry_id, MIN(le.added_at)
+            FROM vocab_list_entries le
+            JOIN vocab_lists vl
+              ON vl.id = le.list_id
+             AND vl.user_id = $1
+             AND vl.deleted_at IS NULL
+           WHERE le.entry_id IS NOT NULL
+           GROUP BY le.entry_id
+       ),
+       first_saves AS (
+          -- One row per saved entry, earliest save wins.
+          SELECT entry_id, MIN(saved_at) AS saved_at
+            FROM saves
+           GROUP BY entry_id
+       )
+       SELECT bu.id           AS upload_id,
+              bu.title        AS upload_title,
+              ve.id           AS entry_id,
+              ve.korean,
+              ve.english,
+              fs.saved_at,
+              -- Full matching-row count alongside the capped page (window
+              -- runs before LIMIT — same idiom as GET /vocab/entries above)
+              -- so the client can see how much the cap hid.
+              COUNT(*) OVER ()::text AS total
+         FROM first_saves fs
+         JOIN vocab_entries ve
+           ON ve.id = fs.entry_id
+         -- The ownership predicate lives ON the join: an entry tagged to an
+         -- upload the caller does NOT own simply produces no row (never a
+         -- leaked title, never an error).
+         JOIN book_uploads bu
+           ON bu.id = ve.source_upload_id
+          AND bu.user_id = $1
+        ORDER BY bu.created_at DESC, bu.id DESC, fs.saved_at DESC, ve.id
+        LIMIT $2`,
+      // Over-fetch ONE row past the cap: its presence proves truncation, and
+      // its upload id tells whether the cap fell mid-group (see below).
+      [userId, SAVED_FROM_UPLOADS_ROW_CAP + 1],
+    );
+
+    // Truncation handling — two invariants the wire contract promises:
+    //   1. `truncated`/`total` say when (and how much) the cap hid.
+    //   2. Every returned group is WHOLE. The LIMIT applies to flat rows, so
+    //      the cap can land mid-group; a partially-returned group would look
+    //      complete (worse than absent). If the over-fetched sentinel row
+    //      belongs to the same upload as the last kept row, the cap split
+    //      that group — drop the whole group (its rows are the ordered tail,
+    //      so filtering by upload id removes exactly that trailing run). If
+    //      the sentinel starts a NEW group, the kept groups are all whole.
+    //      Degenerate case: a single group larger than the cap yields zero
+    //      groups with truncated=true — honest, and unreachable at personal
+    //      scale (cap = 500 saved words in ONE upload).
+    const truncated = rows.length > SAVED_FROM_UPLOADS_ROW_CAP;
+    const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
+    let visible = rows;
+    if (truncated) {
+      const lastKept = rows[SAVED_FROM_UPLOADS_ROW_CAP - 1]!;
+      const sentinel = rows[SAVED_FROM_UPLOADS_ROW_CAP]!;
+      visible = rows.slice(0, SAVED_FROM_UPLOADS_ROW_CAP);
+      if (sentinel.upload_id === lastKept.upload_id) {
+        visible = visible.filter((r) => r.upload_id !== lastKept.upload_id);
+      }
+    }
+
+    // Fold the flat rows into per-upload groups, preserving SQL order. pg
+    // returns BIGINTs as strings; the DTO documents ids as JSON numbers
+    // (both fit in Number.MAX_SAFE_INTEGER — same convention as every other
+    // route in this file).
+    interface SavedGroup {
+      upload: { id: number; title: string };
+      entries: Array<{
+        id: number;
+        korean: string | null;
+        english: string | null;
+        savedAt: string;
+      }>;
+    }
+    const groups: SavedGroup[] = [];
+    const byUpload = new Map<number, SavedGroup>();
+    for (const r of visible) {
+      const uploadId = Number(r.upload_id);
+      let group = byUpload.get(uploadId);
+      if (group === undefined) {
+        group = { upload: { id: uploadId, title: r.upload_title }, entries: [] };
+        byUpload.set(uploadId, group);
+        groups.push(group);
+      }
+      group.entries.push({
+        id: Number(r.entry_id),
+        korean: r.korean,
+        english: r.english,
+        savedAt: r.saved_at.toISOString(),
+      });
+    }
+    res.status(200).json({ groups, total, truncated });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /* ---------- Weekly suggestions (suggest-only — no auto-add) ---------- */
 

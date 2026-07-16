@@ -10,7 +10,8 @@
  *      the first thing on the page, so the param needs no handling.
  *   2. My Uploads (F-053) — vocab saved from the user's book uploads,
  *      grouped by source upload; rendered ONLY when such items exist (see
- *      `SavedFromUploads` — the backend can't supply this yet).
+ *      `SavedFromUploads` — wired to `GET /vocab/saved-from-uploads`,
+ *      F-107).
  *   3. This Week — the suggest-only strip, VOCAB ONLY (F-047: grammar
  *      content left this page; the library has a Grammar tab).
  *   4. Browse — the curated corpus. Genre + difficulty DROPDOWN filters
@@ -119,6 +120,7 @@ import { ApiError } from '../../services/api';
 import type {
   BookLevel,
   ContentDomain,
+  SavedFromUploadsGroup,
   ServerVocabList,
   VocabEntry,
 } from '../../types/domain';
@@ -378,28 +380,99 @@ export default function ReviewVocab(): JSX.Element {
 
 /**
  * F-053 contract: show vocab the user SAVED from their book uploads (tap a
- * word in an upload → add it to a list → it files here), grouped by source
+ * word in an upload → save/list it → it files here), grouped by source
  * upload — and render the section ONLY when such items exist.
  *
- * Backend audit (P3B): no endpoint can supply this data today —
- *   - `POST /vocab/mine` (the tap-a-word save path) records NO upload
- *     provenance: it upserts a shared `user_mined` entry keyed by
- *     krdict-id/lemma only (server/src/routes/vocab.ts).
- *   - `GET /vocab/entries?source_upload_id=` returns the SHARED corpus rows
- *     a digitized book tagged (U3a) — words extracted FROM the book, not
- *     words the user chose to save.
- *   - `vocab_list_entries` rows carry no upload provenance either
- *     (server/src/routes/vocabLists.ts, migration 049 XOR columns).
+ * Wired (F-107) to `GET /vocab/saved-from-uploads`: the save paths now
+ * record upload provenance (`POST /vocab/mine` + `POST /grammar/bank`
+ * accept `source_upload_id`, ownership-validated server-side), and the read
+ * folds both save forms (card banks + list adds of upload-tagged entries)
+ * into per-upload groups. Distinct from the U3a
+ * `GET /vocab/entries?source_upload_id=` browse (everything a book tagged):
+ * this is only what the user chose to keep.
  *
- * So the honest render is nothing: the "only shown IF such saved items
- * exist" condition is false for every user until a saved-from-uploads
- * endpoint lands (ticket F-107: record provenance on the save paths +
- * `GET /vocab/saved-from-uploads`). Wiring this section to the U3a
- * tagged-rows query instead would fabricate "saved" semantics the data
- * doesn't have.
+ * Honest empty state = NOTHING renders: F-053 specifies the section is
+ * "only shown if such saved items exist", so no groups (and, best-effort,
+ * a failed fetch — this is a supplementary shelf, not the page's core
+ * surface, same posture as the theme-filter fetch above) yields null
+ * rather than an empty shell or an error card.
+ *
+ * Threat model: upload titles and saved words are the caller's OWN data
+ * (server-scoped to the session user); both render through React text
+ * children, so a hostile title cannot escape into markup.
  */
 function SavedFromUploads(): JSX.Element | null {
-  return null;
+  const [groups, setGroups] = useState<SavedFromUploadsGroup[]>([]);
+  // F-107 truncation signal: the server caps the response at 500 rows and
+  // only ever returns WHOLE groups (a group the cap would split mid-group is
+  // dropped), so this flag — not any visible gap — is the sole sign that
+  // more saves exist beyond what renders.
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    vocabService
+      .fetchSavedFromUploads(ctrl.signal)
+      .then((res) => {
+        if (ctrl.signal.aborted) return;
+        setGroups(res.groups);
+        setTruncated(res.truncated);
+      })
+      .catch(() => {
+        // Best-effort — see the component doc comment above.
+      });
+    return () => {
+      ctrl.abort();
+    };
+  }, []);
+
+  if (groups.length === 0) return null;
+
+  return (
+    <CollapsibleTile
+      className="km-vocab__section km-vocab__savedFromUploads"
+      surface="city"
+      rail
+      title={<Bilingual en="My uploads" kr="내 업로드" />}
+    >
+      {groups.map((group) => (
+        <section
+          key={`saved-upload:${String(group.upload.id)}`}
+          className="km-vocab__savedUploadGroup"
+          aria-label={group.upload.title}
+        >
+          <Eyebrow>{group.upload.title}</Eyebrow>
+          <Card className="km-reference__list" variant="flat">
+            <ul>
+              {group.entries.map((entry) => (
+                <li
+                  key={`saved:${String(group.upload.id)}:${String(entry.id)}`}
+                  className="km-reference__row"
+                >
+                  <div className="km-resources__entry-row">
+                    <span className="kr km-reference__row-kr">
+                      {entry.korean ?? ''}
+                    </span>
+                    <span className="km-reference__row-en">
+                      {entry.english ?? ''}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </section>
+      ))}
+      {truncated ? (
+        <p className="km-vocab__savedUploadsTruncated">
+          <Bilingual
+            en="Showing your most recent saves only"
+            kr="최근 저장 항목만 표시됩니다"
+          />
+        </p>
+      ) : null}
+    </CollapsibleTile>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

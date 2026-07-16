@@ -1,45 +1,42 @@
-"""Migration 068 (upload_extractions, ticket F-108) — real-chain tests.
+"""Migration 068 (grammar_entries.source_upload_id, ticket F-107) — real-chain
+tests.
 
 WHY THIS FILE EXISTS:
-    068 is the U2 extraction pipeline's storage: the `upload_extractions` run
-    table (status lifecycle, page range, result counts, bounded error) plus
-    the two kgiu_entries CHECK relaxations that admit 'user_mined' grammar
-    rows. Its value is in the lifecycle + cost topology, and one behavior is
-    SECURITY-LOAD-BEARING (fixpass b8 BLOCKER-1): the run row is the per-user
-    daily Vision-page COST LEDGER, so `fk_upload_extractions_upload` must be
-    ON DELETE SET NULL — a CASCADE would let `DELETE /uploads/:id` erase
-    today's charged pages and reset the cap on demand. These tests apply the
-    REAL migration chain against a real Postgres-16 testcontainer via
-    ``migrate.main()`` and PROVE each guard by attempting the write (or
-    delete) it must reject or survive.
+    068 adds a nullable `source_upload_id` FK on `grammar_entries` — the
+    user-saved upload-provenance dimension for the grammar save path
+    (`POST /grammar/bank`), mirroring the column migration 040 put on
+    `vocab_entries`/`kgiu_entries` for the vocab side. The route layer owns
+    the ownership validation ("the upload must belong to the saving user")
+    and its own test coverage (server/tests/routes/grammar.test.ts); this
+    file proves the DATABASE-level contract those routes depend on: the
+    column shape, the FK actually rejecting a dangling upload id, ON DELETE
+    SET NULL un-tagging (not deleting) banked patterns when the upload goes
+    away, and the F-088 marker classification on both SQL files.
 
 SCOPE:
-    - markers: up is non-destructive, down destructive (F-088 classification).
-    - up: applies on the full real chain; re-applying the body is a no-op
-      (enum DO-block, IF NOT EXISTS, CREATE OR REPLACE TRIGGER, DROP+ADD
-      CONSTRAINT are all re-runnable).
-    - relaxed CHECKs: a live pipeline-shaped 'user_mined' kgiu INSERT passes
-      (any book_level — the sentinel convention), while a non-user_mined
-      corpus/level mismatch still fails.
-    - BLOCKER-1 pin: deleting the parent book_uploads row keeps the ledger
-      row, nulls upload_id, and the partial-unique live-run claim still
-      arbitrates (a second live run 23505s; orphaned NULL rows never block).
-    - down: refused without --allow-destructive; with it, reverses cleanly on
-      an EMPTY user_mined kgiu corpus (table + enum gone, original CHECKs
-      restored verbatim so a user_mined kgiu INSERT is rejected again); FAILS
-      LOUDLY when user_mined kgiu rows exist (ADD CONSTRAINT validates
-      existing rows — 022's documented posture); re-up is clean.
+    - up: source_upload_id is a nullable BIGINT FK -> book_uploads(id); NULL
+      is valid (every pre-068 row / non-upload save); a dangling id is a
+      ForeignKeyViolation; deleting the referenced upload SET-NULLs the tag
+      while the grammar row survives; the up file classifies as
+      non-destructive via the F-088 marker.
+    - down: DROP COLUMN removes source_upload_id (+ the FK + partial index
+      with it); the down file classifies as destructive via the F-088 marker
+      (the DROP COLUMN shape the legacy sniff would NOT catch — same shape
+      as 063/066's own downs); existing grammar rows survive; re-up is clean
+      even with rows present (nullable column, no NOT NULL to trip on a
+      populated table).
 
 DETERMINISM:
-    Mirrors test_migration_060.py — the real migration files are copied into
-    a tmp_path-scoped directory and the runner is pointed at it via
-    ``--migrations-dir``; the ``dsn`` fixture gives each test a fresh schema.
+    Mirrors test_migration_066.py — real migration files copied into a
+    tmp_path-scoped dir, runner pointed at it via --migrations-dir, fresh
+    schema per test.
 """
 
 from __future__ import annotations
 
 import pathlib
 import shutil
+from typing import Iterable
 
 import psycopg
 import pytest
@@ -63,18 +60,13 @@ REAL_MIGRATIONS_DIR: pathlib.Path = (
     pathlib.Path(__file__).resolve().parents[1] / "migrations"
 )
 
-# The migration immediately before 068. `down --target PRE_068` rolls back
-# ONLY 068 (its DROP TABLE down is what requires --allow-destructive).
-PRE_068 = "067"
-
-# A syntactically valid argon2id-shaped hash satisfying
-# ck_users_password_hash_argon2id (LIKE '$argon2id$%', length 80..255).
 FAKE_HASH = "$argon2id$" + "x" * 70
 
+# The migration immediately before 068 in this file's minimal chain — the
+# down-target that rolls back exactly 068 and nothing else. 040 creates
+# book_uploads (the FK target); 001 creates grammar_entries itself.
+PRE_068 = "040"
 
-# ---------------------------------------------------------------------------
-# Fixtures — one container per session, a fresh DB + full migration dir per test
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
 def pg_container():
@@ -98,30 +90,34 @@ def env(monkeypatch, dsn) -> None:
     monkeypatch.setenv("DATABASE_URL", dsn)
 
 
-@pytest.fixture()
-def full_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A tmp directory containing EVERY production migration file."""
-    d = tmp_path / "migrations_full"
-    d.mkdir(parents=True)
-    copied = 0
+def _copy_real_migrations(dest: pathlib.Path, versions: Iterable[str]) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    wanted = set(versions)
+    copied: set[str] = set()
     for src in REAL_MIGRATIONS_DIR.iterdir():
-        if src.suffix == ".sql" and src.is_file():
-            shutil.copy2(src, d / src.name)
-            copied += 1
-    assert copied > 0, f"no migration files found under {REAL_MIGRATIONS_DIR}"
+        if src.suffix != ".sql" or not src.is_file():
+            continue
+        version_prefix = src.name.split("_", 1)[0]
+        if version_prefix in wanted:
+            shutil.copy2(src, dest / src.name)
+            copied.add(version_prefix)
+    missing = wanted - copied
+    if missing:
+        raise FileNotFoundError(
+            f"expected real migration files for versions {sorted(missing)} "
+            f"under {REAL_MIGRATIONS_DIR}, found none"
+        )
+
+
+@pytest.fixture()
+def provenance_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    """001 (users, grammar_entries, set_updated_at()) + 002 (vocab_entries /
+    kgiu_entries — 040 ALTERs both, so 002 must precede it) + 040
+    (book_uploads, the FK target) + 068 (the column under test)."""
+    d = tmp_path / "migrations_grammar_provenance"
+    _copy_real_migrations(d, versions={"001", "002", "040", "068"})
     return d
 
-
-def _full_up(full_dir: pathlib.Path) -> None:
-    # --allow-destructive: migration 045 (hygiene_cleanup, DROP TABLE) sits in
-    # the chain, so a full `up` trips migrate.py's destructive gate without it.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
-    assert rc == 0, f"full up returned {rc}"
-
-
-# ---------------------------------------------------------------------------
-# Seed helpers — raw SQL, no app layer involved
-# ---------------------------------------------------------------------------
 
 def _seed_user(conn: psycopg.Connection, email: str) -> int:
     with conn.cursor(row_factory=tuple_row) as cur:
@@ -132,291 +128,212 @@ def _seed_user(conn: psycopg.Connection, email: str) -> int:
         return cur.fetchone()[0]
 
 
-def _seed_book_upload(conn: psycopg.Connection, user_id: int, title: str = "테스트 책") -> int:
+def _seed_upload(conn: psycopg.Connection, user_id: int, title: str) -> int:
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
             """
-            INSERT INTO book_uploads (user_id, title, type, status, byte_size)
-            VALUES (%s, %s, 'grammar'::book_upload_type, 'ready'::book_upload_status, 1024)
+            INSERT INTO book_uploads (user_id, title, type, blob_ref, byte_size)
+            VALUES (%s, %s, 'grammar'::book_upload_type, %s, 1024)
             RETURNING id
             """,
-            (user_id, title),
+            (user_id, title, f"{user_id}/test.pdf"),
         )
         return cur.fetchone()[0]
 
 
-def _seed_run(
-    conn: psycopg.Connection,
-    upload_id: int,
-    user_id: int,
-    status: str = "done",
-    pages_requested: int = 10,
+def _seed_grammar_entry(
+    conn: psycopg.Connection, user_id: int, pattern_key: str, source_upload_id
 ) -> int:
+    # 'ending' satisfies 001's own category CHECK (this minimal chain predates
+    # 034's relaxation, which is a different migration's concern).
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
             """
-            INSERT INTO upload_extractions
-                (upload_id, user_id, status, page_from, page_to, pages_requested,
-                 started_at)
-            VALUES (%s, %s, %s::upload_extraction_status, 1, %s, %s, now())
+            INSERT INTO grammar_entries
+                    (user_id, pattern_key, pattern_display, summary_en,
+                     proficiency, category, source_upload_id)
+            VALUES (%s, %s, '-은걸', 'mild exclamation',
+                    'L3'::proficiency_level, 'ending', %s)
             RETURNING id
             """,
-            (upload_id, user_id, status, pages_requested, pages_requested),
-        )
-        return cur.fetchone()[0]
-
-
-def _user_mined_corpus_source_id(conn: psycopg.Connection) -> int:
-    """The corpus_sources row migration 022 seeds — the pipeline's provenance
-    anchor for every extracted row."""
-    with conn.cursor(row_factory=tuple_row) as cur:
-        cur.execute("SELECT id FROM corpus_sources WHERE corpus = 'user_mined'::corpus")
-        row = cur.fetchone()
-        assert row is not None, "022's user_mined corpus_sources seed row is missing"
-        return row[0]
-
-
-def _insert_user_mined_kgiu(
-    conn: psycopg.Connection,
-    source_id: str,
-    book_level: str = "beginner",
-) -> int:
-    """A pipeline-shaped 'user_mined' kgiu INSERT — mirrors
-    services/uploadExtract.ts persistExtraction's column choices."""
-    csid = _user_mined_corpus_source_id(conn)
-    with conn.cursor(row_factory=tuple_row) as cur:
-        cur.execute(
-            """
-            INSERT INTO kgiu_entries (
-                corpus_source_id, corpus, source_id, book_level, entry_type,
-                source_book, source_pages, pattern, title_en, explanation,
-                category, proficiency, domain)
-            VALUES (%s, 'user_mined'::corpus, %s, %s::book_level,
-                    'grammar'::kgiu_entry_type, 'book-upload', %s,
-                    '-았/었더니', 'having done X', 'result of a past action',
-                    'uploaded', 'L3'::proficiency_level, 'general'::content_domain)
-            RETURNING id
-            """,
-            (csid, source_id, book_level, [3, 7]),
+            (user_id, pattern_key, source_upload_id),
         )
         return cur.fetchone()[0]
 
 
 # ---------------------------------------------------------------------------
-# 1. F-088 marker classification.
+# 1. F-088 marker: 068's up is non-destructive, down is destructive.
 # ---------------------------------------------------------------------------
 
 def test_068_marker_classification() -> None:
-    up_sql = (REAL_MIGRATIONS_DIR / "068_upload_extractions.up.sql").read_text(
-        encoding="utf-8"
-    )
-    down_sql = (REAL_MIGRATIONS_DIR / "068_upload_extractions.down.sql").read_text(
-        encoding="utf-8"
-    )
+    up_sql = (
+        REAL_MIGRATIONS_DIR / "068_grammar_entries_source_upload.up.sql"
+    ).read_text(encoding="utf-8")
+    down_sql = (
+        REAL_MIGRATIONS_DIR / "068_grammar_entries_source_upload.down.sql"
+    ).read_text(encoding="utf-8")
     assert migrate.explicit_destructiveness(up_sql) is False
+    assert not migrate.contains_destructive(up_sql)
     assert migrate.explicit_destructiveness(down_sql) is True
     assert migrate.contains_destructive(down_sql)
 
 
-# ---------------------------------------------------------------------------
-# 2. UP — applies on the real chain; the body is idempotent; the relaxed
-#    CHECKs admit a live user_mined kgiu row (and ONLY widen — a curated-
-#    corpus mismatch still fails).
-# ---------------------------------------------------------------------------
-
-def test_068_up_applies_and_reapply_is_idempotent(
-    env, dsn: str, full_dir: pathlib.Path
+def test_068_up_applies_without_allow_destructive(
+    env, dsn: str, provenance_dir: pathlib.Path
 ) -> None:
-    _full_up(full_dir)
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0, "068 up must not require --allow-destructive (F-088 marker)"
 
-    up_sql = (REAL_MIGRATIONS_DIR / "068_upload_extractions.up.sql").read_text(
-        encoding="utf-8"
-    )
+
+# ---------------------------------------------------------------------------
+# 2. Schema shape: nullable FK — NULL valid, real upload id persists, a
+#    dangling id is rejected, and deleting the upload SET-NULLs the tag.
+# ---------------------------------------------------------------------------
+
+def test_068_column_accepts_null_and_a_real_owned_upload(
+    env, dsn: str, provenance_dir: pathlib.Path
+) -> None:
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
+
     with psycopg.connect(dsn, autocommit=True) as conn:
-        # Drive the body a second time directly (the runner skips an applied
-        # version): enum DO-block, IF NOT EXISTS, CREATE OR REPLACE TRIGGER,
-        # DROP CONSTRAINT IF EXISTS + ADD must all be re-runnable.
-        with conn.cursor() as cur:
-            cur.execute(up_sql)
+        user_id = _seed_user(conn, "f107-accepts@example.com")
+        upload_id = _seed_upload(conn, user_id, "문법책")
+        id_null = _seed_grammar_entry(conn, user_id, "GR-null-tag", None)
+        id_tagged = _seed_grammar_entry(conn, user_id, "GR-tagged", upload_id)
         with conn.cursor(row_factory=tuple_row) as cur:
-            cur.execute("SELECT count(*) FROM upload_extractions")
-            assert cur.fetchone()[0] == 0
             cur.execute(
-                """
-                SELECT count(*) FROM pg_indexes
-                 WHERE tablename = 'upload_extractions'
-                   AND indexname = 'uq_upload_extractions_upload_live'
-                """
+                "SELECT id, source_upload_id FROM grammar_entries "
+                "WHERE id IN (%s, %s) ORDER BY id",
+                (id_null, id_tagged),
             )
-            assert cur.fetchone()[0] == 1
+            rows = {r[0]: r[1] for r in cur.fetchall()}
+            assert rows[id_null] is None
+            assert rows[id_tagged] == upload_id
 
 
-def test_068_relaxed_checks_admit_live_user_mined_kgiu_rows(
-    env, dsn: str, full_dir: pathlib.Path
+def test_068_fk_rejects_a_dangling_upload_id(
+    env, dsn: str, provenance_dir: pathlib.Path
 ) -> None:
-    _full_up(full_dir)
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
+
     with psycopg.connect(dsn, autocommit=True) as conn:
-        # The pipeline's exact shape (book_level 'beginner' sentinel) passes…
-        _insert_user_mined_kgiu(conn, "upload-1-았었더니", book_level="beginner")
-        # …and the level CHECK's user_mined branch is level-agnostic (any
-        # book_level satisfies it — the sentinel carries no meaning).
-        _insert_user_mined_kgiu(conn, "upload-1-거든요", book_level="advanced")
-        # Strictly-more-permissive only: a curated corpus still binds level.
-        with pytest.raises(errors.CheckViolation):
-            with conn.cursor() as cur:
-                csid = _user_mined_corpus_source_id(conn)
-                cur.execute(
-                    """
-                    INSERT INTO kgiu_entries (
-                        corpus_source_id, corpus, source_id, book_level,
-                        entry_type, source_book, pattern, proficiency)
-                    VALUES (%s, 'kgiu_beginner'::corpus, 'bad-level-row',
-                            'advanced'::book_level, 'grammar'::kgiu_entry_type,
-                            'x', '-지만', 'L3'::proficiency_level)
-                    """,
-                    (csid,),
-                )
+        user_id = _seed_user(conn, "f107-dangling@example.com")
+        with pytest.raises(errors.ForeignKeyViolation):
+            _seed_grammar_entry(conn, user_id, "GR-dangling", 99_999_999)
 
 
-# ---------------------------------------------------------------------------
-# 3. BLOCKER-1 pin — the cost ledger survives its upload's deletion.
-# ---------------------------------------------------------------------------
-
-def test_068_upload_delete_keeps_ledger_row_and_nulls_upload_id(
-    env, dsn: str, full_dir: pathlib.Path
+def test_068_deleting_the_upload_untags_but_keeps_the_pattern(
+    env, dsn: str, provenance_dir: pathlib.Path
 ) -> None:
-    _full_up(full_dir)
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        user_id = _seed_user(conn, "ledger@test.dev")
-        upload_id = _seed_book_upload(conn, user_id)
-        run_id = _seed_run(conn, upload_id, user_id, status="done", pages_requested=50)
+    """ON DELETE SET NULL — the whole point of mirroring 040's posture: the
+    user's banked pattern outlives the source PDF; only the tag clears."""
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
 
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        user_id = _seed_user(conn, "f107-setnull@example.com")
+        upload_id = _seed_upload(conn, user_id, "삭제될 책")
+        entry_id = _seed_grammar_entry(conn, user_id, "GR-survivor", upload_id)
         with conn.cursor(row_factory=tuple_row) as cur:
             cur.execute("DELETE FROM book_uploads WHERE id = %s", (upload_id,))
-            # The run row SURVIVED (ON DELETE SET NULL, not CASCADE) — under a
-            # CASCADE this SELECT returns nothing and the daily Vision-page
-            # cap would be resettable by DELETE /uploads/:id.
             cur.execute(
-                """
-                SELECT upload_id, user_id, pages_requested
-                  FROM upload_extractions WHERE id = %s
-                """,
-                (run_id,),
+                "SELECT source_upload_id FROM grammar_entries WHERE id = %s",
+                (entry_id,),
             )
             row = cur.fetchone()
-            assert row is not None, "ledger row must survive its upload's deletion"
-            assert row[0] is None, "upload_id must be SET NULL, not kept dangling"
-            assert row[1] == user_id
-            assert row[2] == 50, "the charged pages stay on the user's ledger"
-
-            # …and the per-user cap SUM (the query the claim tx runs) still
-            # counts the orphaned row.
-            cur.execute(
-                """
-                SELECT COALESCE(SUM(pages_requested), 0)::int
-                  FROM upload_extractions
-                 WHERE user_id = %s AND created_at >= date_trunc('day', now())
-                """,
-                (user_id,),
-            )
-            assert cur.fetchone()[0] == 50
+            assert row is not None, "the banked pattern must survive the delete"
+            assert row[0] is None, "the tag must clear (ON DELETE SET NULL)"
 
 
-def test_068_live_run_claim_still_arbitrates_after_set_null(
-    env, dsn: str, full_dir: pathlib.Path
+# ---------------------------------------------------------------------------
+# 3. DOWN — DROP COLUMN removes source_upload_id (+ FK + index), requires
+#    --allow-destructive (F-088 marker); grammar rows survive; re-up is clean
+#    even with rows present.
+# ---------------------------------------------------------------------------
+
+def test_068_down_requires_allow_destructive_then_drops_column(
+    env, dsn: str, provenance_dir: pathlib.Path
 ) -> None:
-    _full_up(full_dir)
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
+
     with psycopg.connect(dsn, autocommit=True) as conn:
-        user_id = _seed_user(conn, "claims@test.dev")
-        upload_a = _seed_book_upload(conn, user_id, "책 A")
-        upload_b = _seed_book_upload(conn, user_id, "책 B")
+        user_id = _seed_user(conn, "f107-down@example.com")
+        upload_id = _seed_upload(conn, user_id, "롤백 책")
+        _seed_grammar_entry(conn, user_id, "GR-rollback", upload_id)
 
-        # One live run per upload: the partial unique still rejects a second
-        # live claim for the SAME upload…
-        _seed_run(conn, upload_a, user_id, status="running")
-        with pytest.raises(errors.UniqueViolation):
-            _seed_run(conn, upload_a, user_id, status="running")
-
-        # …a SETTLED run never blocks a new claim…
-        _seed_run(conn, upload_b, user_id, status="failed")
-        _seed_run(conn, upload_b, user_id, status="running")
-
-        # …and orphaned (upload deleted → NULL upload_id) live rows are
-        # outside the arbiter: NULLs never collide, so two can coexist and
-        # block nothing (they are ledger rows, not claims, once orphaned).
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM book_uploads WHERE id = %s", (upload_a,))
-            cur.execute("DELETE FROM book_uploads WHERE id = %s", (upload_b,))
-        with conn.cursor(row_factory=tuple_row) as cur:
-            cur.execute(
-                """
-                SELECT count(*) FROM upload_extractions
-                 WHERE upload_id IS NULL AND status = 'running'
-                """
-            )
-            assert cur.fetchone()[0] == 2
-        upload_c = _seed_book_upload(conn, user_id, "책 C")
-        _seed_run(conn, upload_c, user_id, status="running")  # not blocked
-
-
-# ---------------------------------------------------------------------------
-# 4. DOWN — destructive gate; clean reverse on an empty extracted corpus;
-#    FAILS LOUDLY on a populated one; re-up clean.
-# ---------------------------------------------------------------------------
-
-def test_068_down_requires_allow_destructive_then_reverses_cleanly(
-    env, dsn: str, full_dir: pathlib.Path
-) -> None:
-    _full_up(full_dir)
-
-    # Refused without the flag (DROP TABLE + explicit marker).
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--target", PRE_068, "down"])
-    assert rc != 0, "068.down is destructive — the gate must refuse it without the flag"
+    # The gate must refuse without the flag (F-088 marker declares 068.down
+    # destructive even though DROP COLUMN has no keyword the legacy sniff
+    # catches — same shape as 063/066's own downs).
+    rc = migrate.main(
+        ["--migrations-dir", str(provenance_dir), "--target", PRE_068, "down"]
+    )
+    assert rc != 0, "068.down is marked destructive — the gate must refuse it"
 
     rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_068, "--allow-destructive", "down"]
+        [
+            "--migrations-dir",
+            str(provenance_dir),
+            "--target",
+            PRE_068,
+            "--allow-destructive",
+            "down",
+        ]
     )
     assert rc == 0, f"down --target {PRE_068} returned {rc}"
 
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        with conn.cursor(row_factory=tuple_row) as cur:
-            cur.execute("SELECT to_regclass('public.upload_extractions')")
-            assert cur.fetchone()[0] is None, "table must be gone after down"
-            cur.execute(
-                "SELECT count(*) FROM pg_type WHERE typname = 'upload_extraction_status'"
-            )
-            assert cur.fetchone()[0] == 0, "enum must be gone after down"
-        # The original CHECKs are restored verbatim: a user_mined kgiu row is
-        # rejected again (by the corpus CHECK — the pre-068 definition).
-        with pytest.raises(errors.CheckViolation):
-            _insert_user_mined_kgiu(conn, "upload-1-post-down")
-
-    # Round trip: re-up rebuilds the post-068 state.
-    rc = migrate.main(["--migrations-dir", str(full_dir), "--allow-destructive", "up"])
-    assert rc == 0
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        _insert_user_mined_kgiu(conn, "upload-1-post-reup")
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor(
+        row_factory=tuple_row
+    ) as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'grammar_entries'
+               AND column_name = 'source_upload_id'
+            """
+        )
+        assert cur.fetchone() is None, "source_upload_id must be gone after 068 down"
+        # The banked pattern survives (only its provenance column is dropped).
+        cur.execute("SELECT count(*) FROM grammar_entries")
+        assert cur.fetchone()[0] == 1
 
 
-def test_068_down_fails_loudly_on_populated_user_mined_kgiu_corpus(
-    env, dsn: str, full_dir: pathlib.Path
+def test_068_re_up_is_clean_even_with_existing_rows(
+    env, dsn: str, provenance_dir: pathlib.Path
 ) -> None:
-    _full_up(full_dir)
+    """The column is NULLable — re-up must succeed with grammar_entries rows
+    already present (each backfills source_upload_id = NULL, the honest
+    "unknown" for saves that predate the provenance dimension)."""
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0
+
     with psycopg.connect(dsn, autocommit=True) as conn:
-        _insert_user_mined_kgiu(conn, "upload-9-패턴")
+        user_id = _seed_user(conn, "f107-reup@example.com")
+        _seed_grammar_entry(conn, user_id, "GR-reup", None)
 
-    # ADD CONSTRAINT validates existing rows — the populated extracted corpus
-    # must make the down FAIL rather than silently strand invalid rows
-    # (mirrors migration 022's documented posture for vocab_entries).
     rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_068, "--allow-destructive", "down"]
-    )
-    assert rc != 0, "down must fail loudly while user_mined kgiu rows exist"
-
-    # The operator deliberately removes the extracted rows → down succeeds.
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM kgiu_entries WHERE corpus = 'user_mined'::corpus")
-    rc = migrate.main(
-        ["--migrations-dir", str(full_dir), "--target", PRE_068, "--allow-destructive", "down"]
+        [
+            "--migrations-dir",
+            str(provenance_dir),
+            "--target",
+            PRE_068,
+            "--allow-destructive",
+            "down",
+        ]
     )
     assert rc == 0
+
+    rc = migrate.main(["--migrations-dir", str(provenance_dir), "up"])
+    assert rc == 0, "068 must re-apply cleanly over grammar_entries with rows"
+
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor(
+        row_factory=tuple_row
+    ) as cur:
+        cur.execute(
+            "SELECT source_upload_id FROM grammar_entries WHERE pattern_key = 'GR-reup'"
+        )
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] is None
