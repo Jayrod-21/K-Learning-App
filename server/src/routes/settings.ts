@@ -228,13 +228,34 @@ const DEFAULT_STORED_PREFS: StoredPrefs = {
  * Derive the wire `notif` booleans from the user's `notification_schedules`
  * rows (052 — the canonical store the F-040 Settings UI edits directly).
  *
- * Mapping (the exact inverse of 064's backfill, which keyed on the email
- * channel because it is the only channel with real send behavior):
+ * Mapping (the exact inverse of what 064's backfill PRODUCES — 064 keyed on
+ * the email channel because it is the only channel with real send behavior):
  *   daily / reviewsDue / weekly ← an ENABLED ('email', kind) row exists
  *   channel.email               ← ANY enabled email row exists
  *   channel.sms                 ← ANY enabled sms row exists (placeholder
  *                                 channel — stored, never sent; F-040)
  * A user with no rows derives all-false: nothing is implicitly on.
+ *
+ * NOT a round-trip of arbitrary pre-064 blob state. Three legacy blob classes
+ * were deliberately dropped by 064 itself (documented in its header), so they
+ * read differently here than the old blob-sourced GET did — expected, not a
+ * derivation bug:
+ *   1. `channel.email: true` with all three kinds false → 064 inserted no
+ *      rows → derives `email: false` (blob said true).
+ *   2. `channel.sms: true` → 064 never backfilled sms → derives `sms: false`
+ *      (blob said true), unless the user has since created enabled sms rows
+ *      via PUT /notifications/schedules.
+ *   3. Any kind true with `channel.email: false` → 064's email gate skipped
+ *      it → derives that kind false (blob said true).
+ * None of these states could ever have produced a send, and no client or
+ * server consumer renders or acts on these booleans (verified exhaustively in
+ * the F-093 contract review), so the drift is wire-only.
+ *
+ * Note also: the kind booleans key on the email channel ONLY, so an enabled
+ * 'push' row (creatable via PUT /notifications/schedules — `ScheduleChannel`
+ * in routes/notifications.ts) is invisible in daily/reviewsDue/weekly. This
+ * mirrors 064's email-only mapping and the email-only F-040 client; revisit
+ * if push ever gains real send behavior.
  */
 async function deriveNotifFromSchedules(userId: number): Promise<NotifPrefs> {
   const { rows } = await query<{ kind: string; channel: string; enabled: boolean }>(

@@ -813,12 +813,12 @@ describe('POST /grammar/identify — downstream (B4)', () => {
   // client fault keeps its status; a 5xx-class proxy error flattens to a
   // whitelisted-message 502. Neither ever carries the raw proxy message.
   it.each([
-    [429, 'ClaudeRateLimitError', 429],
-    [400, 'PromptInjectionRejectedError', 400],
-    [503, 'ClaudeUnavailableError', 502],
+    [429, 'ClaudeRateLimitError', 429, 'too many requests — please slow down and try again shortly'],
+    [400, 'PromptInjectionRejectedError', 400, 'your message could not be processed'],
+    [503, 'ClaudeUnavailableError', 502, 'the AI assistant is temporarily unavailable — please try again'],
   ])(
     'proxy httpStatus %s (%s) → %s upstream_error with no raw proxy text (F-193)',
-    async (httpStatus, code, wireStatus) => {
+    async (httpStatus, code, wireStatus, wireMessage) => {
       const broken = buildTestApp({
         connectionString: pg.connectionString,
         claudeProxy: {
@@ -840,6 +840,9 @@ describe('POST /grammar/identify — downstream (B4)', () => {
           .send({ highlightSpan: '-아', fullSentence: '안녕하세요' });
         expect(res.status).toBe(wireStatus);
         expect(res.body.error.code).toBe('upstream_error');
+        // Pin the exact whitelisted message (CLAUDE_CLIENT_MESSAGES /
+        // DEFAULT_UPSTREAM_MESSAGE in errors.ts) — not just raw-text absence.
+        expect(res.body.error.message).toBe(wireMessage);
         expect(JSON.stringify(res.body)).not.toContain('raw proxy failure detail');
       } finally {
         await teardownTestApp(broken);

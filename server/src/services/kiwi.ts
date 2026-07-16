@@ -128,7 +128,16 @@ function logUpstreamDetail(correlationId: string, statusCode: number, body: stri
 function isTransient(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as NodeJS.ErrnoException).code ?? '';
-  return ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(code);
+  // UND_ERR_BODY_TIMEOUT: the body stalled after headers arrived (thrown by
+  // `res.body.text()`) — the same transient class as a headers timeout. Retry,
+  // then surface the fixed 'kiwi unreachable' 502 instead of an opaque 500.
+  return [
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ETIMEDOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+  ].includes(code);
 }
 
 function safeParseJson(text: string): unknown {
