@@ -8,7 +8,7 @@ on:
 
 jobs:
   client-checks:
-    name: Client — Lint, Type Check & Build
+    name: Client — Lint, Type Check, Test & Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -31,6 +31,12 @@ jobs:
 
       - name: Type check
         run: npx tsc --noEmit
+
+      # Runs the full vitest suite (the Server job already runs its tests; the
+      # client suite was previously CI-invisible — a client test could go red
+      # and still merge). `npm test` maps to `vitest run` (non-watch).
+      - name: Unit tests
+        run: npm test
 
       - name: Build
         run: npm run build
