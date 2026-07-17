@@ -1072,7 +1072,10 @@ function LandingView(props: LandingViewProps): JSX.Element {
                     <Bilingual en="Clear review queue" kr="복습 대기열 비우기" />
                   </Eyebrow>
                   <div className="kr-display km-review__sheet-title">
-                    <Bilingual en="Remove all cards?" kr="카드를 모두 지울까요?" />
+                    <Bilingual
+                      en="Remove all vocab cards?"
+                      kr="어휘 카드를 모두 지울까요?"
+                    />
                   </div>
                 </div>
                 <Button
@@ -1085,10 +1088,13 @@ function LandingView(props: LandingViewProps): JSX.Element {
                 </Button>
               </div>
               <hr className="hr-double km-review__sheet-rule" />
+              {/* Accurate scope (server review NIT): only VOCAB cards are
+                  cleared — grammar practice cards stay in the due feed by
+                  design, so the copy must not promise an empty session. */}
               <p className="km-review__clear-confirm-copy">
                 <Bilingual
-                  en="This removes these cards from review — your saved words and lists are kept, and you can add words back to review any time."
-                  kr="복습에서 카드만 제거돼요 — 저장한 단어와 목록은 그대로 남고, 언제든 다시 복습에 추가할 수 있어요."
+                  en="This removes your vocab cards from review (grammar practice cards stay) — your saved words and lists are kept, and you can add words back to review any time."
+                  kr="복습에서 어휘 카드만 제거돼요 (문법 연습 카드는 남아요) — 저장한 단어와 목록은 그대로 남고, 언제든 다시 복습에 추가할 수 있어요."
                 />
               </p>
               <div className="km-review__clear-confirm-actions">
@@ -1880,11 +1886,14 @@ function StudySession({
       });
   };
 
-  // Flip always resets the tile (B-022).
+  // Flip always resets the tile (B-022). While a remove is in flight the
+  // card is frozen (no flip via tap OR spacebar) — flipping would expose the
+  // rating row for a card the server is concurrently soft-deleting (SF-1).
   const flip = useCallback((): void => {
+    if (removingKey !== null) return;
     setFlipped((f) => !f);
     closeDrawer();
-  }, [closeDrawer]);
+  }, [closeDrawer, removingKey]);
 
   // Spacebar reveals — ignored while focus sits on anything interactive.
   // Space must ACTIVATE a focused control (a rating button, the drawer
@@ -1972,15 +1981,24 @@ function StudySession({
 
   const rate = useCallback(
     (rating: FsrsRating): void => {
-      if (card === null) return;
+      // SF-1: never rate the card currently being removed. Advancing `idx`
+      // here and then losing the card from `liveDeck` when the DELETE
+      // resolves would shift every later card down one and silently skip
+      // the card that slid into the old index (it would also submit a
+      // review against a card the server is concurrently soft-deleting).
+      if (card === null || removingKey !== null) return;
       setBreakdown((prev) => ({ ...prev, [rating]: prev[rating] + 1 }));
       setFlipped(false);
       closeDrawer();
       setIdx((i) => i + 1);
       setRateError(null);
+      // SF-2: moving on from a card also retires its remove-failure alert —
+      // a card-specific "couldn't remove X" banner must not chase the user
+      // through the rest of the session.
+      setRemoveError(null);
       persist(card, rating);
     },
-    [card, closeDrawer, persist],
+    [card, closeDrawer, persist, removingKey],
   );
 
   /** Remove the CURRENT card from the review queue (soft delete — the word
@@ -2244,7 +2262,9 @@ function StudySession({
         />
       </div>
 
-      {/* FSRS rating buttons */}
+      {/* FSRS rating buttons — disabled while a remove is in flight (SF-1):
+          the `rate` guard is the real race fix; the disabled state makes the
+          frozen, pending card visible instead of silently eating taps. */}
       {flipped ? (
         <div className="km-review__ratings" role="group" aria-label="FSRS rating">
           {RATINGS.map((r) => (
@@ -2254,6 +2274,7 @@ function StudySession({
               onClick={() => {
                 rate(r.id);
               }}
+              disabled={removingKey !== null}
               className={`km-review__rating focusring ${r.className}`}
             >
               <span className="km-review__rating-label">
