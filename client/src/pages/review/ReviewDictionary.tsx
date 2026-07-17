@@ -312,7 +312,7 @@ export default function ReviewDictionary(): JSX.Element {
             has no <label>/id to associate one via htmlFor — a shared
             component, out of scope here — so the accessible name AND a
             visible caption both carry the same copy). */}
-        <Eyebrow className="km-dictionary__searchLabel">
+        <Eyebrow className="km-dictionary__search-label">
           <Bilingual en="Search for a word" kr="단어 검색" />
         </Eyebrow>
         <SearchBox

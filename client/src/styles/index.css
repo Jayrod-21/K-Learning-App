@@ -3630,8 +3630,8 @@ h1, h2 { font-family: var(--font-display); }
   padding: 12px 14px;
   margin-bottom: 18px;
 }
-.km-review__stripBody { flex: 1; min-width: 0; }
-.km-review__stripName {
+.km-review__strip-body { flex: 1; min-width: 0; }
+.km-review__strip-name {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--paper);
@@ -3641,7 +3641,7 @@ h1, h2 { font-family: var(--font-display); }
 }
 
 .km-review__progress { margin-bottom: 22px; }
-.km-review__progressMeta {
+.km-review__progress-meta {
   display: flex;
   justify-content: space-between;
   font-size: 0.625rem;
@@ -3678,13 +3678,13 @@ h1, h2 { font-family: var(--font-display); }
   min-height: 320px;
   background: var(--ink-2);
 }
-.km-review__backHead {
+.km-review__back-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: 10px;
 }
-.km-review__backWord {
+.km-review__back-word {
   font-size: 2rem;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -3692,8 +3692,8 @@ h1, h2 { font-family: var(--font-display); }
 }
 .km-review__en { font-size: 1.0625rem; color: var(--vermilion-ink); font-weight: 500; }
 .km-review__ex { font-size: 1rem; color: var(--paper); line-height: 1.55; }
-.km-review__exEn { font-size: 0.75rem; color: var(--paper-mute); margin-top: 4px; }
-.km-review__drawerBtn {
+.km-review__ex-en { font-size: 0.75rem; color: var(--paper-mute); margin-top: 4px; }
+.km-review__drawer-btn {
   align-self: flex-start;
   display: flex;
   align-items: center;
@@ -3706,9 +3706,9 @@ h1, h2 { font-family: var(--font-display); }
   border-radius: 4px;
   border: 1px solid var(--line);
 }
-.km-review__drawerRow { margin-bottom: 8px; }
-.km-review__drawerRow:last-child { margin-bottom: 0; }
-.km-review__drawerEn { font-size: 0.6875rem; color: var(--paper-mute); }
+.km-review__drawer-row { margin-bottom: 8px; }
+.km-review__drawer-row:last-child { margin-bottom: 0; }
+.km-review__drawer-en { font-size: 0.6875rem; color: var(--paper-mute); }
 .km-review__notes { font-size: 0.75rem; color: var(--paper-mute); margin-top: 10px; font-style: italic; }
 
 .km-review__ratings {
@@ -3735,12 +3735,12 @@ h1, h2 { font-family: var(--font-display); }
 .km-review__rating--hard:hover  { border-color: var(--paper-mute); }
 .km-review__rating--good:hover  { border-color: var(--indigo); }
 .km-review__rating--easy:hover  { border-color: var(--moss); }
-.km-review__ratingLabel { font-size: 0.875rem; font-weight: 500; }
-.km-review__rating--again .km-review__ratingLabel { color: var(--vermilion-ink); }
-.km-review__rating--hard  .km-review__ratingLabel { color: var(--paper-mute); }
-.km-review__rating--good  .km-review__ratingLabel { color: var(--indigo-ink); }
-.km-review__rating--easy  .km-review__ratingLabel { color: var(--moss-ink); }
-.km-review__ratingSub { font-size: 0.6875rem; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
+.km-review__rating-label { font-size: 0.875rem; font-weight: 500; }
+.km-review__rating--again .km-review__rating-label { color: var(--vermilion-ink); }
+.km-review__rating--hard  .km-review__rating-label { color: var(--paper-mute); }
+.km-review__rating--good  .km-review__rating-label { color: var(--indigo-ink); }
+.km-review__rating--easy  .km-review__rating-label { color: var(--moss-ink); }
+.km-review__rating-sub { font-size: 0.6875rem; color: var(--paper-mute); font-variant-numeric: tabular-nums; }
 .km-review__hint {
   text-align: center;
   font-size: 0.75rem;
@@ -3756,17 +3756,17 @@ h1, h2 { font-family: var(--font-display); }
 }
 
 /* Review · Lists tab */
-.km-review__sectionTitle { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; }
-.km-review__listsCol { display: flex; flex-direction: column; gap: 8px; }
+.km-review__section-title { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; }
+.km-review__lists-col { display: flex; flex-direction: column; gap: 8px; }
 
 /* FU-NF-42 B3: grammar production review section. Mirrors the list-row idiom
    so a "Drill" row sits naturally above the vocab flashcard. */
-.km-review__grammarCol {
+.km-review__grammar-col {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.km-review__grammarRow {
+.km-review__grammar-row {
   width: 100%;
   text-align: left;
   cursor: pointer;
@@ -3776,21 +3776,21 @@ h1, h2 { font-family: var(--font-display); }
   gap: 12px;
   font-family: inherit;
 }
-.km-review__grammarBody { flex: 1; min-width: 0; }
-.km-review__grammarPattern {
+.km-review__grammar-body { flex: 1; min-width: 0; }
+.km-review__grammar-pattern {
   display: block;
   font-size: 1.0625rem;
   font-weight: 500;
   color: var(--paper);
 }
-.km-review__grammarSummary {
+.km-review__grammar-summary {
   display: block;
   font-size: 0.75rem;
   color: var(--paper-mute);
   margin-top: 2px;
 }
 
-.km-review__listRow {
+.km-review__list-row {
   width: 100%;
   text-align: left;
   cursor: pointer;
@@ -3802,17 +3802,17 @@ h1, h2 { font-family: var(--font-display); }
 }
 
 /* Review · sheets */
-.km-review__sheetBody { padding: 0 4px; }
-.km-review__sheetHead {
+.km-review__sheet-body { padding: 0 4px; }
+.km-review__sheet-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.km-review__sheetTitle { font-size: 1.375rem; font-weight: 600; line-height: 1.15; margin: 0; }
-.km-review__sheetMeta { font-size: 0.8125rem; color: var(--paper-mute); margin-top: 2px; }
-.km-review__sheetActions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
-.km-review__sheetRule { margin: 20px 0 16px; }
+.km-review__sheet-title { font-size: 1.375rem; font-weight: 600; line-height: 1.15; margin: 0; }
+.km-review__sheet-meta { font-size: 0.8125rem; color: var(--paper-mute); margin-top: 2px; }
+.km-review__sheet-actions { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+.km-review__sheet-rule { margin: 20px 0 16px; }
 
 .km-review__input {
   padding: 10px 12px;
@@ -3829,8 +3829,8 @@ h1, h2 { font-family: var(--font-display); }
   border-color: var(--vermilion);
   background: var(--ink-3);
 }
-.km-review__kindOpts { display: flex; gap: 6px; }
-.km-review__kindOpt {
+.km-review__kind-opts { display: flex; gap: 6px; }
+.km-review__kind-opt {
   padding: 7px 12px;
   border-radius: 3px;
   cursor: pointer;
@@ -3843,7 +3843,7 @@ h1, h2 { font-family: var(--font-display); }
   text-transform: uppercase;
   font-weight: 500;
 }
-.km-review__kindOpt--on {
+.km-review__kind-opt--on {
   border-color: var(--vermilion);
   background: var(--vermilion-soft);
   color: var(--vermilion-ink);
@@ -4577,7 +4577,7 @@ h1, h2 { font-family: var(--font-display); }
 
 /* Batch-2 fix-pass (F-147) — the "New list" Sheet trigger, replacing the old
  * always-inline `.km-resources__create` card. */
-.km-resources__createTrigger { margin: 0 18px 12px; display: flex; }
+.km-resources__create-trigger { margin: 0 18px 12px; display: flex; }
 .km-resources__create-row {
   display: flex;
   gap: 10px;

@@ -207,7 +207,7 @@ export function MyVocabLists({
       {/* F-147 — the create form is a Sheet popup behind this trigger,
           matching every other create/add flow on the Vocab page instead of
           an always-visible inline card. */}
-      <div className="km-resources__createTrigger">
+      <div className="km-resources__create-trigger">
         <Button
           variant="gold"
           size="sm"
@@ -374,13 +374,13 @@ function CreateListSheet({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="New list">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="New list" kr="새 목록" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               <Bilingual en="Create a list" kr="목록 만들기" />
             </div>
           </div>
@@ -393,7 +393,7 @@ function CreateListSheet({
             <Icon name="close" size={14} />
           </Button>
         </div>
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         <div className="km-resources__create-row">
           <input
@@ -436,7 +436,7 @@ function CreateListSheet({
           <div
             role="radiogroup"
             aria-label="List kind"
-            className="km-review__kindOpts"
+            className="km-review__kind-opts"
           >
             {kinds.map((k) => (
               <button
@@ -447,7 +447,7 @@ function CreateListSheet({
                 onClick={() => {
                   setNewKind(k);
                 }}
-                className={`km-review__kindOpt focusring${newKind === k ? ' km-review__kindOpt--on' : ''}`}
+                className={`km-review__kind-opt focusring${newKind === k ? ' km-review__kind-opt--on' : ''}`}
                 disabled={creating}
               >
                 <Bilingual en={k} kr={KIND_KR[k]} compact />
@@ -457,7 +457,7 @@ function CreateListSheet({
         ) : null}
         {createError ? <ErrorCard message={createError} /> : null}
 
-        <div className="km-review__sheetActions">
+        <div className="km-review__sheet-actions">
           <Button
             variant="gold"
             size="md"
@@ -606,8 +606,8 @@ function ListDetailSheet({
 
   return (
     <Sheet open={list !== null} onClose={onClose} ariaLabel="List detail">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="List" kr="목록" />
@@ -635,11 +635,11 @@ function ListDetailSheet({
                 maxLength={120}
               />
             ) : (
-              <div className="kr-display km-review__sheetTitle">
+              <div className="kr-display km-review__sheet-title">
                 {currentName}
               </div>
             )}
-            <div className="km-review__sheetMeta">
+            <div className="km-review__sheet-meta">
               {list?.name_en ? `${list.name_en} · ` : ''}
               <Bilingual
                 en={`${String(list?.entry_count ?? 0)} ${(list?.entry_count ?? 0) === 1 ? 'word' : 'words'}`}
@@ -658,7 +658,7 @@ function ListDetailSheet({
           </Button>
         </div>
 
-        <div className="km-review__sheetActions">
+        <div className="km-review__sheet-actions">
           {renaming ? (
             <Button
               variant="ghost"
@@ -690,7 +690,7 @@ function ListDetailSheet({
           )}
         </div>
 
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         {loading ? (
           <div className="km-vocab__state" role="status">

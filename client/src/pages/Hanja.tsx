@@ -1195,15 +1195,15 @@ function QuickAddSheet({
         // Fix-pass batch-3 (SF-1, REVIEW_batch3-fidelity.md): this Sheet
         // used to roll its own chrome (`.km-hanja__quickadd` as the OUTER
         // wrapper, no head/close row, raw `.km-btn` buttons) instead of the
-        // shared `.km-review__sheetBody`/`__sheetHead` recipe + `<Button>`
+        // shared `.km-review__sheet-body`/`__sheet-head` recipe + `<Button>`
         // every other page's Sheet uses (Review/Grammar/Reading) — the SAME
         // "create a list" job read as a different object on this page.
         // `.km-hanja__quickadd` now wraps only the list-specific content
         // BELOW the shared head, unchanged, so none of its own descendant
         // rules (`.km-hanja__quickadd-list`/`-row`/`-name`/`-empty`) needed
         // to move.
-        <div className="km-review__sheetBody">
-          <div className="km-review__sheetHead">
+        <div className="km-review__sheet-body">
+          <div className="km-review__sheet-head">
             <Eyebrow>
               <Bilingual en={`Add ${h.ch} to a list`} kr={`${h.ch} 목록에 추가`} />
             </Eyebrow>
@@ -1855,11 +1855,11 @@ function CreateListSheet({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="New hanja list">
-      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
-          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheet-body`/
+          `__sheet-head` + `<Button>` Close, matching Review/Grammar/Reading's
           Sheet recipe instead of this page's own bespoke chrome. */}
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <Eyebrow>
             <Bilingual en="New list" kr="새 목록" />
           </Eyebrow>
@@ -2392,11 +2392,11 @@ function AddHanjaPicker({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="Add hanja to list">
-      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheetBody`/
-          `__sheetHead` + `<Button>` Close, matching Review/Grammar/Reading's
+      {/* Fix-pass batch-3 (SF-1) — shared `.km-review__sheet-body`/
+          `__sheet-head` + `<Button>` Close, matching Review/Grammar/Reading's
           Sheet recipe instead of this page's own bespoke chrome. */}
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <Eyebrow>
             <Bilingual
               en={`Add hanja to “${listName}”`}

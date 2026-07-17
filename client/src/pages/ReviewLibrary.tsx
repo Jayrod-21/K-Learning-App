@@ -179,9 +179,9 @@ function ReviewLibrary(): JSX.Element {
               <CityCard
                 tone={s.tone}
                 rail
-                className="km-library__rowCard"
+                className="km-library__row-card"
               >
-                <span className="km-library__rowTop">
+                <span className="km-library__row-top">
                   <Icon name={s.icon} size={20} />
                   <span className="km-library__rowmeta">
                     <span className="km-library__rowlabel">

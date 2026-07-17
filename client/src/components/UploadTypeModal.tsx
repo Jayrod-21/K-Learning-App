@@ -194,13 +194,13 @@ export function UploadTypeModal({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="Upload a book">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="Upload a book" kr="책 업로드" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               {step === 'type' ? (
                 <Bilingual en="What kind of content?" kr="어떤 종류인가요?" />
               ) : (
@@ -218,7 +218,7 @@ export function UploadTypeModal({
           </Button>
         </div>
 
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         {step === 'type' ? (
           <ul className="km-resources__pick-list">

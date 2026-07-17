@@ -14,7 +14,7 @@
  * default 20px inset IS the page's margin, matching the design mock's
  * `.pdf` card). Token-driven only — no hard-coded hex.
  *
- * F-155 mobile swipe: `.km-upload-viewer__pageDrag` is the live drag-offset
+ * F-155 mobile swipe: `.km-upload-viewer__page-drag` is the live drag-offset
  * layer (component sets its `transform: translateX(...)` inline per-frame);
  * this sheet only owns the snap-back transition and its reduced-motion
  * override, mirroring `components/SwipeCarousel.css`'s identical pattern
@@ -164,14 +164,14 @@
  * SwipeCarousel's track); on release it either resets to 0 (under
  * threshold — "spring back") or the page changes and a fresh `PageImage`
  * mounts already at rest, so there is nothing left to animate TO. */
-.km-upload-viewer__pageDrag {
+.km-upload-viewer__page-drag {
   transition: transform 200ms ease;
 }
-.km-upload-viewer__pageDrag--dragging {
+.km-upload-viewer__page-drag--dragging {
   transition: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .km-upload-viewer__pageDrag {
+  .km-upload-viewer__page-drag {
     transition: none;
   }
 }

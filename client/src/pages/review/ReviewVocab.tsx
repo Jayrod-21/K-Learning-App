@@ -260,7 +260,7 @@ export default function ReviewVocab(): JSX.Element {
 
       {/* F-061 — add-words mode banner + the return leg of the round-trip. */}
       {addToList !== null ? (
-        <Card variant="accent" className="km-vocab__addBanner" role="status">
+        <Card variant="accent" className="km-vocab__add-banner" role="status">
           <div style={{ flex: 1, minWidth: 0 }}>
             <Eyebrow>
               <Bilingual en="Adding words to" kr="단어 추가 중" />
@@ -289,7 +289,7 @@ export default function ReviewVocab(): JSX.Element {
           this section — see the F-146 test for the query shape that
           replaces the retired heading-role assertion. */}
       <CollapsibleTile
-        className="km-vocab__section km-vocab__listsTile"
+        className="km-vocab__section km-vocab__lists-tile"
         surface="city"
         tone="accent"
         rail
@@ -312,7 +312,7 @@ export default function ReviewVocab(): JSX.Element {
           instead of an always-inline card. F-047: vocab picks only —
           grammar suggestions live on the Grammar tab's side of the library
           now (`showGrammar={false}` unchanged). */}
-      <div className="km-vocab__weekTrigger">
+      <div className="km-vocab__week-trigger">
         <Button
           variant="ghost"
           size="sm"
@@ -332,13 +332,13 @@ export default function ReviewVocab(): JSX.Element {
         }}
         ariaLabel="This week's words"
       >
-        <div className="km-review__sheetBody">
-          <div className="km-review__sheetHead">
+        <div className="km-review__sheet-body">
+          <div className="km-review__sheet-head">
             <div>
               <Eyebrow>
                 <Bilingual en="This week" kr="이번 주" />
               </Eyebrow>
-              <div className="kr-display km-review__sheetTitle">
+              <div className="kr-display km-review__sheet-title">
                 <Bilingual en="Suggested picks" kr="추천 단어" />
               </div>
             </div>
@@ -353,7 +353,7 @@ export default function ReviewVocab(): JSX.Element {
               <Icon name="close" size={14} />
             </Button>
           </div>
-          <hr className="hr-double km-review__sheetRule" />
+          <hr className="hr-double km-review__sheet-rule" />
           {/* Mounted only while the sheet is open — the fetch inside
               WeeklySuggestions is lazy (no wasted round-trip behind a popup
               the user never opens). */}
@@ -365,7 +365,7 @@ export default function ReviewVocab(): JSX.Element {
         className="km-vocab__section"
         aria-labelledby="km-vocab-browse-h"
       >
-        <h2 id="km-vocab-browse-h" className="km-review__sectionTitle">
+        <h2 id="km-vocab-browse-h" className="km-review__section-title">
           <Bilingual en="Browse the corpus" kr="말뭉치 둘러보기" />
         </h2>
         <VocabBrowse addToList={addToList} />
@@ -437,7 +437,7 @@ function SavedFromUploads(): JSX.Element | null {
 
   return (
     <CollapsibleTile
-      className="km-vocab__section km-vocab__savedFromUploads"
+      className="km-vocab__section km-vocab__saved-from-uploads"
       surface="city"
       rail
       title={<Bilingual en="My uploads" kr="내 업로드" />}
@@ -445,7 +445,7 @@ function SavedFromUploads(): JSX.Element | null {
       {groups.map((group) => (
         <section
           key={`saved-upload:${String(group.upload.id)}`}
-          className="km-vocab__savedUploadGroup"
+          className="km-vocab__saved-upload-group"
           aria-label={group.upload.title}
         >
           <Eyebrow>{group.upload.title}</Eyebrow>
@@ -471,7 +471,7 @@ function SavedFromUploads(): JSX.Element | null {
         </section>
       ))}
       {truncated ? (
-        <p className="km-vocab__savedUploadsTruncated">
+        <p className="km-vocab__saved-uploads-truncated">
           <Bilingual
             en="Showing your most recent saves only"
             kr="최근 저장 항목만 표시됩니다"
@@ -649,7 +649,7 @@ function VocabBrowse({
           no <label>/id to associate one via htmlFor — a shared component,
           out of scope here — so the accessible name AND a visible caption
           both carry the same copy). */}
-      <Eyebrow className="km-vocab__searchLabel">
+      <Eyebrow className="km-vocab__search-label">
         <Bilingual en="Search for a word" kr="단어 검색" />
       </Eyebrow>
       <SearchBox
@@ -926,16 +926,16 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
 
   return (
     <Sheet open={entry !== null} onClose={onClose} ariaLabel="Add to a list">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="Add to list" kr="목록에 추가" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               {entry?.korean ?? ''}
             </div>
-            <div className="km-review__sheetMeta">{entry?.english ?? ''}</div>
+            <div className="km-review__sheet-meta">{entry?.english ?? ''}</div>
           </div>
           <Button
             variant="ghost"
@@ -947,7 +947,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
           </Button>
         </div>
 
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         {loading ? (
           <div className="km-vocab__state" role="status">
@@ -990,7 +990,7 @@ function AddToListSheet({ entry, onClose }: AddToListSheetProps): JSX.Element {
 
         {/* F-048 — create a list right here; the new list is seeded with
             this word. */}
-        <div className="km-vocab__sheetCreate">
+        <div className="km-vocab__sheet-create">
           <input
             type="text"
             value={newListName}

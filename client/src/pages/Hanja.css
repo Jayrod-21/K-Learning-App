@@ -240,7 +240,7 @@
 /* ── F-166/F-168 popups (quick-add sheet, create-list sheet) ──
  * Fix-pass batch-3 (SF-1): `.km-hanja__quickadd` used to be the Sheet's
  * OUTER wrapper (bespoke chrome, no head/close row). It's now nested
- * INSIDE the shared `.km-review__sheetBody`/`__sheetHead` (Hanja.tsx) —
+ * INSIDE the shared `.km-review__sheet-body`/`__sheet-head` (Hanja.tsx) —
  * just the list-specific content block below the shared head — so this
  * stays a flat, unscoped selector and needed no changes itself. */
 .km-hanja__quickadd {
@@ -295,7 +295,7 @@
 
 /* ── F-166 bulk add-hanja picker ──────────────────────────────────
  * Fix-pass batch-3 (SF-1): same change as `.km-hanja__quickadd` above —
- * now nested inside the shared `.km-review__sheetBody`/`__sheetHead`
+ * now nested inside the shared `.km-review__sheet-body`/`__sheet-head`
  * instead of being the Sheet's own outer wrapper. */
 .km-hanja__picker {
   display: flex;
@@ -462,7 +462,7 @@
   cursor: default;
 }
 /* Engine-true next-interval hint under each rating label (mirrors the vocab
-   session's .km-review__ratingSub). */
+   session's .km-review__rating-sub). */
 .km-hanja__rating-sub {
   display: block;
   margin-top: 2px;

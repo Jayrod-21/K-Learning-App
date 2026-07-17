@@ -504,11 +504,11 @@
 
 /* One carousel page — small inset so focus rings inside the page aren't
  * clipped by the viewport's overflow. */
-.km-progress__historyPage {
+.km-progress__history-page {
   padding: 2px 2px 0;
 }
 
-.km-progress__historyTitle {
+.km-progress__history-title {
   font-weight: 600;
   margin: 2px 0 10px;
 }
@@ -519,16 +519,16 @@
  * this file) — color follows the entity across the whole page, and the dark
  * theme comes free from the token flip. Writing has no dedicated slot (same
  * as before the move): LineChart's vermilion fallback applies. */
-.km-progress__trendPanel {
+.km-progress__trend-panel {
   padding: 2px 2px 0;
 }
 
-.km-progress__trendPanel[data-skill='reading'] { --km-chart-accent: var(--kmp-reading); }
-.km-progress__trendPanel[data-skill='listening'] { --km-chart-accent: var(--kmp-listening); }
-.km-progress__trendPanel[data-skill='vocab'] { --km-chart-accent: var(--kmp-vocab); }
-.km-progress__trendPanel[data-skill='grammar'] { --km-chart-accent: var(--kmp-grammar); }
+.km-progress__trend-panel[data-skill='reading'] { --km-chart-accent: var(--kmp-reading); }
+.km-progress__trend-panel[data-skill='listening'] { --km-chart-accent: var(--kmp-listening); }
+.km-progress__trend-panel[data-skill='vocab'] { --km-chart-accent: var(--kmp-vocab); }
+.km-progress__trend-panel[data-skill='grammar'] { --km-chart-accent: var(--kmp-grammar); }
 
-.km-progress__trendHead {
+.km-progress__trend-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
@@ -536,27 +536,27 @@
   margin-bottom: 8px;
 }
 
-.km-progress__trendSkill {
+.km-progress__trend-skill {
   font-weight: 600;
   font-size: 0.875rem;
   /* F-129 — defensive: a flex child's default min-width is its unshrunk
-   * content size, which can force `.km-progress__trendHead` wider than its
+   * content size, which can force `.km-progress__trend-head` wider than its
    * container at narrow widths. */
   min-width: 0;
 }
 
 /* P3b Batch B — mute the secondary language of bilingual chrome on this
    page (card titles + trend-panel skill heads + F-030 history-page titles).
-   (.km-progress__trendKr removed by the F-097 dead-rule sweep.) */
+   (.km-progress__trend-kr removed by the F-097 dead-rule sweep.) */
 .km-progress__card-title .km-bilingual__sub,
-.km-progress__historyTitle .km-bilingual__sub,
-.km-progress__trendSkill .km-bilingual__sub {
+.km-progress__history-title .km-bilingual__sub,
+.km-progress__trend-skill .km-bilingual__sub {
   color: var(--paper-mute);
   font-weight: 400;
 }
 
 /* Latest value is the headline number — text ink, never the series color. */
-.km-progress__trendValue {
+.km-progress__trend-value {
   font-size: 1.25rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -583,7 +583,7 @@
  * reaches 540px, i.e. viewport ≥ 850px; 3 columns (3×260+40=820) start at
  * viewport ≥ 1088px. */
 @media (min-width: 768px) {
-  .km-progress__trendGrid {
+  .km-progress__trend-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     gap: 20px;
@@ -611,7 +611,7 @@
 
 /* Writing placeholder — mirrors LineChart's empty state so the carousel
    pages read as one family. */
-.km-progress__trendEmpty {
+.km-progress__trend-empty {
   display: flex;
   align-items: center;
   justify-content: center;

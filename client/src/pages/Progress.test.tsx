@@ -1844,7 +1844,7 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
     const region = screen.getByRole('region', { name: 'Progress by skill' });
     expect(region).toHaveAttribute('aria-roledescription', 'carousel');
     expect(within(region).getAllByRole('tab')).toHaveLength(5);
-    expect(document.querySelector('.km-progress__trendGrid')).toBeNull();
+    expect(document.querySelector('.km-progress__trend-grid')).toBeNull();
   });
 
   it('renders the SwipeCarousel at an explicit narrow viewport too', () => {
@@ -1853,7 +1853,7 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
 
     const region = screen.getByRole('region', { name: 'Progress by skill' });
     expect(region).toHaveAttribute('aria-roledescription', 'carousel');
-    expect(document.querySelector('.km-progress__trendGrid')).toBeNull();
+    expect(document.querySelector('.km-progress__trend-grid')).toBeNull();
   });
 
   it('renders every skill panel at once in a grid — no carousel/dots — at tablet width (768px)', () => {
@@ -1870,7 +1870,7 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
       screen.queryByRole('tab', { name: /^Page \d+ of 5$/ }),
     ).not.toBeInTheDocument();
 
-    const grid = document.querySelector('.km-progress__trendGrid');
+    const grid = document.querySelector('.km-progress__trend-grid');
     expect(grid).not.toBeNull();
     // All five skill panels render simultaneously — no aria-hidden paging,
     // no dots to click through (unlike the mobile carousel above).
@@ -1889,13 +1889,13 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
     mockViewportWidth(1280);
     renderPage();
 
-    expect(document.querySelector('.km-progress__trendGrid')).not.toBeNull();
+    expect(document.querySelector('.km-progress__trend-grid')).not.toBeNull();
     expect(
       screen.getByRole('img', { name: 'Writing trend over the last 30 days' }),
     ).toBeInTheDocument();
   });
 
-  it('CSS: `.km-progress__trendGrid` is a real CSS grid, gated behind the ≥768px breakpoint, with the exact auto-fit/260px geometry the fix-pass arithmetic depends on', () => {
+  it('CSS: `.km-progress__trend-grid` is a real CSS grid, gated behind the ≥768px breakpoint, with the exact auto-fit/260px geometry the fix-pass arithmetic depends on', () => {
     // Fix-pass SHOULD-FIX #2 (REVIEW_d1-adaptive.md): pin the actual
     // `grid-template-columns` value (not just `display: grid;`) so a future
     // edit that silently changes the column scheme is caught, matching the
@@ -1905,7 +1905,7 @@ describe('Progress page — device-adaptive "Progress by skill" grid (Phase D1)'
       'utf8',
     );
     const mediaBlock =
-      /@media \(min-width: 768px\) \{\s*\.km-progress__trendGrid \{[\s\S]*?\n\}/.exec(
+      /@media \(min-width: 768px\) \{\s*\.km-progress__trend-grid \{[\s\S]*?\n\}/.exec(
         stylesheet,
       )?.[0] ?? '';
     expect(mediaBlock).not.toBe('');

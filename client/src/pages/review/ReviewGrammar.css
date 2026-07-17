@@ -20,23 +20,23 @@
 
 /* F-056 — the saved-from-uploads tile (the F-053 vocab mirror): one upload
  * title (Eyebrow) + its saved-pattern list per group. Spacing mirrors
- * ReviewVocab.css's `.km-vocab__savedUploadGroup` rules. */
+ * ReviewVocab.css's `.km-vocab__saved-upload-group` rules. */
 .km-review-grammar__saved {
   margin-bottom: 18px;
 }
 
-.km-review-grammar__savedGroup + .km-review-grammar__savedGroup {
+.km-review-grammar__saved-group + .km-review-grammar__saved-group {
   margin-top: 14px;
 }
 
-.km-review-grammar__savedGroup .km-reference__list {
+.km-review-grammar__saved-group .km-reference__list {
   margin-top: 6px;
 }
 
 /* Quiet truncation note under the saved groups — only rendered when the
  * server's whole-groups row cap trimmed the response (mirrors
- * `.km-vocab__savedUploadsTruncated`). */
-.km-review-grammar__savedTruncated {
+ * `.km-vocab__saved-uploads-truncated`). */
+.km-review-grammar__saved-truncated {
   margin: 10px 0 0;
   font-size: 0.8125rem;
   color: var(--paper-mute);

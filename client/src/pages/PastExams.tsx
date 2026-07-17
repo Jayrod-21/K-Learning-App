@@ -303,14 +303,14 @@ export default function PastExams(): JSX.Element {
           per-item picks — the same honest limitation `AttemptsReview` in
           `pages/Topik.tsx` discloses); every recent miss across all TOPIK
           work is reviewable from the Mistakes page, wired here. */}
-      <Card variant="flat" className="km-pastexams__mistakesLink">
+      <Card variant="flat" className="km-pastexams__mistakes-link">
         <p>
           <Bilingual
             en="Want to review what you got wrong? Every recent miss across all TOPIK work lives in Mistakes."
             kr="틀린 문제를 복습하고 싶으신가요? 최근에 틀린 모든 TOPIK 문제는 Mistakes에서 볼 수 있어요."
           />
         </p>
-        <Link to="/review/mistakes" className="km-pastexams__mistakesCta focusring">
+        <Link to="/review/mistakes" className="km-pastexams__mistakes-cta focusring">
           <Bilingual en="Review your mistakes" kr="틀린 문제 복습" />{' '}
           <Icon name="arrow-right" size={13} />
         </Link>

@@ -21,7 +21,7 @@
 
 /* F-149 — the visible caption above the search field (SearchBox itself has
  * no label slot). Matches FilterSelect's own label sizing/tone below it. */
-.km-dictionary__searchLabel {
+.km-dictionary__search-label {
   margin: 18px 0 6px;
 }
 

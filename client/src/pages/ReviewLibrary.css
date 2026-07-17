@@ -32,7 +32,7 @@
  * ActivityTile uses -- the button owns 100% of the interaction/a11y, the
  * card is a purely decorative wrapper). This page-scoped, two-class
  * selector resets the old surface without touching the shared rule (same
- * technique as `.km-today__tileCard.km-citycard` in Today.css / the
+ * technique as `.km-today__tile-card.km-citycard` in Today.css / the
  * `.km-citycard.km-collapsible` override in CollapsibleTile.css). */
 .km-library .km-library__row {
   display: block;
@@ -57,11 +57,11 @@
   }
 }
 
-.km-library__rowCard.km-citycard {
+.km-library__row-card.km-citycard {
   padding: 14px 16px;
 }
 
-.km-library__rowTop {
+.km-library__row-top {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -135,14 +135,14 @@
     display: flex;
   }
 
-  .km-library__list--grid .km-library__rowCard.km-citycard {
+  .km-library__list--grid .km-library__row-card.km-citycard {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
   }
 
-  .km-library__list--grid .km-library__rowTop {
+  .km-library__list--grid .km-library__row-top {
     flex: 1;
     min-width: 0;
   }

@@ -19,7 +19,7 @@
 
 /* One completed-exam row — the whole row is the re-enter link (a real
  * navigation, so it renders as an <a>, not a <button>). Mirrors
- * Mistakes.css's `.km-mistakes__writingRow` shape (shrinking text column +
+ * Mistakes.css's `.km-mistakes__writing-row` shape (shrinking text column +
  * fixed-width score pill), plus a trailing re-enter action glyph. */
 .km-pastexams__row-btn {
   width: 100%;
@@ -62,7 +62,7 @@
   color: var(--paper-dim);
 }
 
-.km-pastexams__mistakesLink {
+.km-pastexams__mistakes-link {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -70,7 +70,7 @@
   padding: 18px;
 }
 
-.km-pastexams__mistakesCta {
+.km-pastexams__mistakes-cta {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -80,6 +80,6 @@
   align-self: flex-start;
 }
 
-.km-pastexams__mistakesCta:hover {
+.km-pastexams__mistakes-cta:hover {
   text-decoration: underline;
 }

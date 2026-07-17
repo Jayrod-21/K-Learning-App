@@ -1288,7 +1288,7 @@ describe('Review — completion (F-062)', () => {
     const breakdown = screen.getByLabelText('Rating breakdown');
     const cell = (name: RegExp): HTMLElement => {
       const dt = within(breakdown).getByText(name);
-      return dt.closest('.km-review__breakCell') as HTMLElement;
+      return dt.closest('.km-review__break-cell') as HTMLElement;
     };
     expect(within(cell(/Good/)).getByText('1')).toBeInTheDocument();
     expect(within(cell(/Easy/)).getByText('1')).toBeInTheDocument();
@@ -1644,7 +1644,7 @@ describe('Review — F-128 Seoul reskin', () => {
     renderReview('/learn/vocab?study=due');
 
     // The signboard wrapper is present and the flip/rate flow is unchanged.
-    expect(document.querySelector('.km-review__flashcardWrap')).not.toBeNull();
+    expect(document.querySelector('.km-review__flashcard-wrap')).not.toBeNull();
     await user.click(screen.getByRole('button', { name: 'Flip card' }));
     await user.click(screen.getByRole('button', { name: /Good/ }));
 

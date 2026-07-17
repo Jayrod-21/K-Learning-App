@@ -108,7 +108,7 @@
   min-height: 18px;
 }
 
-.km-linechart__readoutMetric {
+.km-linechart__readout-metric {
   color: var(--paper-faint);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -137,7 +137,7 @@
   border-radius: 8px;
 }
 
-.km-linechart__emptyText {
+.km-linechart__empty-text {
   color: var(--paper-mute);
   font-size: 0.8125rem;
 }

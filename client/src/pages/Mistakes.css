@@ -70,7 +70,7 @@
   gap: 8px;
 }
 
-.km-mistakes__tileWrap {
+.km-mistakes__tile-wrap {
   display: contents;
 }
 
@@ -102,14 +102,14 @@
 }
 
 /* ── F-154 Sheet popup body ──────────────────────────────────────────────
- * Batch-2 fix-pass (S2): the shared `.km-review__sheetBody`/`__sheetHead`
+ * Batch-2 fix-pass (S2): the shared `.km-review__sheet-body`/`__sheet-head`
  * (styles/index.css, also used by ReviewGrammar/ReviewVocab's own popups)
  * now own padding + head layout — this page's classes ride ALONGSIDE them as
  * an extra class for the one genuinely Mistakes-specific need: the body's
  * flex-column stacking (the shared rule is padding-only, no direction/gap).
- * `.km-mistakes__sheetHead` no longer needs its own rule — it was an exact
- * duplicate of `.km-review__sheetHead`. */
-.km-mistakes__sheetBody {
+ * `.km-mistakes__sheet-head` no longer needs its own rule — it was an exact
+ * duplicate of `.km-review__sheet-head`. */
+.km-mistakes__sheet-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -198,14 +198,14 @@
 /* One graded-writing history row (`.km-reference__row`'s inner content —
  * mirrors ReviewVocab.tsx's `.km-resources__entry-row` shape: a shrinking
  * text column + a fixed-width score pill). */
-.km-mistakes__writingRow {
+.km-mistakes__writing-row {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 12px 18px;
 }
 
-.km-mistakes__writingRow-main {
+.km-mistakes__writing-row-main {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -213,7 +213,7 @@
   gap: 2px;
 }
 
-.km-mistakes__writingRow-prompt {
+.km-mistakes__writing-row-prompt {
   font-size: 0.9375rem;
   font-weight: 500;
   color: var(--paper);
@@ -225,12 +225,12 @@
   overflow: hidden;
 }
 
-.km-mistakes__writingRow-meta {
+.km-mistakes__writing-row-meta {
   font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
-.km-mistakes__writingRow-score {
+.km-mistakes__writing-row-score {
   flex: none;
   white-space: nowrap;
 }

@@ -1775,8 +1775,8 @@ export function Chat(): JSX.Element {
           // (including the "English · 영어" text) actually clickable via the
           // browser's built-in label→control delegation, matching the
           // pointer cursor's affordance instead of contradicting it.
-          <label className="km-chat__engToggle">
-            <span className="km-chat__engToggleLabel km-eyebrow">
+          <label className="km-chat__eng-toggle">
+            <span className="km-chat__eng-toggle-label km-eyebrow">
               <Bilingual en="English" kr="영어" />
             </span>
             <Toggle
@@ -1812,7 +1812,7 @@ export function Chat(): JSX.Element {
         >
           {/* ── Conversation sidebar ────────────────────────────────── */}
           <nav className="km-chat__side" aria-label="Conversations">
-            <div className="km-chat__sideHead">
+            <div className="km-chat__side-head">
               <button
                 type="button"
                 className="km-chat__collapse focusring"
@@ -1831,7 +1831,7 @@ export function Chat(): JSX.Element {
                 />
               </button>
               {!collapsed ? (
-                <span className="km-eyebrow km-chat__sideLabel">
+                <span className="km-eyebrow km-chat__side-label">
                   <Bilingual en="Chats" kr="대화" />
                 </span>
               ) : null}
@@ -1844,7 +1844,7 @@ export function Chat(): JSX.Element {
               variant="ghost"
               size="sm"
               fullWidth
-              className="km-chat__newChat"
+              className="km-chat__new-chat"
               onClick={startNewChat}
               disabled={creating}
               aria-busy={creating ? 'true' : 'false'}
@@ -1855,7 +1855,7 @@ export function Chat(): JSX.Element {
             </Button>
             <ul
               id="chat-conversations"
-              className="km-chat__convList"
+              className="km-chat__conv-list"
               aria-label="Conversation history"
             >
               {rows.map((row) => {
@@ -1875,9 +1875,9 @@ export function Chat(): JSX.Element {
                     <button
                       type="button"
                       className={cn(
-                        'km-chat__convRow',
+                        'km-chat__conv-row',
                         'focusring',
-                        isActive && 'km-chat__convRow--current',
+                        isActive && 'km-chat__conv-row--current',
                       )}
                       onClick={() => {
                         selectConversation(row.id);
@@ -1897,16 +1897,16 @@ export function Chat(): JSX.Element {
                       {isActive ? (
                         <DancheongRail
                           tone="accent"
-                          className="km-chat__convRail"
+                          className="km-chat__conv-rail"
                         />
                       ) : null}
-                      <span className="km-chat__convDot" aria-hidden="true" />
+                      <span className="km-chat__conv-dot" aria-hidden="true" />
                       {!collapsed ? (
-                        <span className="km-chat__convText">
-                          <span className="kr km-chat__convTitle">
+                        <span className="km-chat__conv-text">
+                          <span className="kr km-chat__conv-title">
                             {title}
                           </span>
-                          <span className="km-chat__convWhen">{when}</span>
+                          <span className="km-chat__conv-when">{when}</span>
                         </span>
                       ) : null}
                     </button>
@@ -1944,7 +1944,7 @@ export function Chat(): JSX.Element {
                     button pattern as WordPopover/Sheet backdrops. */}
                 <button
                   type="button"
-                  className="km-chat__askpopBackdrop"
+                  className="km-chat__askpop-backdrop"
                   aria-label="Dismiss — start fresh"
                   tabIndex={-1}
                   data-testid="chat-askpop-backdrop"
@@ -1957,7 +1957,7 @@ export function Chat(): JSX.Element {
                   role="dialog"
                   aria-modal="true"
                   aria-labelledby="chat-askpop-title"
-                  className="km-chat__askpopWrap"
+                  className="km-chat__askpop-wrap"
                 >
                   {/* F-128 device #1 — a real `CityCard` (hanji paper Day /
                       neon signboard Night, `feat` for hero emphasis). One
@@ -1967,21 +1967,21 @@ export function Chat(): JSX.Element {
                       outer div above stays the a11y/focus-trap target
                       (`popupRef`); this is purely its visual child. */}
                   <CityCard tone="accent" feat className="km-chat__askpop">
-                    <div id="chat-askpop-title" className="km-chat__askpopTitle">
+                    <div id="chat-askpop-title" className="km-chat__askpop-title">
                       <Bilingual
                         en="Discuss the page you were on?"
                         kr="보던 페이지에 대해 이야기할까요?"
                       />
                     </div>
-                    <div className="km-chat__askpopCtx">
+                    <div className="km-chat__askpop-ctx">
                       <span className="km-eyebrow">
                         <Bilingual en="From" kr="이전 화면" />
                       </span>
-                      <span className="km-chat__askpopFrom">
+                      <span className="km-chat__askpop-from">
                         {popupContext.pageLabel} — {popupContext.summary}
                       </span>
                     </div>
-                    <div className="km-chat__askpopRow">
+                    <div className="km-chat__askpop-row">
                       <Button
                         variant="gold"
                         size="sm"
@@ -2026,14 +2026,14 @@ export function Chat(): JSX.Element {
               aria-busy={historyLoading ? 'true' : 'false'}
             >
               {historyError !== null && historyError.forId === activeId ? (
-                <div role="alert" className="km-chat__historyError">
+                <div role="alert" className="km-chat__history-error">
                   <span>{HISTORY_FAILED_COPY}</span>
                   <Button variant="ghost" size="sm" onClick={retryHistory}>
                     <Bilingual en="Retry" kr="다시 시도" />
                   </Button>
                 </div>
               ) : historyLoading ? (
-                <div className="km-chat__historyLoading">
+                <div className="km-chat__history-loading">
                   <Bilingual
                     en="Loading conversation…"
                     kr="대화 불러오는 중…"
@@ -2064,14 +2064,14 @@ export function Chat(): JSX.Element {
 
             {/* Composer */}
             <div className="km-chat__composer">
-              <label className="km-chat__composerLabel" htmlFor="chat-input">
+              <label className="km-chat__composer-label" htmlFor="chat-input">
                 {/* The 합쇼체 register cue stays OUTSIDE the bilingual pair —
                     it's the target register, not a translation of "Reply". */}
                 <span className="km-eyebrow">
                   <Bilingual en="Reply" kr="답장" /> · 합쇼체
                 </span>
               </label>
-              <div className="km-chat__composerRow">
+              <div className="km-chat__composer-row">
                 {/* Three hidden pickers behind the "+" menu — camera and
                     image share IMAGE_ACCEPT/uploadImageFile and differ only
                     in `capture` (see the header's "Attachments" section). */}
@@ -2124,7 +2124,7 @@ export function Chat(): JSX.Element {
                     ref={attachTriggerRef}
                     variant="ghost"
                     size="md"
-                    className="km-chat__attachTrigger"
+                    className="km-chat__attach-trigger"
                     onClick={toggleAttachMenu}
                     disabled={uploading || streaming || !threadReady}
                     aria-label="Attach"
@@ -2145,14 +2145,14 @@ export function Chat(): JSX.Element {
                       // CityCard/DancheongRail read (seoul-devices.css) —
                       // a Night tone-glow border / Day hairline for this
                       // popover, without duplicating CityCard's own rules.
-                      className={cn('km-chat__attachMenu', 'km-tone--accent')}
+                      className={cn('km-chat__attach-menu', 'km-tone--accent')}
                     >
                       <button
                         ref={setAttachItemRef(0)}
                         type="button"
                         role="menuitem"
                         tabIndex={attachActiveIndex === 0 ? 0 : -1}
-                        className="km-chat__attachItem focusring"
+                        className="km-chat__attach-item focusring"
                         onFocus={() => {
                           attachActiveIndexRef.current = 0;
                           setAttachActiveIndex(0);
@@ -2170,7 +2170,7 @@ export function Chat(): JSX.Element {
                         type="button"
                         role="menuitem"
                         tabIndex={attachActiveIndex === 1 ? 0 : -1}
-                        className="km-chat__attachItem focusring"
+                        className="km-chat__attach-item focusring"
                         onFocus={() => {
                           attachActiveIndexRef.current = 1;
                           setAttachActiveIndex(1);
@@ -2188,7 +2188,7 @@ export function Chat(): JSX.Element {
                         type="button"
                         role="menuitem"
                         tabIndex={attachActiveIndex === 2 ? 0 : -1}
-                        className="km-chat__attachItem focusring"
+                        className="km-chat__attach-item focusring"
                         onFocus={() => {
                           attachActiveIndexRef.current = 2;
                           setAttachActiveIndex(2);
@@ -2220,7 +2220,7 @@ export function Chat(): JSX.Element {
                 <Button
                   variant="gold"
                   size="md"
-                  className="km-chat__sendBtn"
+                  className="km-chat__send-btn"
                   onClick={send}
                   disabled={
                     !input.trim() || streaming || uploading || !threadReady
@@ -2232,12 +2232,12 @@ export function Chat(): JSX.Element {
                 </Button>
               </div>
               {uploading ? (
-                <div role="status" className="km-chat__uploadStatus">
+                <div role="status" className="km-chat__upload-status">
                   <Bilingual en="Uploading…" kr="업로드 중…" />
                 </div>
               ) : null}
               {sendError ? (
-                <div role="alert" className="km-chat__sendError">
+                <div role="alert" className="km-chat__send-error">
                   {sendError}
                 </div>
               ) : null}
@@ -2297,7 +2297,7 @@ function Bubble({
           // alt would only announce the same thing twice (and jsx-a11y
           // rightly bans "photo/image" filler labels).
           <img
-            className="km-chat__bubbleImg"
+            className="km-chat__bubble-img"
             src={msg.image.src}
             alt=""
             data-testid="chat-bubble-image"
@@ -2306,11 +2306,11 @@ function Bubble({
         {msg.file ? (
           // F-035 document turn — a small file chip above the text (its own
           // content, below, IS the document's text — nothing more to show).
-          <div className="km-chat__fileChip" data-testid="chat-bubble-file">
+          <div className="km-chat__file-chip" data-testid="chat-bubble-file">
             <Icon name="upload" size={14} />
-            <span className="km-chat__fileName">{msg.file.name}</span>
+            <span className="km-chat__file-name">{msg.file.name}</span>
             {msg.file.truncated ? (
-              <span className="km-chat__fileTruncated">
+              <span className="km-chat__file-truncated">
                 <Bilingual en="(truncated)" kr="(일부만)" />
               </span>
             ) : null}

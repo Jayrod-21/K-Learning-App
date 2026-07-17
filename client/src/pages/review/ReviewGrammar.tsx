@@ -426,7 +426,7 @@ function PatternRow({
   const pending = pendingKey === key;
   return (
     // No className here (batch-2 fix-pass NIT): the retired
-    // `.km-review-grammar__rowItem` had no matching CSS rule — the parent
+    // `.km-review-grammar__row-item` had no matching CSS rule — the parent
     // `<ul>` already resets list styling and `.km-review-grammar__row`'s own
     // flex `gap` handles spacing, so the `<li>` needs no styling hook.
     <li>
@@ -713,7 +713,7 @@ function GrammarSavedFromUploads(): JSX.Element | null {
       {groups.map((group) => (
         <section
           key={`saved-upload:${String(group.upload.id)}`}
-          className="km-review-grammar__savedGroup"
+          className="km-review-grammar__saved-group"
           aria-label={group.upload.title}
         >
           <Eyebrow>{group.upload.title}</Eyebrow>
@@ -739,7 +739,7 @@ function GrammarSavedFromUploads(): JSX.Element | null {
         </section>
       ))}
       {truncated ? (
-        <p className="km-review-grammar__savedTruncated">
+        <p className="km-review-grammar__saved-truncated">
           <Bilingual
             en="Showing your most recent saves only"
             kr="최근 저장 항목만 표시됩니다"
@@ -927,16 +927,16 @@ function GrammarDetailSheet({
 }: GrammarDetailSheetProps): JSX.Element {
   return (
     <Sheet open={row !== null} onClose={onClose} ariaLabel="Grammar pattern detail">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="Pattern" kr="문형" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               {row?.pattern ?? ''}
             </div>
-            <div className="km-review__sheetMeta">
+            <div className="km-review__sheet-meta">
               {row?.title_en ?? row?.pattern ?? ''}
               {row?.proficiency ? ` · ${row.proficiency}` : ''}
             </div>
@@ -951,7 +951,7 @@ function GrammarDetailSheet({
           </Button>
         </div>
 
-        <div className="km-review__sheetActions">
+        <div className="km-review__sheet-actions">
           <Button
             variant={added ? 'ghost' : 'gold'}
             size="md"
@@ -983,7 +983,7 @@ function GrammarDetailSheet({
           </Button>
         </div>
 
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         {loading ? (
           <div className="km-grammar__state" role="status">
