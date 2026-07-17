@@ -1823,6 +1823,28 @@ h1, h2 { font-family: var(--font-display); }
   padding: 10px 12px;
   line-height: 1.45;
 }
+/* Login — F-006 unverified notice (email not verified on sign-in). A softer,
+   informational sibling of km-login__error — it's an actionable state, not a
+   failure. */
+.km-login__notice {
+  font-size: 0.8125rem;
+  color: var(--ink);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--rule, rgba(0, 0, 0, 0.14));
+  border-radius: 3px;
+  padding: 12px 14px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.km-login__notice p { margin: 0; }
+/* Resend affordance wrapper (login notice, check-email step, verify page). */
+.km-resend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .km-login__switch {
   margin-top: 22px;
   text-align: center;
@@ -1837,6 +1859,38 @@ h1, h2 { font-family: var(--font-display); }
   letter-spacing: -0.005em;
 }
 .km-link:hover { text-decoration: underline; }
+
+/* F-006 — in-app unverified banner (signed-in but email not verified) ──── */
+.km-unverified-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--surface-2, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--rule, rgba(0, 0, 0, 0.14));
+  border-radius: 4px;
+}
+.km-unverified-banner__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.km-unverified-banner__text { margin: 0; }
+.km-unverified-banner__dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-soft, inherit);
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0 4px;
+}
 
 /* Login — 2FA code input ─────────────────────────────────────────────── */
 .km-login__code-input {

@@ -12,6 +12,36 @@ import { z } from 'zod';
 
 loadDotenv();
 
+/**
+ * Strict string-boolean env parser.
+ *
+ * `z.coerce.boolean()` runs JS `Boolean(value)`, so the STRING "false" coerces
+ * to `true` — an operator setting `FLAG=false` in a compose file would silently
+ * get `true`. That is unacceptable for flags whose whole purpose is to be an
+ * operator kill-switch (REGISTRATION_ENABLED, MFA_REQUIRED,
+ * EMAIL_VERIFICATION_REQUIRED), so EVERY boolean flag uses this parser:
+ * explicit truthy/falsy string sets, anything else fails config parse at
+ * startup. `z.coerce.boolean()` is BANNED in this schema — the deploy compose
+ * passes `REGISTRATION_ENABLED=false` as a string, and under coercion that
+ * string re-opened production self-signup (F-006 fix-pass B1). Config tests
+ * (tests/config.test.ts) pin the `"false"` → false behavior for each flag.
+ */
+function envBool(defaultValue: boolean) {
+  return z.preprocess(
+    (v) => {
+      if (v === undefined || v === null || v === '') return defaultValue;
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'string') {
+        const s = v.trim().toLowerCase();
+        if (['true', '1', 'yes', 'on'].includes(s)) return true;
+        if (['false', '0', 'no', 'off'].includes(s)) return false;
+      }
+      return v; // fall through to z.boolean() → parse error (fail fast)
+    },
+    z.boolean(),
+  );
+}
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -103,13 +133,16 @@ const EnvSchema = z.object({
 
   // Registration gate. MUST be false in production (single-user app, seeded via
   // the seed-user CLI). Default true keeps dev/test self-service registration.
-  REGISTRATION_ENABLED: z.coerce.boolean().default(true),
+  // Strict envBool: the compose files pass the STRING "false", which
+  // z.coerce.boolean() silently parsed as true — leaving self-signup OPEN in
+  // prod and re-arming the register-409 enumeration oracle (F-006 B1).
+  REGISTRATION_ENABLED: envBool(true),
 
   // Mandatory-MFA enforcement (D1). Default true: every login needs a confirmed
   // TOTP, and a user without one is forced into enrollment before a session is
   // issued. Legacy/test flows that want the old direct-session behavior set
-  // this false.
-  MFA_REQUIRED: z.coerce.boolean().default(true),
+  // this false. Strict envBool — same landmine as REGISTRATION_ENABLED above.
+  MFA_REQUIRED: envBool(true),
 
   // Per-account TOTP lockout (B-LOCK). N consecutive bad codes → locked for
   // TOTP_LOCKOUT_MINUTES. The IP authLimiter is the other half of the defense.
@@ -122,6 +155,52 @@ const EnvSchema = z.object({
 
   // Number of single-use recovery codes minted at enrollment-confirm / regenerate.
   RECOVERY_CODE_COUNT: z.coerce.number().int().positive().default(10),
+
+  // ---------------------------------------------------------------------------
+  // Email verification (F-006). See server SECURITY.md §19 +
+  // docs/BUILD_f006_email_verification.md.
+  // ---------------------------------------------------------------------------
+  // The login gate: an unverified account cannot complete a password login
+  // (typed `email_unverified` response). Default ON (email verification is a
+  // standing deploy priority); this flag is the operator kill-switch if mail
+  // delivery breaks — flipping it to false changes NOTHING else about auth.
+  // Uses the strict envBool parser so `EMAIL_VERIFICATION_REQUIRED=false` in a
+  // compose file actually disables it (see envBool's header).
+  EMAIL_VERIFICATION_REQUIRED: envBool(true),
+
+  // Verification-token lifetime. Short by design — the link is single-use and
+  // a resend is one click, so a stolen mailbox backlog goes stale quickly.
+  EMAIL_VERIFICATION_TOKEN_TTL_HOURS: z.coerce.number().int().positive().default(24),
+
+  // Per-USER resend cooldown, enforced DB-side (latest token created_at).
+  // This — not the per-IP limiter — is the real mail-bomb gate: the resend
+  // endpoint always returns a generic 200 (no user enumeration), and the auth
+  // limiter's skipSuccessfulRequests would therefore never count it.
+  EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC: z.coerce.number().int().positive().default(60),
+
+  // ---------------------------------------------------------------------------
+  // Mail transport (F-006) — provider-agnostic SMTP, NEVER a hardcoded vendor.
+  // Unset SMTP_HOST ⇒ the mock/log transport (dev + tests): the message is
+  // logged (including the verification URL — the dev escape hatch) and nothing
+  // is sent. In production these point at Proton Mail Bridge's local SMTP
+  // (127.0.0.1:1025, STARTTLS, per-Bridge credentials) — but nothing here
+  // knows or cares that it's Proton; any SMTP relay works.
+  // ---------------------------------------------------------------------------
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().max(65_535).default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  // RFC 5322 From. Required whenever SMTP_HOST is set (refined below) — the
+  // sending domain's SPF/DKIM/DMARC must authorize this address or receivers
+  // will spam-folder the mail (deploy note in BUILD_f006).
+  SMTP_FROM: z.string().min(3).optional(),
+  // true = implicit TLS (usually port 465); false = plaintext + STARTTLS
+  // upgrade (587 / Proton Bridge's 1025). Strict parser — see envBool.
+  SMTP_SECURE: envBool(false),
+  // Proton Bridge presents a self-signed certificate on loopback; the operator
+  // sets this false ONLY for such a localhost relay. Default true — never
+  // silently accept a bad cert on a real network path.
+  SMTP_TLS_REJECT_UNAUTHORIZED: envBool(true),
 
   // CORS
   CLIENT_ORIGIN: z.string().min(1, 'CLIENT_ORIGIN is required (e.g. https://app.example.com)'),
@@ -141,6 +220,17 @@ const EnvSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),
+}).superRefine((cfg, ctx) => {
+  // A configured SMTP relay without a From address would fail on the first
+  // send, at request time. Fail at startup instead (SECURITY.md §1 posture:
+  // bad config is a deploy-time problem).
+  if (cfg.SMTP_HOST && !cfg.SMTP_FROM) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SMTP_FROM'],
+      message: 'SMTP_FROM is required when SMTP_HOST is set',
+    });
+  }
 });
 
 export type Config = z.infer<typeof EnvSchema>;

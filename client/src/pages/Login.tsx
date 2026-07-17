@@ -7,7 +7,11 @@
  *
  *   1. Credentials — email + password. Submit → `login()`. On a no-2FA build
  *      this authenticates directly; on the mandatory-2FA build it sets
- *      `pending` and the screen advances.
+ *      `pending` and the screen advances. F-006: a register that resolves
+ *      `verification_required` advances to the "check your email" step
+ *      instead (no session was minted), and a login rejected with the typed
+ *      `email_unverified` code renders an unverified notice with a resend
+ *      affordance — never a generic failure.
  *   2. Code  (`pending.kind === 'mfa'`) — 6-digit TOTP input
  *      (autoComplete `one-time-code`, inputMode numeric) with a "use a recovery
  *      code" toggle. Submit → `submitTotp()` → authenticated (redirect).
@@ -62,6 +66,7 @@ import { Eyebrow } from '../components/Eyebrow';
 import { SealStamp } from '../components/SealStamp';
 import { DoubleRule } from '../components/DoubleRule';
 import { RecoveryCodesPanel } from '../components/RecoveryCodesPanel';
+import { ResendVerificationButton } from '../components/ResendVerificationButton';
 import { ApiError } from '../services/api';
 import { otpauthUriToDataUrl } from '../lib/qr';
 import { useAuth } from '../hooks/useAuth';
@@ -80,6 +85,9 @@ export default function Login(): JSX.Element {
   // top level so they survive the brief window between `confirmEnroll`
   // resolving and `completeEnrollment` redirecting.
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  // F-006: set when a register resolves `verification_required` — the account
+  // exists but no session was minted; the screen shows "check your email".
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
 
   return (
     <div className="km-shell">
@@ -96,8 +104,19 @@ export default function Login(): JSX.Element {
 
         {recoveryCodes !== null ? (
           <RecoveryStep codes={recoveryCodes} />
+        ) : registeredEmail !== null ? (
+          <CheckEmailStep
+            email={registeredEmail}
+            onBack={() => {
+              setRegisteredEmail(null);
+            }}
+          />
         ) : pending === null ? (
-          <CredentialsStep />
+          <CredentialsStep
+            onRegistered={(email) => {
+              setRegisteredEmail(email);
+            }}
+          />
         ) : pending.kind === 'mfa' ? (
           <CodeStep />
         ) : (
@@ -116,13 +135,21 @@ export default function Login(): JSX.Element {
 // Step 1 — Credentials (sign in / create account)
 // ─────────────────────────────────────────────────────────────
 
-function CredentialsStep(): JSX.Element {
+function CredentialsStep({
+  onRegistered,
+}: {
+  onRegistered: (email: string) => void;
+}): JSX.Element {
   const { login, register } = useAuth();
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // F-006: set when a login is rejected with the typed `email_unverified`
+  // code — renders the unverified notice + resend affordance instead of a
+  // generic failure. Cleared on the next submit / mode switch.
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const emailId = useId();
@@ -134,16 +161,33 @@ function CredentialsStep(): JSX.Element {
     e.preventDefault();
     if (submitting) return;
     setError(null);
+    setUnverifiedEmail(null);
     setSubmitting(true);
     try {
       if (mode === 'register') {
-        await register(email.trim(), password, displayName.trim() || undefined);
+        const outcome = await register(
+          email.trim(),
+          password,
+          displayName.trim() || undefined,
+        );
+        if (outcome === 'verification_required') {
+          // F-006: account created, no session — advance to "check your
+          // email". Lower-cased to match what the server stored/mailed.
+          onRegistered(email.trim().toLowerCase());
+          return;
+        }
       } else {
         await login(email.trim(), password);
       }
       // On 2FA paths `login` resolves having set `pending`; the parent swaps
       // in the next step. Nothing to do here.
     } catch (err) {
+      // F-006 typed state: unverified account. The code (never the server
+      // message) selects the dedicated notice with its resend affordance.
+      if (err instanceof ApiError && err.code === 'email_unverified') {
+        setUnverifiedEmail(email.trim().toLowerCase());
+        return;
+      }
       const msg = messageFor(err, mode);
       if (msg) setError(msg);
     } finally {
@@ -154,6 +198,7 @@ function CredentialsStep(): JSX.Element {
   function switchMode(): void {
     setMode((m) => (m === 'login' ? 'register' : 'login'));
     setError(null);
+    setUnverifiedEmail(null);
   }
 
   return (
@@ -255,6 +300,17 @@ function CredentialsStep(): JSX.Element {
           </div>
         ) : null}
 
+        {unverifiedEmail !== null ? (
+          <div role="alert" className="km-login__notice">
+            <p>
+              Your email address hasn&apos;t been verified yet. Open the
+              verification link we sent to <strong>{unverifiedEmail}</strong>,
+              then sign in again.
+            </p>
+            <ResendVerificationButton email={unverifiedEmail} />
+          </div>
+        ) : null}
+
         <Button
           type="submit"
           variant="gold"
@@ -278,6 +334,49 @@ function CredentialsStep(): JSX.Element {
           {mode === 'register'
             ? 'Already have an account? Sign in'
             : "Don't have an account? Create one"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Step 1b — Check your email (post-register, F-006)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Shown after a register that resolved `verification_required`: the account
+ * exists, no session was minted, and the user must open the emailed link
+ * (which lands on /verify-email) before signing in. The resend affordance
+ * uses the same non-enumerating endpoint as everywhere else.
+ */
+function CheckEmailStep({
+  email,
+  onBack,
+}: {
+  email: string;
+  onBack: () => void;
+}): JSX.Element {
+  return (
+    <>
+      <h1 className="kr-display km-login__title">
+        <Bilingual kr="메일을 확인하세요" en="Check your email" />
+      </h1>
+      <p className="km-login__lede">
+        We sent a verification link to <strong>{email}</strong>. Open it to
+        activate your account, then come back and sign in.
+      </p>
+      <DoubleRule accent style={{ margin: '18px 0 22px' }} />
+
+      <p className="km-field__hint">
+        No email after a few minutes? Check your spam folder, or request a new
+        link below.
+      </p>
+      <ResendVerificationButton email={email} />
+
+      <div className="km-login__switch">
+        <button type="button" className="km-link focusring" onClick={onBack}>
+          Back to sign in
         </button>
       </div>
     </>

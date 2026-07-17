@@ -33,6 +33,8 @@ import type {
   PatchAuthMeBody,
   RecoveryCodesResult,
   RegenerateRecoveryCodesResponse,
+  ResendVerificationResponse,
+  VerifyEmailResponse,
 } from '../types/domain';
 import type { User } from '../hooks/auth-context';
 
@@ -201,6 +203,38 @@ export async function regenerateRecoveryCodes(
     { password },
   );
   return { recoveryCodes: res.recovery_codes };
+}
+
+// ── Email verification (F-006) ────────────────────────────────
+
+/**
+ * POST /auth/verify — consume the emailed verification token.
+ *
+ * Returns the success status (`'verified'` | `'already_verified'` — the
+ * latter is the idempotent double-click shape and is ALSO a success). Throws
+ * `ApiError` with `code: 'token_expired' | 'token_invalid'` otherwise; the
+ * VerifyEmail screen maps those codes to fixed copy (never server text).
+ *
+ * SECURITY: the raw token comes straight from the link's URL and goes
+ * straight to the wire — this layer never stores or logs it.
+ */
+export async function verifyEmail(
+  token: string,
+): Promise<'verified' | 'already_verified'> {
+  const res = await api.post<VerifyEmailResponse>('/auth/verify', { token });
+  return res.status;
+}
+
+/**
+ * POST /auth/verify/resend — request a fresh verification email.
+ *
+ * The server's response is a fixed generic `{status:'ok'}` in EVERY case
+ * (unknown email, already verified, cooldown-suppressed, sent) — deliberate
+ * anti-enumeration, so the UI must phrase success accordingly ("if an
+ * account exists…"), never "email sent to your account".
+ */
+export async function resendVerification(email: string): Promise<void> {
+  await api.post<ResendVerificationResponse>('/auth/verify/resend', { email });
 }
 
 /**

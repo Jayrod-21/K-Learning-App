@@ -1867,6 +1867,13 @@ export interface AuthMeResponse {
      * that mutate the user MUST read the live value.
      */
     version?: number;
+    /**
+     * F-006: whether the account email has been verified (derived server-side
+     * from `email_verified_at`; the timestamp itself is never exposed).
+     * Drives the "verify your email" banner. Optional in the wire type for
+     * legacy fixtures; the server always sends it.
+     */
+    email_verified?: boolean;
   };
 }
 
@@ -1986,6 +1993,39 @@ export interface MfaStatus {
   enabled: boolean;
   recoveryCodesRemaining: number;
 }
+
+// ── Email verification (F-006) ────────────────────────────────
+//
+// SECURITY — same posture as the MFA types above: the raw verification token
+// arrives ONLY via the emailed link's URL, is relayed straight to
+// `POST /auth/verify`, and is never persisted by the client. Error copy is
+// mapped from `code`/`status` through fixed tables (never echoed server text).
+
+/**
+ * `POST /auth/register` envelope. Two shapes by deployment posture:
+ *   - gate ON (`EMAIL_VERIFICATION_REQUIRED`, the prod default) →
+ *     `status:'verification_required'` and NO session cookie — the client
+ *     shows the "check your email" screen.
+ *   - gate OFF → the legacy `{user}` shape with the session cookie set.
+ */
+export type RegisterResponse =
+  | { status: 'verification_required'; user: { id: number; email: string } }
+  | { status?: undefined; user: AuthMeResponse['user'] };
+
+/** `GET|POST /auth/verify` success envelope. `already_verified` is the
+ *  friendly idempotent shape (double-clicked link, replay after success). */
+export interface VerifyEmailResponse {
+  status: 'verified' | 'already_verified';
+}
+
+/** `POST /auth/verify/resend` envelope — deliberately a fixed generic shape
+ *  in EVERY case (anti-enumeration; see the server route). */
+export interface ResendVerificationResponse {
+  status: 'ok';
+}
+
+/** `register()` outcome the Login screen branches on. */
+export type RegisterOutcome = 'authenticated' | 'verification_required';
 
 // ─────────────────────────────────────────────────────────────
 // Images / OCR mining (Pass 8)

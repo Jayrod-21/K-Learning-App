@@ -47,6 +47,7 @@ import { PwaUpdatePrompt } from './components/PwaUpdatePrompt';
 import { Shell } from './components/Shell';
 import { legacyRedirectRoutes } from './lib/redirects';
 import Login from './pages/Login';
+import VerifyEmail from './pages/VerifyEmail';
 import Today from './pages/Today';
 import Topik from './pages/Topik';
 import Review from './pages/Review';
@@ -101,6 +102,13 @@ export default function App(): JSX.Element {
                       </PublicOnly>
                     }
                   />
+                  {/* F-006: verification-link landing. Deliberately neither
+                      PublicOnly nor RequireAuth — the link must work for a
+                      guest completing signup AND for a signed-in-but-
+                      unverified session (email change / gate off). It is an
+                      SPA route, NOT an API prefix, so no nginx allow-list
+                      entry (see km-nginx-api-route-allowlist). */}
+                  <Route path="/verify-email" element={<VerifyEmail />} />
                   <Route
                     element={
                       <RequireAuth>

@@ -92,6 +92,7 @@ import { ChatFab } from './ChatFab';
 import { FeedbackFab } from './FeedbackFab';
 import { LearnMenu, LEARN_MENU_EXIT_MS } from './LearnMenu';
 import { Sidebar } from './Sidebar';
+import { UnverifiedBanner } from './UnverifiedBanner';
 import { ExamActiveProvider } from '../hooks/ExamActiveProvider';
 import { TourProvider } from '../hooks/TourProvider';
 import { useDeviceClass } from '../hooks/useDeviceClass';
@@ -197,6 +198,9 @@ export function Shell(): JSX.Element {
         <div className="km-shell">
           <div className="km-shell__statusbar" aria-hidden="true" />
           <main className="km-shell__scroll">
+            {/* F-006: only renders for a signed-in-but-unverified user
+                (gate off, or just after an email change) — otherwise null. */}
+            <UnverifiedBanner />
             <Outlet />
           </main>
           <ChatFab />
