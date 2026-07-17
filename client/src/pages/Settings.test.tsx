@@ -67,6 +67,10 @@ const mocks = vi.hoisted(() => {
     // TourProvider, whose replay path must reach a startable runner.
     startTour: vi.fn(),
     refresh: vi.fn(async () => undefined),
+    // Context logout (the Profile group's "Log out" action). By AuthProvider
+    // contract it ALWAYS resolves — the provider clears local state even when
+    // the POST fails — so the default impl mirrors that.
+    logout: vi.fn(async () => undefined),
     // Mutable from the test bodies — the useAuth mock reads it on each call.
     currentUser: {
       id: 1,
@@ -124,7 +128,7 @@ vi.mock('../hooks/useAuth', () => ({
     loading: false,
     login: vi.fn(),
     register: vi.fn(),
-    logout: vi.fn(),
+    logout: mocks.logout,
     refresh: mocks.refresh,
   }),
 }));
@@ -256,6 +260,8 @@ beforeEach(() => {
   mocks.putSchedules.mockResolvedValue({ schedules: [] });
   mocks.refresh.mockReset();
   mocks.refresh.mockResolvedValue(undefined);
+  mocks.logout.mockReset();
+  mocks.logout.mockResolvedValue(undefined);
   mocks.currentUser = {
     id: 1,
     email: 'jay@example.com',
@@ -1926,6 +1932,77 @@ describe('Settings — Beta feedback entry point (F-023)', () => {
 
     await user.click(reportButton);
     expect(await screen.findByTestId('tickets-probe')).toBeInTheDocument();
+  });
+});
+
+// ─── Log out (Profile group action) ──────────────────────────────────
+
+describe('Settings — Log out', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('lives in the Profile tile: hidden while collapsed, revealed on expand', () => {
+    meOk();
+    renderSettings();
+
+    // Collapsed: the button is aria-hidden with the rest of the tile body.
+    expect(
+      screen.queryByRole('button', { name: /Log out/ }),
+    ).not.toBeInTheDocument();
+
+    expandGroup(/Profile/);
+    const logoutButton = screen.getByRole('button', { name: /Log out/ });
+    expect(logoutButton).toBeInTheDocument();
+    expect(logoutButton).toBeEnabled();
+    // The hint explains the consequence next to the control.
+    expect(
+      screen.getByText(/Ends your session on this device/),
+    ).toBeInTheDocument();
+  });
+
+  it('clicking it calls useAuth().logout exactly once (state clear + /login redirect are AuthProvider/RequireAuth contracts)', async () => {
+    meOk();
+    const user = userEvent.setup();
+    renderSettings();
+
+    expandGroup(/Profile/);
+    await user.click(screen.getByRole('button', { name: /Log out/ }));
+
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+    // No arguments — the context method owns the whole flow.
+    expect(mocks.logout).toHaveBeenCalledWith();
+  });
+
+  it('single-flights: while the logout is in flight the button disables (aria-busy) and re-clicks do not re-fire', async () => {
+    meOk();
+    // Never-settling logout keeps the in-flight window open for the whole
+    // test. In the real app the RequireAuth gate unmounts Settings when the
+    // provider flips to guest, so "stuck disabled" is unreachable there.
+    mocks.logout.mockReset();
+    // Never-settling promise; typed `Promise<undefined>` to match the hoisted
+    // mock's inferred return type (`vi.fn(async () => undefined)`).
+    mocks.logout.mockImplementation(
+      () => new Promise<undefined>(() => undefined),
+    );
+    const user = userEvent.setup();
+    renderSettings();
+
+    expandGroup(/Profile/);
+    const logoutButton = screen.getByRole('button', { name: /Log out/ });
+    await user.click(logoutButton);
+
+    expect(logoutButton).toBeDisabled();
+    expect(logoutButton).toHaveAttribute('aria-busy', 'true');
+
+    // A second click on a disabled button is inert (pointer-events removed;
+    // fireEvent bypasses that, so use it to prove the guard, not the CSS).
+    fireEvent.click(logoutButton);
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
   });
 });
 

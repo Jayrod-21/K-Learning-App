@@ -49,6 +49,7 @@ import { ApiError, api } from '../services/api';
 import {
   login as loginRequest,
   loginTotp,
+  logout as logoutRequest,
   mfaConfirm,
   mfaEnroll,
 } from '../services/auth';
@@ -304,7 +305,7 @@ export function AuthProvider({
    */
   const logout = useCallback(async (): Promise<void> => {
     try {
-      await api.post<void>('/auth/logout');
+      await logoutRequest();
     } catch {
       // Best-effort — if the server can't reach us we still drop local
       // state so the UI redirects to login. Next probe will reconcile.

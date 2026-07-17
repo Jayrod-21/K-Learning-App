@@ -421,7 +421,7 @@ function languageDisplayEqual(
 
 export default function Settings(): JSX.Element {
   const navigate = useNavigate();
-  const { user, refresh } = useAuth();
+  const { user, refresh, logout } = useAuth();
   const { settings, updateSettings, resetSettings } = useSettings();
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const { accent, setAccent } = useAccent();
@@ -1086,6 +1086,26 @@ export default function Settings(): JSX.Element {
     [schedulesHydrated, flushSchedules],
   );
 
+  // ───── Log out (Profile group action) ─────
+  //
+  // `useAuth().logout` is best-effort by contract: it POSTs /auth/logout,
+  // then ALWAYS clears the in-memory auth state (even when the POST fails —
+  // a logout must never leave the user stuck) and re-probes. The resulting
+  // `status: 'guest'` flip makes App.tsx's `RequireAuth` gate replace this
+  // screen with `/login`; there is deliberately NO explicit `navigate` here,
+  // so the redirect can never race or disagree with the auth state.
+  // `loggingOut` single-flights the click and drives the disabled/aria-busy
+  // presentation. It is never reset on the happy path because the gate
+  // unmounts this page; the documented server-5xx edge (cookie survives, the
+  // re-probe re-authenticates) round-trips through /login back here as a
+  // fresh mount, which starts un-disabled again.
+  const [loggingOut, setLoggingOut] = useState(false);
+  const onLogout = useCallback((): void => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    void logout();
+  }, [loggingOut, logout]);
+
   // ───── Device-adaptive two-column layout (Phase D2, fix-pass revision) ─
   //
   // The five settings groups render inside ONE always-mounted wrapper
@@ -1179,6 +1199,28 @@ export default function Settings(): JSX.Element {
         />
       </SettingsRow>
       {fieldErrors.phone ? <ErrorCard message={fieldErrors.phone} /> : null}
+      {/* Log out — the account-level session action lives with the account
+          fields. SECURITY: the button only calls `useAuth().logout`; session
+          revocation + cookie clearing are the server's job (POST
+          /auth/logout), local state clearing is AuthProvider's, and the
+          /login redirect is RequireAuth's — see the handler comment above. */}
+      <div className="km-settings__logout">
+        <p className="km-settings__logout-hint">
+          <Bilingual
+            en="Ends your session on this device and returns you to the sign-in screen."
+            kr="이 기기에서 로그아웃하고 로그인 화면으로 돌아갑니다."
+          />
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onLogout}
+          disabled={loggingOut}
+          aria-busy={loggingOut ? true : undefined}
+        >
+          <Bilingual en="Log out" kr="로그아웃" />
+        </Button>
+      </div>
     </SettingsGroup>
   );
 

@@ -16,6 +16,7 @@ import { api, ApiError } from '../services/api';
 const authMocks = vi.hoisted(() => ({
   login: vi.fn(),
   loginTotp: vi.fn(),
+  logout: vi.fn(),
   mfaEnroll: vi.fn(),
   mfaConfirm: vi.fn(),
 }));
@@ -23,6 +24,7 @@ const authMocks = vi.hoisted(() => ({
 vi.mock('../services/auth', () => ({
   login: authMocks.login,
   loginTotp: authMocks.loginTotp,
+  logout: authMocks.logout,
   mfaEnroll: authMocks.mfaEnroll,
   mfaConfirm: authMocks.mfaConfirm,
 }));
@@ -34,6 +36,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   authMocks.login.mockReset();
   authMocks.loginTotp.mockReset();
+  authMocks.logout.mockReset();
   authMocks.mfaEnroll.mockReset();
   authMocks.mfaConfirm.mockReset();
 });
@@ -61,6 +64,16 @@ function Probe(): JSX.Element {
         }}
       >
         refresh
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          // `logout` always resolves by contract — no catch needed, but the
+          // harness mirrors real callers (`void`-discard, fire-and-forget).
+          void auth.logout();
+        }}
+      >
+        do-logout
       </button>
     </div>
   );
@@ -178,6 +191,77 @@ describe('AuthProvider.refresh()', () => {
       expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
     });
     expect(screen.getByTestId('email')).toHaveTextContent('late@example.com');
+  });
+});
+
+describe('AuthProvider.logout()', () => {
+  it('POSTs /auth/logout (via the service), clears state to guest, and re-probes', async () => {
+    const getSpy = vi
+      .spyOn(api, 'get')
+      // Initial mount probe → signed in.
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'jay@example.com' },
+      })
+      // Post-logout defence-in-depth re-probe → the server revoked the row.
+      .mockRejectedValueOnce(
+        new ApiError('no session', { status: 401, code: 'unauthenticated' }),
+      );
+    authMocks.logout.mockResolvedValueOnce(undefined);
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'do-logout' }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('guest');
+    });
+    expect(screen.getByTestId('email')).toHaveTextContent('');
+    expect(authMocks.logout).toHaveBeenCalledTimes(1);
+    // Initial probe + the post-logout re-probe.
+    expect(getSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('still clears local state to guest when the POST fails (never stuck)', async () => {
+    vi.spyOn(api, 'get')
+      .mockResolvedValueOnce({
+        user: { id: 1, email: 'jay@example.com' },
+      })
+      // Post-logout re-probe → 401 (deterministic; a network-shaped error
+      // here would detour through probe's 500ms retry backoff and slow the
+      // test without adding logout coverage).
+      .mockRejectedValueOnce(
+        new ApiError('no session', { status: 401, code: 'unauthenticated' }),
+      );
+    authMocks.logout.mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'internal' }),
+    );
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('authenticated');
+    });
+
+    await act(async () => {
+      screen.getByRole('button', { name: 'do-logout' }).click();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('status')).toHaveTextContent('guest');
+    });
+    expect(screen.getByTestId('email')).toHaveTextContent('');
   });
 });
 

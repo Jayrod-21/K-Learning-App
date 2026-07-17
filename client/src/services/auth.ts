@@ -205,6 +205,22 @@ export async function regenerateRecoveryCodes(
   return { recoveryCodes: res.recovery_codes };
 }
 
+/**
+ * POST /auth/logout — revoke the current session row server-side and clear
+ * the `HttpOnly` session cookie (the server responds 204, no body).
+ *
+ * Throws `ApiError` on network / 5xx so the caller can decide the posture.
+ * The AuthProvider treats the call as best-effort: it clears the in-memory
+ * auth state whether or not the revoke lands, so a flaky network can never
+ * leave the user visually stuck signed in. There is nothing else to clear
+ * client-side — the cookie is `HttpOnly` (this layer can neither read nor
+ * delete it; the server's `Set-Cookie` clears it) and no session token is
+ * ever written to `localStorage`/`sessionStorage`.
+ */
+export async function logout(): Promise<void> {
+  await api.post<void>('/auth/logout');
+}
+
 // ── Email verification (F-006) ────────────────────────────────
 
 /**
