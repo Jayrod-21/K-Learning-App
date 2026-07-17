@@ -18,6 +18,7 @@ import type { CommunityTicket, OwnTicket, TicketComment } from '../types/domain'
 
 const ticketsSvc = vi.hoisted(() => ({
   createTicket: vi.fn(),
+  fetchTicket: vi.fn(),
   listMyTickets: vi.fn(),
   listCommunityTickets: vi.fn(),
   patchTicket: vi.fn(),
@@ -90,6 +91,7 @@ async function openFileSheet(
 
 beforeEach(() => {
   ticketsSvc.createTicket.mockReset();
+  ticketsSvc.fetchTicket.mockReset();
   ticketsSvc.listMyTickets.mockReset();
   ticketsSvc.listCommunityTickets.mockReset();
   ticketsSvc.patchTicket.mockReset();
@@ -99,6 +101,12 @@ beforeEach(() => {
   ticketsSvc.listMyTickets.mockResolvedValue([]);
   ticketsSvc.listCommunityTickets.mockResolvedValue([]);
   ticketsSvc.listTicketComments.mockResolvedValue([]);
+  // Default: the id-addressed detail fetch finds nothing — tests that rely
+  // on the cached-list fast path (or never open a detail) keep working, and
+  // any test that needs the fetch to resolve overrides this per-test.
+  ticketsSvc.fetchTicket.mockRejectedValue(
+    new ApiError('ticket not found', { status: 404, code: 'not_found' }),
+  );
 });
 
 afterEach(() => {
@@ -462,6 +470,87 @@ describe('Tickets — ticket detail + editing', () => {
     expect(screen.getByRole('button', { name: /New ticket/ })).toBeInTheDocument();
   });
 
+  it('REGRESSION (file → open → NOT FOUND): a just-filed ticket ABSENT from the filtered /mine list still opens, resolved by GET /tickets/:id', async () => {
+    // The exact beta bug: /mine is filtered by the board's status/type
+    // filter, so a just-filed ticket can be missing from BOTH cached lists
+    // when its detail is opened. The old list-only lookup rendered "We
+    // couldn't find that ticket." Reverting the fix to that lookup makes
+    // this test fail (the id-addressed fetch is the only thing that resolves
+    // the row here — both lists are empty).
+    ticketsSvc.listMyTickets.mockResolvedValue([]);
+    ticketsSvc.listCommunityTickets.mockResolvedValue([]);
+    const filed: OwnTicket = {
+      ...MINE_1,
+      id: 42,
+      title: 'Freshly filed, not in any list',
+    };
+    ticketsSvc.fetchTicket.mockResolvedValue({ kind: 'own', ticket: filed });
+
+    // Land straight on the detail URL (the state after navigating to a
+    // just-filed ticket whose row the filtered list never showed).
+    renderPage(`/tickets?tab=mine&ticket=${String(filed.id)}`);
+
+    // The detail renders from the id-addressed fetch, with edit rights
+    // (owner shape → the Title field is editable), NOT the not-found card.
+    expect(
+      await screen.findByRole('textbox', { name: 'Title' }),
+    ).toHaveValue(filed.title);
+    expect(
+      screen.queryByText(/couldn.t find that ticket/i),
+    ).not.toBeInTheDocument();
+    expect(ticketsSvc.fetchTicket).toHaveBeenCalledWith(
+      filed.id,
+      expect.anything(),
+    );
+  });
+
+  it("REGRESSION: detail loads under an active status filter that would exclude the ticket from /mine (the fetch is authoritative, not the filtered list)", async () => {
+    // An active `status=resolved` board filter means /mine returns only
+    // resolved rows — an open ticket is absent. Opening it must still work
+    // because the detail view reads GET /tickets/:id, not the filtered list.
+    ticketsSvc.listMyTickets.mockResolvedValue([]); // filter excludes it
+    const openTicket: OwnTicket = {
+      ...MINE_1,
+      id: 77,
+      status: 'open',
+      title: 'Open ticket hidden by a resolved-only filter',
+    };
+    ticketsSvc.fetchTicket.mockResolvedValue({
+      kind: 'own',
+      ticket: openTicket,
+    });
+    renderPage(`/tickets?tab=mine&ticket=${String(openTicket.id)}`);
+
+    expect(
+      await screen.findByRole('textbox', { name: 'Title' }),
+    ).toHaveValue(openTicket.title);
+  });
+
+  it('opening ANOTHER user\'s ticket by id renders it VIEW-ONLY (community shape, no edit form)', async () => {
+    // GET /tickets/:id returns the anonymized community shape for a ticket
+    // that isn't the caller's own — no `version`, so no edit rights, even
+    // though it's reachable by id.
+    ticketsSvc.listMyTickets.mockResolvedValue([]);
+    const othersTicket: CommunityTicket = {
+      ...COMMUNITY_1,
+      id: 88,
+      isMine: false,
+      title: "Someone else's ticket, opened by id",
+    };
+    ticketsSvc.fetchTicket.mockResolvedValue({
+      kind: 'community',
+      ticket: othersTicket,
+    });
+    renderPage(`/tickets?tab=community&ticket=${String(othersTicket.id)}`);
+
+    expect(await screen.findByText(othersTicket.title)).toBeInTheDocument();
+    // View-only: no edit affordances.
+    expect(
+      screen.queryByRole('textbox', { name: 'Title' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Save/ })).not.toBeInTheDocument();
+  });
+
   it('edits title/body/status and saves via PATCH with the expected_version', async () => {
     ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]);
     ticketsSvc.patchTicket.mockResolvedValue({
@@ -498,11 +587,22 @@ describe('Tickets — ticket detail + editing', () => {
   });
 
   it('a stale PATCH (409) reloads the fresh row and shows a friendly recovery notice', async () => {
-    ticketsSvc.listMyTickets
-      .mockResolvedValueOnce([MINE_1]) // initial mount load
-      .mockResolvedValueOnce([
-        { ...MINE_1, title: 'Someone already renamed this', version: 2 },
-      ]); // conflict-triggered refetch (unfiltered)
+    ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]); // initial mount list
+    // Both the detail OPEN and the 409 recovery route through the
+    // id-addressed GET /tickets/:id (= `fetchTicket`), which returns a
+    // `TicketDetailResult`, not an array: first the owner-shape row the
+    // detail view loads, then the freshly-bumped row the conflict recovery
+    // pulls.
+    ticketsSvc.fetchTicket
+      .mockResolvedValueOnce({ kind: 'own', ticket: MINE_1 })
+      .mockResolvedValueOnce({
+        kind: 'own',
+        ticket: {
+          ...MINE_1,
+          title: 'Someone already renamed this',
+          version: 2,
+        },
+      });
     ticketsSvc.patchTicket.mockRejectedValueOnce(
       new ApiError('stale version', { status: 409, code: 'conflict' }),
     );
@@ -525,7 +625,13 @@ describe('Tickets — ticket detail + editing', () => {
         'Someone already renamed this',
       );
     });
-    expect(ticketsSvc.listMyTickets).toHaveBeenCalledTimes(2);
+    // The id-addressed read is hit twice: once for the detail open, once for
+    // the conflict recovery (the initial /mine list is a separate call).
+    expect(ticketsSvc.fetchTicket).toHaveBeenCalledTimes(2);
+    expect(ticketsSvc.fetchTicket).toHaveBeenLastCalledWith(
+      MINE_1.id,
+      expect.anything(),
+    );
   });
 });
 

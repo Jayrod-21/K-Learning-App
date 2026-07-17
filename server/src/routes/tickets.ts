@@ -9,6 +9,9 @@
  *   GET    /tickets/mine          — the caller's own tickets (with version,
  *                                   for PATCH's optimistic concurrency)
  *   GET    /tickets/community     — ALL tickets, author ANONYMIZED
+ *   GET    /tickets/:id           — ONE ticket by id: the OWNER shape (with
+ *                                   version) for the caller's own ticket,
+ *                                   the ANONYMIZED community shape otherwise
  *   PATCH  /tickets/:id           — edit OWN ticket (title/body/status),
  *                                   optimistic concurrency via expected_version
  *   POST   /tickets/:id/comments  — add a timestamped comment to any ticket
@@ -215,6 +218,93 @@ router.get(
         [userId, q.status ?? null, q.type ?? null, q.limit, q.offset],
       );
       res.status(200).json({ tickets: rows, limit: q.limit, offset: q.offset });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/* ---------- GET /tickets/:id — ONE ticket, id-addressed ---------- */
+
+// The detail view's authoritative read. Before this route existed the client
+// resolved a ticket detail purely by membership in the (status/type-FILTERED)
+// /mine and /community lists — so a just-filed ticket whose status didn't
+// match the active board filter resolved to "not found" the moment those
+// lists reloaded. An id-addressed read cannot be hidden by any list filter
+// or pagination window.
+//
+// NOTE: registered AFTER /mine and /community — Express matches in
+// registration order, so those literal paths must win over this param route.
+router.get(
+  '/:id',
+  cheapLimiter(),
+  validateParams(TicketIdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const ticketId = (req as typeof req & {
+        validatedParams: z.infer<typeof TicketIdParamsSchema>;
+      }).validatedParams.id;
+
+      // Owner probe first: the caller's OWN ticket comes back in the full
+      // owner shape — the exact SELECT list of /mine, because `version` (the
+      // PATCH concurrency token) is what grants the client edit rights.
+      // Ownership is enforced in SQL (`id AND user_id`, PATCH's pre-read
+      // posture), never inferred from anything client-supplied.
+      const own = await query<OwnTicketRow & { comment_count: number }>(
+        `SELECT t.id, t.type, t.title, t.body, t.status, t.version,
+                t.source_page,
+                COALESCE(COUNT(c.id), 0)::int AS comment_count,
+                t.created_at, t.updated_at
+           FROM tickets t
+           LEFT JOIN ticket_comments c ON c.ticket_id = t.id
+          WHERE t.id = $1 AND t.user_id = $2
+          GROUP BY t.id`,
+        [ticketId, userId],
+      );
+      const ownTicket = own.rows[0];
+      if (ownTicket) {
+        res.status(200).json({ ticket: ownTicket });
+        return;
+      }
+
+      // Not the caller's own → the ANONYMIZED community shape (F-023): the
+      // exact SELECT list of /community — no user_id, no users join, and no
+      // `version` (an owner-only affordance whose absence is what tells the
+      // client "view-only"). This is NOT an IDOR: ticket existence and
+      // content are community-visible by design (the shared board); a
+      // non-owner sees exactly what /community already shows them, never
+      // author identity. `is_mine` is always false on this branch — the
+      // owner probe above already claimed every row where it could be true —
+      // but is computed the same way as /community's for shape parity.
+      const community = await query<{
+        id: number;
+        type: string;
+        title: string;
+        body: string;
+        status: string;
+        source_page: string | null;
+        comment_count: number;
+        is_mine: boolean;
+        created_at: Date;
+        updated_at: Date;
+      }>(
+        `SELECT t.id, t.type, t.title, t.body, t.status, t.source_page,
+                COALESCE(COUNT(c.id), 0)::int AS comment_count,
+                (t.user_id = $2)              AS is_mine,
+                t.created_at, t.updated_at
+           FROM tickets t
+           LEFT JOIN ticket_comments c ON c.ticket_id = t.id
+          WHERE t.id = $1
+          GROUP BY t.id`,
+        [ticketId, userId],
+      );
+      const ticket = community.rows[0];
+      // Missing id → 404, never 403: there is no "exists but forbidden"
+      // state on a community-visible board, and the shape matches every
+      // other absent-resource response in this file.
+      if (!ticket) throw new NotFoundError('ticket not found');
+      res.status(200).json({ ticket });
     } catch (err) {
       next(err);
     }
