@@ -960,8 +960,8 @@ function TranslateSheet({
           on the app puts dismissal there); `.km-reading__translate-sheet`
           rides as an EXTRA class for the one Reading-specific need (the
           flex-column stack of src/result blocks below it). */}
-      <div className="km-review__sheetBody km-reading__translate-sheet">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body km-reading__translate-sheet">
+        <div className="km-review__sheet-head">
           <Eyebrow>
             <Bilingual en="Translation" kr="번역" compact />
           </Eyebrow>

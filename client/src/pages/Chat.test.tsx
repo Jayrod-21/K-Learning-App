@@ -2584,13 +2584,13 @@ describe('Chat — F-129 mobile: no horizontal overflow', () => {
 
     const composerRow = screen
       .getByRole('button', { name: 'Attach' })
-      .closest('.km-chat__composerRow');
+      .closest('.km-chat__composer-row');
     expect(composerRow).not.toBeNull();
     expect(
-      screen.getByLabelText('Reply input').closest('.km-chat__composerRow'),
+      screen.getByLabelText('Reply input').closest('.km-chat__composer-row'),
     ).toBe(composerRow);
     expect(
-      screen.getByRole('button', { name: 'Send' }).closest('.km-chat__composerRow'),
+      screen.getByRole('button', { name: 'Send' }).closest('.km-chat__composer-row'),
     ).toBe(composerRow);
   });
 });
@@ -2609,10 +2609,10 @@ describe('Chat — composer touch-target floor (BLOCKER-1 fix-pass, REVIEW_batch
     );
 
     const attachRule =
-      /\.km-chat\s+\.km-chat__attachTrigger\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
+      /\.km-chat\s+\.km-chat__attach-trigger\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
       '';
     const sendRule =
-      /\.km-chat\s+\.km-chat__sendBtn\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+      /\.km-chat\s+\.km-chat__send-btn\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
 
     expect(attachRule).not.toBe('');
     expect(sendRule).not.toBe('');

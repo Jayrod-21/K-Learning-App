@@ -51,7 +51,7 @@
 }
 
 /* Examples tile chrome (B-022 close affordance + rounded geometry). */
-.km-review__drawerHead {
+.km-review__drawer-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -95,19 +95,19 @@
  * word and the revealed back word both read as the signboard's "neon
  * tube" text. */
 [data-theme="dark"] .km-review__word,
-[data-theme="dark"] .km-review__backWord {
+[data-theme="dark"] .km-review__back-word {
   text-shadow: 0 0 10px var(--km-tone);
 }
 
 /* ── F-128 device #5 — subway-line session progress ─────────────────────
- * `.km-review__progress`/`__progressMeta` already carry layout rules in the
+ * `.km-review__progress`/`__progress-meta` already carry layout rules in the
  * shared sheet (styles/index.css) that still apply unchanged (the meta
  * markup didn't change) — this only ADDS the gap above the new
  * `SubwayProgress` line, via the higher-specificity `.km-review` ancestor
  * scope (same override convention as the `.km-flashcard` rules above), so
  * it wins regardless of stylesheet import order without touching the
  * shared file. The plain-bar rules the old markup used
- * (`.km-review__progressBar`/`__progressFill`) were confirmed dead
+ * (`.km-review__progress-bar`/`__progress-fill`) were confirmed dead
  * (fix-pass batch-3: no JSX referenced them anywhere in the app) and have
  * been removed from styles/index.css. */
 .km-review .km-review__progress {
@@ -136,10 +136,10 @@
 }
 
 /* ── F-157 — "New list" Sheet trigger (My lists, landing) ───────────────── */
-.km-review__listsCard {
+.km-review__lists-card {
   margin-bottom: 4px;
 }
-.km-review__createTrigger {
+.km-review__create-trigger {
   display: flex;
   margin-bottom: 14px;
 }
@@ -147,7 +147,7 @@
 /* ── F-128 device #9 — completion-page mother-of-pearl accent bar ───────
  * Purely decorative (`aria-hidden`); sits ABOVE the reviewed-count text so
  * the shimmer gradient never sits behind readable copy (no contrast risk). */
-.km-review__completeShimmer {
+.km-review__complete-shimmer {
   display: block;
   width: 64px;
   height: 4px;
@@ -156,7 +156,7 @@
 }
 
 /* ── Shared inline error line ─────────────────────────────────────────── */
-.km-review__inlineError {
+.km-review__inline-error {
   margin-top: 8px;
   font-size: 0.8125rem;
   color: var(--vermilion-ink);
@@ -168,18 +168,18 @@
   flex-direction: column;
   gap: 22px;
 }
-.km-review__sectionHead {
+.km-review__section-head {
   margin-bottom: 10px;
 }
 
-/* F-157: `.km-review__createRow`/`__input` are still used — inside the new
+/* F-157: `.km-review__create-row`/`__input` are still used — inside the new
  * create-list Sheet now, instead of the old always-visible inline card. */
-.km-review__createRow {
+.km-review__create-row {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.km-review__createRow .km-review__input {
+.km-review__create-row .km-review__input {
   flex: 1;
   min-width: 0;
 }
@@ -197,7 +197,7 @@
   color: var(--paper-mute);
 }
 
-.km-review__listRow {
+.km-review__list-row {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -208,21 +208,21 @@
   font-family: inherit;
   color: var(--paper);
 }
-.km-review__listRowBody {
+.km-review__list-row-body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.km-review__listRowName {
+.km-review__list-row-name {
   font-size: 0.9375rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.km-review__listRowEn {
+.km-review__list-row-en {
   font-size: 0.75rem;
   color: var(--paper-mute);
   overflow: hidden;
@@ -230,23 +230,23 @@
   white-space: nowrap;
 }
 
-.km-review__dueStrip {
+.km-review__due-strip {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
 }
-.km-review__dueBody {
+.km-review__due-body {
   flex: 1;
   min-width: 0;
 }
-.km-review__dueCount {
+.km-review__due-count {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--paper);
 }
 
-.km-review__seedBody {
+.km-review__seed-body {
   font-size: 0.875rem;
 }
 
@@ -256,29 +256,29 @@
   flex-direction: column;
   gap: 14px;
 }
-.km-review__detailHead {
+.km-review__detail-head {
   margin-bottom: 2px;
 }
-.km-review__detailTitle {
+.km-review__detail-title {
   font-size: 1.625rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   margin: 0;
 }
-.km-review__detailMeta {
+.km-review__detail-meta {
   font-size: 0.8125rem;
   color: var(--paper-mute);
   margin-top: 4px;
 }
-.km-review__detailTitleEdit {
+.km-review__detail-title-edit {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.km-review__titleInput {
+.km-review__title-input {
   font-size: 1.25rem;
 }
-.km-review__detailActions {
+.km-review__detail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -287,32 +287,32 @@
 .km-review__entries {
   padding: 4px 14px;
 }
-.km-review__entryList {
+.km-review__entry-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.km-review__entryRow {
+.km-review__entry-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
 }
-.km-review__entryRow:last-child {
+.km-review__entry-row:last-child {
   border-bottom: none;
 }
-.km-review__entryMain {
+.km-review__entry-main {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.km-review__entryKr {
+.km-review__entry-kr {
   font-size: 0.9375rem;
   font-weight: 500;
   color: var(--paper);
 }
-.km-review__entryEn {
+.km-review__entry-en {
   flex: 1;
   min-width: 0;
   font-size: 0.8125rem;
@@ -322,34 +322,34 @@
   white-space: nowrap;
 }
 /* F-112 — the corpus example sentence rendered under a list-entry row. */
-.km-review__entryExample {
+.km-review__entry-example {
   font-size: 0.75rem;
   color: var(--paper-mute);
 }
-.km-review__entryExampleEn {
+.km-review__entry-example-en {
   color: var(--paper-dim);
 }
 /* Honest-truncation note under the entry rows (lists past the server's
    100-row detail page). */
-.km-review__entriesNote {
+.km-review__entries-note {
   margin: 4px 0 0;
   font-size: 0.75rem;
   color: var(--paper-mute);
 }
 
 /* ── Study session chrome ─────────────────────────────────────────────── */
-.km-review__stripEn {
+.km-review__strip-en {
   font-size: 0.75rem;
   color: var(--paper-mute);
 }
-.km-review__sourceLabel {
+.km-review__source-label {
   font-size: 0.8125rem;
   color: var(--paper-dim);
   font-style: italic;
 }
 
 /* ── Completion (F-062) ───────────────────────────────────────────────── */
-.km-review__completeCard {
+.km-review__complete-card {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -357,17 +357,17 @@
   gap: 6px;
   padding: 28px 22px;
 }
-.km-review__completeTitle {
+.km-review__complete-title {
   font-size: 1.375rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 8px 0 0;
 }
-.km-review__completeDeck {
+.km-review__complete-deck {
   font-size: 0.875rem;
   color: var(--paper-dim);
 }
-.km-review__completeCount {
+.km-review__complete-count {
   font-size: 0.9375rem;
   font-weight: 500;
   color: var(--paper);
@@ -380,7 +380,7 @@
   width: 100%;
   margin: 14px 0 0;
 }
-.km-review__breakCell {
+.km-review__break-cell {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -390,14 +390,14 @@
   border-radius: var(--radius-sm);
   background: var(--ink-1);
 }
-.km-review__breakCount {
+.km-review__break-count {
   margin: 0;
   font-size: 1.125rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--paper);
 }
-.km-review__nextDue {
+.km-review__next-due {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -407,11 +407,11 @@
   font-size: 0.8125rem;
   color: var(--paper-dim);
 }
-.km-review__completeLine {
+.km-review__complete-line {
   font-size: 0.8125rem;
   color: var(--paper-mute);
 }
-.km-review__completeActions {
+.km-review__complete-actions {
   display: flex;
   gap: 10px;
   margin-top: 18px;

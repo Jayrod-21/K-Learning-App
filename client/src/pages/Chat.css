@@ -15,8 +15,8 @@
  *   - caps bubble width and tightens thread rhythm so long replies don't
  *     stretch full-width;
  *   - the "+" attach trigger opens a popup menu (`.km-chat__attach*`);
- *   - the labeled English-toggle row (B-020, `.km-chat__engToggle*`);
- *   - the file-attachment chip (F-035, `.km-chat__fileChip*`).
+ *   - the labeled English-toggle row (B-020, `.km-chat__eng-toggle*`);
+ *   - the file-attachment chip (F-035, `.km-chat__file-chip*`).
  *
  * No hard-coded hex anywhere in this file (F-131, grep-verified). `--ink*` =
  * surfaces, `--paper*` = text ink, `--vermilion*`/`--on-vermilion` = the
@@ -29,9 +29,9 @@
  * Fix-pass batch-4 (S-2, REVIEW_batch4-cst.md): the line above previously
  * said "tokens only," which overclaimed — two conventional un-tokenized
  * literal-black `rgba()` values predate this pass and remain by design, not
- * oversight: the attach-menu's drop shadow (`.km-chat__attachMenu`,
+ * oversight: the attach-menu's drop shadow (`.km-chat__attach-menu`,
  * `box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32)`) and the ask-popup's fixed
- * backdrop scrim (`.km-chat__askpopBackdrop`,
+ * backdrop scrim (`.km-chat__askpop-backdrop`,
  * `background: rgba(6, 8, 12, 0.32)`). Both are theme-neutral shadow/scrim
  * conventions (same idiom as other pages' modal scrims), not a skill/accent
  * color, so tokenizing them would add indirection without a real day/night
@@ -57,7 +57,7 @@
 
 /* ── English-toggle row (B-020) — now a pill chip, matching the doc's
    §6 "pills/badges" treatment instead of bare floating text. ──────────── */
-.km-chat__engToggle {
+.km-chat__eng-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -67,10 +67,10 @@
   background: var(--ink-2);
   cursor: pointer;
 }
-[data-theme="dark"] .km-chat__engToggle {
+[data-theme="dark"] .km-chat__eng-toggle {
   border-color: var(--line-strong);
 }
-.km-chat__engToggleLabel {
+.km-chat__eng-toggle-label {
   color: var(--paper-mute);
   white-space: nowrap;
 }
@@ -186,7 +186,7 @@
 }
 
 /* Image (Slice 3) + document (F-035) attachment chrome inside a bubble. */
-.km-chat__bubbleImg {
+.km-chat__bubble-img {
   display: block;
   max-width: 100%;
   max-height: 260px;
@@ -194,7 +194,7 @@
   border: 1px solid var(--line);
   margin-bottom: 8px;
 }
-.km-chat__fileChip {
+.km-chat__file-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -207,13 +207,13 @@
   color: var(--paper-dim);
   font-size: 0.75rem;
 }
-.km-chat__fileName {
+.km-chat__file-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 220px;
 }
-.km-chat__fileTruncated { color: var(--paper-mute); font-style: italic; }
+.km-chat__file-truncated { color: var(--paper-mute); font-style: italic; }
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 .km-chat__composer {
@@ -222,8 +222,8 @@
   flex-direction: column;
   gap: 8px;
 }
-.km-chat__composerLabel { display: block; }
-.km-chat__composerRow {
+.km-chat__composer-label { display: block; }
+.km-chat__composer-row {
   display: flex;
   gap: 8px;
   align-items: flex-end;
@@ -232,7 +232,7 @@
   border-radius: var(--radius-lg);
   background: var(--ink-1);
 }
-.km-chat__composerRow:focus-within { border-color: var(--vermilion); }
+.km-chat__composer-row:focus-within { border-color: var(--vermilion); }
 .km-chat__textarea {
   flex: 1;
   padding: 10px 8px;
@@ -262,7 +262,7 @@
  * without touching the 10px padding/circular shape (the icon stays visually
  * centered inside the now-taller hit box, same technique as `.km-btn--sm`'s
  * own comment describes). */
-.km-chat .km-chat__attachTrigger {
+.km-chat .km-chat__attach-trigger {
   padding: 10px;
   border-radius: 50%;
   min-height: 44px;
@@ -270,7 +270,7 @@
 }
 /* Send — the same round-icon treatment, so the two flanking controls read
  * as a matched pair either side of the textarea. Same BLOCKER-1 fix. */
-.km-chat .km-chat__sendBtn {
+.km-chat .km-chat__send-btn {
   padding: 10px;
   border-radius: 50%;
   min-height: 44px;
@@ -281,7 +281,7 @@
    anchors to it; the menu opens UPWARD (the composer sits at the bottom of
    the screen). */
 .km-chat__attach { position: relative; flex: 0 0 auto; }
-.km-chat__attachMenu {
+.km-chat__attach-menu {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
@@ -299,7 +299,7 @@
  * (styles/seoul-devices.css's `km-tone--accent` utility, applied at the
  * call site in Chat.tsx) — a Night tone-glow border for this popover,
  * without duplicating CityCard's own rules into a shared file. */
-[data-theme="dark"] .km-chat__attachMenu {
+[data-theme="dark"] .km-chat__attach-menu {
   background: linear-gradient(
     160deg,
     color-mix(in srgb, var(--ink-2) 85%, transparent),
@@ -310,7 +310,7 @@
     0 0 0 1px color-mix(in srgb, var(--km-tone) 12%, transparent),
     0 0 22px -6px color-mix(in srgb, var(--km-tone) 50%, transparent);
 }
-.km-chat__attachItem {
+.km-chat__attach-item {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -325,10 +325,10 @@
   cursor: pointer;
   white-space: nowrap;
 }
-.km-chat__attachItem:hover { background: var(--ink-3); }
+.km-chat__attach-item:hover { background: var(--ink-3); }
 
-.km-chat__uploadStatus { margin-top: 2px; font-size: 0.75rem; opacity: 0.75; }
-.km-chat__sendError {
+.km-chat__upload-status { margin-top: 2px; font-size: 0.75rem; opacity: 0.75; }
+.km-chat__send-error {
   margin-top: 2px;
   font-size: 0.8125rem;
   color: var(--vermilion);
@@ -355,14 +355,14 @@
   transition: width 200ms ease;
 }
 .km-chat__layout--collapsed .km-chat__side { width: 44px; }
-.km-chat__sideHead {
+.km-chat__side-head {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 10px 8px;
   border-bottom: 1px solid var(--line);
 }
-.km-chat__sideLabel { white-space: nowrap; overflow: hidden; }
+.km-chat__side-label { white-space: nowrap; overflow: hidden; }
 .km-chat__collapse {
   flex: 0 0 auto;
   display: inline-flex;
@@ -379,10 +379,10 @@
 .km-chat__collapse:hover { color: var(--vermilion-ink); }
 /* F-128: the "New chat" action is now the shared ghost `Button` (Chat.tsx)
  * — only spacing lives here, color/radius/glow come from `.km-btn--ghost`. */
-.km-chat__newChat {
+.km-chat__new-chat {
   margin: 10px 8px 6px;
 }
-.km-chat__convList {
+.km-chat__conv-list {
   flex: 1;
   margin: 0;
   padding: 4px 6px;
@@ -392,7 +392,7 @@
   flex-direction: column;
   gap: 2px;
 }
-.km-chat__convRow {
+.km-chat__conv-row {
   position: relative;
   overflow: hidden;
   display: flex;
@@ -410,38 +410,38 @@
   overflow: hidden;
   transition: background 140ms, color 140ms;
 }
-.km-chat__convRow:hover { background: var(--ink-2); color: var(--paper); }
+.km-chat__conv-row:hover { background: var(--ink-2); color: var(--paper); }
 /* F-128 device #2: the current row carries a `DancheongRail` leading edge
  * (Chat.tsx) instead of only the dot below; a tone-tinted background reads
  * as "selected chip" rather than a flat color swap. Extra left padding
  * keeps the dot/title clear of the rail's edge. */
-.km-chat__convRow--current {
+.km-chat__conv-row--current {
   background: color-mix(in srgb, var(--vermilion) 14%, var(--ink-3));
   color: var(--paper);
   padding-left: 12px;
 }
-.km-chat__convRail { z-index: 1; }
-.km-chat__convDot {
+.km-chat__conv-rail { z-index: 1; }
+.km-chat__conv-dot {
   flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--paper-mute);
 }
-.km-chat__convRow--current .km-chat__convDot { background: var(--vermilion); }
-.km-chat__convText {
+.km-chat__conv-row--current .km-chat__conv-dot { background: var(--vermilion); }
+.km-chat__conv-text {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
 }
-.km-chat__convTitle {
+.km-chat__conv-title {
   font-size: 0.75rem;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.km-chat__convWhen { font-size: 0.625rem; color: var(--paper-mute); }
+.km-chat__conv-when { font-size: 0.625rem; color: var(--paper-mute); }
 .km-chat__retention {
   margin: 0;
   padding: 8px 6px;
@@ -457,8 +457,8 @@
   display: flex;
   flex-direction: column;
 }
-.km-chat__historyLoading,
-.km-chat__historyError {
+.km-chat__history-loading,
+.km-chat__history-error {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -467,7 +467,7 @@
   font-size: 0.8125rem;
   color: var(--paper-mute);
 }
-.km-chat__historyError { color: var(--danger-ink); }
+.km-chat__history-error { color: var(--danger-ink); }
 
 /* "Discuss the page you were on?" popup (chat rework Slice 3). F-128: the
    visible surface is now a real `CityCard` (Chat.tsx) — this wrapper only
@@ -476,7 +476,7 @@
    backdrop-button pattern as `.km-popover__backdrop`, and the same 60/61
    layer pair; the card stays in-flow (mockup placement) but is lifted
    above the scrim. */
-.km-chat__askpopBackdrop {
+.km-chat__askpop-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(6, 8, 12, 0.32);
@@ -485,7 +485,7 @@
   cursor: pointer;
   animation: fade 160ms ease-out;
 }
-.km-chat__askpopWrap {
+.km-chat__askpop-wrap {
   position: relative;
   z-index: 61;
   margin: 0 0 10px;
@@ -493,23 +493,23 @@
 .km-chat__askpop.km-citycard {
   padding: 16px 18px;
 }
-.km-chat__askpopTitle {
+.km-chat__askpop-title {
   font-size: 0.875rem;
   font-weight: 600;
   margin-bottom: 6px;
 }
-.km-chat__askpopCtx {
+.km-chat__askpop-ctx {
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin-bottom: 10px;
 }
-.km-chat__askpopFrom {
+.km-chat__askpop-from {
   font-size: 0.75rem;
   color: var(--paper-dim);
   overflow-wrap: anywhere;
 }
-.km-chat__askpopRow {
+.km-chat__askpop-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;

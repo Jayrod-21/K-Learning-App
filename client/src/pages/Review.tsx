@@ -855,13 +855,13 @@ function LandingView(props: LandingViewProps): JSX.Element {
       {/* My lists — the page's primary surface (F-060). F-128 device #1/#2:
           a CityCard signboard with the leading-edge DancheongRail. */}
       <section aria-labelledby="review-mylists-head" data-tour="vocab-lists">
-        <CityCard tone="accent" rail className="km-review__listsCard">
-          <div className="km-eyebrow km-review__sectionHead" id="review-mylists-head">
+        <CityCard tone="accent" rail className="km-review__lists-card">
+          <div className="km-eyebrow km-review__section-head" id="review-mylists-head">
             <Bilingual kr="내 단어장" en="My lists" />
           </div>
 
           {/* F-157 — trigger opens the create-list Sheet popup. */}
-          <div className="km-review__createTrigger">
+          <div className="km-review__create-trigger">
             <Button
               variant="gold"
               size="sm"
@@ -886,20 +886,20 @@ function LandingView(props: LandingViewProps): JSX.Element {
               hint="Tap New list above, then add words from the library."
             />
           ) : (
-            <div className="km-review__listsCol">
+            <div className="km-review__lists-col">
               {visibleLists.map((l) => (
                 <button
                   key={l.id}
                   type="button"
-                  className="km-review__listRow km-card km-card--default focusring"
+                  className="km-review__list-row km-card km-card--default focusring"
                   onClick={() => {
                     onOpenList(l.id);
                   }}
                 >
-                  <span className="km-review__listRowBody">
-                    <span className="kr km-review__listRowName">{l.name_kr}</span>
+                  <span className="km-review__list-row-body">
+                    <span className="kr km-review__list-row-name">{l.name_kr}</span>
                     {l.name_en !== null && l.name_en !== '' ? (
-                      <span className="km-review__listRowEn">{l.name_en}</span>
+                      <span className="km-review__list-row-en">{l.name_en}</span>
                     ) : null}
                   </span>
                   <Pill>
@@ -926,7 +926,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
         <SkeletonCard height={90} />
       ) : hasDueWork ? (
         <section aria-labelledby="review-due-head" data-tour="vocab-study">
-          <div className="km-eyebrow km-review__sectionHead" id="review-due-head">
+          <div className="km-eyebrow km-review__section-head" id="review-due-head">
             <Bilingual kr="복습 대기열" en="Review queue" />
           </div>
           {dueErrored ? (
@@ -935,10 +935,10 @@ function LandingView(props: LandingViewProps): JSX.Element {
               onRetry={onRetryDue}
             />
           ) : dueCount !== null && dueCount > 0 ? (
-            <Card variant="accent" className="km-review__dueStrip">
+            <Card variant="accent" className="km-review__due-strip">
               <SealStamp char="復" size="sm" />
-              <div className="km-review__dueBody">
-                <div className="km-review__dueCount">
+              <div className="km-review__due-body">
+                <div className="km-review__due-count">
                   <Bilingual
                     en={`${String(dueCount)} card${dueCount === 1 ? '' : 's'} due`}
                     kr={`복습할 카드 ${String(dueCount)}장`}
@@ -971,7 +971,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
         tone="accent"
         rail
       >
-        <div className="km-review__seedBody">
+        <div className="km-review__seed-body">
           <div style={{ fontSize: '0.875rem', color: 'var(--paper-dim)', marginBottom: 10 }}>
             Seed review cards from the loaded vocab corpus so they show up in
             the review queue.
@@ -993,7 +993,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
             <div
               role={seedStatus.kind === 'error' ? 'alert' : 'status'}
               className={
-                seedStatus.kind === 'error' ? 'km-review__inlineError' : undefined
+                seedStatus.kind === 'error' ? 'km-review__inline-error' : undefined
               }
               style={{ marginTop: 8, fontSize: '0.8125rem' }}
             >
@@ -1060,13 +1060,13 @@ function CreateListSheet({
 
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="New list">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>
               <Bilingual en="New list" kr="새 목록" />
             </Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               <Bilingual en="Create a list" kr="목록 만들기" />
             </div>
           </div>
@@ -1079,9 +1079,9 @@ function CreateListSheet({
             <Icon name="close" size={14} />
           </Button>
         </div>
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
-        <div className="km-review__createRow">
+        <div className="km-review__create-row">
           <input
             type="text"
             value={nameKr}
@@ -1114,12 +1114,12 @@ function CreateListSheet({
           disabled={creating}
         />
         {error ? (
-          <div role="alert" className="km-review__inlineError">
+          <div role="alert" className="km-review__inline-error">
             {error}
           </div>
         ) : null}
 
-        <div className="km-review__sheetActions">
+        <div className="km-review__sheet-actions">
           <Button
             variant="gold"
             size="md"
@@ -1167,7 +1167,7 @@ function GrammarReviewSection({
           kr={`문법 만들기 · 복습 예정 ${String(cards.length)}개`}
         />
       </div>
-      <div className="km-review__grammarCol">
+      <div className="km-review__grammar-col">
         {cards.map((gc) => (
           <button
             key={gc.cardId}
@@ -1175,13 +1175,13 @@ function GrammarReviewSection({
             onClick={() => {
               onDrill(gc);
             }}
-            className="km-review__grammarRow km-card km-card--default focusring"
+            className="km-review__grammar-row km-card km-card--default focusring"
             aria-label={`Drill ${gc.display}${gc.summary ? ` — ${gc.summary}` : ''}`}
           >
-            <div className="km-review__grammarBody">
-              <span className="kr km-review__grammarPattern">{gc.display}</span>
+            <div className="km-review__grammar-body">
+              <span className="kr km-review__grammar-pattern">{gc.display}</span>
               {gc.summary ? (
-                <span className="km-review__grammarSummary">{gc.summary}</span>
+                <span className="km-review__grammar-summary">{gc.summary}</span>
               ) : null}
             </div>
             <span className="km-pill km-pill--gold">
@@ -1363,16 +1363,16 @@ function ListDetailView({
 
   return (
     <div className="km-review__detail">
-      <header className="km-review__detailHead">
+      <header className="km-review__detail-head">
         {editing ? (
-          <div className="km-review__detailTitleEdit">
+          <div className="km-review__detail-title-edit">
             <input
               type="text"
               value={nameKr}
               onChange={(e) => {
                 setNameKr(e.target.value);
               }}
-              className="kr-display focusring km-review__input km-review__titleInput"
+              className="kr-display focusring km-review__input km-review__title-input"
               aria-label="List name (Korean)"
               maxLength={120}
               disabled={saveBusy}
@@ -1406,10 +1406,10 @@ function ListDetailView({
           </div>
         ) : (
           <div>
-            <h2 className="kr-display km-review__detailTitle">
+            <h2 className="kr-display km-review__detail-title">
               {data.list.name_kr}
             </h2>
-            <div className="km-review__detailMeta">
+            <div className="km-review__detail-meta">
               {data.list.name_en ? `${data.list.name_en} · ` : ''}
               <Bilingual
                 en={`${String(data.list.entry_count)} word${data.list.entry_count === 1 ? '' : 's'}`}
@@ -1422,7 +1422,7 @@ function ListDetailView({
       </header>
 
       {/* F-060: Study sits at the TOP of the list view. */}
-      <div className="km-review__detailActions">
+      <div className="km-review__detail-actions">
         <Button
           variant="gold"
           size="md"
@@ -1490,7 +1490,7 @@ function ListDetailView({
         <div
           role={seedStatus.kind === 'error' ? 'alert' : 'status'}
           className={
-            seedStatus.kind === 'error' ? 'km-review__inlineError' : undefined
+            seedStatus.kind === 'error' ? 'km-review__inline-error' : undefined
           }
           style={{ marginTop: 4, marginBottom: 8, fontSize: '0.8125rem' }}
         >
@@ -1499,7 +1499,7 @@ function ListDetailView({
       ) : null}
 
       {editError ? (
-        <div role="alert" className="km-review__inlineError">
+        <div role="alert" className="km-review__inline-error">
           {editError}
         </div>
       ) : null}
@@ -1513,7 +1513,7 @@ function ListDetailView({
       ) : (
         <>
           <Card variant="flat" className="km-review__entries">
-            <ul className="km-review__entryList">
+            <ul className="km-review__entry-list">
               {visible.map((e) => {
                 // F-091: default an absent item_type to 'vocab' — every row
                 // on THIS page is vocab today, but the fallback matches the
@@ -1522,13 +1522,13 @@ function ListDetailView({
                 return (
                   <li
                     key={`${itemType}:${String(e.entry_id)}`}
-                    className="km-review__entryRow"
+                    className="km-review__entry-row"
                   >
-                    <div className="km-review__entryMain">
-                      <span className="kr km-review__entryKr">
+                    <div className="km-review__entry-main">
+                      <span className="kr km-review__entry-kr">
                         {e.korean ?? ''}
                       </span>
-                      <span className="km-review__entryEn">{e.english ?? ''}</span>
+                      <span className="km-review__entry-en">{e.english ?? ''}</span>
                       {e.proficiency !== null ? (
                         <span className="km-pill km-pill--default">
                           {e.proficiency}
@@ -1554,10 +1554,10 @@ function ListDetailView({
                     </div>
                     {/* F-112 — the corpus example sentence, when on file. */}
                     {e.example_korean ? (
-                      <div className="km-review__entryExample">
+                      <div className="km-review__entry-example">
                         <span className="kr">{e.example_korean}</span>
                         {e.example_english ? (
-                          <span className="km-review__entryExampleEn">
+                          <span className="km-review__entry-example-en">
                             {' '}
                             · {e.example_english}
                           </span>
@@ -1579,7 +1579,7 @@ function ListDetailView({
               101+ from BOTH this view and the study deck while the header
               shows the full count. */}
           {data.list.entry_count > data.entries.length ? (
-            <p className="km-review__entriesNote">
+            <p className="km-review__entries-note">
               {`Showing the first ${String(data.entries.length)} of ${String(data.list.entry_count)} words — a study session covers these ${String(data.entries.length)}.`}
             </p>
           ) : null}
@@ -1868,14 +1868,14 @@ function StudySession({
       {/* Deck strip */}
       <Card variant="default" className="km-review__strip">
         <SealStamp char="復" size="sm" />
-        <div className="km-review__stripBody">
+        <div className="km-review__strip-body">
           <div className="km-eyebrow">
             <Bilingual en="Studying" kr="학습 중" />
           </div>
-          <div className="kr km-review__stripName">
+          <div className="kr km-review__strip-name">
             {deckNameKr}
             {deckNameEn ? (
-              <span className="km-review__stripEn"> · {deckNameEn}</span>
+              <span className="km-review__strip-en"> · {deckNameEn}</span>
             ) : null}
           </div>
         </div>
@@ -1891,7 +1891,7 @@ function StudySession({
       {/* Progress — F-128 device #5: the subway-line station-dot metaphor
           replaces the plain fill bar. */}
       <div className="km-review__progress">
-        <div className="km-review__progressMeta">
+        <div className="km-review__progress-meta">
           <span>
             {idx + 1} / {deck.length}
           </span>
@@ -1908,7 +1908,7 @@ function StudySession({
       {/* Flashcard — F-128 device #1: a CityCard-tone signboard/hanji-paper
           surface (Review.css overrides `.km-flashcard__face` under this
           scope), flip interaction unchanged. */}
-      <div className="km-review__flashcardWrap km-tone--accent">
+      <div className="km-review__flashcard-wrap km-tone--accent">
         <Flashcard
           flipped={flipped}
           onFlip={flip}
@@ -1933,8 +1933,8 @@ function StudySession({
             // answer stays out of the a11y tree until revealed.
             flipped ? (
               <div className="km-review__back">
-                <div className="km-review__backHead">
-                  <div className="kr-display km-review__backWord">{card.kr}</div>
+                <div className="km-review__back-head">
+                  <div className="kr-display km-review__back-word">{card.kr}</div>
                   {card.proficiency !== undefined ? (
                     <Pill>{card.proficiency}</Pill>
                   ) : null}
@@ -1947,14 +1947,14 @@ function StudySession({
                       <div className="km-eyebrow">
                         <Bilingual en="Seen in" kr="출처" />
                       </div>
-                      <div className="km-review__sourceLabel">{card.source}</div>
+                      <div className="km-review__source-label">{card.source}</div>
                     </div>
                   </>
                 ) : null}
                 {card.exKr !== '' ? (
                   <div>
                     <div className="kr km-review__ex">{card.exKr}</div>
-                    <div className="km-review__exEn">{card.exEn}</div>
+                    <div className="km-review__ex-en">{card.exEn}</div>
                   </div>
                 ) : null}
                 <button
@@ -1966,7 +1966,7 @@ function StudySession({
                     if (drawer) closeDrawer();
                     else openDrawer();
                   }}
-                  className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawerBtn"
+                  className="km-btn km-btn--ghost km-btn--sm focusring km-review__drawer-btn"
                   aria-expanded={drawer}
                 >
                   <Icon name="info" size={14} />{' '}
@@ -1978,7 +1978,7 @@ function StudySession({
                 </button>
                 {drawer ? (
                   <div className="km-review__drawer">
-                    <div className="km-review__drawerHead">
+                    <div className="km-review__drawer-head">
                       <span className="km-eyebrow">
                         <Bilingual en="Examples" kr="예문" compact />
                       </span>
@@ -1995,11 +1995,11 @@ function StudySession({
                       </button>
                     </div>
                     {examplesLoading ? (
-                      <div className="km-review__drawerEn">
+                      <div className="km-review__drawer-en">
                         <Bilingual en="Loading examples…" kr="예문을 불러오는 중…" />
                       </div>
                     ) : examplesFailed ? (
-                      <div role="alert" className="km-review__drawerEn">
+                      <div role="alert" className="km-review__drawer-en">
                         <Bilingual
                           en="Couldn't load examples."
                           kr="예문을 불러오지 못했어요."
@@ -2019,15 +2019,15 @@ function StudySession({
                       </div>
                     ) : (krdictExamples ?? []).length > 0 ? (
                       (krdictExamples ?? []).map((ex, i) => (
-                        <div key={i} className="km-review__drawerRow">
+                        <div key={i} className="km-review__drawer-row">
                           <div className="kr">{ex.korean}</div>
                           {ex.english ? (
-                            <div className="km-review__drawerEn">{ex.english}</div>
+                            <div className="km-review__drawer-en">{ex.english}</div>
                           ) : null}
                         </div>
                       ))
                     ) : (
-                      <div className="km-review__drawerEn">
+                      <div className="km-review__drawer-en">
                         <Bilingual
                           en="No additional examples."
                           kr="추가 예문이 없어요."
@@ -2057,10 +2057,10 @@ function StudySession({
               }}
               className={`km-review__rating focusring ${r.className}`}
             >
-              <span className="km-review__ratingLabel">
+              <span className="km-review__rating-label">
                 <Bilingual en={r.label} kr={r.kr} compact />
               </span>
-              <span className="km-review__ratingSub">{r.sub}</span>
+              <span className="km-review__rating-sub">{r.sub}</span>
             </button>
           ))}
         </div>
@@ -2071,7 +2071,7 @@ function StudySession({
         </div>
       )}
       {rateError ? (
-        <div role="alert" className="km-review__inlineError" style={{ marginTop: 12 }}>
+        <div role="alert" className="km-review__inline-error" style={{ marginTop: 12 }}>
           {rateError}
         </div>
       ) : null}
@@ -2119,17 +2119,17 @@ function SessionComplete({
 
   return (
     <section className="km-review__complete" aria-labelledby="review-complete-head">
-      <Card variant="default" className="km-review__completeCard">
+      <Card variant="default" className="km-review__complete-card">
         {/* F-128 device #7 — the milestone (hand-stamped) 印 treatment,
             not the plain section-anchor badge: this IS a completion mark. */}
         <SealStamp milestone char="完" size="lg" tone="accent" />
-        <h2 id="review-complete-head" className="km-review__completeTitle">
+        <h2 id="review-complete-head" className="km-review__complete-title">
           <Bilingual en="Session complete" kr="세션 완료" />
         </h2>
-        <div className="km-review__completeDeck kr">
+        <div className="km-review__complete-deck kr">
           {deckNameKr}
           {deckNameEn ? (
-            <span className="km-review__stripEn"> · {deckNameEn}</span>
+            <span className="km-review__strip-en"> · {deckNameEn}</span>
           ) : null}
         </div>
 
@@ -2139,10 +2139,10 @@ function SessionComplete({
             bar, never behind the readable count itself (no contrast risk
             against a moving multi-hue gradient). */}
         <span
-          className="km-review__completeShimmer km-najeon km-najeon--shimmer"
+          className="km-review__complete-shimmer km-najeon km-najeon--shimmer"
           aria-hidden="true"
         />
-        <div className="km-review__completeCount">
+        <div className="km-review__complete-count">
           <Bilingual
             en={`${String(reviewed)} card${reviewed === 1 ? '' : 's'} reviewed`}
             kr={`카드 ${String(reviewed)}장 복습`}
@@ -2152,11 +2152,11 @@ function SessionComplete({
         {/* Rating breakdown */}
         <dl className="km-review__breakdown" aria-label="Rating breakdown">
           {RATINGS.map((r) => (
-            <div key={r.id} className={`km-review__breakCell ${r.className}`}>
-              <dt className="km-review__ratingLabel">
+            <div key={r.id} className={`km-review__break-cell ${r.className}`}>
+              <dt className="km-review__rating-label">
                 <Bilingual en={r.label} kr={r.kr} compact />
               </dt>
-              <dd className="km-review__breakCount">{breakdown[r.id]}</dd>
+              <dd className="km-review__break-count">{breakdown[r.id]}</dd>
             </div>
           ))}
         </dl>
@@ -2166,11 +2166,11 @@ function SessionComplete({
           <Bilingual en="Next reviews" kr="다음 복습" />
         </div>
         {pendingSaves > 0 ? (
-          <div role="status" className="km-review__completeLine">
+          <div role="status" className="km-review__complete-line">
             <Bilingual en="Saving your ratings…" kr="평가를 저장하는 중…" />
           </div>
         ) : results.length > 0 ? (
-          <ul className="km-review__nextDue">
+          <ul className="km-review__next-due">
             {dueSoon > 0 ? (
               <li>
                 <Bilingual
@@ -2197,7 +2197,7 @@ function SessionComplete({
             ) : null}
           </ul>
         ) : (
-          <div className="km-review__completeLine">
+          <div className="km-review__complete-line">
             <Bilingual
               en="No saved reviews this session."
               kr="이번 세션에는 저장된 복습이 없어요."
@@ -2206,7 +2206,7 @@ function SessionComplete({
         )}
         {failedSaves > 0 ? (
           <>
-            <div role="alert" className="km-review__inlineError">
+            <div role="alert" className="km-review__inline-error">
               {failedSaves === 1
                 ? '1 rating couldn’t be saved.'
                 : `${String(failedSaves)} ratings couldn’t be saved.`}
@@ -2217,12 +2217,12 @@ function SessionComplete({
           </>
         ) : null}
         {localRatings > 0 ? (
-          <div className="km-review__completeLine" role="status">
+          <div className="km-review__complete-line" role="status">
             {`${String(localRatings)} practice rating${localRatings === 1 ? '' : 's'} (sample data — not saved).`}
           </div>
         ) : null}
 
-        <div className="km-review__completeActions">
+        <div className="km-review__complete-actions">
           <Button
             variant="gold"
             size="md"

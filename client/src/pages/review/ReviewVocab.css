@@ -5,7 +5,7 @@
  * Colocated per the LineChart.css convention (the global sheet is shared
  * mutable state across parallel feature branches). Layout-only rules —
  * colors/typography ride the shared tokens already applied by the reused
- * classes (km-review__sectionTitle, km-resources__create-input, …).
+ * classes (km-review__section-title, km-resources__create-input, …).
  *
  * F-129/F-145 — mobile-first: `.km-vocab` gets a defensive `overflow-x:
  * hidden` backstop (same convention as `.km-progress` in Progress.css) in
@@ -20,7 +20,7 @@
  * the shared `PageHubHeader` component (batch-2 fix-pass BLOCKER-2). See
  * components/PageHubHeader.css for the (now single) copy of these rules. */
 
-/* F-146 — `.km-vocab__listsTile` on the My Lists CollapsibleTile is a bare
+/* F-146 — `.km-vocab__lists-tile` on the My Lists CollapsibleTile is a bare
  * selector hook (fixpass/test targeting) — it rides the SAME `.km-vocab
  * __section` margin rhythm as every other stacked section below it, so no
  * separate spacing rule is needed here. */
@@ -30,20 +30,20 @@
   margin-top: 18px;
 }
 
-.km-vocab__section > .km-review__sectionTitle {
+.km-vocab__section > .km-review__section-title {
   display: block;
   margin: 0 0 10px;
 }
 
 /* F-053/F-107 — "My uploads" saved-from-uploads groups: one upload title
- * (Eyebrow) + its saved-word list per group. `.km-vocab__savedFromUploads`
+ * (Eyebrow) + its saved-word list per group. `.km-vocab__saved-from-uploads`
  * itself rides the shared `.km-vocab__section` rhythm (same convention as
- * `.km-vocab__listsTile` above); only the intra-group spacing needs rules. */
-.km-vocab__savedUploadGroup + .km-vocab__savedUploadGroup {
+ * `.km-vocab__lists-tile` above); only the intra-group spacing needs rules. */
+.km-vocab__saved-upload-group + .km-vocab__saved-upload-group {
   margin-top: 14px;
 }
 
-.km-vocab__savedUploadGroup .km-reference__list {
+.km-vocab__saved-upload-group .km-reference__list {
   margin-top: 6px;
 }
 
@@ -51,7 +51,7 @@
  * rendered when the server's row cap trimmed the response (every shown group
  * is still whole, so this line is the sole "there is more" signal). Sized/
  * colored like the page's other secondary state text (.km-vocab__state). */
-.km-vocab__savedUploadsTruncated {
+.km-vocab__saved-uploads-truncated {
   margin: 10px 0 0;
   font-size: 0.8125rem;
   color: var(--paper-mute);
@@ -74,20 +74,20 @@
 }
 
 /* F-048 — inline create-a-list row at the bottom of the add-to-list sheet. */
-.km-vocab__sheetCreate {
+.km-vocab__sheet-create {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 12px;
 }
 
-.km-vocab__sheetCreate .km-resources__create-input {
+.km-vocab__sheet-create .km-resources__create-input {
   flex: 1;
   min-width: 0;
 }
 
 /* F-061 — add-words-mode banner (hand-off from the flashcards list edit). */
-.km-vocab__addBanner {
+.km-vocab__add-banner {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -101,7 +101,7 @@
 
 /* F-148 — the "This week" popup trigger. A small standalone row between My
  * Lists and Browse (replacing the always-inline WeeklySuggestions card). */
-.km-vocab__weekTrigger {
+.km-vocab__week-trigger {
   display: flex;
   margin-top: 14px;
 }
@@ -109,7 +109,7 @@
 /* F-149 — the visible caption above the search field (SearchBox itself has
  * no label slot). Matches FilterSelect's own label sizing/tone below it so
  * every field on this page reads as consistently labelled. */
-.km-vocab__searchLabel {
+.km-vocab__search-label {
   margin: 18px 0 6px;
 }
 

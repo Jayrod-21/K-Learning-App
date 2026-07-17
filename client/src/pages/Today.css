@@ -71,10 +71,10 @@
  * clearly below the page's own 20px `<h1>` (`.km-skyline__title`) so it
  * never competes with it. Token reuse only — `--font-display`/`--paper` are
  * the same AA-checked pair every other headline on this page already uses
- * (`.km-today__tileHeadline`), so this introduces no new contrast surface
+ * (`.km-today__tile-headline`), so this introduces no new contrast surface
  * to validate. Bilingual (`<Bilingual en kr />`) is unchanged underneath —
  * only the wrapping element + its styling changed. */
-.km-today__sectionTitle {
+.km-today__section-title {
   margin: 12px 0 8px;
   text-align: center;
   font-family: var(--font-display);
@@ -88,10 +88,10 @@
  * tightening below, the Suggested-learning → TOPIK boundary SPECIFICALLY
  * still read as too much empty space on a real phone. Scoped to only the
  * TOPIK heading (via the `--topik` modifier Today.tsx adds to just that
- * `<h2>`) rather than lowering `.km-today__sectionTitle`'s shared
+ * `<h2>`) rather than lowering `.km-today__section-title`'s shared
  * `margin-top` for all three headers — the Review&drills → Suggested-
  * learning gap already reads correctly and must stay exactly as-is. */
-.km-today__sectionTitle--topik {
+.km-today__section-title--topik {
   margin-top: 4px;
 }
 
@@ -109,14 +109,14 @@
  * carousel viewport's overflow clip. Relative units + full-width content
  * only (F-129): nothing here ever forces a fixed px width past the
  * viewport. */
-.km-today__tilePage {
+.km-today__tile-page {
   padding: 2px 2px 6px;
   max-width: 100%;
 }
 
 /* Clear the corner-slot resume banner (top:8px + ~28px pill) so it never
  * overlaps a tile's icon chip while pages slide underneath it. */
-.km-today__tilePage--banner {
+.km-today__tile-page--banner {
   padding-top: 40px;
 }
 
@@ -126,7 +126,7 @@
  * surface — this button is reset to invisible chrome so the card reads as
  * the whole tile, with a hover lift shared by every tile regardless of
  * tone (F-131: no tone hard-codes its own hover behavior). */
-.km-today__tileBtn {
+.km-today__tile-btn {
   display: block;
   width: 100%;
   max-width: 100%;
@@ -142,15 +142,15 @@
   transition: transform 120ms ease, box-shadow 120ms ease;
 }
 
-.km-today__tileBtn:hover {
+.km-today__tile-btn:hover {
   transform: translateY(-2px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .km-today__tileBtn {
+  .km-today__tile-btn {
     transition: none;
   }
-  .km-today__tileBtn:hover {
+  .km-today__tile-btn:hover {
     transform: none;
   }
 }
@@ -158,17 +158,17 @@
 /* Tighten CityCard's default 20px padding for this hub's smaller tiles
  * (F-133) — a compound selector, so it wins over CityCard.css's single
  * `.km-citycard` rule without editing that file. */
-.km-today__tileCard.km-citycard {
+.km-today__tile-card.km-citycard {
   padding: 14px 16px;
 }
 
-.km-today__tileTop {
+.km-today__tile-top {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.km-today__tileIcon {
+.km-today__tile-icon {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -180,7 +180,7 @@
   color: var(--km-tone, var(--vermilion));
 }
 
-.km-today__tileBody {
+.km-today__tile-body {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -189,7 +189,7 @@
   gap: 3px;
 }
 
-.km-today__tileHeadline {
+.km-today__tile-headline {
   font-size: 0.9375rem;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -198,13 +198,13 @@
   overflow-wrap: anywhere;
 }
 
-.km-today__tileMeta {
+.km-today__tile-meta {
   font-size: 0.75rem;
   color: var(--paper-dim);
 }
 
-.km-today__tileHeadline .km-bilingual__sub,
-.km-today__tileMeta .km-bilingual__sub {
+.km-today__tile-headline .km-bilingual__sub,
+.km-today__tile-meta .km-bilingual__sub {
   color: var(--paper-mute);
   font-weight: 400;
 }
@@ -214,7 +214,7 @@
  * rows below it. Clamped to 3 lines (Q54 essay prompts run ~200 chars) so
  * a long prompt can't blow out the peek slider's fixed tile widths — the
  * FULL text stays in the DOM/accessibility tree, only the paint is boxed. */
-.km-today__tilePrompt {
+.km-today__tile-prompt {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -233,7 +233,7 @@
 /* "Done today" row (F-138) — a plain text line + an honest SealStamp
  * milestone, never a fabricated bar/percentage (F-137's "no highlights"
  * spirit applies here too: this is metadata, not a glowing progress meter). */
-.km-today__tileProgress {
+.km-today__tile-progress {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -243,16 +243,16 @@
 }
 
 /* F-173 — the resumed-TOPIK-attempt "X of N" progress row. Same rhythm as
- * `.km-today__tileProgress` (a hairline-separated row under the tile), kept
+ * `.km-today__tile-progress` (a hairline-separated row under the tile), kept
  * as its own class since it sits between the tile and the "Review mistakes"
  * shortcut, not inside `ActivityTile`'s own `extra` slot. */
-.km-today__resumeProgress {
+.km-today__resume-progress {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
 }
 
-.km-today__resumeProgressCount {
+.km-today__resume-progress-count {
   margin-top: 6px;
   font-size: 0.75rem;
   color: var(--paper-dim);
@@ -261,13 +261,13 @@
 
 /* TOPIK's "Review mistakes" shortcut, folded into the suggested-learning
  * page instead of its own carousel tab (F-135). */
-.km-today__topikExtra {
+.km-today__topik-extra {
   display: flex;
   justify-content: flex-end;
   margin-top: 8px;
 }
 
-.km-today__linkBtn {
+.km-today__link-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -283,11 +283,11 @@
   cursor: pointer;
 }
 
-.km-today__linkBtn:hover {
+.km-today__link-btn:hover {
   color: var(--vermilion-ink);
 }
 
-.km-today__errorWrap {
+.km-today__error-wrap {
   border-radius: var(--radius-lg);
 }
 
@@ -314,14 +314,14 @@
  * browser's native scroll-into-view on focus already make it keyboard
  * accessible with zero extra wiring.
  */
-.km-today__peekOuter {
-  /* Claw back .km-today__tilePage's 2px inset (unused here — this section
+.km-today__peek-outer {
+  /* Claw back .km-today__tile-page's 2px inset (unused here — this section
      renders its own track directly) so the peek padding below still lines
      up visually with the ActivityTile edges in Carousels 1/3. */
   margin: 0 -2px;
 }
 
-.km-today__peekTrack {
+.km-today__peek-track {
   display: flex;
   overflow-x: auto;
   overflow-y: hidden;
@@ -341,11 +341,11 @@
   -ms-overflow-style: none;
 }
 
-.km-today__peekTrack::-webkit-scrollbar {
+.km-today__peek-track::-webkit-scrollbar {
   display: none;
 }
 
-.km-today__peekItem {
+.km-today__peek-item {
   flex: 0 0 78%;
   max-width: 78%;
   min-width: 0;
@@ -375,7 +375,7 @@
  * construction. Unsupported browsers simply render every tile at equal,
  * fully legible weight — a flat but fully functional peek row, never a
  * broken one. Shared by BOTH Carousel 1 ("Review & drills") and Carousel 2
- * ("Suggested learning") — same `.km-today__peekItem` class, so this one
+ * ("Suggested learning") — same `.km-today__peek-item` class, so this one
  * block covers both carousels identically.
  */
 @supports (animation-timeline: view()) {
@@ -391,19 +391,19 @@
     }
   }
 
-  .km-today__peekItem {
+  .km-today__peek-item {
     animation: km-today-peek-pop linear both;
     animation-timeline: view(inline);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .km-today__peekItem {
+  .km-today__peek-item {
     animation: none;
   }
 }
 
-.km-today__peekEmpty {
+.km-today__peek-empty {
   margin: 4px 2px;
   padding: 14px 16px;
   font-size: 0.8125rem;
@@ -456,7 +456,7 @@
     gap: 14px;
   }
 
-  .km-today__gridItem {
+  .km-today__grid-item {
     /* A grid item's default min-width is its content's min-content size —
        guard against that forcing a track wider than the row (F-129's
        established convention across this codebase). */

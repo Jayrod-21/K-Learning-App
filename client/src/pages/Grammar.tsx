@@ -2372,14 +2372,14 @@ function DetailSheet({
 }: DetailSheetProps): JSX.Element {
   return (
     <Sheet open={open} onClose={onClose} ariaLabel="Grammar pattern detail">
-      <div className="km-review__sheetBody">
-        <div className="km-review__sheetHead">
+      <div className="km-review__sheet-body">
+        <div className="km-review__sheet-head">
           <div>
             <Eyebrow>Pattern</Eyebrow>
-            <div className="kr-display km-review__sheetTitle">
+            <div className="kr-display km-review__sheet-title">
               {row?.pattern ?? ''}
             </div>
-            <div className="km-review__sheetMeta">
+            <div className="km-review__sheet-meta">
               {row?.title ?? ''}
               {row ? ` · ${row.proficiency}` : ''}
             </div>
@@ -2394,11 +2394,11 @@ function DetailSheet({
           </Button>
         </div>
 
-        <div className="km-review__sheetActions">
+        <div className="km-review__sheet-actions">
           <Pill tone="gold">Saved</Pill>
         </div>
 
-        <hr className="hr-double km-review__sheetRule" />
+        <hr className="hr-double km-review__sheet-rule" />
 
         {loading ? (
           <div className="km-grammar__state" role="status">

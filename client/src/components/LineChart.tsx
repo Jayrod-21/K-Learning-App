@@ -186,7 +186,7 @@ export function LineChart({
   if (n === 0) {
     return (
       <div className="km-linechart km-linechart--empty">
-        <span className="km-linechart__emptyText">No data yet</span>
+        <span className="km-linechart__empty-text">No data yet</span>
       </div>
     );
   }
@@ -391,7 +391,7 @@ export function LineChart({
       {/* Always-visible readout — the tooltip's home. role="status" = polite
           live region, so hover/focus changes are announced. */}
       <div className="km-linechart__readout" role="status">
-        <span className="km-linechart__readoutMetric">{metricLabel}</span>
+        <span className="km-linechart__readout-metric">{metricLabel}</span>
         {readoutPt !== undefined ? (
           <span>
             {formatDay(readoutPt.date)} · {formatValue(readoutPt.value)}

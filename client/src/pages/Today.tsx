@@ -415,20 +415,20 @@ function ActivityTile({
   return (
     <button
       type="button"
-      className="km-today__tileBtn focusring"
+      className="km-today__tile-btn focusring"
       aria-label={ariaLabel}
       onClick={onClick}
     >
-      <CityCard tone={tone} rail feat={feat} className="km-today__tileCard">
-        <span className="km-today__tileTop">
-          <span className="km-today__tileIcon" aria-hidden="true">
+      <CityCard tone={tone} rail feat={feat} className="km-today__tile-card">
+        <span className="km-today__tile-top">
+          <span className="km-today__tile-icon" aria-hidden="true">
             <Icon name={icon} size={20} />
           </span>
-          <span className="km-today__tileBody">
+          <span className="km-today__tile-body">
             {pill}
-            <span className="km-today__tileHeadline">{headline}</span>
+            <span className="km-today__tile-headline">{headline}</span>
             {meta !== undefined ? (
-              <span className="km-today__tileMeta">{meta}</span>
+              <span className="km-today__tile-meta">{meta}</span>
             ) : null}
           </span>
           <Icon name="arrow-right" size={18} />
@@ -455,8 +455,8 @@ function DoneTodayRow({
 }): JSX.Element | null {
   if (count === null) return null;
   return (
-    <span className="km-today__tileProgress">
-      <span className="km-today__tileMeta">
+    <span className="km-today__tile-progress">
+      <span className="km-today__tile-meta">
         <Bilingual en={labelEn(count)} kr={labelKr(count)} />
       </span>
       {count > 0 ? (
@@ -488,7 +488,7 @@ function SkeletonCard(): JSX.Element {
  *  hanji-textured error surface every failure state on this page uses. */
 function PlanErrorCard({ onRetry }: { onRetry: () => void }): JSX.Element {
   return (
-    <div className="km-today__errorWrap km-giwa">
+    <div className="km-today__error-wrap km-giwa">
       <ErrorCard message="Today's plan is unavailable." onRetry={onRetry} />
     </div>
   );
@@ -497,7 +497,7 @@ function PlanErrorCard({ onRetry }: { onRetry: () => void }): JSX.Element {
 /**
  * F-190 — centers a specific peek-slider tile the moment it mounts, instead
  * of leaving the browser's default scrollLeft:0 (which centers whichever
- * tile happens to be FIRST in DOM order — see `.km-today__peekTrack`'s
+ * tile happens to be FIRST in DOM order — see `.km-today__peek-track`'s
  * symmetric 11%-peek padding in Today.css, which is exactly what makes
  * position 0 read as "centered" for a first tile). Both peek sliders are
  * reordered (Carousel 1: Grammar/Vocab/Hanja; Carousel 2: Listening/Reading/
@@ -548,7 +548,7 @@ function useCenterOnMountRef(): (el: HTMLDivElement | null) => void {
  * mobile peek slider (unchanged markup/classes — `.km-today__peek{Outer,
  * Track,Item}`, same native scroll-snap mechanism as before this phase) OR,
  * at tablet/desktop (`useDeviceClass() !== 'mobile'`), a plain CSS grid
- * (`.km-today__grid`/`.km-today__gridItem`, Today.css) that lays every tile
+ * (`.km-today__grid`/`.km-today__grid-item`, Today.css) that lays every tile
  * out side by side — no scroll-snap, no partial "peek" tile, every tile
  * visible and focusable at once. Carousel 1 ("Review & drills") and
  * Carousel 2 ("Suggested learning") share this ONE component instead of
@@ -582,7 +582,7 @@ function TileRail({
     return (
       <div className="km-today__grid">
         {tiles.map((t) => (
-          <div key={t.key} className="km-today__gridItem">
+          <div key={t.key} className="km-today__grid-item">
             {t.node}
           </div>
         ))}
@@ -590,10 +590,10 @@ function TileRail({
     );
   }
   return (
-    <div className="km-today__peekOuter">
-      <div className="km-today__peekTrack">
+    <div className="km-today__peek-outer">
+      <div className="km-today__peek-track">
         {tiles.map((t) => (
-          <div key={t.key} className="km-today__peekItem" ref={t.centerRef}>
+          <div key={t.key} className="km-today__peek-item" ref={t.centerRef}>
             {t.node}
           </div>
         ))}
@@ -891,7 +891,7 @@ export function Today(): JSX.Element {
                 // sighted users; screen readers get the FULL text via the
                 // tile's aria-label above (this subtree is presentational
                 // inside the button).
-                <span className="km-today__tilePrompt kr">{promptPreview}</span>
+                <span className="km-today__tile-prompt kr">{promptPreview}</span>
               ) : null}
               <DoneTodayRow
                 count={writingDoneToday}
@@ -946,19 +946,19 @@ export function Today(): JSX.Element {
       {/* Carousel 1 — Review & drills: Grammar / Vocab / Hanja, as the SAME
           native-scroll-snap peek slider as Carousel 2 below (direct user
           request — see the module header comment and Today.css's
-          `.km-today__peekTrack` block for the shared mechanism). F-190
+          `.km-today__peek-track` block for the shared mechanism). F-190
           reorders Vocab into the MIDDLE slot (was first) so the peek slider
           opens centered on it — `vocabCenterRef` lands the initial scroll
           position there on mount. Vocab (restored, reversing F-139) reads a
           real live due-count off the plan, so it alone among these three
-          tiles depends on `today` — only its `km-today__peekItem` swaps
+          tiles depends on `today` — only its `km-today__peek-item` swaps
           between skeleton/tile/error; Grammar and Hanja never depended on
           the plan and are always the same static tile regardless of its
           fate. Deliberately a plain labeled `<section>` (implicit `region`),
           not `aria-roledescription="carousel"` — same reasoning as
           Carousel 2: every tile is simultaneously real and focusable, the
           honest a11y shape for a continuous scroll rail. */}
-      <h2 className="km-today__sectionTitle">
+      <h2 className="km-today__section-title">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </h2>
       {/* Guided-tour anchor (first-run "start a session" step). */}
@@ -1095,7 +1095,7 @@ export function Today(): JSX.Element {
           `aria-roledescription="carousel"` — every tile is simultaneously
           real and focusable (no aria-hidden/inert paging), which is the
           honest a11y shape for a continuous scroll rail / grid alike. */}
-      <h2 className="km-today__sectionTitle km-hangul-watermark" data-glyph="배">
+      <h2 className="km-today__section-title km-hangul-watermark" data-glyph="배">
         <Bilingual en="Suggested learning" kr="추천 학습" />
       </h2>
       <section className="km-today__section" aria-label="Suggested learning">
@@ -1106,7 +1106,7 @@ export function Today(): JSX.Element {
         ) : suggestedTiles.length > 0 ? (
           <TileRail isGridLayout={isGridLayout} tiles={suggestedTiles} />
         ) : (
-          <p className="km-today__peekEmpty">
+          <p className="km-today__peek-empty">
             <Bilingual
               en="No suggested content right now"
               kr="지금은 추천 학습이 없습니다"
@@ -1124,12 +1124,12 @@ export function Today(): JSX.Element {
           F-187 — direct user feedback: the Suggested-learning → TOPIK
           boundary specifically read as too much empty space on a real
           phone even after an earlier general tightening pass (see
-          `.km-today__section`/`.km-today__sectionTitle` in Today.css). The
+          `.km-today__section`/`.km-today__section-title` in Today.css). The
           `--topik` modifier below trims JUST this header's own top margin
           (Today.css) rather than touching the shared rule every section
           title reads, so the Review&drills → Suggested-learning gap (which
           reads fine) is untouched. */}
-      <h2 className="km-today__sectionTitle km-today__sectionTitle--topik">
+      <h2 className="km-today__section-title km-today__section-title--topik">
         <Bilingual en="TOPIK" kr="토픽" />
       </h2>
       {/* D1 — the `--topik` modifier lets Today.css cap+center this single
@@ -1147,8 +1147,8 @@ export function Today(): JSX.Element {
           <div
             key="topik"
             className={cn(
-              'km-today__tilePage',
-              openAttempt !== null && 'km-today__tilePage--banner',
+              'km-today__tile-page',
+              openAttempt !== null && 'km-today__tile-page--banner',
             )}
           >
             <ActivityTile
@@ -1193,7 +1193,7 @@ export function Today(): JSX.Element {
                 which reads as "exam complete" beside the "Resume exam" CTA
                 — see the `hasRealTotal` comment above). */}
             {openAttempt !== null ? (
-              <div className="km-today__resumeProgress">
+              <div className="km-today__resume-progress">
                 {hasRealTotal ? (
                   <>
                     <SubwayProgress
@@ -1203,21 +1203,21 @@ export function Today(): JSX.Element {
                       label="Resumed exam progress"
                       valueText={resumeAnsweredEn}
                     />
-                    <div className="km-today__resumeProgressCount">
+                    <div className="km-today__resume-progress-count">
                       <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
                     </div>
                   </>
                 ) : (
-                  <div className="km-today__resumeProgressCount">
+                  <div className="km-today__resume-progress-count">
                     <Bilingual en={resumeAnsweredEn} kr={resumeAnsweredKr} />
                   </div>
                 )}
               </div>
             ) : null}
-            <div className="km-today__topikExtra">
+            <div className="km-today__topik-extra">
               <button
                 type="button"
-                className="km-today__linkBtn focusring"
+                className="km-today__link-btn focusring"
                 onClick={() => {
                   navigate('/review/mistakes');
                 }}

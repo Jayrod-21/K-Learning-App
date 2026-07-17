@@ -175,7 +175,7 @@ function MistakeQuestionTile({
 }): JSX.Element {
   const { item } = mistake;
   return (
-    <li className="km-mistakes__tileWrap">
+    <li className="km-mistakes__tile-wrap">
       <button
         type="button"
         className="km-mistakes__qtile focusring"
@@ -248,12 +248,12 @@ function MistakeSheetBody({
     // Batch-2 fix-pass (S2, `REVIEW_batch2-fidelity.md`) — the shared
     // `.km-review__sheet*` classes (ReviewGrammar/ReviewVocab's own popups)
     // now drive padding/head layout here too, instead of this page's
-    // previously hand-rolled duplicate rules. `.km-mistakes__sheetBody`/
-    // `__sheetHead` ride as EXTRA classes for the one genuinely
+    // previously hand-rolled duplicate rules. `.km-mistakes__sheet-body`/
+    // `__sheet-head` ride as EXTRA classes for the one genuinely
     // Mistakes-specific need (the flex-column body layout) — see
     // Mistakes.css.
-    <div className="km-review__sheetBody km-mistakes__sheetBody">
-      <div className="km-review__sheetHead km-mistakes__sheetHead">
+    <div className="km-review__sheet-body km-mistakes__sheet-body">
+      <div className="km-review__sheet-head km-mistakes__sheet-head">
         <div>
           <Eyebrow>
             {item.section} · {item.number}번 · {modeLabel(mistake.mode)}
@@ -426,12 +426,12 @@ function WritingAttemptRow({
   const rubric = writingRubricLabel(attempt.rubric);
   return (
     <li className="km-reference__row">
-      <div className="km-mistakes__writingRow">
-        <div className="km-mistakes__writingRow-main">
-          <span className="kr km-mistakes__writingRow-prompt">
+      <div className="km-mistakes__writing-row">
+        <div className="km-mistakes__writing-row-main">
+          <span className="kr km-mistakes__writing-row-prompt">
             {attempt.promptKr}
           </span>
-          <span className="km-mistakes__writingRow-meta">
+          <span className="km-mistakes__writing-row-meta">
             <Bilingual en={rubric.en} kr={rubric.kr} />
             {when !== '' ? <> · {when}</> : null}
             {attempt.estimatedLevel !== null ? (
@@ -439,7 +439,7 @@ function WritingAttemptRow({
             ) : null}
           </span>
         </div>
-        <span className="km-pill km-pill--default km-mistakes__writingRow-score">
+        <span className="km-pill km-pill--default km-mistakes__writing-row-score">
           {attempt.totalScore}/{attempt.maxTotal}
         </span>
       </div>

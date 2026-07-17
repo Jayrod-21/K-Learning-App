@@ -302,12 +302,12 @@ function SkillTrendPanel({
     // data-skill drives the per-skill chart accent in Progress.css (the same
     // validated categorical --kmp-* palette the diagnostic trend chart uses,
     // so color follows the entity across the page).
-    <div className="km-progress__trendPanel" data-skill={skillKey}>
-      <div className="km-progress__trendHead">
-        <span className="km-progress__trendSkill">
+    <div className="km-progress__trend-panel" data-skill={skillKey}>
+      <div className="km-progress__trend-head">
+        <span className="km-progress__trend-skill">
           <Bilingual en={label} kr={kr} />
         </span>
-        <span className="km-progress__trendValue">{latestValue(series)}</span>
+        <span className="km-progress__trend-value">{latestValue(series)}</span>
       </div>
       {series.metric === 'none' ? (
         // `none` is the client-only degraded placeholder: this skill's route
@@ -316,14 +316,14 @@ function SkillTrendPanel({
         // itself), so a fetch failure is never dressed up as a fresh account.
         // Never fabricated numbers either way (F-014 gave Writing a real
         // /writing/series route, so it degrades like every other skill now).
-        <div className="km-progress__trendEmpty">
+        <div className="km-progress__trend-empty">
           <Bilingual en="Couldn’t load this trend." kr="추이를 불러오지 못했어요." />
         </div>
       ) : skillKey === 'writing' && series.points.length === 0 ? (
         // Writing's route answered but the user has no graded attempts yet —
         // an invitation to start, not a bare empty chart. Only the empty
         // REAL series lands here; a failed route reads "No data yet" above.
-        <div className="km-progress__trendEmpty">
+        <div className="km-progress__trend-empty">
           <Bilingual
             en="Start writing to see your progress here."
             kr="성장을 보려면 쓰기를 시작하세요."
@@ -419,7 +419,7 @@ function SkillTrendsBody({
         // D1 — every skill panel visible at once, no paging. `LineChart`'s
         // own SVG is `width: 100%; height: auto` (LineChart.css), so each
         // panel's chart scales to whatever the grid cell gives it.
-        <div className="km-progress__trendGrid">{skillPanels}</div>
+        <div className="km-progress__trend-grid">{skillPanels}</div>
       ) : (
         <SwipeCarousel ariaLabel="Progress by skill">{skillPanels}</SwipeCarousel>
       )}
@@ -763,11 +763,11 @@ function HistoryPage({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="km-progress__historyPage">
+    <div className="km-progress__history-page">
       <Eyebrow>
         <Bilingual en={metaEn} kr={metaKr} />
       </Eyebrow>
-      <div className="km-progress__historyTitle">
+      <div className="km-progress__history-title">
         <Bilingual en={titleEn} kr={titleKr} />
       </div>
       {children}

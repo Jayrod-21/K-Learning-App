@@ -93,7 +93,7 @@
   justify-content: flex-end;
 }
 
-/* Sheet body — `.km-review__sheetBody`/`__sheetHead` (index.css, the
+/* Sheet body — `.km-review__sheet-body`/`__sheet-head` (index.css, the
  * Mistakes/ReviewGrammar batch-2 precedent) drive padding + the title/Close
  * head row; this class only adds the flex-column stack this sheet's src/
  * loading/result blocks need. */

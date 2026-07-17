@@ -1490,11 +1490,11 @@ describe('Reading — Seoul Day & Night reskin (F-128/F-129/F-131)', () => {
     );
 
     const sheet = screen.getByRole('dialog', { name: 'Passage translation' });
-    const head = sheet.querySelector('.km-review__sheetHead');
+    const head = sheet.querySelector('.km-review__sheet-head');
     expect(head).toBeInTheDocument();
     expect(
       within(head as HTMLElement).getByRole('button', { name: 'Close' }),
     ).toBeInTheDocument();
-    expect(sheet.querySelector('.km-review__sheetBody')).toBeInTheDocument();
+    expect(sheet.querySelector('.km-review__sheet-body')).toBeInTheDocument();
   });
 });

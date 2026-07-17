@@ -1506,8 +1506,8 @@ export default function UploadViewer(): JSX.Element {
               onLostPointerCapture={onPagePointerLost}
             >
               <div
-                className={`km-upload-viewer__pageDrag${
-                  swipeDragX !== null ? ' km-upload-viewer__pageDrag--dragging' : ''
+                className={`km-upload-viewer__page-drag${
+                  swipeDragX !== null ? ' km-upload-viewer__page-drag--dragging' : ''
                 }`}
                 style={{ transform: `translateX(${String(swipeDragX ?? 0)}px)` }}
               >

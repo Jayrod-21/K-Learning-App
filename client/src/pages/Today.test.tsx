@@ -592,9 +592,9 @@ describe('Today', () => {
     expect(within(drills).queryAllByRole('tab')).toHaveLength(0);
     expect(within(suggested).queryAllByRole('tab')).toHaveLength(0);
 
-    expect(drills.querySelector('.km-today__peekTrack')).not.toBeNull();
-    expect(suggested.querySelector('.km-today__peekTrack')).not.toBeNull();
-    expect(drills.querySelectorAll('.km-today__peekItem')).toHaveLength(3);
+    expect(drills.querySelector('.km-today__peek-track')).not.toBeNull();
+    expect(suggested.querySelector('.km-today__peek-track')).not.toBeNull();
+    expect(drills.querySelectorAll('.km-today__peek-item')).toHaveLength(3);
   });
 
   // ── Carousel 1 — Review & drills: Vocab (restored) / Grammar / Hanja ──
@@ -648,7 +648,7 @@ describe('Today', () => {
     const vocabTile = screen.getByRole('button', {
       name: 'Open review — 24 cards due',
     });
-    const vocabItem = vocabTile.closest('.km-today__peekItem');
+    const vocabItem = vocabTile.closest('.km-today__peek-item');
     expect(vocabItem).not.toBeNull();
 
     // Called exactly once (mount), inline-centered — never re-centers on
@@ -853,7 +853,7 @@ describe('Today', () => {
     const readingTile = screen.getByRole('button', {
       name: /Open reading/,
     });
-    const readingItem = readingTile.closest('.km-today__peekItem');
+    const readingItem = readingTile.closest('.km-today__peek-item');
     expect(readingItem).not.toBeNull();
 
     const centeringCalls = scrollIntoView.mock.contexts.filter(
@@ -867,10 +867,10 @@ describe('Today', () => {
     // Listening/Writing must NOT also have been centered — only Reading.
     const listeningItem = screen
       .getByRole('button', { name: /Open listening/ })
-      .closest('.km-today__peekItem');
+      .closest('.km-today__peek-item');
     const writingItem = screen
       .getByRole('button', { name: /Open writing/ })
-      .closest('.km-today__peekItem');
+      .closest('.km-today__peek-item');
     expect(
       scrollIntoView.mock.contexts.filter((ctx) => ctx === listeningItem),
     ).toHaveLength(0);
@@ -1075,7 +1075,7 @@ describe('Today', () => {
     const writingTile = screen.getByRole('button', { name: /Paragraph in/ });
     // No fabricated stand-in text and no empty bordered stub.
     expect(
-      writingTile.querySelector('.km-today__tilePrompt'),
+      writingTile.querySelector('.km-today__tile-prompt'),
     ).not.toBeInTheDocument();
     // …and the accessible name stays the plain title — no dangling period
     // or phantom preview folded into the label.
@@ -1108,7 +1108,7 @@ describe('Today', () => {
     // stub or pollute the label.
     const writingTile = screen.getByRole('button', { name: /Paragraph in/ });
     expect(
-      writingTile.querySelector('.km-today__tilePrompt'),
+      writingTile.querySelector('.km-today__tile-prompt'),
     ).not.toBeInTheDocument();
     expect(writingTile).toHaveAccessibleName(
       'Open writing — Paragraph in 합쇼체',
@@ -1195,13 +1195,13 @@ describe('Today', () => {
     );
 
     const trackRule =
-      /\.km-today__peekTrack\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+      /\.km-today__peek-track\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
     expect(trackRule).not.toBe('');
     expect(trackRule).toContain('overflow-x: auto;');
     expect(trackRule).toContain('scroll-snap-type: x mandatory;');
 
     const itemRule =
-      /\.km-today__peekItem\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+      /\.km-today__peek-item\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
     expect(itemRule).not.toBe('');
     expect(itemRule).toContain('scroll-snap-align: center;');
     // Peek geometry: a tile narrower than 100% so its neighbors are
@@ -1211,9 +1211,9 @@ describe('Today', () => {
     // Reduced-motion: the progressive center-emphasis animation is
     // explicitly disabled, never left running. Matched structurally (not
     // just a substring search) so this can't false-match the base
-    // `.km-today__peekItem` rule declared earlier in the file.
+    // `.km-today__peek-item` rule declared earlier in the file.
     const reducedMotionBlock =
-      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peekItem \{[^}]*\}\s*\}/.exec(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peek-item \{[^}]*\}\s*\}/.exec(
         stylesheet,
       )?.[0] ?? '';
     expect(reducedMotionBlock).not.toBe('');
@@ -1432,8 +1432,8 @@ describe('Today', () => {
 
     // The old eyebrow-styled subscript class is gone entirely; the new
     // header class is the ONLY thing carrying these three section titles.
-    expect(document.querySelector('.km-today__sectionEyebrow')).toBeNull();
-    const titles = document.querySelectorAll('.km-today__sectionTitle');
+    expect(document.querySelector('.km-today__section-eyebrow')).toBeNull();
+    const titles = document.querySelectorAll('.km-today__section-title');
     expect(titles).toHaveLength(3);
 
     // Real headings (level 2, below the page's own `<h1>`), in carousel
@@ -1441,11 +1441,11 @@ describe('Today', () => {
     const headings = screen.getAllByRole('heading', { level: 2 });
     expect(headings).toHaveLength(3);
     expect(headings[0]).toHaveTextContent('Review & drills');
-    expect(headings[0]).toHaveClass('km-today__sectionTitle');
+    expect(headings[0]).toHaveClass('km-today__section-title');
     expect(headings[1]).toHaveTextContent('Suggested learning');
-    expect(headings[1]).toHaveClass('km-today__sectionTitle');
+    expect(headings[1]).toHaveClass('km-today__section-title');
     expect(headings[2]).toHaveTextContent('TOPIK');
-    expect(headings[2]).toHaveClass('km-today__sectionTitle');
+    expect(headings[2]).toHaveClass('km-today__section-title');
 
     // Suggested learning keeps its decorative Hangul-watermark glyph — only
     // the wrapping element changed (Eyebrow div → h2), not the device.
@@ -1462,10 +1462,10 @@ describe('Today', () => {
       'utf8',
     );
 
-    expect(stylesheet).not.toMatch(/\.km-today__sectionEyebrow\s*\{/);
+    expect(stylesheet).not.toMatch(/\.km-today__section-eyebrow\s*\{/);
 
     const titleRule =
-      /\.km-today__sectionTitle\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+      /\.km-today__section-title\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
     expect(titleRule).not.toBe('');
     expect(titleRule).toContain('text-align: center;');
     // Meaningfully larger than the old 10px eyebrow and bold enough to read
@@ -1489,7 +1489,7 @@ describe('Today', () => {
     expect(sectionRule).toContain('margin-bottom: 0;');
 
     const titleRule =
-      /\.km-today__sectionTitle\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
+      /\.km-today__section-title\s*\{[^}]*\}/.exec(stylesheet)?.[0] ?? '';
     // The combined inter-section gap (section margin-bottom + title
     // margin-top) is well under the pre-tightening total of 24px (6px + the
     // old eyebrow's 18px).
@@ -1503,13 +1503,13 @@ describe('Today', () => {
     const { container } = renderTodayAt();
 
     const headings = screen.getAllByRole('heading', { level: 2 });
-    expect(headings[0]).not.toHaveClass('km-today__sectionTitle--topik');
-    expect(headings[1]).not.toHaveClass('km-today__sectionTitle--topik');
+    expect(headings[0]).not.toHaveClass('km-today__section-title--topik');
+    expect(headings[1]).not.toHaveClass('km-today__section-title--topik');
     expect(headings[2]).toHaveTextContent('TOPIK');
-    expect(headings[2]).toHaveClass('km-today__sectionTitle--topik');
+    expect(headings[2]).toHaveClass('km-today__section-title--topik');
     // Sanity: exactly one heading carries the modifier.
     expect(
-      container.querySelectorAll('.km-today__sectionTitle--topik'),
+      container.querySelectorAll('.km-today__section-title--topik'),
     ).toHaveLength(1);
 
     const stylesheet = readFileSync(
@@ -1517,13 +1517,13 @@ describe('Today', () => {
       'utf8',
     );
     const modifierRule =
-      /\.km-today__sectionTitle--topik\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
+      /\.km-today__section-title--topik\s*\{[^}]*\}/.exec(stylesheet)?.[0] ??
       '';
     expect(modifierRule).not.toBe('');
     const modifierMargin = Number(
       /margin-top:\s*(\d+)px/.exec(modifierRule)?.[1] ?? NaN,
     );
-    // Strictly less than the shared `.km-today__sectionTitle` margin-top
+    // Strictly less than the shared `.km-today__section-title` margin-top
     // (12px, asserted above) — the Suggested-learning → TOPIK boundary
     // specifically shrinks; Review&drills → Suggested-learning (which
     // reads fine) keeps the full 12px via the un-modified shared rule.
@@ -1566,7 +1566,7 @@ describe('Today', () => {
     // happy-dom does no layout, so the actual on-screen scroll-driven scale
     // can't be measured by rendering — pin the CSS mechanism from source
     // (same pattern as the scroll-snap mechanism test above). Both
-    // carousels render the same `.km-today__peekItem` class (asserted
+    // carousels render the same `.km-today__peek-item` class (asserted
     // structurally in the "SAME peek-slider mechanism" test above), so this
     // single source-level pin covers both.
     const stylesheet = readFileSync(
@@ -1603,9 +1603,9 @@ describe('Today', () => {
 
     // Reduced-motion: the scaling animation is explicitly disabled, never
     // left running — equal size, no scaling, matched structurally so this
-    // can't false-match the base `.km-today__peekItem` rule.
+    // can't false-match the base `.km-today__peek-item` rule.
     const reducedMotionBlock =
-      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peekItem \{[^}]*\}\s*\}/.exec(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.km-today__peek-item \{[^}]*\}\s*\}/.exec(
         stylesheet,
       )?.[0] ?? '';
     expect(reducedMotionBlock).not.toBe('');
@@ -1655,9 +1655,9 @@ describe('Today — device-adaptive grid layout (Phase D1)', () => {
     loadDefaults();
     const { container } = renderTodayAt();
 
-    expect(container.querySelector('.km-today__peekTrack')).not.toBeNull();
+    expect(container.querySelector('.km-today__peek-track')).not.toBeNull();
     expect(
-      container.querySelectorAll('.km-today__peekItem').length,
+      container.querySelectorAll('.km-today__peek-item').length,
     ).toBeGreaterThan(0);
     expect(container.querySelector('.km-today__grid')).toBeNull();
   });
@@ -1668,8 +1668,8 @@ describe('Today — device-adaptive grid layout (Phase D1)', () => {
     const { container } = renderTodayAt();
 
     const drills = screen.getByRole('region', { name: 'Review and drills' });
-    expect(drills.querySelector('.km-today__peekTrack')).not.toBeNull();
-    expect(drills.querySelectorAll('.km-today__peekItem')).toHaveLength(3);
+    expect(drills.querySelector('.km-today__peek-track')).not.toBeNull();
+    expect(drills.querySelectorAll('.km-today__peek-item')).toHaveLength(3);
     expect(container.querySelector('.km-today__grid')).toBeNull();
   });
 
@@ -1684,13 +1684,13 @@ describe('Today — device-adaptive grid layout (Phase D1)', () => {
     });
 
     expect(drills.querySelector('.km-today__grid')).not.toBeNull();
-    expect(drills.querySelectorAll('.km-today__gridItem')).toHaveLength(3);
+    expect(drills.querySelectorAll('.km-today__grid-item')).toHaveLength(3);
     expect(suggested.querySelector('.km-today__grid')).not.toBeNull();
-    expect(suggested.querySelectorAll('.km-today__gridItem')).toHaveLength(3);
+    expect(suggested.querySelectorAll('.km-today__grid-item')).toHaveLength(3);
     // No peek-slider markup survives anywhere on the page in the grid
     // branch — `TileRail` renders one markup or the other, never both.
-    expect(container.querySelector('.km-today__peekTrack')).toBeNull();
-    expect(container.querySelector('.km-today__peekItem')).toBeNull();
+    expect(container.querySelector('.km-today__peek-track')).toBeNull();
+    expect(container.querySelector('.km-today__peek-item')).toBeNull();
   });
 
   it('renders the grid at desktop width (1280px) too, with every tile still real and focusable — same DOM order as mobile', () => {
