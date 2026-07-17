@@ -12,10 +12,13 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  addTicketComment,
+  createTicket,
   fetchTicket,
   listMyTickets,
   listCommunityTickets,
   listTicketComments,
+  patchTicket,
 } from './tickets';
 import { api } from './api';
 
@@ -115,5 +118,52 @@ describe('list endpoints — bigint id coercion', () => {
 
     expect(rows[0].id).toBe(7);
     expect(typeof rows[0].id).toBe('number');
+  });
+});
+
+// The mutating endpoints reuse the same three mappers the reads exercise, but
+// each response path is asserted DIRECTLY here so the wire boundary stays
+// covered even if the mappers are ever split or a path stops routing through
+// them (review NIT-2).
+describe('mutating endpoints — bigint id coercion on the response', () => {
+  it('createTicket coerces the created ticket id to a number', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      ticket: { ...ownWire, id: '9' },
+    });
+
+    const created = await createTicket({ type: 'bug', title: 'T', body: 'B' });
+
+    expect(created.id).toBe(9);
+    expect(typeof created.id).toBe('number');
+  });
+
+  it('patchTicket coerces the updated ticket id to a number', async () => {
+    vi.spyOn(api, 'patch').mockResolvedValueOnce({
+      ticket: { ...ownWire, id: '1', version: 2 },
+    });
+
+    const updated = await patchTicket(1, {
+      status: 'resolved',
+      expectedVersion: 1,
+    });
+
+    expect(updated.id).toBe(1);
+    expect(typeof updated.id).toBe('number');
+  });
+
+  it('addTicketComment coerces the created comment id to a number', async () => {
+    vi.spyOn(api, 'post').mockResolvedValueOnce({
+      comment: {
+        id: '8',
+        body: 'hi',
+        is_mine: true,
+        created_at: '2026-07-17T00:00:00.000Z',
+      },
+    });
+
+    const comment = await addTicketComment(1, 'hi');
+
+    expect(comment.id).toBe(8);
+    expect(typeof comment.id).toBe('number');
   });
 });
