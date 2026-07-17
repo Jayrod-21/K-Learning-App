@@ -118,12 +118,29 @@ services:
       - TOTP_SECRET_ENC_KEY=${TOTP_SECRET_ENC_KEY}
       - REGISTRATION_ENABLED=${REGISTRATION_ENABLED:-false}
       - MFA_REQUIRED=${MFA_REQUIRED:-true}
+      # F-006 email verification (values in Deploy/.env). SMTP_HOST unset ⇒
+      # mock transport (no real send). host.docker.internal reaches Proton
+      # Mail Bridge on the HOST (see extra_hosts below).
+      - EMAIL_VERIFICATION_REQUIRED=${EMAIL_VERIFICATION_REQUIRED:-true}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_TLS_REJECT_UNAUTHORIZED=${SMTP_TLS_REJECT_UNAUTHORIZED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMAGE_STORAGE_DIR=${IMAGE_STORAGE_DIR:-/app/var/images}
       - BOOK_UPLOAD_STORAGE_DIR=${BOOK_UPLOAD_STORAGE_DIR:-/app/var/book-uploads}
       # F-012: where the server reads corpus mp3s (routes/ttmik.ts). Matches
       # the read-only bind mount below — fixed in-container path, both colors.
       - CORPUS_AUDIO_DIR=/corpus
+
+    # F-006: reach Proton Mail Bridge on the HOST. Bridge's SMTP listens on the
+    # host's 127.0.0.1, unreachable from inside the container; host-gateway maps
+    # host.docker.internal → the host. Only used when SMTP_HOST is set to it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     volumes:
       # SHARED image volume — BOTH colors mount km_images at the same path so
