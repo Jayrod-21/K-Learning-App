@@ -5,12 +5,18 @@
  *
  * Responsibilities:
  *   - Missing-target guard: anchored steps whose element is not currently in
- *     the DOM are dropped before the drive starts. If a tour that HAS
- *     anchored steps loses all of them (page still loading, empty state,
- *     desktop-vs-mobile chrome), the un-anchored connective copy usually
- *     still runs; a tour reduced to ZERO steps reports 'unavailable' and the
- *     caller does not mark it seen — it simply retries on a later visit.
- *     The tour can therefore never block the UI or crash on a missing node.
+ *     the DOM are dropped before the drive starts.
+ *   - Availability threshold (fix-pass S1): a tour that DEFINES anchored
+ *     steps must resolve AT LEAST ONE of them, or it reports 'unavailable'
+ *     and the caller does not mark it seen — it retries on a later visit
+ *     instead of burning its one shot running connective copy over a
+ *     half-loaded or empty-state page. "At least one" (not "the first" /
+ *     "all") is deliberate: it is robust to step reordering, and a
+ *     partially-loaded page that resolves most anchors still delivers the
+ *     tour's value — only the fully-anchorless case is a degraded no-show.
+ *     A tour with NO anchored steps at all (modal-only welcome/outro copy)
+ *     is always available. The tour can therefore never block the UI or
+ *     crash on a missing node.
  *   - Reduced motion: `prefers-reduced-motion: reduce` turns off the
  *     spotlight/popover animations (driver's `animate: false`).
  *   - Dismissal: Esc and overlay-click close the tour (`allowClose`), and
@@ -62,13 +68,17 @@ export function startTour(
   opts: { onFinished: () => void },
 ): StartTourResult {
   const steps: DriveStep[] = [];
+  let anchoredDefined = 0;
+  let anchoredResolved = 0;
   for (const s of tour.steps) {
     if (s.target !== undefined) {
+      anchoredDefined += 1;
       // Missing-target guard — resolve NOW, render later. driver.js would
       // fall back to a centered popover for a dead selector, which would
       // show anchored copy ("this button here") with no button; dropping
       // the step is the honest behavior.
       if (document.querySelector(s.target) === null) continue;
+      anchoredResolved += 1;
       steps.push({
         element: s.target,
         popover: {
@@ -83,7 +93,12 @@ export function startTour(
     }
   }
 
-  if (steps.length === 0) {
+  // Availability threshold (see header): an anchored tour that resolved NONE
+  // of its anchors is a half-loaded/empty page — report 'unavailable' so the
+  // caller does NOT mark it seen and it retries on a later visit, instead of
+  // running only its connective copy and burning the one-shot. Modal-only
+  // tours (anchoredDefined === 0) skip the check and are always available.
+  if (steps.length === 0 || (anchoredDefined > 0 && anchoredResolved === 0)) {
     return { status: 'unavailable' };
   }
 

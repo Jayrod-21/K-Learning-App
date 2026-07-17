@@ -7,8 +7,9 @@
  * feature spec cares about:
  *   - first-run fires when `toursSeen` is empty; not when its id is present,
  *   - a surface mini-tour fires on the first visit, not the second,
- *   - finishing/skipping persists the id (localStorage + a read-merge-write
- *     PUT with the right shape),
+ *   - finishing/skipping persists the id (localStorage + a field-scoped
+ *     `PATCH /settings/prefs/tours-seen` — never a full-blob PUT, so the
+ *     sync structurally cannot clobber palette/textSize),
  *   - replay re-runs an already-seen tour,
  *   - "skip all" marks everything seen and suppresses auto-fire,
  *   - an 'unavailable' tour (no target resolved) is NOT marked seen,
@@ -20,7 +21,7 @@
  * paint-settle delay.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, renderHook } from '@testing-library/react';
+import { act, cleanup, renderHook } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { JSX, ReactNode } from 'react';
 import { TourProvider } from './TourProvider';
@@ -43,10 +44,12 @@ vi.mock('../lib/tourDriver', () => ({
 const serviceMocks = vi.hoisted(() => ({
   fetchPrefs: vi.fn(),
   putPrefs: vi.fn(),
+  patchToursSeen: vi.fn(),
 }));
 vi.mock('../services/settings', () => ({
   fetchPrefs: serviceMocks.fetchPrefs,
   putPrefs: serviceMocks.putPrefs,
+  patchToursSeen: serviceMocks.patchToursSeen,
 }));
 
 const BASE_PREFS: Prefs = {
@@ -129,8 +132,14 @@ beforeEach(() => {
   driverMocks.startTour.mockReset();
   serviceMocks.fetchPrefs.mockReset();
   serviceMocks.putPrefs.mockReset();
+  serviceMocks.patchToursSeen.mockReset();
   serviceMocks.fetchPrefs.mockResolvedValue({ ...BASE_PREFS });
   serviceMocks.putPrefs.mockImplementation((p: Prefs) => Promise.resolve(p));
+  // The server unions the sent ids into its stored list and echoes the full
+  // prefs view; default: nothing stored server-side beyond what we sent.
+  serviceMocks.patchToursSeen.mockImplementation((ids: string[]) =>
+    Promise.resolve({ ...BASE_PREFS, toursSeen: [...ids].sort() }),
+  );
   mockStarted();
 });
 
@@ -232,7 +241,7 @@ describe('TourProvider — surface mini-tour trigger', () => {
 });
 
 describe('TourProvider — persistence on finish/skip', () => {
-  it('marks the tour seen locally and PUTs the merged prefs (right shape)', async () => {
+  it('marks the tour seen locally and PATCHes ONLY the toursSeen field (never a full-blob PUT)', async () => {
     serviceMocks.fetchPrefs.mockResolvedValue({
       ...BASE_PREFS,
       toursSeen: ['first-run'],
@@ -248,14 +257,39 @@ describe('TourProvider — persistence on finish/skip', () => {
 
     // Local fast path: the id is in localStorage immediately.
     expect(seenInStorage()).toContain('hanja');
-    // Server sync: read-merge-write — the PUT body is the FRESH prefs blob
-    // with only toursSeen replaced (palette/textSize untouched).
-    expect(serviceMocks.putPrefs).toHaveBeenCalledTimes(1);
-    const body = serviceMocks.putPrefs.mock.calls[0][0] as Prefs;
-    expect(body.toursSeen).toEqual(['first-run', 'hanja']);
-    expect(body.palette).toEqual(BASE_PREFS.palette);
-    expect(body.textSize).toBe(BASE_PREFS.textSize);
-    expect(body.languageDisplay).toEqual(BASE_PREFS.languageDisplay);
+    // Server sync: field-scoped PATCH with the sorted local set. The server
+    // union-merges and jsonb_set's only that key, so no palette/textSize/
+    // languageDisplay value is ever carried by (or clobbered by) this sync —
+    // proven structurally here: the provider issues NO full-blob PUT at all.
+    expect(serviceMocks.patchToursSeen).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.patchToursSeen).toHaveBeenCalledWith([
+      'first-run',
+      'hanja',
+    ]);
+    expect(serviceMocks.putPrefs).not.toHaveBeenCalled();
+  });
+
+  it('adopts ids the PATCH echo carries that were only known server-side (mid-session convergence)', async () => {
+    serviceMocks.fetchPrefs.mockResolvedValue({
+      ...BASE_PREFS,
+      toursSeen: ['first-run'],
+    });
+    // Another device marked 'library' between our boot and this mark: the
+    // server's union echo carries it back.
+    serviceMocks.patchToursSeen.mockImplementation((ids: string[]) =>
+      Promise.resolve({
+        ...BASE_PREFS,
+        toursSeen: [...new Set([...ids, 'library'])].sort(),
+      }),
+    );
+    const result = renderAt('/learn/hanja');
+    await settle();
+    await act(async () => {
+      lastOnFinished?.();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(result.current.seen.has('library')).toBe(true);
+    expect(seenInStorage()).toContain('library');
   });
 
   it('a failed sync still keeps the local mark (no re-fire, no crash)', async () => {
@@ -265,8 +299,8 @@ describe('TourProvider — persistence on finish/skip', () => {
     });
     const result = renderAt('/learn/hanja');
     await settle();
-    // The mark-time re-GET fails outright.
-    serviceMocks.fetchPrefs.mockRejectedValue(new Error('offline'));
+    // The mark-time PATCH fails outright.
+    serviceMocks.patchToursSeen.mockRejectedValue(new Error('offline'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await act(async () => {
       lastOnFinished?.();
@@ -342,14 +376,16 @@ describe('TourProvider — replay + skip-all', () => {
     });
     expect(driverMocks.startTour).not.toHaveBeenCalled();
     expect(seenInStorage()).toEqual([...TOUR_IDS].sort());
-    expect(serviceMocks.putPrefs).toHaveBeenCalledTimes(1);
-    const body = serviceMocks.putPrefs.mock.calls[0][0] as Prefs;
-    expect(body.toursSeen).toEqual([...TOUR_IDS].sort());
+    expect(serviceMocks.patchToursSeen).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.patchToursSeen).toHaveBeenCalledWith(
+      [...TOUR_IDS].sort(),
+    );
+    expect(serviceMocks.putPrefs).not.toHaveBeenCalled();
   });
 });
 
 describe('TourProvider — missing targets', () => {
-  it("an 'unavailable' tour (no step resolved) is not marked seen and does not crash", async () => {
+  it("an 'unavailable' tour (no anchored step resolved) is not marked seen and does not crash", async () => {
     driverMocks.startTour.mockReturnValue({ status: 'unavailable' });
     serviceMocks.fetchPrefs.mockResolvedValue({
       ...BASE_PREFS,
@@ -359,8 +395,36 @@ describe('TourProvider — missing targets', () => {
     await settle();
     expect(startedTourIds()).toEqual(['hanja']); // it TRIED…
     expect(seenInStorage()).not.toContain('hanja'); // …but did not burn the mark
-    expect(serviceMocks.putPrefs).not.toHaveBeenCalled();
+    expect(serviceMocks.patchToursSeen).not.toHaveBeenCalled();
     expect(result.current.activeTourId).toBeNull();
+  });
+
+  it('an unavailable tour retries on a later visit, runs once its anchors resolve, and only THEN burns the mark (S1 contract, provider half)', async () => {
+    // Visit 1: half-loaded page — the runner reports 'unavailable'.
+    driverMocks.startTour.mockReturnValue({ status: 'unavailable' });
+    serviceMocks.fetchPrefs.mockResolvedValue({
+      ...BASE_PREFS,
+      toursSeen: ['first-run'],
+    });
+    const first = renderAt('/learn/hanja');
+    await settle();
+    expect(startedTourIds()).toEqual(['hanja']);
+    expect(first.current.seen.has('hanja')).toBe(false);
+    cleanup();
+
+    // Visit 2 (fresh mount, same device): the anchors now resolve. The tour
+    // fires again — the one-shot was NOT burned — and finishing it persists.
+    driverMocks.startTour.mockReset();
+    mockStarted();
+    renderAt('/learn/hanja');
+    await settle();
+    expect(startedTourIds()).toEqual(['hanja']);
+    await act(async () => {
+      lastOnFinished?.();
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(seenInStorage()).toContain('hanja');
+    expect(serviceMocks.patchToursSeen).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -60,8 +60,12 @@ const mocks = vi.hoisted(() => {
     regenerateRecoveryCodes: vi.fn(),
     fetchPrefs: vi.fn(),
     putPrefs: vi.fn(),
+    patchToursSeen: vi.fn(),
     fetchSchedules: vi.fn(),
     putSchedules: vi.fn(),
+    // Tour runner spy (fix-pass SF-2): the "Help & tours" tests mount a REAL
+    // TourProvider, whose replay path must reach a startable runner.
+    startTour: vi.fn(),
     refresh: vi.fn(async () => undefined),
     // Mutable from the test bodies — the useAuth mock reads it on each call.
     currentUser: {
@@ -90,6 +94,7 @@ vi.mock('../lib/qr', () => ({
 vi.mock('../services/settings', () => ({
   fetchPrefs: mocks.fetchPrefs,
   putPrefs: mocks.putPrefs,
+  patchToursSeen: mocks.patchToursSeen,
   // Real constant (v2 flatten + accent sync): the wire palette echo the page
   // seeds its PUT baseline with before hydration. Mirrors the module's export.
   LEGACY_PALETTE_DEFAULT: {
@@ -124,12 +129,21 @@ vi.mock('../hooks/useAuth', () => ({
   }),
 }));
 
+// The driver.js boundary, mocked so the "Help & tours" tests can mount a
+// REAL TourProvider (SF-2) without pulling the overlay engine into happy-dom.
+vi.mock('../lib/tourDriver', () => ({
+  startTour: mocks.startTour,
+}));
+
 // We import Settings AFTER the mocks above so the module sees them.
 import Settings from './Settings';
 import { AccentProvider } from '../hooks/AccentProvider';
 import { TextSizeProvider } from '../hooks/TextSizeProvider';
 import { SettingsProvider } from '../hooks/SettingsProvider';
 import { ThemeProvider } from '../hooks/ThemeProvider';
+import { TourProvider } from '../hooks/TourProvider';
+import { TOURS_SEEN_STORAGE_KEY } from '../hooks/tour-context';
+import { TOUR_IDS, type TourDefinition } from '../lib/tours';
 import { ToastProvider } from '../components/ToastProvider';
 
 /**
@@ -224,6 +238,16 @@ beforeEach(() => {
   // prefs tests override these.
   mocks.fetchPrefs.mockResolvedValue(DEFAULT_PREFS);
   mocks.putPrefs.mockResolvedValue(DEFAULT_PREFS);
+  mocks.patchToursSeen.mockReset();
+  // Server union echo: what the provider sent is what is now stored.
+  mocks.patchToursSeen.mockImplementation((ids: string[]) =>
+    Promise.resolve({ ...DEFAULT_PREFS, toursSeen: [...ids].sort() }),
+  );
+  mocks.startTour.mockReset();
+  mocks.startTour.mockReturnValue({
+    status: 'started',
+    handle: { destroy: vi.fn() },
+  });
   mocks.fetchSchedules.mockReset();
   mocks.putSchedules.mockReset();
   // Default: a fresh user — the server stores nothing until the first PUT
@@ -2467,5 +2491,164 @@ describe('Settings — device-adaptive two-column layout (Phase D2)', () => {
     expect(stylesheet).not.toMatch(
       /@media \(min-width: 768px\)[\s\S]{0,400}km-settings__grid/,
     );
+  });
+});
+
+describe('Settings — Help & tours (fix-pass SF-2: mounted WITH a real TourProvider)', () => {
+  /**
+   * The 65 tests above render provider-free, so `ToursSection` returns null
+   * in all of them (by design — `useTourOptional`). These tests mount the
+   * REAL `TourProvider` (runner + server sync mocked at their module
+   * boundaries) around the same provider stack, so the section renders and
+   * the Replay / Skip-all wiring is exercised end-to-end: context → provider
+   * state → localStorage + PATCH persistence.
+   */
+  function renderSettingsWithTours(): void {
+    render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <ThemeProvider>
+          <AccentProvider>
+            <TextSizeProvider>
+              <ToastProvider>
+                <SettingsProvider>
+                  <TourProvider>
+                    <Routes>
+                      <Route path="/settings" element={<Settings />} />
+                      <Route
+                        path="/tickets"
+                        element={<div data-testid="tickets-probe">tickets</div>}
+                      />
+                    </Routes>
+                  </TourProvider>
+                </SettingsProvider>
+              </ToastProvider>
+            </TextSizeProvider>
+          </AccentProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  /** Seed the seen-set BEFORE mount (the suite's beforeEach cleared it).
+   *  Also keeps the provider's auto-fire quiet: with `first-run` seen and
+   *  no surface tour registered for /settings, nothing fires on its own. */
+  function seedSeen(ids: readonly string[]): void {
+    window.localStorage.setItem(TOURS_SEEN_STORAGE_KEY, JSON.stringify(ids));
+  }
+
+  function startedTourIds(): string[] {
+    return mocks.startTour.mock.calls.map(
+      (c) => (c[0] as TourDefinition).id,
+    );
+  }
+
+  beforeEach(() => {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  });
+
+  it('renders the section with the Replay controls and the skip-all button (null without the provider — proven by every other test in this file)', async () => {
+    seedSeen([...TOUR_IDS]);
+    renderSettingsWithTours();
+    expandGroup(/Help & tours/);
+
+    expect(
+      screen.getByRole('button', { name: /Replay the welcome tour/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('combobox', { name: 'Choose a page intro to replay' }),
+    ).toBeInTheDocument();
+    // No pick yet → Replay is disabled (DOM value narrowing gate).
+    expect(
+      screen.getByRole('button', { name: /Replay$/ }),
+    ).toBeDisabled();
+    await act(async () => {
+      vi.advanceTimersByTime(10); // settle the provider's boot fetch
+    });
+  });
+
+  it('Replay re-arms an already-SEEN surface tour: picking it and clicking Replay runs it again despite its seen mark', async () => {
+    seedSeen([...TOUR_IDS]); // hanja included — the tour is "used up"
+    renderSettingsWithTours();
+    await act(async () => {
+      vi.advanceTimersByTime(10); // hydrate (all seen → no auto-fire)
+    });
+    expandGroup(/Help & tours/);
+
+    fireEvent.change(
+      screen.getByRole('combobox', { name: 'Choose a page intro to replay' }),
+      { target: { value: 'hanja' } },
+    );
+    const replayBtn = screen.getByRole('button', {
+      name: /Replay$/,
+    });
+    expect(replayBtn).toBeEnabled();
+    fireEvent.click(replayBtn);
+
+    // The provider navigates to the tour's surface first, then runs it after
+    // the paint-settle delay.
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+    expect(startedTourIds()).toEqual(['hanja']);
+  });
+
+  it('Replay the welcome tour re-runs first-run despite its seen mark', async () => {
+    seedSeen([...TOUR_IDS]);
+    renderSettingsWithTours();
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+    });
+    expandGroup(/Help & tours/);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Replay the welcome tour/ }),
+    );
+    // first-run replays from Today (`/`) so its chrome anchors resolve.
+    await act(async () => {
+      vi.advanceTimersByTime(700);
+    });
+    expect(startedTourIds()).toEqual(['first-run']);
+  });
+
+  it('Skip all tours marks EVERY tour seen and persists it (localStorage + field-scoped PATCH), then disables itself', async () => {
+    seedSeen(['first-run']); // partial → skip-all is live, no auto-fire on /settings
+    renderSettingsWithTours();
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+    });
+    expandGroup(/Help & tours/);
+
+    const skipBtn = screen.getByRole('button', { name: /Skip all tours/ });
+    expect(skipBtn).toBeEnabled();
+    fireEvent.click(skipBtn);
+
+    // Same-device tier: every registered id lands in localStorage.
+    await waitFor(() => {
+      expect(
+        JSON.parse(
+          window.localStorage.getItem(TOURS_SEEN_STORAGE_KEY) ?? '[]',
+        ) as string[],
+      ).toEqual([...TOUR_IDS].sort());
+    });
+    // Cross-device tier: ONE field-scoped PATCH with the full id set — and
+    // never a full-blob PUT from the tour path (S3 posture).
+    await waitFor(() => {
+      expect(mocks.patchToursSeen).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.patchToursSeen).toHaveBeenCalledWith([...TOUR_IDS].sort());
+    expect(mocks.putPrefs).not.toHaveBeenCalled();
+
+    // The control reflects the suppressed state and can't double-fire.
+    const offBtn = await screen.findByRole('button', {
+      name: /All tours are off/,
+    });
+    expect(offBtn).toBeDisabled();
+
+    // …and the suppression is REAL: no tour ever started in this test.
+    expect(mocks.startTour).not.toHaveBeenCalled();
   });
 });

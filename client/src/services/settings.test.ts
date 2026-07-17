@@ -2,7 +2,7 @@
  * settings service — /settings/prefs URL/body wiring + error surface.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchPrefs, putPrefs, type Prefs } from './settings';
+import { fetchPrefs, patchToursSeen, putPrefs, type Prefs } from './settings';
 import { api, ApiError } from './api';
 
 afterEach(() => {
@@ -85,5 +85,44 @@ describe('putPrefs', () => {
     );
 
     await expect(putPrefs(PREFS)).rejects.toMatchObject({ code: 'network' });
+  });
+});
+
+describe('patchToursSeen', () => {
+  it('PATCHes /settings/prefs/tours-seen with ONLY the toursSeen field and returns the echoed prefs', async () => {
+    const echoed = { ...PREFS, toursSeen: ['first-run', 'hanja'] };
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce(echoed);
+
+    const out = await patchToursSeen(['first-run', 'hanja']);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/settings/prefs/tours-seen',
+      { toursSeen: ['first-run', 'hanja'] },
+      undefined,
+    );
+    expect(out).toEqual(echoed);
+  });
+
+  it('forwards the abort signal when given', async () => {
+    const spy = vi.spyOn(api, 'patch').mockResolvedValueOnce(PREFS);
+    const ctrl = new AbortController();
+
+    await patchToursSeen(['first-run'], ctrl.signal);
+
+    expect(spy).toHaveBeenCalledWith(
+      '/settings/prefs/tours-seen',
+      { toursSeen: ['first-run'] },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('surfaces failures as ApiError (caller treats the sync as best-effort)', async () => {
+    vi.spyOn(api, 'patch').mockRejectedValueOnce(
+      new ApiError('network unreachable', { status: 0, code: 'network' }),
+    );
+
+    await expect(patchToursSeen(['first-run'])).rejects.toMatchObject({
+      code: 'network',
+    });
   });
 });

@@ -47,6 +47,10 @@ vi.mock('../services/settings', () => ({
     new Promise<never>(() => {
       /* unreachable in these tests */
     }),
+  patchToursSeen: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
 }));
 
 /** Signed-in + email-VERIFIED → UnverifiedBanner renders null. */

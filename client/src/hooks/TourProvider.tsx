@@ -20,18 +20,23 @@
  *   - Suppressed while a mock exam is active (`useExamActive` — a popover
  *     over a running timed exam would be hostile), and while another tour
  *     is on screen.
- *   - A tour that resolves ZERO steps (`'unavailable'`) is NOT marked seen —
- *     it retries on a later visit instead of burning its one shot on a
- *     half-loaded page.
+ *   - A tour whose anchored steps ALL fail to resolve (`'unavailable'` from
+ *     the runner) is NOT marked seen — it retries on a later visit instead
+ *     of burning its one shot on a half-loaded page.
  *
  * PERSISTENCE MODEL (two-tier, the accent/textSize posture)
  *   - Finish/skip → the id enters the in-memory set + localStorage
  *     synchronously (same-device durability), then a best-effort
- *     read-merge-write server sync: GET fresh prefs, union `toursSeen`,
- *     PUT the full blob. The fresh GET (instead of reusing the boot
- *     snapshot) means a palette/textSize change made since boot is never
- *     clobbered — the PUT carries the server's own current values for every
- *     slice this provider doesn't own. Concurrent marks coalesce (single
+ *     field-scoped server sync: `PATCH /settings/prefs/tours-seen` with the
+ *     local set; the server union-merges into the stored list and writes
+ *     ONLY that key (`jsonb_set`). Because no other prefs slice is carried,
+ *     this sync structurally CANNOT clobber a palette/textSize change made
+ *     meanwhile — the GET→PUT window the old full-blob read-merge-write
+ *     sync had is gone. Residual (accepted): concurrent writers of
+ *     `toursSeen` itself still resolve last-writer-wins on that one field;
+ *     each device's localStorage re-unions on its next sync, so the set
+ *     converges upward. Ids the SERVER knew and we didn't ride back on the
+ *     PATCH echo and are adopted locally. Concurrent marks coalesce (single
  *     in-flight sync + one pending re-run). Sync failure is non-fatal and
  *     logged; localStorage still suppresses re-fires on this device.
  *   - The Settings screen's own prefs PUTs source `toursSeen` live from
@@ -55,7 +60,7 @@ import {
   type ReactNode,
 } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { fetchPrefs, putPrefs } from '../services/settings';
+import { fetchPrefs, patchToursSeen } from '../services/settings';
 import { startTour, type TourHandle } from '../lib/tourDriver';
 import {
   FIRST_RUN_TOUR_ID,
@@ -116,10 +121,14 @@ export function TourProvider({
     }
     syncInFlightRef.current = true;
     try {
-      const prefs = await fetchPrefs();
+      // Field-scoped write: the server union-merges these ids into the
+      // stored list and touches ONLY the toursSeen key, so this can never
+      // carry (and therefore never revert) palette/languageDisplay/textSize
+      // — see the PERSISTENCE MODEL header note.
+      const echoed = await patchToursSeen([...seenRef.current].sort());
       // Rolling-deploy guard: an old server omits the field entirely.
-      const serverSeen: string[] = Array.isArray(prefs.toursSeen)
-        ? prefs.toursSeen
+      const serverSeen: string[] = Array.isArray(echoed.toursSeen)
+        ? echoed.toursSeen
         : [];
       const merged = new Set([...serverSeen, ...seenRef.current]);
       // Adopt ids the server knew and we didn't (another device marked
@@ -128,8 +137,6 @@ export function TourProvider({
         storeSeenTours(merged);
         setSeen(merged);
       }
-      if (setsEqual(merged, new Set(serverSeen))) return; // nothing to write
-      await putPrefs({ ...prefs, toursSeen: [...merged].sort() });
     } catch (err) {
       // Non-fatal: localStorage already holds the mark, and the next
       // mark/boot re-attempts. No toast — a tour-bookkeeping blip is not

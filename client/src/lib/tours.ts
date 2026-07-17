@@ -14,7 +14,9 @@
  * A step with no `target` renders as a centered modal popover (welcome /
  * outro copy). Elements are looked up at run time; a step whose target is
  * absent is skipped by the runner, so a half-loaded or empty-state page can
- * never wedge a tour.
+ * never wedge a tour — and if NONE of a tour's anchored steps resolve, the
+ * runner reports the tour 'unavailable' (not seen; retries later) rather
+ * than running connective copy alone (see lib/tourDriver.ts).
  *
  * Tour ids are a CLOSED, client-defined set (`TOUR_IDS`) — they are what is
  * persisted into the `toursSeen` prefs field, never user input. The server
@@ -113,6 +115,11 @@ export const TOURS: ReadonlyArray<TourDefinition> = [
         side: 'bottom',
       },
       {
+        // The floating ChatFab is mounted in BOTH chromes (mobile and
+        // sidebar layouts), so this target + "dot" copy is chrome-
+        // independent. The sidebar's own chat entry carries the distinct
+        // `chat-nav` key precisely so it can't shadow this anchor by DOM
+        // order (fix-pass SF-1).
         target: '[data-tour="chat-fab"]',
         title: 'Your tutor, everywhere',
         body: 'This dot opens the AI tutor chat from any screen — it already knows what page you’re on.',

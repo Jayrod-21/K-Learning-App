@@ -118,3 +118,24 @@ export async function putPrefs(
     signal !== undefined ? { signal } : undefined,
   );
 }
+
+/**
+ * PATCH /settings/prefs/tours-seen → union-merge tour ids into the stored
+ * `toursSeen` and echo the full prefs view (with the merged list).
+ *
+ * Field-scoped on the server via `jsonb_set` — no other prefs slice is
+ * carried, so unlike a full-object PUT this write can NEVER clobber a
+ * palette/textSize change that landed since the caller last read prefs.
+ * `TourProvider`'s seen-sync is the only caller (Settings' own PUTs source
+ * `toursSeen` live from `loadSeenTours()` instead).
+ */
+export async function patchToursSeen(
+  toursSeen: ToursSeen,
+  signal?: AbortSignal,
+): Promise<Prefs> {
+  return api.patch<Prefs>(
+    '/settings/prefs/tours-seen',
+    { toursSeen },
+    signal !== undefined ? { signal } : undefined,
+  );
+}

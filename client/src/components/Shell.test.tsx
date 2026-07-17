@@ -61,14 +61,19 @@ import { TOUR_IDS } from '../lib/tours';
 // never-settling promise keeps it permanently un-hydrated: its auto-fire
 // gate waits on hydration, so no tour can ever fire under these tests, no
 // real network request is attempted, and no late async setState can leak
-// act() warnings into unrelated assertions. `putPrefs` is only reachable
-// after a tour finishes, which can't happen here — stubbed for the import.
+// act() warnings into unrelated assertions. `putPrefs`/`patchToursSeen` are
+// only reachable after a tour finishes, which can't happen here — stubbed
+// for the import.
 vi.mock('../services/settings', () => ({
   fetchPrefs: (): Promise<never> =>
     new Promise<never>(() => {
       /* never settles — TourProvider stays inert */
     }),
   putPrefs: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
+  patchToursSeen: (): Promise<never> =>
     new Promise<never>(() => {
       /* unreachable in these tests */
     }),

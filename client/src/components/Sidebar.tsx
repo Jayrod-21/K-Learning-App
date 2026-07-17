@@ -127,9 +127,13 @@ export function Sidebar(): JSX.Element {
         // a visual preference that has nothing to do with them.
         aria-label={`${it.label} · ${it.kr}`}
         // Guided-tour anchor — PRIMARY tabs share BottomNav's `tab-<id>`
-        // keys (the two chromes are mutually exclusive, so a selector only
-        // ever resolves one). LEARN sub-page links carry no anchor: the
-        // tour's "learn-launcher" step targets the section wrapper below.
+        // keys: the two NAV chromes are mutually exclusive (Shell mounts
+        // Sidebar XOR BottomNav), so a `tab-*` selector only ever resolves
+        // one. NOTE that reasoning does NOT extend to the floating ChatFab,
+        // which mounts in both chromes — hence the rail's chat entry below
+        // carries its own `chat-nav` key, never `chat-fab` (fix-pass SF-1).
+        // LEARN sub-page links carry no anchor: the tour's "learn-launcher"
+        // step targets the section wrapper below.
         data-tour={
           (PRIMARY_TAB_IDS as ReadonlyArray<string>).includes(id)
             ? `tab-${id}`
@@ -187,11 +191,17 @@ export function Sidebar(): JSX.Element {
       </div>
 
       {!examActive && !isSettingsPath(location.pathname) ? (
+        // Guided-tour anchor: `chat-nav` is DELIBERATELY distinct from the
+        // floating dot's `chat-fab` (fix-pass SF-1). The FAB is mounted in
+        // BOTH chromes, so a shared key would resolve by DOM order to this
+        // rail entry — spotlighting a sidebar row while the step copy says
+        // "this dot". No step targets `chat-nav` today; it exists so a
+        // future rail-specific step has a stable, unambiguous hook.
         <button
           type="button"
           className="km-sidebar__link km-sidebar__chat focusring"
           aria-label="Chat · 대화"
-          data-tour="chat-fab"
+          data-tour="chat-nav"
           onClick={openChat}
         >
           <Icon name="chat" size={20} />
