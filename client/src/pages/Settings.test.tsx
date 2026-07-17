@@ -67,6 +67,10 @@ const mocks = vi.hoisted(() => {
     // TourProvider, whose replay path must reach a startable runner.
     startTour: vi.fn(),
     refresh: vi.fn(async () => undefined),
+    // Context logout (the Profile group's "Log out" action). By AuthProvider
+    // contract it ALWAYS resolves — the provider clears local state even when
+    // the POST fails — so the default impl mirrors that.
+    logout: vi.fn(async () => undefined),
     // Mutable from the test bodies — the useAuth mock reads it on each call.
     currentUser: {
       id: 1,
@@ -124,7 +128,7 @@ vi.mock('../hooks/useAuth', () => ({
     loading: false,
     login: vi.fn(),
     register: vi.fn(),
-    logout: vi.fn(),
+    logout: mocks.logout,
     refresh: mocks.refresh,
   }),
 }));
@@ -256,6 +260,8 @@ beforeEach(() => {
   mocks.putSchedules.mockResolvedValue({ schedules: [] });
   mocks.refresh.mockReset();
   mocks.refresh.mockResolvedValue(undefined);
+  mocks.logout.mockReset();
+  mocks.logout.mockResolvedValue(undefined);
   mocks.currentUser = {
     id: 1,
     email: 'jay@example.com',
@@ -1926,6 +1932,92 @@ describe('Settings — Beta feedback entry point (F-023)', () => {
 
     await user.click(reportButton);
     expect(await screen.findByTestId('tickets-probe')).toBeInTheDocument();
+  });
+});
+
+// ─── Log out (Profile group action) ──────────────────────────────────
+
+describe('Settings — Log out', () => {
+  function meOk(): void {
+    mocks.fetchMe.mockResolvedValue({
+      id: 1,
+      email: 'jay@example.com',
+      display_name: 'Jay',
+    } satisfies User);
+  }
+
+  it('lives in the Profile tile: hidden while collapsed, revealed on expand', () => {
+    meOk();
+    renderSettings();
+
+    // Collapsed: the tile body stays MOUNTED but aria-hidden + inert
+    // (CollapsibleTile's contract), so the button is invisible to the
+    // default role query yet reachable with `hidden: true`. Assert BOTH
+    // halves — the default-query absence alone would pass vacuously even
+    // if the body unmounted, and the hidden-query presence pins the
+    // "hidden, not gone" mechanism.
+    expect(
+      screen.queryByRole('button', { name: /Log out/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Log out/, hidden: true }),
+    ).toBeInTheDocument();
+
+    expandGroup(/Profile/);
+    const logoutButton = screen.getByRole('button', { name: /Log out/ });
+    expect(logoutButton).toBeInTheDocument();
+    expect(logoutButton).toBeEnabled();
+    // The hint explains the consequence next to the control.
+    expect(
+      screen.getByText(/Ends your session on this device/),
+    ).toBeInTheDocument();
+  });
+
+  it('clicking it calls useAuth().logout exactly once (state clear + /login redirect are AuthProvider/RequireAuth contracts)', async () => {
+    meOk();
+    const user = userEvent.setup();
+    renderSettings();
+
+    expandGroup(/Profile/);
+    await user.click(screen.getByRole('button', { name: /Log out/ }));
+
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
+    // No arguments — the context method owns the whole flow.
+    expect(mocks.logout).toHaveBeenCalledWith();
+  });
+
+  it('single-flights: while the logout is in flight the button disables (aria-busy) and re-clicks do not re-fire', async () => {
+    meOk();
+    // Never-settling logout keeps the in-flight window open for the whole
+    // test. In the real app the RequireAuth gate unmounts Settings when the
+    // provider flips to guest, so "stuck disabled" is unreachable there.
+    mocks.logout.mockReset();
+    // Never-settling promise; typed `Promise<undefined>` to match the hoisted
+    // mock's inferred return type (`vi.fn(async () => undefined)`).
+    mocks.logout.mockImplementation(
+      () => new Promise<undefined>(() => undefined),
+    );
+    const user = userEvent.setup();
+    renderSettings();
+
+    expandGroup(/Profile/);
+    const logoutButton = screen.getByRole('button', { name: /Log out/ });
+    await user.click(logoutButton);
+
+    expect(logoutButton).toBeDisabled();
+    expect(logoutButton).toHaveAttribute('aria-busy', 'true');
+
+    // A second click must not re-fire. Precision on WHAT this proves:
+    // fireEvent bypasses user-event's pointer-events simulation, but React
+    // itself refuses to dispatch onClick on a `disabled` button — so the
+    // re-fire is stopped by the `disabled` attribute before the
+    // `if (loggingOut) return` closure guard is ever reached. That guard
+    // stays as (unexercised) belt-and-suspenders for the sliver between
+    // the first click and the disabling re-render; the protection this
+    // test pins is `disabled` blocking the re-fire, and removing
+    // `disabled` fails the `toBeDisabled()` assertion above.
+    fireEvent.click(logoutButton);
+    expect(mocks.logout).toHaveBeenCalledTimes(1);
   });
 });
 

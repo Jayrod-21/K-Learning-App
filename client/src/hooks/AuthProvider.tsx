@@ -49,6 +49,7 @@ import { ApiError, api } from '../services/api';
 import {
   login as loginRequest,
   loginTotp,
+  logout as logoutRequest,
   mfaConfirm,
   mfaEnroll,
 } from '../services/auth';
@@ -289,25 +290,37 @@ export function AuthProvider({
    * state, then re-probe. The re-probe is defence in depth — if the server
    * revoked the session, the probe returns 401 and confirms `guest`.
    *
-   * Known edge (acceptable for Pass 1, documented for Pass 3):
+   * Known edge (accepted here; tracked as **F-201** in BUGS_AND_FEATURES.md):
    *   - **Server-side 5xx during logout**: the POST throws, we clear local
    *     state, then `probe()` re-runs and the *cookie is still valid* on the
    *     server. The probe succeeds → state flips back to `authenticated`,
    *     which is correct (the session genuinely still exists) but the UI
    *     flashes "logged out" for the duration of the POST→probe window. The
-   *     user is effectively *not* logged out. Pass 3 will add a retry +
-   *     surfaced warning ("we couldn't reach the server to end your
-   *     session — try again or close all tabs").
+   *     user is effectively *not* logged out, with no feedback beyond the
+   *     `console.warn` in the catch below. A real fix needs server work
+   *     (idempotent revoke so a client retry always lands, and/or a
+   *     short-lived rolling cookie so an un-revoked session dies on its
+   *     own) plus a surfaced client warning ("we couldn't reach the server
+   *     to end your session — try again or close all tabs") — that bundle
+   *     is F-201, deliberately out of scope for this client-only branch.
    *   - **Network down during logout**: same shape — local clear, probe
    *     also fails, state stays `guest` (a previously-network-down session
    *     can't be reached anyway). Acceptable.
    */
   const logout = useCallback(async (): Promise<void> => {
     try {
-      await api.post<void>('/auth/logout');
-    } catch {
+      await logoutRequest();
+    } catch (err) {
       // Best-effort — if the server can't reach us we still drop local
       // state so the UI redirects to login. Next probe will reconcile.
+      // Surfaced as a warning (never a throw — the local clear below MUST
+      // run): on a 5xx the server session is still live and the re-probe
+      // will bounce the user back in with zero visible feedback. Tracked
+      // as F-201 (user-facing warning + idempotent server revoke).
+      console.warn(
+        'logout: POST /auth/logout failed — server session may still be live (F-201)',
+        err,
+      );
     }
     // Drop any half-finished 2FA challenge too — a stale `pending` would
     // otherwise stick the Login screen on the code/enroll step after a logout.

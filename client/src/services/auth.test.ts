@@ -12,6 +12,7 @@ import {
   fetchMfaStatus,
   login,
   loginTotp,
+  logout,
   mfaConfirm,
   mfaEnroll,
   patchMe,
@@ -78,6 +79,28 @@ describe('patchMe', () => {
     await expect(patchMe({ expected_version: 1 })).rejects.toMatchObject({
       status: 0,
       code: 'network',
+    });
+  });
+});
+
+describe('logout', () => {
+  it('POSTs /auth/logout with no body and resolves void', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce(undefined);
+
+    await expect(logout()).resolves.toBeUndefined();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('/auth/logout');
+  });
+
+  it('rethrows ApiError unchanged (caller decides the best-effort posture)', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'internal' }),
+    );
+
+    await expect(logout()).rejects.toMatchObject({
+      status: 500,
+      code: 'internal',
     });
   });
 });

@@ -41,6 +41,23 @@
   opacity: 0.6;
 }
 
+/* ── Log out (Profile group action) ───────────────────────────── */
+
+/* Separated from the profile fields by a hairline so the session action
+ * reads as its own row — same divider idiom as the sched rows below. */
+.km-settings__logout {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.km-settings__logout-hint {
+  margin: 0 0 10px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--paper-mute);
+}
+
 /* ── Notification schedules (F-040) ───────────────────────────── */
 
 .km-settings__sched-note {
