@@ -103,6 +103,8 @@ vi.mock('../hooks/useEndpointOrMock', () => ({
 vi.mock('../services/vocab', () => ({
   getDueCards: vi.fn(),
   getDueCardsPage: vi.fn(),
+  removeCard: vi.fn(),
+  clearDueCards: vi.fn(),
   submitReview: vi.fn(),
   listLists: vi.fn(),
   getListDetail: vi.fn(),
@@ -1663,6 +1665,294 @@ describe('Review — F-128 Seoul reskin', () => {
     expect(document.querySelector('.km-subway')).not.toBeNull();
     expect(
       screen.getByRole('progressbar', { name: 'Session progress' }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Remove from review + clear the queue (soft delete — words stay saved)
+// ─────────────────────────────────────────────────────────────
+
+describe('Review — remove one card from review (study session)', () => {
+  /** Two-card due deck so removal can prove the NEXT card slides in. */
+  const SECOND_RAW: DueCard = {
+    ...DUE_RAW,
+    id: 102,
+    vocab_entry_id: 2,
+    vocabKorean: '학교',
+    vocabEnglish: 'school',
+  };
+  const TWO_CARD_DECK: StudyCard[] = [
+    DUE_STUDY[0]!,
+    {
+      key: 'due:102',
+      kr: '학교',
+      en: 'school',
+      exKr: '',
+      exEn: '',
+      wire: { kind: 'due', snapshot: SECOND_RAW },
+    },
+  ];
+
+  it('removes the current card via DELETE and advances to the next card', async () => {
+    settleLanding({ due: TWO_CARD_DECK });
+    vi.mocked(vocabService.removeCard).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+
+    await waitFor(() => {
+      expect(vocabService.removeCard).toHaveBeenCalledWith(101);
+    });
+    // The removed card's word is gone; the next card slid into its slot and
+    // the session shrank honestly (1 of 1, not 1 of 2 with a phantom).
+    expect(screen.queryByText('영향')).not.toBeInTheDocument();
+    expect(screen.getByText('학교')).toBeInTheDocument();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+  });
+
+  it('removing the last card completes the session', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.removeCard).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+
+    expect(await screen.findByText('Session complete')).toBeInTheDocument();
+    expect(vocabService.removeCard).toHaveBeenCalledWith(101);
+  });
+
+  it('keeps the card and shows an honest error when the removal fails', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.removeCard).mockRejectedValue(
+      new ApiError('server exploded', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+
+    // The failure surfaces as an alert…
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('영향');
+    // …and the card is STILL in the deck (nothing was optimistically lied
+    // away) with the control re-enabled for a retry.
+    expect(screen.getByText('영향')).toBeInTheDocument();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    ).toBeEnabled();
+  });
+
+  it('blocks rating the card while its removal is in flight (no skipped card)', async () => {
+    settleLanding({ due: TWO_CARD_DECK });
+    // Deferred DELETE so the test controls the in-flight window.
+    let resolveRemove!: () => void;
+    vi.mocked(vocabService.removeCard).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRemove = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    // Flip FIRST (the card freezes once the removal starts), then remove.
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+
+    // Mid-flight: the rating row is visibly pending and rating is a no-op —
+    // without the guard, `idx` would advance and the DELETE resolving would
+    // shift the deck under it, silently skipping 학교 for the session.
+    const good = screen.getByRole('button', { name: /Good/ });
+    expect(good).toBeDisabled();
+    await user.click(good);
+    expect(vocabService.submitReview).not.toHaveBeenCalled();
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRemove();
+    });
+    // The removal lands cleanly: the next card slid into this slot — the
+    // session did NOT jump to complete over a skipped card — and no rating
+    // was ever submitted for the removed card.
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+    expect(screen.getByText('1 / 1')).toBeInTheDocument();
+    expect(screen.queryByText('Session complete')).not.toBeInTheDocument();
+    expect(vocabService.submitReview).not.toHaveBeenCalled();
+  });
+
+  it('blocks the spacebar flip while the removal is in flight', async () => {
+    settleLanding({ due: TWO_CARD_DECK });
+    let resolveRemove!: () => void;
+    vi.mocked(vocabService.removeCard).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRemove = resolve;
+        }),
+    );
+    renderReview('/learn/vocab?study=due');
+
+    // fireEvent (not userEvent) so focus STAYS on `body`: userEvent's click
+    // would focus the remove button, and the window space handler always
+    // bails while focus sits on an interactive element (happy-dom's blur()
+    // doesn't move activeElement back to body) — which would mask the very
+    // in-flight guard this test exists to pin down.
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+    // The removal is genuinely in flight before the keypress…
+    expect(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    ).toBeDisabled();
+    // …and space must NOT reveal the card being removed.
+    fireEvent.keyDown(window, { key: ' ' });
+    expect(
+      screen.queryByRole('group', { name: 'FSRS rating' }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveRemove();
+    });
+    expect(await screen.findByText('학교')).toBeInTheDocument();
+  });
+
+  it('clears the stale remove-error once the user rates past the card (SF-2)', async () => {
+    settleLanding({ due: TWO_CARD_DECK });
+    vi.mocked(vocabService.removeCard).mockRejectedValue(
+      new ApiError('server exploded', { status: 500, code: 'server_error' }),
+    );
+    vi.mocked(vocabService.submitReview).mockResolvedValue({
+      version: 2,
+      due_at: new Date().toISOString(),
+      scheduled_days: 1,
+    });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab?study=due');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Remove 영향 from review' }),
+    );
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+
+    // The user shrugs and rates the card instead — the card-specific
+    // "couldn't remove 영향" alert must not follow them onto the next card.
+    await user.click(screen.getByRole('button', { name: 'Flip card' }));
+    await user.click(screen.getByRole('button', { name: /Good/ }));
+
+    expect(screen.getByText('학교')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('offers no remove control on a fixture (local-wire) card', () => {
+    const LOCAL_DECK: StudyCard[] = [
+      { key: 'fixture:v1', kr: '물', en: 'water', exKr: '', exEn: '', wire: { kind: 'local' } },
+    ];
+    settleLanding({ due: LOCAL_DECK });
+    renderReview('/learn/vocab?study=due');
+
+    expect(
+      screen.queryByRole('button', { name: /Remove .* from review/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('Review — clear the review queue (landing)', () => {
+  it('clears only after an explicit confirmation that says the words are kept', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.clearDueCards).mockResolvedValue({ cleared: 5 });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab');
+
+    // Tapping Clear does NOT clear — it opens the confirmation sheet.
+    await user.click(
+      screen.getByRole('button', { name: 'Clear the review queue' }),
+    );
+    expect(vocabService.clearDueCards).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', {
+      name: 'Clear the review queue?',
+    });
+    // The confirmation copy must state plainly that the saved words survive…
+    expect(
+      within(dialog).getByText(/your saved words and lists are kept/),
+    ).toBeInTheDocument();
+    // …and must not over-promise an empty session: only VOCAB cards are
+    // cleared — grammar practice cards stay in the due feed by design.
+    expect(
+      within(dialog).getByText(/vocab cards from review \(grammar practice cards stay\)/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /Clear the queue/ }),
+    );
+
+    await waitFor(() => {
+      expect(vocabService.clearDueCards).toHaveBeenCalledTimes(1);
+    });
+    // Removed-count status + a due refetch so the queue section reflects
+    // the (now empty) server truth.
+    expect(
+      await screen.findByText(
+        'Removed 5 cards from review. Your saved words are kept.',
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(hoisted.refetchCalls.due).toBeGreaterThan(0);
+    });
+  });
+
+  it('cancelling the confirmation clears nothing', async () => {
+    settleLanding({ due: DUE_STUDY });
+    const user = userEvent.setup();
+    renderReview('/learn/vocab');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Clear the review queue' }),
+    );
+    const dialog = screen.getByRole('dialog', {
+      name: 'Clear the review queue?',
+    });
+    await user.click(within(dialog).getByRole('button', { name: /Cancel/ }));
+
+    expect(vocabService.clearDueCards).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('dialog', { name: 'Clear the review queue?' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('surfaces an honest error (nothing removed) when the clear fails', async () => {
+    settleLanding({ due: DUE_STUDY });
+    vi.mocked(vocabService.clearDueCards).mockRejectedValue(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+    const user = userEvent.setup();
+    renderReview('/learn/vocab');
+
+    await user.click(
+      screen.getByRole('button', { name: 'Clear the review queue' }),
+    );
+    await user.click(
+      within(
+        screen.getByRole('dialog', { name: 'Clear the review queue?' }),
+      ).getByRole('button', { name: /Clear the queue/ }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Nothing was removed');
+    // The queue strip (and its Clear affordance) is still there for a retry.
+    expect(
+      screen.getByRole('button', { name: 'Clear the review queue' }),
     ).toBeInTheDocument();
   });
 });

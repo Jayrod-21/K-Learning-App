@@ -7,6 +7,8 @@
  *   GET  /vocab/cards/due
  *   POST /vocab/cards/init
  *   POST /vocab/cards/:cardId/reviews
+ *   DELETE /vocab/cards/:cardId   (remove from review — soft delete)
+ *   POST /vocab/cards/clear       (clear the review queue — soft delete)
  *   POST /vocab/mine        (FU-NF-33: tap anything → bank it)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -17,6 +19,7 @@ import {
   ensureCorpusSource,
   registerUser,
   seedBookUpload,
+  seedHanjaCharacter,
   seedTopikItem,
   seedVocabCard,
   seedVocabEntry,
@@ -52,12 +55,14 @@ describe('vocab — auth required', () => {
     ['GET', '/vocab/series'],
     ['GET', '/vocab/saved-from-uploads'],
     ['POST', '/vocab/cards/init'],
+    ['POST', '/vocab/cards/clear'],
+    ['DELETE', '/vocab/cards/1'],
     ['POST', '/vocab/mine'],
   ])('%s %s unauthenticated → 401', async (method, path) => {
     const r =
-      method === 'GET'
-        ? await request(t.app).get(path)
-        : await request(t.app).post(path).send({});
+      method === 'GET' ? await request(t.app).get(path)
+      : method === 'DELETE' ? await request(t.app).delete(path)
+      : await request(t.app).post(path).send({});
     expect(r.status).toBe(401);
   });
 });
@@ -1209,6 +1214,223 @@ describe('POST /vocab/cards/:cardId/reviews — optimistic concurrency', () => {
       duration_ms: -5,
     });
     expect(res.status).toBe(400);
+  });
+});
+
+// ── Remove-from-review (soft delete — the word stays SAVED) ──────────────────
+
+/** Insert a vocab-entry card directly (controllable due/suspension), returning
+ *  both ids so tests can assert the entry survives the card's removal. */
+async function insertVocabCard(
+  userId: number,
+  opts: { suspended?: boolean; dueInFuture?: boolean } = {},
+): Promise<{ cardId: number; entryId: number }> {
+  const entryId = await seedVocabEntry(pg.pool, {
+    korean: `제거${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+  });
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO vocab_cards (user_id, face, vocab_entry_id, proficiency, due_at, suspended_at)
+     VALUES ($1, 'recognition'::card_face, $2, 'L3'::proficiency_level,
+             CASE WHEN $3 THEN now() + interval '30 days' ELSE now() END,
+             CASE WHEN $4 THEN now() ELSE NULL END)
+     RETURNING id`,
+    [userId, entryId, opts.dueInFuture ?? false, opts.suspended ?? false],
+  );
+  return { cardId: Number(rows[0]!.id), entryId };
+}
+
+/** Insert a hanja-target card (its own queue — must never be touched here). */
+async function insertHanjaCard(userId: number, char: string): Promise<number> {
+  const characterId = await seedHanjaCharacter(pg.pool, { char });
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO vocab_cards (user_id, face, hanja_character_id, due_at)
+     VALUES ($1, 'recognition'::card_face, $2, now())
+     RETURNING id`,
+    [userId, characterId],
+  );
+  return Number(rows[0]!.id);
+}
+
+/** Insert a grammar PRODUCTION card (graduation owns its lifecycle). */
+async function insertGrammarCard(userId: number, key: string): Promise<number> {
+  const entry = await pg.pool.query<{ id: string }>(
+    `INSERT INTO grammar_entries
+       (user_id, pattern_key, pattern_display, summary_en, proficiency, category, discovered_via)
+     VALUES ($1, $2, '-지만', 'but / although', 'L3', 'ending', 'manual')
+     RETURNING id::text AS id`,
+    [userId, key],
+  );
+  const { rows } = await pg.pool.query<{ id: string }>(
+    `INSERT INTO vocab_cards (user_id, face, grammar_entry_id, proficiency, due_at)
+     VALUES ($1, 'production'::card_face, $2, 'L3'::proficiency_level, now())
+     RETURNING id`,
+    [userId, entry.rows[0]!.id],
+  );
+  return Number(rows[0]!.id);
+}
+
+describe('DELETE /vocab/cards/:cardId — remove one card from review (soft delete)', () => {
+  it('soft-deletes the card, drops it from the due queue, and leaves the WORD saved', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { cardId, entryId } = await insertVocabCard(userId);
+
+    // Sanity: the card is in the due queue before removal.
+    const before = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect((before.body.cards as Array<{ id: number }>).map((c) => c.id)).toContain(cardId);
+
+    await agent.delete(`/vocab/cards/${String(cardId)}`).expect(204);
+
+    // Soft delete only: the row survives with deleted_at stamped.
+    const card = await pg.pool.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(card.rowCount).toBe(1);
+    expect(card.rows[0]!.deleted_at).not.toBeNull();
+
+    // The saved WORD is untouched — vocab_entries never sees a write.
+    const entry = await pg.pool.query(`SELECT 1 FROM vocab_entries WHERE id = $1`, [entryId]);
+    expect(entry.rowCount).toBe(1);
+
+    // …and the card is gone from the review queue.
+    const after = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect((after.body.cards as Array<{ id: number }>).map((c) => c.id)).not.toContain(cardId);
+  });
+
+  it('is idempotent: re-removing an already-removed card → 204, original removal timestamp preserved', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const { cardId } = await insertVocabCard(userId);
+
+    await agent.delete(`/vocab/cards/${String(cardId)}`).expect(204);
+    const first = await pg.pool.query<{ deleted_at: Date }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    await agent.delete(`/vocab/cards/${String(cardId)}`).expect(204);
+    const second = await pg.pool.query<{ deleted_at: Date }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    // COALESCE keeps the first removal's timestamp — a retry rewrites nothing.
+    expect(second.rows[0]!.deleted_at.getTime()).toBe(first.rows[0]!.deleted_at.getTime());
+  });
+
+  it("cross-user card → 404, and the other user's card is NOT removed", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const { cardId } = await insertVocabCard(a.userId);
+    const b = await registerUser(t.app, pg.pool);
+
+    const res = await b.agent.delete(`/vocab/cards/${String(cardId)}`);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+
+    const card = await pg.pool.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(card.rows[0]!.deleted_at).toBeNull();
+  });
+
+  it('a hanja card → 404 and stays live (its own queue owns it)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const hanjaCardId = await insertHanjaCard(userId, '安');
+
+    const res = await agent.delete(`/vocab/cards/${String(hanjaCardId)}`);
+    expect(res.status).toBe(404);
+    const card = await pg.pool.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [hanjaCardId],
+    );
+    expect(card.rows[0]!.deleted_at).toBeNull();
+  });
+
+  it('a grammar production card → 404 and stays live (graduation owns that flow)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const grammarCardId = await insertGrammarCard(userId, 'GR-remove-guard');
+
+    const res = await agent.delete(`/vocab/cards/${String(grammarCardId)}`);
+    expect(res.status).toBe(404);
+    const card = await pg.pool.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM vocab_cards WHERE id = $1`,
+      [grammarCardId],
+    );
+    expect(card.rows[0]!.deleted_at).toBeNull();
+  });
+
+  it('unknown id → 404, non-numeric id → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.delete('/vocab/cards/99999999')).status).toBe(404);
+    expect((await agent.delete('/vocab/cards/abc')).status).toBe(400);
+  });
+});
+
+describe('POST /vocab/cards/clear — clear the vocab review queue (soft delete)', () => {
+  it('soft-deletes ALL of the user\'s vocab cards (due, future, suspended), returns the count, keeps the words', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const due = await insertVocabCard(userId);
+    const future = await insertVocabCard(userId, { dueInFuture: true });
+    const suspended = await insertVocabCard(userId, { suspended: true });
+
+    const res = await agent.post('/vocab/cards/clear').send();
+    expect(res.status).toBe(200);
+    expect(res.body.cleared).toBe(3);
+
+    // Every card soft-deleted (rows survive, deleted_at stamped)…
+    const cards = await pg.pool.query<{ deleted_at: Date | null }>(
+      `SELECT deleted_at FROM vocab_cards WHERE user_id = $1`,
+      [userId],
+    );
+    expect(cards.rowCount).toBe(3);
+    for (const row of cards.rows) expect(row.deleted_at).not.toBeNull();
+
+    // …the saved WORDS are all intact…
+    for (const { entryId } of [due, future, suspended]) {
+      const entry = await pg.pool.query(`SELECT 1 FROM vocab_entries WHERE id = $1`, [entryId]);
+      expect(entry.rowCount).toBe(1);
+    }
+
+    // …and the review queue is honestly empty.
+    const queue = await agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect(queue.body.cards).toEqual([]);
+    expect(queue.body.total).toBe(0);
+  });
+
+  it("leaves hanja cards, grammar cards, and OTHER users' cards untouched", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    await insertVocabCard(a.userId);
+    const hanjaCardId = await insertHanjaCard(a.userId, '功');
+    const grammarCardId = await insertGrammarCard(a.userId, 'GR-clear-guard');
+    const b = await registerUser(t.app, pg.pool);
+    const other = await insertVocabCard(b.userId);
+
+    const res = await a.agent.post('/vocab/cards/clear').send();
+    expect(res.status).toBe(200);
+    // Only the ONE vocab card cleared — never the hanja/grammar decks.
+    expect(res.body.cleared).toBe(1);
+
+    const untouched = await pg.pool.query<{ id: string; deleted_at: Date | null }>(
+      `SELECT id, deleted_at FROM vocab_cards WHERE id = ANY($1::bigint[])`,
+      [[hanjaCardId, grammarCardId, other.cardId]],
+    );
+    expect(untouched.rowCount).toBe(3);
+    for (const row of untouched.rows) expect(row.deleted_at).toBeNull();
+
+    // The other user's queue still serves their card.
+    const bQueue = await b.agent.get('/vocab/cards/due?limit=200').expect(200);
+    expect((bQueue.body.cards as Array<{ id: number }>).map((c) => c.id)).toContain(
+      other.cardId,
+    );
+  });
+
+  it('is idempotent: a repeat clear (and a clear on an empty queue) → cleared: 0', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const empty = await agent.post('/vocab/cards/clear').send();
+    expect(empty.status).toBe(200);
+    expect(empty.body.cleared).toBe(0);
+
+    await insertVocabCard(userId);
+    expect((await agent.post('/vocab/cards/clear').send()).body.cleared).toBe(1);
+    expect((await agent.post('/vocab/cards/clear').send()).body.cleared).toBe(0);
   });
 });
 

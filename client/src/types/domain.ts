@@ -1183,6 +1183,16 @@ export interface ReviewSubmission {
   expected_version: number;
 }
 
+/**
+ * Result envelope from `POST /vocab/cards/clear` — how many of the user's
+ * vocab review cards were removed (soft-deleted) by the bulk clear. The
+ * underlying WORDS stay saved (`vocab_entries` and list memberships are
+ * never touched); only the review cards leave the queue.
+ */
+export interface ClearCardsResult {
+  cleared: number;
+}
+
 /** Result envelope from `POST /vocab/cards/:id/reviews`. */
 export interface ReviewResult {
   version: number;
