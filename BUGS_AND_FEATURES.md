@@ -11,19 +11,22 @@ cause + a **category label** so work can be batched into focused coding sessions
   `CONFIG` (env/deploy). Many items are cross-cutting — the **primary** tag is
   where the bulk of the fix lives; secondary tags in parentheses.
 
-## Status snapshot (2026-07-06 — post feature-roadmap + intense bug sweep)
+## Status snapshot (2026-07-17 — reconciled)
 
-**Bugs: all 17 resolved / reclassified.** B-001–B-011, B-013–B-016 🟢 done; **B-016**
-genuinely closed 2026-07-06 (via F-014 — it had been mis-marked). **B-012** is NOT a
-loader bug (the loader is faithful) — it's an upstream corpus *extraction* gap (~400
-words/level short of nominal 2,000) → tracked in FOLLOW_UPS, not a code fix.
+**Bugs: 36 total — 33 done · 2 in progress · 1 open · 0 deferred.**
+🟡 in progress: **B-025** (read-along highlight needs forced alignment — deferred) and **B-026**
+(~58 mp3s absent from disk; blocked on user-supplied audio). 🔴 open: **B-031** (TOPIK item 222
+option-1 OCR glitch). Everything else — B-001–B-024, B-027–B-030, B-032–B-036 — is done.
 
-**Features: 17 done, 4 open.** 🟢 done: F-001, F-003, F-004, F-005, **F-007, F-008,
-F-009, F-010, F-011, F-012, F-013, F-014, F-015, F-017, F-019, F-020, F-021** (the
-2026-07-06 roadmap: Hanja → Mistakes/explanations → Resume TOPIK → stats carousel →
-Writing rework → Ask-about-this → diagnostic hardening, PRs #49–#55). 🔴 open (→ the
-app overhaul phase): **F-002** (TOPIK L1/L2 diagnostic), **F-006** (email notifications),
-**F-016** (More-tab → Chat rework + in-chat dictionary), **F-018** (rich grammar detail).
+**Features: 143 total — 128 done · 4 in progress · 11 open · 0 deferred.**
+🟡 in progress: **F-016** (dictionary done; nav rework deferred to the app overhaul), **F-080** and
+**F-081** (clients shipped; backends tracked as F-119/F-120), **F-198** (device-adaptive layouts epic).
+🔴 open: **F-084**, **F-109**, **F-119**, **F-120**, **F-194**, **F-197**, **F-200**, **F-201**,
+**F-202** (client vitest in CI — implementation lives on the unmerged `ci/client-vitest-gate` branch,
+PR #139), **F-203**, **F-204**. Reconciled 2026-07-17 against `origin/rebuild`: **F-053**, **F-056**,
+**F-059**, **F-093** upgraded 🟡→🟢 — their deferred backend halves shipped (f2e9d07 vocab
+saved-from-uploads, 967bdcc grammar saved-from-uploads + live OCR trigger, e76c55d settings notif
+contract step).
 
 **Intense bug sweep (2026-07-06):** 5 Fable finders swept the whole codebase → ~40 real
 defects fixed across 6 batches + a CRITICAL, each mutation-tested + independently
@@ -37,7 +40,7 @@ Trail: `db/docs/{SWEEP,FIX_sweep,REVIEW_SWEEP}_*.md`. Residuals → FOLLOW_UPS F
 **Not in this doc — see `FOLLOW_UPS.md`:** F-UP-013…018 (answer-key data, resurrect-race
 hardening, resume-fail UX, carousel/Writing nits, and the bug-sweep residuals).
 
-> Snapshot refreshed 2026-07-06 after the sweep. Per-item detailed entries below are the
+> Snapshot reconciled 2026-07-17 against git `origin/rebuild`. Per-item detailed entries below are the
 > source of truth; path:line refs are pointers, not guaranteed exact after edits.
 
 ---
@@ -64,43 +67,185 @@ Launch one focused session per group; cross-cutting items noted.
 
 | ID | Type | Status | Pri | Category | Summary |
 |----|------|--------|-----|----------|---------|
-| B-001 | Bug | 🔴 | P1 | DATA (DATABASE) | Read "passages" are vocab word-lists, not prose/conversation |
-| B-002 | Bug | 🔴 | P1 | BACKEND (UI, DATA) | Word lookup: "Definition unavailable"; examples never returned |
-| B-003 | Bug | 🔴 | P2 | DATA (UI) | Read formatting = one-word-per-line, not a paragraph |
-| B-004 | Bug | 🔴 | P2 | UI | Read audio never plays — `AudioBlock` is a fake player by design |
-| B-005 | Bug | 🔴 | P2 | UI | Today: Listening tile points at `/reading`; no Listening screen exists |
-| B-006 | Bug | 🔴 | P1 | BACKEND (API) | Diagnostic freezes: each answer blocks on a live Claude next-item gen |
-| B-007 | Bug | 🔴 | P2 | UI (DATA) | Diagnostic retake shows stale result (client cache + hardcoded copy) |
-| B-008 | Bug | 🔴 | P1 | BACKEND (UI, DATABASE) | TOPIK passage exists in DB but DTO drops it + UI has no passage element |
-| B-009 | Bug | 🔴 | P1 | BACKEND (UI, DATABASE) | Review card: due query never joins vocab; UI hardcodes empty en/ex/source |
-| B-010 | Bug | 🔴 | P1 | UI (BACKEND) | Chat empty "TUTOR" box — SSE event discriminator mismatch, NOT the API key |
-| B-011 | Bug | 🔴 | P2 | DATA | Dictionary empty — KRDICT data never loaded (no code fix) |
-| B-012 | Bug | ⚪ | P3 | DATA | Verify vocab-2000 completeness — 3,188 words loaded vs nominal ~4,000 (spot-check covered pages) |
-| B-013 | Bug | 🔴 | P2 | UI (BACKEND) | "Add to review" is inert — no UI to seed vocab review cards; `POST /cards/init` exists but unwired |
-| B-014 | Bug | 🔴 | P2 | UI | Review: rating a card flashes the NEXT card's English before it advances (flip not reset) |
-| B-015 | Bug | 🔴 | P2 | UI | Reference "This Week": vocab+grammar need to be tabs; grammar overflows off-screen horizontally |
-| B-016 | Bug | 🟢 | P3 | BACKEND (UI) | `expensiveLimiter` 429 never sends `retry_after` → Writing's "retry in N s" copy is dead code |
-| F-001 | Feature | 🔴 | P2 | UI (BACKEND) | Writing tile → Grammar; `/grade-writing` backend exists but is orphaned |
-| F-002 | Feature | 🟢 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK L1 & L2 to diagnostic (enum + band math + tagged content) |
-| F-003 | Feature | 🔴 | P3 | BACKEND (UI) | Vocab genre+difficulty filters — columns exist, just not wired |
-| F-004 | Feature | 🔴 | P2 | UI | Grammar detail view — endpoint + `getPattern` exist; Reference rows not clickable |
-| F-005 | Feature | 🔴 | P3 | BACKEND (UI) | Grammar difficulty+genre filters — columns exist, just not wired |
-| F-006 | Feature | 🔴 | P3 | BACKEND (CONFIG) | Email notifications — no mail infra anywhere; net-new build |
-| F-007 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Resume in-progress TOPIK test — no attempt persistence today |
-| F-008 | Feature | 🟢 | P2 | UI (BACKEND) | TOPIK results/grade screen — already built in Mock; needs Study-mode parity |
-| F-009 | Feature | 🟢 | P2 | UI (DATA) | Wrong-answer explanations — wired in Mock; gate to incorrect-only + data coverage |
-| F-010 | Feature | 🟢 | P2 | UI (BACKEND) | Progress/diagnostic history page with graph comparison across attempts |
-| F-011 | Feature | 🟢 | P2 | BACKEND (DATA, DATABASE) | Diagnostic hardening — cheap heuristic pass **spec'd** → `BRIEF_F011_diagnostic_hardening.md` |
-| F-012 | Feature | 🔴 | P2 | BACKEND (DATABASE, DATA, UI) | TTMIK tab — play Iyagi podcasts + TTMIK lessons with real audio + read-along script |
-| F-013 | Feature | 🟢 | P2 | UI (BACKEND) | Word mastery view — surface per-word FSRS mastery (progress tab or word detail) |
-| F-014 | Feature | 🟢 | P2 | UI (BACKEND) | Today "Writing" tab rework — audit + identify changes (relates to F-001) |
-| F-015 | Feature | 🔴 | P2 | DATA (BACKEND, UI) | Hanja — finish + populate (route/tests exist; data missing, UI incomplete) |
-| F-016 | Feature | 🟡 | P2 | UI (BACKEND) | Rework "More" tab → rename Ask/Chat/AI → Chat, with an in-chat dictionary function |
-| F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel (per-skill mastery/reviewed graphs, finger-slide) |
-| F-018 | Feature | 🟢 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules in the detail Sheet (now explanation+unit only) |
-| F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations — 0/2,088 topik_items have one; pilot done (in-session, no API) |
-| F-020 | Feature | 🟢 | P2 | UI (BACKEND) | "Ask about this" — push a question + its explanation into Chat for AI follow-up Q&A |
-| F-021 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Wrong-answer review log — revisit past missed questions + explanations across sessions (30-day window) |
+| B-001 | Bug | 🟢 | P1 | DATA (DATABASE) | Read passages are vocab word-lists, not prose |
+| B-002 | Bug | 🟢 | P1 | BACKEND (UI, DATA) | Word lookup: "Definition unavailable"; no examples |
+| B-003 | Bug | 🟢 | P2 | DATA (UI) | Read formatting is one word per line, not a paragraph |
+| B-004 | Bug | 🟢 | P2 | UI | Read audio never plays |
+| B-005 | Bug | 🟢 | P2 | UI | Today: Listening and Reading open the same screen |
+| B-006 | Bug | 🟢 | P1 | BACKEND (API) | Diagnostic freezes after selecting an answer |
+| B-007 | Bug | 🟢 | P2 | UI (DATA) | Diagnostic retake shows stale result |
+| B-008 | Bug | 🟢 | P1 | BACKEND (UI, DATABASE) | TOPIK question unanswerable — passage not rendered |
+| B-009 | Bug | 🟢 | P1 | BACKEND (UI, DATABASE) | Review card: English both sides, empty source/examples |
+| B-010 | Bug | 🟢 | P1 | UI (BACKEND) | Chat returns empty "TUTOR" box (NOT the API key) |
+| B-011 | Bug | 🟢 | P2 | DATA | Dictionary is empty |
+| B-012 | Bug | 🟢 | P3 | DATA | Verify vocab-2000 completeness (3,188 loaded vs nominal ~4,000) |
+| B-013 | Bug | 🟢 | P2 | UI (BACKEND) | "Add to review" is inert — no UI to seed vocab review cards |
+| B-014 | Bug | 🟢 | P2 | UI | Review: next card's English flashes before the card advances |
+| B-015 | Bug | 🟢 | P2 | UI | Reference "This Week": vocab + grammar need tabs; grammar overflows off-screen |
+| B-016 | Bug | 🟢 | P3 | BACKEND (UI) | `expensiveLimiter` 429 never sends `retry_after` → Writing retry copy is dead |
+| B-017 | Bug | ✅ | P1 | UI (BACKEND) | Placeholders shown where real database data should render |
+| B-018 | Bug | 🟢 | P2 | UI | Today grammar tile says "coming soon" instead of opening Grammar practice |
+| B-019 | Bug | 🟢 | P2 | UI | Today Reading tile routes to listening lessons, not Reading |
+| B-020 | Bug | 🟢 | P3 | UI | English on/off slider has no label |
+| B-021 | Bug | 🟢 | P1 | BACKEND (DATABASE) | Verify FSRS/anki intervals are actually honored |
+| B-022 | Bug | 🟢 | P2 | UI | "More examples" overlays rating row; no close; doesn't reset |
+| B-023 | Bug | 🟢 | P3 | UI | Card has pointed corner + square box over a rounded tile |
+| B-024 | Bug | 🟢 | P3 | UI | Saved-grammar list formatting is cluttered; forms wrap lines |
+| B-025 | Bug | 🟡 | P1 | DATA (UI) | Verify TTMIK transcripts + highlights |
+| B-026 | Bug | 🟡 | P1 | DATA (BACKEND, CONFIG) | Missing audio investigation — ~10 TTMIK lessons + ~48 Iyagi episodes |
+| B-027 | Bug | 🟢 | P1 | BACKEND (UI) | Verify writing questions aren't hard-locked to Q53/Q54 and randomize |
+| B-028 | Bug | 🟢 | P1 | UI (BACKEND) | Verify Hanja drill / recall actually works |
+| B-029 | Bug | 🟢 | P2 | UI | TOPIK landing wrongly limited to 10 items |
+| B-030 | Bug | 🟢 | P1 | DATABASE (CONFIG) | App DB connection runs as a Postgres SUPERUSER |
+| B-031 | Bug | 🔴 | P3 | DATA | TOPIK item 222 option-1 text OCR glitch |
+| B-032 | Bug | ✅ | P3 | BACKEND | `withRetry` never retries plain connection errors (dead error-name check) |
+| B-033 | Bug | ✅ | P3 | BACKEND | Tickets PATCH returns 409 instead of 404 when the ticket vanishes mid-update |
+| B-034 | Bug | 🟢 | P2 | UI | B-021 client slice — drill banner still says "next in ~10 minutes" for scheduledDays 0 |
+| B-035 | Bug | 🟢 | P2 | UI | B-027 client slice — Writing.tsx still indexes the deterministic prompt list |
+| B-036 | Bug | ✅ | P2 | bug · regression | Settings → Appearance text-size (S / M / L) does nothing |
+| F-001 | Feature | 🟢 | P2 | UI (BACKEND) | Make "Writing" a real writing feature (backend already exists) |
+| F-002 | Feature | 🟢 | P3 | DATABASE (DATA, BACKEND) | Add TOPIK Level 1 & 2 to the diagnostic |
+| F-003 | Feature | 🟢 | P3 | BACKEND (UI) | Vocabulary: genre + difficulty filters |
+| F-004 | Feature | 🟢 | P2 | UI | Grammar: clickable detail view (backend already exists) |
+| F-005 | Feature | 🟢 | P3 | BACKEND (UI) | Grammar: difficulty + genre/source filters |
+| F-006 | Feature | 🟢 | P3 → deploy-priority | BACKEND (CONFIG, DATABASE, UI) | Email verification for account signup |
+| F-007 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Resume an in-progress TOPIK test |
+| F-008 | Feature | 🟢 | P2 | UI (BACKEND) | TOPIK results / grade screen |
+| F-009 | Feature | 🟢 | P2 | UI (DATA) | Wrong-answer explanations |
+| F-010 | Feature | 🟢 | P2 | UI (BACKEND) | Progress / diagnostic history page with graph comparison |
+| F-011 | Feature | 🟢 | P2 | BACKEND (DATA, DATABASE) | Diagnostic is a heuristic, not a valid psychometric test |
+| F-012 | Feature | 🟢 | P2 | BACKEND (DATABASE, DATA, UI) | Talk To Me In Korean (TTMIK) tab — podcasts + lessons with audio + read-along script |
+| F-013 | Feature | 🟢 | P2 | UI (BACKEND) | Word mastery view — see how well a word is known |
+| F-014 | Feature | 🟢 | P2 | UI (BACKEND) | Today "Writing" tab — rework (scope to be identified) |
+| F-015 | Feature | 🟢 | P2 | DATA (BACKEND, UI) | Hanja — finish the feature + populate the data |
+| F-016 | Feature | 🟡 | P2 | UI (BACKEND) | Rework the "More" tab → Ask/Chat/AI, with an in-chat dictionary |
+| F-017 | Feature | 🟢 | P2 | UI (BACKEND) | Today: swipeable multi-skill stats carousel |
+| F-018 | Feature | 🟢 | P3 | BACKEND (UI) | Rich grammar detail — render examples/dialogues/formation_rules |
+| F-019 | Feature | 🟢 | P2 | DATA | Generate wrong-answer explanations for topik_items |
+| F-020 | Feature | 🟢 | P2 | UI (BACKEND) | "Ask about this" — push a question + explanation into Chat |
+| F-021 | Feature | 🟢 | P2 | DATABASE (BACKEND, UI) | Wrong-answer review log (mistakes) — 30-day window |
+| F-022 | Feature | ✅ | P1 | DATABASE (BACKEND) | Database integrity + security audit, schema readiness for Wave 1 |
+| F-023 | Feature | ✅ | P1 | BACKEND (DATABASE, UI) | In-app ticketing / feedback system for beta testers |
+| F-024 | Feature | 🟢 | P1 | UI | Back buttons on nested/sub-pages |
+| F-025 | Feature | 🟢 | P3 | UI | App-wide text-size setting + smaller default |
+| F-026 | Feature | 🟢 | P2 | UI | Vocab tile rework → vocab/grammar carousel |
+| F-027 | Feature | 🟢 | P2 | API (BACKEND, UI) | Writing tile: generate-new-topic via Claude API (TOPIK or general) |
+| F-028 | Feature | 🟢 | P2 | UI | TOPIK-recommended carousel rework (study link, order, resume banner) |
+| F-029 | Feature | 🟢 | P3 | UI | All carousels loop back to the first tile |
+| F-030 | Feature | 🟢 | P2 | UI | "Where you stand" bottom section → carousel (trend / attempt-vs-attempt / all attempts) |
+| F-031 | Feature | 🟢 | P2 | UI | Word mastery pagination — words per page |
+| F-032 | Feature | 🟢 | P2 | UI | Word Mastery + Grammar Mastery as tabs in one area |
+| F-033 | Feature | 🟢 | P2 | UI | Chat page formatting overhaul |
+| F-034 | Feature | 🟢 | P2 | UI (BACKEND) | Remove in-chat dictionary + suggested words |
+| F-035 | Feature | 🟢 | P2 | UI (BACKEND) | "+" attach button in chat box (camera / image / document upload) |
+| F-036 | Feature | 🟢 | P2 | BACKEND (API) | Auto-name chats (Claude-web style) |
+| F-037 | Feature | 🟢 | P2 | API (BACKEND) | Rework Claude response style in chat |
+| F-038 | Feature | 🟢 | P3 | UI | Collapsible settings tiles, collapsed by default |
+| F-039 | Feature | 🟢 | P2 | UI | Move Uploads out of Settings → Review → Uploads |
+| F-040 | Feature | 🟢 | P2 | BACKEND (UI, CONFIG) | Notifications rework — user-selectable timing + SMS placeholder |
+| F-041 | Feature | 🟢 | P2 | UI (BACKEND) | Hanja Mastery carousel |
+| F-042 | Feature | 🟢 | P2 | UI | Restructure Review landing (sections + removals) |
+| F-043 | Feature | 🟢 | P3 | UI | Rename "Review" → "Library" |
+| F-044 | Feature | 🟢 | P2 | UI (BACKEND) | Session selector + collapsible questions in Mistakes |
+| F-045 | Feature | 🟢 | P2 | UI (BACKEND) | Show score out of total questions per TOPIK exam |
+| F-046 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Writing review — past written responses (TOPIK + generated prompts) |
+| F-047 | Feature | 🟢 | P2 | UI | Remove grammar from the Vocabulary tab |
+| F-048 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Add-word list selection + Create List button |
+| F-049 | Feature | 🟢 | P2 | UI (BACKEND) | Genre + difficulty dropdown filters at top of Vocabulary |
+| F-050 | Feature | 🟢 | P2 | UI (BACKEND) | Rename Dictionary → "All Words" with first-character + genre search |
+| F-051 | Feature | 🟢 | P3 | UI | Limit word list to 15 with show-more (up to 30) |
+| F-052 | Feature | 🟢 | P3 | UI | Move My Lists to the top |
+| F-053 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | "My Uploads" sub-page inside Vocabulary |
+| F-054 | Feature | 🟢 | P2 | UI | Prune Grammar page (remove vocab/dictionary, search-all, genre filter) |
+| F-055 | Feature | 🟢 | P3 | UI | Grammar difficulty filter → dropdown |
+| F-056 | Feature | 🟢 | P2 | UI (BACKEND) | Grammar "Uploads" sub-page |
+| F-057 | Feature | 🟢 | P2 | UI | PDF viewer: rotation option + auto fit-width |
+| F-058 | Feature | 🟢 | P3 | UI | Uploads listing shows only PDF versions |
+| F-059 | Feature | 🟢 | P2 | UI (BACKEND) | Manual OCR trigger button |
+| F-060 | Feature | 🟢 | P2 | UI (BACKEND) | Flashcards landing rework — lists-first, remove sessions + All Cards |
+| F-061 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Edit-lists inside a list (rename, remove words, add-words flow) |
+| F-062 | Feature | 🟢 | P2 | UI | List-completion page with stats |
+| F-063 | Feature | 🟢 | P2 | UI (BACKEND) | Rework banked/graduate/known terminology → grammar mastery model |
+| F-064 | Feature | 🟢 | P3 | UI | Move drill button to top-right, rename "Practice" |
+| F-065 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | View past drill entries |
+| F-066 | Feature | 🟢 | P2 | BACKEND (DATABASE, UI) | Anki-style scheduling for grammar |
+| F-067 | Feature | 🟢 | P2 | UI (BACKEND) | Reading sections by type (literature, dialogue) + uploaded docs |
+| F-068 | Feature | 🟢 | P2 | API (BACKEND, UI) | AI short-story generation section |
+| F-069 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Per-upload reading resume |
+| F-070 | Feature | 🟢 | P2 | UI (API) | Passage selection → translation popup (Google-Translate style) |
+| F-071 | Feature | 🟢 | P2 | UI | Listen landing → square tile grid (2 across) |
+| F-072 | Feature | 🟢 | P3 | UI | Limit Listen listing to 15 files per page |
+| F-073 | Feature | 🟢 | P2 | API (UI) | Generate selection — AI-created non-TOPIK prompts |
+| F-074 | Feature | 🟢 | P2 | UI (BACKEND) | Responses tab — past writing responses |
+| F-075 | Feature | 🟢 | P2 | UI (BACKEND, DATABASE) | Hanja flashcard system (lists + anki) |
+| F-076 | Feature | 🟢 | P2 | UI | Hanja drawing drill |
+| F-077 | Feature | 🟢 | P3 | UI | Hanja page reword |
+| F-078 | Feature | 🟢 | P2 | UI (BACKEND) | Daily right/wrong counter |
+| F-079 | Feature | 🟢 | P2 | UI (BACKEND) | Mock exam chooser with done-checkmarks + start page with attempts |
+| F-080 | Feature | 🟡 | P2 | UI (DATA, BACKEND) | Listening mock exams — playable per-question audio |
+| F-081 | Feature | 🟡 | P2 | DATA (UI) | Show question-paired images where possible |
+| F-082 | Feature | 🟢 | P2 | UI (BACKEND) | TOPIK landing "Previous attempts" review view |
+| F-083 | Feature | ✅ | P3 | DATABASE | DB hygiene cleanup migration |
+| F-084 | Feature | 🔴 | P2 | DATA | Iyagi 51–100 transcript load — numbering-mismatch investigation |
+| F-085 | Feature | ✅ | P3 | CONFIG | Node 22 upgrade consistency sweep (CI + client Dockerfile + compose + engines guard) |
+| F-086 | Feature | ✅ | P2 | CONFIG (UI) | App-wide px→rem font-size migration (makes the F-025 text-size setting fully effective) |
+| F-087 | Feature | 🟢 | P3 | UI | Accent-as-text/indicator contrast test coverage |
+| F-088 | Feature | ✅ | P3 | CONFIG (DATABASE) | Per-migration explicit destructive marker (vs pattern-sniffing) |
+| F-089 | Feature | ✅ | P3 | DATABASE (CONFIG) | Revoke default TEMP privilege from `km_app` |
+| F-090 | Feature | ✅ | P3 | DATA (UI) | F-078 pre-046 attempt-history gap decision |
+| F-091 | Feature | 🟢 | P2 | UI | Client multi-type list awareness — key and delete list rows by (item_type, entry_id) |
+| F-092 | Feature | ✅ | P3 | DATABASE | notification_deliveries needs a uniqueness-based claim key before a sender ships |
+| F-093 | Feature | 🟢 | P3 | UI (BACKEND) | Migrate client Settings off the 018 preferences-blob notification booleans |
+| F-094 | Feature | ✅ | P3 | BACKEND | Migrate the remaining private `mapClaudeError` copies to the shared 4xx-aware helper |
+| F-095 | Feature | ✅ | P2 | UI | Chat client slice for F-035/F-036 — "+" attach button + auto-name trigger |
+| F-096 | Feature | 🟢 | P2 | DATA | Writing-prompt content depth — seed more prompts per rubric |
+| F-097 | Feature | 🟢 | P4 | UI (HYGIENE) | App-wide dead-CSS sweep of the shared `index.css` global sheet |
+| F-098 | Feature | 🟢 | P4 | UI (CONSISTENCY) | BEM element-casing convention + mechanical rename |
+| F-099 | Feature | 🟢 | P3 | BACKEND (API, UI) | Grammar-mastery read route (server) for the Progress Grammar tab |
+| F-100 | Feature | ✅ | P4 | UI (DOC) | Fix the stale `nav.ts` Uploads comment (fold into F-057–F-059) |
+| F-101 | Feature | 🟢 | P2 | UI | Carry a Today-generated writing topic into the Writing screen (F-027 → F-073 page half) |
+| F-102 | Feature | 🟢 | P3 | UI (NAV) | `/images` needs an in-app re-entry point |
+| F-103 | Feature | 🟢 | P2 | UI (BACKEND) | Dedicated "Past TOPIK exams" surface |
+| F-104 | Feature | 🟢 | P2 | BACKEND (API) | `GET /topik/attempts` — completed-attempt history with per-exam score |
+| F-105 | Feature | 🟢 | P3 | BACKEND (API) | `attempt_id` in the `GET /topik/mistakes` DTO |
+| F-106 | Feature | 🟢 | P2 | BACKEND (API) | `GET /writing/attempts` — per-response writing history |
+| F-107 | Feature | 🟢 | P2 | BACKEND (API, DATABASE) | Upload provenance on vocab/grammar save paths + saved-from-uploads read |
+| F-108 | Feature | 🟢 | P2 | BACKEND (API) | U2 extraction/OCR pipeline (backend) |
+| F-109 | Feature | 🔴 | P4 | BACKEND (DATABASE) | Retain `source_format` on uploads (enables literal source-format filter) |
+| F-110 | Feature | 🟢 | P2 | BACKEND (API) | `GET /grammar-drill/attempts` — past drill history (grammar F-065 backend) |
+| F-111 | Feature | 🟢 | P3 | BACKEND (API) | Per-pattern grammar production-card schedule read (grammar F-063 backend) |
+| F-112 | Feature | 🟢 | P3 | BACKEND (API) | Vocab list detail rows should carry example sentences |
+| F-113 | Feature | 🟢 | P2 | BACKEND (API) | Per-list due-aware study queue + bulk "add all to review" |
+| F-114 | Feature | 🟢 | P4 | BACKEND (API) | Expose numeric `hanja_characters.id` on the `GET /hanja` DTO |
+| F-115 | Feature | 🟢 | P3 | DATA (BACKEND) | Hanja stroke-order data → guided + gradable drawing drill (F-076 backend) |
+| F-116 | Feature | 🟢 | P2 | API (BACKEND) | `POST /reading/translate` — whole-passage translation (reading F-070 backend) |
+| F-117 | Feature | 🟢 | P3 | BACKEND (DATABASE, API) | Widen the writing rubric taxonomy beyond Q53/Q54 (writing B-027 remainder) |
+| F-118 | Feature | 🟢 | P2 | BACKEND (API) | `GET /topik/tests` — enumerate TOPIK papers (TOPIK F-079 chooser backend) |
+| F-119 | Feature | 🔴 | P2 | DATA (BACKEND) | TOPIK listening audio — ingest + serve per-question (TOPIK F-080 data gap) |
+| F-120 | Feature | 🔴 | P3 | DATA (BACKEND) | TOPIK question images — extract + serve (TOPIK F-081 data gap) |
+| F-121 | Feature | ✅ | P4 | UI (A11Y) | `ShowMore` final-reveal focus lands on an off-screen node (visible-focus polish) |
+| F-122 | Feature | 🟢 | P3 | BACKEND (DATABASE) | Persist `topik_level` on `topik_attempts` for full D-1 level-pinning |
+| F-123 | Feature | 🟢 | P3 | UI (BACKEND) | Exam-completion checkmarks keyed by `sourceTest` alone (same D-1 class) |
+| F-124 | Feature | ✅ | P4 | BACKEND (SECURITY) | `mapClaudeError` forwards `${code}: ${message}` to the client |
+| F-125 | Feature | ✅ | P4 | BACKEND | `POST /conversation/:id/name` not exactly-once under concurrent first calls |
+| F-126 | Feature | ✅ | P2 | DEPLOY (CONFIG) | `set-km-app-password.sh` verification false-fails (aborts every deploy) |
+| F-127 | Feature | 🟢 | P3 | UI | Global entry point (FAB) for the beta ticketing page |
+| F-187 | Feature | ✅ | P2 | ui-polish | Today — excess vertical gap between "Suggested Learning" and "TOPIK" |
+| F-188 | Feature | ✅ | P3 | ui-polish | Today — stray small blue line above-and-left of "Review & Drills" |
+| F-189 | Feature | ✅ | P2 | design-system · cross-cutting | Distinct per-skill highlight colors — shared across Today tiles AND the LEARN honeycomb |
+| F-190 | Feature | ✅ | P2 | ui-polish | Center the default carousel card — Review & Drills → Vocab, Suggested Learning → Reading |
+| F-191 | Feature | ✅ | P3 | design-system consistency | TOPIK's own page + mock mode carried the old accent/blue chrome (not its new stone hue) |
+| F-194 | Feature | 🔴 | P3 | DATABASE | 064's down-migration can't distinguish "backfilled" from "a real pre-064 row that happens to match the shape" |
+| F-195 | Feature | 🟢 | P3 | error-hygiene | `services/kiwi.ts` forwards raw upstream error `{name,message}` to the client |
+| F-196 | Feature | 🟢 | P4 | resilience | Replace the PastExams exhaustiveness `throw` with a page-scoped guard |
+| F-197 | Feature | 🔴 | P2 | content | Ingest the Downloads audio corpus (map Track N → app slot) |
+| F-198 | Feature | 🟡 | P2 | design-system · epic | EPIC · Device-adaptive layouts (responsive desktop/tablet/mobile) |
+| F-199 | Feature | 🟢 | P4 | multi-user correctness | Per-user upload provenance — a 2nd user mining the same lemma silently loses their tag |
+| F-200 | Feature | 🔴 | P4 | data hygiene · follow-up (F-199) | Clear legacy pre-070 mine-written tags from `vocab_entries.source_upload_id` |
+| F-201 | Feature | 🔴 | P3 | auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2) | Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app |
+| F-202 | Feature | 🔴 | P2 | CI / tooling | CI must run the client vitest suite (currently only lint/typecheck/build) |
+| F-203 | Feature | 🔴 | P4 | wire-contract hardening · follow-up (`REVIEW_ticket-id-fix.md` probe 3) | Server-side bigint id normalization — fix the bigint→string class at the source |
+| F-204 | Feature | 🔴 | P4 | wire-boundary hardening · follow-up (`REVIEW_ticket-id-fix.md` NIT-1) | Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion |
 
 ---
 
@@ -887,7 +1032,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **What:** Move the My Lists section up to the top of the Vocabulary page.
 
 ### F-053 · "My Uploads" sub-page inside Vocabulary
-- **Status:** 🟡 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** —
+- **Status:** 🟢 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND, DATABASE) · **Beta:** — · reconciled 2026-07-17 (shipped: f2e9d07 vocab saved-from-uploads backend)
 - **What:** A My Uploads page inside Vocabulary holding vocab words the user chose to study from their uploads (clicking a word in an upload and adding it to a list files it here), separable/grouped by the source upload on the user's profile.
 - **Notes:** Only shown if such saved items exist. Grammar twin = F-056.
 
@@ -904,7 +1049,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **Notes:** Relates to F-005 (grammar filter columns exist, unwired).
 
 ### F-056 · Grammar "Uploads" sub-page
-- **Status:** 🟡 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟢 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** — · reconciled 2026-07-17 (shipped: 967bdcc grammar saved-from-uploads route)
 - **What:** Add an Uploads page mirroring the Vocabulary one (F-053): user-saved grammar pulled from their uploads, grouped by source upload — only populated when a grammar-bearing upload/selection exists.
 
 #### ▸ Review → Uploads
@@ -920,7 +1065,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **Disposition:** A literal "PDF-only" filter is unimplementable and product-wrong — the server discards the original format at ingest (migration 041, no `source_format` column) and a literal filter would hide zip-based corpus books. Phase 3B shipped the honest equivalent: a **viewable-rendition filter** (excludes only un-renderable ghost rows, keeps processing/failed lifecycle rows). A literal source-format filter needs a server column first — tracked in **F-109**.
 
 ### F-059 · Manual OCR trigger button
-- **Status:** 🟡 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟢 client shipped · backend deferred · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** — · reconciled 2026-07-17 (shipped: 967bdcc live OCR trigger)
 - **What:** Add a clickable OCR button (or another term understandable to a normal user) that starts the OCR process for an upload.
 
 #### ▸ Learn → Vocab flashcards
@@ -1181,7 +1326,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-2). Copy into the sender-phase spec. `db/migrations/063_notification_deliveries_claim_key.{up,down}.sql` adds `window_start TIMESTAMPTZ NOT NULL` + `uq_notification_deliveries_schedule_window UNIQUE (schedule_id, window_start)`. Claim/settle primitives in `server/src/services/notificationDelivery.ts` (`claimDelivery` = atomic `INSERT ... ON CONFLICT DO NOTHING`; `settleDelivery` = `UPDATE ... WHERE status='pending'`, the "unclaimed" guard) — still no sender/scheduler, just the guard rail per the ticket's own scope. Tests: `server/tests/services/notificationDelivery.test.ts`, including an 8-way `Promise.all` concurrent-claim test proving exactly one winner under real Postgres. Down is marked destructive (F-088) — DROP COLUMN would lose claim history.
 
 ### F-093 · Migrate client Settings off the 018 preferences-blob notification booleans
-- **Status:** 🟡 partial (Phase B2a) · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟢 partial (Phase B2a) · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** — · reconciled 2026-07-17 (shipped: e76c55d settings notif contract)
 - **What:** The Settings screen still reads/writes the migration-018 `users.preferences` JSONB notification booleans; migration 052 + `/notifications/schedules` is now the real notification-intent store. Until the client migrates, two sources of truth drift (the blob's booleans are documented as future-dead keys in 052's header).
 - **Fix hint:** Point the Settings notification section at GET/PUT `/notifications/schedules` (note: `weekday` must be *omitted*, not `null`, for daily kinds), then retire the blob's notification keys from `NotifPrefsSchema` in a follow-up once nothing reads them.
 - **Notes:** Deferred from the P2-G2 /fixpass (reading/notif review F2-3). The Settings notification SECTION (the actual UI) had already migrated to `/notifications/schedules` before this batch — the schedule rows are what F-040 shipped. Phase B2a did the EXPAND half: `db/migrations/064_backfill_notification_schedules_from_prefs.{up,down}.sql` backfills `notification_schedules` from any pre-existing blob intent (gated on `channel.email`, `ON CONFLICT DO NOTHING` so real user data always wins, defensive `jsonb_typeof` guards against a malformed blob aborting the migration) — see `db/tests/test_migration_064.py`. Also closed the one live client-side drift vector: `client/src/pages/Settings.tsx`'s outgoing prefs PUT now echoes `lastSyncedPrefsRef.current.notif` (the last value the SERVER reported) instead of `settings.notif` (the localStorage cache "Reset to defaults" can independently revert) — see the F-093 regression test in `Settings.test.tsx`. **NOT done in this batch:** making `GET`/`PUT /settings/prefs` actually SOURCE `notif` from `notification_schedules` server-side. Investigated and deliberately deferred — that wire-contract change (the route stops trusting/persisting the client's `notif` and instead derives+overrides it from the canonical schedules table) breaks ~15 assertions in `server/tests/routes/settings.test.ts` that currently pin "PUT echoes whatever notif you send, verbatim" as the contract, and is a bigger, coordinated client+server redesign than an expand-only batch should carry — exactly the "CONTRACT step, do it as a follow-up" the ticket's own fix hint already anticipated. Recommend its own ticket/batch.
@@ -1796,7 +1941,7 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 
 ## 🔎 Ticket-id-coercion follow-ups — surfaced by the ticket-detail bigint-id fix-pass (filed 2026-07-17)
 
-### F-202 · Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion
+### F-204 · Shared `coerceId()` helper — guard every service's bare `Number(id)` wire coercion
 - **Status:** 🔴 open · **Priority:** P4 · **Category:** wire-boundary hardening · follow-up (`REVIEW_ticket-id-fix.md` NIT-1)
 - **Where / State:** every client service coerces Postgres-bigint string ids with a bare `Number()` at its wire→domain mapper: `tickets.ts` (the three F-023 mappers, post-fix), `grammar.ts:71,107`, `hanja.ts:350,393-394`, `progress.ts:54,65`, `vocab.ts:105,472`. An unguarded `Number()` silently produces `0` (empty string), `NaN` (non-numeric), or a precision-lost integer (> `Number.MAX_SAFE_INTEGER`) on a server contract break — reproducing the exact silent "not found" symptom class the ticket-detail fix closed, instead of failing loudly. Risk today is near zero (`bigserial` positive ids, single-user DB, far below 2^53; the URL side is already hardened via `parseTicketIdParam`), which is why this is a follow-up and was deliberately NOT folded into the launch-critical ticket-detail hotfix. Guarding only tickets would diverge from the codebase convention — do it as ONE pass across all services.
 - **Key files:** `client/src/services/tickets.ts`, `client/src/services/grammar.ts`, `client/src/services/hanja.ts`, `client/src/services/progress.ts`, `client/src/services/vocab.ts` (+ a new shared home, e.g. `client/src/lib/` or `client/src/services/wire.ts`)
