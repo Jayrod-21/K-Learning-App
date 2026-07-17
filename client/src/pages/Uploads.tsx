@@ -197,6 +197,7 @@ export default function Uploads(): JSX.Element {
         size="md"
         fullWidth
         leadingIcon={<Icon name="upload" size={14} />}
+        data-tour="uploads-new"
         onClick={() => {
           setModalOpen(true);
         }}

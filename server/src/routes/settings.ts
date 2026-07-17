@@ -104,6 +104,32 @@ const TextSizePreset = z.enum(['sm', 'md', 'lg']).catch('md');
 const CorrectPreset = z.enum(['moss', 'pine', 'teal']);
 const WrongPreset = z.enum(['vermilion', 'amber', 'slate']);
 
+/**
+ * Guided-tour completion marks (tutorial/product tour) — the ids of the
+ * coach-mark tours the user has finished or skipped, server-synced so a seen
+ * tour never re-fires on another device.
+ *
+ * Ids are a CLOSED set defined in the client registry (`client/src/lib/
+ * tours.ts`), never user-authored input — but the server deliberately stores
+ * them as opaque bounded strings instead of a hard enum: every new client
+ * tour would otherwise 400 a PUT from the newer client (the exact
+ * rolling-deploy failure the accent/textSize `.catch`es exist to avoid).
+ * Bounds still apply: each id ≤ 64 chars, ≤ 200 ids — a crafted request
+ * cannot bloat the JSONB blob unboundedly.
+ *
+ * `.default([])` — every blob stored before this feature has NO `toursSeen`
+ * key; defaulting (the `languageDisplay` posture) means the GET-side
+ * safeParse still passes and the user's palette/textSize are NOT wiped back
+ * to defaults. `.catch([])` — a corrupt/oversized stored value coerces to
+ * "none seen" (worst case a tour re-fires once, Esc-dismissable) instead of
+ * failing the whole-blob parse.
+ */
+const ToursSeenSchema = z
+  .array(z.string().min(1).max(64))
+  .max(200)
+  .default([])
+  .catch([]);
+
 const PalettePrefsSchema = z
   .object({
     paper: PaperPreset,
@@ -190,6 +216,7 @@ export const StoredPrefsSchema = z
     palette: PalettePrefsSchema,
     languageDisplay: LanguageDisplayPrefsSchema.default(DEFAULT_LANGUAGE_DISPLAY),
     textSize: TextSizePreset,
+    toursSeen: ToursSeenSchema,
   })
   .strict();
 export type StoredPrefs = z.infer<typeof StoredPrefsSchema>;
@@ -218,6 +245,7 @@ const DEFAULT_STORED_PREFS: StoredPrefs = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
+  toursSeen: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -356,6 +384,7 @@ router.put('/prefs', cheapLimiter(), validateBody(PrefsSchema), async (req, res,
       palette: body.palette,
       languageDisplay: body.languageDisplay,
       textSize: body.textSize,
+      toursSeen: body.toursSeen,
     };
 
     // Write the WHOLE stored object (no merge, no version gate). Last-writer-wins

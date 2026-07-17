@@ -201,6 +201,9 @@ const DEFAULT_PREFS = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
   textSize: 'md',
+  // Fresh user — no tours seen (matches the empty localStorage the suite's
+  // beforeEach clears to, so hydration stays a no-op here too).
+  toursSeen: [],
 };
 
 beforeEach(() => {
@@ -943,6 +946,7 @@ describe('Settings — prefs server-sync (Pass 9)', () => {
         palette: storedPalette,
         languageDisplay: DEFAULT_PREFS.languageDisplay,
         textSize: DEFAULT_PREFS.textSize,
+        toursSeen: DEFAULT_PREFS.toursSeen,
       });
     });
 

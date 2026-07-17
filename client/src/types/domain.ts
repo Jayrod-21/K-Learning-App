@@ -719,6 +719,14 @@ export type LanguageDisplayMode = 'en' | 'ko' | 'both';
 /** One of the two chrome languages — the `primary` (main-text) choice. */
 export type BilingualLanguage = 'en' | 'ko';
 
+/** Guided-tour completion marks — the ids of coach-mark tours the user has
+ *  finished or skipped, server-synced via `/settings/prefs` (`toursSeen`,
+ *  mirrors the server `ToursSeenSchema`: bounded opaque strings). The CLOSED
+ *  id set lives in `lib/tours.ts` (`TourId`); the wire deliberately carries
+ *  plain strings so a build that predates a tour id tolerates (and
+ *  preserves) ids persisted by a newer one. */
+export type ToursSeen = string[];
+
 /** Language-display preferences — server-synced via `/settings/prefs`
  *  (mirrors the server `LanguageDisplayPrefsSchema` exactly). */
 export interface LanguageDisplayPrefs {

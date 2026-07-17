@@ -19,6 +19,7 @@ const PREFS: Prefs = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: { mode: 'both', primary: 'ko', subScale: 0.7 },
   textSize: 'md',
+  toursSeen: ['first-run'],
 };
 
 describe('fetchPrefs', () => {

@@ -318,7 +318,7 @@ function Topik(): JSX.Element {
         ariaLabel="Choose Study or Mock"
         tone={SKILL_COLOR.topik.tone}
       >
-        <div className="km-topik__chooser">
+        <div className="km-topik__chooser" data-tour="topik-chooser">
           <Eyebrow>
             <Bilingual en="TOPIK · 기출" kr="기출 · TOPIK" compact />
           </Eyebrow>

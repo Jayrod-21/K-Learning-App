@@ -139,6 +139,9 @@ import { useAccent } from '../hooks/useAccent';
 import { isAccent } from '../hooks/accent-context';
 import { useTextSize } from '../hooks/useTextSize';
 import { isTextSize, DEFAULT_TEXT_SIZE, type TextSize } from '../hooks/text-size-context';
+import { loadSeenTours } from '../hooks/tour-context';
+import { useTourOptional } from '../hooks/useTour';
+import { FIRST_RUN_TOUR_ID, TOURS, TOUR_IDS, isTourId } from '../lib/tours';
 import {
   fetchMe,
   fetchMfaStatus,
@@ -227,6 +230,9 @@ async function loadPrefsMock(): Promise<Prefs> {
     // Like the wire palette: the mock is never adopted (isMock guard), so the
     // default id is an honest stand-in for the provider-owned local value.
     textSize: DEFAULT_TEXT_SIZE,
+    // Tours: the localStorage cache is the honest local value (TourProvider
+    // owns it), same posture as `local.languageDisplay` above.
+    toursSeen: [...loadSeenTours()].sort(),
   };
 }
 
@@ -709,11 +715,19 @@ export default function Settings(): JSX.Element {
   // the accent picker from then on.
   // `textSize` mirrors `accent` exactly (F-025): seeded from the provider's
   // localStorage fast-path, owned by the Text size control from then on.
+  // `toursSeen` is sourced LIVE from `loadSeenTours()` (the localStorage
+  // store TourProvider writes synchronously) here and on every PUT below —
+  // never from a hydration baseline — so a Settings-driven PUT can never
+  // carry a stale tour list and wipe a tour finished after this screen
+  // mounted. TourProvider is the only writer that initiates PUTs FOR the
+  // field (read-merge-write), so it is deliberately absent from the
+  // change-diff below.
   const lastSyncedPrefsRef = useRef<Prefs>({
     notif: settings.notif,
     palette: { ...LEGACY_PALETTE_DEFAULT, accent },
     languageDisplay: settings.languageDisplay,
     textSize,
+    toursSeen: [...loadSeenTours()].sort(),
   });
 
   const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -902,6 +916,10 @@ export default function Settings(): JSX.Element {
       palette: { ...last.palette, accent },
       languageDisplay: settings.languageDisplay,
       textSize,
+      // Live localStorage read (see lastSyncedPrefsRef's comment) — always
+      // the freshest set, and NOT part of the diff below: this screen only
+      // ever relays the value alongside its own changes.
+      toursSeen: [...loadSeenTours()].sort(),
     };
     if (
       current.palette.accent === last.palette.accent &&
@@ -1361,6 +1379,10 @@ export default function Settings(): JSX.Element {
         {notificationsGroup}
         {appearanceGroup}
         {feedbackGroup}
+        {/* Help & tours (guided tutorial) — self-contained: reads the tour
+            context leniently and renders nothing when Shell's TourProvider
+            isn't mounted (provider-free test renders). */}
+        <ToursSection />
       </div>
 
       <p className="km-settings__about">한국어 마스터 · v0.2</p>
@@ -2439,5 +2461,92 @@ function ScheduleRow({
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * ToursSection — the "Help & tours" group (guided tutorial):
+ *   - Replay the first-run welcome tour on demand.
+ *   - Replay any per-surface intro (the provider navigates to the surface
+ *     first, then runs it). Prefix-matched tours (`/uploads/:id` — no
+ *     static route to land on) are excluded from the picker.
+ *   - "Skip all tours" — marks every registered tour seen in one write, so
+ *     a beta tester can opt out of the whole system up front.
+ *
+ * Reads the tour context LENIENTLY (`useTourOptional`): in production Shell
+ * always mounts `TourProvider`, but the existing provider-free Settings test
+ * renders keep working because this section simply renders nothing then.
+ */
+function ToursSection(): JSX.Element | null {
+  const tour = useTourOptional();
+  const [pickedId, setPickedId] = useState<string>('');
+  if (tour === null) return null;
+
+  const replayable = TOURS.filter(
+    (t) => t.id !== FIRST_RUN_TOUR_ID && t.match !== 'prefix',
+  );
+  const allSeen = TOUR_IDS.every((id) => tour.seen.has(id));
+
+  return (
+    <SettingsGroup icon="compass" eyebrow="도움말 · 투어" title="Help & tours" tone="plain">
+      <p className="km-settings__ticket-hint">
+        <Bilingual
+          en="Short guided intros pop up the first time you open each part of the app. Replay them here, or turn them all off."
+          kr="앱의 각 화면을 처음 열면 짧은 안내 투어가 나와요. 여기서 다시 보거나 모두 끌 수 있어요."
+        />
+      </p>
+      <Button
+        variant="gold"
+        size="md"
+        fullWidth
+        onClick={() => {
+          tour.replay(FIRST_RUN_TOUR_ID);
+        }}
+      >
+        <Bilingual en="Replay the welcome tour" kr="환영 투어 다시 보기" />
+      </Button>
+      <div className="km-settings__tour-replay">
+        <select
+          className="km-field__input"
+          aria-label="Choose a page intro to replay"
+          value={pickedId}
+          onChange={(e) => {
+            setPickedId(e.target.value);
+          }}
+        >
+          <option value="">Replay a page intro…</option>
+          {replayable.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label} · {t.kr}
+            </option>
+          ))}
+        </select>
+        <Button
+          variant="ghost"
+          size="md"
+          disabled={pickedId === ''}
+          onClick={() => {
+            // The option values are registry ids, but the DOM is not a
+            // trusted source — narrow before handing to the provider.
+            if (isTourId(pickedId)) tour.replay(pickedId);
+          }}
+        >
+          <Bilingual en="Replay" kr="다시 보기" compact />
+        </Button>
+      </div>
+      <button
+        type="button"
+        className="km-btn km-btn--ghost km-btn--sm focusring km-settings__reset"
+        disabled={allSeen}
+        onClick={() => {
+          tour.markAllSeen();
+        }}
+      >
+        <Bilingual
+          en={allSeen ? 'All tours are off' : 'Skip all tours'}
+          kr={allSeen ? '모든 투어 꺼짐' : '모든 투어 건너뛰기'}
+        />
+      </button>
+    </SettingsGroup>
   );
 }

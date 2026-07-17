@@ -854,7 +854,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
     <div className="km-review__landing">
       {/* My lists — the page's primary surface (F-060). F-128 device #1/#2:
           a CityCard signboard with the leading-edge DancheongRail. */}
-      <section aria-labelledby="review-mylists-head">
+      <section aria-labelledby="review-mylists-head" data-tour="vocab-lists">
         <CityCard tone="accent" rail className="km-review__listsCard">
           <div className="km-eyebrow km-review__sectionHead" id="review-mylists-head">
             <Bilingual kr="내 단어장" en="My lists" />
@@ -925,7 +925,7 @@ function LandingView(props: LandingViewProps): JSX.Element {
       {dueLoading ? (
         <SkeletonCard height={90} />
       ) : hasDueWork ? (
-        <section aria-labelledby="review-due-head">
+        <section aria-labelledby="review-due-head" data-tour="vocab-study">
           <div className="km-eyebrow km-review__sectionHead" id="review-due-head">
             <Bilingual kr="복습 대기열" en="Review queue" />
           </div>

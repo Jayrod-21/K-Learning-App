@@ -30,6 +30,7 @@ import type {
   NotifPrefs,
   PalettePrefs,
   TextSizePreset,
+  ToursSeen,
 } from '../types/domain';
 
 /**
@@ -66,6 +67,18 @@ export interface Prefs {
    *  deploy omits the field on GET, so the hydration path guards with the
    *  local value before adopting. */
   textSize: TextSizePreset;
+  /** Guided-tour completion marks (tutorial tour) — same two-tier posture
+   *  as `textSize`: localStorage["km.toursSeen"] is the same-device fast
+   *  path (owned by `TourProvider`); this field is the cross-device truth.
+   *  The server schema defaults/`.catch`es a missing or corrupt stored
+   *  value to `[]`, so legacy blobs hydrate cleanly — but a pre-feature
+   *  SERVER mid-rolling-deploy omits the field on GET, so readers guard
+   *  with `Array.isArray` before adopting. The Settings screen sources this
+   *  slice LIVE from `loadSeenTours()` on every PUT (never from its
+   *  hydration baseline) so it can't clobber a tour finished after the
+   *  screen mounted; `TourProvider` is the only writer that initiates a PUT
+   *  *for* this field (read-merge-write). */
+  toursSeen: ToursSeen;
 }
 
 /**

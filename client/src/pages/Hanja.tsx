@@ -832,6 +832,7 @@ function QuickNav({
         type="button"
         className="km-hanja__quick-btn focusring"
         onClick={onStudy}
+        data-tour="hanja-study"
       >
         <Icon name="cards" size={18} />
         <span className="km-hanja__quick-meta">
@@ -848,6 +849,7 @@ function QuickNav({
         type="button"
         className="km-hanja__quick-btn focusring"
         onClick={onLists}
+        data-tour="hanja-lists"
       >
         <Icon name="list" size={18} />
         <span className="km-hanja__quick-meta">
@@ -876,7 +878,12 @@ function ViewToggle({
     { id: 'index', label: 'Index', kr: '색인' },
   ];
   return (
-    <div className="km-hanja__viewtoggle" role="tablist" aria-label="Hanja view">
+    <div
+      className="km-hanja__viewtoggle"
+      role="tablist"
+      aria-label="Hanja view"
+      data-tour="hanja-view"
+    >
       {tabs.map((t) => {
         const active = view === t.id;
         return (
