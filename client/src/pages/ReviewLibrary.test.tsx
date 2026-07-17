@@ -226,7 +226,8 @@ describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
     // Exact class attribute, not a substring check — the D2 contract is that
     // the mobile DOM does not change AT ALL, modifier included.
     expect(list.getAttribute('class')).toBe('km-library__list');
-    expect(within(list).getAllByRole('listitem')).toHaveLength(4);
+    // Five shelves: the four F-042 shelves + the F-102 Images re-entry row.
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
   });
 
   it('mobile at an explicit narrow viewport (375px): still no grid modifier', () => {
@@ -236,7 +237,7 @@ describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
     expect(list.getAttribute('class')).toBe('km-library__list');
   });
 
-  it('tablet (768px): the list carries the --grid modifier with all four shelves still present, in order', () => {
+  it('tablet (768px): the list carries the --grid modifier with all five shelves still present, in order', () => {
     mockViewportWidth(768);
     renderLibrary();
     const list = screen.getByRole('list', { name: 'Library sections' });
@@ -246,11 +247,13 @@ describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
     const rowText = within(list)
       .getAllByRole('button')
       .map((b) => b.textContent ?? '');
-    expect(rowText).toHaveLength(4);
+    expect(rowText).toHaveLength(5);
     expect(rowText[0]).toContain('Vocabulary');
     expect(rowText[1]).toContain('Grammar');
     expect(rowText[2]).toContain('TOPIK exams');
     expect(rowText[3]).toContain('Uploads');
+    // F-102 — the /images re-entry row stays LAST in the grid branch too.
+    expect(rowText[4]).toContain('Images');
   });
 
   it('desktop (1280px): same --grid modifier (tablet and desktop share the one 2-column layout)', () => {
@@ -272,11 +275,12 @@ describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
   });
 
   it('CSS: the --grid modifier is a FIXED 2-column grid gated behind ≥768px — the geometry the no-orphan arithmetic depends on', () => {
-    // 4 shelves ÷ 2 columns = a clean 2×2 at every ≥768px width. Pin the
-    // exact `grid-template-columns` so a future edit to auto-fit (which
-    // computes 3 columns from ~976px viewport and would strand the fourth
-    // shelf alone in row 2 — see the arithmetic in ReviewLibrary.css) can't
-    // slip through as an innocuous-looking tweak.
+    // 5 shelves ÷ 2 columns = two full rows plus the trailing Images shelf,
+    // which the orphan guard below stretches full-width. Pin the exact
+    // `grid-template-columns` so a future edit to auto-fit (which computes
+    // 3 columns from ~976px viewport and would reshuffle which shelf ends
+    // up orphaned — see the arithmetic in ReviewLibrary.css) can't slip
+    // through as an innocuous-looking tweak.
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'ReviewLibrary.css'),
       'utf8',
@@ -292,7 +296,7 @@ describe('ReviewLibrary — device-adaptive grid layout (Phase D2)', () => {
     );
   });
 
-  it('CSS: the orphan guard spans a trailing odd shelf full-width (inert at the current even count, mirrors the D1 fix-pass rule)', () => {
+  it('CSS: the orphan guard spans a trailing odd shelf full-width (ACTIVE at the current five-shelf count — it is what keeps the F-102 Images row from sitting stranded in a half-empty row)', () => {
     const stylesheet = readFileSync(
       join(cwd(), 'src', 'pages', 'ReviewLibrary.css'),
       'utf8',
