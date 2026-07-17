@@ -7,6 +7,7 @@
  * exports a hook, no component). Both import the context from here.
  */
 import { createContext } from 'react';
+import type { RegisterOutcome } from '../types/domain';
 
 /**
  * Authenticated user shape.
@@ -29,6 +30,14 @@ export interface User {
   display_name?: string;
   phone?: string;
   version?: number;
+  /**
+   * F-006: whether the account email is verified. `false` drives the
+   * "verify your email" banner (a logged-in-but-unverified state is possible
+   * when `EMAIL_VERIFICATION_REQUIRED=false`, or right after an email
+   * change). Optional because pre-F-006 fixtures omit it — treat only an
+   * explicit `false` as unverified.
+   */
+  email_verified?: boolean;
 }
 
 export type AuthStatus = 'loading' | 'authenticated' | 'guest';
@@ -110,12 +119,17 @@ export interface AuthContextValue {
    * authenticated.
    */
   completeEnrollment: () => Promise<void>;
-  /** Create an account and sign in. Throws `ApiError` on conflict / validation. */
+  /**
+   * Create an account. Resolves `'authenticated'` (gate-off legacy: session
+   * minted, state flips) or `'verification_required'` (F-006 prod posture:
+   * NO session — the screen must show "check your email" and the app gate
+   * stays `guest`). Throws `ApiError` on conflict / validation.
+   */
   register: (
     email: string,
     password: string,
     displayName?: string,
-  ) => Promise<void>;
+  ) => Promise<RegisterOutcome>;
   /** Revoke session and clear cookie. Always resolves. */
   logout: () => Promise<void>;
   /**

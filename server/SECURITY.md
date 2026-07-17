@@ -1068,3 +1068,74 @@ mfaChallenges}.ts`. Operator CLIs `seed-user` and `mfa-reset`.
   Decrypt failures log a fixed sentinel (`*_decrypt_failed`), never the
   ciphertext or key. Route errors use a fixed `{error:{code,message}}` table with
   no server-internal detail echoed to the client.
+
+## 19. Pass F-006 surface — email verification (`/auth/verify`, migration 071)
+
+Email verification is a standing deploy priority. The flow adds a hashed,
+single-use, expiring token table (`email_verification_tokens`, migration 071),
+a provider-agnostic mail transport (`services/mail.ts`), and a
+config-toggleable login gate. Design + operator steps:
+`docs/BUILD_f006_email_verification.md`.
+
+### 19.1 Verification-token hygiene
+- **Threat:** a leaked or guessed verification link forges a verified email.
+- **Defense:** the token is 32 CSPRNG bytes (256-bit) base64url; only its
+  SHA-256 **hash** is stored (`token_hash`, CHECK `^[0-9a-f]{64}$`) — a DB read
+  never yields a clickable link. Verify compares hashes with `timingSafeEqual`
+  (defense-in-depth over the indexed lookup). Single-use via an atomic
+  `UPDATE … WHERE consumed_at IS NULL` rowCount gate; 24 h expiry
+  (`EMAIL_VERIFICATION_TOKEN_TTL_HOURS`) enforced by the active-lookup
+  predicate. A verification token confers NO session powers — consuming it only
+  stamps `users.email_verified_at`.
+
+### 19.2 No user-enumeration
+- **Threat:** verify / resend as an account-existence or verification-status
+  oracle.
+- **Defense:** `/auth/verify/resend` returns a fixed `200 {status:'ok'}` in
+  EVERY case (unknown / verified / cooldown-suppressed / sent), and the token
+  work runs fire-and-forget AFTER the response so timing does not leak. The
+  `/auth/verify` error branches (`token_expired` vs `token_invalid`) are only
+  reachable by someone already HOLDING the token, so distinguishing them is
+  safe (and enables the "expired — resend" UX). The login gate discloses
+  `email_unverified` ONLY after a correct password (no status-probing oracle;
+  a wrong password stays the generic 401).
+
+### 19.3 Anti-abuse (mail-bombing)
+- **Defense:** per-IP `cheapLimiter` on resend PLUS a per-USER DB cooldown
+  (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC`, default 60 s, probed off the tokens
+  table). The per-user cooldown is the real gate — the auth limiter's
+  `skipSuccessfulRequests` would never count an always-200 route. A resend
+  supersedes prior live tokens (`invalidated_at`), so only the newest link is
+  ever redeemable.
+
+### 19.4 Login gate placement & session safety
+- The gate runs AFTER password verification and BEFORE any MFA challenge or
+  session mint. It therefore never enters (or weakens) the TOTP / recovery /
+  forced-enroll machinery, and verified logins are byte-identical to before.
+  Session fixation is unaffected — a gated login mints no session at all, and a
+  passing login still issues a fresh session row. `EMAIL_VERIFICATION_REQUIRED`
+  (default true) is the operator kill-switch if mail delivery breaks.
+
+### 19.5 Not locking out existing users
+- Migration 071 grandfathers every pre-existing account
+  (`email_verified_at = created_at` for NULL rows — those accounts were
+  operator-provisioned). `seed-user` honors `SEED_USER_MARK_VERIFIED=true`
+  (pre-verify, no email). The backfill is one-way (the down does NOT reverse it
+  — un-stamping would destroy real verification state).
+
+### 19.6 Email-change verification
+- `PATCH /auth/me` on an actual email change resets `email_verified_at` (the
+  stamp attests the OLD address), supersedes outstanding tokens, and sends a
+  fresh verification to the NEW address. The current session is kept (a typo'd
+  address stays correctable); the next login is gated.
+
+### 19.7 Mail transport / secrets in logs
+- Provider-agnostic: SMTP (nodemailer, env-configured — in this deployment,
+  Proton Mail Bridge) or a log-only mock when `SMTP_HOST` is unset. The SMTP
+  transport logs only `{to-domain, subject, messageId}` — never the body (it
+  carries the raw token). The mock transport DOES log the full body (its dev
+  escape-hatch purpose) and is only ever selected with no relay configured.
+  `SMTP_TLS_REJECT_UNAUTHORIZED=false` exists solely for a loopback relay's
+  self-signed cert (Proton Bridge) — the operator's explicit, documented
+  opt-out. DNS: the sending domain MUST publish SPF/DKIM/DMARC authorizing the
+  From address (see BUILD_f006 deploy steps) or receivers spam-folder the mail.

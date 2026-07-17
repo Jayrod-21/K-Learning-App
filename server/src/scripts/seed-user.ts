@@ -11,6 +11,13 @@
  *   SEED_USER_PASSWORD — the account password (required, >= 12 chars to match the
  *                        register schema floor and the Argon2 input cap).
  *   SEED_USER_DISPLAY_NAME — optional display name.
+ *   SEED_USER_MARK_VERIFIED — 'true' to stamp email_verified_at at creation
+ *                        (operator escape hatch: no email is sent, the login
+ *                        gate is immediately satisfied). Default: unset —
+ *                        a verification email is sent via the configured mail
+ *                        transport (F-006); with no SMTP configured, the mock
+ *                        transport logs the verify URL to the console, which
+ *                        the operator can open directly.
  *
  * Idempotent: ON CONFLICT (email) DO NOTHING. Re-running reports "exists" and
  * does NOT rotate the password (use a dedicated password-reset path for that).
@@ -20,8 +27,12 @@
  *   - Fails loud (non-zero exit) on missing/short inputs rather than seeding a
  *     weak or partial account.
  *   - Uses the same Argon2id hasher as /auth/register (no bespoke crypto).
+ *   - The verification token is issued by the same hashed-at-rest machinery
+ *     as /auth/register (auth/emailVerification.ts); the raw token is never
+ *     printed here.
  */
 import { hashPassword } from '../auth/passwords.js';
+import { issueAndSendVerificationEmail } from '../auth/emailVerification.js';
 import { query, closePool } from '../db/pool.js';
 import { getLogger } from '../logging.js';
 
@@ -32,6 +43,8 @@ async function main(): Promise<void> {
   const email = process.env.SEED_USER_EMAIL?.trim().toLowerCase();
   const password = process.env.SEED_USER_PASSWORD;
   const displayName = process.env.SEED_USER_DISPLAY_NAME?.trim() || null;
+  const markVerified =
+    (process.env.SEED_USER_MARK_VERIFIED ?? '').trim().toLowerCase() === 'true';
 
   if (!email) {
     throw new Error('SEED_USER_EMAIL is required');
@@ -45,17 +58,41 @@ async function main(): Promise<void> {
 
   const passwordHash = await hashPassword(password);
   const { rows } = await query<{ id: number }>(
-    `INSERT INTO users (email, password_hash, display_name)
-     VALUES ($1, $2, $3)
+    `INSERT INTO users (email, password_hash, display_name, email_verified_at)
+     VALUES ($1, $2, $3, CASE WHEN $4 THEN now() ELSE NULL END)
      ON CONFLICT (email) DO NOTHING
      RETURNING id`,
-    [email, passwordHash, displayName],
+    [email, passwordHash, displayName, markVerified],
   );
 
   if (rows[0]) {
-    log.info({ userId: rows[0].id, email }, 'seed-user: account created');
+    const userId = Number(rows[0].id);
+    log.info({ userId, email }, 'seed-user: account created');
     // eslint-disable-next-line no-console
-    console.error(`seed-user: created account for ${email} (id=${rows[0].id})`);
+    console.error(`seed-user: created account for ${email} (id=${String(userId)})`);
+    if (markVerified) {
+      // eslint-disable-next-line no-console
+      console.error('seed-user: email pre-verified (SEED_USER_MARK_VERIFIED=true) — no email sent');
+    } else {
+      // F-006: same verification flow as /auth/register. Best-effort — the
+      // account exists either way; the recovery paths are the login screen's
+      // resend affordance or the EMAIL_VERIFICATION_REQUIRED=false kill-switch.
+      try {
+        await issueAndSendVerificationEmail(userId, email);
+        // eslint-disable-next-line no-console
+        console.error(`seed-user: verification email sent to ${email}`);
+      } catch (mailErr) {
+        log.error(
+          { userId, err: (mailErr as Error).message },
+          'seed-user: verification email send failed',
+        );
+        // eslint-disable-next-line no-console
+        console.error(
+          'seed-user: WARNING — verification email failed to send; use the ' +
+            'login screen resend, or set EMAIL_VERIFICATION_REQUIRED=false',
+        );
+      }
+    }
   } else {
     log.info({ email }, 'seed-user: account already exists (no-op)');
     // eslint-disable-next-line no-console

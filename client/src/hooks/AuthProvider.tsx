@@ -59,6 +59,7 @@ import {
   type PendingChallenge,
   type User,
 } from './auth-context';
+import type { RegisterOutcome, RegisterResponse } from '../types/domain';
 
 interface AuthState {
   status: AuthStatus;
@@ -256,7 +257,7 @@ export function AuthProvider({
       email: string,
       password: string,
       displayName?: string,
-    ): Promise<void> => {
+    ): Promise<RegisterOutcome> => {
       // See `login` — same race, same defence.
       probeRef.current?.abort();
       // Trim explicitly so a whitespace-only `displayName` is dropped
@@ -265,12 +266,20 @@ export function AuthProvider({
       // user). The `|| undefined` collapses '' (after trim) to omission.
       const trimmedDisplayName: string | undefined =
         displayName?.trim() || undefined;
-      const data = await api.post<AuthResponse>('/auth/register', {
+      const data = await api.post<RegisterResponse>('/auth/register', {
         email,
         password,
         ...(trimmedDisplayName ? { display_name: trimmedDisplayName } : {}),
       });
+      if (data.status === 'verification_required') {
+        // F-006 gate-on posture: the server minted NO session. Stay `guest`;
+        // the Login screen renders the "check your email" step off this
+        // outcome. (Nothing to persist — the verification token only ever
+        // exists inside the email.)
+        return 'verification_required';
+      }
       setState({ status: 'authenticated', user: data.user });
+      return 'authenticated';
     },
     [],
   );

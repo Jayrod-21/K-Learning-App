@@ -1,11 +1,13 @@
 /**
  * Auth routes.
  *
- *   POST  /auth/register    — create a user, issue a session
- *   POST  /auth/login       — verify password, issue a session
- *   POST  /auth/logout      — revoke current session, clear cookie
- *   GET   /auth/me          — describe the current user
- *   PATCH /auth/me          — update display_name / email / phone (Pass 3)
+ *   POST  /auth/register       — create a user; session OR verification-required (F-006)
+ *   POST  /auth/login          — verify password, issue a session
+ *   POST  /auth/logout         — revoke current session, clear cookie
+ *   GET   /auth/me             — describe the current user
+ *   PATCH /auth/me             — update display_name / email / phone (Pass 3)
+ *   GET|POST /auth/verify      — consume an email-verification token (F-006)
+ *   POST  /auth/verify/resend  — re-issue the verification email (F-006)
  *
  * Threat model (SECURITY.md):
  *   - Credential stuffing: rate-limited per-IP via authLimiter.
@@ -17,9 +19,18 @@
  *   - Privilege escalation: registration cannot set arbitrary fields (Zod
  *     schema only accepts {email, password, display_name?}); PATCH /me's Zod
  *     schema is .strict() — extra keys (`role`, `is_admin`, …) are 400'd.
- *   - Email-change-without-verification: PATCH /me lets an authenticated user
- *     swap their `users.email` directly. Email verification is deferred
- *     (Repository/client/SECURITY.md §"Deferred"). We compensate by:
+ *   - Email verification (F-006, SECURITY.md §19): registration and email
+ *     changes issue a hashed, single-use, 24h-expiring token (see
+ *     auth/emailVerification.ts for the token threat model) and email a
+ *     verify link. With EMAIL_VERIFICATION_REQUIRED (default ON), an
+ *     unverified account cannot complete a password login — the gate runs
+ *     AFTER password verification (so it cannot be used to probe another
+ *     account's verification status) and BEFORE any MFA challenge or session
+ *     issue (so the TOTP/recovery/forced-enroll machinery is never entered
+ *     unverified and is otherwise untouched). /auth/verify and
+ *     /auth/verify/resend return fixed, non-enumerating shapes.
+ *   - Email-change hijack: PATCH /me lets an authenticated user swap
+ *     `users.email` directly. Defenses:
  *       (a) requiring an authenticated session (cookie was already issued to
  *           the prior email — an attacker without the session cookie can't
  *           pivot);
@@ -27,9 +38,11 @@
  *           bucket as login);
  *       (c) WARN-level audit log on every email change (correlation id +
  *           user id + new domain only — never the new local part, to keep
- *           PII out of logs).
- *     A full verification flow (verify-link + cooldown + revoke-other-
- *     sessions) lands when email_verification ships.
+ *           PII out of logs);
+ *       (d) F-006: the change RESETS email_verified_at (the stamp attests the
+ *           OLD address), supersedes outstanding tokens, and sends a fresh
+ *           verification to the NEW address. The current session is kept (a
+ *           typo'd address can still be corrected); the next login is gated.
  *   - Account-takeover via session token leak persisting across email change:
  *     out of scope here. The "log me out everywhere" SQL (ADR-002 §"Open
  *     questions") is the recovery path; the Settings UI will surface it when
@@ -45,7 +58,7 @@ import {
 } from '../middleware/errors.js';
 import { validateBody } from '../middleware/validate.js';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { authLimiter } from '../middleware/rateLimits.js';
+import { authLimiter, cheapLimiter } from '../middleware/rateLimits.js';
 import { hashPassword, safeDummyVerify, verifyPassword } from '../auth/passwords.js';
 import {
   clearSessionCookie,
@@ -59,6 +72,11 @@ import {
   verifyTotp,
 } from '../auth/totp.js';
 import { generateRecoveryCodes, hashRecoveryCode } from '../auth/recoveryCodes.js';
+import {
+  consumeVerificationToken,
+  issueAndSendVerificationEmail,
+  secondsSinceLastToken,
+} from '../auth/emailVerification.js';
 import {
   bumpChallengeAttempts,
   consumeChallenge,
@@ -222,6 +240,9 @@ interface PublicUser {
   display_name: string | null;
   phone: string | null;
   version: number;
+  /** F-006: drives the client's "verify your email" banner. Derived
+   *  (email_verified_at IS NOT NULL) — the timestamp itself is not exposed. */
+  email_verified: boolean;
 }
 
 /**
@@ -247,8 +268,10 @@ async function finishLogin(
     display_name: string | null;
     phone: string | null;
     version: number;
+    email_verified: boolean;
   }>(
-    `SELECT id, email::text AS email, display_name, phone, version
+    `SELECT id, email::text AS email, display_name, phone, version,
+            (email_verified_at IS NOT NULL) AS email_verified
        FROM users
       WHERE id = $1 AND deleted_at IS NULL
       LIMIT 1`,
@@ -307,7 +330,8 @@ router.post(
       // registration costs nothing and leaks nothing about existing accounts.
       // Fixed code `registration_closed` per the contract (not the generic
       // ForbiddenError `forbidden` code) so the client error table can map it.
-      if (!loadConfig().REGISTRATION_ENABLED) {
+      const cfg = loadConfig();
+      if (!cfg.REGISTRATION_ENABLED) {
         sendError(res, 403, 'registration_closed', 'registration is closed');
         return;
       }
@@ -333,13 +357,42 @@ router.post(
         }
         throw err;
       }
+      const email = body.email.toLowerCase();
+
+      // F-006: issue the verification token + send the email. BEST-EFFORT —
+      // a mail outage must never fail the registration (the account exists;
+      // /auth/verify/resend is the recovery path). The raw token lives only
+      // inside the email; nothing here logs it.
+      try {
+        await issueAndSendVerificationEmail(userId, email);
+      } catch (mailErr) {
+        req.log.error(
+          { userId, err: (mailErr as Error).message },
+          'verification email send failed (registration still succeeded)',
+        );
+      }
+
+      if (cfg.EMAIL_VERIFICATION_REQUIRED) {
+        // Verification-gated deployments do NOT mint a session at register:
+        // the login gate would reject this account anyway, and handing an
+        // unverified browser a session would contradict it. The client shows
+        // the "check your email" screen off this typed status.
+        req.log.info({ userId }, 'user registered — email verification pending');
+        res.status(201).json({
+          status: 'verification_required',
+          user: { id: userId, email },
+        });
+        return;
+      }
+
+      // Legacy / gate-off: the original direct-session behavior, unchanged.
       const { raw, record } = await issueSession(userId, {
         userAgent: req.header('user-agent') ?? undefined,
         ipAddress: req.ip ?? undefined,
       });
       setSessionCookie(res, raw, record.expires_at);
       req.log.info({ userId }, 'user registered');
-      res.status(201).json({ user: { id: userId, email: body.email.toLowerCase() } });
+      res.status(201).json({ user: { id: userId, email } });
     } catch (err) {
       next(err);
     }
@@ -358,8 +411,9 @@ router.post(
         id: number;
         password_hash: string;
         deleted_at: Date | null;
+        email_verified_at: Date | null;
       }>(
-        `SELECT id, password_hash, deleted_at
+        `SELECT id, password_hash, deleted_at, email_verified_at
            FROM users
           WHERE email = $1
           LIMIT 1`,
@@ -377,6 +431,25 @@ router.post(
       const ok = await verifyPassword(user.password_hash, body.password);
       if (!ok) {
         throw new UnauthorizedError('invalid credentials');
+      }
+
+      // F-006 login gate: an unverified account cannot proceed to MFA or a
+      // session. Placement is security-load-bearing:
+      //   - AFTER password verification — verification status is disclosed
+      //     ONLY to a caller holding valid credentials (no enumeration /
+      //     status-probing oracle; wrong password stays the generic 401).
+      //   - BEFORE the MFA branches — the TOTP/recovery/forced-enroll paths
+      //     are simply never entered unverified, so nothing about the MFA
+      //     machinery is weakened or special-cased, and verified users'
+      //     logins are byte-identical to before.
+      // Typed code (not a generic failure) so the client can render the
+      // "verify your email" state with a resend affordance. Config-toggleable:
+      // EMAIL_VERIFICATION_REQUIRED=false is the operator kill-switch if mail
+      // delivery breaks — with it off this block is a no-op.
+      if (loadConfig().EMAIL_VERIFICATION_REQUIRED && row.email_verified_at === null) {
+        req.log.info({ userId: user.id }, 'login blocked — email unverified');
+        sendError(res, 403, 'email_unverified', 'email address not verified');
+        return;
       }
 
       // Password verified — branch on the user's TOTP state (PASS_LOGIN_CONTRACT
@@ -979,6 +1052,137 @@ router.get('/mfa/status', authLimiter(), requireAuth, async (req, res, next) => 
   }
 });
 
+// -----------------------------------------------------------------------------
+// Email verification (F-006). See auth/emailVerification.ts for the token
+// lifecycle + threat model; SECURITY.md §19 for the summary.
+// -----------------------------------------------------------------------------
+
+/**
+ * Shared verify handler for GET (?token=) and POST ({token}). Both exist so
+ * the emailed link works whether the client SPA relays it as a POST (the
+ * normal path — /verify-email page) or something fetches the API URL
+ * directly. Consuming is idempotent-safe: an already-verified user gets a
+ * friendly success, never an error (double-click = still fine).
+ *
+ * Limiter: authLimiter — it counts FAILED responses only, which is exactly
+ * the brute-force signal here (a flood of bad tokens 400s and starves; a
+ * legitimate double-click succeeds and is never throttled).
+ */
+async function handleVerify(req: Request, res: Response, rawToken: unknown): Promise<void> {
+  // Shape gate at the boundary (Zod covers POST; GET arrives via req.query).
+  if (typeof rawToken !== 'string' || rawToken.length === 0 || rawToken.length > 128) {
+    sendError(res, 400, 'token_invalid', 'that verification link is not valid');
+    return;
+  }
+  const outcome = await consumeVerificationToken(rawToken);
+  switch (outcome) {
+    case 'verified':
+      req.log.info({ event: 'email_verified' }, 'email verification consumed');
+      res.status(200).json({ status: 'verified' });
+      return;
+    case 'already_verified':
+      // Friendly idempotent success — re-clicking a used link is not an error.
+      res.status(200).json({ status: 'already_verified' });
+      return;
+    case 'expired':
+      // Safe to disclose: only reachable while HOLDING the token; enables the
+      // "link expired — request a new one" UX.
+      sendError(res, 400, 'token_expired', 'that verification link has expired');
+      return;
+    case 'invalid':
+      sendError(res, 400, 'token_invalid', 'that verification link is not valid');
+      return;
+  }
+}
+
+const VerifyBodySchema = z.object({ token: z.string().min(1).max(128) });
+
+router.post(
+  '/verify',
+  authLimiter(),
+  validateBody(VerifyBodySchema),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof VerifyBodySchema>;
+      await handleVerify(req, res, body.token);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get('/verify', authLimiter(), async (req, res, next) => {
+  try {
+    await handleVerify(req, res, req.query.token);
+  } catch (err) {
+    next(err);
+  }
+});
+
+const ResendSchema = z.object({ email: z.string().email().max(254) });
+
+/**
+ * POST /auth/verify/resend — re-issue the verification email.
+ *
+ * NO USER ENUMERATION: the response is a fixed 200 {status:'ok'} in EVERY
+ * case — unknown email, already-verified account, cooldown suppression, and
+ * the actual send all look identical to the caller. The mail work runs
+ * fire-and-forget AFTER the response so response timing cannot oracle
+ * account existence either. (The residual signal — one extra indexed SELECT
+ * on the exists path — is sub-millisecond noise behind network jitter.)
+ *
+ * Abuse posture: cheapLimiter bounds the per-IP request rate (the auth
+ * limiter's skipSuccessfulRequests would never count an always-200 route),
+ * and the per-USER DB cooldown (EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC,
+ * probed via the tokens table) is the real mail-bomb gate: at most one email
+ * per account per cooldown window, no matter how many IPs ask.
+ */
+router.post(
+  '/verify/resend',
+  cheapLimiter(),
+  validateBody(ResendSchema),
+  async (req, res, next) => {
+    try {
+      const body = req.body as z.infer<typeof ResendSchema>;
+      const email = body.email.toLowerCase();
+      const { rows } = await query<{ id: string; email_verified_at: Date | null }>(
+        `SELECT id, email_verified_at
+           FROM users
+          WHERE email = $1 AND deleted_at IS NULL
+          LIMIT 1`,
+        [email],
+      );
+      const row = rows[0];
+      let shouldSend = false;
+      let userId = 0;
+      if (row && row.email_verified_at === null) {
+        // pg returns BIGINT as a string.
+        userId = Number(row.id);
+        const since = await secondsSinceLastToken(userId);
+        const cooldown = loadConfig().EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC;
+        shouldSend = since === null || since >= cooldown;
+        if (!shouldSend) {
+          req.log.info({ userId, event: 'verify_resend_cooldown' }, 'resend suppressed by cooldown');
+        }
+      }
+      // Fixed generic response FIRST (anti-enumeration, see header) …
+      res.status(200).json({ status: 'ok' });
+      // … then the best-effort send, detached from the response path.
+      if (shouldSend) {
+        const log = req.log;
+        void issueAndSendVerificationEmail(userId, email).catch((mailErr: unknown) => {
+          log.error(
+            { userId, err: (mailErr as Error).message },
+            'verification email resend failed',
+          );
+        });
+      }
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // F-UP-018 (rate-limit ordering): /logout and /me previously mounted NO
 // limiter, so an unauthenticated flood (bogus session cookies → one session
 // lookup each) was unbounded. authLimiter counts only FAILED requests
@@ -1017,8 +1221,10 @@ router.get('/me', authLimiter(), requireAuth, async (req, res, next) => {
       display_name: string | null;
       phone: string | null;
       version: number;
+      email_verified: boolean;
     }>(
-      `SELECT id, email::text AS email, display_name, phone, version
+      `SELECT id, email::text AS email, display_name, phone, version,
+              (email_verified_at IS NOT NULL) AS email_verified
          FROM users
         WHERE id = $1 AND deleted_at IS NULL
         LIMIT 1`,
@@ -1125,14 +1331,25 @@ router.patch(
           display_name: string | null;
           phone: string | null;
           version: number;
+          email_verified: boolean;
         }>(
+          // F-006: an actual email CHANGE resets email_verified_at — the stamp
+          // attests the OLD address; keeping it would let an unverified new
+          // address inherit verified status. SET expressions read the
+          // pre-update row, so the CASE compares against the OLD email.
           `UPDATE users
               SET display_name = COALESCE($2, display_name),
                   email        = COALESCE($3::citext, email),
                   phone        = COALESCE($4, phone),
+                  email_verified_at = CASE
+                    WHEN $3::citext IS NOT NULL AND $3::citext IS DISTINCT FROM email
+                    THEN NULL
+                    ELSE email_verified_at
+                  END,
                   version      = version + 1
             WHERE id = $1 AND deleted_at IS NULL AND version = $5
-            RETURNING id, email::text AS email, display_name, phone, version`,
+            RETURNING id, email::text AS email, display_name, phone, version,
+                      (email_verified_at IS NOT NULL) AS email_verified`,
           [
             userId,
             body.display_name ?? null,
@@ -1181,8 +1398,19 @@ router.patch(
             beforeDomain,
             afterDomain,
           },
-          'user changed account email (verification deferred)',
+          'user changed account email (verification reset — F-006)',
         );
+        // F-006: verify the NEW address. Best-effort (the profile change
+        // already committed; resend is the recovery path) and the session is
+        // deliberately untouched — the user can still fix a typo'd address.
+        try {
+          await issueAndSendVerificationEmail(userId, newEmail);
+        } catch (mailErr) {
+          req.log.error(
+            { userId, err: (mailErr as Error).message },
+            'verification email send failed after email change',
+          );
+        }
       }
 
       // pg returns BIGINT as a string; the user DTO contract is a JSON number.
