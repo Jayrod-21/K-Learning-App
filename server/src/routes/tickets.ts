@@ -139,6 +139,42 @@ router.post(
   },
 );
 
+/* ---------- Shared ticket SELECT-list fragments (fix-pass S1) ----------
+ *
+ * The F-023 anonymity contract lives in these column lists. They used to be
+ * hand-copied into four queries (/mine, /community, and GET /:id's two
+ * branches), where an edit to any one copy could silently fork the owner or
+ * anonymized shape — and an accidental column added to only the /:id
+ * community copy would be an identity-leak waiting to happen. Single-
+ * sourcing them makes parity structural: /mine and GET /:id's owner branch
+ * CANNOT drift apart, nor can /community and GET /:id's community branch.
+ * (tests/routes/tickets.test.ts's shape-parity test guards the same
+ * contract behaviorally, so even a fork of these constants gets caught.)
+ */
+
+/** OWNER shape — includes `version` (the PATCH concurrency token, the
+ *  client's edit-rights signal). Only ever selected under a
+ *  `user_id = <caller>` WHERE clause; never returned for another user's
+ *  ticket. */
+const OWNER_TICKET_COLS = `t.id, t.type, t.title, t.body, t.status, t.version,
+                t.source_page,
+                COALESCE(COUNT(c.id), 0)::int AS comment_count,
+                t.created_at, t.updated_at`;
+
+/** ANONYMIZED community shape (F-023): deliberately no user_id, no users
+ *  join, no `version`. `is_mine` compares against the CALLER's own id — it
+ *  exposes nothing about any other author. `source_page` (F-127) is
+ *  client-reported UI context, not author identity — safe to include (see
+ *  module header threat-model note). `callerIdParam` is the placeholder the
+ *  enclosing query binds the caller's user id to; its type constrains it to
+ *  a literal placeholder token, so nothing request-derived can ever be
+ *  interpolated into the SQL text. */
+const communityTicketCols = (callerIdParam: '$1' | '$2'): string =>
+  `t.id, t.type, t.title, t.body, t.status, t.source_page,
+                COALESCE(COUNT(c.id), 0)::int AS comment_count,
+                (t.user_id = ${callerIdParam})              AS is_mine,
+                t.created_at, t.updated_at`;
+
 /* ---------- GET /tickets/mine — the caller's own tickets ---------- */
 
 router.get(
@@ -154,10 +190,7 @@ router.get(
       const { rows } = await query<OwnTicketRow & { comment_count: number }>(
         // LEFT JOIN aggregate so a ticket with zero comments still returns
         // (comment_count = 0).
-        `SELECT t.id, t.type, t.title, t.body, t.status, t.version,
-                t.source_page,
-                COALESCE(COUNT(c.id), 0)::int AS comment_count,
-                t.created_at, t.updated_at
+        `SELECT ${OWNER_TICKET_COLS}
            FROM tickets t
            LEFT JOIN ticket_comments c ON c.ticket_id = t.id
           WHERE t.user_id = $1
@@ -199,15 +232,9 @@ router.get(
         created_at: Date;
         updated_at: Date;
       }>(
-        // ANONYMIZED (F-023): the SELECT list deliberately excludes user_id
-        // and never joins users. `is_mine` compares against the CALLER's own
-        // id — it exposes nothing about any other author. `source_page`
-        // (F-127) is client-reported UI context, not author identity — safe
-        // to include here (see module header threat-model note).
-        `SELECT t.id, t.type, t.title, t.body, t.status, t.source_page,
-                COALESCE(COUNT(c.id), 0)::int AS comment_count,
-                (t.user_id = $1)              AS is_mine,
-                t.created_at, t.updated_at
+        // ANONYMIZED (F-023) — the shared community SELECT list; see the
+        // `communityTicketCols` doc for the full contract.
+        `SELECT ${communityTicketCols('$1')}
            FROM tickets t
            LEFT JOIN ticket_comments c ON c.ticket_id = t.id
           WHERE ($2::text IS NULL OR t.status = $2)
@@ -252,10 +279,7 @@ router.get(
       // Ownership is enforced in SQL (`id AND user_id`, PATCH's pre-read
       // posture), never inferred from anything client-supplied.
       const own = await query<OwnTicketRow & { comment_count: number }>(
-        `SELECT t.id, t.type, t.title, t.body, t.status, t.version,
-                t.source_page,
-                COALESCE(COUNT(c.id), 0)::int AS comment_count,
-                t.created_at, t.updated_at
+        `SELECT ${OWNER_TICKET_COLS}
            FROM tickets t
            LEFT JOIN ticket_comments c ON c.ticket_id = t.id
           WHERE t.id = $1 AND t.user_id = $2
@@ -289,10 +313,7 @@ router.get(
         created_at: Date;
         updated_at: Date;
       }>(
-        `SELECT t.id, t.type, t.title, t.body, t.status, t.source_page,
-                COALESCE(COUNT(c.id), 0)::int AS comment_count,
-                (t.user_id = $2)              AS is_mine,
-                t.created_at, t.updated_at
+        `SELECT ${communityTicketCols('$2')}
            FROM tickets t
            LEFT JOIN ticket_comments c ON c.ticket_id = t.id
           WHERE t.id = $1

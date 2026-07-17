@@ -19,8 +19,9 @@
  *     guarantee, not just a UI convention.
  *   - Optimistic concurrency: `patchTicket` requires `expectedVersion`; a
  *     409 (stale) surfaces as `ApiError({status: 409})`. Callers must
- *     refetch `listMyTickets` and let the user retry against the fresh
- *     version — see `Tickets.tsx`'s recovery UX.
+ *     refetch the fresh row via `fetchTicket` (the id-addressed read — no
+ *     list filter or pagination window can hide it) and let the user retry
+ *     against the fresh version — see `Tickets.tsx`'s recovery UX.
  *   - IDOR: a PATCH against a ticket that isn't the caller's own 404s
  *     server-side (identical shape to "doesn't exist" — routes/tickets.ts).
  *     This module does not special-case that; it surfaces as `ApiError`.
@@ -239,8 +240,8 @@ export async function listCommunityTickets(
  * PATCH /tickets/:id — edit OWN ticket (title/body/status).
  * `patch.expectedVersion` is REQUIRED (mirrors the server's
  * optimistic-concurrency gate); a stale value 409s as `ApiError` — the
- * caller must refetch `listMyTickets` and let the user retry against the
- * fresh version (see Tickets.tsx's recovery UX).
+ * caller must refetch the fresh row via `fetchTicket` and let the user
+ * retry against the fresh version (see Tickets.tsx's recovery UX).
  */
 export async function patchTicket(
   id: number,

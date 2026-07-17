@@ -9,7 +9,7 @@
  * even for the caller's own ticket viewed from the Community tab).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ToastProvider } from '../components/ToastProvider';
@@ -435,9 +435,18 @@ describe('Tickets — anonymity contract (F-023)', () => {
     expect(screen.queryByText(/^By /)).not.toBeInTheDocument();
   });
 
-  it("opening the caller's own ticket from the Community tab still renders it view-only unless it's also in My tickets", async () => {
+  it('the community-cached fallback path never grants edit rights from `isMine` (only a server owner shape can)', async () => {
+    // NOTE (fix-pass N-2, REVIEW_ticket_client.md): against the REAL
+    // server, opening your own ticket by id returns the OWNER shape and
+    // renders editable — this test is NOT that scenario. Here the
+    // id-addressed fetch 404s (the `beforeEach` default mock), so the view
+    // falls back to the cached Community row. What this proves: that
+    // fallback path derives NO edit rights from the row's `isMine` flag —
+    // edit rights come only from a server-decided owner shape (the
+    // GET /tickets/:id owner branch, or /mine membership), which this
+    // render never received.
     const mine: CommunityTicket = { ...COMMUNITY_1, id: 3, isMine: true, title: 'My own filed suggestion' };
-    ticketsSvc.listMyTickets.mockResolvedValue([]); // not (yet) loaded into `mine` array
+    ticketsSvc.listMyTickets.mockResolvedValue([]); // no owner shape from /mine either
     ticketsSvc.listCommunityTickets.mockResolvedValue([mine]);
     const user = userEvent.setup();
     renderPage();
@@ -446,8 +455,7 @@ describe('Tickets — anonymity contract (F-023)', () => {
     await user.click(screen.getByRole('button', { name: `View ticket: ${mine.title}` }));
 
     expect(await screen.findByText(mine.title)).toBeInTheDocument();
-    // No edit form — canEdit is false because this row never appeared in
-    // GET /tickets/mine (the client never assumes ownership from `isMine`).
+    // No edit form: `isMine` is a display hint ("Yours"), never ownership.
     expect(screen.queryByRole('textbox', { name: 'Title' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Save/ })).not.toBeInTheDocument();
   });
@@ -631,6 +639,121 @@ describe('Tickets — ticket detail + editing', () => {
     expect(ticketsSvc.fetchTicket).toHaveBeenLastCalledWith(
       MINE_1.id,
       expect.anything(),
+    );
+  });
+});
+
+// Fix-pass (REVIEW_ticket_client.md F-1 + F-2): direct coverage for the two
+// detail failure surfaces the id-addressed fetch introduced, and for the
+// save-vs-in-flight-fetch race guard.
+describe('Tickets — detail failure surfaces + save-vs-fetch race (fix-pass F-1/F-2)', () => {
+  it('F-2a: a direct navigation to a nonexistent id renders the honest not-found card — no spinner, no useless Retry', async () => {
+    // Default mocks: both lists empty, fetchTicket rejects 404 — exactly a
+    // deep link to a deleted/never-existed ticket. A 404 is an ANSWER, so
+    // the render must fall through to the not-found card; a regression that
+    // routes 404 into `detailError` would render a retry-forever ErrorCard
+    // instead and fail this test.
+    renderPage('/tickets?tab=mine&ticket=999');
+
+    expect(
+      await screen.findByText(/couldn.t find that ticket/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Retry' }),
+    ).not.toBeInTheDocument();
+    expect(ticketsSvc.fetchTicket).toHaveBeenCalledWith(999, expect.anything());
+  });
+
+  it('F-2b: a non-404 detail fetch failure renders the ErrorCard, and Retry re-drives the id-addressed fetch to recovery', async () => {
+    ticketsSvc.fetchTicket
+      .mockRejectedValueOnce(
+        new ApiError('boom', { status: 500, code: 'server_error' }),
+      )
+      .mockResolvedValueOnce({
+        kind: 'own',
+        ticket: { ...MINE_1, id: 55, title: 'Recovered after retry' },
+      });
+    const user = userEvent.setup();
+    renderPage('/tickets?tab=mine&ticket=55');
+
+    // The error surface — NOT the not-found card (that would be lying: the
+    // ticket may well exist; the fetch just failed).
+    expect(
+      await screen.findByText('Could not load that ticket.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/couldn.t find that ticket/i),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+    // Retry re-drove loadDetail; the owner row now renders editable.
+    expect(
+      await screen.findByRole('textbox', { name: 'Title' }),
+    ).toHaveValue('Recovered after retry');
+    expect(ticketsSvc.fetchTicket).toHaveBeenCalledTimes(2);
+    expect(ticketsSvc.fetchTicket).toHaveBeenLastCalledWith(
+      55,
+      expect.anything(),
+    );
+  });
+
+  it('F-1 RACE: a save that completes while the initial detail fetch is still in flight wins — the late pre-save response cannot snap the view back', async () => {
+    // The ticket IS cached in `mine` (instant editable fast path), but the
+    // authoritative GET /tickets/:id hangs (slow network) — we hold its
+    // resolver. The user edits and saves BEFORE it resolves; the fetch then
+    // resolves with the PRE-save row. Without the race guard (abort the
+    // in-flight detail fetch when a save lands, seed `detail` from the
+    // save even while it's still null), the stale response would be stored,
+    // outrank the updated `mine` row in the render, and reset the edit
+    // buffer back to the pre-save title — failing the final assertion.
+    ticketsSvc.listMyTickets.mockResolvedValue([MINE_1]);
+    let resolveDetailFetch!: (r: {
+      kind: 'own';
+      ticket: OwnTicket;
+    }) => void;
+    ticketsSvc.fetchTicket.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDetailFetch = resolve;
+      }),
+    );
+    const saved: OwnTicket = {
+      ...MINE_1,
+      title: 'Renamed before the fetch landed',
+      version: 2,
+    };
+    ticketsSvc.patchTicket.mockResolvedValue(saved);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(MINE_1.title);
+    await user.click(
+      screen.getByRole('button', { name: `View ticket: ${MINE_1.title}` }),
+    );
+
+    const titleInput = await screen.findByRole('textbox', { name: 'Title' });
+    await user.clear(titleInput);
+    await user.type(titleInput, saved.title);
+    await user.click(screen.getByRole('button', { name: /Save/ }));
+    // The save fully lands (PATCH resolved, success toast shown) while the
+    // detail fetch is STILL pending.
+    expect(await screen.findByText('Saved.')).toBeInTheDocument();
+    expect(ticketsSvc.patchTicket).toHaveBeenCalledWith(MINE_1.id, {
+      expectedVersion: 1,
+      title: saved.title,
+    });
+
+    // NOW the stale detail fetch resolves — with the pre-save row. The
+    // async act flushes the promise's .then chain (and any state updates it
+    // would apply) before we assert.
+    await act(async () => {
+      resolveDetailFetch({ kind: 'own', ticket: MINE_1 });
+      await Promise.resolve();
+    });
+
+    // The saved row stays authoritative: no snap-back of the edit buffer.
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue(
+      saved.title,
     );
   });
 });

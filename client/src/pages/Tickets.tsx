@@ -1188,17 +1188,31 @@ export default function Tickets(): JSX.Element {
     [searchParams, setSearchParams, tab],
   );
 
-  const onTicketUpdated = useCallback((updated: OwnTicket): void => {
-    setMine((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-    // Keep the id-addressed detail row coherent too — it outranks the list
-    // caches in the detail view, so a successful save (or 409 recovery)
-    // must land there or the view would snap back to the pre-save row.
-    setDetail((prev) =>
-      prev !== null && prev.ticket.id === updated.id
-        ? { kind: 'own', ticket: updated }
-        : prev,
-    );
-  }, []);
+  const onTicketUpdated = useCallback(
+    (updated: OwnTicket): void => {
+      setMine((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      // The PATCH (or 409-recovery) response is the server's freshest word
+      // on this row — and an ownership proof in itself. When it's the ticket
+      // currently open, make it authoritative over the detail fetch: ABORT
+      // any older in-flight `GET /tickets/:id` so a slower, pre-save
+      // response can never land afterwards and snap the view back to stale
+      // data, then store the saved row as the detail. This runs even when
+      // the initial fetch hasn't resolved yet (`detail` still null) — the
+      // exact window a previous `prev !== null` guard missed: a save that
+      // outran the detail fetch was skipped here, and the late fetch then
+      // overwrote the just-saved row (fix-pass F-1, REVIEW_ticket_client.md).
+      // The id check keeps a save that resolves AFTER navigating to a
+      // different ticket from clobbering (or aborting) the new ticket's own
+      // load.
+      if (updated.id === ticketId) {
+        detailCtrlRef.current?.abort();
+        setDetail({ kind: 'own', ticket: updated });
+        setDetailLoading(false);
+        setDetailError(null);
+      }
+    },
+    [ticketId],
+  );
 
   // F-128 — stable identity is not optional here: `Sheet`'s `useModalA11y`
   // re-arms its focus-capture/restore effect whenever `onClose`'s reference
