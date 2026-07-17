@@ -1097,8 +1097,8 @@ export default function Settings(): JSX.Element {
   // `loggingOut` single-flights the click and drives the disabled/aria-busy
   // presentation. It is never reset on the happy path because the gate
   // unmounts this page; the documented server-5xx edge (cookie survives, the
-  // re-probe re-authenticates) round-trips through /login back here as a
-  // fresh mount, which starts un-disabled again.
+  // re-probe re-authenticates — tracked as F-201) round-trips through /login
+  // back here as a fresh mount, which starts un-disabled again.
   const [loggingOut, setLoggingOut] = useState(false);
   const onLogout = useCallback((): void => {
     if (loggingOut) return;

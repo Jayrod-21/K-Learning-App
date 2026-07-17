@@ -1780,6 +1780,14 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 - **Key files:** `server/src/routes/vocab.ts` (saved-from-uploads leg 2, mine upsert comment), `db/migrations/070_vocab_cards_source_upload.up.sql` (header documents the retention), `server/src/services/uploadExtract.ts` (`sourceIdFor` — the `upload-*` key space), `vocab_list_entries` (where list-only-save provenance would need to live)
 - **Fix hint:** two-step, in order: (1) move list-only-save provenance to a user-scoped store (e.g. a nullable `source_upload_id` on `vocab_list_entries` with an ownership-guarded backfill, mirroring 070) so leg 2 no longer needs the legacy entry tags; (2) a destructive-marked migration clearing `vocab_entries.source_upload_id` WHERE `corpus='user_mined' AND (source_id LIKE 'krdict-%' OR source_id LIKE 'lemma-%')`, with a test proving `upload-*` (F-108 extracted) rows keep their tag and only the legacy mine-written tags clear. Low value at single-user scale — do not rush it.
 
+## 🔎 Logout-button follow-up — surfaced by the client-logout fix-pass (filed 2026-07-17)
+
+### F-201 · Failed logout (5xx) leaves the server session live — silent /login round-trip back into the app
+- **Status:** 🔴 open · **Priority:** P3 · **Category:** auth resilience · follow-up (client logout button, `docs/REVIEW_logout.md` SF-2)
+- **Where / State:** `client/src/hooks/AuthProvider.tsx` `logout()` is best-effort by design: a 5xx on `POST /auth/logout` still clears local state to `guest` (the tested never-stuck-signed-in invariant — KEEP IT), then the re-probe finds the cookie still valid and flips back to `authenticated`, so `PublicOnly` bounces the user from `/login` straight back to where they were. Net effect: the user clicked "Log out", the screen flashed, they are still signed in, and the only feedback is a `console.warn` (added when this ticket was filed). Staying authenticated is the CORRECT security posture — the session genuinely still exists; pretending otherwise would be worse — but the silence is user-hostile and the live session outlives the user's intent to end it.
+- **Key files:** `client/src/hooks/AuthProvider.tsx` (`logout()` + its doc comment), `client/src/pages/Settings.tsx` (handler comment), `server/src/routes/auth.ts` (the logout route)
+- **Fix hint:** server first (the real fix): make the session revoke idempotent and cheap so a client retry always lands, and/or keep the session cookie short-lived with rolling renewal so an un-revoked session dies on its own shortly after a failed logout. Client second: retry the POST once, and when it still fails surface a toast/banner ("We couldn't reach the server to end your session — try again, or close all tabs") instead of the silent round-trip. Do NOT block the local clear on the server call — the always-clear-local invariant is load-bearing and tested (`AuthProvider.test.tsx` "never stuck").
+
 ---
 
 <!-- Templates — copy when adding items.

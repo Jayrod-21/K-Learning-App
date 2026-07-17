@@ -1950,10 +1950,18 @@ describe('Settings — Log out', () => {
     meOk();
     renderSettings();
 
-    // Collapsed: the button is aria-hidden with the rest of the tile body.
+    // Collapsed: the tile body stays MOUNTED but aria-hidden + inert
+    // (CollapsibleTile's contract), so the button is invisible to the
+    // default role query yet reachable with `hidden: true`. Assert BOTH
+    // halves — the default-query absence alone would pass vacuously even
+    // if the body unmounted, and the hidden-query presence pins the
+    // "hidden, not gone" mechanism.
     expect(
       screen.queryByRole('button', { name: /Log out/ }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Log out/, hidden: true }),
+    ).toBeInTheDocument();
 
     expandGroup(/Profile/);
     const logoutButton = screen.getByRole('button', { name: /Log out/ });
@@ -1999,8 +2007,15 @@ describe('Settings — Log out', () => {
     expect(logoutButton).toBeDisabled();
     expect(logoutButton).toHaveAttribute('aria-busy', 'true');
 
-    // A second click on a disabled button is inert (pointer-events removed;
-    // fireEvent bypasses that, so use it to prove the guard, not the CSS).
+    // A second click must not re-fire. Precision on WHAT this proves:
+    // fireEvent bypasses user-event's pointer-events simulation, but React
+    // itself refuses to dispatch onClick on a `disabled` button — so the
+    // re-fire is stopped by the `disabled` attribute before the
+    // `if (loggingOut) return` closure guard is ever reached. That guard
+    // stays as (unexercised) belt-and-suspenders for the sliver between
+    // the first click and the disabling re-render; the protection this
+    // test pins is `disabled` blocking the re-fire, and removing
+    // `disabled` fails the `toBeDisabled()` assertion above.
     fireEvent.click(logoutButton);
     expect(mocks.logout).toHaveBeenCalledTimes(1);
   });
