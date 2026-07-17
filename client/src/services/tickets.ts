@@ -19,8 +19,9 @@
  *     guarantee, not just a UI convention.
  *   - Optimistic concurrency: `patchTicket` requires `expectedVersion`; a
  *     409 (stale) surfaces as `ApiError({status: 409})`. Callers must
- *     refetch `listMyTickets` and let the user retry against the fresh
- *     version — see `Tickets.tsx`'s recovery UX.
+ *     refetch the fresh row via `fetchTicket` (the id-addressed read — no
+ *     list filter or pagination window can hide it) and let the user retry
+ *     against the fresh version — see `Tickets.tsx`'s recovery UX.
  *   - IDOR: a PATCH against a ticket that isn't the caller's own 404s
  *     server-side (identical shape to "doesn't exist" — routes/tickets.ts).
  *     This module does not special-case that; it surfaces as `ApiError`.
@@ -38,6 +39,7 @@ import type {
   OwnTicket,
   PatchTicketBody,
   TicketComment,
+  TicketDetailResult,
   TicketListQuery,
   TicketStatus,
   TicketType,
@@ -194,6 +196,34 @@ export async function listMyTickets(
   return res.tickets.map(toOwnTicket);
 }
 
+/**
+ * GET /tickets/:id — ONE ticket, addressed by id. The detail view's
+ * authoritative read: unlike `/mine`/`/community`, no status/type filter or
+ * pagination window can hide the row (the "file a ticket → open it → not
+ * found" beta regression this endpoint exists to close).
+ *
+ * The response shape IS the server's ownership decision: the caller's own
+ * ticket arrives in the owner shape (with `version` → edit rights), anyone
+ * else's in the ANONYMIZED community shape (F-023 — `is_mine` only, never
+ * an author). `version` presence is the wire discriminator; the returned
+ * `kind` surfaces that decision to callers as a checked union instead of a
+ * duck-typed guess at each call site. A missing id rejects with
+ * `ApiError({status: 404})`.
+ */
+export async function fetchTicket(
+  id: number,
+  signal?: AbortSignal,
+): Promise<TicketDetailResult> {
+  const res = await api.get<{ ticket: OwnTicketWire | CommunityTicketWire }>(
+    `/tickets/${String(id)}`,
+    signal !== undefined ? { signal } : undefined,
+  );
+  const wire = res.ticket;
+  return 'version' in wire
+    ? { kind: 'own', ticket: toOwnTicket(wire) }
+    : { kind: 'community', ticket: toCommunityTicket(wire) };
+}
+
 /** GET /tickets/community — every ticket, author ANONYMIZED. */
 export async function listCommunityTickets(
   query?: TicketListQuery,
@@ -210,8 +240,8 @@ export async function listCommunityTickets(
  * PATCH /tickets/:id — edit OWN ticket (title/body/status).
  * `patch.expectedVersion` is REQUIRED (mirrors the server's
  * optimistic-concurrency gate); a stale value 409s as `ApiError` — the
- * caller must refetch `listMyTickets` and let the user retry against the
- * fresh version (see Tickets.tsx's recovery UX).
+ * caller must refetch the fresh row via `fetchTicket` and let the user
+ * retry against the fresh version (see Tickets.tsx's recovery UX).
  */
 export async function patchTicket(
   id: number,

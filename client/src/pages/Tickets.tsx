@@ -16,12 +16,19 @@
  * be opened — with edit rights — from either tab (see `TicketDetail`'s
  * `canEdit` derivation below).
  *
- * Detail is a NESTED VIEW, not a separate fetch: there is no
- * `GET /tickets/:id` route, so the base ticket object is looked up from
- * whichever of the two already-loaded lists contains it (keyed by
- * `?ticket=<id>` in the URL, alongside `?tab=` so Back returns to the tab
- * the user came from — mirrors Review.tsx's list↔detail URL-state pattern).
- * Only the comment thread (`GET /tickets/:id/comments`) is fetched fresh.
+ * Detail is a NESTED VIEW keyed by `?ticket=<id>` in the URL (alongside
+ * `?tab=` so Back returns to the tab the user came from — mirrors
+ * Review.tsx's list↔detail URL-state pattern). The base ticket object is
+ * fetched by id from `GET /tickets/:id` — the owner shape (carrying
+ * `version`, i.e. edit rights) for the caller's own ticket, the anonymized
+ * community shape for anyone else's — with the two already-loaded lists as
+ * an instant-render fast path while that fetch is in flight. The detail
+ * view deliberately does NOT depend on list membership: `/mine` and
+ * `/community` are FILTERED by the board's status/type filter, so a
+ * just-filed ticket can be absent from the very lists that were once the
+ * only lookup source — the "file → open → not found" beta regression the
+ * id-addressed fetch closes. The comment thread (`GET
+ * /tickets/:id/comments`) is fetched fresh as before.
  *
  * Threat model (client half — the server owns the real defenses; see
  * routes/tickets.ts's header for the full enumeration):
@@ -40,8 +47,10 @@
  *     that changed underneath it.
  *   - **IDOR.** A PATCH against a ticket that isn't the caller's own 404s
  *     server-side; this page never assumes ownership from the client side —
- *     `canEdit` is derived from whether the row actually appeared in
- *     `GET /tickets/mine`, not from any client-side guess.
+ *     `canEdit` is derived from the SERVER's ownership decision: either the
+ *     owner-vs-anonymized shape of the `GET /tickets/:id` response, or the
+ *     row's presence in `GET /tickets/mine` — never a client-side guess
+ *     (in particular, never from the community feed's `isMine` flag).
  *   - **XSS / error-string leakage.** Every error surface routes through
  *     `errorMessageFor` (fixed, author-controlled copy) — raw server prose
  *     is never rendered.
@@ -107,6 +116,7 @@ import { ApiError } from '../services/api';
 import {
   addTicketComment,
   createTicket,
+  fetchTicket,
   listCommunityTickets,
   listMyTickets,
   listTicketComments,
@@ -117,6 +127,7 @@ import type {
   OwnTicket,
   PatchTicketBody,
   TicketComment,
+  TicketDetailResult,
   TicketStatus,
   TicketType,
 } from '../types/domain';
@@ -648,7 +659,8 @@ function CommentThread({ ticketId }: { ticketId: number }): JSX.Element {
  *  the runtime discriminator when narrowing `OwnTicket | CommunityTicket`,
  *  rather than trusting a caller-supplied `canEdit` boolean via an unchecked
  *  `as` cast. Today the two always agree (`canEdit` is derived from the same
- *  `mine`-list membership that's the only source of `version` — see the
+ *  server-decided owner shapes — the `GET /tickets/:id` owner branch and
+ *  `mine`-list membership — that are the only sources of `version`; see the
  *  module header), but this makes that invariant compiler-checked instead of
  *  merely true-by-construction at the one current call site. */
 function asOwnTicket(ticket: OwnTicket | CommunityTicket): OwnTicket | null {
@@ -657,13 +669,15 @@ function asOwnTicket(ticket: OwnTicket | CommunityTicket): OwnTicket | null {
 
 interface TicketDetailProps {
   ticket: OwnTicket | CommunityTicket;
-  /** True iff this ticket was found in `GET /tickets/mine` — the ONLY
-   *  source of edit rights (never a client-side guess; see module header). */
+  /** True iff the SERVER handed us this ticket in the owner shape — via the
+   *  `GET /tickets/:id` owner branch or `GET /tickets/mine` membership, the
+   *  only sources of edit rights (never a client-side guess; see module
+   *  header). */
   canEdit: boolean;
   onTicketUpdated: (updated: OwnTicket) => void;
-  /** Re-fetches just this ticket's fresh row from `/tickets/mine`
-   *  (unfiltered, so a board-level status/type filter can never hide the
-   *  very row a 409 needs). Returns `null` if it's genuinely gone. */
+  /** Re-fetches just this ticket's fresh row via the id-addressed
+   *  `GET /tickets/:id` (no board filter or list window can hide the row a
+   *  409 needs). Returns `null` if it's genuinely gone. */
   refetchOwnTicket: (id: number) => Promise<OwnTicket | null>;
 }
 
@@ -996,13 +1010,17 @@ export default function Tickets(): JSX.Element {
     };
   }, [loadMine]);
 
-  /** Re-fetches ONE ticket's fresh row, unfiltered — used only by the
-   *  edit form's 409 recovery (see TicketDetailProps.refetchOwnTicket doc).
-   *  Deliberately bypasses `statusFilter`/`typeFilter` so an active board
-   *  filter can never hide the very row a stale-write recovery needs, and
-   *  only patches that one row into `mine` rather than replacing the whole
-   *  (possibly filtered) list. Takes its own `AbortController` (aborting any
-   *  prior in-flight recovery fetch, and on this page's unmount) — the same
+  /** Re-fetches ONE ticket's fresh row via the id-addressed
+   *  `GET /tickets/:id` — used only by the edit form's 409 recovery (see
+   *  TicketDetailProps.refetchOwnTicket doc). Addressing by id means no
+   *  board filter OR list pagination window can ever hide the very row a
+   *  stale-write recovery needs (this used to scan an unfiltered-but-
+   *  windowed `/mine` page and could miss beyond it); the fresh row is
+   *  patched into `mine` in place rather than replacing the whole (possibly
+   *  filtered) list. Returns `null` when the ticket is genuinely gone (404)
+   *  or — unreachable today, ownership never changes — no longer the
+   *  caller's own. Takes its own `AbortController` (aborting any prior
+   *  in-flight recovery fetch, and on this page's unmount) — the same
    *  contract as every other fetch in this file. */
   const refetchOwnTicketCtrlRef = useRef<AbortController | null>(null);
   const refetchOwnTicket = useCallback(
@@ -1010,12 +1028,19 @@ export default function Tickets(): JSX.Element {
       const ctrl = new AbortController();
       refetchOwnTicketCtrlRef.current?.abort();
       refetchOwnTicketCtrlRef.current = ctrl;
-      const rows = await listMyTickets(undefined, ctrl.signal);
-      const fresh = rows.find((t) => t.id === id) ?? null;
-      if (fresh) {
+      try {
+        const result = await fetchTicket(id, ctrl.signal);
+        if (result.kind !== 'own') return null;
+        const fresh = result.ticket;
         setMine((prev) => prev.map((t) => (t.id === id ? fresh : t)));
+        return fresh;
+      } catch (err) {
+        // "Gone" is an answer, not a failure — the caller renders it as
+        // such; every other error still propagates to the caller's
+        // retry-able error surface.
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
       }
-      return fresh;
     },
     [],
   );
@@ -1095,6 +1120,57 @@ export default function Tickets(): JSX.Element {
     [communityPage],
   );
 
+  // ── Detail (id-addressed fetch) ──
+  // The authoritative source for the nested detail view: `GET /tickets/:id`.
+  // The cached `mine`/`community` rows remain an instant-render fast path,
+  // but the view must never DEPEND on list membership — both lists are
+  // filtered by the board's status/type filter, so a just-filed ticket can
+  // be absent from them (the "file → open → not found" regression).
+  const [detail, setDetail] = useState<TicketDetailResult | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const detailCtrlRef = useRef<AbortController | null>(null);
+
+  const loadDetail = useCallback((id: number): void => {
+    const ctrl = new AbortController();
+    detailCtrlRef.current?.abort();
+    detailCtrlRef.current = ctrl;
+    setDetailLoading(true);
+    setDetailError(null);
+    fetchTicket(id, ctrl.signal)
+      .then((result) => {
+        if (ctrl.signal.aborted) return;
+        setDetail(result);
+        setDetailLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof ApiError && err.code === 'canceled') return;
+        // A 404 is an ANSWER ("no such ticket"), not a failure: leave
+        // `detailError` null so the render falls through to the honest
+        // not-found card instead of a retry surface that can never succeed.
+        if (!(err instanceof ApiError && err.status === 404)) {
+          setDetailError(errorMessageFor(err, 'Could not load that ticket.'));
+        }
+        setDetailLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    // A ticket-id change invalidates any previously fetched row — clear
+    // BEFORE (re)fetching so ticket A's data can never render under ticket
+    // B's id. Loader sets loading=true synchronously by design (the
+    // codebase's fetch-effect convention).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDetail(null);
+    setDetailError(null);
+    if (ticketId === null) return;
+    loadDetail(ticketId);
+    return () => {
+      detailCtrlRef.current?.abort();
+    };
+  }, [ticketId, loadDetail]);
+
   const onTabChange = useCallback(
     (id: string): void => {
       setSearchParams({ tab: id });
@@ -1112,9 +1188,31 @@ export default function Tickets(): JSX.Element {
     [searchParams, setSearchParams, tab],
   );
 
-  const onTicketUpdated = useCallback((updated: OwnTicket): void => {
-    setMine((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
-  }, []);
+  const onTicketUpdated = useCallback(
+    (updated: OwnTicket): void => {
+      setMine((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+      // The PATCH (or 409-recovery) response is the server's freshest word
+      // on this row — and an ownership proof in itself. When it's the ticket
+      // currently open, make it authoritative over the detail fetch: ABORT
+      // any older in-flight `GET /tickets/:id` so a slower, pre-save
+      // response can never land afterwards and snap the view back to stale
+      // data, then store the saved row as the detail. This runs even when
+      // the initial fetch hasn't resolved yet (`detail` still null) — the
+      // exact window a previous `prev !== null` guard missed: a save that
+      // outran the detail fetch was skipped here, and the late fetch then
+      // overwrote the just-saved row (fix-pass F-1, REVIEW_ticket_client.md).
+      // The id check keeps a save that resolves AFTER navigating to a
+      // different ticket from clobbering (or aborting) the new ticket's own
+      // load.
+      if (updated.id === ticketId) {
+        detailCtrlRef.current?.abort();
+        setDetail({ kind: 'own', ticket: updated });
+        setDetailLoading(false);
+        setDetailError(null);
+      }
+    },
+    [ticketId],
+  );
 
   // F-128 — stable identity is not optional here: `Sheet`'s `useModalA11y`
   // re-arms its focus-capture/restore effect whenever `onClose`'s reference
@@ -1147,9 +1245,26 @@ export default function Tickets(): JSX.Element {
   if (ticketId !== null) {
     const mineDetail = mine.find((t) => t.id === ticketId) ?? null;
     const communityDetail = community.find((t) => t.id === ticketId) ?? null;
-    // `mine` wins when a ticket appears in both — only that copy carries
-    // `version`, and therefore edit rights (see module header).
-    const ticket = mineDetail ?? communityDetail;
+    // The id-addressed fetch is authoritative (fresh, and unhideable by the
+    // board filter); the cached list rows are only the instant-render fast
+    // path while it's in flight. The `.ticket.id === ticketId` guard is
+    // belt-and-braces — the effect above clears `detail` on every id change.
+    const fetchedOwn =
+      detail !== null && detail.kind === 'own' && detail.ticket.id === ticketId
+        ? detail.ticket
+        : null;
+    const fetchedCommunity =
+      detail !== null &&
+      detail.kind === 'community' &&
+      detail.ticket.id === ticketId
+        ? detail.ticket
+        : null;
+    // An owner-shaped row wins over a community-shaped one — only it
+    // carries `version`, and therefore edit rights. Ownership is the
+    // SERVER's decision either way (the /tickets/:id owner branch, or
+    // /mine membership) — never a client guess (see module header).
+    const ownDetail = fetchedOwn ?? mineDetail;
+    const ticket = ownDetail ?? fetchedCommunity ?? communityDetail;
     const backTo = `/tickets?tab=${tab}`;
     const backLabel = tab === 'mine' ? 'My tickets' : 'Community';
 
@@ -1167,10 +1282,17 @@ export default function Tickets(): JSX.Element {
           heading={<Bilingual en="Ticket" kr="티켓" />}
         />
         {ticket === null ? (
-          mineLoading || communityLoading ? (
+          detailLoading || mineLoading || communityLoading ? (
             <p role="status" className="km-tickets__state">
               Loading…
             </p>
+          ) : detailError !== null ? (
+            <ErrorCard
+              message={detailError}
+              onRetry={() => {
+                loadDetail(ticketId);
+              }}
+            />
           ) : (
             <Card className="km-tickets__state">
               We couldn&apos;t find that ticket.
@@ -1179,7 +1301,7 @@ export default function Tickets(): JSX.Element {
         ) : (
           <TicketDetail
             ticket={ticket}
-            canEdit={mineDetail !== null}
+            canEdit={ownDetail !== null}
             onTicketUpdated={onTicketUpdated}
             refetchOwnTicket={refetchOwnTicket}
           />

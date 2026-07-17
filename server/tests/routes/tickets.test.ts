@@ -50,6 +50,7 @@ describe('tickets — auth required', () => {
     ['POST', '/tickets'],
     ['GET', '/tickets/mine'],
     ['GET', '/tickets/community'],
+    ['GET', '/tickets/1'],
     ['PATCH', '/tickets/1'],
     ['POST', '/tickets/1/comments'],
     ['GET', '/tickets/1/comments'],
@@ -77,6 +78,20 @@ describe('tickets — overflowing ids → 400, not a pg 500 (routes sweep #3)', 
     const { agent } = await registerUser(t.app, pg.pool);
     const res = await agent.get('/tickets/99999999999999999999/comments');
     expect(res.status).toBe(400);
+  });
+
+  it('GET /tickets/99999999999999999999 → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/tickets/99999999999999999999');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('GET /tickets/abc (non-numeric id) → 400, not a 500 (fix-pass N2)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/tickets/abc');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
   });
 });
 
@@ -293,6 +308,123 @@ describe('GET /tickets/community — the anonymized feed', () => {
     expect(res.body.tickets[0].type).toBe('concern');
     expect(res.body.limit).toBe(5);
     expect(res.body.offset).toBe(0);
+  });
+});
+
+describe('GET /tickets/:id — id-addressed detail', () => {
+  it("returns the caller's OWN ticket in the owner shape (version + source_page + comment_count)", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent.post('/tickets').send({
+      type: 'bug',
+      title: 'own detail',
+      body: 'b',
+      source_page: '/progress',
+    });
+    const id = create.body.ticket.id;
+    await agent.post(`/tickets/${id}/comments`).send({ body: 'one' });
+
+    const res = await agent.get(`/tickets/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.ticket.id).toBe(id);
+    expect(res.body.ticket.title).toBe('own detail');
+    expect(res.body.ticket.body).toBe('b');
+    expect(res.body.ticket.status).toBe('open');
+    // The owner shape is exactly /mine's SELECT list — `version` is the
+    // PATCH concurrency token and the client's edit-rights signal.
+    expect(res.body.ticket.version).toBe(1);
+    expect(res.body.ticket.source_page).toBe('/progress');
+    expect(res.body.ticket.comment_count).toBe(1);
+    expect(res.body.ticket.is_mine).toBeUndefined();
+    // Even the owner's read carries no identity columns.
+    assertAnonymized(res.body);
+  });
+
+  it('a JUST-FILED ticket is immediately readable by id — independent of any list filter (the "file → open → not found" regression)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const create = await agent
+      .post('/tickets')
+      .send({ type: 'bug', title: 'just filed', body: 'b' });
+    const id = create.body.ticket.id;
+
+    // The board's filtered /mine list can EXCLUDE the new (open) ticket —
+    // exactly the state that used to render "not found" in the client…
+    const filtered = await agent.get('/tickets/mine?status=resolved');
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.tickets).toHaveLength(0);
+
+    // …but the id-addressed read always resolves it.
+    const res = await agent.get(`/tickets/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.ticket.id).toBe(id);
+    expect(res.body.ticket.title).toBe('just filed');
+    expect(res.body.ticket.version).toBe(1);
+  });
+
+  it("returns ANOTHER user's ticket in the ANONYMIZED community shape (no version, is_mine=false) — F-023", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const create = await a.agent
+      .post('/tickets')
+      .send({ type: 'request', title: 'A owns this', body: 'b' });
+    const id = create.body.ticket.id;
+
+    const b = await registerUser(t.app, pg.pool);
+    const res = await b.agent.get(`/tickets/${id}`);
+    // Reading another user's ticket by id is allowed BY DESIGN (the board
+    // is community-visible) — what must never leak is author identity.
+    expect(res.status).toBe(200);
+    expect(res.body.ticket.id).toBe(id);
+    expect(res.body.ticket.title).toBe('A owns this');
+    expect(res.body.ticket.is_mine).toBe(false);
+    // No `version`: the concurrency token is an owner affordance — its
+    // absence is what tells the client "view-only".
+    expect(res.body.ticket.version).toBeUndefined();
+    // The anonymity contract, asserted over the ENTIRE payload.
+    assertAnonymized(res.body);
+  });
+
+  it('404 (code not_found) on a missing id — never a 403/ownership probe', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get('/tickets/999999');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('not_found');
+  });
+
+  it('SHAPE PARITY (fix-pass S1): GET /:id owner keys == a /mine row; GET /:id anon keys == a /community row', async () => {
+    // The anonymity contract is a set of column LISTS. The route now
+    // single-sources them (OWNER_TICKET_COLS / communityTicketCols in
+    // routes/tickets.ts), and this test pins the contract behaviorally:
+    // if any of the four shapes forks — one copy gaining or losing a
+    // column — the key sets stop matching and this fails, independent of
+    // how the SQL is composed.
+    const a = await registerUser(t.app, pg.pool);
+    const create = await a.agent
+      .post('/tickets')
+      .send({ type: 'bug', title: 'parity probe', body: 'b' });
+    const id = create.body.ticket.id;
+    await a.agent.post(`/tickets/${id}/comments`).send({ body: 'one' });
+
+    const mineRes = await a.agent.get('/tickets/mine');
+    const ownRes = await a.agent.get(`/tickets/${id}`);
+    expect(mineRes.status).toBe(200);
+    expect(ownRes.status).toBe(200);
+    expect(Object.keys(ownRes.body.ticket).sort()).toEqual(
+      Object.keys(mineRes.body.tickets[0]).sort(),
+    );
+
+    const b = await registerUser(t.app, pg.pool);
+    const communityRes = await b.agent.get('/tickets/community');
+    const anonRes = await b.agent.get(`/tickets/${id}`);
+    expect(communityRes.status).toBe(200);
+    expect(anonRes.status).toBe(200);
+    expect(Object.keys(anonRes.body.ticket).sort()).toEqual(
+      Object.keys(communityRes.body.tickets[0]).sort(),
+    );
+    // And the two shapes differ exactly where they should: `version` is
+    // owner-only, `is_mine` is community-only.
+    expect(ownRes.body.ticket.version).toBe(1);
+    expect(anonRes.body.ticket.version).toBeUndefined();
+    expect(anonRes.body.ticket.is_mine).toBe(false);
+    expect(ownRes.body.ticket.is_mine).toBeUndefined();
   });
 });
 

@@ -2613,10 +2613,22 @@ export interface CommunityTicket {
 }
 
 /**
+ * `GET /tickets/:id` — the one id-addressed ticket read. The SERVER decides
+ * which shape the caller gets: the owner shape (`OwnTicket`, carrying
+ * `version` and therefore edit rights) for the caller's own ticket, the
+ * ANONYMIZED community shape (`CommunityTicket`, F-023) for anyone else's.
+ * `kind` mirrors that server decision — client code must derive edit rights
+ * from it (or from `/mine` membership), never from a client-side guess.
+ */
+export type TicketDetailResult =
+  | { kind: 'own'; ticket: OwnTicket }
+  | { kind: 'community'; ticket: CommunityTicket };
+
+/**
  * PATCH /tickets/:id body — optimistic concurrency via `expectedVersion`
  * (mapped to the wire's `expected_version` in services/tickets.ts). A stale
- * value 409s; the caller must refetch `/mine` and retry against the fresh
- * version.
+ * value 409s; the caller must refetch the fresh row (`fetchTicket`) and
+ * retry against its version.
  */
 export interface PatchTicketBody {
   title?: string;
