@@ -75,6 +75,9 @@ export function BottomNav({
         )}
         aria-current={active ? 'page' : undefined}
         aria-label={`${it.label} · ${it.kr}`}
+        // Guided-tour anchor (lib/tours.ts) — the Sidebar's links carry the
+        // SAME keys, so whichever chrome is mounted resolves the step.
+        data-tour={`tab-${id}`}
         onClick={() => {
           if (location.pathname !== it.path) {
             navigate(it.path);
@@ -115,6 +118,7 @@ export function BottomNav({
         aria-expanded={learnOpen}
         aria-controls={learnOpen || learnClosing ? learnMenuId : undefined}
         aria-label="Learn · 배움"
+        data-tour="learn-launcher"
         onClick={onToggleLearn}
       >
         <Icon name="learn" size={28} />

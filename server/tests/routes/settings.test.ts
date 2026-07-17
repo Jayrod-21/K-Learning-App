@@ -3,8 +3,9 @@
  * F-093 CONTRACT — notif single-sourced from notification_schedules).
  *
  * Routes:
- *   GET /settings/prefs
- *   PUT /settings/prefs
+ *   GET   /settings/prefs
+ *   PUT   /settings/prefs
+ *   PATCH /settings/prefs/tours-seen
  *
  * Real Postgres via testcontainers per Bar §"Testing" (no SQLite stand-in). No
  * Claude (the route is cheap + Claude-free).
@@ -45,11 +46,13 @@ const NOTIF_NONE = {
   weekly: false,
 };
 
-/** The blob-persisted defaults (palette/languageDisplay/textSize — no notif). */
+/** The blob-persisted defaults (palette/languageDisplay/textSize/toursSeen —
+ *  no notif). */
 const DEFAULT_STORED = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
+  toursSeen: [],
 };
 
 /** What GET serves a fresh user: stored defaults + derived (empty) notif. */
@@ -59,6 +62,7 @@ const CUSTOM_STORED = {
   palette: { paper: 'sumi', accent: 'mint', correct: 'pine', wrong: 'amber' },
   languageDisplay: { mode: 'en', primary: 'en', subScale: 0.5 },
   textSize: 'lg',
+  toursSeen: ['first-run', 'hanja'],
 };
 
 /**
@@ -117,11 +121,14 @@ describe('settings — auth required', () => {
   it.each([
     ['GET', '/settings/prefs'],
     ['PUT', '/settings/prefs'],
+    ['PATCH', '/settings/prefs/tours-seen'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const res =
       method === 'GET'
         ? await request(t.app).get(p)
-        : await request(t.app).put(p).send(DEFAULT_PREFS_BODY);
+        : method === 'PUT'
+          ? await request(t.app).put(p).send(DEFAULT_PREFS_BODY)
+          : await request(t.app).patch(p).send({ toursSeen: ['first-run'] });
     expect(res.status).toBe(401);
   });
 });
@@ -380,12 +387,14 @@ describe('languageDisplay (Overhaul P3a)', () => {
     const res = await agent.get('/settings/prefs');
     expect(res.status).toBe(200);
     // The user's stored choices survive; only the missing fields default
-    // (textSize catches to 'md' the same way — F-025). notif is derived.
+    // (textSize catches to 'md' and toursSeen defaults to [] the same way).
+    // notif is derived.
     expect(res.body).toEqual({
       notif: NOTIF_NONE,
       palette: CUSTOM_STORED.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
+      toursSeen: [],
     });
   });
 
@@ -416,6 +425,7 @@ describe('languageDisplay (Overhaul P3a)', () => {
       palette: CUSTOM_STORED.palette,
       languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
       textSize: 'md',
+      toursSeen: [],
     });
     const get = await agent.get('/settings/prefs');
     expect(get.body.languageDisplay).toEqual(DEFAULT_LANGUAGE_DISPLAY);
@@ -491,8 +501,9 @@ describe('textSize (F-025 app-wide text size)', () => {
     expect(res.status).toBe(200);
     expect(res.body.textSize).toBe('md');
     // ...and the rest of the PUT body persisted untouched (derived notif).
+    // The body carried no toursSeen either → the field defaults to [].
     const get = await agent.get('/settings/prefs');
-    expect(get.body).toEqual({ ...CUSTOM_VIEW, textSize: 'md' });
+    expect(get.body).toEqual({ ...CUSTOM_VIEW, textSize: 'md', toursSeen: [] });
   });
 
   it("a totally unknown textSize value also coerces to 'md' (catch posture, never 400/500)", async () => {
@@ -501,6 +512,239 @@ describe('textSize (F-025 app-wide text size)', () => {
     const res = await agent.put('/settings/prefs').send(body);
     expect(res.status).toBe(200);
     expect(res.body.textSize).toBe('md');
+  });
+});
+
+describe('toursSeen (guided tutorial tours)', () => {
+  it('PUT round-trips toursSeen via echo + GET (and it lands in the column)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const body = { ...DEFAULT_PREFS_BODY, toursSeen: ['first-run', 'library'] };
+    const put = await agent.put('/settings/prefs').send(body);
+    expect(put.status).toBe(200);
+    expect(put.body.toursSeen).toEqual(['first-run', 'library']);
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual({ ...DEFAULT_VIEW, toursSeen: ['first-run', 'library'] });
+    const { rows } = await pg.pool.query<{ preferences: { toursSeen: unknown } }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences.toursSeen).toEqual(['first-run', 'library']);
+  });
+
+  it('GET defaults toursSeen to [] on a legacy blob WITHOUT the field — palette/textSize survive', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // A blob stored before the tours feature existed.
+    const { toursSeen: _drop, ...legacy } = CUSTOM_STORED;
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(legacy),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // NOT the defaults fallback: the user's stored choices survive intact.
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, toursSeen: [] });
+  });
+
+  it('GET coerces a corrupt stored toursSeen to [] WITHOUT wiping the rest of the blob', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const poisoned = { ...CUSTOM_STORED, toursSeen: 'not-an-array' };
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(poisoned),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, toursSeen: [] });
+  });
+
+  it('PUT from a pre-feature client (no toursSeen) is accepted and stores [] (not a 400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const { toursSeen: _drop, ...legacyBody } = CUSTOM_PREFS;
+    const res = await agent.put('/settings/prefs').send(legacyBody);
+    expect(res.status).toBe(200);
+    expect(res.body.toursSeen).toEqual([]);
+    expect(res.body.palette).toEqual(CUSTOM_STORED.palette);
+  });
+
+  it('a malformed toursSeen coerces to [] on PUT (never 400/500, bounds cannot be bloated)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    // Oversized element (65 chars) — dropped by the per-element filter,
+    // leaving [] (no valid ids in the body).
+    const bad1 = { ...DEFAULT_PREFS_BODY, toursSeen: ['x'.repeat(65)] };
+    const res1 = await agent.put('/settings/prefs').send(bad1);
+    expect(res1.status).toBe(200);
+    expect(res1.body.toursSeen).toEqual([]);
+    // Oversized array (201 VALID ids) — fails the array-level length bound,
+    // catches to [] (anti-bloat guard; unreachable from the closed registry).
+    const bad2 = {
+      ...DEFAULT_PREFS_BODY,
+      toursSeen: Array.from({ length: 201 }, (_, i) => `t${String(i)}`),
+    };
+    const res2 = await agent.put('/settings/prefs').send(bad2);
+    expect(res2.status).toBe(200);
+    expect(res2.body.toursSeen).toEqual([]);
+    // Wrong element type — dropped per-element, leaving [].
+    const bad3 = { ...DEFAULT_PREFS_BODY, toursSeen: [42] };
+    const res3 = await agent.put('/settings/prefs').send(bad3);
+    expect(res3.status).toBe(200);
+    expect(res3.body.toursSeen).toEqual([]);
+    // Nothing oversized ever reached the column.
+    const get = await agent.get('/settings/prefs');
+    expect(get.body.toursSeen).toEqual([]);
+  });
+
+  it('a MIXED valid/garbage toursSeen on PUT drops ONLY the bad elements — the valid ids survive (fix-pass S4)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const mixed = {
+      ...DEFAULT_PREFS_BODY,
+      // Two real registry ids among an oversized string, a number, an empty
+      // string, and a null — one bad element must never wipe the whole list.
+      toursSeen: ['first-run', 'x'.repeat(65), 42, '', 'library', null],
+    };
+    const res = await agent.put('/settings/prefs').send(mixed);
+    expect(res.status).toBe(200);
+    expect(res.body.toursSeen).toEqual(['first-run', 'library']);
+    // …and that is exactly what persisted.
+    const { rows } = await pg.pool.query<{ preferences: { toursSeen: unknown } }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences.toursSeen).toEqual(['first-run', 'library']);
+  });
+
+  it('a MIXED valid/garbage STORED toursSeen keeps its valid ids on GET (per-element read tolerance, fix-pass S4)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    // Hand-corrupted column: two valid marks among garbage elements. The old
+    // whole-array `.catch([])` would have wiped both — re-firing seen tours.
+    const poisoned = {
+      ...CUSTOM_STORED,
+      toursSeen: ['first-run', 42, 'x'.repeat(65), 'hanja'],
+    };
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(poisoned),
+      userId,
+    ]);
+    const res = await agent.get('/settings/prefs');
+    expect(res.status).toBe(200);
+    // Valid marks survive; the rest of the blob is untouched.
+    expect(res.body).toEqual({ ...CUSTOM_VIEW, toursSeen: ['first-run', 'hanja'] });
+  });
+
+  it('the prefs schema stays strict around the new field (unknown sibling key → 400)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bad = { ...DEFAULT_PREFS_BODY, tourSeen: ['first-run'] }; // typo'd key
+    const res = await agent.put('/settings/prefs').send(bad);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /settings/prefs/tours-seen (fix-pass S3 — field-scoped union merge)', () => {
+  it('unions the sent ids into the stored list and echoes the full merged view', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200); // stores ['first-run','hanja']
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['library', 'first-run'] });
+    expect(res.status).toBe(200);
+    // Union, sorted; the rest of the view is the stored slices + derived notif.
+    expect(res.body).toEqual({
+      ...CUSTOM_VIEW,
+      toursSeen: ['first-run', 'hanja', 'library'],
+    });
+    // …and it persisted.
+    const { rows } = await pg.pool.query<{ preferences: { toursSeen: unknown } }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    expect(rows[0]!.preferences.toursSeen).toEqual(['first-run', 'hanja', 'library']);
+  });
+
+  it('touches ONLY the toursSeen key — every other stored slice survives byte-identical (the S3 no-clobber property)', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
+    await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['topik'] })
+      .expect(200);
+    const { rows } = await pg.pool.query<{ preferences: Record<string, unknown> }>(
+      `SELECT preferences FROM users WHERE id = $1`,
+      [userId],
+    );
+    // The full stored blob: CUSTOM_STORED with only toursSeen grown.
+    expect(rows[0]!.preferences).toEqual({
+      ...CUSTOM_STORED,
+      toursSeen: ['first-run', 'hanja', 'topik'],
+    });
+  });
+
+  it('cannot SHRINK the stored list — marks are monotonic (an empty PATCH is a no-op)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: [] });
+    expect(res.status).toBe(200);
+    expect(res.body.toursSeen).toEqual(['first-run', 'hanja']);
+    const get = await agent.get('/settings/prefs');
+    expect(get.body.toursSeen).toEqual(['first-run', 'hanja']);
+  });
+
+  it('a FRESH user (empty {} migration blob): marks persist AND are served back — defaults fill the rest', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['first-run'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...DEFAULT_VIEW, toursSeen: ['first-run'] });
+    // The GET-side parse accepts what was written (a jsonb_set on `{}` would
+    // have stored a palette-less blob the parser rejects — the route writes a
+    // full defaults blob instead).
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual({ ...DEFAULT_VIEW, toursSeen: ['first-run'] });
+  });
+
+  it('a CORRUPT stored blob: marks persist over stored defaults, never a 500', async () => {
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    await pg.pool.query(`UPDATE users SET preferences = $1::jsonb WHERE id = $2`, [
+      JSON.stringify({ palette: 'garbage' }),
+      userId,
+    ]);
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['hanja'] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ...DEFAULT_VIEW, toursSeen: ['hanja'] });
+    const get = await agent.get('/settings/prefs');
+    expect(get.body).toEqual({ ...DEFAULT_VIEW, toursSeen: ['hanja'] });
+  });
+
+  it('drops garbage elements per-element on the PATCH body too (S4 posture shared with PUT)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    await agent.put('/settings/prefs').send(CUSTOM_PREFS).expect(200);
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['library', 42, 'x'.repeat(65), ''] });
+    expect(res.status).toBe(200);
+    expect(res.body.toursSeen).toEqual(['first-run', 'hanja', 'library']);
+  });
+
+  it('rejects an unknown sibling key (strict) → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['first-run'], palette: CUSTOM_STORED.palette });
+    expect(res.status).toBe(400);
+  });
+
+  it("a user's PATCH never touches another user's prefs (IDOR structurally impossible)", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    await a.agent
+      .patch('/settings/prefs/tours-seen')
+      .send({ toursSeen: ['first-run'] })
+      .expect(200);
+    const res = await b.agent.get('/settings/prefs');
+    expect(res.body).toEqual(DEFAULT_VIEW);
   });
 });
 

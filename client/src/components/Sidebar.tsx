@@ -45,6 +45,7 @@ import {
   LEARN_SUBPAGE_IDS,
   matchActiveNavId,
   navItem,
+  PRIMARY_TAB_IDS,
   type NavItemId,
 } from '../lib/nav';
 import { Bilingual } from './Bilingual';
@@ -125,6 +126,19 @@ export function Sidebar(): JSX.Element {
         // cells, so a screen-reader user's reading order never depends on
         // a visual preference that has nothing to do with them.
         aria-label={`${it.label} · ${it.kr}`}
+        // Guided-tour anchor — PRIMARY tabs share BottomNav's `tab-<id>`
+        // keys: the two NAV chromes are mutually exclusive (Shell mounts
+        // Sidebar XOR BottomNav), so a `tab-*` selector only ever resolves
+        // one. NOTE that reasoning does NOT extend to the floating ChatFab,
+        // which mounts in both chromes — hence the rail's chat entry below
+        // carries its own `chat-nav` key, never `chat-fab` (fix-pass SF-1).
+        // LEARN sub-page links carry no anchor: the tour's "learn-launcher"
+        // step targets the section wrapper below.
+        data-tour={
+          (PRIMARY_TAB_IDS as ReadonlyArray<string>).includes(id)
+            ? `tab-${id}`
+            : undefined
+        }
         onClick={() => {
           goto(it.path);
         }}
@@ -156,7 +170,9 @@ export function Sidebar(): JSX.Element {
         {renderLink('progress')}
       </div>
 
-      <div className="km-sidebar__section">
+      {/* Guided-tour anchor: on desktop there is no hexagon launcher, so the
+          first-run tour's LEARN step spotlights this whole section. */}
+      <div className="km-sidebar__section" data-tour="learn-launcher">
         <h2 id={LEARN_HEADING_ID} className="km-eyebrow km-sidebar__heading">
           <Bilingual en="Learn" kr="배움" />
         </h2>
@@ -175,10 +191,17 @@ export function Sidebar(): JSX.Element {
       </div>
 
       {!examActive && !isSettingsPath(location.pathname) ? (
+        // Guided-tour anchor: `chat-nav` is DELIBERATELY distinct from the
+        // floating dot's `chat-fab` (fix-pass SF-1). The FAB is mounted in
+        // BOTH chromes, so a shared key would resolve by DOM order to this
+        // rail entry — spotlighting a sidebar row while the step copy says
+        // "this dot". No step targets `chat-nav` today; it exists so a
+        // future rail-specific step has a stable, unambiguous hook.
         <button
           type="button"
           className="km-sidebar__link km-sidebar__chat focusring"
           aria-label="Chat · 대화"
+          data-tour="chat-nav"
           onClick={openChat}
         >
           <Icon name="chat" size={20} />

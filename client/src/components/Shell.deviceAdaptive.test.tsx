@@ -15,9 +15,16 @@
  * contract for a missing `matchMedia` entirely (older webviews); this file
  * only covers Shell's render branch. `Shell.test.tsx` covers the
  * (untouched) LearnMenu phase machine in detail.
+ *
+ * F-006 + guided-tour coupling: same harness posture as `Shell.test.tsx`
+ * (see its module doc comment for the full rationale) — `AuthContext` is
+ * supplied directly with a VERIFIED user so `<UnverifiedBanner/>`'s
+ * `useAuth()` resolves and the banner renders null, and `TourProvider` is
+ * kept inert (never-settling prefs fetch + an all-seen localStorage seed)
+ * so no coach-mark tour can fire over the chrome assertions.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, type RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
@@ -25,23 +32,69 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { cwd } from 'node:process';
 import { Shell } from './Shell';
+import { AuthContext, type AuthContextValue } from '../hooks/auth-context';
+import { TOURS_SEEN_STORAGE_KEY } from '../hooks/tour-context';
+import { TOUR_IDS } from '../lib/tours';
+
+// Keep TourProvider un-hydrated (its auto-fire gate waits on this fetch
+// settling), with no real network attempt — see Shell.test.tsx.
+vi.mock('../services/settings', () => ({
+  fetchPrefs: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* never settles — TourProvider stays inert */
+    }),
+  putPrefs: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
+  patchToursSeen: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
+}));
+
+/** Signed-in + email-VERIFIED → UnverifiedBanner renders null. */
+const VERIFIED_AUTH: AuthContextValue = {
+  status: 'authenticated',
+  user: { id: 1, email: 'tester@example.com', email_verified: true },
+  loading: false,
+  pending: null,
+  login: async () => undefined,
+  submitTotp: async () => undefined,
+  enroll: async () => ({ otpauthUri: 'otpauth://x', secret: 'S' }),
+  confirmEnroll: async () => ({ recoveryCodes: [] }),
+  completeEnrollment: async () => undefined,
+  register: async () => 'authenticated' as const,
+  logout: async () => undefined,
+  refresh: async () => undefined,
+};
 
 function LocationProbe(): JSX.Element {
   const loc = useLocation();
   return <div data-testid="pathname">{loc.pathname}</div>;
 }
 
-function renderShellAt(initialPath = '/'): void {
-  render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<Shell />}>
-          <Route path="*" element={<LocationProbe />} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+function renderShellAt(initialPath = '/'): RenderResult {
+  return render(
+    <AuthContext.Provider value={VERIFIED_AUTH}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route path="*" element={<LocationProbe />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </AuthContext.Provider>,
   );
 }
+
+beforeEach(() => {
+  // Defence in depth against tour auto-fire: every tour reads as seen.
+  window.localStorage.setItem(
+    TOURS_SEEN_STORAGE_KEY,
+    JSON.stringify([...TOUR_IDS]),
+  );
+});
 
 /** Stub `window.matchMedia` to report a fixed viewport width, mirroring
  *  `useDeviceClass`'s two `(min-width: Npx)` queries. */
@@ -66,6 +119,7 @@ function mockViewportWidth(width: number): void {
 }
 
 afterEach(() => {
+  window.localStorage.removeItem(TOURS_SEEN_STORAGE_KEY);
   vi.unstubAllGlobals();
 });
 
@@ -125,15 +179,7 @@ describe('Shell — sidebar chrome (≥768px)', () => {
 describe('Shell — LearnMenu DOM position (fix-pass: restored pre-D0 sibling relationship)', () => {
   it('mounts .km-learnmenu as a sibling of .km-shell, not nested inside it', async () => {
     const user = userEvent.setup();
-    const { container } = render(
-      <MemoryRouter initialEntries={['/']}>
-        <Routes>
-          <Route element={<Shell />}>
-            <Route path="*" element={<LocationProbe />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
-    );
+    const { container } = renderShellAt('/');
 
     await user.click(screen.getByRole('button', { name: 'Learn · 배움' }));
 

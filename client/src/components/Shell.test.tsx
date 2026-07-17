@@ -26,8 +26,24 @@
  * device-class queries (only `prefers-reduced-motion` matches), so it stays
  * 'mobile' too. See `Shell.deviceAdaptive.test.tsx` for the Sidebar-chrome
  * coverage this file intentionally does not duplicate.
+ *
+ * F-006 + guided-tour coupling: `Shell` now renders `<UnverifiedBanner/>`
+ * (which calls `useAuth()` — it THROWS outside a provider) and mounts
+ * `TourProvider` (which boot-fetches `GET /settings/prefs` and can auto-fire
+ * a coach-mark tour over the chrome). The harness therefore:
+ *   - supplies `AuthContext` directly with a VERIFIED authenticated user —
+ *     the lightest correct posture: `useAuth()` resolves, the banner renders
+ *     null, and no `/auth/me` probe ever leaves the process (wrapping the
+ *     real `AuthProvider` would fire one per render);
+ *   - mocks `services/settings` with a never-settling `fetchPrefs`, so
+ *     `TourProvider` never hydrates and (per its own contract) never
+ *     auto-fires — no network attempt, no async setState outside act;
+ *   - seeds `localStorage["km.toursSeen"]` with every tour id as a second
+ *     line of defence, so even a future TourProvider that fired before
+ *     hydration would find nothing unseen to fire.
+ * The Shell assertions themselves are untouched.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -37,6 +53,53 @@ import { join } from 'node:path';
 import { cwd } from 'node:process';
 import { Shell } from './Shell';
 import { LEARN_MENU_EXIT_MS } from './LearnMenu';
+import { AuthContext, type AuthContextValue } from '../hooks/auth-context';
+import { TOURS_SEEN_STORAGE_KEY } from '../hooks/tour-context';
+import { TOUR_IDS } from '../lib/tours';
+
+// TourProvider (mounted by Shell) boot-fetches `GET /settings/prefs`. A
+// never-settling promise keeps it permanently un-hydrated: its auto-fire
+// gate waits on hydration, so no tour can ever fire under these tests, no
+// real network request is attempted, and no late async setState can leak
+// act() warnings into unrelated assertions. `putPrefs`/`patchToursSeen` are
+// only reachable after a tour finishes, which can't happen here — stubbed
+// for the import.
+vi.mock('../services/settings', () => ({
+  fetchPrefs: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* never settles — TourProvider stays inert */
+    }),
+  putPrefs: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
+  patchToursSeen: (): Promise<never> =>
+    new Promise<never>(() => {
+      /* unreachable in these tests */
+    }),
+}));
+
+/**
+ * A signed-in, email-VERIFIED user: `UnverifiedBanner` renders null, so the
+ * LearnMenu/FeedbackFab assertions below see exactly the pre-F-006 chrome.
+ * Plain async no-op stubs (not vi.fn()) — nothing in this file asserts on
+ * them, and the suite-level `vi.restoreAllMocks` can't wipe an
+ * implementation that was never a mock.
+ */
+const VERIFIED_AUTH: AuthContextValue = {
+  status: 'authenticated',
+  user: { id: 1, email: 'tester@example.com', email_verified: true },
+  loading: false,
+  pending: null,
+  login: async () => undefined,
+  submitTotp: async () => undefined,
+  enroll: async () => ({ otpauthUri: 'otpauth://x', secret: 'S' }),
+  confirmEnroll: async () => ({ recoveryCodes: [] }),
+  completeEnrollment: async () => undefined,
+  register: async () => 'authenticated' as const,
+  logout: async () => undefined,
+  refresh: async () => undefined,
+};
 
 function LocationProbe(): JSX.Element {
   const loc = useLocation();
@@ -55,13 +118,15 @@ const FEEDBACK_FAB_NAME = 'Report feedback · 피드백 보내기';
 
 function renderShell(initialPath = '/'): void {
   render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<Shell />}>
-          <Route path="*" element={<LocationProbe />} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <AuthContext.Provider value={VERIFIED_AUTH}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route path="*" element={<LocationProbe />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </AuthContext.Provider>,
   );
 }
 
@@ -107,7 +172,17 @@ function mockReducedMotion(): void {
   );
 }
 
+beforeEach(() => {
+  // Defence in depth against tour auto-fire (see the module doc comment):
+  // every registered tour reads as already seen on this "device".
+  window.localStorage.setItem(
+    TOURS_SEEN_STORAGE_KEY,
+    JSON.stringify([...TOUR_IDS]),
+  );
+});
+
 afterEach(() => {
+  window.localStorage.removeItem(TOURS_SEEN_STORAGE_KEY);
   vi.restoreAllMocks();
   vi.useRealTimers();
 });

@@ -1243,7 +1243,9 @@ export default function UploadViewer(): JSX.Element {
         />
       ) : (
         <>
-          <div className="km-upload-viewer__toolbar">
+          {/* Guided-tour anchor: the whole view toolbar (jump/zoom/fit/
+              rotate/reorder) is spotlit as one step. */}
+          <div className="km-upload-viewer__toolbar" data-tour="viewer-zoom">
             <input
               id="km-upload-jump"
               type="number"
@@ -1346,6 +1348,7 @@ export default function UploadViewer(): JSX.Element {
             <Button
               variant="ghost"
               size="sm"
+              data-tour="viewer-extract"
               onClick={() => {
                 void extract();
               }}

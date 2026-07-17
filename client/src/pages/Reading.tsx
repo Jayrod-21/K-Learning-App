@@ -405,7 +405,7 @@ function BookShelf({
   }
 
   return (
-    <div>
+    <div data-tour="reading-shelf">
       {BOOK_SECTIONS.map((section) => {
         const rows = books.filter((b) => section.types.includes(b.type));
         if (rows.length === 0) return null; // empty sections stay out of the way

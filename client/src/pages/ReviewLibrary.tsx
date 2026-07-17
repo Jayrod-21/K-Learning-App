@@ -165,6 +165,7 @@ function ReviewLibrary(): JSX.Element {
         )}
         role="list"
         aria-label="Library sections"
+        data-tour="library-sections"
       >
         {SECTIONS.map((s) => (
           <div key={s.key} role="listitem">

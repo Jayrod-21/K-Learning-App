@@ -514,7 +514,11 @@ export default function Ttmik(): JSX.Element {
 function CollectionTiles(): JSX.Element {
   const navigate = useNavigate();
   return (
-    <ul className="km-ttmik__tiles" aria-label="Audio collections">
+    <ul
+      className="km-ttmik__tiles"
+      aria-label="Audio collections"
+      data-tour="listen-collections"
+    >
       {COLLECTIONS.map((c) => (
         <li key={c.corpus}>
           <CityCard tone={c.tone} className="km-ttmik__tile">

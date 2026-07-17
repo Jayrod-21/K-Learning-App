@@ -219,3 +219,18 @@
     grid-column: 1 / -1;
   }
 }
+
+/* ───── Help & tours (guided tutorial) ───── */
+
+/* Replay-a-page-intro row: picker + Replay button side by side. */
+.km-settings__tour-replay {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.km-settings__tour-replay select {
+  flex: 1;
+  min-width: 0;
+}

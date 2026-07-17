@@ -803,6 +803,7 @@ function Writing(): JSX.Element {
                 role="radiogroup"
                 aria-label="Writing task type"
                 id={rubricGroupId}
+                data-tour="writing-task-type"
               >
                 {CHOICES.map((c, i) => {
                   const selected = uiChoice === c.id;
@@ -832,7 +833,12 @@ function Writing(): JSX.Element {
               {/* Task prompt + compose sheet — F-128 device #1/#2: a
                   CityCard signboard/hanji-paper hero with a leading
                   DancheongRail, replacing the plain default Card. */}
-              <CityCard rail tone="accent" className="km-writing__card">
+              <CityCard
+                rail
+                tone="accent"
+                className="km-writing__card"
+                data-tour="writing-prompt"
+              >
                 {uiChoice === 'ai_prompt' ? (
                   <>
                     {/* F-163: the generator now lives INSIDE the top-level

@@ -7,10 +7,15 @@
  * `users.preferences`, migration 018) so the choices survive a device change
  * and sync across a user's sessions.
  *
- *   GET /settings/prefs  → the stored prefs (or defaults if empty/corrupt),
- *                          with `notif` DERIVED from notification_schedules
- *   PUT /settings/prefs  → replace the stored prefs (last-writer-wins);
- *                          `notif` in the body is accepted but IGNORED
+ *   GET   /settings/prefs            → the stored prefs (or defaults if
+ *                                      empty/corrupt), with `notif` DERIVED
+ *                                      from notification_schedules
+ *   PUT   /settings/prefs            → replace the stored prefs
+ *                                      (last-writer-wins); `notif` in the
+ *                                      body is accepted but IGNORED
+ *   PATCH /settings/prefs/tours-seen → union-merge tour ids into the stored
+ *                                      `toursSeen` ONLY (jsonb_set — no
+ *                                      other field carried or clobbered)
  *
  * F-093 CONTRACT step: `notif` is no longer stored in (or read from) the 018
  * blob. `notification_schedules` (052) is the single source of truth for
@@ -104,6 +109,44 @@ const TextSizePreset = z.enum(['sm', 'md', 'lg']).catch('md');
 const CorrectPreset = z.enum(['moss', 'pine', 'teal']);
 const WrongPreset = z.enum(['vermilion', 'amber', 'slate']);
 
+/**
+ * Guided-tour completion marks (tutorial/product tour) — the ids of the
+ * coach-mark tours the user has finished or skipped, server-synced so a seen
+ * tour never re-fires on another device.
+ *
+ * Ids are a CLOSED set defined in the client registry (`client/src/lib/
+ * tours.ts`), never user-authored input — but the server deliberately stores
+ * them as opaque bounded strings instead of a hard enum: every new client
+ * tour would otherwise 400 a PUT from the newer client (the exact
+ * rolling-deploy failure the accent/textSize `.catch`es exist to avoid).
+ * Bounds still apply: each id ≤ 64 chars, ≤ 200 ids — a crafted request
+ * cannot bloat the JSONB blob unboundedly.
+ *
+ * `.default([])` — every blob stored before this feature has NO `toursSeen`
+ * key; defaulting (the `languageDisplay` posture) means the GET-side
+ * safeParse still passes and the user's palette/textSize are NOT wiped back
+ * to defaults.
+ *
+ * PER-ELEMENT tolerance (fix-pass S4): malformed ELEMENTS are dropped
+ * individually by the preprocess filter — one bad id (a number, an empty or
+ * oversized string) must never discard the user's whole accumulated
+ * seen-list. Unlike the accent/textSize `.catch`es (which coerce a scalar
+ * PREFERENCE to a default value), this array is accumulated user DATA, so
+ * the wipe radius is kept to exactly the invalid elements. The outer
+ * `.catch([])` still guards the ARRAY-level failures — a non-array value or
+ * a >200-element list (the anti-bloat bound, unreachable from the closed
+ * client registry) coerces to "none seen" rather than failing the
+ * whole-blob parse (worst case a tour re-fires once, Esc-dismissable).
+ */
+const TourIdElementSchema = z.string().min(1).max(64);
+const ToursSeenSchema = z.preprocess(
+  (v) =>
+    Array.isArray(v)
+      ? v.filter((el) => TourIdElementSchema.safeParse(el).success)
+      : v,
+  z.array(TourIdElementSchema).max(200).default([]).catch([]),
+);
+
 const PalettePrefsSchema = z
   .object({
     paper: PaperPreset,
@@ -190,6 +233,7 @@ export const StoredPrefsSchema = z
     palette: PalettePrefsSchema,
     languageDisplay: LanguageDisplayPrefsSchema.default(DEFAULT_LANGUAGE_DISPLAY),
     textSize: TextSizePreset,
+    toursSeen: ToursSeenSchema,
   })
   .strict();
 export type StoredPrefs = z.infer<typeof StoredPrefsSchema>;
@@ -218,6 +262,7 @@ const DEFAULT_STORED_PREFS: StoredPrefs = {
   palette: { paper: 'hanji', accent: 'coral', correct: 'moss', wrong: 'vermilion' },
   languageDisplay: DEFAULT_LANGUAGE_DISPLAY,
   textSize: 'md',
+  toursSeen: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -356,6 +401,7 @@ router.put('/prefs', cheapLimiter(), validateBody(PrefsSchema), async (req, res,
       palette: body.palette,
       languageDisplay: body.languageDisplay,
       textSize: body.textSize,
+      toursSeen: body.toursSeen,
     };
 
     // Write the WHOLE stored object (no merge, no version gate). Last-writer-wins
@@ -381,5 +427,101 @@ router.put('/prefs', cheapLimiter(), validateBody(PrefsSchema), async (req, res,
     next(err);
   }
 });
+
+// ---------------------------------------------------------------------------
+// PATCH /settings/prefs/tours-seen — field-scoped, union-merge write.
+// ---------------------------------------------------------------------------
+
+const ToursSeenPatchSchema = z.object({ toursSeen: ToursSeenSchema }).strict();
+
+/**
+ * Field-scoped tour-marks sync (fix-pass S3). `TourProvider` used to sync a
+ * finished tour via GET → merge → full-blob PUT, which carried the GET-time
+ * palette/languageDisplay/textSize — any prefs write landing inside that
+ * GET→PUT window (e.g. Settings' debounced accent PUT racing "Skip all
+ * tours") was silently reverted. This route removes that exposure class
+ * structurally: the ids are UNION-merged with the stored list server-side
+ * and written with `jsonb_set` on the CURRENT column value, so no other
+ * prefs field is ever carried — a concurrent palette PUT cannot be
+ * clobbered by a tour mark, full stop.
+ *
+ * Residual race (documented, accepted): two concurrent writers of
+ * `toursSeen` ITSELF (a full PUT racing this PATCH, or two tabs marking
+ * different tours) still resolve last-writer-wins on this one field — an id
+ * can transiently drop server-side. Self-healing: every device keeps its
+ * own marks in localStorage and re-unions them on its next mark/boot sync,
+ * so the set only ever converges upward. A version gate/CAS is deliberately
+ * out of scope (the route's locked last-writer-wins posture).
+ *
+ * Union-merge (never replace) also means this endpoint cannot SHRINK the
+ * list — "unsee" doesn't exist in the product (replay ignores seen state),
+ * so a monotonic grow-only write is the safest primitive to expose.
+ */
+router.patch(
+  '/prefs/tours-seen',
+  cheapLimiter(),
+  validateBody(ToursSeenPatchSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { toursSeen } = req.body as z.infer<typeof ToursSeenPatchSchema>;
+      const { rows } = await query<{ preferences: unknown }>(
+        `SELECT preferences
+           FROM users
+          WHERE id = $1 AND deleted_at IS NULL`,
+        [userId],
+      );
+      const stored = rows[0] ? parseStoredPrefs(rows[0].preferences) : null;
+      const base = stored ?? DEFAULT_STORED_PREFS;
+      // Sorted for deterministic storage; capped so a stored-∪-body union can
+      // never exceed the anti-bloat bound and trip the GET-side `.catch([])`
+      // whole-list coercion (unreachable from the 11-id client registry —
+      // defense against a crafted 200+200 union).
+      const merged = [...new Set([...base.toursSeen, ...toursSeen])]
+        .sort()
+        .slice(0, 200);
+
+      if (stored !== null) {
+        // Valid blob: touch ONLY the toursSeen key. `jsonb_set` operates on
+        // the column's value AT WRITE TIME (single atomic UPDATE), so a
+        // palette/textSize write landing since our SELECT survives intact.
+        // The `jsonb_typeof` predicate guards the read-to-write window
+        // against the blob having been replaced with a non-object; rowCount
+        // 0 then simply means the mark retries on the client's next sync.
+        await query(
+          `UPDATE users
+              SET preferences = jsonb_set(preferences, '{toursSeen}', $1::jsonb, true)
+            WHERE id = $2 AND deleted_at IS NULL
+              AND jsonb_typeof(preferences) = 'object'`,
+          [JSON.stringify(merged), userId],
+        );
+      } else {
+        // Empty `{}` (migration default) or corrupt blob: there is nothing
+        // recoverable to preserve, so persist a full valid blob (stored
+        // defaults + the merged marks). Without this, `jsonb_set` on `{}`
+        // would store a palette-less blob the GET-side parse rejects — the
+        // marks would be written but never served.
+        await query(
+          `UPDATE users
+              SET preferences = $1::jsonb
+            WHERE id = $2 AND deleted_at IS NULL`,
+          [JSON.stringify({ ...DEFAULT_STORED_PREFS, toursSeen: merged }), userId],
+        );
+      }
+
+      // Same view shape as GET/PUT: the (unchanged) stored slices with the
+      // merged marks + the canonical derived notif, so the client can adopt
+      // ids another device persisted without a follow-up GET.
+      const view: PrefsView = {
+        notif: await deriveNotifFromSchedules(userId),
+        ...base,
+        toursSeen: merged,
+      };
+      res.status(200).json(view);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

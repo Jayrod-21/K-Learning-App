@@ -15,6 +15,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { JSX } from 'react';
 import { ExamActiveContext } from '../hooks/exam-active-context';
 import { readChatOpenState } from '../lib/chatContext';
+import { ChatFab } from './ChatFab';
 import { Sidebar } from './Sidebar';
 
 function LocationProbe(): JSX.Element {
@@ -208,5 +209,43 @@ describe('Sidebar — /settings quiet zone (mirrors ChatFab)', () => {
   it('a sibling route that merely starts with "settings" text is not caught by the prefix match', () => {
     renderSidebarAt('/settingsomething');
     expect(screen.getByRole('button', { name: /^Chat/ })).toBeInTheDocument();
+  });
+});
+
+describe('Sidebar — guided-tour anchor keys (fix-pass SF-1)', () => {
+  it('the rail chat entry carries its OWN anchor key (chat-nav), never the floating dot\'s chat-fab', () => {
+    renderSidebarAt('/');
+    const chat = screen.getByRole('button', { name: /^Chat/ });
+    expect(chat).toHaveAttribute('data-tour', 'chat-nav');
+    expect(document.querySelector('[data-tour="chat-fab"]')).toBeNull();
+  });
+
+  it('with BOTH chrome pieces mounted (sidebar layout), the first-run "dot" step\'s selector resolves UNIQUELY to the floating ChatFab', () => {
+    // Shell mounts the ChatFab unconditionally in both chromes, so on
+    // desktop the Sidebar and the FAB coexist — a shared `chat-fab` key
+    // would resolve by DOM order to the rail row while the step copy says
+    // "this dot". Pin the uniqueness contract.
+    render(
+      <ExamActiveContext.Provider
+        value={{ examActive: false, setExamActive: () => {} }}
+      >
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route
+              path="*"
+              element={
+                <>
+                  <Sidebar />
+                  <ChatFab />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </ExamActiveContext.Provider>,
+    );
+    const matches = document.querySelectorAll('[data-tour="chat-fab"]');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toHaveClass('km-chatfab');
   });
 });

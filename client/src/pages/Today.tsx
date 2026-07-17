@@ -961,7 +961,12 @@ export function Today(): JSX.Element {
       <h2 className="km-today__sectionTitle">
         <Bilingual en="Review & drills" kr="복습 · 드릴" />
       </h2>
-      <section className="km-today__section" aria-label="Review and drills">
+      {/* Guided-tour anchor (first-run "start a session" step). */}
+      <section
+        className="km-today__section"
+        aria-label="Review and drills"
+        data-tour="today-plan"
+      >
         <TileRail
           isGridLayout={isGridLayout}
           tiles={[

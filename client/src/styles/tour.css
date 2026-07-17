@@ -1,0 +1,104 @@
+/**
+ * Guided-tour popover theme — re-skins driver.js's stock popover
+ * (`popoverClass: 'km-tour'`, set in lib/tourDriver.ts) with the app's own
+ * tokens so the coach marks read as Korean Master chrome, not a bolted-on
+ * library:
+ *   - surface/ink: `--ink-3` (the "highest" popover surface) on `--paper`,
+ *     exactly what Sheet/WordPopover use — correct in BOTH `data-theme`s
+ *     because the tokens are theme-scoped in styles/index.css.
+ *   - accent: `--vermilion` — remapped by the `data-accent` presets, so the
+ *     Next button and progress text follow the user's Seoul-neon accent
+ *     choice automatically.
+ *   - shape/type: `--radius-lg` (Day hanji-paper vs Night rounded-modern)
+ *     and the display serif for titles (`h1/h2` convention).
+ *
+ * Loaded from lib/tourDriver.ts AFTER driver.js's own stylesheet so these
+ * declarations win on cascade order without needing !important — except the
+ * arrow colors, where driver.js sets side-specific border colors at equal
+ * specificity per side; the two !importants there are deliberate.
+ */
+
+.driver-popover.km-tour {
+  background-color: var(--ink-3);
+  color: var(--paper);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 12px 32px rgba(6, 8, 12, 0.28),
+    0 0 0 1px var(--hairline, rgba(0, 0, 0, 0.08));
+  padding: 16px 18px;
+  max-width: 320px;
+}
+
+.driver-popover.km-tour .driver-popover-title {
+  font-family: var(--font-display, 'Noto Serif', Georgia, serif);
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--paper);
+}
+
+.driver-popover.km-tour .driver-popover-description {
+  color: var(--paper-dim);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.driver-popover.km-tour .driver-popover-progress-text {
+  color: var(--vermilion);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* The stock close ✕ is a bare glyph button — give it the app's mute ink. */
+.driver-popover.km-tour .driver-popover-close-btn {
+  color: var(--paper-mute);
+}
+.driver-popover.km-tour .driver-popover-close-btn:hover {
+  color: var(--paper);
+}
+
+/* Nav buttons: Next/Done as a filled accent chip, Back as a quiet ghost —
+ * the same weight split the app's own Button variants use. driver.js styles
+ * these with `text-shadow` and a beveled border; flatten both. */
+.driver-popover.km-tour .driver-popover-navigation-btns button {
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill, 999px);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-shadow: none;
+}
+
+.driver-popover.km-tour .driver-popover-next-btn {
+  background-color: var(--vermilion);
+  color: var(--on-vermilion, #fff);
+}
+.driver-popover.km-tour .driver-popover-next-btn:hover {
+  background-color: var(--vermilion-bright, var(--vermilion));
+  color: var(--on-vermilion, #fff);
+}
+
+.driver-popover.km-tour .driver-popover-prev-btn {
+  background-color: transparent;
+  color: var(--paper-dim);
+  border-color: var(--paper-faint);
+}
+.driver-popover.km-tour .driver-popover-prev-btn:hover {
+  color: var(--paper);
+}
+
+/* Arrow — driver.js colors it with per-side border rules of equal
+ * specificity, so a plain background override can't reach it. Match the
+ * popover surface per side. */
+.driver-popover.km-tour .driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--ink-3) !important;
+}
+.driver-popover.km-tour .driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--ink-3) !important;
+}
+.driver-popover.km-tour .driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--ink-3) !important;
+}
+.driver-popover.km-tour .driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--ink-3) !important;
+}

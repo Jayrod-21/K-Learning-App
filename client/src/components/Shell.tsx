@@ -94,6 +94,7 @@ import { LearnMenu, LEARN_MENU_EXIT_MS } from './LearnMenu';
 import { Sidebar } from './Sidebar';
 import { UnverifiedBanner } from './UnverifiedBanner';
 import { ExamActiveProvider } from '../hooks/ExamActiveProvider';
+import { TourProvider } from '../hooks/TourProvider';
 import { useDeviceClass } from '../hooks/useDeviceClass';
 
 /** DOM id linking the hexagon's `aria-controls` to the LearnMenu panel. */
@@ -187,6 +188,11 @@ export function Shell(): JSX.Element {
 
   return (
     <ExamActiveProvider>
+      {/* TourProvider (guided tutorial) sits INSIDE ExamActiveProvider — it
+        * reads the exam flag to suppress auto-fired tours mid-mock — and
+        * ABOVE the Outlet so every screen (and the Settings "Help & tours"
+        * controls) can reach the tour context. */}
+      <TourProvider>
       <div className="km-appframe">
         {sidebarLayout ? <Sidebar /> : null}
         <div className="km-shell">
@@ -221,6 +227,7 @@ export function Shell(): JSX.Element {
           />
         ) : null}
       </div>
+      </TourProvider>
     </ExamActiveProvider>
   );
 }

@@ -62,6 +62,7 @@ export function ChatFab(): JSX.Element | null {
       type="button"
       className="km-chatfab focusring"
       aria-label="Open chat · 대화"
+      data-tour="chat-fab"
       onClick={() => {
         // Slice 3: the FAB always opens a NEW conversation and hands the
         // page's context along (Chat shows the discuss-this-page popup when

@@ -825,6 +825,7 @@ function Grammar(): JSX.Element {
               size="sm"
               onClick={openPractice}
               leadingIcon={<Icon name="play" size={14} />}
+              data-tour="grammar-practice"
             >
               Practice
             </Button>
