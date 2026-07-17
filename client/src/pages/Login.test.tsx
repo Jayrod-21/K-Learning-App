@@ -35,6 +35,14 @@ vi.mock('../lib/qr', () => ({
   otpauthUriToDataUrl: vi.fn(async () => 'data:image/png;base64,QRTEST'),
 }));
 
+// F-006: the ResendVerificationButton (used by the check-email + unverified
+// notice steps) calls services/auth.resendVerification directly. Stub it so
+// the resend flow is assertable without a network layer.
+const resendMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../services/auth', () => ({
+  resendVerification: resendMock,
+}));
+
 import Login from './Login';
 
 /** Build a default mocked auth context; tests override per-case. */
@@ -49,7 +57,7 @@ function makeAuth(overrides: Partial<AuthContextValue> = {}): AuthContextValue {
     enroll: vi.fn(async () => ({ otpauthUri: 'otpauth://x', secret: 'SEED' })),
     confirmEnroll: vi.fn(async () => ({ recoveryCodes: ['AAAAA-BBBBB'] })),
     completeEnrollment: vi.fn(async () => undefined),
-    register: vi.fn(async () => undefined),
+    register: vi.fn(async () => 'authenticated' as const),
     logout: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
     ...overrides,
@@ -133,6 +141,92 @@ describe('Login — credentials step', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Registration is closed.',
     );
+  });
+});
+
+// ─── F-006: register → check-your-email step ──────────────────
+
+describe('Login — F-006 register verification_required', () => {
+  it('advances to the "check your email" step (no session) when register resolves verification_required', async () => {
+    const register = vi.fn(async () => 'verification_required' as const);
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    await user.type(screen.getByLabelText('Email'), 'New@Example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    // The check-email step renders, addressed to the lower-cased email.
+    expect(
+      await screen.findByRole('heading', { level: 1, name: /Check your email/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('new@example.com')).toBeInTheDocument();
+    // register was called with the trimmed email.
+    expect(register).toHaveBeenCalledWith(
+      'New@Example.com',
+      'a-long-passphrase',
+      undefined,
+    );
+  });
+
+  it('the check-email step resend button calls resendVerification with the account email', async () => {
+    const register = vi.fn(async () => 'verification_required' as const);
+    mocks.authValue = makeAuth({ register });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Create one/ }));
+    await user.type(screen.getByLabelText('Email'), 'checkme@example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Create account' }));
+
+    await screen.findByRole('heading', { level: 1, name: /Check your email/ });
+    await user.click(
+      screen.getByRole('button', { name: /Resend verification email/ }),
+    );
+    await waitFor(() => {
+      expect(resendMock).toHaveBeenCalledWith('checkme@example.com');
+    });
+    // Non-enumerating success copy.
+    expect(
+      await screen.findByText(/If an account exists for checkme@example.com/),
+    ).toBeInTheDocument();
+  });
+});
+
+// ─── F-006: unverified login notice ───────────────────────────
+
+describe('Login — F-006 email_unverified login', () => {
+  it('renders the unverified notice + resend affordance (not a generic failure) on a typed email_unverified error', async () => {
+    const login = vi.fn(async () => {
+      throw new ApiError('email address not verified', {
+        status: 403,
+        code: 'email_unverified',
+      });
+    });
+    mocks.authValue = makeAuth({ login });
+    render(<Login />);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Email'), 'Unverified@Example.com');
+    await user.type(screen.getByLabelText('Password'), 'a-long-passphrase');
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/hasn.t been verified yet/);
+    // Addressed to the lower-cased email; the raw server message never leaks.
+    expect(alert).toHaveTextContent('unverified@example.com');
+    expect(alert).not.toHaveTextContent('email address not verified');
+
+    // The resend affordance is present and wired.
+    await user.click(
+      screen.getByRole('button', { name: /Resend verification email/ }),
+    );
+    await waitFor(() => {
+      expect(resendMock).toHaveBeenCalledWith('unverified@example.com');
+    });
   });
 });
 

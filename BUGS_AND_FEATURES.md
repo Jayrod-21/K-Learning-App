@@ -365,13 +365,35 @@ Launch one focused session per group; cross-cutting items noted.
 - **Key files:** `db/migrations/002_darakwon_corpora.up.sql:230`; `server/src/routes/grammar.ts:30,57`; `client/src/pages/Reference.tsx:715` (GrammarTab)
 - **Fix hint:** Extend `KgiuSearchQuerySchema`/WHERE with `domain`+`book_level` (source textbook maps to `corpus`/`source_book`), then add filter UI. Pairs with F-003.
 
-### F-006 · Email notifications from a domain email
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (CONFIG)
-- **State:** Net-new. Email is collected and notification *intents* exist
-  (`notif.channel.email`, reviewsDue/daily/weekly), but there is NO mail-sending
-  infra anywhere (no nodemailer/sendgrid/SES/SMTP in source) and no reminder scheduler.
-- **Key files:** `client/src/pages/Settings.tsx:588`; `server/src/routes/settings.ts:62,83` (persists intent only); no mail module present
-- **Fix hint:** Add a mail provider client + env config (domain sender, SPF/DKIM) and a scheduled worker that fans out reminders/word lists from the stored intents. Ties into the deploy email-verification checklist.
+### F-006 · Email verification for account signup
+- **Status:** 🟢 done (2026-07-16) · **Priority:** P3 → deploy-priority · **Category:** BACKEND (CONFIG, DATABASE, UI)
+- **Resolution (2026-07-16):** built the email-verification deploy priority (the
+  notification-*sending* scheduler from the old scope stays deferred — F-040
+  superseded that half). New `email_verification_tokens` table (migration 071:
+  hashed-at-rest, single-use, 24h-expiring, mirrors 025; grandfathers existing
+  accounts via a one-way `email_verified_at = created_at` backfill so the login
+  gate can't lock the seeded account out). Provider-agnostic mail transport
+  (`server/src/services/mail.ts` — nodemailer SMTP configured from env, points
+  at Proton Mail Bridge in prod, log-only mock when `SMTP_HOST` unset / in
+  tests). Token module `server/src/auth/emailVerification.ts` (CSPRNG,
+  `timingSafeEqual`, atomic consume, resend supersession). Wired into
+  `/auth/register` + seed-user (issue + email) and `PATCH /auth/me` (email
+  change resets verification). New routes `GET|POST /auth/verify` (idempotent) +
+  `POST /auth/verify/resend` (non-enumerating, per-user cooldown). Login gate:
+  unverified → typed `403 email_unverified`, config-toggleable via
+  `EMAIL_VERIFICATION_REQUIRED` (default true), placed after password + before
+  MFA. Client: post-register "check your email" step, `/verify-email` landing
+  page (success/expired/invalid/network + resend), unverified login notice, and
+  an in-app `UnverifiedBanner`. Gates: server vitest 1469 pass / 4 skip; db 143
+  pass (incl. `test_migration_071.py`); client lint+tsc clean, 30 touched-file
+  tests, vite build. Design + operator DNS/SMTP steps:
+  `docs/BUILD_f006_email_verification.md`; threat model: `server/SECURITY.md §19`.
+- **Key files:** `db/migrations/071_email_verification_tokens.{up,down}.sql`;
+  `server/src/services/mail.ts`; `server/src/auth/emailVerification.ts`;
+  `server/src/routes/auth.ts`; `server/src/config/index.ts`;
+  `client/src/pages/VerifyEmail.tsx`; `client/src/components/{ResendVerificationButton,UnverifiedBanner}.tsx`
+- **Operator TODO (deploy):** point `SMTP_*` env at Proton Mail Bridge and
+  publish the sending domain's SPF/DKIM/DMARC records (see BUILD_f006 §6).
 
 ### F-007 · Resume an in-progress TOPIK test
 - **Status:** 🟢 done (2026-07-06, deployed) · **Priority:** P2 · **Category:** DATABASE (BACKEND, UI)

@@ -15,6 +15,7 @@ import {
 } from '../../src/services/claudeProxy.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 import { resetKrdictReadyCache } from '../../src/routes/define.js';
+import { _resetMailTransportForTesting } from '../../src/services/mail.js';
 import { createApp } from '../../src/app.js';
 
 export interface TestApp {
@@ -48,6 +49,13 @@ export interface BuildOptions {
    */
   mfaRequired?: boolean;
   registrationEnabled?: boolean;
+  /**
+   * F-006 email-verification login gate. Defaults FALSE so the pre-existing
+   * suites — which register-then-use-the-session directly — stay valid; the
+   * verification suite opts in. The mail transport is always reset to the
+   * mock (SMTP_HOST is cleared in buildTestApp), so NO test touches real SMTP.
+   */
+  emailVerificationRequired?: boolean;
 }
 
 /**
@@ -330,9 +338,13 @@ export function buildTestApp(opts: BuildOptions): TestApp {
   // pre-existing auth tests keep their direct-session expectations. The MFA suite
   // flips mfaRequired on.
   process.env.TOTP_SECRET_ENC_KEY = TEST_TOTP_SECRET_ENC_KEY;
+  // F-006: never let a host machine's SMTP env leak into tests — with
+  // SMTP_HOST unset the mail module selects the log-only mock transport.
+  delete process.env.SMTP_HOST;
   _setConfigForTesting({
     MFA_REQUIRED: opts.mfaRequired ?? false,
     REGISTRATION_ENABLED: opts.registrationEnabled ?? true,
+    EMAIL_VERIFICATION_REQUIRED: opts.emailVerificationRequired ?? false,
   });
 
   // Capture the pool currently installed as the global so teardown can restore
@@ -351,6 +363,10 @@ export function buildTestApp(opts: BuildOptions): TestApp {
 
   resetLimiters();
   resetKrdictReadyCache();
+  // Drop any cached mail transport so this app re-selects from the CURRENT
+  // config (always the mock here — SMTP_HOST cleared above). A test that
+  // installs a capture transport does so AFTER building its app.
+  _resetMailTransportForTesting();
   // Re-derive the AES key from the (possibly overridden) test config so a prior
   // test's key never leaks into this app instance.
   _resetEncryptionKeyForTesting();
