@@ -48,7 +48,13 @@ import type {
 /** Wire shape of a ticket the CALLER owns — `GET /tickets/mine`, and the
  *  POST/PATCH response envelope (routes/tickets.ts `OwnTicketRow`). */
 interface OwnTicketWire {
-  id: number;
+  /** `tickets.id` is a Postgres `bigint`; node-postgres serializes bigint as a
+   *  JSON string, so the wire value arrives as `"1"`, NOT `1`. The mapper below
+   *  coerces to the domain's `number`. Typing this honestly (not `number`) is
+   *  what forces that coercion — the previous `number` lie let `"1" === 1`
+   *  comparisons silently fail in the detail view ("we couldn't find that
+   *  ticket" for every ticket). */
+  id: number | string;
   type: TicketType;
   title: string;
   body: string;
@@ -65,7 +71,9 @@ interface OwnTicketWire {
 
 /** Wire shape of a `GET /tickets/community` row — ANONYMIZED, see module header. */
 interface CommunityTicketWire {
-  id: number;
+  /** Postgres `bigint` → JSON string on the wire; coerced to `number` by the
+   *  mapper. See `OwnTicketWire.id`. */
+  id: number | string;
   type: TicketType;
   title: string;
   body: string;
@@ -80,7 +88,9 @@ interface CommunityTicketWire {
 
 /** Wire shape of one comment — ANONYMIZED, see module header. */
 interface TicketCommentWire {
-  id: number;
+  /** Postgres `bigint` → JSON string on the wire; coerced to `number` by the
+   *  mapper. See `OwnTicketWire.id`. */
+  id: number | string;
   body: string;
   is_mine: boolean;
   created_at: string;
@@ -110,7 +120,8 @@ interface CommentsListEnvelope {
 
 function toOwnTicket(wire: OwnTicketWire): OwnTicket {
   return {
-    id: wire.id,
+    // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
+    id: Number(wire.id),
     type: wire.type,
     title: wire.title,
     body: wire.body,
@@ -125,7 +136,8 @@ function toOwnTicket(wire: OwnTicketWire): OwnTicket {
 
 function toCommunityTicket(wire: CommunityTicketWire): CommunityTicket {
   return {
-    id: wire.id,
+    // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
+    id: Number(wire.id),
     type: wire.type,
     title: wire.title,
     body: wire.body,
@@ -140,7 +152,8 @@ function toCommunityTicket(wire: CommunityTicketWire): CommunityTicket {
 
 function toComment(wire: TicketCommentWire): TicketComment {
   return {
-    id: wire.id,
+    // bigint arrives as a string — normalize to number (see OwnTicketWire.id).
+    id: Number(wire.id),
     body: wire.body,
     isMine: wire.is_mine,
     createdAt: wire.created_at,
