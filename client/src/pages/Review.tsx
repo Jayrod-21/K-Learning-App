@@ -617,6 +617,43 @@ export function Review(): JSX.Element {
     })();
   }, [seeding, refetchDue]);
 
+  // Clear-the-queue state (remove EVERY vocab card from review; the saved
+  // words are kept — the server soft-deletes the cards only). Mirrors the
+  // B-013 seed pattern above: in-flight guard + last-result banner. The
+  // confirmation UI lives in LandingView (it owns the Sheet); this callback
+  // only ever runs AFTER the user confirmed there.
+  const [clearing, setClearing] = useState(false);
+  const [clearStatus, setClearStatus] = useState<SeedStatus | null>(null);
+  const clearQueue = useCallback((): void => {
+    if (clearing) return;
+    setClearing(true);
+    setClearStatus(null);
+    void (async (): Promise<void> => {
+      try {
+        const res = await vocabService.clearDueCards();
+        setClearStatus({
+          kind: 'success',
+          text:
+            res.cleared > 0
+              ? `Removed ${String(res.cleared)} card${res.cleared === 1 ? '' : 's'} from review. Your saved words are kept.`
+              : 'Your review queue was already empty.',
+        });
+        // Re-fetch so the due count (and the queue section) reflect reality.
+        refetchDue();
+      } catch (err) {
+        setClearStatus({
+          kind: 'error',
+          text: errorMessageFor(
+            err,
+            "Couldn't clear the review queue. Nothing was removed — try again.",
+          ),
+        });
+      } finally {
+        setClearing(false);
+      }
+    })();
+  }, [clearing, refetchDue]);
+
   const drillGrammarCard = useCallback(
     (gc: GrammarProductionCard): void => {
       navigate('/learn/grammar', {
@@ -753,6 +790,9 @@ export function Review(): JSX.Element {
         seeding={seeding}
         seedStatus={seedStatus}
         onSeedReview={seedReview}
+        clearing={clearing}
+        clearStatus={clearStatus}
+        onClearQueue={clearQueue}
       />
     );
   }
@@ -802,6 +842,11 @@ interface LandingViewProps {
   seeding: boolean;
   seedStatus: SeedStatus | null;
   onSeedReview: () => void;
+  /** Bulk clear-the-queue (soft delete; words stay saved) — in-flight guard,
+   *  last-result banner, and the confirmed action itself. */
+  clearing: boolean;
+  clearStatus: SeedStatus | null;
+  onClearQueue: () => void;
 }
 
 function LandingView(props: LandingViewProps): JSX.Element {
@@ -822,10 +867,19 @@ function LandingView(props: LandingViewProps): JSX.Element {
     seeding,
     seedStatus,
     onSeedReview,
+    clearing,
+    clearStatus,
+    onClearQueue,
   } = props;
 
+  // `clearStatus` keeps the section mounted after a full clear empties the
+  // queue — otherwise the "Removed N cards…" confirmation would unmount with
+  // the section it lives in the moment the refetched count hits zero.
   const hasDueWork =
-    dueErrored || (dueCount !== null && dueCount > 0) || grammarCards.length > 0;
+    dueErrored ||
+    (dueCount !== null && dueCount > 0) ||
+    grammarCards.length > 0 ||
+    clearStatus !== null;
 
   // Belt-and-suspenders for the 4th grammar-in-vocab surface (see the
   // `listsRealFn` doc comment on the `Review` component): the fetch is
@@ -849,6 +903,22 @@ function LandingView(props: LandingViewProps): JSX.Element {
   const closeCreate = useCallback(() => {
     setCreateOpen(false);
   }, []);
+
+  // Clear-queue confirmation Sheet. Bulk removal (even a reversible, soft
+  // one) never fires off a single tap: the user must confirm a dialog that
+  // states plainly that the saved words are kept. Stable callbacks for the
+  // same useModalA11y-identity reason as the create sheet above.
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const openConfirmClear = useCallback(() => {
+    setConfirmClearOpen(true);
+  }, []);
+  const closeConfirmClear = useCallback(() => {
+    setConfirmClearOpen(false);
+  }, []);
+  const confirmClear = useCallback(() => {
+    setConfirmClearOpen(false);
+    onClearQueue();
+  }, [onClearQueue]);
 
   return (
     <div className="km-review__landing">
@@ -945,6 +1015,22 @@ function LandingView(props: LandingViewProps): JSX.Element {
                   />
                 </div>
               </div>
+              {/* Clear the whole vocab review queue — behind the confirm
+                  Sheet below (bulk action, even though the server only ever
+                  soft-deletes and the saved words are kept). */}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={openConfirmClear}
+                disabled={clearing}
+                aria-label="Clear the review queue"
+              >
+                {clearing ? (
+                  <Bilingual en="Clearing…" kr="비우는 중…" compact />
+                ) : (
+                  <Bilingual en="Clear" kr="비우기" compact />
+                )}
+              </Button>
               <Button
                 variant="gold"
                 size="md"
@@ -955,9 +1041,71 @@ function LandingView(props: LandingViewProps): JSX.Element {
               </Button>
             </Card>
           ) : null}
+          {/* Clear-queue outcome: the success line doubles as the section's
+              post-clear empty state ("Removed N cards … words are kept") and
+              an error keeps its recourse honest — nothing was removed. */}
+          {clearStatus ? (
+            <div
+              role={clearStatus.kind === 'error' ? 'alert' : 'status'}
+              className={
+                clearStatus.kind === 'error'
+                  ? 'km-review__inline-error km-review__clear-status'
+                  : 'km-review__clear-status'
+              }
+            >
+              {clearStatus.text}
+            </div>
+          ) : null}
           {grammarCards.length > 0 ? (
             <GrammarReviewSection cards={grammarCards} onDrill={onDrillGrammar} />
           ) : null}
+
+          <Sheet
+            open={confirmClearOpen}
+            onClose={closeConfirmClear}
+            ariaLabel="Clear the review queue?"
+          >
+            <div className="km-review__sheet-body">
+              <div className="km-review__sheet-head">
+                <div>
+                  <Eyebrow>
+                    <Bilingual en="Clear review queue" kr="복습 대기열 비우기" />
+                  </Eyebrow>
+                  <div className="kr-display km-review__sheet-title">
+                    <Bilingual en="Remove all cards?" kr="카드를 모두 지울까요?" />
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={closeConfirmClear}
+                  aria-label="Close clear confirmation"
+                >
+                  <Icon name="close" size={14} />
+                </Button>
+              </div>
+              <hr className="hr-double km-review__sheet-rule" />
+              <p className="km-review__clear-confirm-copy">
+                <Bilingual
+                  en="This removes these cards from review — your saved words and lists are kept, and you can add words back to review any time."
+                  kr="복습에서 카드만 제거돼요 — 저장한 단어와 목록은 그대로 남고, 언제든 다시 복습에 추가할 수 있어요."
+                />
+              </p>
+              <div className="km-review__clear-confirm-actions">
+                <Button variant="ghost" size="md" onClick={closeConfirmClear}>
+                  <Bilingual en="Cancel" kr="취소" compact />
+                </Button>
+                <Button
+                  variant="gold"
+                  size="md"
+                  onClick={confirmClear}
+                  disabled={clearing}
+                >
+                  <Bilingual en="Clear the queue" kr="대기열 비우기" compact />
+                </Button>
+              </div>
+            </div>
+          </Sheet>
         </section>
       ) : null}
 
@@ -1656,8 +1804,21 @@ function StudySession({
   const [localRatings, setLocalRatings] = useState(0);
   const [rateError, setRateError] = useState<string | null>(null);
 
-  const complete = idx >= deck.length;
-  const card = complete ? null : (deck[idx] ?? null);
+  // Remove-from-review (soft delete server-side; the saved word is kept).
+  // Removed cards leave the LOCAL deck too — `liveDeck` below is what every
+  // count/progress/index reads, so the session never re-presents a card the
+  // server already dropped from the queue. NOT optimistic: the card leaves
+  // the deck only after the DELETE succeeds, so the UI never claims a
+  // removal that didn't happen (`removeError` carries the honest failure).
+  const [removedKeys, setRemovedKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [removingKey, setRemovingKey] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const liveDeck = deck.filter((c) => !removedKeys.has(c.key));
+
+  const complete = idx >= liveDeck.length;
+  const card = complete ? null : (liveDeck[idx] ?? null);
 
   // ── B-022: "More examples" tile state ────────────────────────
   // The tile expands UNDERNEATH the answer (the co-located CSS grid-stacks
@@ -1822,6 +1983,39 @@ function StudySession({
     [card, closeDrawer, persist],
   );
 
+  /** Remove the CURRENT card from the review queue (soft delete — the word
+   *  stays saved; see services/vocab.removeCard). Fixture cards have no
+   *  server card to remove and never render the control. On success the card
+   *  leaves the local deck (the next card slides into this index — no
+   *  setIdx) and, if it was the last one, the session completes. */
+  const removeCurrent = useCallback((): void => {
+    if (card === null || card.wire.kind !== 'due' || removingKey !== null) {
+      return;
+    }
+    const key = card.key;
+    const cardId = card.wire.snapshot.id;
+    setRemovingKey(key);
+    setRemoveError(null);
+    void (async (): Promise<void> => {
+      try {
+        await vocabService.removeCard(cardId);
+        setRemovedKeys((prev) => new Set(prev).add(key));
+        setFlipped(false);
+        closeDrawer();
+      } catch (err) {
+        // Honest failure: the card stays in the deck (and in the queue).
+        setRemoveError(
+          errorMessageFor(
+            err,
+            `Couldn't remove “${card.kr}” from review — it's still in your queue.`,
+          ),
+        );
+      } finally {
+        setRemovingKey(null);
+      }
+    })();
+  }, [card, removingKey, closeDrawer]);
+
   const restart = useCallback((): void => {
     setIdx(0);
     setFlipped(false);
@@ -1831,6 +2025,9 @@ function StudySession({
     setFailedSaves([]);
     setLocalRatings(0);
     setRateError(null);
+    setRemoveError(null);
+    // `removedKeys` deliberately survives a restart: those cards are gone
+    // from the server-side queue — re-presenting them would be a lie.
   }, [closeDrawer]);
 
   if (complete) {
@@ -1881,27 +2078,29 @@ function StudySession({
         </div>
         <Pill>
           <Bilingual
-            en={`${String(deck.length)} cards`}
-            kr={`카드 ${String(deck.length)}장`}
+            en={`${String(liveDeck.length)} cards`}
+            kr={`카드 ${String(liveDeck.length)}장`}
             compact
           />
         </Pill>
       </Card>
 
       {/* Progress — F-128 device #5: the subway-line station-dot metaphor
-          replaces the plain fill bar. */}
+          replaces the plain fill bar. Counts read the LIVE deck, so a
+          removed card shrinks the session honestly instead of leaving a
+          phantom station. */}
       <div className="km-review__progress">
         <div className="km-review__progress-meta">
           <span>
-            {idx + 1} / {deck.length}
+            {idx + 1} / {liveDeck.length}
           </span>
         </div>
         <SubwayProgress
-          steps={deck.length}
+          steps={liveDeck.length}
           current={idx}
           tone="accent"
           label="Session progress"
-          valueText={`Card ${String(idx + 1)} of ${String(deck.length)}`}
+          valueText={`Card ${String(idx + 1)} of ${String(liveDeck.length)}`}
         />
       </div>
 
@@ -2070,6 +2269,35 @@ function StudySession({
           reveal.
         </div>
       )}
+      {/* Remove-from-review — only real (due-wire) cards have a server card
+          to remove; fixture cards never render the control. The stopPropagation
+          keeps the tap from doubling as the page-level drawer dismiss. */}
+      {card.wire.kind === 'due' ? (
+        <div className="km-review__remove-row">
+          <Button
+            variant="ghost"
+            size="sm"
+            leadingIcon={<Icon name="close" size={12} />}
+            onClick={(e) => {
+              e.stopPropagation();
+              removeCurrent();
+            }}
+            disabled={removingKey !== null}
+            aria-label={`Remove ${card.kr} from review`}
+          >
+            {removingKey !== null ? (
+              <Bilingual en="Removing…" kr="제거 중…" compact />
+            ) : (
+              <Bilingual en="Remove from review" kr="복습에서 제거" compact />
+            )}
+          </Button>
+        </div>
+      ) : null}
+      {removeError ? (
+        <div role="alert" className="km-review__inline-error" style={{ marginTop: 12 }}>
+          {removeError}
+        </div>
+      ) : null}
       {rateError ? (
         <div role="alert" className="km-review__inline-error" style={{ marginTop: 12 }}>
           {rateError}

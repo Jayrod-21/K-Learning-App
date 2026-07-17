@@ -369,7 +369,10 @@ router.get(
   },
 );
 
-const ReviewParamsSchema = z.object({
+/** `:cardId` param — shared by the review-submit and remove-from-review
+ *  routes. Bounded to MAX_ID (binds to BIGINT) so a garbage 20-digit id 400s
+ *  at the boundary instead of overflowing in pg (routes sweep #3). */
+const CardIdParamsSchema = z.object({
   cardId: z.coerce.number().int().positive().max(MAX_ID),
 });
 
@@ -401,13 +404,13 @@ const ReviewBodySchema = z.object({
 router.post(
   '/cards/:cardId/reviews',
   cheapLimiter(),
-  validateParams(ReviewParamsSchema),
+  validateParams(CardIdParamsSchema),
   validateBody(ReviewBodySchema),
   async (req, res, next) => {
     try {
       const userId = getUserId(req);
       const cardId = (req as typeof req & {
-        validatedParams: z.infer<typeof ReviewParamsSchema>;
+        validatedParams: z.infer<typeof CardIdParamsSchema>;
       }).validatedParams.cardId;
       const body = req.body as z.infer<typeof ReviewBodySchema>;
 
@@ -437,6 +440,139 @@ router.post(
     }
   },
 );
+
+/* ---------- Remove from review (soft delete — the word stays SAVED) ---------- */
+
+/**
+ * The card population "remove from review" operates on: the user's VOCAB
+ * review deck — every card the vocab flashcard flow can present (vocab-entry,
+ * sentence, and topik cards), and NOTHING that belongs to another review
+ * surface:
+ *
+ *   - `hanja_character_id IS NULL` — hanja-target cards (migration 050) have
+ *     their OWN queue (`GET /hanja/cards/due`) and their own review UI;
+ *     clearing the vocab queue must never empty the hanja deck.
+ *   - `grammar_entry_id IS NULL` — grammar PRODUCTION cards ride the same
+ *     `/vocab/cards/due` wire but the client partitions them into the grammar
+ *     drill section (FU-NF-42), and "I know this pattern" already has its own
+ *     first-class mechanism (graduation, migration 033). Removing/clearing
+ *     the vocab queue must not silently soft-delete a grammar card and
+ *     destroy its FSRS history — a grammar card id gets the same 404 a
+ *     foreign id does.
+ *
+ * This is a shared SQL fragment (not client input — no injection surface) so
+ * the single-card and bulk-clear routes can never drift apart on scoping.
+ */
+const VOCAB_DECK_SCOPE_SQL = `hanja_character_id IS NULL
+            AND grammar_entry_id IS NULL`;
+
+/**
+ * DELETE /vocab/cards/:cardId — remove ONE card from the review queue.
+ *
+ * SOFT delete only (`deleted_at = now()`): the card row keeps its FSRS
+ * history and — critically — the underlying WORD is untouched. `vocab_entries`
+ * is shared reference data this route never writes; the user's `vocab_lists`
+ * memberships and saved-from-uploads provenance also survive. "Remove from
+ * review" means the CARD leaves the due queue; the saved word stays saved
+ * (and is re-bankable later via the existing idempotent bank/mine routes,
+ * which skip only LIVE cards — `deleted_at IS NULL` — so a removed word can
+ * be re-added and simply gets a fresh card).
+ *
+ * Idempotent: re-removing an already-removed card is a 204, not an error —
+ * `COALESCE(deleted_at, now())` matches the already-deleted row while
+ * PRESERVING its original removal timestamp (a retry must not rewrite
+ * history). A card that does not exist, belongs to ANOTHER user, or is a
+ * hanja/grammar card (see VOCAB_DECK_SCOPE_SQL) is a uniform 404.
+ *
+ * Threat model:
+ *   - IDOR/cross-user removal: the UPDATE is scoped `user_id = <session>` —
+ *     a crafted request with another user's card id matches zero rows and
+ *     404s identically to a nonexistent id (no existence oracle, and the
+ *     other user's card is never touched).
+ *   - Destructive-op abuse: soft delete only — no data is destroyed, the
+ *     word remains recoverable; cheapLimiter bounds hammering.
+ *   - Injection: the id is Zod-validated (int, bounded) and bound as a
+ *     parameter; the only SQL fragments are server-side constants.
+ */
+router.delete(
+  '/cards/:cardId',
+  cheapLimiter(),
+  validateParams(CardIdParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const cardId = (req as typeof req & {
+        validatedParams: z.infer<typeof CardIdParamsSchema>;
+      }).validatedParams.cardId;
+      const { rowCount } = await query(
+        `UPDATE vocab_cards
+            SET deleted_at = COALESCE(deleted_at, now())
+          WHERE id = $1
+            AND user_id = $2
+            AND ${VOCAB_DECK_SCOPE_SQL}`,
+        [cardId, userId],
+      );
+      if (rowCount === 0) throw new NotFoundError('vocab card not found');
+      res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * POST /vocab/cards/clear — remove EVERY card from the user's vocab review
+ * queue in one call. Returns `{ cleared: <count> }`.
+ *
+ * Same soft-delete semantics as the single-card route above: cards get
+ * `deleted_at = now()`; the words themselves (`vocab_entries`), the user's
+ * lists, and upload provenance are untouched — "clear the review queue"
+ * empties the QUEUE, not the user's saved vocabulary.
+ *
+ * Scope — the whole vocab card SET, not just what happens to be due today:
+ *   - future-due cards clear too (a user emptying their queue means "start
+ *     over", not "hide today's slice");
+ *   - SUSPENDED vocab cards clear too (documented decision: suspension is a
+ *     pause WITHIN the review set; clearing removes the set itself, so a
+ *     paused card doesn't linger as a zombie that un-suspends into a queue
+ *     the user emptied);
+ *   - hanja and grammar cards do NOT clear (VOCAB_DECK_SCOPE_SQL above) —
+ *     those decks/mechanisms are owned elsewhere.
+ *
+ * Idempotent: `deleted_at IS NULL` in the WHERE means a repeat call clears
+ * nothing and honestly returns `{ cleared: 0 }`.
+ *
+ * Threat model:
+ *   - Cross-user bulk wipe: the UPDATE is scoped to the SESSION user id
+ *     (never a client-supplied id) — a crafted request cannot clear another
+ *     user's queue. The client also gates this behind a confirmation, but
+ *     the server-side scoping is the actual defense.
+ *   - Destructive-op blast radius: soft delete, per-user, vocab-deck-scoped
+ *     — no shared/reference data is writable from here; cheapLimiter bounds
+ *     repeat abuse.
+ *   - Injection: no client input reaches the SQL at all (the only parameter
+ *     is the session user id).
+ */
+router.post('/cards/clear', cheapLimiter(), async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    const { rows } = await query<{ cleared: number }>(
+      `WITH removed AS (
+          UPDATE vocab_cards
+             SET deleted_at = now()
+           WHERE user_id = $1
+             AND deleted_at IS NULL
+             AND ${VOCAB_DECK_SCOPE_SQL}
+           RETURNING 1
+       )
+       SELECT COUNT(*)::int AS cleared FROM removed`,
+      [userId],
+    );
+    res.status(200).json({ cleared: rows[0]!.cleared });
+  } catch (err) {
+    next(err);
+  }
+});
 
 const InitBodySchema = z.object({
   corpus: z.enum(['vocab_2000_beginner', 'vocab_2000_intermediate']),

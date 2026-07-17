@@ -22,6 +22,7 @@ import { api } from './api';
 import type {
   AddListEntriesResult,
   BookLevel,
+  ClearCardsResult,
   ContentDomain,
   CreateListBody,
   CreateListResponse,
@@ -290,6 +291,37 @@ export async function submitReview(
     `/vocab/cards/${String(cardId)}/reviews`,
     payload,
   );
+}
+
+/**
+ * DELETE /vocab/cards/:cardId — remove ONE card from the review queue.
+ *
+ * SOFT delete server-side: the card leaves the due queue but the saved WORD
+ * is untouched (`vocab_entries`, list memberships, and upload provenance all
+ * survive — removal is about the review card, never the word). Idempotent:
+ * re-removing an already-removed card is a 204, not an error. The server
+ * scopes the write to the session user — a card that isn't the caller's own
+ * 404s (`ApiError(status: 404)`) and is never touched.
+ */
+export async function removeCard(cardId: number): Promise<void> {
+  await api.delete<void>(`/vocab/cards/${String(cardId)}`);
+}
+
+/**
+ * POST /vocab/cards/clear — remove EVERY card from the user's vocab review
+ * queue (due, future-scheduled, and suspended alike). Returns how many were
+ * removed. Soft delete server-side: the user's saved words, lists, and
+ * upload provenance are all kept — only the review cards go. Hanja and
+ * grammar cards are NOT cleared (their decks are owned by their own
+ * surfaces). Idempotent: a repeat call returns `{ cleared: 0 }`.
+ *
+ * Bulk-destructive by the user's standards even though it's soft — callers
+ * MUST gate this behind an explicit confirmation UI; the server additionally
+ * scopes the write to the session user, so a crafted request can never clear
+ * someone else's queue.
+ */
+export async function clearDueCards(): Promise<ClearCardsResult> {
+  return api.post<ClearCardsResult>('/vocab/cards/clear', {});
 }
 
 /** POST /vocab/cards/init — seed a recognition card slice. Idempotent. */

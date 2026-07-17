@@ -250,6 +250,33 @@
   font-size: 0.875rem;
 }
 
+/* ── Clear-the-queue (remove all vocab cards; saved words are kept) ───── */
+/* No `color` here: the error state pairs this class with
+ * `.km-review__inline-error`, whose vermilion must win (this rule is later
+ * in the file, so a color set here would silently override it). */
+.km-review__clear-status {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+}
+.km-review__clear-confirm-copy {
+  margin: 12px 0 16px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--paper-dim);
+}
+.km-review__clear-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Per-card remove-from-review (soft delete; the word stays saved) ──── */
+.km-review__remove-row {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
 /* ── List detail (F-060/F-061) ────────────────────────────────────────── */
 .km-review__detail {
   display: flex;

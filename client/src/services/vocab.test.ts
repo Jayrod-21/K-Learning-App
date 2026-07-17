@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addListEntries,
+  clearDueCards,
   createList,
   deleteList,
   fetchSavedFromUploads,
@@ -15,6 +16,7 @@ import {
   listLists,
   mineWord,
   patchList,
+  removeCard,
   removeListEntry,
   searchEntries,
   searchEntriesPage,
@@ -304,6 +306,43 @@ describe('submitReview', () => {
         expected_version: 99,
       }),
     ).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe('removeCard', () => {
+  it('DELETEs /vocab/cards/:cardId (soft delete — the saved word survives server-side)', async () => {
+    const spy = vi.spyOn(api, 'delete').mockResolvedValueOnce(undefined);
+
+    await removeCard(101);
+
+    expect(spy).toHaveBeenCalledWith('/vocab/cards/101');
+  });
+
+  it("surfaces a 404 for a card that isn't the caller's", async () => {
+    vi.spyOn(api, 'delete').mockRejectedValueOnce(
+      new ApiError('not found', { status: 404, code: 'not_found' }),
+    );
+
+    await expect(removeCard(999)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe('clearDueCards', () => {
+  it('POSTs /vocab/cards/clear and returns the removed count', async () => {
+    const spy = vi.spyOn(api, 'post').mockResolvedValueOnce({ cleared: 7 });
+
+    const got = await clearDueCards();
+
+    expect(spy).toHaveBeenCalledWith('/vocab/cards/clear', {});
+    expect(got.cleared).toBe(7);
+  });
+
+  it('propagates a failed clear (nothing was removed)', async () => {
+    vi.spyOn(api, 'post').mockRejectedValueOnce(
+      new ApiError('boom', { status: 500, code: 'server_error' }),
+    );
+
+    await expect(clearDueCards()).rejects.toMatchObject({ status: 500 });
   });
 });
 
