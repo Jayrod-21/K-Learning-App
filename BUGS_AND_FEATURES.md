@@ -307,6 +307,12 @@ Launch one focused session per group; cross-cutting items noted.
 
 ## ✨ Features / Improvements
 
+### F-202 · CI must run the client vitest suite (currently only lint/typecheck/build)
+- **Status:** 🔴 open · **Priority:** P2 · **Category:** CI / tooling · **Beta:** —
+- **What:** The GitHub CI "Client" job runs only `lint` + `tsc` + `vite build` — it does NOT run `vitest`. So client TEST regressions merge invisibly. Confirmed real: two latent broken client tests were live on `rebuild` undetected — F-006's stale `Shell.test.tsx` harness (`UnverifiedBanner` needs `AuthProvider`) and F-102's D2 grid count (a 5th "Images" shelf). Both only surfaced when the tutorial branch forced a full-suite run.
+- **Fix:** add `npx vitest run` to the client CI job (mind memory — the suite is ~128 files / 2200+ tests; cap workers, e.g. `--pool=forks`). Until then, every client-touching gate MUST run the full client suite locally (orchestrator standing rule).
+- **Where:** `.github/workflows/ci.yml` (the "Client — Lint, Type Check & Build" job). Surfaced 2026-07-17 during the tutorial integration.
+
 ### F-001 · Make "Writing" a real writing feature (backend already exists)
 - **Status:** 🟢 done (2026-07-05) · **Priority:** P2 · **Category:** UI (BACKEND)
 - **Where:** Today → Writing tile.
@@ -1044,7 +1050,7 @@ F-063 grammar-mastery model, F-077 Hanja reword) are flagged and not pre-decided
 - **What:** Create the drawing drill for Hanja.
 
 ### F-077 · Hanja page reword
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** The Hanja page needs a reword.
 - **Notes:** Flagged **discuss** — possibilities to be brainstormed with the user first.
 
@@ -1136,7 +1142,7 @@ New tickets from Phase 0:
 - **Notes:** Unblocks F-025's real effect — today the setting only moves the rem-migrated Phase-1 primitives (BackButton/CollapsibleTile/Tabs/FilterSelect/ShowMore, converted in the Phase-1 fix-pass). Known-limitation notes live in `client/src/lib/text-size-presets.ts` and the index.css text-size block; Settings hint copy already worded honestly. Surfaced by the Phase-1 /fixpass text-size review (S1). New text should be authored in rem from day one.
 
 ### F-087 · Accent-as-text/indicator contrast test coverage
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** UI · **Beta:** —
 - **What:** `client/src/**/tokensContrast.test.ts` validates accent-on-surface (non-text 3:1) but not accent-used-as-a-selection-INDICATOR / accent-as-text at the AA text bar. The Phase-1 fix-pass measured the light-theme **mint** `--vermilion` at **2.99:1 vs `--ink`** (below 3:1) and **coral** at 3.01:1 (barely passing) — currently masked by redundant cues (underline/`--paper` promotion). Add explicit accent-as-indicator + accent-as-text assertions so a future token tweak or a component that leans on accent color alone can't silently drop below AA.
 - **Notes:** Surfaced + ruled non-blocking by the Phase-1 /fixpass re-review; the mint 2.99:1 gap predates Phase-1 (in `rebuild`'s own token comments). Do this **before the overhaul mounts Tabs / accent-driven selection at scale**.
 
@@ -1163,7 +1169,7 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G2 /fixpass (tickets review SHOULD-FIX 1).
 
 ### F-091 · Client multi-type list awareness — key and delete list rows by (item_type, entry_id)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** UI · **Beta:** —
 - **What:** Migration 049 lets a list hold vocab AND grammar/hanja items whose numeric ids may collide, but the client still assumes `entry_id` alone identifies a row: `client/src/components/MyVocabLists.tsx` (~517) keys rows on `` `entry:${entry_id}` `` (collides across types → wrong-row rendering), and `removeListEntry` (`client/src/services/vocab.ts` ~374-382) never passes `?type=` (server defaults to vocab → removing a grammar row 404s at best, deletes a same-numbered vocab row at worst).
 - **Fix hint:** Key rows and deletes on the `(item_type, entry_id)` pair and pass `?type=` on remove; `addListEntries` should adopt the typed `items: [{type, id}]` body. **Hard gate: must land before any grammar/hanja add-UI ships (the F-048/F-060/F-061 client slice).** Server is already correct.
 - **Notes:** Deferred from the P2-G2 /fixpass (lists review SF-2). Harmless today — no UI can put a non-vocab item in a list yet.
@@ -1207,22 +1213,22 @@ New tickets from Phase 0:
 - **Notes:** Deferred from the P2-G3 /fixpass (Phase-3 client work by design).
 
 ### F-096 · Writing-prompt content depth — seed more prompts per rubric
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** DATA · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** DATA · **Beta:** —
 - **What:** The active writing-prompt bank is only ~3 prompts/rubric (migration 038 seed), so even with server-side random selection (B-027 backend) the rotation is shallow. Seed a substantially larger bank per rubric (Q53 memo/graph tasks, Q54 essay topics), optionally curating outputs from `POST /writing/generate`.
 - **Fix hint:** New seed migration (add-only INSERTs into `writing_prompts` with `rubric` + `is_active`) — content work, not code. Keep prompt lengths well under the DB CHECK ceilings.
 - **Notes:** Deferred from the P2-G3 /fixpass (B-027 Phase-0 note: "add prompt content depth").
 
 ### F-097 · App-wide dead-CSS sweep of the shared `index.css` global sheet
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (HYGIENE) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P4 · **Category:** UI (HYGIENE) · **Beta:** —
 - **What:** The shared `client/src/styles/index.css` accumulates orphaned rule blocks whenever a page rework deletes markup, because parallel branches deliberately avoid editing the shared sheet mid-flight. Phase 3A's fix-pass swept the settings-channel/toggle and `.km-today__queue*` orphans, but `.km-progress__trendKr` (pre-existing on `rebuild`, out of the 3A diff scope) remains. Do one deliberate sweep of the whole sheet for classes with zero `.tsx` consumers.
 - **Fix hint:** Grep each `.km-*` selector against the client tree; delete only zero-consumer blocks. Distinct from **F-086** (px→rem migration) — this is dead-rule removal, not unit conversion.
 
 ### F-098 · BEM element-casing convention + mechanical rename
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** UI (CONSISTENCY) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P4 · **Category:** UI (CONSISTENCY) · **Beta:** —
 - **What:** BEM element casing drifts per page — Settings is kebab-case (`__sched-row`), Today is camelCase (`__tileIcon`), Progress mixes both. Pick one convention (kebab-case recommended, it dominates the older pages), document it, and mechanically rename. Deferred from the Phase 3A /fixpass as high-churn / low-value to do inline; worth doing before Phase 3B compounds it.
 
 ### F-099 · Grammar-mastery read route (server) for the Progress Grammar tab
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API, UI) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** BACKEND (API, UI) · **Beta:** —
 - **What:** Progress's F-032 mastery tabs ship Words + Hanja live, but the Grammar tab shows an honest "coming soon" placeholder because no `/grammar/mastery`-style aggregate read route exists yet (P4 plan of record). Build the read route (FSRS bucket counts over the user's grammar cards) and wire the tab — the client already reserves the panel for real data.
 - **Notes:** Pairs with F-063 (grammar-mastery model). Progress Grammar tab is wired to accept a real panel with no further client rework.
 
@@ -1251,11 +1257,11 @@ Delivered on `feat/phase3a-core-surfaces`, full 4-phase /fixpass PASS (re-review
 Surfaced by the Phase 3B builders + /fixpass reviewers; several backend routes are net-new work the client already reserves UI for.
 
 ### F-102 · `/images` needs an in-app re-entry point
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (NAV) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** UI (NAV) · **Beta:** —
 - **What:** F-042 removed the interim "Scan images" row from the Library landing, which was `/images`'s ONLY in-app entry point — the OCR image-mining page is now reachable only by typing the URL (route still registered at `client/src/App.tsx:139`). Give it a home: a Library row, the LEARN launcher, or fold it into Uploads/the chat image feature (pending the P4 IA decision on image capture).
 
 ### F-103 · Dedicated "Past TOPIK exams" surface
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** The Library "TOPIK exams" section currently lands on Mistakes as an honest stub (sanctioned by F-042). Build the dedicated past-exams page (list of completed sittings + scores) under the exams shelf; re-point the Library section's target to it, and Mistakes becomes a link inside it. Depends on F-104. The pinning test `ReviewLibrary.test.tsx` must be updated when this lands.
 
 ### F-104 · `GET /topik/attempts` — completed-attempt history with per-exam score
@@ -1263,7 +1269,7 @@ Surfaced by the Phase 3B builders + /fixpass reviewers; several backend routes a
 - **What:** No route returns completed TOPIK attempts with a per-exam score (correct/total, section, sourceTest, completedAt). Schema is ready (migration 046: `topik_attempts.status`, `topik_responses.attempt_id`) — the route is missing in `server/src/routes/topik.ts`. **Unblocks F-045** (Mistakes score-out-of-total, currently honest missed-count only), F-078, F-082, and F-103. (Was code-comment ticket "KM-3B-M1".)
 
 ### F-105 · `attempt_id` in the `GET /topik/mistakes` DTO
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
 - **What:** Mistakes groups sessions by a (local-day, mode) heuristic that merges two same-day mock sittings. Expose `attempt_id` in the `/topik/mistakes` DTO so the session selector groups by true sitting (F-044 exactness). (Was "KM-3B-M2".)
 
 ### F-106 · `GET /writing/attempts` — per-response writing history
@@ -1271,11 +1277,11 @@ Surfaced by the Phase 3B builders + /fixpass reviewers; several backend routes a
 - **What:** `writing_attempts` rows are persisted by `POST /grade-writing`, but the only read is aggregate `GET /writing/series`. Add a per-response history GET (promptKr, rubric, sample, totalScore/maxTotal, gradedAt, nullable promptId to split TOPIK-prompt vs Claude-generated). **Unblocks F-046** (Mistakes writing-review, currently a pending stub) and is the twin of F-074. (Was "KM-3B-M3".)
 
 ### F-107 · Upload provenance on vocab/grammar save paths + saved-from-uploads read
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API, DATABASE) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** BACKEND (API, DATABASE) · **Beta:** —
 - **What:** F-053/F-056 ("My Uploads" sub-pages) render honest-empty because nothing records which upload a saved word/pattern came from. Add optional `source_upload_id` to the save paths (`POST /vocab/mine` + list adds; the grammar equivalent) and a `GET /vocab/saved-from-uploads` (grouped by upload); then wire the reserved `SavedFromUploads` sections. Distinct from F-108 (that populates *extracted-corpus* provenance; this is *user-saved* provenance).
 
 ### F-108 · U2 extraction/OCR pipeline (backend)
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
 - **What:** No OCR/extraction backend exists (`server/src/routes/uploads.ts` header: extraction is a later separate phase, "U2"). Build the OCR trigger route + pipeline reading `book_pages` images; populate `kgiu_entries.source_upload_id` at curation. **Unblocks F-059** (the viewer's honestly-disabled "Extract text" button) and makes F-056's grammar-from-upload view return real rows.
 
 ### F-109 · Retain `source_format` on uploads (enables literal source-format filter)
@@ -1297,19 +1303,19 @@ Backend gaps the Phase 3C-1 card/FSRS reworks (flashcards · grammar · hanja) h
 - **What:** Grammar card rows show only due-NOW badges because there's no read of full FSRS state + `due_at` for non-due production cards. Expose it (e.g. folded into `GET /grammar/bank`) so grammar mastery rows can show Anki state/next-due like vocab. (Was code-comment id "F-063-B".)
 
 ### F-112 · Vocab list detail rows should carry example sentences
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** BACKEND (API) · **Beta:** —
 - **What:** `GET /vocab/lists/:id` rows carry no example sentences, so list-study card backs show gloss only (the KRDICT drawer compensates on demand). Server should JOIN `example_korean`/`example_english` so study backs are complete offline.
 
 ### F-113 · Per-list due-aware study queue + bulk "add all to review"
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** BACKEND (API) · **Beta:** —
 - **What:** List "Study" presents ALL words each run — there's no `due?list_id=` queue, so it isn't due-only like the global due queue. Add a per-list due-aware queue and a per-list bulk "add all to review/deck".
 
 ### F-114 · Expose numeric `hanja_characters.id` on the `GET /hanja` DTO
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** BACKEND (API) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P4 · **Category:** BACKEND (API) · **Beta:** —
 - **What:** The hanja pool DTO doesn't expose the numeric character id, so list-add currently obtains it via an idempotent card-seed round-trip (disclosed in UI). Expose the id on the pool DTO so list-add no longer needs the seed side-effect.
 
 ### F-115 · Hanja stroke-order data → guided + gradable drawing drill (F-076 backend)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** DATA (BACKEND) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** DATA (BACKEND) · **Beta:** —
 - **What:** The F-076 drawing drill ships as a freehand canvas with an honest note — there's no stroke-order data in the corpus. Acquire per-character stroke data (KanjiVG / makemeahanzi-style) to add a guided stroke overlay + a gradable drill. (Was code-comment id "F-076-b".)
 
 ---
@@ -1370,11 +1376,11 @@ Delivered on `feat/phase3c2-content`, full 4-phase /fixpass PASS (re-review: 11/
 ## 🌊 Backend mini-phase follow-up tickets (filed 2026-07-11)
 
 ### F-122 · Persist `topik_level` on `topik_attempts` for full D-1 level-pinning
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** BACKEND (DATABASE) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** BACKEND (DATABASE) · **Beta:** —
 - **What:** F-104/S-1 threaded `topik_level` through the exam pick/serve/grade path so clicking a specific TOPIK I vs II paper serves the exact level. But `topik_attempts` has no `topik_level` column (migration 037 predates D-1), so the F-007 **resume** re-fetch still can't pin the level on an in-progress attempt. Add a `topik_level` column (migration) + thread it through resume to close the D-1 gap fully.
 
 ### F-123 · Exam-completion checkmarks keyed by `sourceTest` alone (same D-1 class)
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** UI (BACKEND) · **Beta:** —
 - **What:** `ExamChooser`'s completed-checkmark set is keyed by `test_number` only, so a completed TOPIK II paper marks the same-numbered TOPIK I paper done (and vice-versa). Key the completed-set by `(test_number, topik_level)` once F-122 lands the level on attempt history.
 
 ### F-124 · `mapClaudeError` forwards `${code}: ${message}` to the client
@@ -1462,7 +1468,7 @@ Source: friends beta-test feedback (Jared, Jul 2026). Two cross-cutting themes �
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Key files:** `pages/Today.tsx`
 
 #### F-134 · Writing tile: prompt PREVIEW on home → carry that prompt into the practice page
-- **Status:** 🔴 open · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile. **CORRECTED SCOPE (user, 2026-07-16) — NOT inline-expand.** (1) Show the actual writing prompt as a **preview** on the Today tile (the user can read the real prompt on the home page). (2) **Start/Practice** navigates to the Writing practice page with **that exact prompt pre-loaded** — not a fresh/random one. The earlier "expands inline" framing was wrong (that's why it kept re-opening as unmet). Two pieces: surface the real prompt text on the tile + thread that specific prompt through the navigation.
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P2 · **Category:** feature · **Where:** Today writing tile. **CORRECTED SCOPE (user, 2026-07-16) — NOT inline-expand.** (1) Show the actual writing prompt as a **preview** on the Today tile (the user can read the real prompt on the home page). (2) **Start/Practice** navigates to the Writing practice page with **that exact prompt pre-loaded** — not a fresh/random one. The earlier "expands inline" framing was wrong (that's why it kept re-opening as unmet). Two pieces: surface the real prompt text on the tile + thread that specific prompt through the navigation.
 
 #### F-135 · Tasks-title IA cleanup
 - **Status:** ✅ done (verified — adversarial reconciliation 2026-07-15) · **Priority:** P2 · **Category:** design · **Where:** the tasks section heading/hierarchy on Today.
@@ -1645,7 +1651,7 @@ Filed from the batch-3 /fixpass (Flashcards/Grammar-practice/Hanja/Reading). All
 - **Where / State:** Batch-3 added a shared `ochre` value to the CityCard/SubwayProgress/DancheongRail `tone` enum and adopted it on the Hanja page. Today.tsx's Hanja tile still uses the `plain` fallback (the pre-`ochre` workaround). Migrate it to `tone="ochre"` — fold into F-177 (Today/Progress header migration) if convenient.
 
 #### F-179 · SwipeCarousel `onChange`/settled-index prop (+ document F-130 on Flashcards)
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** feature
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P4 · **Category:** feature
 - **Where / State:** Swipe-to-advance on the Flashcards study card can't be built because shared `SwipeCarousel` exposes no `onChange`/settled-index prop (a parent can't observe a swipe settling). Low priority — F-130's real targets (carousels + PDF) already work; flashcard-swipe was self-invented scope, the mock never asked for it. If ever wanted, add the prop. Also add a one-line doc comment near `StudySession` in `Review.tsx` noting why flashcards don't swipe-advance.
 
 #### F-180 · Hanja StateChip "Practicing" tone mismatch (vermilion vs ochre)
@@ -1749,11 +1755,11 @@ The final page-rework batch's fixpass found the app is "one batch + two files fr
 ## 🌊 Follow-ups + new scope (filed 2026-07-16)
 
 ### F-195 · `services/kiwi.ts` forwards raw upstream error `{name,message}` to the client
-- **Status:** 🔴 open · **Priority:** P3 · **Category:** error-hygiene · **Where:** `server/src/services/kiwi.ts` puts a raw `{name, message}` into an `UpstreamError.details` that the generic `errorHandler` forwards to the client — same *class* as the F-124 Claude-error leak, but on the (non-Claude) kiwi lemmatizer upstream, which the F-094 consolidation didn't cover. Surfaced by the beta-hardening code audit (`docs/redesign/AUDIT_code.md`).
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P3 · **Category:** error-hygiene · **Where:** `server/src/services/kiwi.ts` puts a raw `{name, message}` into an `UpstreamError.details` that the generic `errorHandler` forwards to the client — same *class* as the F-124 Claude-error leak, but on the (non-Claude) kiwi lemmatizer upstream, which the F-094 consolidation didn't cover. Surfaced by the beta-hardening code audit (`docs/redesign/AUDIT_code.md`).
 - **Fix hint:** route kiwi upstream failures through a safe generic client message (log the raw detail server-side only), mirroring `mapClaudeError`'s whitelist posture.
 
 ### F-196 · Replace the PastExams exhaustiveness `throw` with a page-scoped guard
-- **Status:** 🔴 open · **Priority:** P4 · **Category:** resilience · **Where:** `client/src/pages/PastExams.tsx` `mockSectionFromKr` throws on a `'쓰기'` (writing) section. The invariant (`topik_attempts` never stores writing rows) is SOLID (Zod enum + DB CHECK `ck_topik_attempts_section` + only two writers, both exclude writing), so it's unreachable today. BUT the only `ErrorBoundary` is at the app root above the router, so if the invariant were ever loosened the throw would blank the WHOLE app, not just the page. Surfaced by the TOPIK batch re-review.
+- **Status:** 🟢 done (2026-07-17 — shipped + deployed) · **Priority:** P4 · **Category:** resilience · **Where:** `client/src/pages/PastExams.tsx` `mockSectionFromKr` throws on a `'쓰기'` (writing) section. The invariant (`topik_attempts` never stores writing rows) is SOLID (Zod enum + DB CHECK `ck_topik_attempts_section` + only two writers, both exclude writing), so it's unreachable today. BUT the only `ErrorBoundary` is at the app root above the router, so if the invariant were ever loosened the throw would blank the WHOLE app, not just the page. Surfaced by the TOPIK batch re-review.
 - **Fix hint:** degrade one level up — skip/omit an unmappable row from the rendered list (or render it without a re-enter link) + log the anomaly, keeping fail-loud in dev/tests. Correct the `FIX_REPORT_batch2.md` "crashes the PastExams page" wording to "crashes the whole app."
 
 ### F-197 · Ingest the Downloads audio corpus (map Track N → app slot)
