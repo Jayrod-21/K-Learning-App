@@ -18,11 +18,13 @@ loadDotenv();
  * `z.coerce.boolean()` runs JS `Boolean(value)`, so the STRING "false" coerces
  * to `true` — an operator setting `FLAG=false` in a compose file would silently
  * get `true`. That is unacceptable for flags whose whole purpose is to be an
- * operator kill-switch (EMAIL_VERIFICATION_REQUIRED), so new boolean flags use
- * this parser: explicit truthy/falsy string sets, anything else fails config
- * parse at startup. (The pre-existing z.coerce.boolean() flags —
- * REGISTRATION_ENABLED, MFA_REQUIRED — carry this landmine and are tracked as
- * a follow-up; changing their parse here would be an unscoped behavior change.)
+ * operator kill-switch (REGISTRATION_ENABLED, MFA_REQUIRED,
+ * EMAIL_VERIFICATION_REQUIRED), so EVERY boolean flag uses this parser:
+ * explicit truthy/falsy string sets, anything else fails config parse at
+ * startup. `z.coerce.boolean()` is BANNED in this schema — the deploy compose
+ * passes `REGISTRATION_ENABLED=false` as a string, and under coercion that
+ * string re-opened production self-signup (F-006 fix-pass B1). Config tests
+ * (tests/config.test.ts) pin the `"false"` → false behavior for each flag.
  */
 function envBool(defaultValue: boolean) {
   return z.preprocess(
@@ -131,13 +133,16 @@ const EnvSchema = z.object({
 
   // Registration gate. MUST be false in production (single-user app, seeded via
   // the seed-user CLI). Default true keeps dev/test self-service registration.
-  REGISTRATION_ENABLED: z.coerce.boolean().default(true),
+  // Strict envBool: the compose files pass the STRING "false", which
+  // z.coerce.boolean() silently parsed as true — leaving self-signup OPEN in
+  // prod and re-arming the register-409 enumeration oracle (F-006 B1).
+  REGISTRATION_ENABLED: envBool(true),
 
   // Mandatory-MFA enforcement (D1). Default true: every login needs a confirmed
   // TOTP, and a user without one is forced into enrollment before a session is
   // issued. Legacy/test flows that want the old direct-session behavior set
-  // this false.
-  MFA_REQUIRED: z.coerce.boolean().default(true),
+  // this false. Strict envBool — same landmine as REGISTRATION_ENABLED above.
+  MFA_REQUIRED: envBool(true),
 
   // Per-account TOTP lockout (B-LOCK). N consecutive bad codes → locked for
   // TOTP_LOCKOUT_MINUTES. The IP authLimiter is the other half of the defense.

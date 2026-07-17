@@ -16,15 +16,18 @@ Mirrors `025_mfa_login_challenges` exactly (hashed-at-rest, expiring, single-use
 |---|---|
 | `id` | identity PK |
 | `user_id` | FK → users, `ON DELETE CASCADE` |
+| `email` | citext — the address the link was MAILED TO (the address this token attests); consume requires it to equal the user's CURRENT email (fix-pass SF-1 binding) |
 | `token_hash` | SHA-256 hex of the raw 32-byte base64url token — raw token NEVER stored |
 | `expires_at` | `now() + EMAIL_VERIFICATION_TOKEN_TTL_HOURS` (default 24 h), CHECK > created_at |
 | `consumed_at` | single-use marker, set via atomic rowCount-gated UPDATE |
 | `invalidated_at` | set when a resend supersedes this token (audit-preserving invalidation) |
 | `created_at` | audit |
 
-Indexes: partial active-lookup on `token_hash WHERE consumed_at IS NULL AND
-invalidated_at IS NULL`; `user_id` (resend invalidation + cooldown); `expires_at` (purge).
-Constraints: `UNIQUE(token_hash)`, hash-shape CHECK, expiry CHECK.
+Indexes: `user_id` (resend invalidation + cooldown); `expires_at` (purge); the
+`UNIQUE(token_hash)` index serves the consume lookup (a partial "active-only" index was
+removed by the fix-pass — the consume SELECT deliberately carries no live-ness predicate,
+so the planner could never use it). Constraints: `UNIQUE(token_hash)`, hash-shape CHECK,
+email-length CHECK, expiry CHECK.
 
 **Grandfathering backfill:** `UPDATE users SET email_verified_at = created_at WHERE
 email_verified_at IS NULL`. Pre-F-006 accounts were operator-provisioned (registration is
@@ -53,26 +56,33 @@ down `-- migrate: destructive`.
 ## 3. Flow
 
 - **Register** (`POST /auth/register`) and **seed-user CLI**: create user → issue token
-  (invalidate priors, store hash only) → send email with
-  `${CLIENT_ORIGIN}/verify-email?token=<raw>`. Send failures are logged, never fail the
-  registration (resend recovers). When the gate is ON, register returns
-  `201 {status:'verification_required', user}` and does NOT mint a session; when OFF it
-  keeps the legacy `201 {user}` + session. seed-user honors
+  (invalidate priors, store hash + attested address) → send email with
+  `${CLIENT_ORIGIN}/verify-email#token=<raw>` — the token rides the URL FRAGMENT, which
+  never leaves the browser (no proxy/access-log exposure; fix-pass SF-2). Send failures
+  are logged, never fail the registration (resend recovers). When the gate is ON,
+  register returns `201 {status:'verification_required', user}` and does NOT mint a
+  session; when OFF it keeps the legacy `201 {user}` + session. seed-user honors
   `SEED_USER_MARK_VERIFIED=true` (operator escape hatch — pre-verifies, no email).
-- **Verify** (`GET|POST /auth/verify`, token in query/body): shape-gate → hash →
+  Issuance is per-user serialized (`SELECT … FOR UPDATE`), so concurrent issues leave
+  exactly one live token (fix-pass SF-3).
+- **Verify** (`POST /auth/verify` ONLY — the GET `?token=` variant was removed by the
+  fix-pass: a live secret in a query string lands in access logs): shape-gate → hash →
   lookup → `timingSafeEqual` on the hash → single transaction: rowCount-gated consume +
-  `users.email_verified_at = COALESCE(email_verified_at, now())`. Idempotent: a consumed
-  token whose user is verified, or any token for an already-verified user, returns
-  friendly success (`already_verified`). Distinguishes `token_expired` (enables a
-  targeted resend UX) from `token_invalid` — both only reachable by someone already
+  `users.email_verified_at = COALESCE(email_verified_at, now())`, PLUS the token↔address
+  binding check (the row's `email` must equal the user's current email). Idempotent: a
+  consumed token whose user is verified, or any token for an already-verified user,
+  returns friendly success (`already_verified`). Distinguishes `token_expired` (enables
+  a targeted resend UX) from `token_invalid` — both only reachable by someone already
   holding the token, so no oracle.
 - **Resend** (`POST /auth/verify/resend {email}`): ALWAYS `200 {status:'ok'}` — no
   user-enumeration (same response whether the email exists, is verified, or not).
   Per-IP `cheapLimiter` + a DB-side per-user cooldown
   (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC`, default 60 s) as the real mail-bomb gate
   (the auth limiter's `skipSuccessfulRequests` would never count an always-200 route).
-  Token issue + send run after the response path decision (fire-and-forget) so response
-  timing doesn't oracle account existence.
+  The cooldown check is ATOMIC with the token insert (probe inside the same
+  per-user-locked transaction — fix-pass S2/SF-4), so a concurrent burst mints exactly
+  once. Token issue + send run detached after the response so response timing doesn't
+  oracle account existence.
 - **Login gate**: in `POST /auth/login`, AFTER password verification and BEFORE any MFA
   challenge or session issue: unverified + `EMAIL_VERIFICATION_REQUIRED=true` → `403
   {error:{code:'email_unverified'}}`. Placement rationale: (a) password-first means the
@@ -82,9 +92,13 @@ down `-- migrate: destructive`.
   users' logins are byte-identical to before.
 - **Email change** (`PATCH /auth/me`): changing `email` resets `email_verified_at` to
   NULL (the stamp attests the OLD address — keeping it would be a lie), invalidates
-  outstanding tokens, and sends a fresh verification to the new address. The current
-  session is untouched (the user can still fix a typo'd address); only the next login is
-  gated.
+  outstanding tokens, and issues a fresh token for the new address — all in ONE
+  transaction (fix-pass SF-1: no crash window can strand a live old-address token), with
+  the send cooldown-gated like resend (fix-pass S1: an authenticated session cannot
+  mail-bomb by flipping the email in a loop; if suppressed, the stamp still resets and
+  old tokens still die — resend is the recovery path). The mail send happens after
+  commit, best-effort. The current session is untouched (the user can still fix a
+  typo'd address); only the next login is gated.
 - `GET /auth/me` + login user payloads gain `email_verified: boolean` (strict superset)
   so the client can render the unverified banner.
 
@@ -110,11 +124,15 @@ as a string — filed as a follow-up; not changed here to keep this diff scoped.
 | Token guessing | 32-byte CSPRNG (`randomBytes`), 256-bit entropy; shape-gate before DB |
 | DB theft → usable tokens | SHA-256 hash at rest; raw token exists only in the email |
 | Token replay | single-use: atomic `UPDATE … WHERE consumed_at IS NULL` rowCount gate |
-| Stale link | 24 h expiry, active-lookup predicate `expires_at > now()` |
+| Stale link | 24 h expiry checked server-side at consume |
+| Old-address token verifying a NEW address | token↔address binding (`email` column checked at consume) + atomic email-change transaction |
+| Token in proxy/access logs or Referer | URL-fragment link (`#token=`), no GET query route, SPA scrubs the fragment from history |
 | Timing oracle on hash | `timingSafeEqual` over the hex hashes |
 | User enumeration via resend | fixed generic 200 regardless of account/verify state; async send |
 | User enumeration via verify errors | error branches only reachable while HOLDING a token |
-| Mail-bombing via resend | per-IP limiter + per-user DB cooldown |
+| Mail-bombing via resend | per-IP limiter + per-user DB cooldown, atomic with issuance (burst-safe) |
+| Mail-bombing via authenticated email flips | `PATCH /auth/me` send honors the same per-user cooldown |
+| Concurrent issuance → two live links | per-user `FOR UPDATE` serialization: exactly one live token |
 | Verification-status probing via login | status disclosed only after correct password |
 | Locking out existing users | migration backfill + `EMAIL_VERIFICATION_REQUIRED=false` kill switch + `SEED_USER_MARK_VERIFIED` |
 | Session fixation | untouched — gate runs before session mint; login still issues a fresh session row |
@@ -144,10 +162,19 @@ as a string — filed as a follow-up; not changed here to keep this diff scoped.
 - `server/tests/routes/auth.verify.test.ts` (testcontainer): full happy path
   (register → captured mock email → verify → login), expiry, replay, resend
   invalidation + cooldown, no-enumeration, gate on/off, `email_verified` in /auth/me,
-  email-change reset, GET and POST verify, idempotent double-verify.
+  email-change reset + atomic supersession + cooldown, token↔address binding (a
+  resurrected old-address token still refused), concurrent-issuance and resend-burst
+  serialization, gate × MFA interplay (no challenge minted while unverified), GET
+  route removal, fragment-form link, idempotent double-verify.
+- `server/tests/config.test.ts`: strict boolean env parsing for every flag
+  (`"false"` → false, defaults, garbage fails startup — fix-pass B1/S4) + the
+  SMTP_FROM-with-SMTP_HOST refinement.
 - `db/tests/test_migration_071.py`: real-chain up, idempotent re-apply, constraint
-  proofs, backfill proof, destructive-down refusal + clean down/re-up.
-- Client: `VerifyEmail.test.tsx` (success/expired/invalid/resend), Login register→
-  check-email + unverified-login states, banner test.
+  proofs (incl. the attested-address column), backfill proof, destructive-down
+  refusal + clean down/re-up.
+- Client: `VerifyEmail.test.tsx` (success/expired/invalid/resend, fragment token,
+  history scrub, empty-submit prompt, 429 backoff),
+  `ResendVerificationButton.test.tsx` (send-once, fixed copy, 429 backoff + fallback),
+  Login register→check-email + unverified-login states, banner test.
 - Gate policy: full server vitest + full db suite + client lint/tsc/tests/build — this
   is schema + auth cross-cutting work, so the FULL suites are the gate.

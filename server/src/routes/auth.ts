@@ -6,7 +6,7 @@
  *   POST  /auth/logout         — revoke current session, clear cookie
  *   GET   /auth/me             — describe the current user
  *   PATCH /auth/me             — update display_name / email / phone (Pass 3)
- *   GET|POST /auth/verify      — consume an email-verification token (F-006)
+ *   POST  /auth/verify         — consume an email-verification token (F-006)
  *   POST  /auth/verify/resend  — re-issue the verification email (F-006)
  *
  * Threat model (SECURITY.md):
@@ -40,8 +40,14 @@
  *           user id + new domain only — never the new local part, to keep
  *           PII out of logs);
  *       (d) F-006: the change RESETS email_verified_at (the stamp attests the
- *           OLD address), supersedes outstanding tokens, and sends a fresh
- *           verification to the NEW address. The current session is kept (a
+ *           OLD address), supersedes outstanding tokens, and issues a fresh
+ *           token for the NEW address — all in ONE transaction (fix-pass
+ *           SF-1: no crash window can leave a live old-address token behind;
+ *           and each token is bound to the address it attests, so a stale
+ *           one is dead at consume regardless). The fresh send is gated by
+ *           the same per-user cooldown as resend (fix-pass S1: an
+ *           authenticated session cannot mail-bomb arbitrary addresses by
+ *           flipping the email in a loop). The current session is kept (a
  *           typo'd address can still be corrected); the next login is gated.
  *   - Account-takeover via session token leak persisting across email change:
  *     out of scope here. The "log me out everywhere" SQL (ADR-002 §"Open
@@ -75,7 +81,9 @@ import { generateRecoveryCodes, hashRecoveryCode } from '../auth/recoveryCodes.j
 import {
   consumeVerificationToken,
   issueAndSendVerificationEmail,
-  secondsSinceLastToken,
+  issueVerificationTokenIfCooldownClear,
+  sendVerificationEmail,
+  supersedeVerificationTokens,
 } from '../auth/emailVerification.js';
 import {
   bumpChallengeAttempts,
@@ -1058,18 +1066,22 @@ router.get('/mfa/status', authLimiter(), requireAuth, async (req, res, next) => 
 // -----------------------------------------------------------------------------
 
 /**
- * Shared verify handler for GET (?token=) and POST ({token}). Both exist so
- * the emailed link works whether the client SPA relays it as a POST (the
- * normal path — /verify-email page) or something fetches the API URL
- * directly. Consuming is idempotent-safe: an already-verified user gets a
- * friendly success, never an error (double-click = still fine).
+ * Verify handler — POST only. The emailed link carries the token in the URL
+ * FRAGMENT (`/verify-email#token=…`), which never leaves the browser; the SPA
+ * reads `location.hash` and relays it here as a POST body. There is
+ * deliberately NO GET `?token=` variant: a live secret in a query string
+ * lands in reverse-proxy/CDN access logs and browser history sync (fix-pass
+ * SF-2 / route N1) — the GET convenience route this feature briefly shipped
+ * was removed for exactly that reason. Consuming is idempotent-safe: an
+ * already-verified user gets a friendly success, never an error
+ * (double-click = still fine).
  *
  * Limiter: authLimiter — it counts FAILED responses only, which is exactly
  * the brute-force signal here (a flood of bad tokens 400s and starves; a
  * legitimate double-click succeeds and is never throttled).
  */
 async function handleVerify(req: Request, res: Response, rawToken: unknown): Promise<void> {
-  // Shape gate at the boundary (Zod covers POST; GET arrives via req.query).
+  // Shape gate at the boundary (defense-in-depth over the Zod body schema).
   if (typeof rawToken !== 'string' || rawToken.length === 0 || rawToken.length > 128) {
     sendError(res, 400, 'token_invalid', 'that verification link is not valid');
     return;
@@ -1111,14 +1123,6 @@ router.post(
   },
 );
 
-router.get('/verify', authLimiter(), async (req, res, next) => {
-  try {
-    await handleVerify(req, res, req.query.token);
-  } catch (err) {
-    next(err);
-  }
-});
-
 const ResendSchema = z.object({ email: z.string().email().max(254) });
 
 /**
@@ -1133,9 +1137,12 @@ const ResendSchema = z.object({ email: z.string().email().max(254) });
  *
  * Abuse posture: cheapLimiter bounds the per-IP request rate (the auth
  * limiter's skipSuccessfulRequests would never count an always-200 route),
- * and the per-USER DB cooldown (EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC,
- * probed via the tokens table) is the real mail-bomb gate: at most one email
- * per account per cooldown window, no matter how many IPs ask.
+ * and the per-USER DB cooldown (EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC) is
+ * the real mail-bomb gate. The cooldown check is ATOMIC with the token
+ * insert it gates — `issueVerificationTokenIfCooldownClear` probes inside
+ * the same per-user-locked transaction (fix-pass S2/SF-4) — so a concurrent
+ * burst of resends serializes and exactly one mints: at most one email per
+ * account per cooldown window, no matter how many IPs ask.
  */
 router.post(
   '/verify/resend',
@@ -1153,24 +1160,27 @@ router.post(
         [email],
       );
       const row = rows[0];
-      let shouldSend = false;
-      let userId = 0;
-      if (row && row.email_verified_at === null) {
-        // pg returns BIGINT as a string.
-        userId = Number(row.id);
-        const since = await secondsSinceLastToken(userId);
-        const cooldown = loadConfig().EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC;
-        shouldSend = since === null || since >= cooldown;
-        if (!shouldSend) {
-          req.log.info({ userId, event: 'verify_resend_cooldown' }, 'resend suppressed by cooldown');
-        }
-      }
       // Fixed generic response FIRST (anti-enumeration, see header) …
       res.status(200).json({ status: 'ok' });
-      // … then the best-effort send, detached from the response path.
-      if (shouldSend) {
+      // … then the best-effort issue+send, detached from the response path.
+      // The cooldown decision lives INSIDE issueVerificationTokenIfCooldownClear
+      // (atomic with the insert), never in a pre-response probe — which also
+      // keeps the response timing identical whether or not a send happens.
+      if (row && row.email_verified_at === null) {
+        // pg returns BIGINT as a string.
+        const userId = Number(row.id);
         const log = req.log;
-        void issueAndSendVerificationEmail(userId, email).catch((mailErr: unknown) => {
+        void (async () => {
+          const minted = await issueVerificationTokenIfCooldownClear(userId, email);
+          if (!minted) {
+            log.info(
+              { userId, event: 'verify_resend_cooldown' },
+              'resend suppressed by cooldown',
+            );
+            return;
+          }
+          await sendVerificationEmail(email, minted.raw);
+        })().catch((mailErr: unknown) => {
           log.error(
             { userId, err: (mailErr as Error).message },
             'verification email resend failed',
@@ -1323,42 +1333,81 @@ router.patch(
         throw new UnauthorizedError('user no longer exists');
       }
 
+      // F-006 fix-pass SF-1/S1: the profile UPDATE (which resets
+      // email_verified_at on an actual change), the supersession of the now-
+      // stale old-address tokens, and the cooldown-gated fresh issue all run
+      // in ONE transaction. A crash/failure anywhere rolls the whole unit
+      // back — there is no window where the stamp is reset but a live
+      // old-address token survives (and each token is additionally BOUND to
+      // the address it attests, so even a resurrected stale token cannot
+      // verify the new address). The mail send stays OUTSIDE the transaction
+      // (no external I/O inside an open tx — db/pool bar) and is best-effort.
       let updated;
+      let mintedRaw: string | null = null;
+      let emailChanged = false;
       try {
-        const result = await query<{
-          id: number;
-          email: string;
-          display_name: string | null;
-          phone: string | null;
-          version: number;
-          email_verified: boolean;
-        }>(
-          // F-006: an actual email CHANGE resets email_verified_at — the stamp
-          // attests the OLD address; keeping it would let an unverified new
-          // address inherit verified status. SET expressions read the
-          // pre-update row, so the CASE compares against the OLD email.
-          `UPDATE users
-              SET display_name = COALESCE($2, display_name),
-                  email        = COALESCE($3::citext, email),
-                  phone        = COALESCE($4, phone),
-                  email_verified_at = CASE
-                    WHEN $3::citext IS NOT NULL AND $3::citext IS DISTINCT FROM email
-                    THEN NULL
-                    ELSE email_verified_at
-                  END,
-                  version      = version + 1
-            WHERE id = $1 AND deleted_at IS NULL AND version = $5
-            RETURNING id, email::text AS email, display_name, phone, version,
-                      (email_verified_at IS NOT NULL) AS email_verified`,
-          [
-            userId,
-            body.display_name ?? null,
-            newEmail ?? null,
-            body.phone ?? null,
-            body.expected_version,
-          ],
-        );
-        updated = result.rows[0];
+        const txResult = await withTransaction(async (client) => {
+          const tx = clientQuerier(client);
+          const result = await tx<{
+            id: number;
+            email: string;
+            display_name: string | null;
+            phone: string | null;
+            version: number;
+            email_verified: boolean;
+          }>(
+            // F-006: an actual email CHANGE resets email_verified_at — the stamp
+            // attests the OLD address; keeping it would let an unverified new
+            // address inherit verified status. SET expressions read the
+            // pre-update row, so the CASE compares against the OLD email.
+            `UPDATE users
+                SET display_name = COALESCE($2, display_name),
+                    email        = COALESCE($3::citext, email),
+                    phone        = COALESCE($4, phone),
+                    email_verified_at = CASE
+                      WHEN $3::citext IS NOT NULL AND $3::citext IS DISTINCT FROM email
+                      THEN NULL
+                      ELSE email_verified_at
+                    END,
+                    version      = version + 1
+              WHERE id = $1 AND deleted_at IS NULL AND version = $5
+              RETURNING id, email::text AS email, display_name, phone, version,
+                        (email_verified_at IS NOT NULL) AS email_verified`,
+            [
+              userId,
+              body.display_name ?? null,
+              newEmail ?? null,
+              body.phone ?? null,
+              body.expected_version,
+            ],
+          );
+          const row = result.rows[0];
+          if (!row) return { row: undefined, raw: null, changed: false };
+          const changed =
+            newEmail !== undefined && newEmail !== beforeEmail.toLowerCase();
+          let raw: string | null = null;
+          if (changed) {
+            // Old-address tokens must die IN THIS TRANSACTION even when the
+            // cooldown suppresses a fresh issue — they attest an address the
+            // account no longer has.
+            await supersedeVerificationTokens(userId, tx);
+            // Cooldown-gated (fix-pass S1): an authenticated session flipping
+            // the email in a loop gets at most one send per cooldown window —
+            // same per-user gate as /auth/verify/resend, same table probe,
+            // atomic with the insert. Suppressed ⇒ the resend endpoint is the
+            // recovery path once the window passes.
+            const minted = await issueVerificationTokenIfCooldownClear(
+              userId,
+              newEmail,
+              tx,
+            );
+            raw = minted?.raw ?? null;
+          }
+          return { row, raw, changed };
+        });
+        updated = txResult.row;
+        mintedRaw = txResult.raw;
+        emailChanged = txResult.changed;
       } catch (err) {
         // 23505 = unique_violation. Identical posture to register: vague
         // conflict, don't leak which field collided (only email is UNIQUE
@@ -1388,7 +1437,7 @@ router.patch(
       // never the local part — the local part is PII (per
       // Repository/server/SECURITY.md §4.1). Correlation id is already on
       // the child logger via correlationMiddleware.
-      if (newEmail && newEmail !== beforeEmail.toLowerCase()) {
+      if (emailChanged && newEmail) {
         const beforeDomain = beforeEmail.split('@')[1] ?? 'unknown';
         const afterDomain = newEmail.split('@')[1] ?? 'unknown';
         req.log.warn(
@@ -1400,15 +1449,27 @@ router.patch(
           },
           'user changed account email (verification reset — F-006)',
         );
-        // F-006: verify the NEW address. Best-effort (the profile change
-        // already committed; resend is the recovery path) and the session is
-        // deliberately untouched — the user can still fix a typo'd address.
-        try {
-          await issueAndSendVerificationEmail(userId, newEmail);
-        } catch (mailErr) {
-          req.log.error(
-            { userId, err: (mailErr as Error).message },
-            'verification email send failed after email change',
+        // F-006: verify the NEW address. The token was minted inside the
+        // profile transaction above; only the SEND happens here, after
+        // commit. Best-effort (the profile change already committed; resend
+        // is the recovery path) and the session is deliberately untouched —
+        // the user can still fix a typo'd address.
+        if (mintedRaw !== null) {
+          try {
+            await sendVerificationEmail(newEmail, mintedRaw);
+          } catch (mailErr) {
+            req.log.error(
+              { userId, err: (mailErr as Error).message },
+              'verification email send failed after email change',
+            );
+          }
+        } else {
+          // Cooldown-suppressed (fix-pass S1). The stamp is reset and the old
+          // tokens are dead; the user requests a fresh link via resend once
+          // the window passes.
+          req.log.info(
+            { userId, event: 'verify_resend_cooldown' },
+            'email-change verification send suppressed by cooldown',
           );
         }
       }

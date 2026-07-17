@@ -1084,9 +1084,17 @@ config-toggleable login gate. Design + operator steps:
   never yields a clickable link. Verify compares hashes with `timingSafeEqual`
   (defense-in-depth over the indexed lookup). Single-use via an atomic
   `UPDATE … WHERE consumed_at IS NULL` rowCount gate; 24 h expiry
-  (`EMAIL_VERIFICATION_TOKEN_TTL_HOURS`) enforced by the active-lookup
-  predicate. A verification token confers NO session powers — consuming it only
-  stamps `users.email_verified_at`.
+  (`EMAIL_VERIFICATION_TOKEN_TTL_HOURS`) checked server-side at consume. Each
+  token row is **bound to the address it was mailed to** (`email` column) and
+  redeems only while that is still the user's current address — a link issued
+  for an old address can never stamp a changed one. The emailed link carries
+  the token in the **URL fragment** (`/verify-email#token=…`), which never
+  leaves the browser — reverse-proxy/CDN access logs and Referer headers never
+  see a live token, and the SPA scrubs the fragment from history immediately
+  after capture. There is deliberately NO `GET /auth/verify?token=` route (a
+  secret in a query string lands in access logs); the only consume path is the
+  POST body. A verification token confers NO session powers — consuming it
+  only stamps `users.email_verified_at`.
 
 ### 19.2 No user-enumeration
 - **Threat:** verify / resend as an account-existence or verification-status
@@ -1102,11 +1110,18 @@ config-toggleable login gate. Design + operator steps:
 
 ### 19.3 Anti-abuse (mail-bombing)
 - **Defense:** per-IP `cheapLimiter` on resend PLUS a per-USER DB cooldown
-  (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC`, default 60 s, probed off the tokens
-  table). The per-user cooldown is the real gate — the auth limiter's
-  `skipSuccessfulRequests` would never count an always-200 route. A resend
-  supersedes prior live tokens (`invalidated_at`), so only the newest link is
-  ever redeemable.
+  (`EMAIL_VERIFICATION_RESEND_COOLDOWN_SEC`, default 60 s). The per-user
+  cooldown is the real gate — the auth limiter's `skipSuccessfulRequests`
+  would never count an always-200 route — and it is **atomic with issuance**:
+  the probe runs inside the same per-user-locked transaction as the token
+  insert (`issueVerificationTokenIfCooldownClear`), so a concurrent resend
+  burst serializes and mints exactly once — at most one email per account per
+  window, no matter how many IPs ask. The `PATCH /auth/me` email-change send
+  honors the SAME cooldown (an authenticated session flipping the email in a
+  loop cannot mail-bomb arbitrary addresses). A resend supersedes prior live
+  tokens (`invalidated_at`), so only the newest link is ever redeemable; the
+  per-user row lock makes that hold under concurrent issuance too (two racing
+  issues leave exactly one live token).
 
 ### 19.4 Login gate placement & session safety
 - The gate runs AFTER password verification and BEFORE any MFA challenge or
@@ -1125,9 +1140,14 @@ config-toggleable login gate. Design + operator steps:
 
 ### 19.6 Email-change verification
 - `PATCH /auth/me` on an actual email change resets `email_verified_at` (the
-  stamp attests the OLD address), supersedes outstanding tokens, and sends a
-  fresh verification to the NEW address. The current session is kept (a typo'd
-  address stays correctable); the next login is gated.
+  stamp attests the OLD address), supersedes outstanding tokens, and issues a
+  fresh token for the NEW address **in one transaction** — no crash window can
+  leave the stamp reset while a live old-address token survives. The send is
+  cooldown-gated (§19.3) and happens after commit (best-effort; resend is the
+  recovery path). Belt AND braces: even a hypothetically-surviving old-address
+  token is dead at consume, because tokens are bound to the address they
+  attest (§19.1). The current session is kept (a typo'd address stays
+  correctable); the next login is gated.
 
 ### 19.7 Mail transport / secrets in logs
 - Provider-agnostic: SMTP (nodemailer, env-configured — in this deployment,
@@ -1137,5 +1157,9 @@ config-toggleable login gate. Design + operator steps:
   escape-hatch purpose) and is only ever selected with no relay configured.
   `SMTP_TLS_REJECT_UNAUTHORIZED=false` exists solely for a loopback relay's
   self-signed cert (Proton Bridge) — the operator's explicit, documented
-  opt-out. DNS: the sending domain MUST publish SPF/DKIM/DMARC authorizing the
-  From address (see BUILD_f006 deploy steps) or receivers spam-folder the mail.
+  opt-out. The raw token also never transits a request line: the link uses a
+  URL fragment and the GET query-param route was removed (§19.1), so nginx
+  access logs (km-lb and the client SPA container) cannot capture it — no
+  `access_log` carve-out is needed. DNS: the sending domain MUST publish
+  SPF/DKIM/DMARC authorizing the From address (see BUILD_f006 deploy steps) or
+  receivers spam-folder the mail.

@@ -1,7 +1,7 @@
 /**
  * VerifyEmail — the landing page for the emailed verification link (F-006).
  *
- * `${CLIENT_ORIGIN}/verify-email?token=…` lands here (a PUBLIC route: works
+ * `${CLIENT_ORIGIN}/verify-email#token=…` lands here (a PUBLIC route: works
  * for guests AND for a signed-in-but-unverified session, e.g. after an email
  * change with the gate off). On mount the token is relayed once to
  * `POST /auth/verify` and the outcome renders one of:
@@ -12,17 +12,23 @@
  *   - network  — could not reach the server; offers a retry.
  *
  * Threat model (page scope):
- *   - Token handling: the raw token is read from the URL and sent to the
- *     server ONCE; it is never persisted (no storage, no state beyond the
- *     in-flight request) and never logged. It is single-use + short-lived
- *     server-side, so a leaked browser-history entry goes stale on first use.
+ *   - Token handling (fix-pass SF-1/SF-2): the raw token rides the URL
+ *     FRAGMENT (`#token=`), which the browser never sends on the wire — so
+ *     reverse-proxy/CDN access logs and Referer headers can never capture a
+ *     live token. It is captured into component state ONCE on mount and the
+ *     fragment is immediately scrubbed from the address bar/history
+ *     (`navigate(…, { replace: true })`), so browser history and history-sync
+ *     services never retain it either. It is never persisted (no storage, no
+ *     state beyond the mount capture) and never logged; single-use + 24 h
+ *     expiry server-side back all of this up.
  *   - Error copy: fixed strings selected by `ApiError.code`/`status` — server
  *     message text is NEVER echoed (no oracle, no reflected-XSS drift).
  *   - Resend: the endpoint is non-enumerating; the copy is phrased
- *     conditionally to match.
+ *     conditionally to match, and a 429 disables the form for the server's
+ *     `retry_after` window (structured number, not echoed prose).
  */
 import { useEffect, useId, useRef, useState, type FormEvent, type JSX } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Bilingual } from '../components/Bilingual';
 import { Button } from '../components/Button';
 import { Eyebrow } from '../components/Eyebrow';
@@ -30,20 +36,48 @@ import { SealStamp } from '../components/SealStamp';
 import { DoubleRule } from '../components/DoubleRule';
 import { ApiError } from '../services/api';
 import { resendVerification, verifyEmail } from '../services/auth';
+import { useRetryCountdown } from '../hooks/useRetryCountdown';
 
 type VerifyState = 'verifying' | 'success' | 'expired' | 'invalid' | 'network';
 
+/** Parse `token` out of a `#token=…` fragment. The mailer puts the token in
+ *  the fragment ONLY (never the query string) so it never leaves the browser;
+ *  there is deliberately no `?token=` fallback — no such link has ever been
+ *  emailed (the query form died in the F-006 fix-pass before first deploy). */
+function tokenFromHash(hash: string): string | null {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (!raw) return null;
+  return new URLSearchParams(raw).get('token');
+}
+
 export default function VerifyEmail(): JSX.Element {
-  const [params] = useSearchParams();
-  const token = params.get('token');
+  const location = useLocation();
+  const navigate = useNavigate();
+  // Capture ONCE on mount (lazy initializer): the URL is scrubbed right after,
+  // and the retry affordance re-uses this captured copy, not the URL.
+  const [token] = useState<string | null>(() => tokenFromHash(location.hash));
   const [state, setState] = useState<VerifyState>(
     token ? 'verifying' : 'invalid',
   );
-  // One shot per mount + retry counter: StrictMode's dev double-mount must
-  // not double-consume (the server is idempotent anyway, but a second POST
-  // racing the first could render already_verified copy on the FIRST visit).
+  // Latest-attempt-wins render guard + retry counter: StrictMode's dev
+  // double-mount fires the effect (and its POST) twice — the server is
+  // idempotent and both outcomes map to the same success UI, so this ref only
+  // guarantees the LATEST attempt's result renders (it does not, and need
+  // not, prevent the second request).
   const attemptRef = useRef(0);
   const [retryNonce, setRetryNonce] = useState(0);
+
+  // Scrub the token from the address bar / history as soon as we've captured
+  // it (fix-pass client SF-1). Fragments never reach the server, but they DO
+  // linger in browser history and history-sync — replace-navigate to the bare
+  // path. Idempotent, so the StrictMode double-run is harmless.
+  useEffect(() => {
+    if (location.hash) {
+      navigate(location.pathname, { replace: true });
+    }
+    // Mount-only by design: we scrub whatever fragment we arrived with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!token) return;
@@ -190,24 +224,33 @@ function ResendForm(): JSX.Element {
   const [sending, setSending] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { secondsLeft, start: startBackoff } = useRetryCountdown();
   const emailId = useId();
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>): Promise<void> {
     e.preventDefault();
-    if (sending) return;
+    if (sending || secondsLeft > 0) return;
     const trimmed = email.trim().toLowerCase();
-    if (!trimmed) return;
+    if (!trimmed) {
+      // Fixed copy — an empty submit must never be a silent no-op (the form
+      // is noValidate, so the browser won't announce anything either).
+      setError('Enter your account email to request a new link.');
+      return;
+    }
     setError(null);
     setSending(true);
     try {
       await resendVerification(trimmed);
       setSentTo(trimmed);
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.status === 429
-          ? 'Too many attempts. Please wait a moment and try again.'
-          : 'Could not send the email. Check your connection and retry.',
-      );
+      // Fixed strings only — never server text. A 429 disables the form for
+      // the server's retry_after window (fix-pass SF-2).
+      if (err instanceof ApiError && err.status === 429) {
+        setError('Too many attempts. Please wait a moment and try again.');
+        startBackoff(err.retryAfter);
+      } else {
+        setError('Could not send the email. Check your connection and retry.');
+      }
     } finally {
       setSending(false);
     }
@@ -254,9 +297,19 @@ function ResendForm(): JSX.Element {
           {error}
         </div>
       ) : null}
-      <Button type="submit" variant="gold" size="lg" fullWidth disabled={sending}>
+      <Button
+        type="submit"
+        variant="gold"
+        size="lg"
+        fullWidth
+        disabled={sending || secondsLeft > 0}
+      >
         <span role="status" aria-live="polite">
-          {sending ? 'Sending…' : 'Send a new link'}
+          {sending
+            ? 'Sending…'
+            : secondsLeft > 0
+              ? `Retry in ${String(secondsLeft)}s`
+              : 'Send a new link'}
         </span>
       </Button>
     </form>

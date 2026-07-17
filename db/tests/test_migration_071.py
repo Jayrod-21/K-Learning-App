@@ -158,12 +158,14 @@ def _insert_token(
     user_id: int,
     token_hash: str = HASH_A,
     expires_sql: str = "now() + interval '24 hours'",
+    email: str = "tokens@test.dev",
 ) -> int:
     with conn.cursor(row_factory=tuple_row) as cur:
         cur.execute(
-            "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) "
-            f"VALUES (%s, %s, {expires_sql}) RETURNING id",
-            (user_id, token_hash),
+            "INSERT INTO email_verification_tokens "
+            "(user_id, email, token_hash, expires_at) "
+            f"VALUES (%s, %s, %s, {expires_sql}) RETURNING id",
+            (user_id, email, token_hash),
         )
         return cur.fetchone()[0]
 
@@ -206,7 +208,6 @@ def test_071_up_applies_and_reapply_is_idempotent(
             cur.execute("SELECT count(*) FROM email_verification_tokens")
             assert cur.fetchone()[0] == 0
             for index_name in (
-                "ix_email_verif_active_lookup",
                 "ix_email_verif_user",
                 "ix_email_verif_expires",
             ):
@@ -219,16 +220,35 @@ def test_071_up_applies_and_reapply_is_idempotent(
                     (index_name,),
                 )
                 assert cur.fetchone()[0] == 1, f"missing index {index_name}"
-            # The active-lookup index is PARTIAL (live tokens only).
+            # Fix-pass N-3: the old partial "active lookup" index was unusable
+            # by the consume path (its SELECT carries no live-ness predicate,
+            # deliberately) — the uq_email_verif_token_hash UNIQUE index serves
+            # the hash lookup. It must NOT come back.
             cur.execute(
                 """
-                SELECT indexdef FROM pg_indexes
+                SELECT count(*) FROM pg_indexes
                  WHERE indexname = 'ix_email_verif_active_lookup'
                 """
             )
-            indexdef = cur.fetchone()[0]
-            assert "consumed_at IS NULL" in indexdef
-            assert "invalidated_at IS NULL" in indexdef
+            assert cur.fetchone()[0] == 0, (
+                "ix_email_verif_active_lookup was removed by the F-006 fix-pass "
+                "(unusable partial index) and must not be reintroduced"
+            )
+            # SF-1: the attested-address binding column exists and is NOT NULL.
+            # udt_name (not data_type): extension types like citext report
+            # data_type='USER-DEFINED' in information_schema.
+            cur.execute(
+                """
+                SELECT udt_name, is_nullable
+                  FROM information_schema.columns
+                 WHERE table_name = 'email_verification_tokens'
+                   AND column_name = 'email'
+                """
+            )
+            col = cur.fetchone()
+            assert col is not None, "email (attested address) column must exist"
+            assert col[0] == "citext"
+            assert col[1] == "NO"
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +275,19 @@ def test_071_token_constraints(env, dsn: str, full_dir: pathlib.Path) -> None:
         # ck_email_verif_expiry: a token can never be born expired.
         with pytest.raises(errors.CheckViolation):
             _insert_token(conn, user_id, HASH_B, expires_sql="now() - interval '1 hour'")
+
+        # SF-1 binding column: a token row without its attested address is
+        # rejected (NOT NULL), and a sub-3-char address trips the length CHECK.
+        with pytest.raises(errors.NotNullViolation):
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO email_verification_tokens "
+                    "(user_id, token_hash, expires_at) "
+                    "VALUES (%s, %s, now() + interval '24 hours')",
+                    (user_id, HASH_B),
+                )
+        with pytest.raises(errors.CheckViolation):
+            _insert_token(conn, user_id, HASH_B, email="a")
 
         # FK CASCADE: tokens are transient — a deleted user takes them along.
         with conn.cursor(row_factory=tuple_row) as cur:
@@ -319,10 +352,10 @@ def test_071_down_requires_allow_destructive_then_reverses_cleanly(
     target = _pre_071_target(full_dir)
 
     with psycopg.connect(dsn, autocommit=True) as conn:
-        user_id = _seed_user(conn, "down@test.dev")  # stamped by… nothing: post-071 insert
+        # Inserted AFTER 071 ran, so the backfill never saw it (NULL stamp).
+        user_id = _seed_user(conn, "down@test.dev")
         with conn.cursor(row_factory=tuple_row) as cur:
-            # Grandfather stamp exists only for pre-071 rows; stamp this one
-            # explicitly so we can prove the down leaves users untouched.
+            # Stamp it explicitly so we can prove the down leaves users untouched.
             cur.execute(
                 "UPDATE users SET email_verified_at = now() WHERE id = %s", (user_id,)
             )

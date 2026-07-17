@@ -10,11 +10,21 @@
  *   - login blocked while unverified (typed email_unverified) and allowed
  *     when EMAIL_VERIFICATION_REQUIRED=false;
  *   - verify consumes the token once, stamps email_verified_at, unblocks
- *     login; GET and POST variants; idempotent double-verify;
+ *     login; POST only (the GET ?token= variant was removed — a live secret
+ *     in a query string lands in access logs; the link now carries the token
+ *     in the URL FRAGMENT, which never reaches any server);
  *   - expired token → token_expired; garbage/consumed/superseded → token_invalid;
- *   - replayed token cannot verify a LATER address (email change resets);
- *   - resend: generic non-enumerating 200 in every case, per-user cooldown,
- *     supersedes prior tokens;
+ *   - replayed token cannot verify a LATER address (email change resets), and
+ *     a token is BOUND to the address it attests — a live old-address token
+ *     can never stamp a new address (fix-pass SF-1);
+ *   - email change: stamp reset + supersession + fresh issue are ONE atomic
+ *     transaction, and the send is cooldown-gated (fix-pass SF-1/S1);
+ *   - resend: generic non-enumerating 200 in every case, per-user cooldown
+ *     ATOMIC with issuance (a concurrent burst mints exactly once — SF-4/S2),
+ *     supersedes prior tokens; concurrent issuance leaves exactly one live
+ *     token (SF-3);
+ *   - gate × MFA interplay: unverified stops BEFORE any challenge is minted;
+ *     verified users get the untouched MFA flow (route S5);
  *   - mail-transport failure never fails registration;
  *   - /auth/me carries email_verified.
  */
@@ -27,6 +37,7 @@ import {
   _setMailTransportForTesting,
   type MailMessage,
 } from '../../src/services/mail.js';
+import { issueVerificationToken } from '../../src/auth/emailVerification.js';
 
 const PASSWORD = 'correct horse battery staple';
 
@@ -99,6 +110,10 @@ describe('POST /auth/register — verification-gated', () => {
     await waitForMail(1);
     const raw = tokenFrom(sent[0]!);
     expect(sent[0]!.to).toBe('v1@example.com');
+    // SECURITY (fix-pass SF-2): the token rides the URL FRAGMENT — it must
+    // never appear in a query string, where proxies/access logs would see it.
+    expect(sent[0]!.text).toContain('/verify-email#token=');
+    expect(sent[0]!.text).not.toContain('?token=');
 
     // Hashed at rest: the raw token must NOT appear in the DB; the stored
     // hash must be SHA-256 hex.
@@ -174,14 +189,19 @@ describe('login gate (EMAIL_VERIFICATION_REQUIRED=true)', () => {
   });
 });
 
-describe('GET|POST /auth/verify — token validation', () => {
-  it('GET variant with ?token= verifies too', async () => {
-    await register('getv@example.com');
+describe('POST /auth/verify — token validation', () => {
+  it('the GET ?token= variant is GONE (a live secret must never ride a query string)', async () => {
+    // Fix-pass SF-2 / route N1: GET /auth/verify?token= put the raw token in
+    // request lines that nginx access logs retain. The route was removed; the
+    // only consume path is the POST body relay from the SPA's fragment read.
+    await register('noget@example.com');
     await waitForMail(1);
     const raw = tokenFrom(sent[0]!);
     const res = await request(t.app).get('/auth/verify').query({ token: raw });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('verified');
+    expect(res.status).toBe(404);
+    // The token was NOT consumed by the rejected GET…
+    const ok = await request(t.app).post('/auth/verify').send({ token: raw });
+    expect(ok.body.status).toBe('verified');
   });
 
   it('double-click is idempotent: second consume → friendly already_verified', async () => {
@@ -239,6 +259,12 @@ describe('GET|POST /auth/verify — token validation', () => {
     await agent
       .post('/auth/login')
       .send({ email: 'replay@example.com', password: PASSWORD });
+    // Age the register-time token past the resend cooldown so the email
+    // change's fresh send is not suppressed (fix-pass S1: the change path
+    // honors the same per-user cooldown as resend).
+    await pg.pool.query(
+      `UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes'`,
+    );
     const patch = await agent
       .patch('/auth/me')
       .send({ email: 'replay-new@example.com', expected_version: 1 });
@@ -248,6 +274,13 @@ describe('GET|POST /auth/verify — token validation', () => {
     // …and sent a fresh verification to the NEW address.
     await waitForMail(2);
     expect(sent[1]!.to).toBe('replay-new@example.com');
+    // SF-1: the fresh token row is BOUND to the address it attests.
+    const bound = await pg.pool.query<{ email: string }>(
+      `SELECT email::text AS email FROM email_verification_tokens
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL`,
+    );
+    expect(bound.rows).toHaveLength(1);
+    expect(bound.rows[0]!.email).toBe('replay-new@example.com');
 
     // Replaying the consumed original token → invalid, user stays unverified.
     const res = await request(t.app).post('/auth/verify').send({ token: raw });
@@ -262,6 +295,159 @@ describe('GET|POST /auth/verify — token validation', () => {
     const raw2 = tokenFrom(sent[1]!);
     const ok = await request(t.app).post('/auth/verify').send({ token: raw2 });
     expect(ok.body.status).toBe('verified');
+  });
+
+  it('a LIVE token mailed to the OLD address can never verify a NEW one, even if its supersession is lost (SF-1 binding)', async () => {
+    // The crash-window invariant: PATCH /me runs stamp-reset + supersession +
+    // fresh issue in ONE transaction, so a live old-address token "should"
+    // be impossible. This test assumes the worst anyway — it RESURRECTS the
+    // old token (simulating a lost supersession / code regression) and proves
+    // the token↔address binding still refuses to stamp the new address.
+    await register('bind@example.com');
+    await waitForMail(1);
+    const oldRaw = tokenFrom(sent[0]!); // live, unconsumed, mailed to the OLD address
+
+    // Verify via a bypass stamp so login works, then change the email.
+    await pg.pool.query(`UPDATE users SET email_verified_at = now()`);
+    const agent = request.agent(t.app);
+    await agent
+      .post('/auth/login')
+      .send({ email: 'bind@example.com', password: PASSWORD });
+    const patch = await agent
+      .patch('/auth/me')
+      .send({ email: 'bind-new@example.com', expected_version: 1 });
+    expect(patch.status).toBe(200);
+    expect(patch.body.user.email_verified).toBe(false);
+
+    // Simulate the lost supersession: resurrect the old-address token.
+    await pg.pool.query(
+      `UPDATE email_verification_tokens
+          SET invalidated_at = NULL, consumed_at = NULL
+        WHERE email = 'bind@example.com'`,
+    );
+
+    // It is live, unconsumed, unexpired — and must STILL be refused, because
+    // it attests an address the account no longer has.
+    const res = await request(t.app).post('/auth/verify').send({ token: oldRaw });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('token_invalid');
+    const u = await pg.pool.query<{ email_verified_at: Date | null }>(
+      'SELECT email_verified_at FROM users',
+    );
+    expect(u.rows[0]!.email_verified_at).toBeNull();
+  });
+});
+
+describe('PATCH /auth/me email change — cooldown + atomic supersession (S1/SF-1)', () => {
+  it('rapid email flips send at most ONE email per cooldown window (no authenticated mail-bomb)', async () => {
+    await register('flip@example.com');
+    await waitForMail(1);
+    await pg.pool.query(`UPDATE users SET email_verified_at = now()`);
+    const agent = request.agent(t.app);
+    await agent
+      .post('/auth/login')
+      .send({ email: 'flip@example.com', password: PASSWORD });
+
+    // Age the register token so the FIRST change is allowed to send…
+    await pg.pool.query(
+      `UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes'`,
+    );
+    const first = await agent
+      .patch('/auth/me')
+      .send({ email: 'victim@example.com', expected_version: 1 });
+    expect(first.status).toBe(200);
+    await waitForMail(2);
+    expect(sent[1]!.to).toBe('victim@example.com');
+
+    // …then flip again immediately: INSIDE the cooldown → no send, no token.
+    const second = await agent
+      .patch('/auth/me')
+      .send({ email: 'flip@example.com', expected_version: 2 });
+    expect(second.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(sent).toHaveLength(2); // register + first change only
+
+    // Atomic supersession held even for the suppressed change: the token for
+    // the abandoned 'victim' address is dead, and NO live token exists.
+    const live = await pg.pool.query(
+      `SELECT 1 FROM email_verification_tokens
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL`,
+    );
+    expect(live.rows).toHaveLength(0);
+
+    // The suppressed change still reset the stamp (never skipped).
+    const u = await pg.pool.query<{ email_verified_at: Date | null }>(
+      'SELECT email_verified_at FROM users',
+    );
+    expect(u.rows[0]!.email_verified_at).toBeNull();
+
+    // And the first-change token cannot verify anything anymore (superseded +
+    // bound to an address the account no longer has).
+    const victimRaw = tokenFrom(sent[1]!);
+    const replay = await request(t.app).post('/auth/verify').send({ token: victimRaw });
+    expect(replay.status).toBe(400);
+    expect(replay.body.error.code).toBe('token_invalid');
+  });
+});
+
+describe('issuance concurrency (SF-3/SF-4)', () => {
+  it('two concurrent issues leave EXACTLY one live token (per-user serialization)', async () => {
+    await register('race@example.com');
+    await waitForMail(1);
+    const { rows } = await pg.pool.query<{ id: string }>('SELECT id FROM users');
+    const userId = Number(rows[0]!.id);
+
+    // Fire the module API concurrently — the per-user row lock serializes the
+    // supersede+insert pairs, so the loser supersedes the winner's token.
+    await Promise.all([
+      issueVerificationToken(userId, 'race@example.com'),
+      issueVerificationToken(userId, 'race@example.com'),
+    ]);
+
+    const live = await pg.pool.query(
+      `SELECT 1 FROM email_verification_tokens
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL`,
+    );
+    expect(live.rows).toHaveLength(1);
+    // All three issued rows exist (audit trail preserved) — two superseded.
+    const all = await pg.pool.query('SELECT 1 FROM email_verification_tokens');
+    expect(all.rows).toHaveLength(3);
+  });
+
+  it('a concurrent resend burst mints exactly ONE token / sends ONE email (atomic cooldown)', async () => {
+    await register('burst@example.com');
+    await waitForMail(1);
+    // Age past the cooldown so the burst is eligible to send.
+    await pg.pool.query(
+      `UPDATE email_verification_tokens SET created_at = now() - interval '10 minutes'`,
+    );
+
+    const BURST = 5;
+    const responses = await Promise.all(
+      Array.from({ length: BURST }, () =>
+        request(t.app).post('/auth/verify/resend').send({ email: 'burst@example.com' }),
+      ),
+    );
+    for (const r of responses) {
+      expect(r.status).toBe(200);
+      expect(r.body).toEqual({ status: 'ok' }); // still non-enumerating
+    }
+
+    // The issue+send runs detached after each response; wait for the single
+    // winner, then give any (buggy) extra sends a tick to land.
+    await waitForMail(2);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(sent).toHaveLength(2); // register + exactly one resend
+
+    const tokens = await pg.pool.query(
+      `SELECT 1 FROM email_verification_tokens`,
+    );
+    expect(tokens.rows).toHaveLength(2); // register token + one resend token
+    const live = await pg.pool.query(
+      `SELECT 1 FROM email_verification_tokens
+        WHERE consumed_at IS NULL AND invalidated_at IS NULL`,
+    );
+    expect(live.rows).toHaveLength(1);
   });
 });
 
@@ -335,6 +521,64 @@ describe('POST /auth/verify/resend — anti-enumeration + cooldown + supersessio
     // … the fresh one verifies.
     const newTry = await request(t.app).post('/auth/verify').send({ token: newRaw });
     expect(newTry.body.status).toBe('verified');
+  });
+});
+
+describe('gate × MFA interplay (route S5) — gate BEFORE any challenge, MFA untouched after', () => {
+  it('unverified + correct password + MFA_REQUIRED → email_unverified with NO challenge minted; verified → normal enrollment flow', async () => {
+    const mfaApp = buildTestApp({
+      connectionString: pg.connectionString,
+      emailVerificationRequired: true,
+      mfaRequired: true,
+    });
+    installCaptureTransport();
+    try {
+      const reg = await request(mfaApp.app)
+        .post('/auth/register')
+        .send({ email: 'mfa@example.com', password: PASSWORD });
+      expect(reg.status).toBe(201);
+      expect(reg.body.status).toBe('verification_required');
+
+      // Unverified + CORRECT password: the gate answers BEFORE the MFA
+      // machinery — typed email_unverified, no challenge token in the body,
+      // and no challenge row minted in the DB.
+      const gated = await request(mfaApp.app)
+        .post('/auth/login')
+        .send({ email: 'mfa@example.com', password: PASSWORD });
+      expect(gated.status).toBe(403);
+      expect(gated.body.error.code).toBe('email_unverified');
+      expect(gated.body.challenge_token).toBeUndefined();
+      const challenges = await pg.pool.query('SELECT 1 FROM mfa_login_challenges');
+      expect(challenges.rows).toHaveLength(0);
+
+      // Wrong password on the same unverified account stays the generic 401
+      // (the gate cannot be used to probe verification status).
+      const wrong = await request(mfaApp.app)
+        .post('/auth/login')
+        .send({ email: 'mfa@example.com', password: 'totally-wrong-password' });
+      expect(wrong.status).toBe(401);
+      expect(wrong.body.error.code).not.toBe('email_unverified');
+
+      // Verify → the untouched mandatory-MFA flow takes over: no confirmed
+      // factor, so login answers enrollment_required WITH a challenge.
+      await waitForMail(1);
+      const raw = tokenFrom(sent[0]!);
+      const v = await request(mfaApp.app).post('/auth/verify').send({ token: raw });
+      expect(v.body.status).toBe('verified');
+
+      const login = await request(mfaApp.app)
+        .post('/auth/login')
+        .send({ email: 'mfa@example.com', password: PASSWORD });
+      expect(login.status).toBe(200);
+      expect(login.body.status).toBe('enrollment_required');
+      expect(typeof login.body.challenge_token).toBe('string');
+      expect(login.headers['set-cookie']).toBeUndefined(); // still no session pre-MFA
+      const minted = await pg.pool.query('SELECT 1 FROM mfa_login_challenges');
+      expect(minted.rows).toHaveLength(1);
+    } finally {
+      await teardownTestApp(mfaApp);
+      installCaptureTransport();
+    }
   });
 });
 

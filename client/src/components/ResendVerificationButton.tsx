@@ -10,12 +10,15 @@
  *     success copy here is phrased conditionally ("If an account exists…").
  *   - Fixed error strings only — server `message` text is NEVER echoed
  *     (same never-echo rule as the Login error tables).
- *   - Double-submit guarded locally; the server's per-IP limiter and per-user
- *     cooldown are the real backstops.
+ *   - Double-submit guarded locally; a 429 additionally disables the button
+ *     for the server's `retry_after` window (fix-pass SF-2 — same structured-
+ *     number pattern as Login's 423 lockout). The server's per-IP limiter and
+ *     per-user cooldown are the real backstops.
  */
 import { useState, type JSX } from 'react';
 import { resendVerification } from '../services/auth';
 import { ApiError } from '../services/api';
+import { useRetryCountdown } from '../hooks/useRetryCountdown';
 
 type SendState = 'idle' | 'sending' | 'sent' | 'error';
 
@@ -28,21 +31,24 @@ export function ResendVerificationButton({
 }): JSX.Element {
   const [state, setState] = useState<SendState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const { secondsLeft, start: startBackoff } = useRetryCountdown();
 
   async function handleClick(): Promise<void> {
-    if (state === 'sending') return;
+    if (state === 'sending' || secondsLeft > 0) return;
     setError(null);
     setState('sending');
     try {
       await resendVerification(email);
       setState('sent');
     } catch (err) {
-      // Fixed strings only — never server text.
-      setError(
-        err instanceof ApiError && err.status === 429
-          ? 'Too many attempts. Please wait a moment and try again.'
-          : 'Could not send the email. Check your connection and retry.',
-      );
+      // Fixed strings only — never server text. A 429 starts the backoff
+      // countdown so the button cannot immediately re-fire.
+      if (err instanceof ApiError && err.status === 429) {
+        setError('Too many attempts. Please wait a moment and try again.');
+        startBackoff(err.retryAfter);
+      } else {
+        setError('Could not send the email. Check your connection and retry.');
+      }
       setState('error');
     }
   }
@@ -64,11 +70,15 @@ export function ResendVerificationButton({
         onClick={() => {
           void handleClick();
         }}
-        disabled={state === 'sending'}
+        disabled={state === 'sending' || secondsLeft > 0}
         aria-busy={state === 'sending'}
       >
         <span role="status" aria-live="polite">
-          {state === 'sending' ? 'Sending…' : label}
+          {state === 'sending'
+            ? 'Sending…'
+            : secondsLeft > 0
+              ? `Retry in ${String(secondsLeft)}s`
+              : label}
         </span>
       </button>
       {error ? (
