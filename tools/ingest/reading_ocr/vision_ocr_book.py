@@ -91,6 +91,28 @@ def _paragraph_text(para: dict) -> str:
     return "".join(out).strip()
 
 
+def ordered_paragraphs(fta: dict | None) -> list[tuple[float, str]]:
+    """Every paragraph on the page as (min_y, text), in reading (top-to-bottom)
+    order — unfiltered.
+
+    This is the raw primitive the structured-book drivers (drivers/*.py) build
+    their own state machines on: they need to see the short heading / section
+    markers (``복습``, ``Vocabulary``, ``제N장``) that ``story_paragraphs`` filters
+    out, then decide keep/drop themselves.
+    """
+    out: list[tuple[float, str]] = []
+    if not fta:
+        return out
+    for page in fta.get("pages", []):
+        for block in page.get("blocks", []):
+            for para in block.get("paragraphs", []):
+                t = _paragraph_text(para)
+                ys = [v.get("y", 0) for v in para.get("boundingBox", {}).get("vertices", [])]
+                out.append((min(ys) if ys else 0.0, t))
+    out.sort(key=lambda p: p[0])
+    return out
+
+
 def _korean_ratio(s: str) -> float:
     chars = [c for c in s if not c.isspace()]
     if not chars:
@@ -209,11 +231,48 @@ def run_config(scan_dir: Path, cfg: dict, out_path: Path) -> int:
     return 0
 
 
+def run_cache(scan_dir: Path, cache_dir: Path) -> int:
+    """OCR every ``NNNN.jpg`` in ``scan_dir`` once, caching each page's
+    fullTextAnnotation to ``cache_dir/NNNN.json``.
+
+    Multi-slice books (novels, exercise readers, dialogue books) get re-mapped
+    several times while dialing in chapter boundaries; caching the one expensive
+    Vision pass makes every later re-slice local and free. Idempotent — an
+    already-cached page is skipped, so an interrupted run just resumes.
+    """
+    key = _key()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Lowercase NNNN.jpg only — the whole scan corpus is normalized to that name.
+    scans = sorted(scan_dir.glob("[0-9][0-9][0-9][0-9].jpg"))
+    if not scans:
+        sys.exit(f"no NNNN.jpg scans in {scan_dir}")
+    done = 0
+    for src in scans:
+        dst = cache_dir / f"{src.stem}.json"
+        if dst.exists():
+            continue
+        # Temp file + atomic rename: a kill mid-write must not leave a truncated
+        # NNNN.json that the resume check above would then skip forever. Blank
+        # pages still serialize as literal JSON null (fta is None) — that null
+        # round-trip is load-bearing for resume-skipping blanks.
+        tmp = dst.with_name(dst.name + ".tmp")
+        tmp.write_text(json.dumps(vision_fta(key, src), ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, dst)
+        done += 1
+        if done % 25 == 0:
+            print(f"  cached {done} (at {src.name})", flush=True)
+    print(f"cache done: {done} newly OCR'd, {len(scans)} pages total -> {cache_dir}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scan-dir", required=True, type=Path)
     ap.add_argument("--config", type=Path)
     ap.add_argument("--out", type=Path)
+    ap.add_argument("--cache-dir", type=Path,
+                    help="OCR every scan once into this dir of NNNN.json (cache pass "
+                         "for the structured-book drivers); nothing else runs")
     ap.add_argument("--test", nargs="+")
     ap.add_argument("--layout", choices=("comic", "prose"), default="prose",
                     help="test-mode extraction layout (config runs read cfg['layout'])")
@@ -221,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="test-mode: drop numbered questions / discussion prompts "
                          "(config runs read cfg['drop_exercises'])")
     args = ap.parse_args(argv)
+    if args.cache_dir:
+        return run_cache(args.scan_dir, args.cache_dir)
     if args.test:
         return run_test(args.scan_dir, args.test, anchor=(args.layout == "comic"),
                         drop_exercises=args.drop_exercises)
