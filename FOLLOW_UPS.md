@@ -374,3 +374,23 @@ are thin):
   or by listening for the pool `'remove'` event.
 - **NEW-2:** no test covers the SF-2 `--user` pre-flight — disabling the existence check survived
   the suite. Add a nonexistent-`--user` test asserting the fast-fail before any normalize/write.
+
+## Track A A-2a Whisper worker — two LOW concurrency follow-ups (from A-2a fixpass re-review, 2026-07-18)
+
+`tools/audio_stt/worker.py` passed its 4-phase /fixpass (PASS, 49/49 green). Both items below
+require **≥2 concurrent workers to trigger**, and the deployment runs **exactly one** (single GPU),
+so neither can fire today — but fix them before ever scaling to multiple workers. Both are
+one-liners "for the next touch of this file":
+- **A2A-1 (lock-order inversion / theoretical deadlock):** the reaper's claim tx locks job rows
+  then track rows (`worker.py` reap: `RETURNING track_id` → guarded `UPDATE audio_tracks`), while
+  the persist tx locks the track row then the job row (track `'done'` UPDATE → settle job). With 2+
+  workers and a stale-but-still-finishing job, this is a lock cycle. Postgres's deadlock detector
+  aborts one victim in ~1s and BOTH outcomes are correct (no corruption/hang), so it self-heals —
+  but reorder the persist tx to settle the job (empty-RETURNING check) BEFORE the track `'done'`
+  UPDATE, aligning both txs to job→track order and removing the cycle at zero behavioral cost.
+- **A2A-2 (residual narrow track clobber):** the generic `except` still calls `_mark_track_failed`
+  unconditionally; the narrow interleave "A's job reaped + B settles track `'done'` + A's persist
+  then fails for a DIFFERENT reason than the empty-RETURNING signal (e.g. a CHECK violation)" would
+  clobber B's valid `'done'` → `'failed'`. Close it by adding `AND transcript_status = 'running'` to
+  `_mark_track_failed`'s UPDATE. (The separate `JobSettledElsewhereError` except — the common case —
+  is already handled and does not clobber.)
