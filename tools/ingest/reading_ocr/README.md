@@ -86,6 +86,52 @@ and are worth knowing:
    **-1 printed page**. Always `--test` a few pages and confirm titles align
    with their story content before a full run.
 
+## Structured-book drivers (`drivers/`)
+
+The `layout`/`config` runner above handles books with a tidy, uniform page grid.
+Real books are messier: novels split on chapter title pages, language-learner
+readers interleave the story with review/vocab/question blocks, dialogue books
+alternate Korean and English on facing pages. Each such book gets a small,
+self-documenting **driver** in `drivers/` that maps *that book's* structure. A
+driver contains only the book-specific facts (chapter names, boundary scans, page
+offset, section markers) at the top; the extraction engine is still
+`vision_ocr_book.py`.
+
+Drivers read a **pre-built OCR cache** rather than calling Vision, because a
+multi-slice book gets re-mapped several times while its boundaries are dialed in
+— caching the one expensive Vision pass makes every re-slice local and free:
+
+```bash
+# 1. OCR the whole book once into a cache of NNNN.json (idempotent / resumable):
+python3 vision_ocr_book.py --scan-dir <scans> --cache-dir /tmp/<book>-cache
+
+# 2. Run the driver (cache -> curated JSON):
+python3 drivers/<book>.py --cache-dir /tmp/<book>-cache --out <book>.json
+
+# 3. Load it (km-loader image, as above).
+```
+
+Committed drivers (each reproduces its loaded chapters byte-for-byte):
+
+| Driver | Book (`source_upload_id`) | Structure it maps |
+|---|---|---|
+| `your_name_novel.py` | 너의 이름은 (14) | novel; splits on bare `제N장` title pages (ornament-tolerant) |
+| `nietzsche.py` | 내 삶에 힘이 되는 니체의 말 (15) | prose self-help; 7 fixed `장` chapters, offset +4 |
+| `short_stories.py` | Short Stories in Korean (16) | 8 stories; state machine drops each 복습 (summary/vocab/questions) |
+| `real_life_conversations.py` | Real-Life Korean Conversations (19) | 30 dialogues; keeps Korean turns, drops translation/vocab/patterns |
+
+Gotchas these drivers encode (learned the hard way):
+- **Offset is per-book and can drift** — +4 (Nietzsche), +21 (Short Stories, from
+  roman-numeral front matter), +2/-1 (Folktales facing pages); novels drift, so
+  `your_name_novel.py` uses marker detection, not arithmetic.
+- **OCR drops heading hyphens** — a story-chapter head can OCR as `제2장 찾기`
+  (no `-`); matching the hyphen strictly once swallowed a whole chapter as review.
+- **Running footers mimic headings** (`제2장 - 찾기 39`) — excluded by a trailing
+  page digit AND by honouring only the first `제N장` per story (page numbers
+  sometimes OCR to a non-digit, e.g. `71`→`기`).
+- **Dialogue turns wrap** — a turn's tail lands on its own short line (`어요.`,
+  `요?`); it's glued back onto its turn, not dropped.
+
 ## Known limitation
 
 OCR is ~99% on clean Korean print/handwriting — expect the occasional single-
