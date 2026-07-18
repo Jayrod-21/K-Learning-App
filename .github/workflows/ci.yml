@@ -8,6 +8,9 @@ on:
 
 jobs:
   client-checks:
+    # Name kept verbatim — it's a REQUIRED status check in rebuild's branch
+    # protection; renaming it makes the required context never report and
+    # blocks every PR. The Unit tests step is added below without a rename.
     name: Client — Lint, Type Check & Build
     runs-on: ubuntu-latest
     defaults:
@@ -31,6 +34,12 @@ jobs:
 
       - name: Type check
         run: npx tsc --noEmit
+
+      # Runs the full vitest suite (the Server job already runs its tests; the
+      # client suite was previously CI-invisible — a client test could go red
+      # and still merge). `npm test` maps to `vitest run` (non-watch).
+      - name: Unit tests
+        run: npm test
 
       - name: Build
         run: npm run build

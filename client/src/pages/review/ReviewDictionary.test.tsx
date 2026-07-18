@@ -247,10 +247,15 @@ describe('ReviewDictionary — 초성 × search interplay (F-050)', () => {
     for (const call of krdictSvc.searchKrdict.mock.calls) {
       expect(call[0]).not.toHaveProperty('initial');
     }
-    expect(screen.getByRole('button', { name: '전체' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    // The browse chip-row re-renders asynchronously after the search clears;
+    // await it rather than a bare getByRole, which races the re-render under
+    // CI timing (green locally, flaky in CI until this was awaited).
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '전체' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    });
     expect(screen.getByRole('button', { name: 'ㅁ' })).toHaveAttribute(
       'aria-pressed',
       'false',
