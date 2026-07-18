@@ -31,6 +31,7 @@ import shutil
 
 import psycopg
 import pytest
+from psycopg import sql
 from psycopg.rows import tuple_row
 
 from db import migrate  # type: ignore[import-not-found]
@@ -138,13 +139,17 @@ def test_072_up_adds_comic(env, dsn: str, full_dir) -> None:
 
 
 def test_072_up_is_idempotent_on_reapply(env, dsn: str, full_dir) -> None:
-    """ADD VALUE IF NOT EXISTS: running the chain up when everything is
-    already applied is a no-op, and a hand re-apply of 072's statement
-    against the migrated DB does not error (the IF NOT EXISTS guard)."""
+    """ADD VALUE IF NOT EXISTS: re-applying 072's ALTER statement directly
+    against the already-migrated DB does not error — this exercises the
+    IF NOT EXISTS guard in isolation. (The runner-path re-up — running the
+    chain again when 'comic' already exists — is covered by
+    test_072_down_is_noop_and_reup_clean below.)"""
     _full_up(full_dir)
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
-            f"ALTER TYPE book_upload_type ADD VALUE IF NOT EXISTS '{NEW_VALUE}'"
+            sql.SQL(
+                "ALTER TYPE book_upload_type ADD VALUE IF NOT EXISTS {}"
+            ).format(sql.Literal(NEW_VALUE))
         )
     with psycopg.connect(dsn, autocommit=True) as conn:
         assert NEW_VALUE in _enum_values(conn)

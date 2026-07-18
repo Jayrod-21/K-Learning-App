@@ -76,7 +76,7 @@ const TYPE_META: Record<BookUploadType, { en: string; kr: string }> = {
   both: { en: 'Vocab + grammar', kr: '단어 + 문법' },
   dialogue: { en: 'Dialogue', kr: '대화' },
   literature: { en: 'Literature', kr: '문학' },
-  comic: { en: 'Comic / Manga', kr: '만화' },
+  comic: { en: 'Picture / Comic / Manga', kr: '만화 · 그림책' },
 };
 
 function formatBytes(n: number): string {
