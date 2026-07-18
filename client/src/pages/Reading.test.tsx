@@ -118,6 +118,16 @@ const LITERATURE_PROCESSING: BookUpload = {
   createdAt: '2026-07-02T00:00:00Z',
 };
 
+const COMIC_READY: BookUpload = {
+  id: '77',
+  title: '만화 모험',
+  type: 'comic',
+  status: 'ready',
+  pageCount: 24,
+  byteSize: 2_400_000,
+  createdAt: '2026-07-01T00:00:00Z',
+};
+
 // A chapter title distinct from the book title (`LITERATURE_READY.title` is
 // also '소나기') so `getByRole('button', { name: /open .../ })` can't collide
 // between the book row and the chapter row.
@@ -1066,6 +1076,57 @@ describe('Reading — "view original scan" deep-link (U3c)', () => {
 
     const probe = await screen.findByTestId('upload-viewer-probe');
     expect(probe.textContent).toBe('41');
+  });
+});
+
+describe('Reading — Comics & Picture Books (Track P)', () => {
+  it("groups a ready 'comic' upload into its own Comics & Picture Books section, not Literature/Documents", async () => {
+    uploadsSvc.listUploads.mockResolvedValue([
+      LITERATURE_READY,
+      COMIC_READY,
+      GRAMMAR_READY,
+    ]);
+
+    renderReading();
+
+    const comics = await screen.findByRole('region', {
+      name: 'Comics & Picture Books',
+    });
+    expect(
+      within(comics).getByRole('button', {
+        name: new RegExp(`Open ${COMIC_READY.title}`),
+      }),
+    ).toBeInTheDocument();
+
+    // The comic sits ONLY in its own section — never in a prose section.
+    const literature = screen.getByRole('region', { name: 'Literature' });
+    const documents = screen.getByRole('region', { name: 'Documents' });
+    expect(
+      within(literature).queryByText(COMIC_READY.title),
+    ).not.toBeInTheDocument();
+    expect(
+      within(documents).queryByText(COMIC_READY.title),
+    ).not.toBeInTheDocument();
+  });
+
+  it('tapping a comic row opens the page-image viewer at /uploads/:id — never the chapter picker (?book=)', async () => {
+    uploadsSvc.listUploads.mockResolvedValue([COMIC_READY]);
+
+    const user = userEvent.setup();
+    renderReadingWithViewerRoute();
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: new RegExp(`Open ${COMIC_READY.title}`),
+      }),
+    );
+
+    // The viewer route rendered with the comic's id and NO query string —
+    // the `?book=ID` chapter-picker path (which would dead-end on "no
+    // chapters yet"; comics have no reading_chapters) was never taken.
+    const probe = await screen.findByTestId('upload-viewer-probe');
+    expect(probe.textContent).toBe(COMIC_READY.id);
+    expect(readingSvc.listChapters).not.toHaveBeenCalled();
   });
 });
 

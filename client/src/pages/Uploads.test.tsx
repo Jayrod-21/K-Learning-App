@@ -107,6 +107,25 @@ describe('Uploads — list', () => {
     expect(screen.getByText(/4\.0 MB/)).toBeInTheDocument();
   });
 
+  it("shows the bilingual Picture / Comic / Manga type label on a 'comic' upload row (Track P)", async () => {
+    const comic: BookUpload = {
+      id: '11',
+      title: '만화 모험',
+      type: 'comic',
+      status: 'ready',
+      pageCount: 24,
+      byteSize: 2_400_000,
+      createdAt: '2026-07-03T00:00:00Z',
+    };
+    uploadsSvc.listUploads.mockResolvedValue([comic]);
+    renderPage();
+
+    expect(await screen.findByText('만화 모험')).toBeInTheDocument();
+    // TYPE_META is a total Record over BookUploadType — a missing 'comic'
+    // entry would crash the row render, so the visible label is the proof.
+    expect(screen.getByText(/Picture \/ Comic \/ Manga/)).toBeInTheDocument();
+  });
+
   it('shows a loading state, then an empty state when there are no uploads', async () => {
     uploadsSvc.listUploads.mockResolvedValue([]);
     renderPage();

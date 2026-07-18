@@ -670,7 +670,7 @@ export async function seedBookUpload(
   userId: number,
   opts: {
     title?: string;
-    type?: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature';
+    type?: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature' | 'comic';
     status?: 'processing' | 'ready' | 'failed';
     byteSize?: number;
     pageCount?: number | null;

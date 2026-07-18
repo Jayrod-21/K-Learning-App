@@ -1,0 +1,37 @@
+-- =============================================================================
+-- Migration 072 — book_upload_type 'comic' value (Track P, picture/comic/manga)
+--   UP — extends the `book_upload_type` enum with 'comic': a picture book /
+--        comic / manga upload that is read as page images in the existing
+--        upload viewer. It is a display-only type — NOT grammar-bearing
+--        (services/uploadExtract.ts's GRAMMAR_BEARING_TYPES stays
+--        {grammar, both}) and never auto-OCR'd; the manual "Extract text"
+--        flow remains opt-in. No new tables — `book_pages` (041) already
+--        stores the page images. See docs/CONTENT_INGEST_DESIGN.md §7.
+--   Reverse: 072_book_upload_type_comic.down.sql
+--   Depends on: 040_book_uploads (defines the `book_upload_type` enum).
+--
+-- WHY THIS MIGRATION DOES NOTHING ELSE — THE PG ENUM GOTCHA (mirrors 021/016)
+--   A newly added enum value CANNOT be USED in the SAME transaction that added
+--   it. The runner (migrate.py) wraps EACH migration body in its own
+--   transaction together with the bookkeeping write (ADR-013). So this
+--   migration ONLY adds the value (and commits). The value's first USE happens
+--   at runtime — a `POST /uploads` insert with `type = 'comic'` — in its own
+--   connection and transaction, well after this migration's commit. Nothing
+--   else may ride along in this file: combining the ADD VALUE with any
+--   statement that uses 'comic' would put the ADD VALUE and its first USE in
+--   the same runner transaction and fail at apply time. This is exactly the
+--   split migration 021 used for 'user_mined' (021 added the value; 022 — a
+--   separate migration, therefore a separate transaction — first used it) and
+--   016 used for 'hanja'.
+--
+--   `ADD VALUE IF NOT EXISTS` mirrors 021 / 016 / 002 so re-applying is a
+--   no-op.
+--
+-- TRANSACTION OWNERSHIP (ADR-013):
+--   No top-level BEGIN/COMMIT — `migrate.py` wraps this body in a single
+--   transaction together with the schema_migrations bookkeeping write.
+-- =============================================================================
+
+ALTER TYPE book_upload_type ADD VALUE IF NOT EXISTS 'comic';
+
+-- End of 072_book_upload_type_comic.up.sql — runner owns the transaction (ADR-013).

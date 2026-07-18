@@ -60,6 +60,7 @@ const TYPE_LABELS: Record<BookUploadType, string> = {
   both: '단어 + 문법 · Vocab + grammar',
   dialogue: '대화 · Dialogue',
   literature: '문학 · Literature',
+  comic: '만화 · 그림책 · Picture / Comic / Manga',
 };
 
 function renderModal(
@@ -92,7 +93,7 @@ describe('UploadTypeModal — closed state', () => {
 });
 
 describe('UploadTypeModal — type step', () => {
-  it('shows all five bilingual type chips', async () => {
+  it('shows all six bilingual type chips', async () => {
     renderModal();
     const dialog = await screen.findByRole('dialog', { name: 'Upload a book' });
     for (const label of Object.values(TYPE_LABELS)) {
@@ -224,6 +225,27 @@ describe('UploadTypeModal — file + title step', () => {
       expect(onUploaded).toHaveBeenCalledWith(READY);
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Track P: the comic chip must submit `type: 'comic'` — the whole feature
+  // hinges on the type surviving the modal → uploadBook → server round-trip
+  // (a mis-mapped chip would silently create a prose-typed upload instead).
+  it("submits type 'comic' when the Picture / Comic / Manga chip was chosen", async () => {
+    vi.mocked(uploadBook).mockResolvedValue({ ...READY, type: 'comic' });
+    const user = userEvent.setup();
+    renderModal();
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: TYPE_LABELS.comic }));
+
+    const fileInput = within(dialog).getByLabelText('Book file') as HTMLInputElement;
+    await user.upload(fileInput, makeZipFile('manhwa-scan.zip'));
+
+    await user.click(within(dialog).getByRole('button', { name: /Upload/ }));
+
+    await waitFor(() => {
+      expect(uploadBook).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(uploadBook).mock.calls[0][1]).toBe('comic');
   });
 
   // C-S3 regression: the title input had no length cap, so a >200-char

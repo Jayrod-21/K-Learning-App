@@ -62,7 +62,7 @@ import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
 import { registerUser, seedBookPage, seedBookUpload } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
-import { MAX_UPLOAD_BYTES } from '../../src/services/bookUploadIngest.js';
+import { BOOK_UPLOAD_TYPES, MAX_UPLOAD_BYTES } from '../../src/services/bookUploadIngest.js';
 import { buildStoredZip } from '../helpers/zip.js';
 
 // The PDF path shells out to `pdftoppm`, which the test container doesn't
@@ -483,6 +483,37 @@ describe('POST /uploads — shared validation (zip/pdf-agnostic)', () => {
       .field('type', 'vocab')
       .attach('file', minimalZip(), { filename: 'book.zip', contentType: 'application/zip' });
     expect(res.status).toBe(200);
+  });
+});
+
+describe("POST /uploads — 'comic' type (Track P, picture/comic/manga)", () => {
+  it("BOOK_UPLOAD_TYPES carries 'comic' (the tuple UploadBodySchema's z.enum is built from)", () => {
+    // The Zod enum in routes/uploads.ts is `z.enum(BOOK_UPLOAD_TYPES)` — the
+    // tuple IS the validation surface, mirrored to the DB enum (migration
+    // 072). If 'comic' ever falls out of it, the route 400s every comic
+    // upload while the DB happily accepts the value — assert at the source.
+    expect(BOOK_UPLOAD_TYPES).toContain('comic');
+  });
+
+  it("accepts type 'comic' end-to-end: 201, the row persists type='comic', pages land as images", async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/uploads')
+      .field('title', '만화책')
+      .field('type', 'comic')
+      .attach('file', minimalZip(), { filename: 'manhwa.zip', contentType: 'application/zip' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.upload.type).toBe('comic');
+    expect(res.body.upload.status).toBe('ready');
+    expect(res.body.upload.page_count).toBe(1);
+
+    // The DB enum (072) actually stores the value — not just the DTO echo.
+    const { rows } = await pg.pool.query<{ type: string }>(
+      'SELECT type::text AS type FROM book_uploads WHERE id = $1',
+      [res.body.upload.id],
+    );
+    expect(rows[0]!.type).toBe('comic');
   });
 });
 

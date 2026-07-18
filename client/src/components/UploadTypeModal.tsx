@@ -75,6 +75,7 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
   { id: 'both', en: 'Vocab + grammar', kr: '단어 + 문법' },
   { id: 'dialogue', en: 'Dialogue', kr: '대화' },
   { id: 'literature', en: 'Literature', kr: '문학' },
+  { id: 'comic', en: 'Picture / Comic / Manga', kr: '만화 · 그림책' },
 ];
 
 /**

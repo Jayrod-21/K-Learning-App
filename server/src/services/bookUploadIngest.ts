@@ -107,8 +107,16 @@ export const ALLOWED_MIMES = [
 export const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 
 /** The `book_uploads.type` enum, mirrored here so Zod/TS agree with the DB
- *  CHECK (migration 040). */
-export const BOOK_UPLOAD_TYPES = ['vocab', 'grammar', 'both', 'dialogue', 'literature'] as const;
+ *  enum (migration 040; 'comic' added by 072 — Track P's display-only
+ *  picture/comic/manga type, never grammar-bearing or auto-OCR'd). */
+export const BOOK_UPLOAD_TYPES = [
+  'vocab',
+  'grammar',
+  'both',
+  'dialogue',
+  'literature',
+  'comic',
+] as const;
 export type BookUploadType = (typeof BOOK_UPLOAD_TYPES)[number];
 
 /**

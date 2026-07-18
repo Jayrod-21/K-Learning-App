@@ -297,18 +297,31 @@ export default function Reading(): JSX.Element {
 
 /**
  * The typed sections, in display order. Literature and dialogue are the
- * reader-first types; Documents is where the other uploaded scans
- * (vocab/grammar/both) live per F-067 — they rarely have chapters, so
- * opening one lands on the honest "no chapters yet" state with the
- * original-scan link, never a fabricated reader.
+ * reader-first types; Comics & Picture Books (Track P's 'comic') are
+ * display-only page-image books — `opensViewer` routes their rows straight
+ * to the upload viewer (`/uploads/:id`), never the chapter picker (comics
+ * have no `reading_chapters`, so `?book=ID` would dead-end on "no chapters
+ * yet"); Documents is where the other uploaded scans (vocab/grammar/both)
+ * live per F-067 — they rarely have chapters, so opening one lands on the
+ * honest "no chapters yet" state with the original-scan link, never a
+ * fabricated reader.
  */
 const BOOK_SECTIONS: ReadonlyArray<{
   key: string;
   en: string;
   kr: string;
   types: ReadonlyArray<BookUploadType>;
+  /** Rows open the page-image viewer directly instead of the chapter picker. */
+  opensViewer?: true;
 }> = [
   { key: 'literature', en: 'Literature', kr: '문학', types: ['literature'] },
+  {
+    key: 'comics',
+    en: 'Comics & Picture Books',
+    kr: '만화 · 그림책',
+    types: ['comic'],
+    opensViewer: true,
+  },
   { key: 'dialogue', en: 'Dialogue', kr: '대화', types: ['dialogue'] },
   {
     key: 'documents',
@@ -364,6 +377,17 @@ function BookShelf({
     setReloadTick((t) => t + 1);
   }, []);
 
+  // Track P: comic rows bypass the chapter picker entirely — a comic is a
+  // display-only page-image book with no `reading_chapters`, so it opens
+  // the upload viewer (`/uploads/:id`, App.tsx's UploadViewer route)
+  // directly instead of setting `?book=ID`.
+  const openViewer = useCallback(
+    (id: string) => {
+      navigate(`/uploads/${id}`);
+    },
+    [navigate],
+  );
+
   if (loading) {
     return (
       <div className="km-grammar__state" role="status">
@@ -415,7 +439,7 @@ function BookShelf({
             en={section.en}
             kr={section.kr}
             books={rows}
-            onOpenBook={onOpenBook}
+            onOpenBook={section.opensViewer === true ? openViewer : onOpenBook}
           />
         );
       })}
