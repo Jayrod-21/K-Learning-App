@@ -361,3 +361,16 @@ Paper trail: `db/docs/reviews/redesign-v2/`. Shipped PASS.
   Intentionally kept: the LearnMenu hexwrap `drop-shadow()` filters (box-shadow tokens can't
   feed `filter`, and the clip-path silhouette requires drop-shadow; they already have a dark
   override) and the translucent scrollbar-thumb background (a neutral color, not elevation).
+
+## Bulk book-ingest operator — test-hardening (from Track-P/ingest fixpass re-review, 2026-07-18)
+
+The operator `server/src/scripts/bulk-ingest-books.ts` passed its 4-phase /fixpass (safe to run
+against prod — data-safety guards verified correct in code + mutation-tested). Two NON-blocking
+test-coverage gaps the re-review surfaced (the guards are correct; their future-regression tests
+are thin):
+- **NEW-1:** `tests/scripts/bulk-ingest-books.test.ts` test 5's poisoned-client assertion can't
+  distinguish `release(err)` (destroy) from a wrongful plain `release()` — weakening the destroy
+  survived 18/18. Make it discriminating via the pool `totalCount === 0` after a failed rollback,
+  or by listening for the pool `'remove'` event.
+- **NEW-2:** no test covers the SF-2 `--user` pre-flight — disabling the existence check survived
+  the suite. Add a nonexistent-`--user` test asserting the fast-fail before any normalize/write.
