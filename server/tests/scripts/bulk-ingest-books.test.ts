@@ -19,6 +19,16 @@
  *   - re-tag: a changed manifest `type` updates the existing row on re-run
  *   - a manifest type NOT in BOOK_UPLOAD_TYPES throws BEFORE any write
  *     (no rows, no blob files)
+ *   - MID-TRANSACTION failure (a book_pages INSERT throws after BEGIN):
+ *     the tx is rolled back — no book_uploads row / no book_pages for a new
+ *     book, prior row + pages + blobs fully intact for a replace — and the
+ *     connection is demonstrably usable afterwards (ROLLBACK really ran)
+ *   - failed-ROLLBACK path: ingestOne reports the ORIGINAL error through
+ *     onRollbackFailure so a pool-owning caller can destroy the client
+ *   - the batch runner on a mid-tx failure: reports it as a FAILURE
+ *     (non-zero-exit semantics), rolls back cleanly, and RETURNS the client
+ *     to the pool (no leak); when ROLLBACK also fails it DESTROYS the client
+ *     instead of re-pooling it (release(err) semantics)
  *   - --dry-run: normalizes + reports page counts but writes NOTHING
  *   - missing file: warned + skipped, the rest of the batch still ingests
  *   - failure isolation: one bad archive fails ONLY that book; the batch
@@ -32,11 +42,11 @@ import path from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { PoolClient } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildStoredZip } from '../helpers/zip.js';
 import { _setConfigForTesting } from '../../src/config/index.js';
-import { closePool } from '../../src/db/pool.js';
+import { closePool, getPoolForTesting, setPoolForTesting } from '../../src/db/pool.js';
 import type { BookUploadType } from '../../src/services/bookUploadIngest.js';
 import {
   assertValidManifest,
@@ -87,6 +97,76 @@ async function withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T>
     return await fn(client);
   } finally {
     client.release();
+  }
+}
+
+interface FailingClientOpts {
+  /** Reject any query whose SQL matches this predicate with an injected error. */
+  failWhen: (sql: string) => boolean;
+  /** Also reject ROLLBACK — simulates a dead connection mid-transaction. */
+  failRollback?: boolean;
+}
+
+const INJECTED_FAILURE = 'injected mid-transaction failure';
+const INJECTED_ROLLBACK_FAILURE = 'injected ROLLBACK failure';
+
+/**
+ * Wrap a REAL testcontainer client so its Nth-matching query rejects while
+ * every other query (BEGIN, SELECT ... FOR UPDATE, the upsert, ROLLBACK
+ * unless failRollback) still hits the real Postgres. Everything except the
+ * injected rejection is real — this is a fault injector, not a mock DB.
+ */
+function wrapFailingClient(real: PoolClient, opts: FailingClientOpts): PoolClient {
+  const interceptedQuery = (...args: unknown[]): Promise<unknown> => {
+    const first = args[0];
+    const sql =
+      typeof first === 'string'
+        ? first
+        : String((first as { text?: unknown } | undefined)?.text ?? '');
+    if (opts.failRollback === true && /^\s*ROLLBACK/i.test(sql)) {
+      return Promise.reject(new Error(INJECTED_ROLLBACK_FAILURE));
+    }
+    if (opts.failWhen(sql)) {
+      return Promise.reject(new Error(INJECTED_FAILURE));
+    }
+    return (real.query as (...a: unknown[]) => Promise<unknown>)(...args);
+  };
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'query') return interceptedQuery;
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function'
+        ? (value as (...a: unknown[]) => unknown).bind(target)
+        : value;
+    },
+  });
+}
+
+/**
+ * Install a real pg Pool (against the testcontainer) as the module-global
+ * pool, with promise-style `connect()` — the call runBulkIngest makes —
+ * returning fault-injected clients. Callback-style connect (used internally
+ * by pool.query, e.g. the --user pre-flight) stays unwrapped so only the
+ * per-book transaction path sees the injected failure. Restores the previous
+ * module-global pool afterwards.
+ */
+async function withInjectedFailingPool(
+  opts: FailingClientOpts,
+  fn: (injected: Pool) => Promise<void>,
+): Promise<void> {
+  const prev = getPoolForTesting();
+  const injected = new Pool({ connectionString: pg.connectionString, max: 2 });
+  const origConnect = injected.connect.bind(injected);
+  (injected as { connect: unknown }).connect = (cb?: (...cbArgs: unknown[]) => void) =>
+    cb !== undefined
+      ? (origConnect as (...a: unknown[]) => unknown)(cb)
+      : origConnect().then((client) => wrapFailingClient(client, opts));
+  setPoolForTesting(injected);
+  try {
+    await fn(injected);
+  } finally {
+    await closePool(); // ends `injected` and clears the module global
+    if (prev !== null) setPoolForTesting(prev);
   }
 }
 
@@ -271,6 +351,158 @@ describe('ingestOne — invalid manifest type', () => {
     // No blob was written for this user (the type check fires before the
     // file is even read, let alone persisted).
     expect(existsSync(path.join(storageDir, String(userId)))).toBe(false);
+  });
+});
+
+describe('ingestOne — mid-transaction rollback', () => {
+  it('a persist failure after BEGIN rolls the tx back: no row, no pages, connection still usable', async () => {
+    const real = await pg.pool.connect();
+    try {
+      // Everything up to the first book_pages INSERT (BEGIN, the FOR UPDATE
+      // probe, the book_uploads upsert, the first saveBlob) runs for real;
+      // the page-row INSERT then rejects mid-transaction.
+      const failing = wrapFailingClient(real, {
+        failWhen: (sql) => sql.includes('INSERT INTO book_pages'),
+      });
+      await expect(ingestOne(failing, corpusDir, ENTRY_A, userId)).rejects.toThrow(
+        INJECTED_FAILURE,
+      );
+
+      // The book is FULLY absent — rollback took the upsert with it.
+      expect(await uploadRows()).toHaveLength(0);
+      const { rows } = await pg.pool.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM book_pages',
+      );
+      expect(rows[0]!.n).toBe(0);
+
+      // ROLLBACK really ran on THIS connection: were the tx still open and
+      // aborted, any query here would fail with "current transaction is
+      // aborted" — and a count through the same connection would otherwise
+      // still see its own uncommitted upsert.
+      const probe = await real.query<{ n: number }>('SELECT count(*)::int AS n FROM book_uploads');
+      expect(probe.rows[0]!.n).toBe(0);
+    } finally {
+      real.release();
+    }
+    // NOTE: blobs saved before the failure remain as orphan FILES by design
+    // (see the module header's orphan-blob note) — only DB state is asserted.
+  });
+
+  it('a failed re-ingest (replace) leaves the prior book fully intact — row, pages, and blobs', async () => {
+    const first = await withClient((client) => ingestOne(client, corpusDir, ENTRY_A, userId));
+    const priorPages = await pageRows(first.uploadId);
+    expect(priorPages).toHaveLength(3);
+
+    const real = await pg.pool.connect();
+    try {
+      const failing = wrapFailingClient(real, {
+        failWhen: (sql) => sql.includes('INSERT INTO book_pages'),
+      });
+      const v2: CorpusBookEntry = { ...ENTRY_A, file: 'book-a-v2.zip' };
+      await expect(ingestOne(failing, corpusDir, v2, userId)).rejects.toThrow(INJECTED_FAILURE);
+    } finally {
+      real.release();
+    }
+
+    // Rollback restored the prior state outright: same row, same page rows
+    // (the replace's DELETE was rolled back), prior blobs untouched on disk.
+    const uploads = await uploadRows();
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0]!.id).toBe(first.uploadId);
+    expect(uploads[0]!.page_count).toBe(3);
+    const after = await pageRows(first.uploadId);
+    expect(after.map((p) => p.id)).toEqual(priorPages.map((p) => p.id));
+    for (const p of priorPages) {
+      expect(existsSync(path.join(storageDir, p.blob_ref))).toBe(true);
+    }
+  });
+
+  it('when ROLLBACK also fails, onRollbackFailure receives the ORIGINAL error (for release(err))', async () => {
+    const real = await pg.pool.connect();
+    let poisonedBy: Error | undefined;
+    try {
+      const failing = wrapFailingClient(real, {
+        failWhen: (sql) => sql.includes('INSERT INTO book_pages'),
+        failRollback: true,
+      });
+      await expect(
+        ingestOne(failing, corpusDir, ENTRY_A, userId, {
+          onRollbackFailure: (originalErr) => {
+            poisonedBy = originalErr;
+          },
+        }),
+      ).rejects.toThrow(INJECTED_FAILURE);
+
+      // The hook fired with the ORIGINAL ingest error (withTransaction passes
+      // the original error to release(err) — same contract), NOT the rollback
+      // error, and the rethrown error was not masked either.
+      expect(poisonedBy).toBeInstanceOf(Error);
+      expect(poisonedBy!.message).toBe(INJECTED_FAILURE);
+    } finally {
+      // The REAL connection never rolled back (the wrapper swallowed it) —
+      // clean it up directly before returning it to the test pool.
+      await real.query('ROLLBACK').catch(() => undefined);
+      real.release();
+    }
+  });
+});
+
+describe('runBulkIngest — mid-transaction failure through the batch runner', () => {
+  it('reports the book as a FAILURE, leaves no half-written book, and returns the client to the pool', async () => {
+    await withInjectedFailingPool(
+      { failWhen: (sql) => sql.includes('INSERT INTO book_pages') },
+      async (injected) => {
+        const summary = await runBulkIngest({
+          dir: corpusDir,
+          userId,
+          dryRun: false,
+          manifest: [ENTRY_A],
+        });
+
+        // Non-zero-exit semantics: the failure is RECORDED (main() throws on
+        // any failure), not swallowed as a skip or a success.
+        expect(summary.failures).toHaveLength(1);
+        expect(summary.failures[0]!.title).toBe('Test Book A');
+        expect(summary.failures[0]!.error).toContain(INJECTED_FAILURE);
+        expect(summary.ingested).toBe(0);
+
+        // Rolled back: nothing half-written.
+        expect(await uploadRows()).toHaveLength(0);
+
+        // ROLLBACK succeeded → the client went BACK to the pool (plain
+        // release): every physical client is idle, none leaked or destroyed.
+        expect(injected.totalCount).toBeGreaterThan(0);
+        expect(injected.idleCount).toBe(injected.totalCount);
+      },
+    );
+  });
+
+  it('when ROLLBACK also fails, the poisoned client is DESTROYED (release(err)), not re-pooled', async () => {
+    await withInjectedFailingPool(
+      {
+        failWhen: (sql) => sql.includes('INSERT INTO book_pages'),
+        failRollback: true,
+      },
+      async (injected) => {
+        const summary = await runBulkIngest({
+          dir: corpusDir,
+          userId,
+          dryRun: false,
+          manifest: [ENTRY_A],
+        });
+
+        expect(summary.failures).toHaveLength(1);
+        expect(summary.failures[0]!.error).toContain(INJECTED_FAILURE);
+        expect(await uploadRows()).toHaveLength(0);
+
+        // release(err) DESTROYS the connection: the pre-flight's client (from
+        // the unwrapped callback path) may idle, but the per-book client must
+        // be GONE from the pool — an aborted-tx client re-pooled here would
+        // poison the next checkout ("current transaction is aborted").
+        expect(injected.totalCount).toBe(injected.idleCount);
+        expect(injected.totalCount).toBeLessThanOrEqual(1);
+      },
+    );
   });
 });
 

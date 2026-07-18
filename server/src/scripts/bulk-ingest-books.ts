@@ -41,7 +41,19 @@
  * Failure policy: each book is its own transaction; one bad archive rolls
  * back ONLY that book. Failures are collected and reported at the end, and
  * the process exits non-zero if ANY book failed (so a driving script can't
- * mistake a partial batch for success).
+ * mistake a partial batch for success). It ALSO exits non-zero when every
+ * matched file was missing and nothing was ingested — a --dir pointing at
+ * the wrong-but-existing directory must not read as success.
+ *
+ * Orphan blob files (KNOWN, accepted): two paths can strand page blobs on
+ * disk with no DB row referencing them — a mid-transaction failure after
+ * some `saveBlob` calls (the rows roll back; the already-written files
+ * stay), and a crash between COMMIT and the prior-blob unlink loop. Both
+ * are harmless (nothing references them, and re-runs mint fresh UUIDs so
+ * they are never resurrected), but no reaper exists today. If they ever
+ * accumulate enough to matter, add a `--sweep-orphans` mode that diffs
+ * `book_pages.blob_ref` against the storage directory and unlinks the
+ * difference.
  *
  * Usage:
  *   node dist/scripts/bulk-ingest-books.js --dir /path/to/zips [--user 1]
@@ -56,10 +68,10 @@
  *              matching manifest entries (for testing one book).
  */
 import { access, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { PoolClient } from 'pg';
-import { getPool, closePool } from '../db/pool.js';
+import { getPool, closePool, query } from '../db/pool.js';
 import {
   BOOK_UPLOAD_TYPES,
   persistUpload,
@@ -85,6 +97,9 @@ import { CORPUS_MANIFEST, type CorpusBookEntry } from './corpus-books.manifest.j
  *   - every `type` must be a member of BOOK_UPLOAD_TYPES (the DB enum — a bad
  *     value would otherwise surface as a mid-batch Postgres cast error);
  *   - `file`/`title` non-empty;
+ *   - `file` is a BARE file name (no path separators / `..` traversal) — the
+ *     CLI joins it onto --dir, and the manifest docstring promises "never a
+ *     path"; enforce that promise here instead of trusting the comment;
  *   - titles unique (duplicate titles would silently UPSERT-overwrite each
  *     other within one run — always an editing mistake, never intended).
  */
@@ -93,6 +108,12 @@ export function assertValidManifest(entries: readonly CorpusBookEntry[]): void {
   for (const entry of entries) {
     if (!entry.file || entry.file.trim() === '') {
       throw new Error(`manifest entry "${entry.title}" has an empty file name`);
+    }
+    if (basename(entry.file) !== entry.file) {
+      throw new Error(
+        `manifest entry "${entry.title}" file "${entry.file}" must be a bare file name ` +
+          `(no path separators) — the CLI joins it onto --dir`,
+      );
     }
     if (!entry.title || entry.title.trim() === '') {
       throw new Error(`manifest entry "${entry.file}" has an empty title`);
@@ -176,6 +197,23 @@ export interface IngestOneResult {
 }
 
 /**
+ * Optional callbacks for `ingestOne`'s caller-owned-client contract.
+ */
+export interface IngestOneHooks {
+  /**
+   * Invoked when ROLLBACK itself fails, meaning the connection is suspect
+   * (socket death mid-transaction, backend restart) and MUST NOT be returned
+   * to a pool. Receives the ORIGINAL ingest error — the same value
+   * `ingestOne` rethrows — so a pool-owning caller can destroy the client
+   * with `client.release(err)`, exactly mirroring `withTransaction`
+   * (src/db/pool.ts), which passes the original error to `release` when
+   * ROLLBACK fails. Not invoked when ROLLBACK succeeds (the connection
+   * demonstrably works and is safe to re-pool with a plain `release()`).
+   */
+  readonly onRollbackFailure?: (originalErr: Error) => void;
+}
+
+/**
  * Ingest ONE manifest entry on the given client: normalize (before the tx
  * opens), then BEGIN → `persistUpload` → COMMIT (ROLLBACK + rethrow on any
  * error), then best-effort unlink the replaced pages' prior blobs.
@@ -188,13 +226,17 @@ export interface IngestOneResult {
  * owns the connect/release lifecycle of a pool-drawn client, and this seam
  * deliberately accepts an EXTERNAL client. The rollback path mirrors
  * withTransaction's contract: rollback, surface a rollback failure without
- * masking the original error, rethrow the original.
+ * masking the original error, rethrow the original — and, because release
+ * belongs to the caller here, a FAILED rollback is reported through
+ * `hooks.onRollbackFailure` so the caller can destroy (not re-pool) the
+ * poisoned connection, matching withTransaction's `release(err)`.
  */
 export async function ingestOne(
   client: PoolClient,
   dir: string,
   entry: CorpusBookEntry,
   userId: number,
+  hooks: IngestOneHooks = {},
 ): Promise<IngestOneResult> {
   if (!Number.isInteger(userId) || userId <= 0) {
     throw new Error(`userId must be a positive integer (got ${String(userId)})`);
@@ -211,11 +253,17 @@ export async function ingestOne(
   } catch (err) {
     try {
       await client.query('ROLLBACK');
+      // ROLLBACK succeeded → the connection demonstrably works; the caller
+      // may safely return it to its pool with a plain release().
     } catch (rollbackErr) {
       getLogger().error(
         { err: String(rollbackErr), title: entry.title },
-        'bulk-ingest: ROLLBACK failed after ingest error',
+        'bulk-ingest: ROLLBACK failed after ingest error — connection is suspect',
       );
+      // Mirrors withTransaction (src/db/pool.ts): a failed ROLLBACK means the
+      // connection itself is suspect; hand the ORIGINAL error to the caller so
+      // it can destroy the client via release(err) instead of re-pooling it.
+      hooks.onRollbackFailure?.(err instanceof Error ? err : new Error(String(err)));
     }
     throw err;
   }
@@ -305,6 +353,20 @@ export async function runBulkIngest(opts: BulkIngestOptions): Promise<BulkIngest
     }
   }
 
+  // Pre-flight: the target user row must EXIST before any book is normalized
+  // or written. A typo'd --user would otherwise fully decode every archive
+  // (minutes of CPU per ~240 MB zip) only to die on the book_uploads user_id
+  // FK — 17 expensive failures instead of one instant one. Skipped under
+  // --dry-run, which must never open a DB connection (see below).
+  if (!opts.dryRun) {
+    const userExists = await query('SELECT 1 FROM users WHERE id = $1', [opts.userId]);
+    if (userExists.rowCount === 0) {
+      throw new Error(
+        `--user ${opts.userId} matches no users row — aborting before any book is processed`,
+      );
+    }
+  }
+
   let created = 0;
   let replaced = 0;
   let totalPages = 0;
@@ -333,15 +395,30 @@ export async function runBulkIngest(opts: BulkIngestOptions): Promise<BulkIngest
           `bulk-ingest: ${entry.title} | ${entry.type} | ${ingested.pages.length} pages | (dry-run, not written)`,
         );
       } else {
-        // getPool() only here — --dry-run must work with no REACHABLE DB at
+        // DB access only in this branch (plus the pre-flight above, likewise
+        // non-dry-run-gated) — --dry-run must work with no REACHABLE DB at
         // all (config still requires DATABASE_URL to be set, but a dry run
         // never opens a connection; the pool is lazily constructed + cached).
         const client = await getPool().connect();
+        // Release contract (mirrors withTransaction, src/db/pool.ts): a plain
+        // release() re-pools the client only when its transaction demonstrably
+        // ended. If ROLLBACK itself failed, the connection is suspect (socket
+        // death mid-tx, backend restart) — release(err) DESTROYS it so the
+        // next book can't inherit an aborted-transaction connection.
+        let poisonedBy: Error | undefined;
         let result: IngestOneResult;
         try {
-          result = await ingestOne(client, opts.dir, entry, opts.userId);
+          result = await ingestOne(client, opts.dir, entry, opts.userId, {
+            onRollbackFailure: (originalErr) => {
+              poisonedBy = originalErr;
+            },
+          });
         } finally {
-          client.release();
+          if (poisonedBy !== undefined) {
+            client.release(poisonedBy);
+          } else {
+            client.release();
+          }
         }
         totalPages += result.pageCount;
         if (result.wasNew) created += 1;
@@ -372,9 +449,15 @@ export async function runBulkIngest(opts: BulkIngestOptions): Promise<BulkIngest
   }
 
   const ingested = created + replaced;
+  // Under --dry-run every success lands in `created`, but without a DB we
+  // cannot know new-vs-replaced — say "normalized" rather than a misleading
+  // "N new" when the operator dry-runs over books that would be REPLACES.
+  const breakdown = opts.dryRun
+    ? `${ingested} normalized OK (would ingest; new-vs-replaced unknown without a DB)`
+    : `${ingested} ingested (${created} new, ${replaced} replaced)`;
   console.error(
     `bulk-ingest: done${opts.dryRun ? ' (dry-run — nothing written)' : ''} — ` +
-      `${ingested} ingested (${created} new, ${replaced} replaced), ` +
+      `${breakdown}, ` +
       `${totalPages} pages total, ${skippedMissing.length} missing-file skip(s), ` +
       `${failures.length} failure(s)`,
   );
@@ -429,6 +512,15 @@ async function main(): Promise<void> {
     // Non-zero exit if ANY book errored (the rest were still processed above).
     throw new Error(
       `${summary.failures.length} of ${summary.failures.length + summary.ingested} processed book(s) failed — see log above`,
+    );
+  }
+  if (summary.ingested === 0 && summary.skippedMissing.length > 0) {
+    // Every matched file was missing and NOTHING was processed — almost
+    // certainly a --dir pointing at the wrong (but existing) directory. A
+    // total no-op must not read as success to a driving script.
+    throw new Error(
+      `all ${summary.skippedMissing.length} matched file(s) were missing under --dir and ` +
+        `nothing was ingested — wrong directory?`,
     );
   }
 }
