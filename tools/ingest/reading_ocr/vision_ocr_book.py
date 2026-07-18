@@ -23,6 +23,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -98,8 +99,24 @@ def _korean_ratio(s: str) -> float:
     return hangul / len(chars)
 
 
+# A numbered comprehension question ("1. …", "2) …") or an imperative discussion
+# prompt ("… 소개해 보세요", "… 이야기해 보세요", "…까요?"). In exercise-bearing
+# language-learner books these sit alongside the story prose; drop them from the
+# reading passages (they belong to the comprehension feature — F-205).
+_Q_RE = re.compile(r"^\s*\d+\s*[.)]")
+_PROMPT_RE = re.compile(r"(보세요|보십시오|하세요|까요)\s*[?.!]?\s*$")
+
+
+def _is_exercise(t: str) -> bool:
+    return bool(_Q_RE.match(t) or _PROMPT_RE.search(t))
+
+
 def story_paragraphs(
-    fta: dict | None, min_len: int = 25, min_korean: float = 0.6, anchor: bool = True
+    fta: dict | None,
+    min_len: int = 25,
+    min_korean: float = 0.6,
+    anchor: bool = True,
+    drop_exercises: bool = False,
 ) -> list[str]:
     """All story-prose paragraphs on the page, in reading (top-to-bottom) order.
 
@@ -122,6 +139,8 @@ def story_paragraphs(
             for para in block.get("paragraphs", []):
                 t = _paragraph_text(para)
                 if len(t) >= min_len and _korean_ratio(t) >= min_korean:
+                    if drop_exercises and _is_exercise(t):
+                        continue
                     ys = [v.get("y", 0) for v in para.get("boundingBox", {}).get("vertices", [])]
                     picked.append((min(ys) if ys else 0.0, t))
     if not picked:
@@ -137,14 +156,14 @@ def story_paragraphs(
     return [t for y, t in picked if y >= anchor_y]
 
 
-def run_test(scan_dir: Path, pages: list[str], anchor: bool) -> int:
+def run_test(scan_dir: Path, pages: list[str], anchor: bool, drop_exercises: bool = False) -> int:
     key = _key()
     for p in pages:
         path = scan_dir / p
         if not path.exists():
             print(f"[MISSING] {path}", file=sys.stderr)
             continue
-        paras = story_paragraphs(vision_fta(key, path), anchor=anchor)
+        paras = story_paragraphs(vision_fta(key, path), anchor=anchor, drop_exercises=drop_exercises)
         print(f"\n===== {p}  ({len(paras)} story paragraph(s)) =====")
         for i, t in enumerate(paras, 1):
             print(f"  [{i}] {t}")
@@ -154,12 +173,21 @@ def run_test(scan_dir: Path, pages: list[str], anchor: bool) -> int:
 def run_config(scan_dir: Path, cfg: dict, out_path: Path) -> int:
     key = _key()
     anchor = cfg.get("layout", "prose") == "comic"
+    drop_ex = bool(cfg.get("drop_exercises", False))
     chapters = []
     for ch in cfg["chapters"]:
         passages = []
+        seen: set[str] = set()
         pnum = 0
         for spec in ch["pages"]:
-            for body in story_paragraphs(vision_fta(key, scan_dir / spec["file"]), anchor=anchor):
+            for body in story_paragraphs(
+                vision_fta(key, scan_dir / spec["file"]), anchor=anchor, drop_exercises=drop_ex
+            ):
+                # Facing-page spreads occasionally re-OCR the same block; drop
+                # exact-duplicate bodies within a chapter (keep first occurrence).
+                if body in seen:
+                    continue
+                seen.add(body)
                 pnum += 1
                 passages.append(
                     {"passage_number": pnum, "body": body, "page_number": spec["printed_page"]}
@@ -189,9 +217,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--test", nargs="+")
     ap.add_argument("--layout", choices=("comic", "prose"), default="prose",
                     help="test-mode extraction layout (config runs read cfg['layout'])")
+    ap.add_argument("--drop-exercises", action="store_true",
+                    help="test-mode: drop numbered questions / discussion prompts "
+                         "(config runs read cfg['drop_exercises'])")
     args = ap.parse_args(argv)
     if args.test:
-        return run_test(args.scan_dir, args.test, anchor=(args.layout == "comic"))
+        return run_test(args.scan_dir, args.test, anchor=(args.layout == "comic"),
+                        drop_exercises=args.drop_exercises)
     if not args.config or not args.out:
         ap.error("either --test PAGES or (--config and --out) is required")
     return run_config(args.scan_dir, json.loads(args.config.read_text("utf-8")), args.out)

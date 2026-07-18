@@ -62,14 +62,29 @@ without any pixel cropping. Two layouts:
 - **`prose`** (default; facing-page prose books): the whole page is story text,
   so keep every qualifying Korean paragraph in order.
 
+**`drop_exercises`** (config flag; `--drop-exercises` in test mode): exercise-
+bearing language-learner books (e.g. *Korean Folktales*) interleave numbered
+**comprehension questions** (`1. …`) and imperative **discussion prompts**
+(`… 소개해 보세요`) with the story prose. This drops both so only the story
+becomes reading passages. (The questions themselves are a future feature —
+F-205 — which will *capture* rather than discard them.) Duplicate blocks from
+facing-page re-OCR are also deduped per chapter.
+
+`example_korean_folktales.config.json` is the second worked example — a
+facing-page collection with `layout:prose` + `drop_exercises:true`.
+
 ## Per-book caveat (learned the hard way)
 
 The page→chapter mapping is book-specific. A tidy grid (EKR) is a formula; a
-facing-page folktale collection with per-story intro-prompt pages and
-variable-length stories is NOT — the scan↔printed offset drifts, so those books
-need a page-by-page survey (per-page Korean-ratio + printed page number) to
-build a correct config before running. Always `--test` a few pages and confirm
-titles align with content before a full run.
+facing-page folktale collection is NOT. Two things bit us on *Korean Folktales*
+and are worth knowing:
+1. The scan↔printed offset was constant (+2), but confirm it from the **printed
+   page numbers on the scans**, not an assumption — read the numbers off the
+   pages and match the TOC.
+2. In a facing-page spread the Korean story sits on the page **before** its
+   TOC-listed (English/title) page, so the per-folktale range had to shift
+   **-1 printed page**. Always `--test` a few pages and confirm titles align
+   with their story content before a full run.
 
 ## Known limitation
 
