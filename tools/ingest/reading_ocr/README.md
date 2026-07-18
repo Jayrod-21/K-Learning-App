@@ -111,7 +111,9 @@ python3 drivers/<book>.py --cache-dir /tmp/<book>-cache --out <book>.json
 # 3. Load it (km-loader image, as above).
 ```
 
-Committed drivers (each reproduces its loaded chapters byte-for-byte):
+Committed drivers (each reproduced its loaded chapters byte-for-byte, verified
+at ingest time; re-verifying needs that book's OCR cache — rebuild it with the
+cache pass if it has been cleaned up, e.g. `your_name_novel`'s):
 
 | Driver | Book (`source_upload_id`) | Structure it maps |
 |---|---|---|

@@ -44,6 +44,10 @@ TITLES = [
 ]
 STARTS = [16, 28, 42, 54, 66, 78, 90, 102, 114, 126, 138, 150, 164, 176, 188,
           200, 212, 224, 236, 248, 260, 272, 284, 296, 308, 320, 332, 344, 356, 368]
+assert len(TITLES) == len(STARTS), (
+    f"TITLES ({len(TITLES)}) and STARTS ({len(STARTS)}) out of sync — "
+    "zip would silently truncate the book"
+)
 
 
 def _dialogue_turns(cache_dir: Path, start: int, end: int) -> list[str]:
@@ -52,7 +56,12 @@ def _dialogue_turns(cache_dir: Path, start: int, end: int) -> list[str]:
     for scan in range(start, end + 1):
         for _y, t in ordered_paragraphs(cached_fta(cache_dir, scan)):
             flat = t.replace(" ", "")
-            if t.strip() == "Vocabulary":                 # end of the Korean dialogue
+            # End of the Korean dialogue. startswith, not ==: OCR may punctuate
+            # the heading ("Vocabulary.") or merge it with the first vocab entry,
+            # and missing this one transition would leak Pattern Practice /
+            # Answer Key / Exercises into the dialogue. "Vocabulary" cannot open
+            # a kept Korean turn, so no false positives.
+            if flat.startswith("Vocabulary"):
                 state = "DROP"
                 continue
             if "DialogueinKorean" in flat:                 # (re)start the Korean section
@@ -63,8 +72,15 @@ def _dialogue_turns(cache_dir: Path, start: int, end: int) -> list[str]:
             kr = _korean_ratio(t)
             if len(flat) >= 6 and kr >= 0.6:
                 turns.append(t)
-            elif len(flat) <= 5 and kr >= 0.4 and turns:
-                turns[-1] = turns[-1] + t                  # glue a wrapped turn-tail back
+            elif (len(flat) <= 5 and kr >= 0.4 and turns
+                  and flat.endswith(("요", "다", "까", "가", ".", "?", "!", ")"))):
+                # Glue a wrapped turn-tail back — but only a fragment shaped like
+                # one: a sentence-final ending (…요/…다/…까, colloquial "…가" as
+                # in "병원 가"), closing punctuation, or a stage direction like
+                # "(통화 중)". A stray speaker label ("석진:") or a page number
+                # OCR'd as a hangul glyph ("71"→"기") must not be appended to
+                # the prior turn's body.
+                turns[-1] = turns[-1] + t
     return turns
 
 

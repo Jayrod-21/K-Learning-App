@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from _common import cached_fta, write_document
+from _common import cached_fta, number_passages, write_document
 from vision_ocr_book import story_paragraphs
 
 SOURCE_UPLOAD_ID = 15
@@ -45,16 +45,14 @@ def build(cache_dir: Path) -> list[dict]:
     bounds = [c[2] for c in CHAPTERS] + [END_SCAN + 1]
     chapters = []
     for i, (cn, title, start_scan, pstart) in enumerate(CHAPTERS):
+        assert start_scan - OFFSET == pstart, (
+            f"CHAPTERS row {cn}: scan {start_scan} - offset {OFFSET} != printed {pstart}"
+        )
         end_scan = bounds[i + 1] - 1
-        seen: set[str] = set()
-        passages: list[dict] = []
-        for scan in range(start_scan + 1, end_scan + 1):  # skip the bare title page
-            for body in story_paragraphs(cached_fta(cache_dir, scan), anchor=False):
-                if body in seen:
-                    continue
-                seen.add(body)
-                passages.append({"passage_number": len(passages) + 1, "body": body,
-                                 "page_number": scan - OFFSET})
+        pairs = [(body, scan - OFFSET)
+                 for scan in range(start_scan + 1, end_scan + 1)  # skip the bare title page
+                 for body in story_paragraphs(cached_fta(cache_dir, scan), anchor=False)]
+        passages = number_passages(pairs)
         chapters.append({
             "chapter_number": cn, "title": title,
             "start_page": pstart, "end_page": end_scan - OFFSET, "passages": passages,

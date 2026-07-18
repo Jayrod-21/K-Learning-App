@@ -242,13 +242,22 @@ def run_cache(scan_dir: Path, cache_dir: Path) -> int:
     """
     key = _key()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # Lowercase NNNN.jpg only — the whole scan corpus is normalized to that name.
     scans = sorted(scan_dir.glob("[0-9][0-9][0-9][0-9].jpg"))
+    if not scans:
+        sys.exit(f"no NNNN.jpg scans in {scan_dir}")
     done = 0
     for src in scans:
         dst = cache_dir / f"{src.stem}.json"
         if dst.exists():
             continue
-        dst.write_text(json.dumps(vision_fta(key, src), ensure_ascii=False), encoding="utf-8")
+        # Temp file + atomic rename: a kill mid-write must not leave a truncated
+        # NNNN.json that the resume check above would then skip forever. Blank
+        # pages still serialize as literal JSON null (fta is None) — that null
+        # round-trip is load-bearing for resume-skipping blanks.
+        tmp = dst.with_name(dst.name + ".tmp")
+        tmp.write_text(json.dumps(vision_fta(key, src), ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, dst)
         done += 1
         if done % 25 == 0:
             print(f"  cached {done} (at {src.name})", flush=True)

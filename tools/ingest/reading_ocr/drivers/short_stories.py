@@ -49,11 +49,12 @@ STORIES = [
 _CH_START = re.compile(r"^제\s*(\d+)\s*장")   # story-chapter heading (hyphen optional)
 
 
-def _is_chapter_heading(t: str, flat: str) -> bool:
+def _is_chapter_heading(m: re.Match | None, flat: str) -> bool:
     """A top story-chapter heading ('제2장 - 찾기', or '제2장 찾기' when OCR drops the
     hyphen) — not the page footer ('제2장 - 찾기 39', ends in a page digit) and not
-    the review heading ('제1장 복습 줄거리', caught earlier)."""
-    return bool(_CH_START.match(t)) and len(flat) < 20 and not flat[-1:].isdigit()
+    the review heading ('제1장 복습 줄거리', caught earlier). ``m`` is the caller's
+    already-computed ``_CH_START`` match for the paragraph."""
+    return bool(m) and len(flat) < 20 and not flat[-1:].isdigit()
 
 
 def _story_bodies(cache_dir: Path, start: int, end: int) -> list[str]:
@@ -63,11 +64,17 @@ def _story_bodies(cache_dir: Path, start: int, end: int) -> list[str]:
     for scan in range(start, end + 1):
         for _y, t in ordered_paragraphs(cached_fta(cache_dir, scan)):
             flat = t.replace(" ", "")
-            if "복습" in flat and len(flat) < 30:          # "제N장 복습 줄거리"
+            m = _CH_START.match(t)
+            # Review heading "제N장 복습 줄거리": anchored on the 제N장 heading shape
+            # so a story line that merely mentions 복습 ("복습 좀 해!") can't flip
+            # the machine to REVIEW mid-story, and with no length cap so an OCR
+            # merge with the first 줄거리 sentence still fires. This branch stays
+            # BEFORE the chapter-heading one (load-bearing ordering).
+            if m and "복습" in flat:
                 state = "REVIEW"
                 continue
-            if _is_chapter_heading(t, flat):
-                cn = int(_CH_START.match(t).group(1))
+            if _is_chapter_heading(m, flat):
+                cn = int(m.group(1))
                 if cn in seen_ch:                          # a later footer, not a heading
                     continue
                 seen_ch.add(cn)

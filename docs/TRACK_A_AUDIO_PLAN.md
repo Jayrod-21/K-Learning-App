@@ -63,8 +63,8 @@ Listen reference the same content.
 job runner/process, real-time transcription. Also out: TOPIK mock-test listening
 audio wiring (that's a separate mapping problem, F-185 class).
 
-**Corpus (from the inventory):** ~1,021–1,142 files, ~150–200 hr, ~3.6 GB, all
-mp3 (Folktales = m4a). Sets: TTMIK grammar audio L1–L10, TOPIK 1 (87) + TOPIK 2
+**Corpus (from the inventory):** ~1,021 files (~1,142 counting the loose files),
+~150–200 hr, ~3.6 GB, mp3 (Folktales = m4a). Sets: TTMIK grammar audio L1–L10, TOPIK 1 (87) + TOPIK 2
 (108) listening, News In Korean (50), Real-Life Conversations (90), Easy Korean
 Reading (30), Folktales (35), plus loose files. **3 confirmed book↔audio pairs:**
 Easy Korean Reading (book id=18), Korean Folktales (id=17), Real-Life
@@ -111,17 +111,7 @@ a matching `db/tests/test_migration_NNN.py`).
 - Segments (not one blob) so the Listen UI can highlight the current line as
   audio plays, and so a paired reader can line up passages ↔ segments by time.
 
-**`076_audio_transcription_jobs`** — the claim/settle/reap table, copying `069`
-but with a **real `'pending'` state a worker actually claims** (069 reserved
-`'pending'` for a future runner; this is that runner).
-- Same shape as `069`: `status ('pending','running','done','failed')`, partial
-  unique index `WHERE status IN ('pending','running')` keyed on `track_id`,
-  `started_at/finished_at`, `error TEXT`, stale-reap columns.
-- Only needed for the **A1** (in-app worker) path. For **A2** (offline), the
-  loader writes segments directly and this table can be deferred — noted so we
-  don't build it prematurely.
-
-**`077_listening_source_kind_user_audio`** — widen the existing discriminator.
+**`076_listening_source_kind_user_audio`** — widen the existing discriminator.
 - `listening_attempts.source_kind` is `TEXT + CHECK` today
   (`061_listening_attempts.up.sql`, values `'ttmik_lesson','iyagi_episode'`).
 - Add `'audio_track'` to the CHECK, plus a nullable `track_id BIGINT NULL`
@@ -129,6 +119,17 @@ but with a **real `'pending'` state a worker actually claims** (069 reserved
   `ck_..._target_not_both` at-most-one-target constraint. This lets the existing
   attempt-logging + "listened today" plumbing count user-audio listens with zero
   new surface.
+
+**`077_audio_transcription_jobs`** — the claim/settle/reap table, copying `069`
+but with a **real `'pending'` state a worker actually claims** (069 reserved
+`'pending'` for a future runner; this is that runner).
+- Same shape as `069`: `status ('pending','running','done','failed')`, partial
+  unique index `WHERE status IN ('pending','running')` keyed on `track_id`,
+  `started_at/finished_at`, `error TEXT`, stale-reap columns.
+- Only needed for the **A1** (in-app worker) path. For **A2** (offline), the
+  loader writes segments directly, so `077` is **reserved for whenever A1
+  lands** — the A2 phase ships 073–076 with no numbering gap, and we don't
+  build the jobs table prematurely.
 
 ---
 
@@ -252,8 +253,8 @@ Each PR is independently shippable and goes through the full build → tests →
 **/fixpass** gate (full suite for the schema PRs, per the schema-change rule).
 
 - **A-0 (this doc):** plan + decisions. ← you are here.
-- **A-1 migrations:** 073–075 (+077 source_kind widen) + `db/tests/` for each.
-  No behavior yet. (076 jobs table only if we pick A1.)
+- **A-1 migrations:** 073–076 (076 = the source_kind widen) + `db/tests/` for
+  each. No behavior yet. (077 jobs table reserved; built only if/when we do A1.)
 - **A-2 Whisper tooling:** `tools/ingest/audio_stt/` + a pilot transcription of
   **one** set (Easy Korean Reading, 30 files, already a proven pair) → cached
   transcript JSON, spot-checked for accuracy.

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 from _common import cached_fta, number_passages, write_document
@@ -41,12 +42,23 @@ def build(cache_dir: Path) -> list[dict]:
     for scan in range(FIRST_SCAN, LAST_SCAN + 1):
         path = cache_dir / f"{scan:04d}.json"
         if not path.exists():
+            # A cache normally ends here only AFTER the afterword stop below; an
+            # early gap means a partial cache, so say where extraction stopped.
+            print(f"  scan {scan:04d}: not in cache {cache_dir} — stopping "
+                  f"(partial cache? re-run the --cache-dir pass)", file=sys.stderr)
             break
         fta = cached_fta(cache_dir, scan)
         flat = "".join(t for _y, t in ordered_paragraphs(fta)).replace(" ", "")
         m = _CH_RE.search(flat)
         if m and len(flat) < 12:                          # a bare "제N장" title page
             cn = int(m.group(1))
+            if any(c["chapter_number"] == cn for c in chapters):
+                # A recap/part-title page can repeat an already-seen 제N장; a
+                # duplicate chapter_number would otherwise only fail downstream
+                # at the loader's UNIQUE(source_upload_id, chapter_number).
+                print(f"  scan {scan:04d}: repeated 제{cn}장 marker — ignored",
+                      file=sys.stderr)
+                continue
             cur = {"chapter_number": cn, "bodies": [],
                    "title": f"제{cn}장 {NAMES.get(cn, '')}".strip()}
             chapters.append(cur)
@@ -57,6 +69,17 @@ def build(cache_dir: Path) -> list[dict]:
             break
         if cur is not None:
             cur["bodies"].extend(story_paragraphs(fta, anchor=False))
+
+    # This driver stamps extraction_complete=true, so refuse to write a document
+    # a partial/wrong cache silently truncated: no chapters at all, or a chapter
+    # that never got any prose, is a broken extraction, not a result.
+    if not chapters:
+        sys.exit(f"no 제N장 chapter title pages found in {cache_dir} — wrong or "
+                 "partial cache; refusing to write an empty document")
+    empty = [c["chapter_number"] for c in chapters if not c["bodies"]]
+    if empty:
+        sys.exit(f"chapter(s) {empty} extracted 0 passages — partial cache? "
+                 "refusing to stamp extraction_complete on a truncated extraction")
 
     out = []
     for c in chapters:

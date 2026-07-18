@@ -22,25 +22,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def cached_fta(cache_dir: Path, scan: int) -> dict | None:
-    """The cached Vision fullTextAnnotation for page ``NNNN.json`` (or None)."""
-    return json.loads((cache_dir / f"{scan:04d}.json").read_text("utf-8"))
+    """The cached Vision fullTextAnnotation for scan ``NNNN`` (None when the
+    cache pass stored literal JSON ``null`` for a blank page).
+
+    A MISSING cache file is an error, not a None: silently skipping it would
+    drop every passage on that page from the output, so fail loudly and name
+    both the scan and the cache dir.
+    """
+    path = cache_dir / f"{scan:04d}.json"
+    try:
+        raw = path.read_text("utf-8")
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"scan {scan:04d} not in cache {cache_dir} — re-run the "
+            f"--cache-dir pass to (re)build the OCR cache"
+        ) from None
+    return json.loads(raw)
 
 
-def number_passages(bodies: list[str], *, dedup: bool = True,
-                    page_number: int | None = None) -> list[dict]:
-    """Turn ordered body strings into numbered passage dicts.
+def number_passages(bodies: list[str] | list[tuple[str, int | None]], *,
+                    dedup: bool = True) -> list[dict]:
+    """Turn ordered bodies into numbered passage dicts.
 
-    ``dedup`` drops exact-duplicate bodies (facing-page spreads re-OCR the same
-    block); the first occurrence wins and numbering stays gap-free.
+    Each item is either a plain body string (``page_number`` stays null) or a
+    ``(body, page_number)`` pair for books whose passages span known printed
+    pages. ``dedup`` drops exact-duplicate bodies (facing-page spreads re-OCR
+    the same block); the first occurrence wins — keeping its page number — and
+    numbering stays gap-free.
     """
     seen: set[str] = set()
     passages: list[dict] = []
-    for body in bodies:
+    for item in bodies:
+        body, page = item if isinstance(item, tuple) else (item, None)
         if dedup and body in seen:
             continue
         seen.add(body)
         passages.append({"passage_number": len(passages) + 1, "body": body,
-                         "page_number": page_number})
+                         "page_number": page})
     return passages
 
 
