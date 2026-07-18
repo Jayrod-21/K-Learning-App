@@ -243,7 +243,9 @@ export interface CuratedBatch {
 }
 
 /** Upload types whose pages are expected to carry grammar-pattern content —
- *  drives the vocab/grammar classification below. */
+ *  drives the vocab/grammar classification below. 'comic' (Track P) is a
+ *  display-only type and deliberately absent: its opt-in manual extractions
+ *  send everything to vocab, like every other non-grammar type. */
 const GRAMMAR_BEARING_TYPES: ReadonlySet<string> = new Set(['grammar', 'both']);
 
 /**

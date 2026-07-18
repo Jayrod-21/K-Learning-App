@@ -2400,13 +2400,17 @@ export interface AllSkillSeries {
 /**
  * What kind of content this book is expected to populate once U2's
  * extraction lands. `'both'` = vocab + grammar from the same source.
+ * `'comic'` (Track P) is a display-only picture/comic/manga book read as
+ * page images in the upload viewer — never grammar-bearing, never
+ * auto-OCR'd.
  */
 export type BookUploadType =
   | 'vocab'
   | 'grammar'
   | 'both'
   | 'dialogue'
-  | 'literature';
+  | 'literature'
+  | 'comic';
 
 /**
  * Processing state. U1 has no extraction yet, so every upload stays

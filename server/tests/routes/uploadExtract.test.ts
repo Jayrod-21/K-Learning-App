@@ -138,7 +138,7 @@ afterEach(() => {
 async function seedUploadWithPages(
   userId: number,
   n: number,
-  type: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature' = 'vocab',
+  type: 'vocab' | 'grammar' | 'both' | 'dialogue' | 'literature' | 'comic' = 'vocab',
 ): Promise<number> {
   const uploadId = await seedBookUpload(pg.pool, userId, {
     type,
@@ -313,6 +313,53 @@ describe('grammar classification (curation boundary)', () => {
     expect(res.body.run.vocab_inserted).toBe(1);
     expect(res.body.run.grammar_inserted).toBe(0);
     expect((await kgiuRows(uploadId)).length).toBe(0);
+  });
+
+  it("treats a 'comic' upload (Track P, display-only) as NON-grammar-bearing: even untagged words land in vocab, never kgiu_entries", async () => {
+    // A comic's opt-in manual extraction must classify exactly like every
+    // other non-grammar type — GRAMMAR_BEARING_TYPES stays {grammar, both}.
+    // The untagged word below is the exact shape that WOULD become a grammar
+    // pattern candidate on a 'grammar'/'both' upload.
+    setClaudeProxy(
+      makeStubProxy({
+        ocrImage: async () =>
+          ocrResult({
+            words: [
+              { kr: '말풍선', en: 'speech bubble', pos: 'n.' },
+              { kr: '-잖아', en: 'you know / as you know' }, // untagged
+            ],
+          }),
+      }),
+    );
+    const { agent, userId } = await registerUser(t.app, pg.pool);
+    const uploadId = await seedUploadWithPages(userId, 1, 'comic');
+
+    const res = await agent.post(`/uploads/${uploadId}/extract`).send({});
+    expect(res.status).toBe(201);
+    expect(res.body.run.vocab_inserted).toBe(2);
+    expect(res.body.run.grammar_inserted).toBe(0);
+
+    expect((await kgiuRows(uploadId)).length).toBe(0);
+    const vocab = await vocabRows(uploadId);
+    expect(vocab.map((v) => v.korean).sort()).toEqual(['-잖아', '말풍선']);
+  });
+
+  it("curateOcrWords('comic') is non-grammar-bearing at the pure boundary: the grammar bucket stays empty", () => {
+    const batch = curateOcrWords(
+      [
+        {
+          page: 1,
+          words: [
+            { kr: '만화', en: 'comic', pos: 'n.' },
+            { kr: '-네요', en: 'sentence-final nuance' }, // untagged
+          ],
+        },
+      ],
+      'comic',
+    );
+    expect(batch.grammar).toEqual([]);
+    expect(batch.vocab.map((w) => w.kr).sort()).toEqual(['-네요', '만화']);
+    expect(batch.skipped).toBe(0);
   });
 });
 
