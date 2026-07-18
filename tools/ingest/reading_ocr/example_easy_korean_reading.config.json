@@ -1,0 +1,371 @@
+{
+  "layout": "comic",
+  "source": {
+    "source_upload_id": 18,
+    "book_title": "Easy Korean Reading for Beginners",
+    "extracted_by": "vision-ocr",
+    "extraction_complete": true
+  },
+  "chapters": [
+    {
+      "chapter_number": 1,
+      "title": "요리 (Cooking)",
+      "printed_start": 9,
+      "printed_end": 12,
+      "pages": [
+        {
+          "file": "0013.jpg",
+          "printed_page": 9
+        }
+      ]
+    },
+    {
+      "chapter_number": 2,
+      "title": "영화 (Movies)",
+      "printed_start": 13,
+      "printed_end": 16,
+      "pages": [
+        {
+          "file": "0017.jpg",
+          "printed_page": 13
+        }
+      ]
+    },
+    {
+      "chapter_number": 3,
+      "title": "병원 (Hospitals and Clinics)",
+      "printed_start": 17,
+      "printed_end": 20,
+      "pages": [
+        {
+          "file": "0021.jpg",
+          "printed_page": 17
+        }
+      ]
+    },
+    {
+      "chapter_number": 4,
+      "title": "영화관 (Movie Theaters)",
+      "printed_start": 21,
+      "printed_end": 24,
+      "pages": [
+        {
+          "file": "0025.jpg",
+          "printed_page": 21
+        }
+      ]
+    },
+    {
+      "chapter_number": 5,
+      "title": "잠 (Sleeping)",
+      "printed_start": 25,
+      "printed_end": 28,
+      "pages": [
+        {
+          "file": "0029.jpg",
+          "printed_page": 25
+        }
+      ]
+    },
+    {
+      "chapter_number": 6,
+      "title": "편의점 (Convenience Stores)",
+      "printed_start": 29,
+      "printed_end": 32,
+      "pages": [
+        {
+          "file": "0033.jpg",
+          "printed_page": 29
+        }
+      ]
+    },
+    {
+      "chapter_number": 7,
+      "title": "쇼핑몰 (Shopping Malls)",
+      "printed_start": 33,
+      "printed_end": 36,
+      "pages": [
+        {
+          "file": "0037.jpg",
+          "printed_page": 33
+        }
+      ]
+    },
+    {
+      "chapter_number": 8,
+      "title": "버스 (Buses)",
+      "printed_start": 37,
+      "printed_end": 40,
+      "pages": [
+        {
+          "file": "0041.jpg",
+          "printed_page": 37
+        }
+      ]
+    },
+    {
+      "chapter_number": 9,
+      "title": "서점 (Bookstores)",
+      "printed_start": 41,
+      "printed_end": 44,
+      "pages": [
+        {
+          "file": "0045.jpg",
+          "printed_page": 41
+        }
+      ]
+    },
+    {
+      "chapter_number": 10,
+      "title": "동물원 (The Zoo)",
+      "printed_start": 45,
+      "printed_end": 48,
+      "pages": [
+        {
+          "file": "0049.jpg",
+          "printed_page": 45
+        }
+      ]
+    },
+    {
+      "chapter_number": 11,
+      "title": "캠핑 (Camping)",
+      "printed_start": 49,
+      "printed_end": 52,
+      "pages": [
+        {
+          "file": "0053.jpg",
+          "printed_page": 49
+        }
+      ]
+    },
+    {
+      "chapter_number": 12,
+      "title": "아침 시간 (In the Morning)",
+      "printed_start": 53,
+      "printed_end": 56,
+      "pages": [
+        {
+          "file": "0057.jpg",
+          "printed_page": 53
+        }
+      ]
+    },
+    {
+      "chapter_number": 13,
+      "title": "택배 (Deliveries)",
+      "printed_start": 57,
+      "printed_end": 60,
+      "pages": [
+        {
+          "file": "0061.jpg",
+          "printed_page": 57
+        }
+      ]
+    },
+    {
+      "chapter_number": 14,
+      "title": "안내 (Information)",
+      "printed_start": 61,
+      "printed_end": 64,
+      "pages": [
+        {
+          "file": "0065.jpg",
+          "printed_page": 61
+        }
+      ]
+    },
+    {
+      "chapter_number": 15,
+      "title": "회식 (Company Dinners)",
+      "printed_start": 65,
+      "printed_end": 68,
+      "pages": [
+        {
+          "file": "0069.jpg",
+          "printed_page": 65
+        }
+      ]
+    },
+    {
+      "chapter_number": 16,
+      "title": "생일 (Birthdays)",
+      "printed_start": 69,
+      "printed_end": 72,
+      "pages": [
+        {
+          "file": "0073.jpg",
+          "printed_page": 69
+        }
+      ]
+    },
+    {
+      "chapter_number": 17,
+      "title": "안내방송 (Announcements)",
+      "printed_start": 73,
+      "printed_end": 76,
+      "pages": [
+        {
+          "file": "0077.jpg",
+          "printed_page": 73
+        }
+      ]
+    },
+    {
+      "chapter_number": 18,
+      "title": "초대 (Invitation)",
+      "printed_start": 77,
+      "printed_end": 80,
+      "pages": [
+        {
+          "file": "0081.jpg",
+          "printed_page": 77
+        }
+      ]
+    },
+    {
+      "chapter_number": 19,
+      "title": "화장품 (Makeup)",
+      "printed_start": 81,
+      "printed_end": 84,
+      "pages": [
+        {
+          "file": "0085.jpg",
+          "printed_page": 81
+        }
+      ]
+    },
+    {
+      "chapter_number": 20,
+      "title": "편지 (Letters)",
+      "printed_start": 85,
+      "printed_end": 88,
+      "pages": [
+        {
+          "file": "0089.jpg",
+          "printed_page": 85
+        }
+      ]
+    },
+    {
+      "chapter_number": 21,
+      "title": "가을 (Autumn)",
+      "printed_start": 89,
+      "printed_end": 92,
+      "pages": [
+        {
+          "file": "0093.jpg",
+          "printed_page": 89
+        }
+      ]
+    },
+    {
+      "chapter_number": 22,
+      "title": "치매 (Dementia)",
+      "printed_start": 93,
+      "printed_end": 96,
+      "pages": [
+        {
+          "file": "0097.jpg",
+          "printed_page": 93
+        }
+      ]
+    },
+    {
+      "chapter_number": 23,
+      "title": "취미 (Hobbies)",
+      "printed_start": 97,
+      "printed_end": 100,
+      "pages": [
+        {
+          "file": "0101.jpg",
+          "printed_page": 97
+        }
+      ]
+    },
+    {
+      "chapter_number": 24,
+      "title": "소개 (Introductions)",
+      "printed_start": 101,
+      "printed_end": 104,
+      "pages": [
+        {
+          "file": "0105.jpg",
+          "printed_page": 101
+        }
+      ]
+    },
+    {
+      "chapter_number": 25,
+      "title": "반려동물 (Pets)",
+      "printed_start": 105,
+      "printed_end": 108,
+      "pages": [
+        {
+          "file": "0109.jpg",
+          "printed_page": 105
+        }
+      ]
+    },
+    {
+      "chapter_number": 26,
+      "title": "택시 (Taxis)",
+      "printed_start": 109,
+      "printed_end": 112,
+      "pages": [
+        {
+          "file": "0113.jpg",
+          "printed_page": 109
+        }
+      ]
+    },
+    {
+      "chapter_number": 27,
+      "title": "야식 (Late-night Snacks)",
+      "printed_start": 113,
+      "printed_end": 116,
+      "pages": [
+        {
+          "file": "0117.jpg",
+          "printed_page": 113
+        }
+      ]
+    },
+    {
+      "chapter_number": 28,
+      "title": "동호회 (Clubs)",
+      "printed_start": 117,
+      "printed_end": 120,
+      "pages": [
+        {
+          "file": "0121.jpg",
+          "printed_page": 117
+        }
+      ]
+    },
+    {
+      "chapter_number": 29,
+      "title": "핸드폰 (Cell Phones)",
+      "printed_start": 121,
+      "printed_end": 124,
+      "pages": [
+        {
+          "file": "0125.jpg",
+          "printed_page": 121
+        }
+      ]
+    },
+    {
+      "chapter_number": 30,
+      "title": "냉장고 (Refrigerators)",
+      "printed_start": 125,
+      "printed_end": 128,
+      "pages": [
+        {
+          "file": "0129.jpg",
+          "printed_page": 125
+        }
+      ]
+    }
+  ]
+}
