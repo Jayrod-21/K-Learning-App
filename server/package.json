@@ -17,7 +17,8 @@
     "lint": "ESLINT_USE_FLAT_CONFIG=false eslint 'src/**/*.ts' 'tests/**/*.ts'",
     "typecheck": "tsc --noEmit",
     "seed:user": "node -r ts-node/register/transpile-only src/scripts/seed-user.ts",
-    "mfa:reset": "node -r ts-node/register/transpile-only src/scripts/mfa-reset.ts"
+    "mfa:reset": "node -r ts-node/register/transpile-only src/scripts/mfa-reset.ts",
+    "ingest:books": "node -r ts-node/register/transpile-only src/scripts/bulk-ingest-books.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
