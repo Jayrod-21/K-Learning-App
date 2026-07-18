@@ -12,6 +12,34 @@ below.
 
 ---
 
+## Decisions locked (2026-07-18)
+
+The §11 open questions are answered:
+
+1. **Runner: A1 — the in-app worker** (not the A2 offline-only path). A real
+   worker process transcribes jobs; user audio upload is in-scope. The corpus is
+   ingested *through* this system. → migration 077 (jobs table) is REQUIRED, not
+   deferred.
+2. **Whisper model: `large-v3`** via **`faster-whisper`** (CTranslate2).
+3. **Compute: GPU.** M has an **NVIDIA RTX 3070 (8 GB, driver 595)** — large-v3
+   float16 (~4.7 GB) fits; ~10–30× real-time. The worker container uses CUDA +
+   `--gpus`. **Prereq:** M needs `nvidia-container-toolkit` installed +
+   `nvidia-ctk runtime configure --runtime=docker` (Docker currently has no
+   NVIDIA runtime — default is `runc`). Worker design falls back to CPU int8 if
+   the GPU is unavailable.
+4. **Blob storage: owned copy** into a new `AUDIO_UPLOAD_STORAGE_DIR` (per-user,
+   like page-image uploads). ~3.6 GB on M; clean per-user/deletable semantics.
+5. **Alignment: chapter-level first** — one `audio_track` ↔ one `reading_chapter`
+   ("listen" on the chapter, "read along" on the track). Time-synced segment
+   highlighting is a later enhancement.
+6. **Pilot: Korean Folktales** (book id=17, `KoreanFolktalkesForLanguageLearners`
+   audio; ~35 files) — a confirmed book↔audio pair, small + verifiable.
+
+Because A1 was chosen, the phasing is reordered: the worker + jobs table move
+from the deferred "A-7" into the core sequence (see §10, updated).
+
+---
+
 ## 0. The one hard problem: there is no background worker
 
 Every "async job" in this repo today runs **synchronously inside the HTTP
@@ -252,21 +280,35 @@ vectors and defenses:
 Each PR is independently shippable and goes through the full build → tests →
 **/fixpass** gate (full suite for the schema PRs, per the schema-change rule).
 
-- **A-0 (this doc):** plan + decisions. ← you are here.
-- **A-1 migrations:** 073–076 (076 = the source_kind widen) + `db/tests/` for
-  each. No behavior yet. (077 jobs table reserved; built only if/when we do A1.)
-- **A-2 Whisper tooling:** `tools/ingest/audio_stt/` + a pilot transcription of
-  **one** set (Easy Korean Reading, 30 files, already a proven pair) → cached
-  transcript JSON, spot-checked for accuracy.
-- **A-3 loader + storage:** `load_audio.py` + `audioStore.ts` + config; load the
-  pilot set; verify rows.
-- **A-4 serving:** `routes/audio.ts` (stream + list) + client allow-list +
-  Listen UI wiring via the existing `source_kind` plumbing.
-- **A-5 alignment:** link the pilot reader's tracks ↔ reading chapters; "read
-  along" / "listen" affordances.
-- **A-6 bulk:** transcribe + load the remaining sets (News, TOPIK, Folktales,
-  Real-Life Conversations, etc.).
-- **A-7 (separate, later):** A1 in-app user-audio upload + real worker process.
+A1-chosen sequence. Each PR is independently shippable and goes through the full
+build → tests → **/fixpass** gate (full suite for the schema PRs, per the
+schema-change rule).
+
+- **A-0 (this doc):** plan + decisions. ✅ done.
+- **A-1 schema:** migrations **073 audio_sources / 074 audio_tracks / 075
+  audio_transcript_segments / 076 audio_transcription_jobs / 077 listening
+  source_kind widen (+track_id target)** + `db/tests/test_migration_0NN.py` for
+  each (both directions). No behavior yet — pure schema. First buildable unit;
+  decision-locked; reversible by design.
+- **A-2 Whisper worker + service:** `tools/audio_stt/` faster-whisper large-v3
+  wrapper (GPU w/ CPU-int8 fallback) + a `worker` process that claims
+  `audio_transcription_jobs` (`FOR UPDATE SKIP LOCKED`), transcribes, writes
+  segments, settles; a `worker` service in the compose stack with `--gpus`.
+  Requires `nvidia-container-toolkit` on M. Pilot-transcribe **Korean Folktales**
+  → spot-check accuracy.
+- **A-3 upload + storage:** `audioStore.ts` (owned blobs, copy of uploadStore) +
+  `AUDIO_UPLOAD_STORAGE_DIR` config + `POST /audio` upload route (magic-byte
+  sniff, size cap, per-user daily cap) that enqueues a transcription job.
+- **A-4 serving + Listen:** `routes/audio.ts` (user-scoped list + Range stream,
+  reusing the streamer) + client allow-list + Listen UI wiring via
+  `listening_attempts.source_kind='audio_track'`.
+- **A-5 alignment:** link the pilot reader's tracks ↔ reading chapters
+  (chapter-level) + "read along" / "listen" affordances.
+- **A-6 bulk:** enqueue + transcribe the remaining corpus sets (TTMIK, TOPIK,
+  News, Real-Life Conversations, Easy Korean Reading, etc.); log any dropped/
+  skipped sets.
+- **A-7 (later polish):** passage-level time alignment (segment↔passage
+  highlighting), TOPIK mock-test listening wiring (F-185 class).
 
 ---
 
