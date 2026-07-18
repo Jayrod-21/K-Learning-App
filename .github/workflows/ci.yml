@@ -8,7 +8,10 @@ on:
 
 jobs:
   client-checks:
-    name: Client — Lint, Type Check, Test & Build
+    # Name kept verbatim — it's a REQUIRED status check in rebuild's branch
+    # protection; renaming it makes the required context never report and
+    # blocks every PR. The Unit tests step is added below without a rename.
+    name: Client — Lint, Type Check & Build
     runs-on: ubuntu-latest
     defaults:
       run:
