@@ -36,6 +36,7 @@ import notificationsRoutes from './routes/notifications.js';
 import grammarDrillRoutes from './routes/grammarDrill.js';
 import writingRoutes from './routes/writing.js';
 import uploadsRoutes from './routes/uploads.js';
+import audioRoutes from './routes/audio.js';
 import readingRoutes from './routes/reading.js';
 import ticketsRoutes from './routes/tickets.js';
 
@@ -107,6 +108,11 @@ export function createApp(): Express {
   // added to the km-lb nginx API allow-list (Deploy/nginx-{blue,green}-active.conf)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).
   app.use('/uploads', uploadsRoutes);
+  // Track A (A-3): audio upload + transcription-job enqueue — a NEW top-level
+  // prefix, ALREADY added to the km-lb nginx API allow-list in BOTH
+  // Deploy/nginx-{blue,green}-active.conf (both server blocks; done in A-3's
+  // fix-pass so the SPA never shadows it — see km-nginx-api-route-allowlist).
+  app.use('/audio', audioRoutes);
   // U3b: digitized chapter reader data surface — ALSO a NEW top-level prefix, so
   // it must be added to the km-lb nginx API allow-list (both -active.conf files)
   // or the SPA shadows it (see km-nginx-api-route-allowlist).

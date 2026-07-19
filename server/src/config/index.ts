@@ -95,6 +95,47 @@ const EnvSchema = z.object({
   // control and a failed run spent money too.
   UPLOAD_EXTRACT_DAILY_PAGE_CAP: z.coerce.number().int().positive().default(50),
 
+  // Audio-upload blob store (Track A, A-3 — user-uploaded audio → Whisper).
+  // Mirrors BOOK_UPLOAD_STORAGE_DIR's contract exactly: a filesystem root
+  // under which each uploaded track's bytes are stored as
+  // `{userId}/{uuid}.{mp3|m4a}` (one per audio_tracks row); only the RELATIVE
+  // path is kept in Postgres (audio_tracks.blob_ref, migration 074). Separate
+  // root + module from book pages (different content, size class, and
+  // consumer — the km-worker Whisper container mounts THIS root read-only;
+  // see server/src/services/audioStore.ts). In the deploy compose this is the
+  // shared km_audio_uploads volume, mounted rw here and ro on the worker.
+  AUDIO_UPLOAD_STORAGE_DIR: z.string().min(1).default('./var/audio-uploads'),
+
+  // Per-FILE byte cap on a single audio upload (→ 413). 100 MiB comfortably
+  // covers the corpus's largest real tracks (a 30-min 320kbps mp3 ≈ 72 MB)
+  // while bounding multer's in-memory buffering per request.
+  AUDIO_UPLOAD_MAX_BYTES: z.coerce.number().int().positive().default(100 * 1024 * 1024),
+
+  // Per-user DAILY cap on ENQUEUED transcription bytes (→ 429 BEFORE any
+  // write). Every enqueued byte is a Whisper-CPU commitment on the worker, so
+  // this — not upload count — is the cost lever (mirrors
+  // UPLOAD_EXTRACT_DAILY_PAGE_CAP's posture; the ledger is
+  // audio_transcription_jobs.charged_bytes, which survives track deletion —
+  // migration 076 — so deleting uploads never refunds the budget). 500 MiB/day
+  // ≈ a handful of hour-long files: generous for real personal use, a hard
+  // wall for a runaway script.
+  AUDIO_TRANSCRIBE_DAILY_BYTES_CAP: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(500 * 1024 * 1024),
+
+  // Per-user DAILY cap on the NUMBER of audio uploads (→ 429 BEFORE any
+  // write). The bytes cap above bounds Whisper-CPU cost but not ROW count: a
+  // tiny-file flood (the sniff accepts a 2-byte MPEG header) would create
+  // unbounded sources/tracks/pending jobs — each of which the worker must
+  // claim, spawn Whisper for, and settle — while barely denting the bytes
+  // budget. This is the same backstop BOOK_UPLOAD_DAILY_CAP provides for the
+  // book route: generous for real personal use (50 files/day), a hard wall
+  // for a runaway script. Checked in the SAME advisory-locked SELECT as the
+  // bytes cap (routes/audio.ts) so neither cap can be raced past.
+  AUDIO_UPLOAD_DAILY_COUNT_CAP: z.coerce.number().int().positive().default(50),
+
   // Corpus audio root (F-012 — TTMIK/Iyagi mp3 streaming). Read-only tree the
   // audio routes stream from; DB rows store paths RELATIVE to this root (e.g.
   // 'TTMIK/이야기들/이야기/143 TTMIK Iyagi 143.mp3'). In the deploy compose this

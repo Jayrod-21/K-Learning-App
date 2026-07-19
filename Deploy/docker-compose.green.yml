@@ -132,6 +132,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - IMAGE_STORAGE_DIR=${IMAGE_STORAGE_DIR:-/app/var/images}
       - BOOK_UPLOAD_STORAGE_DIR=${BOOK_UPLOAD_STORAGE_DIR:-/app/var/book-uploads}
+      # Track A (A-3): where the server WRITES uploaded audio blobs. Matches
+      # the km_audio_uploads mount below; the km-worker (shared stack) mounts
+      # the SAME volume read-only at its own path (audio_tracks.blob_ref is
+      # relative, so per-container roots may differ).
+      - AUDIO_UPLOAD_STORAGE_DIR=${AUDIO_UPLOAD_STORAGE_DIR:-/app/var/audio-uploads}
       # F-012: where the server reads corpus mp3s (routes/ttmik.ts). Matches
       # the read-only bind mount below — fixed in-container path, both colors.
       - CORPUS_AUDIO_DIR=/corpus
@@ -149,6 +154,12 @@ services:
       # SHARED book-upload volume — BOTH colors mount km_book_uploads at the same
       # path so user-uploaded book PDFs (U1a) persist across a color switch.
       - km_book_uploads:${BOOK_UPLOAD_STORAGE_DIR:-/app/var/book-uploads}
+      # SHARED audio-upload volume (Track A, A-3) — BOTH colors mount
+      # km_audio_uploads at the same path so uploaded audio survives a color
+      # switch. Read-WRITE: the server is the SOLE writer (POST /audio); the
+      # km-worker Whisper container mounts this same volume :ro (see
+      # docker-compose.shared.yml).
+      - km_audio_uploads:${AUDIO_UPLOAD_STORAGE_DIR:-/app/var/audio-uploads}
       # F-012: corpus audio tree (TTMIK/Iyagi mp3s), READ-ONLY — the server
       # only ever streams from it; a compromised server cannot alter the
       # corpus. Set CORPUS_AUDIO_DIR_HOST in the .env to the host directory
@@ -271,3 +282,6 @@ volumes:
   km_book_uploads:
     external: true
     name: km_book_uploads
+  km_audio_uploads:
+    external: true
+    name: km_audio_uploads

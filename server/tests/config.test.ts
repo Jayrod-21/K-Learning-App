@@ -42,6 +42,10 @@ const TOUCHED_KEYS = [
   'SMTP_FROM',
   'SMTP_SECURE',
   'SMTP_TLS_REJECT_UNAUTHORIZED',
+  'AUDIO_UPLOAD_STORAGE_DIR',
+  'AUDIO_UPLOAD_MAX_BYTES',
+  'AUDIO_TRANSCRIBE_DAILY_BYTES_CAP',
+  'AUDIO_UPLOAD_DAILY_COUNT_CAP',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -140,5 +144,41 @@ describe('SMTP config refinement (F-006)', () => {
     const cfg = parse();
     expect(cfg.SMTP_SECURE).toBe(false);
     expect(cfg.SMTP_TLS_REJECT_UNAUTHORIZED).toBe(false);
+  });
+});
+
+describe('audio-upload knobs (Track A, A-3)', () => {
+  it('unset → the documented defaults', () => {
+    const cfg = parse();
+    expect(cfg.AUDIO_UPLOAD_STORAGE_DIR).toBe('./var/audio-uploads');
+    expect(cfg.AUDIO_UPLOAD_MAX_BYTES).toBe(100 * 1024 * 1024);
+    expect(cfg.AUDIO_TRANSCRIBE_DAILY_BYTES_CAP).toBe(500 * 1024 * 1024);
+    expect(cfg.AUDIO_UPLOAD_DAILY_COUNT_CAP).toBe(50);
+  });
+
+  it('env strings parse to typed values (the compose files pass STRINGS)', () => {
+    process.env.AUDIO_UPLOAD_STORAGE_DIR = '/app/var/audio-uploads';
+    process.env.AUDIO_UPLOAD_MAX_BYTES = '65536';
+    process.env.AUDIO_TRANSCRIBE_DAILY_BYTES_CAP = '131072';
+    process.env.AUDIO_UPLOAD_DAILY_COUNT_CAP = '3';
+    const cfg = parse();
+    expect(cfg.AUDIO_UPLOAD_STORAGE_DIR).toBe('/app/var/audio-uploads');
+    expect(cfg.AUDIO_UPLOAD_MAX_BYTES).toBe(65_536);
+    expect(cfg.AUDIO_TRANSCRIBE_DAILY_BYTES_CAP).toBe(131_072);
+    expect(cfg.AUDIO_UPLOAD_DAILY_COUNT_CAP).toBe(3);
+  });
+
+  it('a non-positive or garbage byte cap fails config parse at startup', () => {
+    process.env.AUDIO_UPLOAD_MAX_BYTES = '0';
+    expect(() => parse()).toThrow(/Invalid configuration/);
+    process.env.AUDIO_UPLOAD_MAX_BYTES = 'lots';
+    expect(() => parse()).toThrow(/Invalid configuration/);
+  });
+
+  it('a non-positive or garbage upload-count cap fails config parse at startup', () => {
+    process.env.AUDIO_UPLOAD_DAILY_COUNT_CAP = '0';
+    expect(() => parse()).toThrow(/Invalid configuration/);
+    process.env.AUDIO_UPLOAD_DAILY_COUNT_CAP = 'many';
+    expect(() => parse()).toThrow(/Invalid configuration/);
   });
 });
