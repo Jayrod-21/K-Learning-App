@@ -723,6 +723,35 @@ export async function seedBookPage(
 }
 
 /**
+ * Seed a single audio_transcription_jobs row directly (Track A — migration
+ * 076). Returns the new job id. Bypasses the upload route entirely: the
+ * per-user daily transcription-bytes cap sums `charged_bytes` by user_id +
+ * created_at ALONE (never a join back to the track — 076's SET-NULL ledger
+ * contract), so a cap test can seed spend with `track_id` NULL (a legal
+ * "track deleted after the fact" ledger row) without building a
+ * source/track pair first. Defaults to a settled 'done' row so the seeded
+ * spend can never collide with the one-live-job-per-track partial unique
+ * (NULL track_id never collides there anyway — belt and braces).
+ */
+export async function seedAudioTranscriptionJob(
+  pool: Pool,
+  userId: number,
+  opts: {
+    chargedBytes: number;
+    status?: 'pending' | 'running' | 'done' | 'failed';
+    createdAt?: Date;
+  },
+): Promise<number> {
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO audio_transcription_jobs (track_id, user_id, status, charged_bytes, created_at)
+     VALUES (NULL, $1, $2::audio_transcription_status, $3, COALESCE($4, now()))
+     RETURNING id`,
+    [userId, opts.status ?? 'done', opts.chargedBytes, opts.createdAt ?? null],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
  * Seed a single reading_chapters row (U3b, digitized chapter reader —
  * migration 044). Returns the new chapter id. `userId` MUST be the owner of
  * `uploadId` (the migration-044 composite FK rejects any other user_id), so
