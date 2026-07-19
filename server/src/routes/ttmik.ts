@@ -73,7 +73,6 @@
  */
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { createReadStream } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, normalize, resolve, sep } from 'node:path';
 import { getLogger } from '../logging.js';
@@ -83,6 +82,12 @@ import { validateBody, validateParams, validateQuery } from '../middleware/valid
 import { query } from '../db/pool.js';
 import { NotFoundError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
+import { streamFileWithRange } from '../services/rangeStream.js';
+
+// Re-exported from the extracted shared module (services/rangeStream.ts —
+// A-4a moved the Range mechanics there so the user-audio streamer shares
+// them) for existing importers of this route module.
+export { parseRangeHeader } from '../services/rangeStream.js';
 
 const ttmikRouter = Router();
 const iyagiRouter = Router();
@@ -616,44 +621,14 @@ async function resolveAudioFile(
   return { absPath: realAbs, size: info.size };
 }
 
-/** A parsed, satisfiable byte range (inclusive, per RFC 9110). */
-interface ByteRange {
-  start: number;
-  end: number;
-}
-
-/**
- * Parse a Range header against a known size.
- * Returns: a ByteRange (→ 206), null (no/malformed header → full 200), or
- * 'unsatisfiable' (→ 416). Only single `bytes=` ranges are honored —
- * multipart/byteranges is deliberately unsupported (no client we serve sends
- * multi-range for audio, and coalescing logic is pure attack surface).
- */
-export function parseRangeHeader(
-  header: string | undefined,
-  size: number,
-): ByteRange | null | 'unsatisfiable' {
-  if (header === undefined) return null;
-  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  // Malformed / multi-range / non-bytes unit → ignore per RFC 9110 §14.2.
-  if (!m || (m[1] === '' && m[2] === '')) return null;
-  if (m[1] === '') {
-    // Suffix range: last N bytes. `bytes=-0` is unsatisfiable by definition.
-    const suffix = Number(m[2]);
-    if (suffix === 0 || size === 0) return 'unsatisfiable';
-    return { start: Math.max(0, size - suffix), end: size - 1 };
-  }
-  const start = Number(m[1]);
-  if (start >= size) return 'unsatisfiable';
-  const end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
-  if (start > end) return 'unsatisfiable';
-  return { start, end };
-}
-
 /**
  * Stream the resolved mp3, honoring a single-byte-range request.
  * Shared by both audio endpoints — the ONLY difference upstream is which
- * table the audio_path came from.
+ * table the audio_path came from. The Range mechanics themselves live in
+ * services/rangeStream.ts (shared with the user-audio streamer, A-4a):
+ * this wrapper contributes only the corpus resolution + the corpus header
+ * policy (audio/mpeg always — the corpus is all mp3; a full day of private
+ * caching — the corpus is immutable, so replays never re-download).
  */
 async function streamCorpusAudio(
   req: Request,
@@ -662,56 +637,11 @@ async function streamCorpusAudio(
   audioPath: string | null,
 ): Promise<void> {
   const { absPath, size } = await resolveAudioFile(audioPath);
-
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', 'audio/mpeg');
-  // Authed licensed content: cacheable only by the browser itself. The corpus
-  // is immutable, so a day of private caching saves re-downloads on replay.
-  res.setHeader('Cache-Control', 'private, max-age=86400');
-
-  const range = parseRangeHeader(req.headers.range, size);
-  if (range === 'unsatisfiable') {
-    // RFC 9110 §15.5.17: tell the client the actual size so it can re-request.
-    res.setHeader('Content-Range', `bytes */${size}`);
-    res.status(416).end();
-    return;
-  }
-
-  // Degenerate empty file (should never ship, but a 0-byte mp3 must not make
-  // createReadStream throw on an inverted start/end pair).
-  if (size === 0) {
-    res.status(200);
-    res.setHeader('Content-Length', 0);
-    res.end();
-    return;
-  }
-
-  const start = range?.start ?? 0;
-  const end = range?.end ?? size - 1;
-  if (range) {
-    res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-  } else {
-    res.status(200);
-  }
-  res.setHeader('Content-Length', end - start + 1);
-
-  const stream = createReadStream(absPath, { start, end });
-  stream.on('error', (err) => {
-    // File vanished / IO error mid-stream. If headers are gone we can only
-    // sever the connection; otherwise surface a clean 500 via the handler.
-    getLogger().error({ err, absPath }, 'corpus audio: stream error');
-    stream.destroy();
-    if (res.headersSent) {
-      res.destroy();
-    } else {
-      next(err);
-    }
+  streamFileWithRange(req, res, next, absPath, size, {
+    contentType: 'audio/mpeg',
+    cacheControl: 'private, max-age=86400',
+    logContext: 'corpus audio',
   });
-  // Client disconnect: stop reading the file (backpressure would eventually,
-  // but destroying promptly frees the fd).
-  res.on('close', () => stream.destroy());
-  stream.pipe(res);
 }
 
 export { iyagiRouter };

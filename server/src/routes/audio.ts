@@ -23,6 +23,21 @@
  *                   to 'processing' forever — per-track transcript_status is
  *                   the truthful progress signal.
  *
+ * A-4a (the Listen playback surface — server side only, client is A-4b):
+ *   GET /audio/tracks/:id         → one owned track + its ORDERED transcript
+ *                   segments: { track: { id, title, transcriptStatus,
+ *                   durationMs, streamUrl }, segments: [{ segmentNumber,
+ *                   startMs, endMs, body }] }. `streamUrl` is the
+ *                   app-relative sibling stream path (the client hands it to
+ *                   an <audio> tag; the session cookie rides same-origin).
+ *                   A not-yet-transcribed track returns segments: [] — a
+ *                   normal state, never an error.
+ *   GET /audio/tracks/:id/stream  → the track's audio bytes, Range-capable
+ *                   (RFC 9110 single range: 206/Content-Range/Accept-Ranges,
+ *                   416 unsatisfiable, malformed → full 200) via the shared
+ *                   services/rangeStream.ts streamer (extracted from
+ *                   ttmik.ts's corpus streamer so the two can't drift).
+ *
  * MODEL — one source per upload: each user upload creates its OWN
  * audio_sources row (kind='standalone_listening', source_upload_id NULL — the
  * migration-073 kind↔link CHECK requires NULL for non-paired kinds) holding a
@@ -63,6 +78,20 @@
  *     a `.strict()` Zod schema — an extra field is REJECTED, not ignored.
  *     kind/status/slug/source_upload_id are server-assigned constants.
  *   - AUTH: `router.use(requireAuth)` — no anonymous surface at all.
+ *   - STREAMING (A-4a, mirrors routes/uploads.ts GET /uploads/:id/page/:n):
+ *     the track probe is WHERE id = $1 AND user_id = $2 (no join —
+ *     migration 074's composite FK structurally pins the denormalized
+ *     user_id, so a drifted row can't exist); a miss for ANY reason (no such
+ *     track / another user's track / poisoned blob_ref / blob file gone) is
+ *     a UNIFORM 404 that never confirms existence. blob_ref resolves through
+ *     audioStore.resolveUnderRoot (traversal-checked under
+ *     AUDIO_UPLOAD_STORAGE_DIR — never a hand-rolled join). Content-Type is
+ *     derived from the SERVER-written blob_ref extension (saveBlob's sniffed
+ *     ext — never a client string) and X-Content-Type-Options: nosniff is
+ *     set so the browser can never re-sniff the bytes (A-3's m4a sniff
+ *     accepts generic MP4 brands, so an uploaded video-ish MP4 must be
+ *     locked to its declared audio type, not sniffed into a playable
+ *     document).
  *   - ATOMICITY: cap check → audio_sources INSERT → blob write → audio_tracks
  *     INSERT → job INSERT, all inside ONE transaction, blob-before-its-row
  *     (bookUploadIngest.persistUpload's ordering): a DB failure after the
@@ -73,15 +102,17 @@
  *     track exists without its job or its bytes.
  */
 import { randomUUID } from 'node:crypto';
+import { stat } from 'node:fs/promises';
 import { Router, type Request } from 'express';
 import { z } from 'zod';
 import { getUserId, requireAuth } from '../middleware/auth.js';
-import { cheapLimiter, expensiveLimiter } from '../middleware/rateLimits.js';
-import { validateBody } from '../middleware/validate.js';
+import { cheapLimiter, expensiveLimiter, mediaLimiter } from '../middleware/rateLimits.js';
+import { validateBody, validateParams } from '../middleware/validate.js';
 import { query, withTransaction } from '../db/pool.js';
-import { ValidationError } from '../middleware/errors.js';
+import { NotFoundError, ValidationError } from '../middleware/errors.js';
 import { loadConfig } from '../config/index.js';
-import { deleteBlob, saveBlob } from '../services/audioStore.js';
+import { deleteBlob, resolveUnderRoot, saveBlob } from '../services/audioStore.js';
+import { streamFileWithRange } from '../services/rangeStream.js';
 import {
   AudioDailyCapError,
   AudioDailyCountCapError,
@@ -109,6 +140,16 @@ const AudioUploadBodySchema = z
     title: z.string().trim().min(1, 'title must not be blank').max(500).optional(),
   })
   .strict();
+
+/** IDs are BIGINT IDENTITY values but always well inside Number.MAX_SAFE_INTEGER
+ *  (routes/uploads.ts's exact stance). */
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+
+/** Path params for the /tracks/:id routes — coerced positive int, anything
+ *  else (text, 0, negative, fractional, overflow) → 400 before any query. */
+const TrackParamsSchema = z.object({
+  id: z.coerce.number().int().positive().max(MAX_ID),
+});
 
 // ---------------------------------------------------------------------------
 // Row types + projections
@@ -421,5 +462,178 @@ router.get('/', cheapLimiter(), async (req, res, next) => {
     next(err);
   }
 });
+
+// ---------------------------------------------------------------------------
+// GET /audio/tracks/:id/stream — the track's audio bytes (user-scoped,
+// Range-capable). A-4b's <audio> element points here.
+// ---------------------------------------------------------------------------
+
+/**
+ * Content-Type from the SERVER-written blob_ref extension. saveBlob writes
+ * exactly `{userId}/{uuid}.{mp3|m4a}` from the SNIFFED mime (never a client
+ * string), so the extension is server-controlled; the octet-stream fallback
+ * is defense in depth for an impossible row, chosen because it is the one
+ * type a browser will never interpret (mirrors uploads.ts's mimeForBlobRef).
+ */
+function mimeForAudioBlobRef(blobRef: string): string {
+  const lower = blobRef.toLowerCase();
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  return 'application/octet-stream';
+}
+
+/** True when the error is a filesystem "no such file" error. */
+function isEnoent(err: unknown): boolean {
+  return err !== null && typeof err === 'object' && (err as { code?: string }).code === 'ENOENT';
+}
+
+router.get(
+  '/tracks/:id/stream',
+  mediaLimiter(),
+  validateParams(TrackParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (req as Request & { validatedParams: z.infer<typeof TrackParamsSchema> })
+        .validatedParams;
+
+      // IDOR guard: one no-join probe on (id, user_id) — migration 074's
+      // composite FK pins the denormalized user_id structurally, so this
+      // WHERE is sufficient. A miss (no such track OR another user's track)
+      // is a uniform 404: never confirm a foreign track exists.
+      const { rows } = await query<{ blob_ref: string }>(
+        `SELECT blob_ref FROM audio_tracks WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+      const row = rows[0];
+      if (!row) {
+        throw new NotFoundError('track not found');
+      }
+
+      let absPath: string;
+      try {
+        absPath = resolveUnderRoot(row.blob_ref);
+      } catch {
+        // A poisoned/corrupt blob_ref (defense in depth — saveBlob only ever
+        // writes safe relative paths). Uniform 404, never confirm what the
+        // traversal attempt would have hit; log the true reason server-side.
+        req.log.warn({ trackId: id }, 'audio: blob_ref failed root resolution — served 404');
+        throw new NotFoundError('track audio not found');
+      }
+
+      let size: number;
+      try {
+        size = (await stat(absPath)).size;
+      } catch (err) {
+        // Row exists but the bytes are gone (e.g. a partial restore) — 404,
+        // not 500 (uploads.ts's page-stream posture).
+        if (isEnoent(err)) {
+          throw new NotFoundError('track audio not found');
+        }
+        throw err;
+      }
+
+      // Range mechanics live in the shared streamer (also used by the ttmik
+      // corpus routes). Content-Type comes from the server-written extension;
+      // the streamer always sets X-Content-Type-Options: nosniff (required
+      // here — A-3's m4a sniff admits generic MP4 brands, so the browser
+      // must never re-sniff these bytes into anything but audio). Uploaded
+      // blobs are immutable (a blob_ref is written once, never replaced), so
+      // a day of private caching is safe (ttmik's corpus policy).
+      streamFileWithRange(req, res, next, absPath, size, {
+        contentType: mimeForAudioBlobRef(row.blob_ref),
+        cacheControl: 'private, max-age=86400',
+        logContext: 'audio track',
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /audio/tracks/:id — one owned track + its ordered transcript segments
+// (the Listen UI's transcript render; mirrors reading.ts's
+// GET /reading/chapters/:chapterId detail-with-children shape).
+// ---------------------------------------------------------------------------
+
+/** A transcript segment as served (BIGINT ids never leave the DB here — the
+ *  segment's own id is an internal key the client has no use for; the
+ *  [startMs, endMs] window is what drives the play-position highlight). */
+interface SegmentDTO {
+  segmentNumber: number;
+  startMs: number;
+  endMs: number;
+  body: string;
+}
+
+router.get(
+  '/tracks/:id',
+  cheapLimiter(),
+  validateParams(TrackParamsSchema),
+  async (req, res, next) => {
+    try {
+      const userId = getUserId(req);
+      const { id } = (req as Request & { validatedParams: z.infer<typeof TrackParamsSchema> })
+        .validatedParams;
+
+      // Ownership assert + the track's own fields, one probe (uniform 404 on
+      // any miss — same reasoning as the stream route above).
+      const trackRes = await query<{
+        title: string | null;
+        duration_ms: number | null;
+        transcript_status: 'pending' | 'running' | 'done' | 'failed';
+      }>(
+        `SELECT title, duration_ms, transcript_status
+           FROM audio_tracks
+          WHERE id = $1 AND user_id = $2`,
+        [id, userId],
+      );
+      const track = trackRes.rows[0];
+      if (!track) {
+        throw new NotFoundError('track not found');
+      }
+
+      // Ordered segments. Ownership was just confirmed and segments CASCADE
+      // from their track (075 — no user_id of their own, always reached
+      // THROUGH the track), so scoping on track_id alone is safe. A
+      // not-yet-transcribed track simply has no rows → segments: [] — a
+      // normal state the client polls through, never an error.
+      const segRes = await query<{
+        segment_number: number;
+        start_ms: number;
+        end_ms: number;
+        body: string;
+      }>(
+        `SELECT segment_number, start_ms, end_ms, body
+           FROM audio_transcript_segments
+          WHERE track_id = $1
+          ORDER BY segment_number`,
+        [id],
+      );
+      const segments: SegmentDTO[] = segRes.rows.map((s) => ({
+        segmentNumber: s.segment_number,
+        startMs: s.start_ms,
+        endMs: s.end_ms,
+        body: s.body,
+      }));
+
+      res.status(200).json({
+        track: {
+          id,
+          title: track.title,
+          transcriptStatus: track.transcript_status,
+          durationMs: track.duration_ms,
+          // App-relative sibling stream path — A-4b hands it straight to an
+          // <audio> element (same-origin, session cookie rides along).
+          streamUrl: `/audio/tracks/${id}/stream`,
+        },
+        segments,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

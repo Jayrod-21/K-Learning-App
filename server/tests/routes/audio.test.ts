@@ -6,6 +6,8 @@
  * Routes:
  *   POST /audio
  *   GET  /audio
+ *   GET  /audio/tracks/:id          (A-4a — track detail + ordered segments)
+ *   GET  /audio/tracks/:id/stream   (A-4a — user-scoped Range-capable bytes)
  *
  * Real Postgres via testcontainers per Bar §"Testing" (no SQLite stand-in).
  * The blob store points at a throwaway temp dir (AUDIO_UPLOAD_STORAGE_DIR is
@@ -42,15 +44,25 @@
  *   - tx atomicity: a blob-write failure mid-transaction → 500 with NO
  *     partial rows in any table and NO blob on disk; a row-INSERT failure
  *     AFTER the blob write → rollback + the orphan blob is unlinked
+ *   - A-4a stream: 200 full body (exact bytes) with audio/mpeg + nosniff +
+ *     Accept-Ranges + Content-Length; m4a → audio/mp4; Range → 206 + correct
+ *     Content-Range + exact partial bytes (bounded, open-ended, suffix);
+ *     unsatisfiable Range → 416 with total-size Content-Range; IDOR (user B
+ *     can NEVER stream user A's track → uniform 404); blob file deleted
+ *     under a live row → 404 (not 500); malformed :id → 400
+ *   - A-4a detail: happy path (done track → ordered camelCase segments +
+ *     streamUrl + transcriptStatus + durationMs); IDOR → 404; a
+ *     not-yet-transcribed track → segments: [] (normal state, not an error);
+ *     nonexistent id → 404
  */
 import os from 'node:os';
 import path from 'node:path';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, unlink } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { startPostgres, stopPostgres, type PgHandle } from '../helpers/pg.js';
 import { buildTestApp, teardownTestApp, type TestApp } from '../helpers/app.js';
-import { registerUser, seedAudioTranscriptionJob } from '../helpers/seed.js';
+import { registerUser, seedAudioSegment, seedAudioTranscriptionJob } from '../helpers/seed.js';
 import { resetLimiters } from '../../src/middleware/rateLimits.js';
 
 // Wrap the REAL audioStore in pass-through vi.fn()s so the atomicity test can
@@ -181,6 +193,8 @@ describe('audio — auth required', () => {
   it.each([
     ['GET', '/audio'],
     ['POST', '/audio'],
+    ['GET', '/audio/tracks/1'],
+    ['GET', '/audio/tracks/1/stream'],
   ])('%s %s unauthenticated → 401', async (method, p) => {
     const res = method === 'GET' ? await request(t.app).get(p) : await request(t.app).post(p);
     expect(res.status).toBe(401);
@@ -685,5 +699,283 @@ describe('POST /audio — transaction atomicity', () => {
       .field('title', 'recovered again')
       .attach('file', fakeMp3(), { filename: 'ok2.mp3', contentType: 'audio/mpeg' });
     expect(retry.status).toBe(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A-4a — GET /audio/tracks/:id/stream (user-scoped, Range-capable)
+// ---------------------------------------------------------------------------
+
+/** Upload `bytes` via the real route and return the new track id (the blob
+ *  lands on disk at the server-written path, exactly as production). */
+async function uploadTrack(
+  agent: ReturnType<typeof request.agent>,
+  bytes: Buffer,
+  opts: { filename?: string; contentType?: string } = {},
+): Promise<number> {
+  const res = await agent.post('/audio').attach('file', bytes, {
+    filename: opts.filename ?? 'track.mp3',
+    contentType: opts.contentType ?? 'audio/mpeg',
+  });
+  expect(res.status).toBe(201);
+  return res.body.trackId as number;
+}
+
+/** GET an audio URL with the body captured as a raw Buffer (supertest does
+ *  not buffer audio/* bodies by default — ttmik.test.ts's exact helper). */
+function getAudio(agent: ReturnType<typeof request.agent>, url: string, range?: string) {
+  const req = agent
+    .get(url)
+    .buffer(true)
+    .parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    });
+  return range === undefined ? req : req.set('Range', range);
+}
+
+describe('GET /audio/tracks/:id/stream — bytes, headers, Range', () => {
+  it('no Range header → 200 with the full exact bytes + the streaming headers', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('audio/mpeg');
+    // REQUIRED: the browser must never content-sniff these bytes (A-3's m4a
+    // sniff admits generic MP4 brands).
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.headers['content-length']).toBe(String(bytes.length));
+    // EXACT contract — `private` alone would also pass for no-store/max-age=0.
+    expect(res.headers['cache-control']).toBe('private, max-age=86400');
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it('an m4a track streams as audio/mp4 (Content-Type from the server-written extension)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeM4a('M4A ');
+    const trackId = await uploadTrack(agent, bytes, {
+      filename: 'track.m4a',
+      contentType: 'audio/mp4',
+    });
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('audio/mp4');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it('Range: bytes=0-99 → 206 with correct Content-Range and the exact slice', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=0-99');
+    expect(res.status).toBe(206);
+    expect(res.headers['content-range']).toBe(`bytes 0-99/${bytes.length}`);
+    expect(res.headers['content-length']).toBe('100');
+    expect(Buffer.compare(res.body as Buffer, bytes.subarray(0, 100))).toBe(0);
+  });
+
+  it('open-ended Range: bytes=4000- → 206 to EOF', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=4000-');
+    expect(res.status).toBe(206);
+    expect(res.headers['content-range']).toBe(`bytes 4000-4095/4096`);
+    expect(Buffer.compare(res.body as Buffer, bytes.subarray(4000))).toBe(0);
+  });
+
+  it('suffix Range: bytes=-16 → 206 with the last 16 bytes', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=-16');
+    expect(res.status).toBe(206);
+    expect(res.headers['content-range']).toBe(`bytes 4080-4095/4096`);
+    expect(Buffer.compare(res.body as Buffer, bytes.subarray(4080))).toBe(0);
+  });
+
+  it('unsatisfiable Range (start past EOF) → 416 with total-size Content-Range', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(4096);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=999999-');
+    expect(res.status).toBe(416);
+    expect(res.headers['content-range']).toBe(`bytes */${bytes.length}`);
+    // No partial bytes may leak on a 416.
+    expect((res.body as Buffer).length).toBe(0);
+  });
+
+  it('inverted Range: bytes=5-2 is an INVALID specifier → ignored, 200 full body (RFC 9110 §14.1.1)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(2048);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=5-2');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-length']).toBe(String(bytes.length));
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it('multi-range bytes=0-1,3-4 is unsupported → ignored, 200 full body', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(2048);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=0-1,3-4');
+    expect(res.status).toBe(200);
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it('zero-length suffix bytes=-0 → 416 with total-size Content-Range', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(2048);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=-0');
+    expect(res.status).toBe(416);
+    expect(res.headers['content-range']).toBe(`bytes */${bytes.length}`);
+    expect((res.body as Buffer).length).toBe(0);
+  });
+
+  it('non-bytes range unit (chunks=0-3) → ignored, 200 full body', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(2048);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'chunks=0-3');
+    expect(res.status).toBe(200);
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it('malformed Range header is ignored → 200 full body (RFC 9110 §14.2)', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const bytes = fakeMp3(2048);
+    const trackId = await uploadTrack(agent, bytes);
+
+    const res = await getAudio(agent, `/audio/tracks/${trackId}/stream`, 'bytes=tuna-sandwich');
+    expect(res.status).toBe(200);
+    expect(Buffer.compare(res.body as Buffer, bytes)).toBe(0);
+  });
+
+  it("IDOR: user B cannot stream user A's track — uniform 404, never confirming existence", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const trackId = await uploadTrack(a.agent, fakeMp3());
+
+    const res = await b.agent.get(`/audio/tracks/${trackId}/stream`);
+    expect(res.status).toBe(404);
+    // Indistinguishable from a genuinely-missing id (the correlationId is
+    // per-request noise; the error payload is what must be uniform).
+    const ghost = await b.agent.get(`/audio/tracks/999999/stream`);
+    expect(ghost.status).toBe(404);
+    expect(res.body.error).toEqual(ghost.body.error);
+  });
+
+  it('a live row whose blob file is gone → 404, not 500', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const trackId = await uploadTrack(agent, fakeMp3());
+    const { rows } = await pg.pool.query<{ blob_ref: string }>(
+      `SELECT blob_ref FROM audio_tracks WHERE id = $1`,
+      [trackId],
+    );
+    await unlink(path.join(process.env.AUDIO_UPLOAD_STORAGE_DIR!, rows[0]!.blob_ref));
+
+    const res = await agent.get(`/audio/tracks/${trackId}/stream`);
+    expect(res.status).toBe(404);
+  });
+
+  it.each(['abc', '0', '-1', '1.5'])('malformed :id %j → 400 before any query', async (bad) => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent.get(`/audio/tracks/${bad}/stream`);
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A-4a — GET /audio/tracks/:id (track detail + ordered transcript segments)
+// ---------------------------------------------------------------------------
+
+describe('GET /audio/tracks/:id — detail + segments', () => {
+  it('returns the track DTO + ordered camelCase segments once transcription is done', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const res = await agent
+      .post('/audio')
+      .field('title', 'Folktale 01')
+      .attach('file', fakeMp3(), { filename: 'f.mp3', contentType: 'audio/mpeg' });
+    expect(res.status).toBe(201);
+    const trackId = res.body.trackId as number;
+
+    // Simulate the worker settling the track (transcript_status + duration),
+    // then its segment rows — seeded out of insertion order to pin the ORDER
+    // BY segment_number (insertion order must never be what sorts them).
+    await pg.pool.query(
+      `UPDATE audio_tracks SET transcript_status = 'done', duration_ms = 6000 WHERE id = $1`,
+      [trackId],
+    );
+    await seedAudioSegment(pg.pool, trackId, 3, { startMs: 4000, endMs: 6000, body: '셋' });
+    await seedAudioSegment(pg.pool, trackId, 1, { startMs: 0, endMs: 2000, body: '하나' });
+    await seedAudioSegment(pg.pool, trackId, 2, { startMs: 2000, endMs: 4000, body: '둘' });
+
+    const detail = await agent.get(`/audio/tracks/${trackId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toEqual({
+      track: {
+        id: trackId,
+        title: 'Folktale 01',
+        transcriptStatus: 'done',
+        durationMs: 6000,
+        streamUrl: `/audio/tracks/${trackId}/stream`,
+      },
+      segments: [
+        { segmentNumber: 1, startMs: 0, endMs: 2000, body: '하나' },
+        { segmentNumber: 2, startMs: 2000, endMs: 4000, body: '둘' },
+        { segmentNumber: 3, startMs: 4000, endMs: 6000, body: '셋' },
+      ],
+    });
+  });
+
+  it('a not-yet-transcribed track returns segments: [] — a normal state, not an error', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    const trackId = await uploadTrack(agent, fakeMp3());
+
+    const detail = await agent.get(`/audio/tracks/${trackId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.track).toMatchObject({
+      id: trackId,
+      transcriptStatus: 'pending',
+      durationMs: null,
+      streamUrl: `/audio/tracks/${trackId}/stream`,
+    });
+    expect(detail.body.segments).toEqual([]);
+  });
+
+  it("IDOR: user B cannot read user A's track detail — uniform 404", async () => {
+    const a = await registerUser(t.app, pg.pool);
+    const b = await registerUser(t.app, pg.pool);
+    const trackId = await uploadTrack(a.agent, fakeMp3());
+    await seedAudioSegment(pg.pool, trackId, 1);
+
+    const res = await b.agent.get(`/audio/tracks/${trackId}`);
+    expect(res.status).toBe(404);
+    const ghost = await b.agent.get(`/audio/tracks/999999`);
+    expect(ghost.status).toBe(404);
+    // correlationId is per-request noise; the error payload must be uniform.
+    expect(res.body.error).toEqual(ghost.body.error);
+  });
+
+  it('a nonexistent id → 404; a malformed id → 400', async () => {
+    const { agent } = await registerUser(t.app, pg.pool);
+    expect((await agent.get('/audio/tracks/424242')).status).toBe(404);
+    expect((await agent.get('/audio/tracks/not-a-number')).status).toBe(400);
   });
 });

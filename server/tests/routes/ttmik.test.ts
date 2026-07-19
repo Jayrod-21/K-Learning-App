@@ -438,8 +438,8 @@ describe('parseRangeHeader', () => {
     ['bytes=-10', { start: 90, end: 99 }],
     ['bytes=-1000', { start: 0, end: 99 }], // suffix larger than file → whole file
     ['bytes=0-9999', { start: 0, end: 99 }], // end clamped
-    ['bytes=100-', 'unsatisfiable'], // start == size
-    ['bytes=7-3', 'unsatisfiable'], // inverted
+    ['bytes=100-', 'unsatisfiable'], // start == size → VALID but unsatisfiable → 416
+    ['bytes=7-3', null], // inverted specifier is INVALID → ignored (RFC 9110 §14.1.1), NOT 416
     ['bytes=-0', 'unsatisfiable'], // zero-length suffix
     ['bytes=-', null], // both empty → malformed → ignore
     ['bytes=0-3,5-9', null], // multi-range unsupported → ignore

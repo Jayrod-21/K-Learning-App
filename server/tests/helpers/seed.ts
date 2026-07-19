@@ -752,6 +752,31 @@ export async function seedAudioTranscriptionJob(
 }
 
 /**
+ * Seed a single audio_transcript_segments row (Track A — migration 075).
+ * Returns the new segment id. `trackId` must reference a REAL audio_tracks
+ * row (FK, CASCADE) — create one via the real POST /audio route or a direct
+ * insert first. Windows default to a contiguous 2-second slot derived from
+ * the segment number so multi-segment seeds are ordered and non-degenerate
+ * without every caller spelling out timestamps.
+ */
+export async function seedAudioSegment(
+  pool: Pool,
+  trackId: number,
+  segmentNumber: number,
+  opts: { startMs?: number; endMs?: number; body?: string } = {},
+): Promise<number> {
+  const startMs = opts.startMs ?? (segmentNumber - 1) * 2000;
+  const endMs = opts.endMs ?? startMs + 2000;
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO audio_transcript_segments (track_id, segment_number, start_ms, end_ms, body)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [trackId, segmentNumber, startMs, endMs, opts.body ?? `세그먼트 ${segmentNumber}`],
+  );
+  return Number(rows[0]!.id);
+}
+
+/**
  * Seed a single reading_chapters row (U3b, digitized chapter reader —
  * migration 044). Returns the new chapter id. `userId` MUST be the owner of
  * `uploadId` (the migration-044 composite FK rejects any other user_id), so
