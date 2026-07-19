@@ -133,10 +133,10 @@ describe('uploadAudio', () => {
     const config = spy.mock.calls[0][2];
     expect(config?.onUploadProgress).toBeInstanceOf(Function);
     const progress = config?.onUploadProgress as (e: AxiosProgressEvent) => void;
-    progress({ loaded: 333, total: 1000, bytes: 333 });
+    progress({ loaded: 333, total: 1000, bytes: 333, lengthComputable: true });
     expect(onProgress).toHaveBeenCalledWith(33);
     // `total` absent (indeterminate length) — never divides by undefined.
-    progress({ loaded: 500, bytes: 500 });
+    progress({ loaded: 500, bytes: 500, lengthComputable: false });
     expect(onProgress).toHaveBeenCalledTimes(1);
   });
 
