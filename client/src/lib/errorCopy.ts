@@ -129,3 +129,34 @@ export function bookUploadErrorMessage(err: unknown): string {
   }
   return 'Upload failed. Try again.';
 }
+
+/**
+ * Fixed copy for a failed AUDIO upload (`POST /audio`, Track A A-4b — see
+ * services/audio.ts). Mirrors `bookUploadErrorMessage`'s shape and
+ * reasoning: the per-user DAILY caps (transcription bytes + upload count,
+ * both Whisper-CPU cost controls) carry NO `retry_after`, while the
+ * short-window rate limiter's 429 does — `retryAfter` presence is the
+ * discriminator. The 400 branch covers every `ValidationError` the route
+ * throws (failed magic-byte sniff, a disallowed declared mime, a bad title
+ * field) — worded to stay correct for any of them rather than confidently
+ * blaming the file. Server prose is NEVER echoed.
+ */
+export function audioUploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 429) {
+      return err.retryAfter !== undefined
+        ? `Rate-limited. Try again in about ${String(Math.ceil(err.retryAfter))} seconds.`
+        : "You've hit today's audio limit. Try again tomorrow.";
+    }
+    if (err.status === 413) {
+      return 'That file is too large. Pick one under 100 MB.';
+    }
+    if (err.status === 400) {
+      return 'That upload could not be processed. Check the file (MP3 or M4A) and the title, then try again.';
+    }
+    if (err.code === 'network') {
+      return 'Network unreachable. Check your connection and try again.';
+    }
+  }
+  return 'Upload failed. Try again.';
+}

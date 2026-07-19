@@ -176,4 +176,37 @@ describe('buildAudioSrc', () => {
     expect(buildAudioSrc('/ttmik/lessons/2/audio', '')).toBeNull();
     expect(buildAudioSrc('/ttmik/lessons/2/21/audiox', '')).toBeNull();
   });
+
+  // Track A A-4b — My Audio track streams join the allow-list.
+  it('accepts the My Audio track stream shape (/audio/tracks/:id/stream)', () => {
+    expect(buildAudioSrc('/audio/tracks/1/stream', '')).toBe(
+      '/audio/tracks/1/stream',
+    );
+    expect(buildAudioSrc('/audio/tracks/427/stream', 'http://localhost:4000')).toBe(
+      'http://localhost:4000/audio/tracks/427/stream',
+    );
+  });
+
+  it('rejects near-misses of the My Audio stream shape (the anchor holds)', () => {
+    // Trailing junk / a lookalike suffix.
+    expect(buildAudioSrc('/audio/tracks/1/streamx', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks/1/stream/', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks/1/stream?x=1', '')).toBeNull();
+    // Traversal past the anchored tail.
+    expect(buildAudioSrc('/audio/tracks/1/stream/../x', '')).toBeNull();
+    // Protocol-relative / missing leading slash / non-numeric id.
+    expect(buildAudioSrc('//audio/tracks/1/stream', '')).toBeNull();
+    expect(buildAudioSrc('audio/tracks/1/stream', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks//stream', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks/abc/stream', '')).toBeNull();
+    // The bare route family without the stream tail is NOT playable media.
+    expect(buildAudioSrc('/audio/tracks/1', '')).toBeNull();
+    expect(buildAudioSrc('/audio', '')).toBeNull();
+    // Whitespace near-misses (R3-N3): the unflagged `$` must not tolerate a
+    // trailing newline (it would in Python / with the `m` flag), and
+    // embedded whitespace must not slip past the digit/literal segments.
+    expect(buildAudioSrc('/audio/tracks/1/stream\n', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks/1/stream ', '')).toBeNull();
+    expect(buildAudioSrc('/audio/tracks/1\t/stream', '')).toBeNull();
+  });
 });
